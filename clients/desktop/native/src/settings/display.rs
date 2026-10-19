@@ -117,6 +117,8 @@ pub struct DisplayPrefs {
     pub tab_position: TabPosition,
     /// How the sidebar groups sessions.
     pub sidebar_grouping: SidebarGrouping,
+    /// Explicit sidebar filter exclusions. `None` is this machine.
+    pub sidebar_hidden_hosts: Vec<Option<String>>,
     /// Agent notifications.
     pub notifications: bool,
     /// Cell width multiplier.
@@ -165,6 +167,7 @@ pub fn default_display() -> DisplayPrefs {
         sidebar_width: 248.0,
         tab_position: TabPosition::Top,
         sidebar_grouping: SidebarGrouping::Project,
+        sidebar_hidden_hosts: Vec::new(),
         notifications: true,
         cell_width: 1.0,
         cell_height: 1.0,
@@ -184,6 +187,22 @@ pub fn default_display() -> DisplayPrefs {
 }
 
 impl DisplayPrefs {
+    /// Host visibility never depends on which session is selected.
+    #[must_use]
+    pub fn sidebar_shows_host(&self, host: Option<&str>) -> bool {
+        !self
+            .sidebar_hidden_hosts
+            .iter()
+            .any(|hidden| hidden.as_deref() == host)
+    }
+
+    pub fn set_sidebar_host_visible(&mut self, host: Option<String>, visible: bool) {
+        self.sidebar_hidden_hosts.retain(|hidden| hidden != &host);
+        if !visible {
+            self.sidebar_hidden_hosts.push(host);
+        }
+    }
+
     /// Terminal background opacity as painted: opaque on a solid window.
     #[must_use]
     pub fn painted_terminal_opacity(&self) -> f64 {
@@ -286,6 +305,20 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         sidebar_grouping: SidebarGrouping::parse(
             object.get("sidebarGrouping").and_then(Value::as_str),
         ),
+        sidebar_hidden_hosts: object
+            .get("sidebarHiddenHosts")
+            .and_then(Value::as_array)
+            .map(|hosts| {
+                hosts
+                    .iter()
+                    .filter_map(|host| match host {
+                        Value::Null => Some(None),
+                        Value::String(name) => Some(Some(name.clone())),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         notifications: flag("notifications", fallback.notifications),
         cell_width: number("cellWidth", fallback.cell_width),
         cell_height: number("cellHeight", fallback.cell_height),
@@ -320,6 +353,7 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "sidebarWidth": display.sidebar_width,
         "tabPosition": display.tab_position.as_str(),
         "sidebarGrouping": display.sidebar_grouping.as_str(),
+        "sidebarHiddenHosts": display.sidebar_hidden_hosts,
         "notifications": display.notifications,
         "cellWidth": display.cell_width,
         "cellHeight": display.cell_height,
@@ -347,166 +381,4 @@ fn round_to(value: f64, steps: f64) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn agent_fleet_is_opt_in_and_round_trips_without_coercion() {
-        for value in [
-            json!({}),
-            json!({"agentFleet": "true"}),
-            json!({"agentFleet": 1}),
-            json!({"agentFleet": null}),
-        ] {
-            assert!(!parse_display(&value).agent_fleet);
-        }
-        let on = DisplayPrefs {
-            agent_fleet: true,
-            ..default_display()
-        };
-        assert_eq!(display_value(&on)["agentFleet"], true);
-        assert_eq!(parse_display(&display_value(&on)), on);
-    }
-
-    #[test]
-    fn tab_placement_round_trips_without_changing_other_preferences() {
-        for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Side] {
-            let prefs = DisplayPrefs {
-                tab_position: position,
-                sidebar_visible: false,
-                sidebar_width: 320.,
-                font_size: 17.,
-                ..default_display()
-            };
-            let value = display_value(&prefs);
-            assert_eq!(value["tabPosition"], position.as_str());
-            assert_eq!(parse_display(&value), prefs);
-        }
-    }
-
-    #[test]
-    fn sidebar_grouping_round_trips_and_defaults_to_projects() {
-        for grouping in [
-            SidebarGrouping::Project,
-            SidebarGrouping::Machine,
-            SidebarGrouping::None,
-        ] {
-            let prefs = DisplayPrefs {
-                sidebar_grouping: grouping,
-                ..default_display()
-            };
-            let value = display_value(&prefs);
-            assert_eq!(value["sidebarGrouping"], grouping.as_str());
-            assert_eq!(parse_display(&value), prefs);
-        }
-        for value in [json!("host"), json!(3), json!(null)] {
-            let parsed = parse_display(&json!({"sidebarGrouping": value, "fontSize": 15}));
-            assert_eq!(parsed.sidebar_grouping, SidebarGrouping::Project);
-            assert_eq!(parsed.font_size, 15.);
-        }
-    }
-
-    #[test]
-    fn window_background_round_trips_and_defaults_to_blur() {
-        for background in [WindowBackground::Blur, WindowBackground::Solid] {
-            let prefs = DisplayPrefs {
-                window_background: background,
-                terminal_opacity: 0.8,
-                ..default_display()
-            };
-            let value = display_value(&prefs);
-            assert_eq!(value["windowBackground"], background.as_str());
-            assert_eq!(parse_display(&value), prefs);
-        }
-        for value in [
-            None,
-            Some(json!("glass")),
-            Some(json!(1)),
-            Some(json!(null)),
-        ] {
-            let mut display = json!({"terminalOpacity": 0.7});
-            if let Some(value) = value {
-                display["windowBackground"] = value;
-            }
-            let parsed = parse_display(&display);
-            assert_eq!(parsed.window_background, WindowBackground::Blur);
-            assert_eq!(parsed.terminal_opacity, 0.7);
-        }
-    }
-
-    #[test]
-    fn a_solid_window_paints_the_terminal_opaque_and_keeps_the_saved_opacity() {
-        let blur = DisplayPrefs {
-            terminal_opacity: 0.7,
-            ..default_display()
-        };
-        assert_eq!(blur.painted_terminal_opacity(), 0.7);
-        let solid = DisplayPrefs {
-            window_background: WindowBackground::Solid,
-            ..blur
-        };
-        assert_eq!(solid.painted_terminal_opacity(), 1.0);
-        assert_eq!(parse_display(&display_value(&solid)).terminal_opacity, 0.7);
-    }
-
-    #[test]
-    fn old_or_unrecognized_tab_placement_preserves_the_rest_of_the_display() {
-        for value in [
-            None,
-            Some(json!("unknown")),
-            Some(json!(null)),
-            Some(json!(42)),
-        ] {
-            let mut display = json!({"sidebarVisible": false, "fontSize": 18});
-            if let Some(value) = value {
-                display["tabPosition"] = value;
-            }
-            let parsed = parse_display(&display);
-            assert_eq!(parsed.tab_position, TabPosition::Top);
-            assert!(!parsed.sidebar_visible);
-            assert_eq!(parsed.font_size, 18.);
-        }
-    }
-
-    #[test]
-    fn the_laser_cursor_defaults_on_and_round_trips_off() {
-        assert!(parse_display(&json!({})).cursor_laser);
-        let off = DisplayPrefs {
-            cursor_laser: false,
-            ..default_display()
-        };
-        let value = display_value(&off);
-        assert_eq!(value["cursorLaser"], false);
-        assert_eq!(parse_display(&value), off);
-    }
-
-    #[test]
-    fn skin_and_plain_terminal_round_trip_and_unknown_skins_fall_back() {
-        let parsed = parse_display(&json!({}));
-        assert_eq!(parsed.skin_id, "glass");
-        assert!(!parsed.plain);
-        assert!(parsed.animations);
-        let plain = DisplayPrefs {
-            skin_id: "terminal".to_owned(),
-            plain: true,
-            animations: false,
-            ..default_display()
-        };
-        let value = display_value(&plain);
-        assert_eq!(value["skinId"], "terminal");
-        assert_eq!(value["plainTerminal"], true);
-        assert_eq!(value["animations"], false);
-        assert_eq!(parse_display(&value), plain);
-        assert_eq!(parse_display(&json!({"skinId": "neon"})).skin_id, "glass");
-        assert!(!parse_display(&json!({"plainTerminal": "yes"})).plain);
-        assert!(!parsed.native_agents);
-        let native = DisplayPrefs {
-            native_agents: true,
-            ..default_display()
-        };
-        assert_eq!(display_value(&native)["nativeAgents"], true);
-        assert_eq!(parse_display(&display_value(&native)), native);
-        assert!(!parse_display(&json!({"nativeAgents": "yes"})).native_agents);
-        assert!(parse_display(&json!({"animations": "no"})).animations);
-    }
-}
+mod tests;

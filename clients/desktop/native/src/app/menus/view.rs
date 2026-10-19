@@ -1,12 +1,12 @@
 //! The View page: tab placement, sidebar grouping and the panels beside the panes.
 
-use gpui::{Context, WeakEntity};
+use gpui::{Context, WeakEntity, point, px};
 use gpui_kit::assets::IconName;
 
 use crate::settings::{SidebarGrouping, TabPosition};
 
 use super::super::desk::Desk;
-use super::super::ui::menu::{MenuPage, MenuSpec};
+use super::super::ui::menu::{MenuItem, MenuPage, MenuSpec};
 use super::{command, spec};
 
 /// Where tabs go and how the sidebar groups sessions: different views of the
@@ -19,6 +19,9 @@ pub(super) fn view_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
     MenuPage::titled(
         "View",
         vec![
+            MenuItem::page("Visible machines", host_filter_page(desk, handle))
+                .icon(IconName::Server)
+                .selector("visible-machines"),
             checked(
                 "tabs-top",
                 IconName::PanelsTopLeft,
@@ -56,6 +59,54 @@ pub(super) fn view_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
                 .checked(desk.prefs.native_agents),
         ],
     )
+}
+
+fn host_filter_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
+    let mut hosts = vec![None];
+    hosts.extend(desk.hosts.iter().map(|host| Some(host.name.clone())));
+    if !hosts.contains(&desk.remote) {
+        hosts.push(desk.remote.clone());
+    }
+    let mut items = vec![{
+        let handle = handle.clone();
+        MenuItem::action("Show all machines", move |_, cx| {
+            let _ = handle.update(cx, |desk, cx| {
+                desk.update_prefs(|prefs| prefs.sidebar_hidden_hosts.clear(), cx)
+            });
+        })
+        .selector("show-all-machines")
+    }];
+    items.extend(hosts.into_iter().map(|host| {
+        let shown = desk.prefs.sidebar_shows_host(host.as_deref());
+        let label = host.clone().unwrap_or_else(|| "This Mac".into());
+        let handle = handle.clone();
+        MenuItem::action(label.clone(), move |_, cx| {
+            let _ = handle.update(cx, |desk, cx| {
+                desk.update_prefs(
+                    |prefs| prefs.set_sidebar_host_visible(host.clone(), !shown),
+                    cx,
+                )
+            });
+        })
+        .checked(shown)
+        .selector(format!("show-host-{label}"))
+    }));
+    MenuPage::titled("Visible machines", items)
+}
+
+impl Desk {
+    /// Host visibility opens directly below its own trigger, not from the
+    /// unrelated View button at the foot of the sidebar.
+    pub(crate) fn open_sidebar_host_filter(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let anchor = self.anchor_below(super::HOST_FILTER, point(px(12.), px(80.)));
+        let page = host_filter_page(self, &cx.weak_entity());
+        let spec = spec("Visible machines", page, 260., self);
+        self.toggle_menu(super::HOST_FILTER, anchor, spec, window, cx);
+    }
 }
 
 pub(super) fn view_menu(desk: &Desk, cx: &mut Context<Desk>) -> MenuSpec {

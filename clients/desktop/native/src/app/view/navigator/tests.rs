@@ -12,8 +12,11 @@ fn work(name: &str, host: Option<&str>, project: Option<&str>) -> Work {
         id: 1,
         project: project.map(|name| (format!("id:{name}"), name.to_owned())),
         terminals: 1,
+        panes: Vec::new(),
+        resources: Vec::new(),
         attention: None,
         intake: false,
+        imported: false,
         online: true,
     }
 }
@@ -74,6 +77,18 @@ fn every_grouping_lists_the_same_work() {
         labels(&group(catalog, SidebarGrouping::None)),
         [(None, vec!["api", "build", "desk", "notes"])]
     );
+}
+
+#[test]
+fn disclosure_is_scoped_to_authority_and_session_not_name_or_live_handle() {
+    let mut local = work("same", None, None);
+    local.destination.key = Some(phux_protocol::ids::SessionKey::new([1; 16]).unwrap());
+    let before = session::disclosure_key(&local);
+    local.destination.name = "renamed".into();
+    local.id = 99;
+    assert_eq!(session::disclosure_key(&local), before);
+    local.destination.host = Some("mini".into());
+    assert_ne!(session::disclosure_key(&local), before);
 }
 
 #[test]

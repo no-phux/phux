@@ -34,6 +34,15 @@ Use **↑/↓** to choose and **Return** to run. **Escape** clears a nonempty
 search, then closes the panel; clicking outside also closes it. Commands that
 open a dialog move the keyboard into that dialog.
 
+### Fullscreen
+
+Use **⌃⌘F**, **Toggle Full Screen** in the command palette, or the green
+window button to enter or leave native fullscreen. On macOS, the menu bar
+and Dock auto-hide so the window fills the display; moving the pointer to
+the corresponding screen edge reveals them. Exiting restores the window
+through the normal macOS fullscreen transition. **Maximize Window** only
+zooms the window within the desktop and is separate from fullscreen.
+
 ### Performance monitor
 
 Open the command palette and search **Performance Monitor**, **CPU**, **memory**,
@@ -133,15 +142,16 @@ Update preferences live in `$XDG_CONFIG_HOME/phux-desktop/updates.json` (default
 `~/.config/phux-desktop/updates.json`). Bare development executables and launches
 with explicit CLI/socket/profile overrides cannot install updates.
 
-The window is a sidebar (every session, the current one open on its tabs and
-background terminals), workspace tabs, split panes, and a status bar that
+The window is a sidebar (every visible session, its pane count and independently
+expandable contents), workspace tabs, split panes, and a status bar that
 speaks only for exceptions. Command-key chords belong to the app; everything
 else reaches the terminal.
 
 Choose **Top**, **Bottom** or **Sidebar** in **Settings > Layout & notifications > Tab placement**,
 or **View** in the main menu. The choice is saved with your display
-preferences. Side tabs live in the sidebar under their session, so there is one
-column of navigation, not two; hiding the sidebar returns them to the titlebar,
+preferences. Side tabs live in a fixed-height, separately scrollable area at the
+foot of the sidebar. Switching sessions never inserts tabs into the session tree;
+hiding the sidebar returns them to the titlebar,
 and Quick Terminal keeps compact titlebar tabs. Bottom tabs sit below your work,
 including in Plain Terminal mode; a plain terminal still hides a lone tab.
 If side panels leave too little room for usable bottom tabs, they temporarily
@@ -157,6 +167,14 @@ each face in the searchable dropdown, with bundled fonts pinned first.
 
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
+Click a session's name to select it; only its caret expands or collapses its
+contents. Switching restores tabs and splits, not the destination's old window
+display settings: the current filter, grouping, sidebar width and tab placement stay put. Selection never folds other sessions or changes the host filter.
+**Settings > Layout & notifications > Sidebar machines**, or **Sidebar view >
+Visible machines**, controls which machines appear. All are shown by default;
+exclusions are saved, do not disconnect hosts, and do not limit Work search.
+The sidebar's **All machines / Machines · filtered** control opens that menu;
+**Reset** shows every machine again, even when the active host was hidden.
 Offline inventory stays visible and cannot be opened until it is refreshed.
 **Settings > Hosts & connections** (also **Machines…** from the main menu's
 **Switch Machine** page, the File menu and the palette) lists This Mac and every saved
@@ -172,7 +190,7 @@ session, not to a new cross-server Workspace record.
 | ⌘T, ⌘O           | New terminal in the focused pane's folder; open a folder                    |
 | ⌘D / ⇧⌘D         | Split right / down (a new terminal)                                         |
 | ⌥⌘D              | Another view of the focused terminal                                        |
-| ⌘W / ⇧⌘W         | Close pane / tab (detaches; the process keeps running)                      |
+| ⌘W / ⇧⌘W         | Close pane / tab (ends the processes and removes their views)               |
 | ⌥⌘ arrows, ⌘[ ⌘] | Focus the pane in a direction, cycle panes                                  |
 | ⇧⌘↩              | Zoom the focused pane                                                       |
 | ⌘1–⌘9, ⇧⌘[ ⇧⌘]   | Select a tab                                                                |
@@ -180,6 +198,7 @@ session, not to a new cross-server Workspace record.
 | ⌘E               | Find the selected text                                                      |
 | ⌘L               | Scroll back to live output                                                  |
 | ⌘↑ / ⌘↓          | Jump to the previous / next shell prompt (needs OSC 133 prompt marks)       |
+| ⌘C / ⌘V          | Copy the selection / paste (a copied file or image pastes as its path)      |
 | ⌘A               | Select everything, scrollback included                                      |
 | ⇧⌘A              | Jump to the agent that most needs you                                       |
 | ⌘B, ⌘,           | Toggle the sidebar, open Settings                                           |
@@ -236,6 +255,19 @@ panes, the sidebar edge, or tabs to rearrange; double-click a tab to rename it.
 Splits grow in and closed panes fold away; the PTY is resized once, when the
 motion settles. Cycling panes, directional navigation, and revealing a
 terminal keep the zoom on the pane receiving keyboard input.
+Drag to select; double-click selects a word, triple-click a line, Option-drag
+a rectangle, and Shift-drag selects even in a program that takes the mouse.
+A drag can leave the pane: held above or below it, the terminal scrolls and
+keeps selecting, faster the farther out the pointer is. The selection stays
+until you click or type in that pane. Command-C copies it as plain text, soft
+wraps joined and trailing blanks trimmed (a selection over 1 MiB says so;
+**Open Scrollback as a File** takes everything). Right-click, or Shift-right-click
+in a program that takes the mouse, for Copy, Paste, Select All and the pane's
+actions. A paste goes to the program as a paste: a shell, editor or coding
+agent that turns on bracketed paste takes many lines at once and runs none of
+them. Only a program that would read the lines as typed keys, where each line
+break is Enter, asks first. On Linux a selection is also the primary
+selection, so a middle click pastes it.
 Dropping files onto a pane pastes their shell-quoted paths, and Command-V of a
 copied file pastes its path rather than its name. Command-V of a clipboard
 image (a screenshot, a copied picture) saves it under the temporary directory
@@ -248,8 +280,10 @@ path as one shell-quoted word and presses nothing else, and only into the pane
 it opened on. **Terminate Terminal Process** (palette only) ends one process.
 **Kill Session** (the palette, or a session's menu in the sidebar) asks first,
 then ends every terminal in the session and deletes it; a notification reports any
-terminal that did not end, and why. Closing a pane, tab or window never ends
-work. New sessions are persistent: they stay, empty, after their last
+terminal that did not end, and why. **Close Pane** (⌘W, pane menu) ends its
+process for every client; **Close Tab** (⇧⌘W, tab menu or close button) ends
+all its processes. Typing `exit` removes the pane too. Closing a window or
+moving a pane to another window only detaches its views and keeps work running. New sessions are persistent: they stay, empty, after their last
 terminal exits. Organization session layouts and display preferences persist
 under `$XDG_STATE_HOME/phux-desktop/sessions/<socket-and-session-key-hash>/`,
 so renaming a session does not change its saved tabs or splits. Older servers
@@ -257,7 +291,7 @@ retain the name-scoped directory. Existing name-scoped and unscoped layouts
 are read-only migration fallbacks; explicit `--layout` paths stay unchanged.
 Terminal identity is still checked against the server incarnation.
 Unavailable saved panes retain their split positions until they can attach;
-closing one explicitly removes it. Replacing the daemon retires its old view
+process-close requests are refused while disconnected rather than hiding live work. Replacing the daemon retires its old view
 handles rather than rebinding their numeric terminal IDs. Unsupported or
 damaged layout files are preserved without automatic writes, with a notice in
 the window. Back up and remove the affected layout file to start a fresh one.
@@ -279,52 +313,5 @@ update or reconnect rather than attributed to a new connection.
 
 ### Native agents
 
-**Native Agents** (`native-agents`, ⌃⌘A, the titlebar toggle, View menu,
-and Settings > Appearance) snaps every agent pane to its conversation, or
-back to its terminal. This window preference (`nativeAgents` in the saved
-display object) also opens conversations published by later agents. Each
-pane can still switch back until the preference changes again; `conversation`
-toggles only the focused pane. Without this explicit preference, passive
-stream discovery never switches faces or keyboard focus.
-
-An agent with no AgentSession offers its harness's documented plugin install
-command to copy (Claude Code, Grok, OMP, Pi, OpenCode), or **New Agent…** for
-harnesses without a hook plugin. Nothing is installed by the app.
-
-Prompts appear in accent bubbles and replies as markdown under the harness
-mark. Thinking and tool calls fold to one line; live thinking and failed
-calls start open, and your fold choice holds for that entry. A working turn
-shows a shimmer line, a blocked turn a "needs you" line. Stop and Send share
-the composer card. These use GPUI Kit components, not vendored chat code.
-
-**New ACP Agent** lists configured ACP-capable integrations and their host
-prerequisites. Launch creates one server-owned host and one headless provider
-session; desktop and mobile observe and control that same AgentSession.
-Closing the desktop detaches without stopping the ACP worker. A graceful phux
-handoff preserves the provider session, activation, and structured transcript.
-The desktop keeps that SDK owner's local draft, pending receipts, and question
-edits when the handoff recreates layout placements. Controls stay disabled until
-the fresh connection confirms the same parent, AgentSession, and activation.
-
-The conversation labels **ACP** and **Attached TUI** are deliberate.
-ACP Send, Stop, and provider dialogs use typed operations against the
-exact activation, current turn, and question. Permission choices, confirmations,
-selection, text/editor input, multi-question answers, and supported scalar JSON
-forms never become terminal keys or automatic approvals. The first human
-response across viewers reserves the request. Queued/submitted is not provider
-consumption; an uncertain reply is shown without automatically sending again.
-Attached TUI conversations keep their existing terminal-backed controls and
-**Open Terminal** handoff for terminal-only approvals.
-
-Native profiles cover OMP, Pi, Claude Code, OpenCode, Codex, Amp, Grok, Gemini
-CLI, Cursor Agent, and Goose; Aider is terminal-only. Operators install and
-authenticate the native ACP executable or maintained adapter explicitly.
-The picker explains unavailable prerequisites and never installs or accepts
-terms for you. For remote sessions, launch on the executing host; the desktop
-does not create a local SDK to impersonate remote work. Setup and exact receipt
-semantics are in [the ACP guide](../../docs/acp.md).
-
-Project panes declared with `integration:` can prefer their configured native
-backend. Arbitrary `command:` or `exec:` panes remain terminals, even when their
-argv resembles an agent CLI. SDK archive recipes resume known provider sessions
-with fresh destination bindings, not archived controller secrets or source IDs.
+See [Native agents](NATIVE_AGENTS.md) for conversation controls, ACP launches,
+Attached TUI behavior, permissions and provider setup.

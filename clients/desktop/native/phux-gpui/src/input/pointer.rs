@@ -1,8 +1,8 @@
 use super::{InputError, TerminalInput, engine_error, input_ready, keys, queued};
 use crate::terminal::geometry::{self, Geometry, SurfacePoint};
 use gpui::{
-    Context, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollWheelEvent, TouchPhase, Window, px,
+    Bounds, Context, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, ScrollWheelEvent, TouchPhase, Window, px,
 };
 use phux_client_runtime::{
     Client,
@@ -11,6 +11,16 @@ use phux_client_runtime::{
     publication::GridFrame,
 };
 use phux_protocol::input::mouse::{MouseAction, MouseButton as WireButton, MouseEvent};
+
+mod release;
+mod selection;
+mod wheel;
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+pub(super) use selection::tick;
 
 impl TerminalInput {
     fn repeated_motion(&mut self, position: Point<Pixels>) -> bool {
@@ -105,6 +115,9 @@ impl TerminalInput {
             self.reported_button = Some(button(event.button));
             return Ok(true);
         }
+        if event.button == MouseButton::Middle {
+            return Ok(self.paste_primary(cx));
+        }
         if event.button != MouseButton::Left {
             return Ok(false);
         }
@@ -119,6 +132,12 @@ impl TerminalInput {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Result<bool, InputError> {
+        if self.gesture != 0 {
+            return self.drag_selection(event.position, event.modifiers, window, cx);
+        }
+        if let Some(button) = self.reported_button {
+            return self.drag_reported(button, event, window, cx);
+        }
         // Cell-quantized clients send one position per cell (input spec §3.1).
         // A move that stays in that cell must not take the control lock.
         if self.repeated_motion(event.position) {
@@ -130,15 +149,6 @@ impl TerminalInput {
             return Ok(true);
         }
         self.admit_focused(window, cx, false)?;
-        if self.gesture != 0 {
-            self.select(1, 1, event.position, event.modifiers)?;
-            cx.notify();
-            return Ok(true);
-        }
-        if let Some(button) = self.reported_button {
-            self.send_captured_mouse(MouseAction::Motion, button, event.position, event.modifiers)?;
-            return Ok(true);
-        }
         if !self.hit(event.position) {
             return Ok(false);
         }
@@ -150,6 +160,28 @@ impl TerminalInput {
         )
     }
 
+    /// Motion while a program holds a captured button, inside the pane or
+    /// past its edge clamped to the nearest cell: one report per cell.
+    fn drag_reported(
+        &mut self,
+        button: WireButton,
+        event: &MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, InputError> {
+        let cell = self
+            .surface(event.position, true)
+            .ok()
+            .map(|surface| (surface.row, surface.col));
+        if repeats_cell(self.last_motion_cell, cell) {
+            return Ok(true);
+        }
+        self.last_motion_cell = cell;
+        self.admit_focused(window, cx, false)?;
+        self.send_captured_mouse(MouseAction::Motion, button, event.position, event.modifiers)?;
+        Ok(true)
+    }
+
     pub fn mouse_up(
         &mut self,
         event: &MouseUpEvent,
@@ -157,10 +189,13 @@ impl TerminalInput {
         cx: &mut Context<Self>,
     ) -> Result<bool, InputError> {
         if self.gesture != 0 {
+            self.autoscroll = None;
+            self.drag_cell = None;
             self.admit_focused(window, cx, false)?;
             let result = self.select(2, 1, event.position, event.modifiers);
             self.gesture = 0;
             result?;
+            self.publish_primary(cx);
             cx.notify();
             return Ok(true);
         }
@@ -176,53 +211,6 @@ impl TerminalInput {
         }
         self.send_captured_release(button, event.position, event.modifiers)?;
         Ok(true)
-    }
-
-    fn send_captured_release(
-        &self,
-        button: WireButton,
-        position: Point<Pixels>,
-        modifiers: Modifiers,
-    ) -> Result<(), InputError> {
-        let surface = self.surface(position, true)?;
-        let client = self.client()?;
-        client.with_control(|control| {
-            if let Some(error) = refuse_captured_release(self.release_facts(control)) {
-                return Err(error);
-            }
-            self.send_mouse(control, MouseAction::Release, button, modifiers, surface)
-        })
-    }
-
-    fn release_facts(&self, control: &ControlPlane) -> ReleaseFacts {
-        let validation = match self.validate(control, true) {
-            Ok(()) => ReleaseValidation::Ready,
-            Err(InputError::StalePresentation) => ReleaseValidation::Stale,
-            Err(InputError::NotReady) => ReleaseValidation::NotReady,
-            Err(_) => ReleaseValidation::Other,
-        };
-        let epoch_matches = self
-            .identity
-            .is_some_and(|identity| control.connection_epoch() == identity.epoch);
-        let frame = control
-            .publication()
-            .acquire_view(self.view)
-            .map(|frame| ReleaseFrame {
-                terminal_matches: frame.terminal_id == self.terminal,
-                replica_matches: self.identity.is_some_and(|identity| {
-                    (frame.stream_id, frame.bootstrap_id) == (identity.stream, identity.bootstrap)
-                }) && control.engine().is_some_and(|engine| {
-                    engine.view_replica_info(self.view).is_ok_and(|info| {
-                        (info.stream_id, info.bootstrap_id) == (frame.stream_id, frame.bootstrap_id)
-                    })
-                }),
-            });
-        ReleaseFacts {
-            validation,
-            epoch_matches,
-            frame,
-            input_ready: input_ready(control, &self.terminal),
-        }
     }
 
     fn send_captured_mouse(
@@ -277,234 +265,6 @@ impl TerminalInput {
             Ok(true)
         })
     }
-
-    fn select(
-        &mut self,
-        phase: u32,
-        clicks: u32,
-        position: Point<Pixels>,
-        modifiers: Modifiers,
-    ) -> Result<(), InputError> {
-        // Clamped: a drag that leaves the pane stays on the edge cell. Pixels
-        // are the integer grid `cell_px` reports, not the pane's logical size.
-        let surface = self.surface(position, true)?;
-        let result = self.with_current(false, |control| {
-            let frame = self.live_frame(control)?;
-            let event = SelectionGestureEvent {
-                phase,
-                clicks: clicks.clamp(1, 3),
-                handle: self.gesture,
-                column: surface.col,
-                row: u32::from(surface.row),
-                rectangle: modifiers.alt,
-                x: surface.x,
-                y: surface.y,
-                columns: u32::from(frame.cols),
-                cell_width: surface.cell_width,
-                screen_height: u32::from(frame.rows)
-                    .saturating_mul(surface.cell_height)
-                    .max(1),
-                padding_left: 0,
-            };
-            control
-                .engine()
-                .ok_or(InputError::NotReady)?
-                .view_selection_gesture(self.view, event)
-                .map_err(engine_error)
-        })?;
-        self.gesture = result.handle;
-        Ok(())
-    }
-
-    /// Scroll the view under the pointer. Like every macOS scroll view, the
-    /// wheel follows the pointer, not keyboard focus, so it needs only this
-    /// window.
-    ///
-    /// A local scroll keeps a continuous position: whole rows move the
-    /// runtime view, and the remaining fraction of a row stays here for the
-    /// painter, which shifts the grid up by it and shows the frame's fringe
-    /// row underneath. A move that stays within the current row takes no
-    /// runtime turn. A program that reports the mouse gets whole-line wheel
-    /// presses instead, accumulated across events.
-    pub fn scroll(
-        &mut self,
-        event: &ScrollWheelEvent,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Result<bool, InputError> {
-        if window.window_handle().window_id() != self.window {
-            return Err(InputError::WrongFocus);
-        }
-        let metrics = self.metrics.ok_or(InputError::StalePresentation)?;
-        if !self.hit(event.position) {
-            return Ok(false);
-        }
-        if event.touch_phase == TouchPhase::Started {
-            self.scroll_remainder = 0.0;
-        }
-        let delta = event.delta.pixel_delta(metrics.line_height);
-        let rows_up = f32::from(delta.y) / f32::from(metrics.line_height).max(1.0);
-        let client = self.client()?;
-        let frame = client
-            .acquire_view(self.view)
-            .ok_or(InputError::StalePresentation)?;
-        if self.reports_wheel(&client, &frame, event.modifiers)? {
-            self.scroll_fraction = None;
-            self.scroll_remainder += rows_up;
-            let lines = self.scroll_remainder.trunc() as i64;
-            self.scroll_remainder -= lines as f32;
-            if lines != 0 {
-                self.with_current(false, |control| self.report_scroll(control, lines, event))?;
-            }
-            return Ok(true);
-        }
-        let bar = frame.scrollbar;
-        let tail = bar.total.saturating_sub(bar.len);
-        let (offset, fraction) = smooth_target(bar.offset, self.fraction_of(&frame), tail, rows_up);
-        if offset != bar.offset {
-            let rows = i64::try_from(offset).unwrap_or(i64::MAX)
-                - i64::try_from(bar.offset).unwrap_or(i64::MAX);
-            self.with_current(false, |control| {
-                control
-                    .scroll_view(self.view, Scroll::Delta(rows))
-                    .map_err(engine_error)
-            })?;
-        }
-        let landed = client
-            .acquire_view(self.view)
-            .map_or(offset, |frame| frame.scrollbar.offset);
-        let fraction = if landed == offset { fraction } else { 0.0 };
-        self.scroll_fraction = (fraction > 0.0).then_some((landed, fraction));
-        cx.notify();
-        Ok(true)
-    }
-
-    /// The part of a row above `frame`'s viewport that the painter scrolls
-    /// past, in `[0, 1)`. Zero unless the last local scroll landed on this
-    /// frame's offset and the frame carries the row below its viewport.
-    pub fn fraction_of(&self, frame: &GridFrame) -> f32 {
-        match self.scroll_fraction {
-            Some((offset, fraction))
-                if offset == frame.scrollbar.offset
-                    && frame.buffer.fringe.len() == usize::from(frame.cols) =>
-            {
-                fraction
-            }
-            _ => 0.0,
-        }
-    }
-
-    /// Whether the program receives the wheel. Mouse modes change only with
-    /// terminal output, so the answer holds while the replica's sequence
-    /// does and a scroll through idle output asks the runtime once.
-    fn reports_wheel(
-        &mut self,
-        client: &Client,
-        frame: &GridFrame,
-        modifiers: Modifiers,
-    ) -> Result<bool, InputError> {
-        if modifiers.shift {
-            return Ok(false);
-        }
-        let key = (frame.stream_id, frame.bootstrap_id, frame.last_seq);
-        if let Some((cached, reports)) = self.wheel_mode
-            && cached == key
-        {
-            return Ok(reports);
-        }
-        let reports = client.with_control(|control| reporting(control, &self.terminal))?;
-        self.wheel_mode = Some((key, reports));
-        Ok(reports)
-    }
-
-    fn report_scroll(
-        &self,
-        control: &mut ControlPlane,
-        lines: i64,
-        event: &ScrollWheelEvent,
-    ) -> Result<(), InputError> {
-        if !input_ready(control, &self.terminal) {
-            return Err(InputError::NotReady);
-        }
-        let button = if lines > 0 {
-            WireButton::Four
-        } else {
-            WireButton::Five
-        };
-        let surface = self.surface(event.position, false)?;
-        for _ in 0..lines.unsigned_abs().min(100) {
-            self.send_mouse(
-                control,
-                MouseAction::Press,
-                button,
-                event.modifiers,
-                surface,
-            )?;
-        }
-        Ok(())
-    }
-}
-
-/// Where a local scroll of `rows_up` rows (toward history when positive)
-/// lands from `offset` plus `fraction`: the whole-row offset to show and the
-/// part of a row above it to scroll past. The position stays within the
-/// scrollback, and the live tail never shows a fraction.
-fn smooth_target(offset: u64, fraction: f32, tail: u64, rows_up: f32) -> (u64, f32) {
-    let position =
-        (offset as f64 + f64::from(fraction) - f64::from(rows_up)).clamp(0.0, tail as f64);
-    let row = position.floor();
-    (row as u64, (position - row) as f32)
-}
-
-/// Why `validate` rejected or accepted a captured application-mouse release.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReleaseValidation {
-    Ready,
-    Stale,
-    NotReady,
-    Other,
-}
-
-/// The live publication, when one exists, compared with the painted identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ReleaseFrame {
-    terminal_matches: bool,
-    replica_matches: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ReleaseFacts {
-    validation: ReleaseValidation,
-    epoch_matches: bool,
-    /// `None` when the view has no published frame.
-    frame: Option<ReleaseFrame>,
-    input_ready: bool,
-}
-
-/// `None` means send the release.
-///
-/// A geometry gap (the live frame is this replica, but its size is not the
-/// painted one yet) and an unpublished frame still belong to the captured
-/// button. A replaced connection or an unknown-delivery fence does not.
-fn refuse_captured_release(facts: ReleaseFacts) -> Option<InputError> {
-    match facts.validation {
-        ReleaseValidation::Ready => None,
-        ReleaseValidation::NotReady => Some(InputError::NotReady),
-        ReleaseValidation::Other => Some(InputError::StalePresentation),
-        ReleaseValidation::Stale => {
-            let same_target = facts.epoch_matches
-                && facts
-                    .frame
-                    .is_none_or(|frame| frame.terminal_matches && frame.replica_matches);
-            if same_target && facts.input_ready {
-                None
-            } else if same_target {
-                Some(InputError::NotReady)
-            } else {
-                Some(InputError::StalePresentation)
-            }
-        }
-    }
 }
 
 /// A motion event the last one already covered. Leaving the grid is not a repeat.
@@ -531,129 +291,4 @@ fn reporting(
         .mouse_mode(terminal)
         .map_err(engine_error)?;
     Ok(mode != MouseMode::None)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        InputError, ReleaseFacts, ReleaseFrame, ReleaseValidation, refuse_captured_release,
-        repeats_cell, smooth_target,
-    };
-
-    #[test]
-    fn smooth_target_keeps_a_continuous_position_inside_the_scrollback() {
-        let near = |(row, fraction): (u64, f32), expected: (u64, f32)| {
-            row == expected.0 && (fraction - expected.1).abs() < 1e-4
-        };
-        // Up from the tail by a quarter row shows the row above, mostly scrolled past.
-        assert!(near(smooth_target(10, 0., 10, 0.25), (9, 0.75)));
-        // Down within a row only grows the fraction.
-        assert!(near(smooth_target(9, 0.25, 10, -0.5), (9, 0.75)));
-        // Crossing rows carries the remainder.
-        assert!(near(smooth_target(9, 0.5, 10, 2.75), (6, 0.75)));
-        // The top and the live tail clamp, and the tail has no fraction.
-        assert!(near(smooth_target(1, 0.5, 10, 5.), (0, 0.)));
-        assert!(near(smooth_target(9, 0.5, 10, -3.), (10, 0.)));
-        // No scrollback: nothing moves.
-        assert!(near(smooth_target(0, 0., 0, 1.), (0, 0.)));
-    }
-
-    #[test]
-    fn motion_in_the_same_cell_is_one_event() {
-        assert!(!repeats_cell(None, Some((0, 0))));
-        assert!(repeats_cell(Some((0, 0)), Some((0, 0))));
-        assert!(!repeats_cell(Some((0, 0)), Some((0, 1))));
-        assert!(!repeats_cell(Some((1, 0)), Some((0, 0))));
-        assert!(!repeats_cell(Some((0, 0)), None));
-    }
-
-    fn facts(
-        validation: ReleaseValidation,
-        epoch_matches: bool,
-        frame: Option<ReleaseFrame>,
-        input_ready: bool,
-    ) -> ReleaseFacts {
-        ReleaseFacts {
-            validation,
-            epoch_matches,
-            frame,
-            input_ready,
-        }
-    }
-
-    #[test]
-    fn a_captured_release_survives_a_geometry_or_frame_gap() {
-        let same = ReleaseFrame {
-            terminal_matches: true,
-            replica_matches: true,
-        };
-        assert_eq!(
-            refuse_captured_release(facts(ReleaseValidation::Stale, true, Some(same), true)),
-            None,
-            "painted size behind the live frame"
-        );
-        assert_eq!(
-            refuse_captured_release(facts(ReleaseValidation::Stale, true, None, true)),
-            None,
-            "no published frame"
-        );
-        assert_eq!(
-            refuse_captured_release(facts(ReleaseValidation::Ready, true, Some(same), true)),
-            None
-        );
-    }
-
-    #[test]
-    fn a_captured_release_stops_for_replacement_or_a_fence() {
-        let same = ReleaseFrame {
-            terminal_matches: true,
-            replica_matches: true,
-        };
-        let other_replica = ReleaseFrame {
-            terminal_matches: true,
-            replica_matches: false,
-        };
-        let other_terminal = ReleaseFrame {
-            terminal_matches: false,
-            replica_matches: true,
-        };
-        assert_eq!(
-            refuse_captured_release(facts(ReleaseValidation::Stale, false, Some(same), true)),
-            Some(InputError::StalePresentation)
-        );
-        assert_eq!(
-            refuse_captured_release(facts(
-                ReleaseValidation::Stale,
-                true,
-                Some(other_replica),
-                true
-            )),
-            Some(InputError::StalePresentation)
-        );
-        assert_eq!(
-            refuse_captured_release(facts(
-                ReleaseValidation::Stale,
-                true,
-                Some(other_terminal),
-                true
-            )),
-            Some(InputError::StalePresentation)
-        );
-        assert_eq!(
-            refuse_captured_release(facts(ReleaseValidation::Stale, true, Some(same), false)),
-            Some(InputError::NotReady)
-        );
-        assert_eq!(
-            refuse_captured_release(facts(ReleaseValidation::Stale, true, None, false)),
-            Some(InputError::NotReady)
-        );
-        assert_eq!(
-            refuse_captured_release(facts(ReleaseValidation::NotReady, true, Some(same), false)),
-            Some(InputError::NotReady)
-        );
-        assert_eq!(
-            refuse_captured_release(facts(ReleaseValidation::Other, true, None, true)),
-            Some(InputError::StalePresentation)
-        );
-    }
 }

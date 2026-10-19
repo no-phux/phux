@@ -7,7 +7,7 @@ fn machine_rows_report_reach_and_open_the_machines_own_work(cx: &mut TestAppCont
     desk.update(cx, |desk, cx| {
         install(desk, connection(1, vec![session(7, "main")]));
         for name in ["mini", "empty", "gone", "pending"] {
-            desk.hosts.push(super::super::super::host::RemoteHost {
+            desk.hosts.push(super::super::host::RemoteHost {
                 name: name.into(),
                 endpoint: format!("quic://{name}.invalid:1"),
             });
@@ -118,7 +118,7 @@ fn a_disconnected_machine_stays_down_until_retried(cx: &mut TestAppContext) {
     let (desk, _) = fixture(cx);
     desk.update(cx, |desk, cx| {
         install(desk, connection(1, vec![session(7, "main")]));
-        desk.hosts.push(super::super::super::host::RemoteHost {
+        desk.hosts.push(super::super::host::RemoteHost {
             name: "mini".into(),
             endpoint: "quic://mini.invalid:1".into(),
         });
@@ -165,7 +165,7 @@ fn settings_rows_offer_each_machines_action_and_sidebar_rows_retry(cx: &mut Test
     desk.update(cx, |desk, _| {
         install(desk, connection(1, vec![session(7, "main")]));
         for name in ["mini", "gone", "pending"] {
-            desk.hosts.push(super::super::super::host::RemoteHost {
+            desk.hosts.push(super::super::host::RemoteHost {
                 name: name.into(),
                 endpoint: format!("quic://{name}.invalid:1"),
             });
@@ -222,13 +222,13 @@ fn settings_rows_offer_each_machines_action_and_sidebar_rows_retry(cx: &mut Test
     click_on(cx, "settings-machine-Open-mini");
     desk.read_with(cx, |desk, _| {
         assert_eq!(desk.remote.as_deref(), Some("mini"));
-        assert_eq!(desk.modal, super::super::super::desk::Modal::None);
+        assert_eq!(desk.modal, super::super::desk::Modal::None);
     });
 }
 
 #[test]
 fn machine_actions_follow_state_and_ownership() {
-    use super::super::super::settings_panel::machine_action;
+    use super::super::settings_panel::machine_action;
     let down = Reach::Unavailable("x".into());
     assert_eq!(machine_action(&down, true), Some("Reconnect"));
     assert_eq!(machine_action(&down, false), Some("Retry"));

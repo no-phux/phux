@@ -1,0 +1,86 @@
+diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
+index a1b4f33..8a42fca 100644
+--- a/gpui-fast-macos/src/window.rs
++++ b/gpui-fast-macos/src/window.rs
+@@ -57,9 +57,9 @@ use objc2::{
+     runtime::{AnyObject as Objc2Object, ProtocolObject},
+ };
+ use objc2_app_kit::{
+-    NSAlert, NSAlertStyle, NSBeep, NSButton as Objc2NSButton, NSDraggingImageComponent,
+-    NSDraggingImageComponentIconKey, NSDraggingItem, NSPasteboardWriting, NSTrackingArea,
+-    NSTrackingAreaOptions, NSView as Objc2NSView, NSWindow as Objc2NSWindow,
++    NSAlert, NSAlertStyle, NSApplicationPresentationOptions, NSBeep, NSButton as Objc2NSButton,
++    NSDraggingImageComponent, NSDraggingImageComponentIconKey, NSDraggingItem, NSPasteboardWriting,
++    NSTrackingArea, NSTrackingAreaOptions, NSView as Objc2NSView, NSWindow as Objc2NSWindow,
+     NSWindowButton as Objc2NSWindowButton, NSWorkspace,
+ };
+ use objc2_foundation::{NSPoint as Objc2NSPoint, NSRect as Objc2NSRect, NSURL};
+@@ -451,6 +451,11 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
+             sel!(windowDidChangeOcclusionState:),
+             window_did_change_occlusion_state as extern "C" fn(&Object, Sel, id),
+         );
++        decl.add_method(
++            sel!(window:willUseFullScreenPresentationOptions:),
++            window_fullscreen_presentation_options
++                as extern "C" fn(&Object, Sel, id, usize) -> usize,
++        );
+         decl.add_method(
+             sel!(windowWillEnterFullScreen:),
+             window_will_enter_fullscreen as extern "C" fn(&Object, Sel, id),
+@@ -3206,6 +3211,30 @@ extern "C" fn window_did_resize(this: &Object, _: Sel, _: id) {
+     window_state.as_ref().lock().move_traffic_light();
+ }
+ 
++extern "C" fn window_fullscreen_presentation_options(
++    _: &Object,
++    _: Sel,
++    _: id,
++    options: usize,
++) -> usize {
++    fullscreen_presentation_options(options)
++}
++
++fn fullscreen_presentation_options(options: usize) -> usize {
++    // Keep AppKit's native fullscreen Space and restore behavior, but do not
++    // reserve a strip for a menu bar configured to remain visible system-wide.
++    // The Hide and AutoHide variants are mutually exclusive.
++    let mut options = NSApplicationPresentationOptions::from_bits_retain(options);
++    options.remove(
++        NSApplicationPresentationOptions::HideDock | NSApplicationPresentationOptions::HideMenuBar,
++    );
++    options.insert(
++        NSApplicationPresentationOptions::AutoHideDock
++            | NSApplicationPresentationOptions::AutoHideMenuBar,
++    );
++    options.bits()
++}
++
+ extern "C" fn window_will_enter_fullscreen(this: &Object, _: Sel, _: id) {
+     let window_state = unsafe { get_window_state(this) };
+     let mut lock = window_state.as_ref().lock();
+@@ -4156,4 +4185,25 @@ mod tests {
+     fn display_id_for_screen_returns_none_for_null_screen() {
+         assert_eq!(display_id_for_screen(nil), None);
+     }
++
++    #[test]
++    fn fullscreen_auto_hides_system_bars_without_losing_appkit_options() {
++        let preserved = NSApplicationPresentationOptions::FullScreen
++            | NSApplicationPresentationOptions::AutoHideToolbar
++            | NSApplicationPresentationOptions::DisableProcessSwitching;
++        for bars in [
++            NSApplicationPresentationOptions::empty(),
++            NSApplicationPresentationOptions::AutoHideDock,
++            NSApplicationPresentationOptions::HideDock
++                | NSApplicationPresentationOptions::HideMenuBar,
++        ] {
++            let options = fullscreen_presentation_options((preserved | bars).bits());
++            assert_eq!(
++                NSApplicationPresentationOptions::from_bits_retain(options),
++                preserved
++                    | NSApplicationPresentationOptions::AutoHideDock
++                    | NSApplicationPresentationOptions::AutoHideMenuBar,
++            );
++        }
++    }
+ }

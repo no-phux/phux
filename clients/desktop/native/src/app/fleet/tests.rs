@@ -8,10 +8,6 @@ use phux_client_core::layout::wire::HandleMap;
 use phux_client_runtime::control::{SessionDescriptor, Topology};
 use phux_protocol::ResourceId;
 
-mod catalog;
-mod dashboard;
-mod machines;
-
 fn key(byte: u8) -> SessionKey {
     SessionKey::new([byte; 16]).unwrap()
 }
@@ -193,3 +189,8 @@ fn click_on(cx: &mut gpui::VisualTestContext, selector: &str) {
     cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     draw(cx);
 }
+
+mod catalog;
+mod dashboard;
+mod machines;
+mod sidebar;

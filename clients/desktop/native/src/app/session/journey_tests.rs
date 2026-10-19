@@ -121,8 +121,8 @@ impl Server {
     fn output(&self, args: &[&str], stdin: &[u8]) -> Vec<u8> {
         use std::io::Write as _;
         let mut command = Command::new(&self.binary);
-        // Workload enrollment edits this fixture's private configuration;
-        // unlike the other verbs it is local-only and rejects --socket.
+        // Workload authority commands operate on isolated disk state and
+        // explicitly reject socket selectors; every dialing verb uses ours.
         if args.first() != Some(&"workload") {
             command.arg("--socket").arg(&self.socket);
         }

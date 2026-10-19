@@ -156,12 +156,34 @@ impl Desk {
                 .is_some_and(|link| link.connection.status == Status::Attached)
     }
 
+    /// A catalog pane must survive the pending connection, not just the
+    /// already-attached path. Only queue its reveal after validated navigation
+    /// actually replaced the projection (or the destination is already active).
+    pub(crate) fn open_work_terminal(
+        &mut self,
+        destination: crate::app::fleet::Destination,
+        terminal: ResourceId,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.work_is_active(&destination);
+        let epoch = self.upload_epoch;
+        self.navigate_work(destination, cx);
+        if current || self.upload_epoch != epoch {
+            self.show_project_terminal(terminal, cx);
+        }
+    }
+
+    pub(super) fn terminal_reveal_ready(&self, terminal: &ResourceId) -> bool {
+        self.link.as_ref().is_some_and(|link| {
+            link.connection.status == Status::Attached
+                && link.connection.session_validated()
+                && link.workspace.restored()
+                && link.connection.pane(terminal).is_some()
+        })
+    }
+
     pub(crate) fn show_project_terminal(&mut self, terminal: ResourceId, cx: &mut Context<Self>) {
-        if self
-            .link
-            .as_ref()
-            .is_some_and(|link| link.connection.pane(&terminal).is_some())
-        {
+        if self.terminal_reveal_ready(&terminal) {
             self.pending_project_terminal = None;
             self.reveal_terminal(&terminal);
         } else {
@@ -287,6 +309,7 @@ impl Desk {
         self.locations.insert(previous, self.store.clone());
         self.persist();
         self.abandon_organize();
+        self.retain_work_inventory();
         self.release_link(true);
         self.link = None;
         self.pending_project_terminal = None;

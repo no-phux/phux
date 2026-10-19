@@ -68,13 +68,14 @@ fn switching_authorities_preserves_the_other_hosts_catalog_and_clears_old_dialog
             Some("mini"),
             connection(2, vec![session(8, "main")]),
         );
-        desk.hosts.push(super::super::super::host::RemoteHost {
+        desk.hosts.push(super::super::host::RemoteHost {
             name: "mini".into(),
             endpoint: "quic://fixture.invalid:1".into(),
         });
-        desk.modal = super::super::super::desk::Modal::KillSession {
+        desk.modal = super::super::desk::Modal::KillSession {
             name: "main".into(),
             session: 7,
+            target: None,
         };
         let target = desk
             .work_catalog()
@@ -88,7 +89,7 @@ fn switching_authorities_preserves_the_other_hosts_catalog_and_clears_old_dialog
             desk.link.as_ref().unwrap().connection.home_key(),
             Some(key(8))
         );
-        assert_eq!(desk.modal, super::super::super::desk::Modal::None);
+        assert_eq!(desk.modal, super::super::desk::Modal::None);
         assert!(
             desk.work_catalog()
                 .iter()
@@ -152,7 +153,7 @@ fn refresh_replaces_terminal_observers_without_dropping_their_inventory(cx: &mut
     let _dial = DeterministicDial::arm();
     let (desk, _) = fixture(cx);
     desk.update(cx, |desk, cx| {
-        desk.hosts.push(super::super::super::host::RemoteHost {
+        desk.hosts.push(super::super::host::RemoteHost {
             name: "mini".into(),
             endpoint: "ws://fixture.invalid:1".into(),
         });

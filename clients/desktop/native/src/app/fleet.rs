@@ -3,8 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{Context, Task};
-use phux_client_runtime::control::Status;
+use phux_client_runtime::control::{PaneDescriptor, Status};
 use phux_protocol::ids::{AuthorityId, SessionKey};
+use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 
 use super::desk::Desk;
 use super::notifications::Kind;
@@ -30,14 +31,24 @@ impl Destination {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkPane {
+    pub descriptor: PaneDescriptor,
+    /// Resolve the same name/title/directory/group fallback on every host.
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Work {
     pub destination: Destination,
     pub id: u32,
     pub project: Option<(String, String)>,
     pub terminals: usize,
+    pub panes: Vec<WorkPane>,
+    pub resources: Vec<ResourceRecord>,
     /// The most pressing state among its agents that need a person.
     pub attention: Option<AgentState>,
     pub intake: bool,
+    pub imported: bool,
     pub online: bool,
 }
 
@@ -186,6 +197,23 @@ fn work_on(connection: &Connection, host: Option<String>) -> Vec<Work> {
                     .iter()
                     .filter(|pane| pane.session_id == session.id)
                     .collect();
+                let resources: Vec<_> = replica
+                    .resources()
+                    .iter()
+                    .filter(|resource| {
+                        Some(resource.session) == session.key
+                            && resource.kind != phux_protocol::ResourceKind::AgentSession
+                            && resource.activation.as_ref().is_some_and(|activation| {
+                                matches!(
+                                    activation.state,
+                                    ExecState::Starting | ExecState::Running | ExecState::Stopping
+                                )
+                            })
+                            && !panes.iter().any(|pane| pane.key == Some(resource.key))
+                    })
+                    .cloned()
+                    .collect();
+                let intake = session.key.is_some() && session.key == topology.intake();
                 Work {
                     destination: Destination {
                         host: host.clone(),
@@ -195,7 +223,18 @@ fn work_on(connection: &Connection, host: Option<String>) -> Vec<Work> {
                     },
                     id: session.id,
                     project,
-                    terminals: panes.len(),
+                    terminals: panes.len() + resources.len(),
+                    panes: panes
+                        .iter()
+                        .map(|pane| WorkPane {
+                            descriptor: (*pane).clone(),
+                            label: super::desk::pane_label(
+                                Some(pane),
+                                connection.group_name(&pane.terminal_id),
+                            ),
+                        })
+                        .collect(),
+                    resources,
                     attention: super::ui::status::strongest(
                         panes
                             .iter()
@@ -203,7 +242,8 @@ fn work_on(connection: &Connection, host: Option<String>) -> Vec<Work> {
                             .filter(|info| info.needs_you())
                             .map(|info| info.state),
                     ),
-                    intake: session.key.is_some() && session.key == topology.intake(),
+                    intake,
+                    imported: session.awaiting_organization && !intake,
                     online: available(connection),
                 }
             })
@@ -211,6 +251,8 @@ fn work_on(connection: &Connection, host: Option<String>) -> Vec<Work> {
     })
 }
 
+#[cfg(test)]
+use super::{desk, host, settings_panel};
 #[cfg(test)]
 mod tests;
 
@@ -222,8 +264,9 @@ impl Desk {
             .iter()
             .map(|host| Some(host.name.clone()))
             .collect();
-        if self.remote.is_some() || !self.hosts.is_empty() {
-            routes.push(None);
+        routes.push(None);
+        if !routes.contains(&self.remote) {
+            routes.push(self.remote.clone());
         }
         self.fleet.observers.retain(|host, _| routes.contains(host));
         self.fleet.held.retain(|host| routes.contains(host));
@@ -275,6 +318,27 @@ impl Desk {
             self.fleet.observers.insert(host, observer);
         }
         self.fleet.revision = self.fleet.revision.wrapping_add(1);
+    }
+
+    /// Preserve the source we are leaving before a new projection replaces it.
+    /// Its inventory observer may still be dialing, even though this window
+    /// already knows the full local topology.
+    pub(crate) fn retain_work_inventory(&mut self) {
+        let Some(link) = &self.link else { return };
+        if !available(&link.connection) {
+            return;
+        }
+        let last = work_on(&link.connection, self.remote.clone());
+        self.fleet
+            .observers
+            .entry(self.remote.clone())
+            .or_insert_with(|| Observer {
+                connection: None,
+                last: Vec::new(),
+                error: None,
+                _wake: None,
+            })
+            .last = last;
     }
 
     pub(crate) fn work_catalog(&self) -> Vec<Work> {

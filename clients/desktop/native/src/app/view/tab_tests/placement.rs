@@ -180,8 +180,11 @@ fn side_tabs_scroll_and_reorder_using_their_scrolled_positions(cx: &mut TestAppC
         cx.notify();
     });
     run(&desk, "tabs-side", cx);
+    let shelf = cx
+        .debug_bounds("sidebar-tab-shelf")
+        .expect("fixed tab area");
     cx.simulate_event(gpui::ScrollWheelEvent {
-        position: point(px(100.), px(150.)),
+        position: shelf.center(),
         delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-210.))),
         ..Default::default()
     });

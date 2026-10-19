@@ -103,7 +103,7 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
                         "Tab placement",
                         resets(tab_position, handle, |prefs| &mut prefs.tab_position),
                     )
-                    .description("Keep tabs above or below your work, or in the sidebar under their session."),
+                    .description("Keep tabs above or below your work, or in the sidebar’s fixed tab area."),
                 )
                 .item(
                     SettingItem::new(
@@ -150,6 +150,7 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
                         .flatten(),
                 ),
         )
+        .group(sidebar_hosts(desk, handle))
         .group(SettingGroup::new().title("Experimental").item(toggle(
             handle,
             "Agent fleet",
@@ -162,6 +163,36 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
             |prefs| &mut prefs.notifications,
             "Alert when an agent needs you. Also appears in Notification Center.",
         )))
+}
+
+fn sidebar_hosts(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
+    let mut hosts = vec![None];
+    hosts.extend(desk.hosts.iter().map(|host| Some(host.name.clone())));
+    if !hosts.contains(&desk.remote) {
+        hosts.push(desk.remote.clone());
+    }
+    SettingGroup::new()
+        .title("Sidebar machines")
+        .items(hosts.into_iter().map(|host| {
+            let label = host.clone().unwrap_or_else(|| "This Mac".into());
+            let (reader, writer) = (handle.clone(), handle.clone());
+            let read_host = host.clone();
+            SettingItem::new(
+                label,
+                SettingField::switch(
+                    move |cx| prefs_of(&reader, cx).sidebar_shows_host(read_host.as_deref()),
+                    move |visible, cx| {
+                        set_prefs(&writer, cx, |prefs| {
+                            prefs.set_sidebar_host_visible(host.clone(), visible)
+                        })
+                    },
+                )
+                .default_value(true),
+            )
+            .description(
+                "Show this machine in the sidebar. Selecting a session never changes this filter.",
+            )
+        }))
 }
 
 pub(super) fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {

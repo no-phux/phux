@@ -41,6 +41,7 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
         Modal::KillSession {
             name: "work".into(),
             session: 1,
+            target: None,
         },
         Modal::Notifications,
         Modal::AgentFleet,

@@ -125,6 +125,7 @@ pub enum Modal {
     KillSession {
         name: String,
         session: u32,
+        target: Option<SessionRenameTarget>,
     },
     WindowSession,
     /// Every open native window, its session, host and tabs.
@@ -139,8 +140,8 @@ pub enum Modal {
     RemoveHost {
         name: String,
     },
-    /// A line-breaking paste held because the placement's terminal is
-    /// running a command.
+    /// A paste held because the placement's program would read its line
+    /// breaks as Enter.
     Paste {
         placement_id: String,
         /// The terminal the paste was held for; a retargeted placement
@@ -243,7 +244,7 @@ pub struct Desk {
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.
     pending_project_terminal: Option<ResourceId>,
-    /// Sessions folded closed in the sidebar, by name.
+    /// Explicitly folded sessions, keyed by host, authority and session identity.
     pub(crate) collapsed: std::collections::HashSet<String>,
     /// The remote registry as last read, for the sidebar's Hosts section.
     pub(crate) hosts: Vec<host::RemoteHost>,

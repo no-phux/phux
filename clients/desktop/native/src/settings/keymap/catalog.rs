@@ -29,8 +29,8 @@ const CATALOG: &str = "\
     split-left | Split Left | Panes |  | Open a terminal to the left of the focused pane. |
     split-up | Split Up | Panes |  | Open a terminal above the focused pane. |
     view | Mirror Pane | Panes | cmd+alt+d | Show the focused terminal in another pane. | duplicate open another view
-    close | Close Pane | Panes | cmd+w | Detach this pane; its terminal keeps running. |
-    close-tab | Close Tab | Tabs | cmd+shift+w | Detach this tab; its terminals keep running. |
+    close | Close Pane | Panes | cmd+w | End this pane's process and remove all its views. |
+    close-tab | Close Tab | Tabs | cmd+shift+w | End every process in this tab and remove their views. |
     zoom | Zoom Pane | Panes | cmd+shift+enter | Expand the focused pane or restore its splits. |
     equalize | Equalize Splits | Panes | cmd+ctrl+= | Give the active tab's panes equal space. | balance
     pane-left | Focus Pane Left | Panes | cmd+alt+left | Focus the neighboring pane on the left. |
@@ -63,7 +63,7 @@ const CATALOG: &str = "\
     plain-terminal | Toggle Plain Terminal | View | cmd+ctrl+t | Switch between the glass desk and a plain terminal window. | skin minimal ghostty chrome glass
     tabs-top | Tabs on Top | View |  | Place workspace tabs in the titlebar. | layout horizontal placement
     tabs-bottom | Tabs on Bottom | View |  | Place workspace tabs below your work, including in plain terminal mode. | layout horizontal placement
-    tabs-side | Tabs in Sidebar | View |  | List workspace tabs in the sidebar, under their session. | layout vertical placement side rail
+    tabs-side | Tabs in Sidebar | View |  | List workspace tabs in the sidebar’s fixed tab area. | layout vertical placement side rail
     group-projects | Group Sessions by Project | View |  | List sessions under their repository in the navigator. | view organize
     group-machines | Group Sessions by Machine | View |  | List sessions under the machine they run on in the navigator. | view hosts organize
     group-none | Ungroup Sessions | View |  | List every session in one navigator list without headings. | view flat
@@ -83,8 +83,8 @@ const CATALOG: &str = "\
     scroll-bottom | Scroll to Bottom | Terminal | cmd+end | Return to the latest terminal output. |
     clear | Clear Screen | Terminal | cmd+k | Send the clear-screen control to the terminal. |
     select-all | Select All | Terminal | cmd+a | Select all available terminal text. |
-    copy | Copy | Terminal |  | Copy the terminal selection to the clipboard. |
-    paste | Paste | Terminal |  | Insert clipboard text into the focused terminal. |
+    copy | Copy | Terminal | cmd+c | Copy the terminal selection to the clipboard. |
+    paste | Paste | Terminal | cmd+v | Insert the clipboard into the focused terminal; a copied file or image goes in as its path. |
     paste-selection | Paste Selection | Terminal |  | Insert the selected terminal text as input. |
     prompt-prev | Jump to Previous Prompt | Terminal | cmd+up | Scroll to the previous shell prompt marker. |
     prompt-next | Jump to Next Prompt | Terminal | cmd+down | Scroll to the next shell prompt marker. |

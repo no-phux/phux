@@ -131,11 +131,10 @@ impl Desk {
     }
 
     pub(super) fn settle_project_terminal(&mut self) {
-        if let Some(terminal) = self.pending_project_terminal.as_ref()
-            && self
-                .link
-                .as_ref()
-                .is_some_and(|link| link.connection.pane(terminal).is_some())
+        if self
+            .pending_project_terminal
+            .as_ref()
+            .is_some_and(|terminal| self.terminal_reveal_ready(terminal))
             && let Some(terminal) = self.pending_project_terminal.take()
         {
             self.reveal_terminal(&terminal);
@@ -214,11 +213,17 @@ impl Desk {
             return;
         }
         if let Some(saved) = loaded.initial {
-            self.prefs = if self.role == WindowRole::Quick {
-                persist::quick_display(Some(&self.prefs), Some(&saved))
-            } else {
-                saved.display.clone()
-            };
+            // The initial session seeds this window's display preferences.
+            // Once navigation has saved a previous location, destination
+            // layouts restore tabs/splits only: old per-session chrome must
+            // never overwrite an explicit host filter, grouping or placement.
+            if self.locations.is_empty() {
+                self.prefs = if self.role == WindowRole::Quick {
+                    persist::quick_display(Some(&self.prefs), Some(&saved))
+                } else {
+                    saved.display.clone()
+                };
+            }
             self.last_saved = Some(saved.clone());
             self.workspace_call(|link| link.workspace.restore(Some(saved)));
             self.sync_bindings(cx);

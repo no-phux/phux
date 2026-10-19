@@ -1,7 +1,7 @@
 //! The sidebar, the one navigator: every session across this Mac and saved
-//! machines, grouped by project, by machine, or not at all. The session this
-//! window shows opens in place: its tabs when they live in the sidebar, then
-//! any of its terminals no tab holds. Where work runs is a word on its row,
+//! machines, grouped by project, by machine, or not at all. Disclosure and
+//! host visibility never follow selection. Sidebar tabs occupy a separate,
+//! fixed-height shelf so they cannot displace the tree. Where work runs is a word on its row,
 //! not a chip; what needs a person is a mark on its row, not a list.
 //!
 //! Groupings are views of the same catalog ([`Desk::work_catalog`]); they
@@ -26,12 +26,15 @@ use super::super::skin::Look;
 use super::super::ui::list::{Emphasis, row_detail, row_label};
 use super::super::ui::status::state_dot;
 use super::super::ui::{dot, ghost_button, ghost_icon, muted, row, row_icon, section_label};
-use super::{tabs, tabs_at};
+use super::tabs;
 
 mod rows;
 mod session;
 
 use session::session_block;
+
+const FOOTER_HEIGHT: f32 = 44.;
+const TAB_SHELF_HEIGHT: f32 = 160.;
 
 /// Whether the prefs show the sidebar in this window.
 pub(super) fn wanted(desk: &Desk) -> bool {
@@ -47,8 +50,17 @@ pub(super) fn build(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> 
         .relative()
         .flex()
         .flex_col()
+        .child(host_filter(desk, &look, cx))
         .child(list(desk, &look, cx))
+        .when(desk.tab_position() == TabPosition::Side, |sidebar| {
+            sidebar.child(tab_shelf(desk, &look, cx))
+        })
         .child(footer(desk, &look, cx))
+        // Organization controls float over reserved scroll padding. Navigation
+        // clears their selection, but must not move the session tree with it.
+        .child(div().absolute().left_0().right_0()
+            .bottom(px(FOOTER_HEIGHT + if desk.tab_position() == TabPosition::Side { TAB_SHELF_HEIGHT } else { 0. }))
+            .child(organization_bar(desk, &look, cx)))
         .child(resize(desk, &look, cx))
         .into_any_element()
 }
@@ -137,7 +149,7 @@ fn footer(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
     div()
         .debug_selector(|| "sidebar-footer".into())
         .flex_shrink_0()
-        .h(px(44.))
+        .h(px(FOOTER_HEIGHT))
         .px(px(8.))
         .flex()
         .items_center()
@@ -191,42 +203,39 @@ fn footer(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
 }
 
 fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
-    let groups = group(desk.work_catalog(), desk.prefs.sidebar_grouping);
+    let work = desk
+        .work_catalog()
+        .into_iter()
+        .filter(|work| {
+            desk.prefs
+                .sidebar_shows_host(work.destination.host.as_deref())
+        })
+        .collect();
+    let groups = group(work, desk.prefs.sidebar_grouping);
     let mut rows = Vec::new();
-    let mut shown = false;
     for group in groups {
         if let Some(label) = &group.label {
             rows.push(section_label(label, look).into_any_element());
         }
         for work in group.work {
-            rows.push(if desk.work_is_active(&work.destination) {
-                shown = true;
-                session_block(desk, &work, look, cx)
-            } else {
-                work_row(desk, work, look, cx)
-            });
+            rows.push(session_block(desk, &work, look, cx));
         }
-    }
-    // Before the catalog lists this window's session (still connecting, or
-    // offline), its tabs still need a home here.
-    if !shown && desk.link.is_some() {
-        rows.insert(0, unlisted_session(desk, look, cx));
     }
     let empty = rows.is_empty();
     div()
         .id("sidebar-list")
-        .flex_grow(1.)
+        .flex_1()
+        .min_h_0()
         .overflow_y_scroll()
         .px(px(8.))
         .pt(px(4.))
-        .pb(px(8.))
+        .pb(px(48.))
         .flex()
         .flex_col()
         .gap(px(1.))
-        .child(organization_bar(desk, look, cx))
         .when(empty, |list| {
             list.child(
-                muted(look, "No sessions yet.")
+                muted(look, "No sessions match this view.")
                     .px(px(8.))
                     .py(px(6.))
                     .text_sm(),
@@ -255,75 +264,71 @@ fn session_slot(caret: &'static str, attention: Option<AgentState>, look: &Look)
     })
 }
 
-/// Another session: one row that opens it here.
-fn work_row(desk: &Desk, work: Work, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
-    let target = work.destination.clone();
-    let machine = target.host_label().to_owned();
-    let tip = format!(
-        "{} · {} · {} terminals{}",
-        target.name,
-        if machine == "Local" {
-            "This Mac"
-        } else {
-            &machine
-        },
-        work.terminals,
-        if work.online { "" } else { " · offline" }
-    );
-    let selector = format!("work-{machine}-{}", work.id);
-    let detail = match (host_word(desk, target.host.as_deref()), work.online) {
-        (Some(host), true) => Some(host),
-        (Some(host), false) => Some(format!("{host} · offline")),
-        (None, false) => Some("offline".into()),
-        (None, true) => None,
-    };
-    row(SharedString::from(selector.clone()), look)
-        .debug_selector(move || selector.clone())
-        .child(session_slot("›", work.attention, look))
-        .child(row_label(
-            target.name.clone(),
-            if work.online {
-                Emphasis::Normal
-            } else {
-                Emphasis::Quiet
-            },
-            look,
-        ))
-        .children(detail.map(|detail| row_detail(detail, look)))
-        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-        .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(target.clone(), cx)))
-        .into_any_element()
-}
-/// This window's session while the catalog cannot list it: its name, how
-/// its connection stands, and its tabs when they live here.
-fn unlisted_session(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
-    let name = if desk.session.is_empty() {
-        "phux".to_owned()
-    } else {
-        desk.session.clone()
-    };
-    let collapsed = desk.collapsed.contains(&name);
-    let side_tabs = tabs_at(desk, &look.skin, TabPosition::Side);
-    let (state, _) = desk.connection_label();
-    let toggle_name = name.clone();
+/// A stable filter control: clicking work never changes these exclusions.
+fn host_filter(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    let filtered = !desk.prefs.sidebar_hidden_hosts.is_empty();
     div()
+        .h(px(32.))
+        .flex_shrink_0()
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .relative()
+                .debug_selector(|| "sidebar-host-filter".into())
+                .child(desk.anchors.probe(menus::HOST_FILTER))
+                .child(
+                    ghost_button(
+                        "sidebar-host-filter",
+                        if filtered {
+                            "Machines · filtered"
+                        } else {
+                            "All machines"
+                        },
+                    )
+                    .toggled(desk.menu_open(menus::HOST_FILTER))
+                    .on_click(
+                        cx.listener(|desk, _, window, cx| {
+                            desk.open_sidebar_host_filter(window, cx)
+                        }),
+                    ),
+                ),
+        )
+        .when(filtered, |bar| {
+            bar.child(
+                div()
+                    .debug_selector(|| "sidebar-host-filter-reset".into())
+                    .child(ghost_button("sidebar-host-filter-reset", "Reset").on_click(
+                        cx.listener(|desk, _, _, cx| {
+                            desk.update_prefs(|prefs| prefs.sidebar_hidden_hosts.clear(), cx)
+                        }),
+                    )),
+            )
+        })
+        .text_color(from_hex(&look.chrome.muted))
+}
+
+/// Workspace tabs have a fixed home, not a variable-height insertion into
+/// whichever session happens to be selected. Each region scrolls separately.
+fn tab_shelf(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    div()
+        .id("sidebar-tab-shelf")
+        .debug_selector(|| "sidebar-tab-shelf".into())
+        .h(px(TAB_SHELF_HEIGHT))
+        .flex_shrink_0()
         .flex()
         .flex_col()
-        .gap(px(1.))
+        .px(px(8.))
+        .child(section_label("Tabs", look).flex_shrink_0())
         .child(
-            row("session-current", look)
-                .debug_selector(|| "session-current".into())
-                .child(session_slot(if collapsed { "▸" } else { "▾" }, None, look))
-                .child(row_label(name, Emphasis::Current, look))
-                .child(row_detail(state, look))
-                .on_click(cx.listener(move |desk, _, _, cx| {
-                    desk.toggle_session_collapsed(&toggle_name, cx)
-                })),
+            div()
+                .id("sidebar-tab-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(tabs::strip(desk, TabPosition::Side, look, cx)),
         )
-        .when(side_tabs && !collapsed, |block| {
-            block.child(tabs::strip(desk, TabPosition::Side, look, cx))
-        })
-        .into_any_element()
 }
 
 /// Machines whose inventory could not be read, each a retry.
@@ -331,6 +336,7 @@ fn unavailable(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Vec<AnyEleme
     desk.fleet
         .failures()
         .into_iter()
+        .filter(|(host, _)| desk.prefs.sidebar_shows_host(host.as_deref()))
         .map(|(host, error)| {
             let name = host.as_deref().unwrap_or("This Mac").to_owned();
             let selector = format!("unavailable-{}", host.as_deref().unwrap_or("Local"));
@@ -365,6 +371,7 @@ fn organization_bar(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElem
         return div().into_any_element();
     }
     div()
+        .bg(look.sheet)
         .flex()
         .items_center()
         .gap(px(4.))
