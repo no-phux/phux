@@ -79,7 +79,7 @@ impl Page {
         match self {
             Self::Appearance => {
                 "theme colors dark light font family size typeface skin look glass plain terminal \
-                 animations motion laser cursor"
+                 animations motion laser cursor native agents conversation chat acp transcript"
             }
             Self::Layout => {
                 "sidebar tabs top bottom side background opacity glass blur solid opaque notifications alerts"

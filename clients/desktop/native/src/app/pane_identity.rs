@@ -121,6 +121,31 @@ impl Harness {
         }
     }
 
+    /// The command that installs the phux plugin this harness reports its
+    /// AgentSession and transcript through (`docs/agents.md`). `None` for a
+    /// harness with no hook plugin: its native view is an ACP launch.
+    #[must_use]
+    pub const fn plugin_install(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Claude => {
+                "claude plugin marketplace add no-phux/phux && claude plugin install phux@phux"
+            }
+            Self::Grok => {
+                "grok plugin marketplace add no-phux/phux && grok plugin install phux@phux --trust"
+            }
+            Self::Omp => "omp plugin install @phux/omp",
+            Self::Pi => "pi install npm:@phux/pi",
+            Self::OpenCode => "opencode plugin add @phux/opencode",
+            Self::Codex
+            | Self::Amp
+            | Self::Cursor
+            | Self::Gemini
+            | Self::Goose
+            | Self::Aider
+            | Self::Other => return None,
+        })
+    }
+
     /// The mark's colour as `[light, dark]` hex, fixed across themes as the
     /// agent state swatches are. `None` takes the theme's muted ink.
     #[must_use]
@@ -323,6 +348,34 @@ mod tests {
         assert_eq!(Harness::from_slug("my-agent"), Harness::Other);
         assert_eq!(Harness::from_slug(""), Harness::Other);
         assert_eq!(Harness::from_slug("-acp"), Harness::Other);
+    }
+
+    #[test]
+    fn plugin_installs_are_the_documented_commands() {
+        let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        let doc = std::fs::read_to_string(root.join("../../../docs/agents.md")).unwrap();
+        let plugged_harnesses = [
+            Harness::Claude,
+            Harness::Grok,
+            Harness::Omp,
+            Harness::Pi,
+            Harness::OpenCode,
+        ];
+        for harness in plugged_harnesses {
+            let command = harness.plugin_install().expect("a documented plugin");
+            for step in command.split(" && ") {
+                assert!(doc.contains(step), "{harness:?}: {step}");
+            }
+        }
+        let plugged = Harness::ALL
+            .iter()
+            .filter(|harness| harness.plugin_install().is_some())
+            .count();
+        assert_eq!(
+            plugged,
+            plugged_harnesses.len(),
+            "every plugin install is checked here"
+        );
     }
 
     #[test]

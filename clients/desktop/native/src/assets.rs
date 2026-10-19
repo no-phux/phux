@@ -29,7 +29,12 @@ gpui_kit::assets::icon_assets!(
         MousePointer2,
         Sparkle,
         Feather,
-        WandSparkles
+        WandSparkles,
+        // Native conversation rows and controls.
+        Brain,
+        Wrench,
+        Square,
+        MessagesSquare
     ]
 );
 
@@ -73,6 +78,19 @@ mod tests {
             IconName::Pencil,
             IconName::Trash,
             IconName::GitBranch,
+            IconName::Brain,
+            IconName::Wrench,
+            IconName::Square,
+            IconName::MessagesSquare,
+            IconName::CircleCheck,
+            IconName::CircleX,
+            IconName::CircleAlert,
+            IconName::Info,
+            IconName::ChevronDown,
+            IconName::ArrowUp,
+            IconName::FileText,
+            IconName::Globe,
+            IconName::Loader,
             IconName::Minus,
             IconName::ChevronLeft,
             IconName::ChevronRight,

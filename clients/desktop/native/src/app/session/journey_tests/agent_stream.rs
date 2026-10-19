@@ -255,3 +255,83 @@ fn agent_stream_enables_native_face_without_restart_and_keeps_drafts(cx: &mut Te
     assert!(!desk.read_with(cx, |desk, _| desk.conversation_visible(&placement)));
     desk.update(cx, |desk, cx| desk.prepare_close(cx));
 }
+
+#[gpui::test]
+#[ignore = "requires PHUX_DESKTOP_JOURNEY_TEST_BIN pointing at a checkout-built CLI and disposable XDG_STATE_HOME"]
+fn native_agents_snaps_every_agent_pane_and_later_agents_follow(cx: &mut TestAppContext) {
+    let server = Server::new();
+    let desktop = desktop(cx);
+    let handle = server.launch(&desktop, cx);
+    let desk = desktop.read_with(cx, |desktop, _| desktop.windows[0].desk.clone());
+    wait_for(cx, |cx| {
+        attached(&desk, cx)
+            && desk.read_with(cx, |desk, _| {
+                desk.focused_terminal()
+                    .is_some_and(|id| desk.link.as_ref().unwrap().connection.ready(&id))
+            })
+    });
+    let (placement, terminal) = desk.read_with(cx, |desk, _| {
+        let placement = desk.focused_placement().unwrap();
+        (placement.id.clone(), placement.terminal_id.clone().unwrap())
+    });
+    let selector = match &terminal {
+        phux_protocol::ResourceId::Local { id } => format!("@{id}"),
+        phux_protocol::ResourceId::Satellite { .. } => panic!("private fixture must be local"),
+    };
+    // On before any agent exists: nothing to show, so the terminal stays.
+    cx.update_window(*handle, |_, window, cx| {
+        desk.update(cx, |desk, cx| desk.execute("native-agents", window, cx));
+    })
+    .unwrap();
+    desk.read_with(cx, |desk, _| {
+        assert!(desk.prefs.native_agents);
+        assert!(!desk.conversation_visible(&placement));
+    });
+    server.run(&[
+        "agent",
+        "session",
+        "open",
+        &selector,
+        "--provider",
+        "omp",
+        "--native-id",
+        "snap",
+    ]);
+    server.run(&[
+        "agent",
+        "emit",
+        &selector,
+        "--type",
+        "session_start",
+        "--data",
+        r#"{"provider":"omp","native_id":"snap"}"#,
+    ]);
+    wait_for(cx, |cx| {
+        desk.read_with(cx, |desk, _| desk.conversation_eligible(&placement))
+    });
+    assert!(
+        desk.read_with(cx, |desk, _| desk.conversation_visible(&placement)),
+        "an agent that starts while Native Agents is on opens on its conversation"
+    );
+    cx.run_until_parked();
+    cx.update_window(*handle, |_, window, cx| {
+        desk.update(cx, |desk, cx| {
+            // The pane's own switch still wins until the preference moves.
+            desk.toggle_conversation(&placement, window, cx);
+            assert!(!desk.conversation_visible(&placement));
+            desk.execute("native-agents", window, cx);
+            assert!(!desk.prefs.native_agents);
+            assert!(!desk.conversation_visible(&placement));
+            desk.execute("native-agents", window, cx);
+            assert!(desk.prefs.native_agents);
+            assert!(
+                desk.conversation_visible(&placement),
+                "turning it on snaps a pane that was switched back"
+            );
+            desk.execute("native-agents", window, cx);
+            assert!(!desk.conversation_visible(&placement));
+        });
+    })
+    .unwrap();
+    desk.update(cx, |desk, cx| desk.prepare_close(cx));
+}
