@@ -37,8 +37,10 @@ impl Shown {
         }
     }
 
-    fn host_label(&self) -> &str {
-        self.host.as_deref().unwrap_or("Local")
+    fn host_label(&self) -> String {
+        self.host
+            .as_deref()
+            .map_or_else(|| "Local".to_owned(), crate::app::machine_name::display)
     }
 }
 

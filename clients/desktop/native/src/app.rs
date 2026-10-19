@@ -16,6 +16,7 @@ mod fleet;
 mod host;
 mod hud;
 mod keys;
+mod machine_name;
 mod menus;
 mod motion;
 mod native_launch;

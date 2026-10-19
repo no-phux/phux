@@ -14,9 +14,12 @@ use gpui::{App, Context, Point, SharedString, WeakEntity, Window, WindowHandle, 
 use gpui_kit::assets::IconName;
 
 use super::actions::title;
-use super::desk::{Desk, Modal};
+use super::desk::{Desk, Modal, display_title};
+use super::machine_name;
 use super::ui::keystroke;
 use super::ui::menu::{self, Anchor, Closed, GlassMenu, Heading, MenuItem, MenuPage, MenuSpec};
+use super::view::group_work;
+use crate::settings::SidebarGrouping;
 
 mod pane;
 mod view;
@@ -232,11 +235,11 @@ fn spec(name: &str, root: MenuPage, width: f32, desk: &Desk) -> MenuSpec {
     }
 }
 
-/// The session this window shows, the way to every other machine, and what
+/// The session this window shows, the way to every other session, and what
 /// to make next. Search lives in Go To and the palette, one item away.
 fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> MenuSpec {
     let handle = cx.weak_entity();
-    let machine = desk.remote.clone().unwrap_or_else(|| "This Mac".into());
+    let machine = machine_name::label(desk.remote.as_deref());
     let session = if desk.session.is_empty() {
         "phux".to_owned()
     } else {
@@ -273,16 +276,17 @@ fn main_menu(desk: &Desk, cx: &mut Context<Desk>) -> MenuSpec {
     let root = MenuPage {
         heading: Some(Heading {
             title: session.into(),
-            detail: Some(format!("On {machine} · Switch machine").into()),
+            detail: Some(format!("On {machine} · Switch session").into()),
             icon: Some(machine_icon(desk.remote.as_deref())),
-            page: Some(Rc::new(machines_page(desk, &handle))),
+            page: Some(Rc::new(sessions_page(desk, &handle))),
         }),
         items,
     };
     spec("Main menu", root, 300., desk)
 }
 
-fn machine_icon(host: Option<&str>) -> IconName {
+/// The mark for where a session runs: this Mac or another machine.
+pub(super) fn machine_icon(host: Option<&str>) -> IconName {
     if host.is_some() {
         IconName::Server
     } else {
@@ -290,43 +294,42 @@ fn machine_icon(host: Option<&str>) -> IconName {
     }
 }
 
-/// This computer and every saved machine, with their state; choosing one
-/// opens its work in this window.
-fn machines_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
-    let machine = |host: Option<String>, label: String, detail: String| {
-        let open = host.clone();
-        MenuItem::action(
-            label,
-            on_desk(handle, move |desk, _, cx| {
-                desk.open_machine(open.clone(), cx)
-            }),
-        )
-        .icon(machine_icon(host.as_deref()))
-        .detail(detail)
-        .checked(desk.remote == host)
-    };
-    let mut items = vec![
-        machine(
-            None,
-            "This Mac".into(),
-            desk.machine_reach(None).label().to_owned(),
-        )
-        .selector("local"),
-    ];
-    items.extend(desk.hosts.iter().map(|host| {
-        let reach = desk.machine_reach(Some(&host.name));
-        machine(
-            Some(host.name.clone()),
-            host.name.clone(),
-            format!("{} · {}", reach.label(), host.endpoint),
-        )
-    }));
+/// Every session on this Mac and saved machines, project by project, each
+/// marked with its machine; choosing one opens it in this window. Machines
+/// themselves are managed one step further.
+fn sessions_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
+    let mut items = Vec::new();
+    for group in group_work(desk.work_catalog(), SidebarGrouping::Project) {
+        for (index, work) in group.work.into_iter().enumerate() {
+            let host = work.destination.host.clone();
+            let mut words: Vec<String> = group.label.iter().cloned().collect();
+            words.push(machine_name::label(host.as_deref()));
+            if !work.online {
+                words.push("offline".into());
+            }
+            let current = desk.work_is_active(&work.destination);
+            let selector = format!("session-{}-{}", work.destination.host_label(), work.id);
+            let target = work.destination.clone();
+            let item = MenuItem::action(
+                display_title(&work.destination.name),
+                on_desk(handle, move |desk, _, cx| {
+                    desk.navigate_work(target.clone(), cx)
+                }),
+            )
+            .icon(machine_icon(host.as_deref()))
+            .detail(words.join(" · "))
+            .checked(current)
+            .selector(selector);
+            let starts_group = index == 0 && !items.is_empty();
+            items.push(if starts_group { item.gap() } else { item });
+        }
+    }
     items.push(command(desk, handle, "machines", IconName::Settings).gap());
     items.push(command(desk, handle, "add-host", IconName::Plus));
     MenuPage {
         heading: Some(Heading {
-            title: "Switch Machine".into(),
-            detail: Some("This Mac and saved machines".into()),
+            title: "Switch Session".into(),
+            detail: Some("Sessions on every machine, by project".into()),
             ..Heading::default()
         }),
         items,
@@ -468,6 +471,31 @@ fn session_menu(desk: &Desk, id: u32, name: &str, cx: &mut Context<Desk>) -> Men
             .icon(IconName::ListTree)
             .selector("select-session-work")
             .gap(),
+        );
+    }
+    if let Some(key) = session
+        .and_then(|session| session.key)
+        .filter(|_| connection.organization())
+    {
+        let current = connection.projects.get(&id).cloned();
+        let name = name.to_owned();
+        items.push(
+            MenuItem::action(
+                "Link to Project…",
+                on_desk(&handle, move |desk, window, cx| {
+                    desk.open_modal(
+                        Modal::Project {
+                            session: key,
+                            name: name.clone(),
+                            current: current.clone(),
+                        },
+                        window,
+                        cx,
+                    )
+                }),
+            )
+            .icon(IconName::Link)
+            .selector("link-project"),
         );
     }
     if let Some(key) = intake {
