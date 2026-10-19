@@ -303,6 +303,11 @@ pub(super) fn fold_header(
             .role(gpui::Role::Button)
             .aria_label(label)
             .aria_expanded(open)
+            // GPUI maps unmodified Enter/Space press+release to on_click for
+            // focused elements. Both flags are required for Tab traversal.
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(|style| style.bg(gpui::hsla(0., 0., 0.5, 0.2)))
             .cursor_pointer()
             .on_click(move |event, window, cx| {
                 cx.stop_propagation();

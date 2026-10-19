@@ -7,10 +7,12 @@ use gpui_kit::component::spinner::Spinner;
 
 use super::super::pane_identity::Harness;
 use super::super::ui::status::{agent_swatch, harness_mark};
-use super::super::ui::{badge, pill};
 use super::transcript::{Style, Toggle, foldable, opens_by_default};
 use super::*;
 use crate::connection::AgentState;
+
+mod header;
+use header::header;
 
 /// Prose reads best in a column; a wide pane centers it.
 const READING_WIDTH: f32 = 820.;
@@ -52,45 +54,12 @@ pub(crate) fn render(
         return unavailable(placement, cx);
     };
     let blocked = conversation.state.status == AgentSessionStatus::Blocked;
-    // Measure the previous frame before appending; do not jump if the reader scrolled up.
-    if let Some(submitted) = face.delivered.take() {
-        face.input.update(cx, |input, cx| {
-            if input.value().as_str() == submitted {
-                input.set_value("", window, cx);
-            }
-        });
-    }
-    if conversation.revision != face.revision {
-        let max =
-            (face.scroll.content_size().height - face.scroll.bounds().size.height).max(px(0.));
-        face.follow = face.follow && -face.scroll.offset().y >= max - px(32.);
-        face.revision = conversation.revision;
-        if face.follow {
-            let scroll = face.scroll.clone();
-            window.on_next_frame(move |window, _| {
-                scroll.set_offset(point(px(0.), px(-1_000_000.)));
-                window.refresh();
-            });
-        }
-    }
+    update_input_and_follow(face, conversation.revision, window, cx);
     let disconnected = conversation
         .native
         .as_ref()
         .is_some_and(|view| !view.connected);
-    let state = if conversation.closed {
-        "closed · read-only"
-    } else if disconnected {
-        "ACP disconnected · read-only"
-    } else {
-        match conversation.state.status {
-            AgentSessionStatus::Working => "working",
-            AgentSessionStatus::Blocked => "needs you",
-            AgentSessionStatus::Done => "finished",
-            AgentSessionStatus::Ended => "ended · read-only",
-            AgentSessionStatus::Idle => "idle",
-            AgentSessionStatus::Unknown => "connected",
-        }
-    };
+    let state = state_label(conversation.closed, disconnected, conversation.state.status);
     let harness = conversation
         .state
         .provider
@@ -125,28 +94,7 @@ pub(crate) fn render(
         harness,
         provider: &provider,
     };
-    let mut previous = None;
-    let rows = conversation
-        .entries
-        .iter()
-        .map(|entry| {
-            let lead = entry.role == TranscriptRole::Assistant && previous != Some(entry.role);
-            previous = Some(entry.role);
-            let open = foldable(entry)
-                && face
-                    .folds
-                    .get(&entry.id)
-                    .copied()
-                    .unwrap_or_else(|| opens_by_default(entry));
-            transcript::transcript_row(
-                entry,
-                open,
-                lead,
-                &style,
-                fold_toggle(placement, &entry.id, open, cx),
-            )
-        })
-        .collect::<Vec<_>>();
+    let rows = transcript_rows(face, &conversation.entries, placement, &style, cx);
     let omitted = conversation.omitted;
     let input = face.input.clone();
     let empty = input.read(cx).value().trim().is_empty();
@@ -172,116 +120,10 @@ pub(crate) fn render(
     let editable = if native { live } else { !pending && writable };
     let working = live && !disconnected && conversation.state.status == AgentSessionStatus::Working;
     let following = face.follow;
-    let terminal_id = placement.to_owned();
-    let send_id = placement.to_owned();
-    let stop_id = placement.to_owned();
-    let live_id = placement.to_owned();
-    let scroll_id = placement.to_owned();
-    let focus_id = placement.to_owned();
     let muted = from_hex(&colors.muted);
-    let hint = if native && blocked {
-        "Respond to the provider request above · first response across viewers wins"
-    } else if blocked {
-        "Attached TUI needs you · Open Terminal to answer approvals or permissions"
-    } else if writable {
-        "Enter sends · Shift+Enter adds a line"
-    } else {
-        "Read-only until this exact terminal and agent session are writable"
-    };
-    let header = div()
-        .flex()
-        .items_center()
-        .gap(px(10.))
-        .child(harness_mark(harness, Some(swatch), 18., &look))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(look.ink)
-                                .truncate()
-                                .child(provider.clone()),
-                        )
-                        .child(if native {
-                            badge("ACP", &look)
-                        } else {
-                            pill(
-                                "Attached TUI",
-                                &format!("{}14", colors.theme.foreground),
-                                &colors.muted,
-                                &look,
-                            )
-                        }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .text_xs()
-                        .text_color(muted)
-                        .child(super::super::ui::dot(6., from_hex(agent_swatch(swatch))))
-                        .child(state),
-                ),
-        )
-        .child(
-            Button::new(SharedString::from(format!(
-                "conversation-terminal-{placement}"
-            )))
-            .label("Terminal")
-            .icon(IconName::SquareTerminal)
-            .ghost()
-            .small()
-            .tooltip("Show this agent's terminal")
-            .on_click(cx.listener(move |desk, _, window, cx| {
-                desk.toggle_conversation(&terminal_id, window, cx)
-            })),
-        );
-    let activity =
-        if working {
-            Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .text_xs()
-                    .text_color(muted)
-                    .child(
-                        Spinner::new()
-                            .xsmall()
-                            .color(from_hex(&colors.theme.accent)),
-                    )
-                    .child(ShimmerText::new(format!("{provider} is working…")).id(
-                        SharedString::from(format!("conversation-working-{placement}")),
-                    ))
-                    .into_any_element(),
-            )
-        } else if live && blocked {
-            let color = from_hex(agent_swatch(AgentState::Blocked));
-            Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .text_xs()
-                    .text_color(color)
-                    .child(Icon::new(IconName::CircleAlert).size(px(13.)))
-                    .child(format!("{provider} needs you"))
-                    .into_any_element(),
-            )
-        } else {
-            None
-        };
+    let hint = composer_hint(native, blocked, writable);
+    let header = header(placement, &style, swatch, state, native, cx);
+    let activity = turn_activity(placement, &provider, working, live && blocked, colors);
     let column = |body: gpui::Div| body.w_full().max_w(px(READING_WIDTH)).mx_auto();
     let composer = div()
         .flex()
@@ -313,30 +155,9 @@ pub(crate) fn render(
                         .text_color(muted)
                         .child(hint),
                 )
-                .child(
-                    Button::new(SharedString::from(format!("conversation-stop-{placement}")))
-                        .label("Stop · Esc")
-                        .icon(IconName::Square)
-                        .accessibility_label("Stop agent")
-                        .ghost()
-                        .small()
-                        .disabled(!stopping)
-                        .on_click(
-                            cx.listener(move |desk, _, _, cx| desk.stop_conversation(&stop_id, cx)),
-                        ),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("conversation-send-{placement}")))
-                        .label(if pending { "Sending…" } else { "Send" })
-                        .icon(IconName::ArrowUp)
-                        .loading(pending)
-                        .primary()
-                        .small()
-                        .disabled(!writable || empty)
-                        .on_click(
-                            cx.listener(move |desk, _, _, cx| desk.send_conversation(&send_id, cx)),
-                        ),
-                ),
+                .children(composer_actions(
+                    placement, pending, writable, empty, stopping, cx,
+                )),
         );
     let transcript = div()
         .flex()
@@ -364,19 +185,7 @@ pub(crate) fn render(
         .flex_col()
         .gap(px(10.))
         .text_color(from_hex(&colors.theme.foreground))
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |desk, _, window, cx| {
-                if desk
-                    .focused_placement()
-                    .map(|placement| placement.id.as_str())
-                    != Some(focus_id.as_str())
-                    && let Some(tab) = desk.active_tab_id()
-                {
-                    desk.focus_placement(&tab, &focus_id, window, cx);
-                }
-            }),
-        )
+        .on_mouse_down(gpui::MouseButton::Left, focus_on_click(placement, cx))
         .child(column(div().child(header)))
         .children(native_identity.map(|identity| {
             column(div())
@@ -386,38 +195,12 @@ pub(crate) fn render(
                 .child(identity)
         }))
         .child(div().h(px(1.)).flex_shrink_0().bg(look.divider))
-        .child(transcript_viewport(
-            div()
-                .id(SharedString::from(format!("conversation-scroll-{placement}")))
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .track_scroll(&scroll)
-                .on_scroll_wheel(cx.listener(move |desk, _, _, cx| {
-                    if let Some(face) = desk.conversation_faces.get_mut(&scroll_id) {
-                        // Explicit reader interaction pauses follow until Jump to latest.
-                        face.follow = false;
-                        cx.notify();
-                    }
-                }))
-                // Only transcript rows live in the List; notices and question
-                // panels sit beside it so every List child is a ListItem.
-                .child(column(transcript)),
-            // Floats over the transcript: pausing follow must not resize it.
-            (!following).then(|| {
-                Button::new(SharedString::from(format!("conversation-live-{placement}")))
-                    .label("Jump to latest")
-                    .icon(IconName::ArrowDown)
-                    .small()
-                    .rounded(px(999.))
-                    .on_click(cx.listener(move |desk, _, _, cx| {
-                        if let Some(face) = desk.conversation_faces.get_mut(&live_id) {
-                            face.follow = true;
-                            face.scroll.set_offset(point(px(0.), px(-1_000_000.)));
-                        }
-                        cx.notify();
-                    }))
-            }),
+        .child(scrolling_transcript(
+            placement,
+            column(transcript),
+            scroll,
+            following,
+            cx,
         ))
         .children(error.map(|error| {
             column(div())
@@ -436,6 +219,239 @@ pub(crate) fn render(
         .children(notice.map(|notice| column(div()).text_xs().text_color(muted).child(notice)))
         .child(column(composer))
         .into_any_element()
+}
+
+fn composer_actions(
+    placement: &str,
+    pending: bool,
+    writable: bool,
+    empty: bool,
+    stopping: bool,
+    cx: &mut Context<Desk>,
+) -> [AnyElement; 2] {
+    let stop_id = placement.to_owned();
+    let send_id = placement.to_owned();
+    [
+        Button::new(SharedString::from(format!("conversation-stop-{placement}")))
+            .label("Stop · Esc")
+            .icon(IconName::Square)
+            .accessibility_label("Stop agent")
+            .ghost()
+            .small()
+            .disabled(!stopping)
+            .on_click(cx.listener(move |desk, _, _, cx| desk.stop_conversation(&stop_id, cx)))
+            .into_any_element(),
+        Button::new(SharedString::from(format!("conversation-send-{placement}")))
+            .label(if pending { "Sending…" } else { "Send" })
+            .icon(IconName::ArrowUp)
+            .loading(pending)
+            .primary()
+            .small()
+            .disabled(!writable || empty)
+            .on_click(cx.listener(move |desk, _, _, cx| desk.send_conversation(&send_id, cx)))
+            .into_any_element(),
+    ]
+}
+
+fn focus_on_click(
+    placement: &str,
+    cx: &mut Context<Desk>,
+) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
+    let focus_id = placement.to_owned();
+    cx.listener(move |desk, _, window, cx| {
+        if desk
+            .focused_placement()
+            .map(|placement| placement.id.as_str())
+            != Some(focus_id.as_str())
+            && let Some(tab) = desk.active_tab_id()
+        {
+            desk.focus_placement(&tab, &focus_id, window, cx);
+        }
+    })
+}
+
+fn scrolling_transcript(
+    placement: &str,
+    transcript: gpui::Div,
+    scroll: ScrollHandle,
+    following: bool,
+    cx: &mut Context<Desk>,
+) -> gpui::Div {
+    let scroll_id = placement.to_owned();
+    let live_id = placement.to_owned();
+    transcript_viewport(
+        div()
+                .id(SharedString::from(format!("conversation-scroll-{placement}")))
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&scroll)
+                .on_scroll_wheel(cx.listener(move |desk, _, _, cx| {
+                    if let Some(face) = desk.conversation_faces.get_mut(&scroll_id) {
+                        // Explicit reader interaction pauses follow until Jump to latest.
+                        face.follow = false;
+                        cx.notify();
+                    }
+                }))
+                // Only transcript rows live in the List; notices and question
+                // panels sit beside it so every List child is a ListItem.
+                .child(transcript),
+        // Floats over the transcript: pausing follow must not resize it.
+        (!following).then(|| {
+            Button::new(SharedString::from(format!("conversation-live-{placement}")))
+                .label("Jump to latest")
+                .icon(IconName::ArrowDown)
+                .small()
+                .rounded(px(999.))
+                .on_click(cx.listener(move |desk, _, _, cx| {
+                    if let Some(face) = desk.conversation_faces.get_mut(&live_id) {
+                        face.follow = true;
+                        face.scroll.set_offset(point(px(0.), px(-1_000_000.)));
+                    }
+                    cx.notify();
+                }))
+        }),
+    )
+}
+
+/// Consume only the delivered draft and preserve a reader's scroll position.
+fn update_input_and_follow(
+    face: &mut Face,
+    revision: u64,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) {
+    if let Some(submitted) = face.delivered.take() {
+        face.input.update(cx, |input, cx| {
+            if input.value().as_str() == submitted {
+                input.set_value("", window, cx);
+            }
+        });
+    }
+    if revision == face.revision {
+        return;
+    }
+    // Measure before appending; do not jump if the reader scrolled up.
+    let max = (face.scroll.content_size().height - face.scroll.bounds().size.height).max(px(0.));
+    face.follow = face.follow && -face.scroll.offset().y >= max - px(32.);
+    face.revision = revision;
+    if face.follow {
+        let scroll = face.scroll.clone();
+        window.on_next_frame(move |window, _| {
+            scroll.set_offset(point(px(0.), px(-1_000_000.)));
+            window.refresh();
+        });
+    }
+}
+
+fn state_label(closed: bool, disconnected: bool, status: AgentSessionStatus) -> &'static str {
+    if closed {
+        return "closed · read-only";
+    }
+    if disconnected {
+        return "ACP disconnected · read-only";
+    }
+    match status {
+        AgentSessionStatus::Working => "working",
+        AgentSessionStatus::Blocked => "needs you",
+        AgentSessionStatus::Done => "finished",
+        AgentSessionStatus::Ended => "ended · read-only",
+        AgentSessionStatus::Idle => "idle",
+        AgentSessionStatus::Unknown => "connected",
+    }
+}
+
+fn composer_hint(native: bool, blocked: bool, writable: bool) -> &'static str {
+    if native && blocked {
+        "Respond to the provider request above · first response across viewers wins"
+    } else if blocked {
+        "Attached TUI needs you · Open Terminal to answer approvals or permissions"
+    } else if writable {
+        "Enter sends · Shift+Enter adds a line"
+    } else {
+        "Read-only until this exact terminal and agent session are writable"
+    }
+}
+
+fn transcript_rows(
+    face: &mut Face,
+    entries: &std::collections::VecDeque<TranscriptEntry>,
+    placement: &str,
+    style: &Style<'_>,
+    cx: &mut Context<Desk>,
+) -> Vec<gpui::Stateful<gpui::Div>> {
+    retain_folds(&mut face.folds, entries);
+    let mut previous = None;
+    entries
+        .iter()
+        .map(|entry| {
+            let lead = entry.role == TranscriptRole::Assistant && previous != Some(entry.role);
+            previous = Some(entry.role);
+            let open = foldable(entry)
+                && face
+                    .folds
+                    .get(&entry.id)
+                    .copied()
+                    .unwrap_or_else(|| opens_by_default(entry));
+            transcript::transcript_row(
+                entry,
+                open,
+                lead,
+                style,
+                fold_toggle(placement, &entry.id, open, cx),
+            )
+        })
+        .collect()
+}
+
+/// Fold choices have the same retention boundary as the bounded transcript.
+pub(super) fn retain_folds(
+    folds: &mut HashMap<String, bool>,
+    entries: &std::collections::VecDeque<TranscriptEntry>,
+) {
+    let retained: std::collections::HashSet<_> = entries.iter().map(|entry| &entry.id).collect();
+    folds.retain(|id, _| retained.contains(id));
+}
+
+fn turn_activity(
+    placement: &str,
+    provider: &str,
+    working: bool,
+    blocked: bool,
+    colors: &Palette,
+) -> Option<AnyElement> {
+    if working {
+        return Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child(
+                    Spinner::new()
+                        .xsmall()
+                        .color(from_hex(&colors.theme.accent)),
+                )
+                .child(
+                    ShimmerText::new(format!("{provider} is working…")).id(SharedString::from(
+                        format!("conversation-working-{placement}"),
+                    )),
+                )
+                .into_any_element(),
+        );
+    }
+    blocked.then(|| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_xs()
+            .text_color(from_hex(agent_swatch(AgentState::Blocked)))
+            .child(Icon::new(IconName::CircleAlert).size(px(13.)))
+            .child(format!("{provider} needs you"))
+            .into_any_element()
+    })
 }
 
 /// What a fold header runs: flip that entry's fold away from `open`.

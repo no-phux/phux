@@ -234,6 +234,146 @@ fn only_a_header_that_folds_is_announced_as_a_button() {
 }
 
 #[test]
+fn fold_choices_follow_transcript_retention() {
+    let mut entries: std::collections::VecDeque<_> = (0..256)
+        .map(|index| {
+            let mut item = entry(TranscriptRole::Thinking, "Thought");
+            item.id = index.to_string();
+            item
+        })
+        .collect();
+    let mut folds: HashMap<_, _> = [
+        ("0".into(), true),
+        ("1".into(), false),
+        ("255".into(), true),
+    ]
+    .into_iter()
+    .collect();
+    super::render::retain_folds(&mut folds, &entries);
+    assert_eq!(folds.len(), 3);
+    entries.pop_front();
+    let mut next = entry(TranscriptRole::Thinking, "Later thought");
+    next.id = "256".into();
+    entries.push_back(next);
+    super::render::retain_folds(&mut folds, &entries);
+    assert!(!folds.contains_key("0"), "evicted choices are forgotten");
+    assert_eq!(folds.get("1"), Some(&false), "explicit folds survive");
+    assert_eq!(folds.get("255"), Some(&true), "explicit opens survive");
+    entries.clear();
+    super::render::retain_folds(&mut folds, &entries);
+    assert!(folds.is_empty(), "replacement replay clears old choices");
+}
+
+struct FoldKeyboardFixture {
+    anchor: gpui::FocusHandle,
+    open: [bool; 2],
+}
+
+impl gpui::Render for FoldKeyboardFixture {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let prefs = crate::settings::default_display();
+        let colors = crate::settings::theme::palette(&crate::settings::theme::theme_by_id(
+            &prefs.theme_id,
+            &[],
+        ));
+        let look = Look::of(&crate::settings::skin::TERMINAL, &colors, &prefs);
+        let mono = prefs.font_family.into();
+        let style = style(&colors, &look, &mono);
+        let thought = entry(TranscriptRole::Thinking, "Finished thinking");
+        let mut call = entry(TranscriptRole::Tool, "");
+        call.id = "call".into();
+        let mut details = tool("ls", "result");
+        details.status = ToolStatus::Ok;
+        call.tool = Some(details);
+        let mut empty = entry(TranscriptRole::Thinking, "");
+        empty.id = "empty".into();
+        div()
+            .size_full()
+            .tab_group()
+            .child(
+                div()
+                    .id("anchor")
+                    .track_focus(&self.anchor)
+                    .tab_stop(true)
+                    .child("Start"),
+            )
+            .child(transcript_row(
+                &empty,
+                false,
+                false,
+                &style,
+                Box::new(|_, _, _| panic!("empty thoughts must not receive activation")),
+            ))
+            .children([thought, call].iter().enumerate().map(|(index, entry)| {
+                transcript_row(
+                    entry,
+                    self.open[index],
+                    false,
+                    &style,
+                    Box::new(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                        this.open[index] = !this.open[index];
+                        cx.notify();
+                    })),
+                )
+            }))
+    }
+}
+
+#[gpui::test]
+fn tab_and_enter_or_space_operate_folded_thinking_and_tool_rows(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut content = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| FoldKeyboardFixture {
+            anchor: cx.focus_handle(),
+            open: [false; 2],
+        });
+        content = Some(view.clone());
+        gpui_kit::base::Root::new(view, window, cx)
+    });
+    let view = content.unwrap();
+    draw(cx);
+    cx.update(|window, cx| view.read(cx).anchor.clone().focus(window, cx));
+    for index in 0..2 {
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(
+                !view.read(cx).anchor.is_focused(window),
+                "Tab must leave the anchor"
+            );
+            assert!(window.focused(cx).is_some(), "Tab must reach a fold header");
+        });
+        press_fold_key(cx, "enter");
+        draw(cx);
+        assert!(
+            view.read_with(cx, |view, _| view.open[index]),
+            "row {index} opens on Enter"
+        );
+        press_fold_key(cx, "space");
+        draw(cx);
+        assert!(!view.read_with(cx, |view, _| view.open[index]));
+    }
+}
+
+fn press_fold_key(cx: &mut gpui::VisualTestContext, key: &str) {
+    use gpui::InputEvent as _;
+    let keystroke = gpui::Keystroke::parse(key).unwrap();
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(gpui::KeyUpEvent { keystroke }.to_platform_input(), cx);
+    });
+}
+
+#[test]
 fn tool_glyphs_follow_what_the_tool_does() {
     use gpui_kit::assets::IconName;
     assert_eq!(tool_icon("Bash"), IconName::SquareTerminal);

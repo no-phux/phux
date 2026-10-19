@@ -122,13 +122,17 @@ impl Harness {
     }
 
     /// The command that installs the phux plugin this harness reports its
-    /// AgentSession and transcript through (`docs/consumers/`). `None` for a
+    /// AgentSession and transcript through (`docs/agents.md`). `None` for a
     /// harness with no hook plugin: its native view is an ACP launch.
     #[must_use]
     pub const fn plugin_install(self) -> Option<&'static str> {
         Some(match self {
-            Self::Claude => "claude plugin install phux@phux",
-            Self::Grok => "grok plugin install phux@phux --trust",
+            Self::Claude => {
+                "claude plugin marketplace add no-phux/phux && claude plugin install phux@phux"
+            }
+            Self::Grok => {
+                "grok plugin marketplace add no-phux/phux && grok plugin install phux@phux --trust"
+            }
             Self::Omp => "omp plugin install @phux/omp",
             Self::Pi => "pi install npm:@phux/pi",
             Self::OpenCode => "opencode plugin add @phux/opencode",
@@ -348,37 +352,30 @@ mod tests {
 
     #[test]
     fn plugin_installs_are_the_documented_commands() {
-        let docs = [
-            (
-                Harness::Claude,
-                include_str!("../../../../../docs/consumers/claude.md"),
-            ),
-            (
-                Harness::Grok,
-                include_str!("../../../../../docs/consumers/grok.md"),
-            ),
-            (
-                Harness::Omp,
-                include_str!("../../../../../docs/consumers/omp.md"),
-            ),
-            (
-                Harness::Pi,
-                include_str!("../../../../../docs/consumers/pi.md"),
-            ),
-            (
-                Harness::OpenCode,
-                include_str!("../../../../../docs/consumers/opencode-v2.md"),
-            ),
+        let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        let doc = std::fs::read_to_string(root.join("../../../docs/agents.md")).unwrap();
+        let plugged_harnesses = [
+            Harness::Claude,
+            Harness::Grok,
+            Harness::Omp,
+            Harness::Pi,
+            Harness::OpenCode,
         ];
-        for (harness, doc) in docs {
+        for harness in plugged_harnesses {
             let command = harness.plugin_install().expect("a documented plugin");
-            assert!(doc.contains(command), "{harness:?}: {command}");
+            for step in command.split(" && ") {
+                assert!(doc.contains(step), "{harness:?}: {step}");
+            }
         }
         let plugged = Harness::ALL
             .iter()
             .filter(|harness| harness.plugin_install().is_some())
             .count();
-        assert_eq!(plugged, docs.len(), "every plugin install is checked here");
+        assert_eq!(
+            plugged,
+            plugged_harnesses.len(),
+            "every plugin install is checked here"
+        );
     }
 
     #[test]
