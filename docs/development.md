@@ -291,6 +291,14 @@ the local build-observability recipes. For the server at run time,
 `phux perf` reads its counters, and the `tokio-console` and `dhat-heap`
 features in `phux-server` and `phux` attach the usual profilers.
 
+`phux perf trace --seconds N` records every timed span in the server for N
+seconds and writes Chrome trace-event JSON under the server's state
+directory (`traces/`, beside `server.log`); open it in
+<https://ui.perfetto.dev>. `phux perf alloc on|off` switches heap
+accounting, which then shows as `heap` in `phux perf`. A server started
+with `PHUX_DEV=1` has heap accounting on from the start. Both use
+`PERF_CONTROL`, gated on `features_ext.PERF_CONTROL`.
+
 ## Mutation testing
 
 Regression tests belong in the ordinary suite; mutation runs are a bounded,

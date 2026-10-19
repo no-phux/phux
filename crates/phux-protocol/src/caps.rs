@@ -1087,6 +1087,10 @@ pub enum ServerFeatureExt {
     SessionKill = 0x0000_0020,
     /// Dedicated SDK-owned `AgentSession` creation and typed native commands.
     NativeAgent = 0x0000_0040,
+    /// The server accepts `PERF_CONTROL`: start and stop a span trace and
+    /// switch heap accounting. A client MUST see the bit before sending the
+    /// command.
+    PerfControl = 0x0000_0080,
 }
 
 impl ServerFeatureExt {
@@ -1099,6 +1103,7 @@ impl ServerFeatureExt {
         Self::Organization,
         Self::SessionKill,
         Self::NativeAgent,
+        Self::PerfControl,
     ];
 
     /// The `docs/spec/proto.md` §6.2 constant, e.g. `"PATH_QUERY"`.
@@ -1112,6 +1117,7 @@ impl ServerFeatureExt {
             Self::Organization => "ORGANIZATION",
             Self::SessionKill => "SESSION_KILL",
             Self::NativeAgent => "NATIVE_AGENT",
+            Self::PerfControl => "PERF_CONTROL",
         }
     }
 
@@ -1133,7 +1139,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::AgentStreamResume as u32
         | ServerFeatureExt::Organization as u32
         | ServerFeatureExt::SessionKill as u32
-        | ServerFeatureExt::NativeAgent as u32;
+        | ServerFeatureExt::NativeAgent as u32
+        | ServerFeatureExt::PerfControl as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

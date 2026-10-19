@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use mission::MissionAction;
 use pair::PairAction;
+use perf::PerfAction;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, TerminalSignal};
@@ -848,8 +849,13 @@ pub(crate) enum Command {
     /// server's lifetime; with `--watch SECS` the verb polls and prints
     /// each interval on its own, so counters become rates and a stall
     /// shows up in the second it happened. Does not start a server.
+    ///
+    /// `phux perf trace` records a span trace of the server for Perfetto;
+    /// `phux perf alloc on|off` switches its heap accounting.
     #[usage(help_heading = "More", display_order = 62)]
     Perf {
+        #[usage(subcommand)]
+        action: Option<PerfAction>,
         #[usage(flatten)]
         json: JsonOpt,
         /// Poll every SECS seconds and print each interval as a delta.

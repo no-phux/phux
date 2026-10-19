@@ -21,25 +21,25 @@ use super::{
     COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_PERF,
     COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
     COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES,
-    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT,
-    COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT,
-    COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS,
-    COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES,
-    COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON,
-    COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue,
-    ControlAction, EVENT_TAG_APPROVAL_DECIDED, EVENT_TAG_APPROVAL_REQUESTED, EVENT_TAG_ASKED,
-    EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
-    EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_INPUT_ACTIVITY, EVENT_TAG_JOURNAL_GAP,
-    EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP,
-    EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck,
-    INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE,
-    InputMode, KillConditions, KillPrecondition, ListenerTransport, MAX_APPEND_BYTES,
-    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
-    MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType, ResourceLifecycle,
-    STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event, decode_key_event,
-    decode_mouse_event, decode_optional_u32, decode_paste_event, decode_terminal_id,
-    encode_focus_event, encode_key_event, encode_mouse_event, encode_paste_event,
-    encode_terminal_id,
+    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL, COMMAND_TAG_PUT_FILE,
+    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
+    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
+    COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE,
+    COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID,
+    COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command,
+    CommandResult, CommandValue, ControlAction, EVENT_TAG_APPROVAL_DECIDED,
+    EVENT_TAG_APPROVAL_REQUESTED, EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED,
+    EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE,
+    EVENT_TAG_INPUT_ACTIVITY, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
+    EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL,
+    EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
+    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition,
+    ListenerTransport, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
+    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, PerfOp, ReportedAgentState, ResourceEventType,
+    ResourceLifecycle, STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event,
+    decode_key_event, decode_mouse_event, decode_optional_u32, decode_paste_event,
+    decode_terminal_id, encode_focus_event, encode_key_event, encode_mouse_event,
+    encode_paste_event, encode_terminal_id,
 };
 
 // `Command` and `CommandResult`: a tag, then a positional body.
@@ -181,6 +181,10 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         Command::GetPerf { reset } => {
             enc.write_u8(COMMAND_TAG_GET_PERF);
             enc.write_u8(u8::from(*reset));
+        }
+        Command::PerfControl { op } => {
+            enc.write_u8(COMMAND_TAG_PERF_CONTROL);
+            enc.write_u8(op.to_u8());
         }
         Command::Transcribe {
             upload_id,
@@ -537,6 +541,10 @@ fn decode_session_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Comma
         COMMAND_TAG_OPEN_LISTENER => decode_open_listener_command(dec)?,
         COMMAND_TAG_GET_PERF => Command::GetPerf {
             reset: dec.read_u8()? != 0,
+        },
+        // Total: an undefined op decodes so the server can refuse it by name.
+        COMMAND_TAG_PERF_CONTROL => Command::PerfControl {
+            op: PerfOp::from_u8(dec.read_u8()?),
         },
         _ => return Ok(None),
     };
