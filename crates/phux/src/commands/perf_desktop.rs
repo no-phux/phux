@@ -61,8 +61,17 @@ fn dispatch(json: bool, ask: Ask, path: &Path) -> Result<(), Refusal> {
 /// The live dev socket: [`PATH_ENV`], else the newest `desktop-*.dev.sock`
 /// beside `server_socket` that accepts a connection.
 fn find(server_socket: &Path) -> Result<PathBuf, Refusal> {
-    if let Some(path) = std::env::var_os(PATH_ENV) {
-        return Ok(PathBuf::from(path));
+    find_with_override(server_socket, std::env::var_os(PATH_ENV).map(PathBuf::from))
+}
+
+fn find_with_override(
+    server_socket: &Path,
+    override_path: Option<PathBuf>,
+) -> Result<PathBuf, Refusal> {
+    refuse_production_server(server_socket)?;
+    if let Some(path) = override_path {
+        verify_server(&path, server_socket)?;
+        return Ok(path);
     }
     let dir = server_socket.parent().unwrap_or_else(|| Path::new("."));
     let mut live: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
@@ -93,15 +102,41 @@ fn find(server_socket: &Path) -> Result<PathBuf, Refusal> {
 }
 
 fn serves_server(path: &Path, server_socket: &Path) -> bool {
-    let Ok(reply) = ask(path, &json!({"op": "identity"}), Duration::from_secs(1)) else {
-        return false;
-    };
-    reply["server_socket"].as_str().is_some_and(|socket| {
-        let canonical =
-            |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        canonical(Path::new(socket)) == canonical(server_socket)
-    })
+    verify_server(path, server_socket).is_ok()
 }
+
+fn refuse_production_server(server_socket: &Path) -> Result<(), Refusal> {
+    phux_config::socket::refuse_dev_on_production(server_socket)
+        .map_err(|message| Refusal::new("production_socket", message, "", 1))
+}
+
+fn verify_server(path: &Path, server_socket: &Path) -> Result<(), Refusal> {
+    let reply = ask(path, &json!({"op": "identity"}), Duration::from_secs(1))?;
+    let actual = reply["server_socket"].as_str().ok_or_else(|| {
+        Refusal::new(
+            "desktop_protocol",
+            "the desktop did not identify its associated server socket",
+            "",
+            1,
+        )
+    })?;
+    let actual = Path::new(actual);
+    refuse_production_server(actual)?;
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if canonical(actual) != canonical(server_socket) {
+        return Err(Refusal::new(
+            "desktop_server_mismatch",
+            "the desktop is associated with a different server socket",
+            "",
+            1,
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod production_tests;
 
 /// Whether a desktop answers at `path`. A socket nobody listens on belongs
 /// to a desktop that was killed; it is removed so it is not probed again.
@@ -125,6 +160,7 @@ fn is_dev_socket(path: &Path) -> bool {
 
 /// One request, one reply; a reply with `ok: false` is a refusal.
 fn ask(path: &Path, request: &Value, timeout: Duration) -> Result<Value, Refusal> {
+    refuse_production_server(path)?;
     let unreachable = |error: std::io::Error| {
         Refusal::new(
             "desktop_unreachable",

@@ -315,8 +315,11 @@ in its crate's `TABLE` to show in reports, traces and the HUD.
 The dev socket verifies the connecting UID and requires a non-symlink,
 owner-only parent directory; `PHUX_DESKTOP_DEV_SOCKET` overrides its path
 but does not relax those checks. Discovery checks the associated server
-socket, including when several server sockets share a directory. Requests
-are limited to 64 KiB, 16 concurrent connections, and five-second I/O
+socket, including when several server sockets share a directory. Development
+builds retain the production-socket guard, including
+explicit dev-socket overrides and desktop calls through an installed CLI;
+an override must identify the same permitted server before dispatch.
+Requests are limited to 64 KiB, 16 concurrent connections, and five-second I/O
 deadlines; a desktop trace records at most 60 seconds. `--reset` returns
 each snapshot before clearing its counters, including in watch mode.
 

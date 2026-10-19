@@ -121,6 +121,7 @@ fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
 ///
 /// The path could not be bound.
 pub fn serve(path: &Path) -> anyhow::Result<PathBuf> {
+    phux_config_core::socket::refuse_dev_on_production(path).map_err(anyhow::Error::msg)?;
     validate_directory(path.parent().unwrap_or_else(|| Path::new(".")))?;
     remove_stale_socket(path)?;
     let listener = UnixListener::bind(path)?;
@@ -240,6 +241,16 @@ fn read_request(reader: &mut BufReader<UnixStream>, timeout: Duration) -> io::Re
 /// Answer one request.
 #[must_use]
 pub fn handle(request: &Value) -> Value {
+    handle_with_cli(request, super::get().cli.as_ref())
+}
+
+fn handle_with_cli(request: &Value, cli: Option<&super::ServerCli>) -> Value {
+    if !matches!(request["op"].as_str(), Some("identity" | "help") | None)
+        && let Some(cli) = cli
+        && let Err(error) = cli.check_socket()
+    {
+        return failure(error.to_string());
+    }
     match request["op"].as_str().unwrap_or_default() {
         "identity" => {
             json!({ "ok": true, "server_socket": super::get().cli.as_ref().map(super::ServerCli::socket) })
@@ -355,6 +366,9 @@ fn trace_duration(seconds: f64) -> Option<Duration> {
 fn micros(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
+
+#[cfg(test)]
+mod production_tests;
 
 #[cfg(test)]
 mod tests {

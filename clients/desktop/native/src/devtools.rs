@@ -255,6 +255,7 @@ const COUNTER_INTERVAL: Duration = Duration::from_millis(50);
 ///
 /// A capture is already armed, or the trace file could not be written.
 pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<TraceResult> {
+    check_trace_server(with_server)?;
     // Arm here first: a refused request must not start a server trace too.
     if !phux_perf::trace::start(phux_perf::trace::DEFAULT_MAX_EVENTS) {
         anyhow::bail!("a trace is already recording in the desktop");
@@ -272,7 +273,6 @@ pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<Tr
     let capture = phux_perf::trace::stop()
         .ok_or_else(|| anyhow::anyhow!("the desktop trace was stopped by someone else"))?;
     let dir = trace_dir();
-    std::fs::create_dir_all(&dir)?;
     let (desktop, desktop_json) = write_desktop_trace(&dir, &capture)?;
     let (mut server, mut server_error) = join_server_trace(server, with_server);
     let path = merge_server_trace(
@@ -293,10 +293,21 @@ pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<Tr
     })
 }
 
+fn check_trace_server(with_server: bool) -> anyhow::Result<()> {
+    if !with_server {
+        return Ok(());
+    }
+    if let Some(cli) = &get().cli {
+        cli.check_socket()?;
+    }
+    Ok(())
+}
+
 fn write_desktop_trace(
     dir: &Path,
     capture: &phux_perf::trace::Capture,
 ) -> anyhow::Result<(PathBuf, String)> {
+    std::fs::create_dir_all(dir)?;
     let json = capture.to_chrome_json("phux desktop", &tables());
     let (path, mut file) = phux_perf::trace::create_trace_file(dir, "desktop")?;
     std::io::Write::write_all(&mut file, json.as_bytes())?;
