@@ -82,8 +82,8 @@ const CATALOG: &str = "\
     scroll-bottom | Scroll to Bottom | Terminal | cmd+end | Return to the latest terminal output. |
     clear | Clear Screen | Terminal | cmd+k | Send the clear-screen control to the terminal. |
     select-all | Select All | Terminal | cmd+a | Select all available terminal text. |
-    copy | Copy | Terminal |  | Copy the terminal selection to the clipboard. |
-    paste | Paste | Terminal |  | Insert clipboard text into the focused terminal. |
+    copy | Copy | Terminal | cmd+c | Copy the terminal selection to the clipboard. |
+    paste | Paste | Terminal | cmd+v | Insert the clipboard into the focused terminal; a copied file or image goes in as its path. |
     paste-selection | Paste Selection | Terminal |  | Insert the selected terminal text as input. |
     prompt-prev | Jump to Previous Prompt | Terminal | cmd+up | Scroll to the previous shell prompt marker. |
     prompt-next | Jump to Next Prompt | Terminal | cmd+down | Scroll to the next shell prompt marker. |

@@ -192,14 +192,19 @@ impl Desk {
         queued == Some(true)
     }
 
-    /// Queue a bracketed paste when the terminal takes input. `None` when not connected.
+    /// Queue a paste when the terminal takes input. `None` when not connected.
+    ///
+    /// Every caller pastes on the person's own request (Paste Selection,
+    /// Insert Path, a dropped file, Send Notes), so it is trusted like
+    /// Command-V: the server brackets it for the program and does not refuse
+    /// a line break, which an untrusted paste would drop on the floor.
     pub(super) fn queue_paste(&self, terminal: &ResourceId, text: &str) -> Option<bool> {
         let client = self.client()?;
         let queued = client.with_control(|control| {
             if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
                 return false;
             }
-            let _ = control.apply_paste(terminal, text);
+            let _ = control.apply_user_paste(terminal, text);
             true
         });
         if queued {

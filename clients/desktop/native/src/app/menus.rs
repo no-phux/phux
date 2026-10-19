@@ -18,7 +18,9 @@ use super::desk::{Desk, Modal};
 use super::ui::keystroke;
 use super::ui::menu::{self, Anchor, Closed, GlassMenu, Heading, MenuItem, MenuPage, MenuSpec};
 
+mod pane;
 mod view;
+use pane::{pane_menu, terminal_menu};
 use view::{view_menu, view_page};
 
 /// A click that dismissed a menu by deactivating it arrives at its trigger
@@ -155,6 +157,24 @@ impl Desk {
     ) {
         let spec = tab_menu(self, tab, cx);
         self.toggle_menu(format!("tab-{tab}"), anchor, spec, window, cx);
+    }
+
+    /// The terminal's right-click menu, at the pointer.
+    pub(crate) fn open_terminal_menu(
+        &mut self,
+        placement: &str,
+        position: Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let spec = terminal_menu(self, placement, cx);
+        self.toggle_menu(
+            format!("terminal-{placement}"),
+            Anchor::At(position),
+            spec,
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn open_pane_menu(
@@ -362,40 +382,6 @@ fn pane_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
             command(desk, handle, "zoom", IconName::Maximize),
         ],
     )
-}
-
-/// The pane actions menu, by catalog id; `close` starts its own group.
-pub(super) const PANE_MENU: [&str; 4] = ["split-right", "split-down", "view", "close"];
-
-/// One pane's actions, run on that pane even when another has focus.
-fn pane_menu(desk: &Desk, placement: &str, cx: &mut Context<Desk>) -> MenuSpec {
-    let handle = cx.weak_entity();
-    let items = PANE_MENU
-        .into_iter()
-        .zip([
-            IconName::PanelRight,
-            IconName::PanelBottom,
-            IconName::Copy,
-            IconName::Close,
-        ])
-        .map(|(id, icon)| {
-            let placement = placement.to_owned();
-            let item = MenuItem::action(
-                title(id),
-                on_desk(&handle, move |desk, window, cx| {
-                    if let Some(tab) = desk.active_tab_id() {
-                        desk.focus_placement(&tab, &placement, window, cx);
-                    }
-                    desk.execute(id, window, cx);
-                }),
-            )
-            .icon(icon)
-            .chord(desk.bound_chord(id).and_then(keystroke))
-            .selector(id);
-            if id == "close" { item.gap() } else { item }
-        })
-        .collect();
-    spec("Pane actions", MenuPage::new(items), 240., desk)
 }
 
 /// One tab's actions.

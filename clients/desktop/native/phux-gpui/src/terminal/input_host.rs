@@ -62,21 +62,27 @@ pub(super) fn on_key_down(
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) {
+    // A host that binds its own Copy and Paste commands sees these chords
+    // first. This fallback serves an embedder that binds nothing.
     if shortcut(event, "c") {
         input.update(cx, |state, cx| {
-            let _ = state.copy_selection(window, cx);
+            if state.copy_selection(window, cx) == Err(crate::input::InputError::TooLarge) {
+                cx.emit(crate::input::InputEvent::Notice(
+                    crate::input::copy_too_large(),
+                ));
+            }
         });
         cx.stop_propagation();
         return;
     }
     if shortcut(event, "v") {
-        let text = cx
-            .read_from_clipboard()
-            .and_then(|item| item.text())
-            .unwrap_or_default();
-        input.update(cx, |state, cx| {
-            let _ = state.paste_text(&text, window, cx);
-        });
+        // The whole item, so a copied file or screenshot pastes its path
+        // exactly as the host's Paste command does.
+        if let Some(item) = cx.read_from_clipboard() {
+            input.update(cx, |state, cx| {
+                gpui::EntityInputHandler::paste(state, item, window, cx);
+            });
+        }
         cx.stop_propagation();
         return;
     }
@@ -119,6 +125,32 @@ fn shortcut(event: &gpui::KeyDownEvent, key: &str) -> bool {
     // and bubble there before this fallback. Do not recapture an unbound chord.
     let clipboard = modifiers.platform && !modifiers.shift && !modifiers.alt;
     clipboard && event.keystroke.key == key
+}
+
+/// A right or middle press: reported to a mouse-reporting program, otherwise left to the window.
+pub(super) fn other_press(
+    input: &gpui::Entity<TerminalInput>,
+) -> impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static {
+    let input = input.clone();
+    move |event, window, cx| {
+        let handled = input.update(cx, |state, cx| {
+            state.mouse_down(event, window, cx).unwrap_or(false)
+        });
+        if handled {
+            cx.stop_propagation();
+        }
+    }
+}
+
+pub(super) fn other_release(
+    input: &gpui::Entity<TerminalInput>,
+) -> impl Fn(&gpui::MouseUpEvent, &mut gpui::Window, &mut gpui::App) + 'static {
+    let input = input.clone();
+    move |event, window, cx| {
+        input.update(cx, |state, cx| {
+            let _ = state.mouse_up(event, window, cx);
+        });
+    }
 }
 
 pub(super) fn paint_preedit(
