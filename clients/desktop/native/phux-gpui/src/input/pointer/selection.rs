@@ -141,7 +141,7 @@ impl TerminalInput {
             return false;
         };
         if let Some(notice) = self.paste_item(&item, true, cx) {
-            cx.emit(super::InputEvent::Notice(notice));
+            cx.emit(crate::input::InputEvent::Notice(notice));
         }
         cx.notify();
         true

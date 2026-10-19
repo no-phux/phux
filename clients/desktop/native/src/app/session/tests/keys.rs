@@ -181,7 +181,13 @@ fn clipboard_chords_belong_to_the_focused_terminal_or_text_field(cx: &mut TestAp
             .focus(window, cx);
     })
     .unwrap();
-    cx.simulate_keystrokes(handle, "cmd-v");
+    // Kit binds a field's Paste to Command-V on macOS, Ctrl-V elsewhere.
+    let field_paste = if cfg!(target_os = "macos") {
+        "cmd-v"
+    } else {
+        "ctrl-v"
+    };
+    cx.simulate_keystrokes(handle, field_paste);
     cx.run_until_parked();
     fixture.read_with(cx, |fixture, cx| {
         assert_eq!(fixture.inputs[0].read(cx).value(), "from the clipboard");
