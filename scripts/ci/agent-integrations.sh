@@ -9,6 +9,7 @@ cd "$root"
 
 bash scripts/doctor.sh integrations
 node --test integrations/grok/test/package.test.mjs
+npm --prefix integrations/muse run gates
 
 # Incidental install audits are off; the explicit audit inside each
 # package's gates script still runs. Same switch as integration-check.
