@@ -237,17 +237,18 @@ pub(crate) fn run_rm(target: &str, yes: bool, json: bool, socket: Option<PathBuf
 }
 
 /// `phux project link SESSION NAME` (`project: Some`) and `phux project
-/// unlink SESSION` (`None`): set or clear the session's project label on the
+/// unlink SESSION` (`None`): set or clear the session's project link on the
 /// server that owns it (`SESSION_SET_PROJECT`, last writer wins). Every
-/// client groups sessions across hosts by that label. Exit 0 success, 1 no
-/// server or no such session, 2 refusal or a server without
-/// `SESSION_PROJECT`.
+/// client groups sessions across hosts by that link. The name is trimmed
+/// first. Exit 0 success, 1 no server or no such session, 2 refusal or a
+/// server without `SESSION_PROJECT`.
 pub(crate) fn run_set_project(
     target: &str,
     project: Option<&str>,
     json: bool,
     server: ServerSpec,
 ) -> ExitCode {
+    let project = project.map(str::trim);
     let verb = if project.is_some() {
         "project link"
     } else {
