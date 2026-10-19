@@ -181,6 +181,34 @@ pub fn creation_attrs(dir: &Path, host: &str, label: Option<&str>) -> Vec<(Strin
     discover(dir, host, label).map_or_else(Vec::new, |project| project.to_attrs())
 }
 
+/// The session attribute holding its explicit project label
+/// (`SESSION_SET_PROJECT`, `phux project link`).
+pub const LABEL_ATTR: &str = "project";
+
+/// The explicit project label in a session's attributes.
+#[must_use]
+pub fn label_of_attrs(attrs: &[(String, String)]) -> Option<&str> {
+    attrs
+        .iter()
+        .find(|(name, _)| name == LABEL_ATTR)
+        .map(|(_, value)| value.as_str())
+}
+
+/// The explicit project label a listed session carries.
+#[must_use]
+pub fn label_of_session(session: &SessionInfo) -> Option<&str> {
+    label_of_attrs(&session.attrs)
+}
+
+/// Set, replace or (with `None`) remove the label in `attrs`, first, where
+/// the server lists it, so a later full listing reads the same.
+pub fn set_label_attr(attrs: &mut Vec<(String, String)>, label: Option<&str>) {
+    attrs.retain(|(name, _)| name != LABEL_ATTR);
+    if let Some(label) = label {
+        attrs.insert(0, (LABEL_ATTR.to_owned(), label.to_owned()));
+    }
+}
+
 /// The identity a listed session's attributes carry.
 #[must_use]
 pub fn of_session(session: &SessionInfo) -> Option<SessionProject> {

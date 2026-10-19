@@ -89,6 +89,15 @@ impl ControlPlane {
             .is_some_and(|server| server.has_ext(ServerFeatureExt::Organization))
     }
 
+    /// Whether the connected server advertises `SESSION_PROJECT`, so
+    /// [`Self::set_session_project`] can be sent.
+    #[must_use]
+    pub fn session_project_supported(&self) -> bool {
+        self.server
+            .as_ref()
+            .is_some_and(|server| server.has_ext(ServerFeatureExt::SessionProject))
+    }
+
     /// Unresolved organization operations, including deferred bulk chunks.
     pub fn pending_organization_operations(&self) -> impl Iterator<Item = OperationId> + '_ {
         self.org.journal.pending().chain(
@@ -602,6 +611,30 @@ impl ControlPlane {
             operation: mint_operation(),
             session,
             name: name.to_owned(),
+        })
+    }
+
+    /// Link a session into a named project, or clear its link
+    /// (`SESSION_SET_PROJECT`; the last writer wins). The label is the
+    /// session's `"project"` attribute; clients group sessions across hosts
+    /// by it.
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError::Unsupported`] unless the connected server advertises
+    /// `SESSION_PROJECT`; [`Self::submit_organization`]'s errors.
+    pub fn set_session_project(
+        &mut self,
+        session: SessionKey,
+        project: Option<&str>,
+    ) -> Result<OperationId, SubmitError> {
+        if !self.handshake_ready || !self.session_project_supported() {
+            return Err(SubmitError::Unsupported);
+        }
+        self.submit_organization(Command::SessionSetProject {
+            operation: mint_operation(),
+            session,
+            project: project.map(str::to_owned),
         })
     }
 

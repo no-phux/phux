@@ -199,6 +199,22 @@ impl super::SessionLoop {
             self.session_picker_dirty = true;
             self.note_chrome_change(repaint);
         }
+        if let Some((key, project)) = outcome.session_project_set.take() {
+            if let Some(session) = self
+                .peers
+                .sessions
+                .iter_mut()
+                .find(|session| session.key == Some(key))
+            {
+                phux_client::project_identity::set_label_attr(
+                    &mut session.attrs,
+                    project.as_deref(),
+                );
+            }
+            self.peers.chrome_dirty = true;
+            self.session_picker_dirty = true;
+            self.note_chrome_change(repaint);
+        }
         self.fold_project_tag_outcome(outcome);
     }
 

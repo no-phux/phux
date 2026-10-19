@@ -463,6 +463,17 @@ impl OrganizationReplica {
                 });
                 ReplicaAction::Changed
             }
+            AgentEvent::SessionProjectSet {
+                session,
+                project,
+                revision,
+            } => {
+                self.with_session(session, |s| {
+                    crate::project_identity::set_label_attr(&mut s.attrs, project.as_deref());
+                    s.revision = *revision;
+                });
+                ReplicaAction::Changed
+            }
             AgentEvent::SessionDeleted { session, .. } => {
                 if let Some(arrangement) = self.session(session).and_then(|s| s.arrangement) {
                     self.arrangements.remove(&arrangement);
@@ -638,6 +649,7 @@ pub const fn is_organization_event(event: &AgentEvent) -> bool {
         event,
         AgentEvent::SessionCreated { .. }
             | AgentEvent::SessionRenamed { .. }
+            | AgentEvent::SessionProjectSet { .. }
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::SessionLifetimeChanged { .. }
             | AgentEvent::MembershipChanged { .. }
@@ -782,6 +794,47 @@ mod tests {
         );
         assert!(replica.handles().is_empty());
         assert_eq!(replica.session(&skey(1)).unwrap().members, 0);
+    }
+
+    #[test]
+    fn a_project_event_sets_replaces_and_clears_the_project_attr() {
+        let mut replica = OrganizationReplica::new();
+        replica.begin_seed(OrgFilter::All);
+        let work = SessionRecord::new(skey(1), "work", Revision::new(2))
+            .with_attrs(vec![("host".to_owned(), "mini".to_owned())]);
+        replica.apply_page(page(5, vec![work], vec![]));
+        let set = |project: Option<&str>, revision| AgentEvent::SessionProjectSet {
+            session: skey(1),
+            project: project.map(str::to_owned),
+            revision: Revision::new(revision),
+        };
+        let attrs =
+            |replica: &OrganizationReplica| replica.session(&skey(1)).unwrap().attrs.clone();
+        let pair = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+
+        assert_eq!(
+            replica.apply_event(Some(6), &set(Some("phux"), 3)),
+            ReplicaAction::Changed
+        );
+        assert_eq!(
+            attrs(&replica),
+            vec![pair("project", "phux"), pair("host", "mini")]
+        );
+        assert_eq!(
+            replica.session(&skey(1)).unwrap().revision,
+            Revision::new(3)
+        );
+        replica.apply_event(Some(7), &set(Some("ghostty"), 4));
+        assert_eq!(
+            attrs(&replica),
+            vec![pair("project", "ghostty"), pair("host", "mini")]
+        );
+        replica.apply_event(Some(8), &set(None, 5));
+        assert_eq!(attrs(&replica), vec![pair("host", "mini")]);
+        assert_eq!(
+            replica.session(&skey(1)).unwrap().revision,
+            Revision::new(5)
+        );
     }
 
     #[test]

@@ -1801,6 +1801,53 @@ async fn session_renamed_event_updates_the_peer_roster_by_key() {
     assert!(names.contains(&"notes"), "{names:?}");
 }
 
+/// A `SESSION_PROJECT_SET` event sets, then clears, the peer row's
+/// `project` attribute the sidebar groups by.
+#[tokio::test(flavor = "current_thread")]
+async fn session_project_set_event_relabels_the_peer_row_by_key() {
+    use phux_protocol::ids::{Revision, SessionKey};
+    let (mut state, mut client, _server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let peer = SessionKey::new([2; 16]).unwrap();
+    state.peers.sessions.push(
+        SessionInfo::new(SessionId::new(2), "peer")
+            .with_key(Some(peer))
+            .with_attrs(vec![("host".to_owned(), "mini".to_owned())]),
+    );
+    for (project, revision) in [(Some("phux"), 2), (None, 3)] {
+        state
+            .apply_server_frame(
+                &mut client,
+                &mut out,
+                None,
+                FrameKind::Event {
+                    terminal: None,
+                    event: phux_protocol::wire::frame::AgentEvent::SessionProjectSet {
+                        session: peer,
+                        project: project.map(str::to_owned),
+                        revision: Revision::new(revision),
+                    },
+                    stamp: None,
+                },
+                true,
+                &mut RepaintAccumulator::default(),
+            )
+            .await
+            .unwrap();
+        let row = state
+            .peers
+            .sessions
+            .iter()
+            .find(|session| session.key == Some(peer))
+            .unwrap();
+        assert_eq!(
+            phux_client::project_identity::label_of_session(row),
+            project
+        );
+        assert!(row.attrs.contains(&("host".to_owned(), "mini".to_owned())));
+    }
+}
+
 /// ADR-0161: with an arrangement link, the peer sweep reads each peer's
 /// arrangement record over it instead of the translated layout key, and a
 /// peer's `ARRANGEMENT_CHANGED` re-reads it.

@@ -1,9 +1,16 @@
 //! Grouping session rows by project identity (ADR-0168): one pure rule for
 //! the TUI sidebar, the session picker, and `phux ls`.
 //!
+//! An explicit project label (`phux project link`) outranks the repository
+//! identity, and a label equal to an identity's display name joins that
+//! identity's group, so a linked non-git session sits beside the git
+//! sessions of the same project, on any host.
+//!
 //! Grouping is membership only. Blocks keep the first-appearance order of
 //! their input, so a caller that orders rows stably (the sidebar) stays
 //! stable and one that orders by what needs you (the picker) keeps that.
+
+use std::collections::HashMap;
 
 use phux_core::project_identity::SessionProject;
 
@@ -12,8 +19,8 @@ use phux_core::project_identity::SessionProject;
 pub struct GroupRow<'a> {
     /// The row's structured identity, when it has one.
     pub project: Option<&'a SessionProject>,
-    /// A free-text `phux.session.project/v1` label, used only when the row
-    /// has no identity.
+    /// An explicit project label: the session's `project` attribute, else a
+    /// legacy `phux.session.project/v1` tag. It outranks [`Self::project`].
     pub label: Option<&'a str>,
     /// Panes in the row that need a person (blocked or asking).
     pub needs_you: usize,
@@ -31,7 +38,8 @@ pub struct Member {
 /// Rows that share one project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectBlock {
-    /// The grouping key: the identity's `id`, or `label:<text>`.
+    /// The grouping key: the identity's `id` (also for a label naming that
+    /// identity), or `label:<text>`.
     pub key: String,
     /// Display name: the first primary checkout's name, else the first
     /// member's.
@@ -52,20 +60,40 @@ pub enum Block {
     Project(ProjectBlock),
 }
 
-fn group_key(row: &GroupRow<'_>) -> Option<String> {
-    if let Some(project) = row.project {
-        return Some(project.id.clone());
+fn label<'a>(row: &GroupRow<'a>) -> Option<&'a str> {
+    row.label.filter(|label| !label.trim().is_empty())
+}
+
+/// Each row's grouping key. A label outranks the row's own identity; a label
+/// equal to the display name of an unlabeled row's identity takes that
+/// identity's key (the first in input order, if two share a name).
+fn group_keys(rows: &[GroupRow<'_>]) -> Vec<Option<String>> {
+    let mut identity_by_name: HashMap<&str, &str> = HashMap::new();
+    for row in rows.iter().filter(|row| label(row).is_none()) {
+        if let Some(project) = row.project {
+            identity_by_name
+                .entry(project.name.as_str())
+                .or_insert(project.id.as_str());
+        }
     }
-    row.label
-        .filter(|label| !label.is_empty())
-        .map(|label| format!("label:{label}"))
+    let key_of = |row: &GroupRow<'_>| {
+        let Some(label) = label(row) else {
+            return row.project.map(|project| project.id.clone());
+        };
+        Some(
+            identity_by_name
+                .get(label)
+                .map_or_else(|| format!("label:{label}"), |id| (*id).to_owned()),
+        )
+    };
+    rows.iter().map(key_of).collect()
 }
 
 /// Group `rows` by project. A project with fewer than `min_members` rows
 /// stays as [`Block::Single`] rows in place.
 #[must_use]
 pub fn group_rows(rows: &[GroupRow<'_>], min_members: usize) -> Vec<Block> {
-    let keys: Vec<Option<String>> = rows.iter().map(group_key).collect();
+    let keys = group_keys(rows);
     let mut blocks = Vec::new();
     let mut emitted = vec![false; rows.len()];
     for index in 0..rows.len() {
@@ -93,8 +121,10 @@ pub fn group_rows(rows: &[GroupRow<'_>], min_members: usize) -> Vec<Block> {
 }
 
 fn project_block(rows: &[GroupRow<'_>], key: &str, indices: &[usize]) -> ProjectBlock {
-    let linked = |j: usize| rows[j].project.is_some_and(|p| p.linked_worktree);
-    let host = |j: usize| rows[j].project.and_then(|p| p.host.as_deref());
+    // A row's identity places it only in its own identity's group.
+    let identity = |j: usize| rows[j].project.filter(|p| p.id == key);
+    let linked = |j: usize| identity(j).is_some_and(|p| p.linked_worktree);
+    let host = |j: usize| identity(j).and_then(|p| p.host.as_deref());
     let mut members = Vec::with_capacity(indices.len());
     let mut placed = vec![false; indices.len()];
     for (slot, &primary) in indices.iter().enumerate() {
@@ -125,8 +155,8 @@ fn project_block(rows: &[GroupRow<'_>], key: &str, indices: &[usize]) -> Project
         }
     }
     let name_of = |j: usize| {
-        rows[j].project.map_or_else(
-            || rows[j].label.unwrap_or_default().to_owned(),
+        identity(j).map_or_else(
+            || label(&rows[j]).unwrap_or_default().to_owned(),
             |p| p.name.clone(),
         )
     };
@@ -257,6 +287,81 @@ mod tests {
         };
         assert_eq!(block.name, "x");
         assert!(block.members.iter().all(|m| m.linked));
+    }
+
+    fn labelled<'a>(project: Option<&'a SessionProject>, label: &'a str) -> GroupRow<'a> {
+        GroupRow {
+            project,
+            label: Some(label),
+            needs_you: 0,
+        }
+    }
+
+    #[test]
+    fn a_label_naming_an_identity_joins_its_group_across_hosts() {
+        let mini = project("gh/a/phux", "phux", false, "mini");
+        let laptop_wt = project("gh/a/phux", "phux", true, "laptop");
+        let rows = [
+            labelled(None, "phux"),
+            row(Some(&mini), 0),
+            row(None, 0),
+            row(Some(&laptop_wt), 0),
+        ];
+        let blocks = group_rows(&rows, 2);
+        let Block::Project(phux) = &blocks[0] else {
+            panic!("{blocks:?}");
+        };
+        assert_eq!(phux.key, "gh/a/phux", "the identity's key, not label:phux");
+        assert_eq!(phux.name, "phux");
+        let order: Vec<(usize, bool)> = phux.members.iter().map(|m| (m.index, m.linked)).collect();
+        assert_eq!(order, [(0, false), (1, false), (3, true)]);
+        assert_eq!(blocks[1], Block::Single(2));
+    }
+
+    #[test]
+    fn an_explicit_label_outranks_the_repository_identity() {
+        let dotfiles = project("gh/a/dotfiles", "dotfiles", true, "mini");
+        let phux = project("gh/a/phux", "phux", false, "mini");
+        let rows = [
+            labelled(Some(&dotfiles), "phux"),
+            row(Some(&dotfiles), 0),
+            row(Some(&phux), 0),
+            labelled(Some(&dotfiles), "infra"),
+            labelled(None, "infra"),
+        ];
+        let blocks = group_rows(&rows, 2);
+        assert_eq!(blocks.len(), 3, "{blocks:?}");
+        let Block::Project(linked) = &blocks[0] else {
+            panic!("{blocks:?}");
+        };
+        assert_eq!(linked.key, "gh/a/phux");
+        let order: Vec<(usize, bool)> =
+            linked.members.iter().map(|m| (m.index, m.linked)).collect();
+        assert_eq!(
+            order,
+            [(0, false), (2, false)],
+            "a relabelled worktree is no longer drawn as a linked one"
+        );
+        assert_eq!(blocks[1], Block::Single(1));
+        let Block::Project(infra) = &blocks[2] else {
+            panic!("{blocks:?}");
+        };
+        assert_eq!(
+            (infra.key.as_str(), infra.name.as_str()),
+            ("label:infra", "infra")
+        );
+        assert_eq!(infra.members.len(), 2);
+    }
+
+    #[test]
+    fn a_blank_label_falls_back_to_the_identity() {
+        let phux = project("gh/a/phux", "phux", false, "mini");
+        let rows = [labelled(Some(&phux), " "), row(Some(&phux), 0)];
+        let Block::Project(block) = &group_rows(&rows, 2)[0] else {
+            panic!("grouped");
+        };
+        assert_eq!(block.key, "gh/a/phux");
+        assert_eq!(block.members.len(), 2);
     }
 
     #[test]
