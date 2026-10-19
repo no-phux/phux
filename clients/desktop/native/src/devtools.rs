@@ -153,6 +153,14 @@ fn ensure_hud_pacer(cx: &mut App) {
     .detach();
 }
 
+/// Remove the dev socket on a clean exit; a killed desktop's socket is
+/// pruned by the next `phux perf --desktop` that finds it dead.
+pub fn shutdown() {
+    if let Some(path) = get().socket.get() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Is the HUD showing?
 #[must_use]
 pub fn hud_visible() -> bool {
@@ -193,8 +201,12 @@ pub struct Snapshot {
 #[must_use]
 pub fn snapshot() -> Snapshot {
     let devtools = get();
+    // `diag::report` starts from the kernel's report and keeps its role;
+    // to a reader of the dev socket this whole process is the desktop.
+    let mut report = crate::diag::report();
+    report.role = "desktop".to_owned();
     Snapshot {
-        report: crate::diag::report(),
+        report,
         frames: frames::last_second(),
         hud: hud_visible(),
         dev: devtools.dev,
