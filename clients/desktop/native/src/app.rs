@@ -14,6 +14,7 @@ mod desk;
 mod diagnostics;
 mod fleet;
 mod host;
+mod hud;
 mod keys;
 mod menus;
 mod motion;

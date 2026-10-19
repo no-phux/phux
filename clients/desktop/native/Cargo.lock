@@ -4089,6 +4089,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -4983,9 +4984,11 @@ dependencies = [
  "gpui-pre-platform",
  "image",
  "log",
+ "nix",
  "phux-client-core",
  "phux-client-ffi",
  "phux-client-runtime",
+ "phux-config-core",
  "phux-gpui",
  "phux-perf",
  "phux-protocol",

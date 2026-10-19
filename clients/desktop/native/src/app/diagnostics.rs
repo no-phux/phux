@@ -56,4 +56,53 @@ impl Desk {
             ),
         );
     }
+
+    /// `Toggle Performance HUD`.
+    pub(crate) fn toggle_hud(&mut self, cx: &mut Context<Self>) {
+        crate::devtools::set_hud(!crate::devtools::hud_visible());
+        cx.notify();
+    }
+
+    /// `Capture Performance Trace`: five seconds of desktop and server spans
+    /// to one Perfetto file, its path on the clipboard.
+    pub(crate) fn capture_trace(&mut self, cx: &mut Context<Self>) {
+        self.post(
+            Kind::Info,
+            "Recording a 5-second trace",
+            Some("Desktop and server spans, memory and frame rate.".into()),
+        );
+        cx.spawn(async move |desk, cx| {
+            let result = smol::unblock(|| {
+                crate::devtools::capture_trace(std::time::Duration::from_secs(5), true)
+            })
+            .await;
+            let _ = desk.update(cx, |desk, cx| {
+                match result {
+                    Ok(trace) => {
+                        let path = trace.path.display().to_string();
+                        cx.write_to_clipboard(ClipboardItem::new_string(path));
+                        let server = trace.server_error.map_or_else(String::new, |error| {
+                            format!(" The server did not take part: {error}")
+                        });
+                        desk.post(
+                            Kind::Info,
+                            "Trace saved; path copied",
+                            Some(format!(
+                                "{} · {} events. Open it in ui.perfetto.dev.{server}",
+                                crate::devtools::display_path(&trace.path),
+                                trace.events,
+                            )),
+                        );
+                    }
+                    Err(error) => desk.post(
+                        Kind::Error,
+                        "Trace failed",
+                        Some(redact(&format!("{error:#}"))),
+                    ),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }

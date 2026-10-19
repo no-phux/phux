@@ -86,6 +86,14 @@ the network or restarting work. The [metric inventory](../crates/phux-server/src
 and [bounded stream diagnostics](../crates/phux-server/src/stream_diagnostics.rs)
 are the current names, not a second hand-maintained metric table.
 
+To see where the time goes, record a trace: `phux perf trace --seconds 5`
+for the server, or `phux perf trace --desktop` for the desktop and server
+on one timeline. Open the file it prints in <https://ui.perfetto.dev>.
+Start either process with `PHUX_DEV=1` to add heap figures. A desktop in
+dev mode also shows a HUD with frame rate, frame build time and jank, and
+answers `phux perf --desktop`. Agents read the same numbers through the
+`phux_perf` and `phux_perf_trace` MCP tools.
+
 TUI logs go to a file, never alt-screen stderr. Server stderr is captured
 by its spawner/service (with an optional file tee). Keep the failing process
 and profile straight; a daemon failure can affect many panes. For an

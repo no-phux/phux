@@ -31,6 +31,7 @@ Addressed to the server or the connection rather than to one resource.
 | `OPEN_LISTENER` | command `0x1c` | SIGNAL (owner socket only) | yes | `open_listener` | shipped |
 | `DETACH_CLIENTS` | command `0x13` | SIGNAL | yes | none | shipped |
 | `GET_PERF` | command `0x18` | OBSERVE, BIND | yes | `get_perf` | shipped |
+| `PERF_CONTROL` | command `0x39` | OBSERVE, BIND (owner socket only) | yes | `perf_control` (features_ext) | shipped |
 | `phux.session.create/v1` | metadata key | CREATE, BIND | yes | none | shipped |
 | `phux.session.name/v1` | metadata key | BIND | yes | none | shipped |
 | `phux.session.keep_empty/v1` | metadata key | CREATE, BIND, SIGNAL | yes | `keep_empty_sessions` | shipped |
@@ -264,6 +265,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `OPEN_LISTENER` | SIGNAL + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `GET_PERF { reset: false }` | OBSERVE | `Global { owner_uds_only: false }` |
 | `GET_PERF { reset: true }` | OBSERVE+BIND | `Global { owner_uds_only: false }` |
+| `PERF_CONTROL` | OBSERVE+BIND + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
 | `NATIVE_AGENT { type: command }` | INPUT | `NamedTerminal` |

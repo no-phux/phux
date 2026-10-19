@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::alloc::AllocStats;
 use crate::{Counter, Gauge, Histogram, HistogramSnapshot, ProcessStats};
 
 /// Bumped when the JSON shape of [`PerfReport`] changes incompatibly.
@@ -149,6 +150,14 @@ pub struct PerfReport {
     /// Kept opaque here so clients can preserve server diagnostic additions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_diagnostics: Option<serde_json::Value>,
+    /// Current resident set size, bytes; `None` where the platform has no
+    /// native reading. Unlike `process.max_rss_bytes` it falls on release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rss_bytes: Option<u64>,
+    /// Heap accounting from [`crate::alloc`]; `None` unless the process
+    /// installs the counting allocator and enabled it (dev mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alloc: Option<AllocStats>,
 }
 
 impl PerfReport {
@@ -210,6 +219,11 @@ impl PerfReport {
             },
             metrics,
             stream_diagnostics: self.stream_diagnostics.clone(),
+            rss_bytes: self.rss_bytes,
+            alloc: match (&self.alloc, &prev.alloc) {
+                (Some(cur), Some(before)) => Some(cur.delta(before)),
+                (cur, _) => *cur,
+            },
         }
     }
 }

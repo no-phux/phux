@@ -135,6 +135,8 @@ impl Desk {
             }
             "add-host" => self.modal = Modal::AddHost,
             "copy-diagnostics" => self.copy_diagnostics(cx),
+            "perf-hud" => self.toggle_hud(cx),
+            "perf-trace" => self.capture_trace(cx),
             // Opening/closing windows must wait until this desk's window lease ends.
             "performance-monitor" => self.defer_desktop(cx, |desktop, cx| {
                 if let Err(error) = desktop.open_performance(cx) {

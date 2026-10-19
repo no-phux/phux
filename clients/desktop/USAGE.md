@@ -50,8 +50,11 @@ For automatic opening at launch, the native executable accepts `--dev-telemetry`
 or `PHUX_DESKTOP_DEV_TELEMETRY=1`. These are conveniences, not prerequisites for
 the runtime controls.
 
-The monitor samples the **desktop process**, not the server or terminal child
-processes, once per second. CPU is measured over the actual elapsed interval
+The monitor samples the **desktop process** once per second, and shows the
+server's CPU, memory and heap every two seconds by running `phux perf
+--json`. Terminal child processes are not included. **Show HUD** and
+**Capture Trace** are the same commands the palette offers below. CPU is
+measured over the actual elapsed interval
 (one fully occupied core is 100%, so multiple cores can exceed 100%). Current
 resident memory and lifetime peak resident memory are separate readings.
 An em dash means unavailable or no interval yet, not zero.
@@ -67,6 +70,32 @@ metrics history is written by the monitor.
 Without opening the monitor, there is no monitor sampling loop. The existing
 cheap atomic render/runtime counters remain on. Nothing about enabling or
 stopping this monitor changes the server.
+
+### Dev mode
+
+Launch with `PHUX_DEV=1` (or `phux-desktop --dev`) for everything at once:
+
+- **HUD.** The top-right corner of each window shows frame rate, frame build
+  time (p50, p99, max), jank (dropped frames while something animates or
+  streams), CPU, memory, live and peak heap, allocations per second, and the
+  server's CPU and memory, over a sparkline of the last 120 frame builds. The
+  sparkline turns amber past an 8.3 ms build and red past 16.7 ms.
+  **Toggle Performance HUD** in the palette shows it without dev mode. The HUD
+  repaints twice a second, so a quiet window reads about 2 fps.
+- **Heap accounting.** Every report gains live and peak heap and allocation
+  counts.
+- **Traces.** **Capture Performance Trace** records five seconds of desktop
+  and server spans, plus memory and frame-rate tracks, into one file and copies
+  its path. Open it in <https://ui.perfetto.dev>. Traces go to `phux-traces`
+  beside the desktop log, or `PHUX_TRACE_DIR`.
+- **Dev socket.** `desktop-<pid>.dev.sock` beside the server socket answers
+  one line of JSON per request (`perf`, `frames`, `server`, `trace`, `hud`,
+  `alloc`, `reset`, `help`). `phux perf --desktop`, `phux perf trace
+  --desktop` and `phux perf hud on|off` use it, as do agents. It is created
+  `0600` and carries no terminal content.
+
+Start the server with `PHUX_DEV=1` too for its heap figures. A desktop that
+starts the server passes its environment on.
 
 ### Updates
 

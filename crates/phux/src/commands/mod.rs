@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use mission::MissionAction;
 use pair::PairAction;
+use perf::PerfAction;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, TerminalSignal};
@@ -279,6 +280,7 @@ pub(crate) mod pair;
 pub(crate) mod partial;
 pub(crate) mod paste;
 pub(crate) mod perf;
+pub(crate) mod perf_desktop;
 pub(crate) mod play;
 pub(crate) mod plugin;
 pub(crate) mod project;
@@ -848,10 +850,24 @@ pub(crate) enum Command {
     /// server's lifetime; with `--watch SECS` the verb polls and prints
     /// each interval on its own, so counters become rates and a stall
     /// shows up in the second it happened. Does not start a server.
+    ///
+    /// `phux perf trace` records a span trace of the server for Perfetto;
+    /// `phux perf alloc on|off` switches its heap accounting.
+    ///
+    /// `--desktop` reads a phux desktop running in dev mode (`PHUX_DEV=1`)
+    /// instead: its frame rate, frame build times, jank, CPU, memory, heap
+    /// and every desktop histogram. `phux perf trace --desktop` records the
+    /// desktop and the server onto one timeline; `phux perf hud on|off`
+    /// shows the desktop's in-window HUD.
     #[usage(help_heading = "More", display_order = 62)]
     Perf {
+        #[usage(subcommand)]
+        action: Option<PerfAction>,
         #[usage(flatten)]
         json: JsonOpt,
+        /// Read the dev-mode phux desktop serving this socket, not the server.
+        #[usage(long)]
+        desktop: bool,
         /// Poll every SECS seconds and print each interval as a delta.
         #[usage(long, value_name = "SECS")]
         watch: Option<f64>,

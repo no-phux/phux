@@ -1268,12 +1268,20 @@ fn dispatch(
         }
         Some(Command::Status { json }) => commands::status::run_status(json.json, socket),
         Some(Command::RuntimeInfo { json }) => commands::runtime_info::run(json.json),
-        Some(Command::Perf { json, watch, reset }) => commands::perf::run_perf(
+        Some(Command::Perf {
+            action,
+            json,
+            desktop,
+            watch,
+            reset,
+        }) => commands::perf::run_perf(
             commands::perf::PerfOptions {
                 json: json.json,
+                desktop,
                 watch,
                 reset,
             },
+            action,
             socket,
         ),
         Some(Command::New {

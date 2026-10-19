@@ -24,7 +24,7 @@ use crate::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use crate::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use crate::input::paste::{PasteEvent, PasteTrust};
 use crate::wire::frame::{
-    InputMode, KillPrecondition, ListenerTransport, ReportedAgentState, TerminalSignal,
+    InputMode, KillPrecondition, ListenerTransport, PerfOp, ReportedAgentState, TerminalSignal,
     ViewportInfo, encode_session_keep_empty,
 };
 
@@ -85,10 +85,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::RevokeDelegation { .. } => 42,
         Command::SessionKill { .. } => 43,
         Command::NativeAgent { .. } => 44,
+        Command::PerfControl { .. } => 45,
     }
 }
 
-const COMMAND_VARIANTS: usize = 45;
+const COMMAND_VARIANTS: usize = 46;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -474,6 +475,12 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
         ),
         (Command::GetPerf { reset: false }, &C_GET_PERF),
         (Command::GetPerf { reset: true }, &C_GET_PERF_RESET),
+        (
+            Command::PerfControl {
+                op: PerfOp::TraceStart,
+            },
+            &C_PERF_CONTROL,
+        ),
         (
             Command::Transcribe {
                 upload_id: upload(),
