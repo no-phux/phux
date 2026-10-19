@@ -87,6 +87,38 @@ impl ProcessStats {
     pub fn current_rss_bytes() -> Option<u64> {
         current_rss_bytes()
     }
+
+    /// Memory charged to this process by macOS, including compressed and GPU
+    /// allocations. This is the physical footprint, not RSS or Rust heap size.
+    /// Unavailable on other platforms; never substitutes a different measure.
+    #[must_use]
+    pub fn physical_footprint_bytes() -> Option<u64> {
+        physical_footprint_bytes()
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "proc_pid_rusage has no safe binding; see SAFETY notes"
+)]
+fn physical_footprint_bytes() -> Option<u64> {
+    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::uninit();
+    let pid = i32::try_from(std::process::id()).ok()?;
+    // SAFETY: RUSAGE_INFO_V2 writes exactly rusage_info_v2 into aligned,
+    // writable storage. The kernel retains no pointer; failure is rejected.
+    let result =
+        unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, info.as_mut_ptr().cast()) };
+    if result != 0 {
+        return None;
+    }
+    // SAFETY: a successful call initialized the complete requested structure.
+    Some(unsafe { info.assume_init() }.ri_phys_footprint)
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn physical_footprint_bytes() -> Option<u64> {
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -155,6 +187,16 @@ const fn current_rss_bytes() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn footprint_is_native_or_explicitly_unavailable() {
+        let footprint = ProcessStats::physical_footprint_bytes();
+        if cfg!(target_os = "macos") {
+            assert!(footprint.is_some_and(|bytes| bytes > 0));
+        } else {
+            assert_eq!(footprint, None);
+        }
+    }
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]

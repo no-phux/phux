@@ -179,8 +179,22 @@ fn the_changes_panel_opens_beside_the_panes_and_lists_a_checkout(cx: &mut TestAp
     draw(cx);
     assert!(cx.debug_bounds("change-Unstaged-src/app/view.rs").is_none());
 
+    let old_diff = desk.read_with(cx, |desk, _| {
+        desk.changes.diff.as_ref().unwrap().0.downgrade()
+    });
     run(&desk, "changes", cx);
-    desk.read_with(cx, |desk, _| assert!(!desk.changes.open));
+    desk.read_with(cx, |desk, _| {
+        assert!(!desk.changes.open);
+        assert!(desk.changes.diff.is_none());
+        for source in [Source::Changes, Source::Staged] {
+            assert!(desk.changes.loaded(source).files.is_empty());
+            assert!(desk.changes.loaded(source).sections.is_empty());
+        }
+    });
+    assert!(
+        old_diff.upgrade().is_none(),
+        "closing must release the diff entity"
+    );
     assert!(cx.debug_bounds("changes-panel").is_none());
 }
 

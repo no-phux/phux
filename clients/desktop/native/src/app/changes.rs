@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{Context, Entity, Focusable, Subscription, Task, Window};
-use gpui_kit::component::diff::{DiffMode, DiffState};
+use gpui_kit::component::diff::{DiffConflictResolution, DiffMode, DiffState};
 use gpui_kit::component::input::TextareaState;
 use phux_protocol::ids::ResourceId;
 
@@ -131,6 +131,8 @@ pub(crate) struct Changes {
     pub source: Source,
     comparisons: Comparisons,
     pub diff: Option<(Entity<DiffState>, Subscription)>,
+    /// Small authored choices, retained without the parsed diff while closed.
+    suspended_conflicts: Vec<SuspendedConflict>,
     /// The file last revealed, kept in view across reloads.
     pub focus: Option<String>,
     /// Viewed files, per comparison, and the fingerprint each was viewed at.
@@ -152,6 +154,12 @@ pub(crate) struct Changes {
     _poll: Option<Task<()>>,
 }
 
+struct SuspendedConflict {
+    path: String,
+    fingerprint: u64,
+    choices: Vec<(usize, DiffConflictResolution)>,
+}
+
 impl Default for Changes {
     fn default() -> Self {
         Self {
@@ -165,6 +173,7 @@ impl Default for Changes {
             source: Source::Changes,
             comparisons: Comparisons::default(),
             diff: None,
+            suspended_conflicts: Vec::new(),
             focus: None,
             viewed: HashMap::new(),
             collapsed: HashSet::new(),
@@ -183,6 +192,69 @@ impl Default for Changes {
 }
 
 impl Changes {
+    fn suspend_conflicts(&mut self, cx: &gpui::App) {
+        if !matches!(self.view, View::Repo(_)) {
+            return;
+        }
+        let Some((state, _)) = &self.diff else {
+            return;
+        };
+        let state = state.read(cx);
+        self.suspended_conflicts = state
+            .files()
+            .iter()
+            .filter_map(|file| {
+                let path = file.path().to_string();
+                let choices: Vec<_> = (0..file.conflicts().len())
+                    .filter_map(|index| {
+                        state
+                            .conflict_resolution(&path, index)
+                            .map(|choice| (index, choice))
+                    })
+                    .collect();
+                if choices.is_empty() {
+                    return None;
+                }
+                Some(SuspendedConflict {
+                    fingerprint: self.loaded(self.source).print(&path)?,
+                    path,
+                    choices,
+                })
+            })
+            .collect();
+    }
+
+    fn restore_conflicts(&mut self, state: &Entity<DiffState>, cx: &mut gpui::App) {
+        // A folder change first installs an empty Loading view. Keep authored
+        // choices until a successful read establishes the checkout identity.
+        if !matches!(self.view, View::Repo(_)) {
+            return;
+        }
+        let suspended = std::mem::take(&mut self.suspended_conflicts);
+        let suspended: Vec<_> = suspended
+            .into_iter()
+            .filter(|saved| self.loaded(self.source).print(&saved.path) == Some(saved.fingerprint))
+            .collect();
+        state.update(cx, |state, cx| {
+            for saved in suspended {
+                for (index, choice) in saved.choices {
+                    state.resolve_conflict(&saved.path, index, Some(choice), cx);
+                }
+            }
+        });
+    }
+
+    /// Closing keeps authored review state, not parsed patches or Kit's copy
+    /// of the diff. Fence an in-flight read before dropping those allocations.
+    fn release_preview(&mut self) {
+        self._poll = None;
+        self.generation += 1;
+        self.reading = false;
+        self.diff = None;
+        self.comparisons = Comparisons::default();
+        self.view = View::Loading;
+    }
+
     /// Whether a panel field holds the keyboard, so the terminal must not take it.
     pub(crate) fn has_keys(&self, window: &Window, cx: &gpui::App) -> bool {
         let focused =
@@ -222,6 +294,11 @@ impl Changes {
     /// Drop the shown comparison's marks whose file changed or left, and
     /// return the paths still listed: they must unfold.
     pub(crate) fn lapse_viewed(&mut self) -> Vec<String> {
+        // An empty loading/error preview is not evidence that a viewed file
+        // changed. Compare fingerprints only after a successful checkout read.
+        if !matches!(self.view, View::Repo(_)) {
+            return Vec::new();
+        }
         let (source, loaded) = (self.source, self.comparisons.get(self.source));
         let mut unfold = Vec::new();
         self.viewed.retain(|(side, path), print| {
@@ -284,7 +361,8 @@ impl Desk {
             self.refresh_changes(true, cx);
             self.arm_changes_poll(cx);
         } else {
-            self.changes._poll = None;
+            self.changes.suspend_conflicts(cx);
+            self.changes.release_preview();
         }
         cx.notify();
     }
@@ -428,6 +506,7 @@ impl Changes {
         self.comments.clear();
         self.draft = None;
         self.viewed.clear();
+        self.suspended_conflicts.clear();
         self.review_root = Some(root.to_owned());
     }
 }
@@ -497,6 +576,156 @@ fn expand_home(cwd: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::AppContext as _;
+
+    #[test]
+    fn closing_preview_fences_reads_and_preserves_review_state() {
+        let mut changes = Changes {
+            generation: 42,
+            reading: true,
+            ..Changes::default()
+        };
+        let root = PathBuf::from("/review");
+        changes.bind_review(&root);
+        changes.focus = Some("f.rs".into());
+        changes.viewed.insert((Source::Changes, "f.rs".into()), 7);
+        changes.collapsed.insert("changes:src".into());
+        changes
+            .comparisons
+            .changes
+            .sections
+            .insert("f.rs".into(), "patch".repeat(1024));
+        changes.release_preview();
+        assert_eq!(
+            changes.generation, 43,
+            "an outstanding generation 42 read is stale"
+        );
+        assert!(!changes.reading);
+        assert!(changes.comparisons.changes.sections.is_empty());
+        assert_eq!(changes.review_root, Some(root));
+        assert_eq!(changes.focus.as_deref(), Some("f.rs"));
+        assert_eq!(changes.viewed[&(Source::Changes, "f.rs".into())], 7);
+        assert!(changes.collapsed.contains("changes:src"));
+        assert!(changes.lapse_viewed().is_empty());
+        assert_eq!(changes.viewed[&(Source::Changes, "f.rs".into())], 7);
+    }
+
+    #[gpui::test]
+    fn conflict_choices_survive_close_only_while_the_file_is_unchanged(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui_kit::component::diff::{DiffConflictResolution, DiffEvent};
+        cx.update(gpui_kit::init);
+        let text = "<<<<<<< ours\nmine\n=======\ntheirs\n>>>>>>> theirs\n";
+        let loaded = || {
+            Loaded::parse(
+                git::PatchText::default(),
+                vec![("f.rs".into(), text.into())],
+            )
+        };
+        let mut changes = Changes::default();
+        changes.comparisons.changes = loaded();
+        changes.view = View::Repo(Status {
+            root: PathBuf::from("/review"),
+            branch: git::Branch::default(),
+            entries: Vec::new(),
+        });
+        let files = changes.comparisons.changes.files.clone();
+        let state = cx.new(|cx| DiffState::new(files, cx));
+        state.update(cx, |state, cx| {
+            state.resolve_conflict("f.rs", 0, Some(DiffConflictResolution::Current), cx)
+        });
+        let subscription = cx.update(|cx| cx.subscribe(&state, |_, _: &DiffEvent, _| {}));
+        changes.diff = Some((state.clone(), subscription));
+        cx.update(|cx| changes.suspend_conflicts(cx));
+        changes.release_preview();
+        assert_eq!(changes.suspended_conflicts.len(), 1);
+        // Reopening from a different subdirectory first displays Loading.
+        let loading = cx.new(|cx| DiffState::new(Vec::new(), cx));
+        cx.update(|cx| changes.restore_conflicts(&loading, cx));
+        assert_eq!(changes.suspended_conflicts.len(), 1);
+        changes.view = View::Repo(Status {
+            root: PathBuf::from("/review"),
+            branch: git::Branch::default(),
+            entries: Vec::new(),
+        });
+        changes.comparisons.changes = loaded();
+        let files = changes.comparisons.changes.files.clone();
+        let reopened = cx.new(|cx| DiffState::new(files, cx));
+        cx.update(|cx| changes.restore_conflicts(&reopened, cx));
+        assert_eq!(
+            reopened
+                .read_with(cx, |state, _| state.resolved_text("f.rs"))
+                .as_deref(),
+            Some("mine\n")
+        );
+
+        // Preserve nothing if the working conflict changed while closed.
+        let subscription = cx.update(|cx| cx.subscribe(&reopened, |_, _: &DiffEvent, _| {}));
+        changes.diff = Some((reopened, subscription));
+        cx.update(|cx| changes.suspend_conflicts(cx));
+        changes.release_preview();
+        changes.comparisons.changes = Loaded::parse(
+            git::PatchText::default(),
+            vec![("f.rs".into(), text.replace("mine", "newer"))],
+        );
+        changes.view = View::Repo(Status {
+            root: PathBuf::from("/review"),
+            branch: git::Branch::default(),
+            entries: Vec::new(),
+        });
+        let files = changes.comparisons.changes.files.clone();
+        let changed = cx.new(|cx| DiffState::new(files, cx));
+        cx.update(|cx| changes.restore_conflicts(&changed, cx));
+        assert!(
+            changed
+                .read_with(cx, |state, _| state.conflict_resolution("f.rs", 0))
+                .is_none()
+        );
+    }
+
+    /// Observational only: RSS need not drop immediately when malloc retains pages.
+    #[gpui::test]
+    #[ignore = "isolated memory observation; run alone with --ignored --nocapture"]
+    fn measure_closed_preview_memory(cx: &mut gpui::TestAppContext) {
+        use gpui_kit::component::diff::DiffEvent;
+        use phux_perf::ProcessStats;
+        cx.update(gpui_kit::init);
+        let before = ProcessStats::physical_footprint_bytes();
+        let text = format!(
+            "diff --git a/large.rs b/large.rs\n--- a/large.rs\n+++ b/large.rs\n@@ -1,50000 +1,50000 @@\n{}-old\n+new\n",
+            " context line of a large source file\n".repeat(49_999)
+        );
+        let mut changes = Changes::default();
+        changes.comparisons.changes = Loaded::parse(
+            git::PatchText {
+                text,
+                reduced: false,
+            },
+            Vec::new(),
+        );
+        let patch_bytes: usize = changes
+            .comparisons
+            .changes
+            .sections
+            .values()
+            .map(String::len)
+            .sum();
+        let files = changes.comparisons.changes.files.clone();
+        let state = cx.new(|cx| DiffState::new(files, cx));
+        let weak = state.downgrade();
+        let subscription = cx.update(|cx| cx.subscribe(&state, |_, _: &DiffEvent, _| {}));
+        changes.diff = Some((state, subscription));
+        let loaded = ProcessStats::physical_footprint_bytes();
+        changes.release_preview();
+        cx.run_until_parked();
+        assert!(weak.upgrade().is_none());
+        assert!(changes.comparisons.changes.sections.is_empty());
+        eprintln!(
+            "preview memory bytes: baseline={before:?}, loaded={loaded:?}, closed={:?}, released_patch_text={patch_bytes}",
+            ProcessStats::physical_footprint_bytes()
+        );
+    }
 
     #[test]
     fn review_notes_belong_to_one_checkout() {
