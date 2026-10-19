@@ -54,6 +54,7 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
     let look = desk.look();
     let gutter = look.skin.shape.gutter;
     let panel = width(desk, window.viewport_size().width.as_f32());
+    let bottom = super::panes::bottom_chrome(desk, &look);
     let body = match desk.changes.view.clone() {
         View::Repo(status) if !status.entries.is_empty() => {
             let diff_width = panel - FILES_WIDTH - gutter;
@@ -89,7 +90,7 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
         .relative()
         .pt(px(gutter))
         .pr(px(gutter))
-        .pb(px(gutter))
+        .pb(px(bottom))
         .child(
             div()
                 .id("changes")
@@ -99,17 +100,21 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
                 .flex_col()
                 .overflow_hidden()
                 .surface(&look, Surface::Pane)
-                .border_1()
-                .border_color(look.border)
+                // Floating on the sheet it is framed like a card; flush
+                // against the window it is only split from the panes.
+                .when(gutter > 0., |panel| panel.border_color(look.border))
+                .when(gutter <= 0., |panel| {
+                    panel.border_0().border_l_1().border_color(look.divider)
+                })
                 .child(header(desk, &look, cx))
                 .child(body),
         )
-        .child(resize(desk, &look, cx))
+        .child(resize(desk, bottom, &look, cx))
         .into_any_element()
 }
 
-/// The left edge, dragged to resize the panel.
-fn resize(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+/// The left edge, dragged to resize the panel, down to the chrome under it.
+fn resize(desk: &Desk, bottom: f32, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let active = desk.dragging_changes();
     let accent = from_hex(&look.chrome.theme.accent);
     div()
@@ -118,8 +123,8 @@ fn resize(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
         .absolute()
         .left(px(-3.))
         .top(px(0.))
+        .bottom(px(bottom))
         .w(px(6.))
-        .h_full()
         .cursor_col_resize()
         .when(active, |handle| handle.bg(accent))
         .hover(move |style| style.bg(accent.opacity(0.5)))
@@ -184,13 +189,17 @@ fn header(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
         .flex_shrink_0()
         .items_center()
         .gap(px(6.))
-        .px(px(12.))
+        // The trailing ghost buttons pad their icons by 4pt, and a close
+        // glyph draws narrower than the branch glyph: these insets put both
+        // edge glyphs the same distance from the rim.
+        .pl(px(14.))
+        .pr(px(8.))
         .py(px(8.))
         .border_b_1()
         .border_color(look.divider)
         .child(
             gpui_kit::component::Icon::new(IconName::GitBranch)
-                .small()
+                .xsmall()
                 .text_color(from_hex(&look.chrome.muted)),
         )
         .child(
@@ -252,13 +261,15 @@ fn placeholder(title: &str, detail: &str, look: &Look) -> AnyElement {
         .px(px(24.))
         .child(
             div()
+                .w_full()
+                .text_center()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(from_hex(&look.chrome.subtext))
                 .child(title.to_owned()),
         )
         .when(!detail.is_empty(), |column| {
-            column.child(muted(look, detail.to_owned()).text_center())
+            column.child(muted(look, detail.to_owned()).w_full().text_center())
         })
         .into_any_element()
 }

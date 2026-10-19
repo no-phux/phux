@@ -9,7 +9,7 @@ use crate::app::color::from_hex;
 use crate::app::desk::{Desk, display_title};
 use crate::app::fleet::Work;
 use crate::app::skin::Look;
-use crate::app::ui::list::{Emphasis, row_detail, row_label};
+use crate::app::ui::list::{Emphasis, ROW_GAP, row_detail, row_label};
 use crate::app::ui::menu::Anchor;
 use crate::app::ui::{ghost_icon, row};
 use crate::app::view::ResourceDrag;
@@ -30,6 +30,11 @@ pub(super) fn disclosure_key(work: &Work) -> String {
     )
 }
 
+const HEADER_GAP: f32 = 4.;
+/// Title and caption lines, set close so they read as one entry.
+const TITLE_LINE: f32 = 18.;
+const DETAIL_LINE: f32 = 16.;
+
 pub(super) fn session_block(
     desk: &Desk,
     work: &Work,
@@ -48,7 +53,7 @@ pub(super) fn session_block(
         .group("session")
         .h(px(44.))
         .min_h(px(44.))
-        .gap(px(4.))
+        .gap(px(HEADER_GAP))
         .when(current, |row| row.bg(look.active))
         .child(
             div()
@@ -57,7 +62,14 @@ pub(super) fn session_block(
                 .role(gpui::Role::Button)
                 .aria_label(if collapsed { "Expand session" } else { "Collapse session" })
                 .cursor_pointer()
-                .child(session_slot(if collapsed { "▸" } else { "▾" }, None, look))
+                // The whole row's height to hit; the caret sits on the title's line.
+                .self_stretch()
+                .flex()
+                .items_center()
+                .pb(px(DETAIL_LINE))
+                // The title starts on its children's icon column.
+                .mr(px(ROW_GAP - HEADER_GAP))
+                .child(session_slot(collapsed, None, look))
                 .on_click(cx.listener(move |desk, _, _, cx| {
                     cx.stop_propagation();
                     desk.toggle_session_collapsed(&toggle_key, cx);
@@ -66,9 +78,9 @@ pub(super) fn session_block(
         // Metadata gets a stable second line, never the name's horizontal space.
         .child(div().flex_1().min_w_0().flex().flex_col().gap(px(1.))
             .child(row_label(display_title(&target.name), if current { Emphasis::Current } else { Emphasis::Normal }, look)
-                .flex_none().w_full()
+                .flex_none().w_full().line_height(px(TITLE_LINE))
                 .debug_selector({ let target = target.clone(); let id = work.id; move || format!("session-label-{}-{id}", target.host_label()) }))
-            .child(row_detail(detail, look).max_w_full().w_full()
+            .child(row_detail(detail, look).max_w_full().w_full().line_height(px(DETAIL_LINE))
                 .debug_selector({ let target = target.clone(); let id = work.id; move || format!("session-detail-{}-{id}", target.host_label()) })))
         .child(div().w(px(8.)).flex_shrink_0().child(crate::app::ui::status::state_dot(work.attention, None)))
         // Reserve the same actions slot on every row, selected or not.

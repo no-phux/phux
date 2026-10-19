@@ -30,7 +30,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         }
         Modal::Settings => launcher::palette(desk, colors, window, cx),
         Modal::Notifications => {
-            let panel = notifications_panel(desk, colors, &look, cx);
+            let panel = notifications_panel(desk, colors, &look, window, cx);
             return match desk.anchors.get("notifications") {
                 Some(bell) => popover(bell, window, cx, panel),
                 None => backdrop(colors, window, cx, panel),
@@ -175,7 +175,29 @@ pub(crate) fn corner(look: &Look, glass: f32) -> gpui::Pixels {
     px(glass * look.skin.shape.kit_radius / kit)
 }
 
-/// An inset row inside a [`card`]: its corner follows the card's.
-pub(super) fn inset_radius(look: &Look) -> gpui::Pixels {
-    px((look.skin.shape.card_radius - 4.).max(0.))
+/// A box `inset` points inside a [`card`]'s outer edge: its corner is
+/// concentric with the card's, down to half a kit corner.
+pub(super) fn inset_radius(look: &Look, inset: f32) -> gpui::Pixels {
+    let shape = &look.skin.shape;
+    px((shape.card_radius - inset).max(shape.kit_radius / 2.))
+}
+
+/// The line box GPUI gives `size` text at the default line height.
+pub(super) fn line_height(window: &Window, size: gpui::Pixels) -> gpui::Pixels {
+    gpui::TextStyle {
+        font_size: size.into(),
+        ..Default::default()
+    }
+    .line_height_in_pixels(window.rem_size())
+}
+
+/// How far below the top of a `line`-high line box GPUI paints the baseline
+/// of `size` text in the UI font: half the leading, then the ascent.
+pub(super) fn baseline(cx: &gpui::App, size: gpui::Pixels, line: gpui::Pixels) -> gpui::Pixels {
+    use gpui_kit::component::ActiveTheme;
+    let text = cx.text_system();
+    let font = text.resolve_font(&gpui::font(cx.theme().font_family.clone()));
+    let ascent = text.ascent(font, size);
+    let descent = text.descent(font, size).abs();
+    (line - ascent - descent) / 2. + ascent
 }

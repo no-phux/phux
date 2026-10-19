@@ -75,6 +75,27 @@ fn bottom_tabs_belong_to_the_workspace_and_leave_the_sidebar_footer_anchored(
 }
 
 #[gpui::test]
+fn top_tabs_start_on_the_pane_column_beside_the_sidebar(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, selectable_work);
+    run(&desk, "tabs-side", cx);
+    run(&desk, "tabs-top", cx);
+    for width in [200., 320.] {
+        desk.update(cx, |desk, cx| {
+            desk.update_prefs(|prefs| prefs.sidebar_width = width, cx);
+        });
+        draw(cx);
+        let main = cx.debug_bounds("main-column").unwrap();
+        let tab = cx.debug_bounds("tab-fixture-a").unwrap();
+        let gutter = desk.read_with(cx, |desk, _| desk.skin().shape.gutter);
+        assert!(main.origin.x >= px(width as f32), "the sidebar shows");
+        assert_eq!(tab.origin.x, main.origin.x + px(gutter));
+    }
+}
+
+#[gpui::test]
 fn side_panels_never_squeeze_bottom_tab_navigation_away(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = fixture(cx);
