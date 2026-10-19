@@ -222,6 +222,13 @@ fn org_command() -> impl Strategy<Value = Command> {
                 name,
             }
         }),
+        (op(), session_key(), proptest::option::of(name())).prop_map(
+            |(operation, session, project)| Command::SessionSetProject {
+                operation,
+                session,
+                project,
+            }
+        ),
         (op(), session_key(), lifetime()).prop_map(|(operation, session, lifetime)| {
             Command::SessionSetLifetime {
                 operation,
@@ -528,6 +535,10 @@ fn org_result() -> impl Strategy<Value = CommandResult> {
     ]
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per organization event, kept as one flat table"
+)]
 fn org_event() -> impl Strategy<Value = AgentEvent> {
     prop_oneof![
         (session_key(), name(), lifetime(), rev()).prop_map(
@@ -547,6 +558,13 @@ fn org_event() -> impl Strategy<Value = AgentEvent> {
                 revision,
             }
         }),
+        (session_key(), proptest::option::of(name()), rev()).prop_map(
+            |(session, project, revision)| AgentEvent::SessionProjectSet {
+                session,
+                project,
+                revision,
+            }
+        ),
         (session_key(), name(), rev()).prop_map(|(session, name, revision)| {
             AgentEvent::SessionDeleted {
                 session,

@@ -217,7 +217,10 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
         | Command::Rename { remote, .. }
         | Command::Detach { remote, .. }
         | Command::Upload { remote, .. }
-        | Command::Download { remote, .. } => remote.remote.as_deref(),
+        | Command::Download { remote, .. }
+        | Command::Project {
+            action: ProjectAction::Link { remote, .. } | ProjectAction::Unlink { remote, .. },
+        } => remote.remote.as_deref(),
         _ => None,
     }
 }
@@ -403,7 +406,10 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             Some(PairAction::Revoke { .. }) => Some("pair revoke"),
         },
         Command::Project { action } => match action {
-            ProjectAction::Open { .. } | ProjectAction::List { .. } => None,
+            ProjectAction::Open { .. }
+            | ProjectAction::List { .. }
+            | ProjectAction::Link { .. }
+            | ProjectAction::Unlink { .. } => None,
             ProjectAction::Init { .. } => Some("project init"),
             ProjectAction::Trust { .. } => Some("project trust"),
             ProjectAction::Untrust { .. } => Some("project untrust"),
@@ -3005,6 +3011,45 @@ pub(crate) enum ProjectAction {
         json: bool,
     },
 
+    /// Link a session into a named project, on any machine.
+    ///
+    /// The link is stored on the server that owns SESSION, so every client
+    /// (desktop, TUI, `phux ls`) sees it, and groups sessions by project
+    /// name across hosts: a link outranks the git repository a session was
+    /// created in, and a link named like a repository joins that
+    /// repository's group. Relinking replaces the link; the last writer
+    /// wins. NAME is trimmed.
+    Link {
+        /// Session name or key (`^ab23cd`).
+        session: String,
+
+        /// Project name (at most 256 bytes, no control characters).
+        name: String,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+
+        #[usage(flatten)]
+        remote: RemoteOpt,
+    },
+
+    /// Clear a session's project link; it groups by its repository again.
+    ///
+    /// Only the link is cleared, never the free-text project a recipe or
+    /// archive recorded.
+    Unlink {
+        /// Session name or key (`^ab23cd`).
+        session: String,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+
+        #[usage(flatten)]
+        remote: RemoteOpt,
+    },
+
     /// Map a git repository and its checked-out worktrees.
     ///
     /// A local repo operation: it never contacts a phux server and never
@@ -3471,8 +3516,9 @@ pub(crate) enum ArchiveAction {
     /// Recreate an archive's missing sessions without starting them.
     ///
     /// Each missing session becomes a persistent session with its archived
-    /// host, project, and directory, and each archived local pane a dormant
-    /// record in its arrangement; nothing is launched until `phux restore`.
+    /// host, project, project link, and directory, and each archived local
+    /// pane a dormant record in its arrangement; nothing is launched until
+    /// `phux restore`.
     /// A session of the same name already on the server is skipped.
     Import {
         /// JSON archive path, or '-' to read from stdin.

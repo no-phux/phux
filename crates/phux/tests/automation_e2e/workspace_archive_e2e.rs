@@ -690,7 +690,7 @@ fn archive_export_captures_a_real_split_tree_and_restore_replays_it() {
 /// exist: the child falls back, and the registry still records the request.
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
-fn import_keeps_edge_host_src_api_directory_and_phux_project() {
+fn import_keeps_edge_host_src_api_directory_phux_project_and_link() {
     let dest = start("edge");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
     let archive = archive_dir.path().join("edge.json");
@@ -705,6 +705,7 @@ fn import_keeps_edge_host_src_api_directory_and_phux_project() {
                     "host": "edge",
                     "cwd": "/src/api",
                     "project": "phux",
+                    "project_link": "platform",
                     "windows": []
                 }
             ]
@@ -746,6 +747,7 @@ fn import_keeps_edge_host_src_api_directory_and_phux_project() {
     assert_eq!(attr(&attrs, "host"), Some("edge"));
     assert_eq!(attr(&attrs, "directory"), Some("/src/api"));
     assert_eq!(attr(&attrs, "project"), Some("phux"));
+    assert_eq!(attr(&attrs, "project.link"), Some("platform"));
 
     let (code, _stdout, stderr) = run(&[
         "archive",
@@ -776,6 +778,10 @@ fn import_keeps_edge_host_src_api_directory_and_phux_project() {
     assert_eq!(
         session["project"], "phux",
         "project tag was not applied: {session}"
+    );
+    assert_eq!(
+        session["project_link"], "platform",
+        "project link was not kept: {session}"
     );
 }
 

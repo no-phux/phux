@@ -735,6 +735,9 @@ pub mod org {
     pub const EXPIRES_AT: u32 = 40;
     /// `LaunchMode` (`u8`); absent = `IMMEDIATE`.
     pub const LAUNCH_MODE: u32 = 41;
+    /// Session project link (`str`, at most 256 bytes); absent on
+    /// `SESSION_SET_PROJECT` clears it.
+    pub const PROJECT: u32 = 42;
 }
 
 /// Fields of a `LaunchSpec` value (`docs/spec/L1.md` §5.7).

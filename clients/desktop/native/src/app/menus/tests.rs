@@ -1,3 +1,4 @@
+use super::pane::PANE_MENU;
 use super::*;
 
 #[test]

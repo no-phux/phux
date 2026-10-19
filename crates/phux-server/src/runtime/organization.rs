@@ -386,6 +386,17 @@ fn translate(
                 name,
             }),
         ),
+        Command::SessionSetProject {
+            operation,
+            session,
+            project,
+        } => (
+            ow::core_operation(&operation),
+            Ok(Op::SessionSetProject {
+                session: ow::core_session_key(&session),
+                project,
+            }),
+        ),
         Command::SessionSetLifetime {
             operation,
             session,
@@ -1373,6 +1384,36 @@ mod tests {
             let renamed = committed(handle(&state, CLIENT, rename, &root));
             assert_eq!(renamed.revision.get(), record.revision.get() + 1);
             assert!(state.with(|s| s.session_by_name("renamed").is_some()));
+
+            let link = |n: u8, project: Option<&str>| Command::SessionSetProject {
+                operation: op(n),
+                session,
+                project: project.map(str::to_owned),
+            };
+            let linked = committed(handle(&state, CLIENT, link(5, Some("other")), &root));
+            assert_eq!(linked.revision.get(), renamed.revision.get() + 1);
+            let attrs = page(&state, OrgFilter::Session(session)).sessions[0]
+                .attrs
+                .clone();
+            let pair = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+            assert_eq!(
+                attrs,
+                vec![pair("project.link", "other"), pair("project", "phux")],
+                "the link rides beside the create's free-text label"
+            );
+            for (n, bad) in [(6, " "), (8, " other"), (9, "other ")] {
+                assert!(matches!(
+                    handle(&state, CLIENT, link(n, Some(bad)), &root),
+                    CommandResult::Refused(WireRefusal::InvalidArgument { .. })
+                ));
+            }
+            let cleared = committed(handle(&state, CLIENT, link(7, None), &root));
+            assert_eq!(cleared.revision.get(), linked.revision.get() + 1);
+            assert_eq!(
+                page(&state, OrgFilter::Session(session)).sessions[0].attrs,
+                vec![pair("project", "phux")],
+                "unlinking leaves the label"
+            );
         });
     }
 

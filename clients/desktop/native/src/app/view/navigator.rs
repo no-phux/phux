@@ -92,17 +92,19 @@ pub(crate) fn group(mut work: Vec<Work>, grouping: SidebarGrouping) -> Vec<Group
         }
     };
     match grouping {
-        // Work without a project sinks below the projects.
+        // Work without a project sinks below the projects. Projects meet by
+        // name, so a linked project and a repository of that name are one.
         SidebarGrouping::Project => work.sort_by(|a, b| {
+            let name = |work: &Work| work.project.as_ref().map(|(_, name)| name.clone());
             (
                 a.project.is_none(),
-                &a.project,
+                name(a),
                 &a.destination.name,
                 &a.destination.host,
             )
                 .cmp(&(
                     b.project.is_none(),
-                    &b.project,
+                    name(b),
                     &b.destination.name,
                     &b.destination.host,
                 ))
@@ -160,7 +162,7 @@ fn footer(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
                 .debug_selector(|| "sidebar-filter".into())
                 .flex_1()
                 .min_w_0()
-                .h(px(28.))
+                .h(px(24.))
                 .px(px(10.))
                 .mr(px(4.))
                 .flex()
@@ -174,7 +176,7 @@ fn footer(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
                 .aria_label("Find work, terminals and tabs")
                 .child(
                     Icon::new(IconName::Search)
-                        .size(px(13.))
+                        .size(px(14.))
                         .text_color(from_hex(&look.chrome.muted)),
                 )
                 .child(muted(look, "Filter").flex_1().text_sm())
@@ -215,7 +217,12 @@ fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let mut rows = Vec::new();
     for group in groups {
         if let Some(label) = &group.label {
-            rows.push(section_label(label, look).into_any_element());
+            // Machines group by their saved name and read as what they resolve to.
+            let label = match desk.prefs.sidebar_grouping {
+                SidebarGrouping::Machine => super::super::machine_name::display(label),
+                _ => label.clone(),
+            };
+            rows.push(section_label(&label, look).into_any_element());
         }
         for work in group.work {
             rows.push(session_block(desk, &work, look, cx));
@@ -248,19 +255,23 @@ fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
 /// The machine a row names: nothing on this Mac or under a machine heading.
 fn host_word(desk: &Desk, host: Option<&str>) -> Option<String> {
     (desk.prefs.sidebar_grouping != SidebarGrouping::Machine)
-        .then(|| host.map(str::to_owned))
+        .then(|| host.map(super::super::machine_name::display))
         .flatten()
 }
 
 /// A session's leading slot: its caret, or a lit dot while something in it
 /// needs a person.
-fn session_slot(caret: &'static str, attention: Option<AgentState>, look: &Look) -> gpui::Div {
+fn session_slot(collapsed: bool, attention: Option<AgentState>, look: &Look) -> gpui::Div {
     row_icon(match attention {
-        Some(state) => state_dot(Some(state), None),
-        None => div()
-            .text_xs()
-            .text_color(from_hex(&look.chrome.faint))
-            .child(caret),
+        Some(state) => state_dot(Some(state), None).into_any_element(),
+        None => Icon::new(if collapsed {
+            IconName::ChevronRight
+        } else {
+            IconName::ChevronDown
+        })
+        .size(px(12.))
+        .text_color(from_hex(&look.chrome.muted))
+        .into_any_element(),
     })
 }
 
@@ -338,7 +349,7 @@ fn unavailable(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Vec<AnyEleme
         .into_iter()
         .filter(|(host, _)| desk.prefs.sidebar_shows_host(host.as_deref()))
         .map(|(host, error)| {
-            let name = host.as_deref().unwrap_or("This Mac").to_owned();
+            let name = super::super::machine_name::label(host.as_deref());
             let selector = format!("unavailable-{}", host.as_deref().unwrap_or("Local"));
             let tip = format!("{error} · Click to retry");
             row(SharedString::from(selector.clone()), look)

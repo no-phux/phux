@@ -4,8 +4,8 @@
 //! An archive is a JSON document of sessions, windows, panes, split trees,
 //! and resumable agent sessions. Importing one never starts a process
 //! ([`import_archive`]): it recreates each missing session persistent, with
-//! its host, project, and directory, and each archived local pane as a
-//! dormant resource record placed in the session's arrangement. `phux
+//! its host, project, project link, and directory, and each archived local
+//! pane as a dormant resource record placed in the session's arrangement. `phux
 //! restore` starts them, as does [`relaunch_imported`], the separate step
 //! `phux project open` runs right after the import.
 
@@ -155,12 +155,16 @@ async fn capture_archive(
     let mut hosts = phux_client::workspace_place::fetch_host_by_session(socket_path).await;
     let mut directories =
         phux_client::workspace_place::fetch_directory_by_session(socket_path).await;
+    let mut links = HashMap::new();
     if let Some(records) = records {
         for session in records.sessions {
             for (key, value) in session.attrs {
                 match key.as_str() {
                     "project" => {
                         projects.insert(session.name.clone(), value);
+                    }
+                    phux_core::project_identity::attr::LINK => {
+                        links.insert(session.name.clone(), value);
                     }
                     "directory" => {
                         directories.insert(session.name.clone(), value);
@@ -173,7 +177,7 @@ async fn capture_archive(
             }
         }
     }
-    let (archive, reconcile_warnings) = archive_from_snapshot(
+    let (mut archive, reconcile_warnings) = archive_from_snapshot(
         &snapshot,
         snapshot::AgentRecords {
             attached: &agent_sessions,
@@ -184,6 +188,9 @@ async fn capture_archive(
         &hosts,
         &directories,
     );
+    for session in &mut archive.sessions {
+        session.project_link = links.remove(&session.name);
+    }
     for warning in bridge_warnings
         .iter()
         .chain(&layout_warnings)
@@ -1048,6 +1055,10 @@ fn session_attrs(create: &model::CreateRequest, kind: ImportKind<'_>) -> Vec<(St
         ("host", create.host.as_deref()),
         ("project", create.project.as_deref()),
         (
+            phux_core::project_identity::attr::LINK,
+            create.project_link.as_deref(),
+        ),
+        (
             "directory",
             project_root.as_deref().or(create.directory.as_deref()),
         ),
@@ -1673,6 +1684,23 @@ mod tests {
                     .map(|id| ResourceInfo::new(ResourceId::local(*id), WindowId::new(1), 80, 24))
                     .collect(),
             )
+    }
+
+    #[test]
+    fn a_restored_session_carries_its_project_link_beside_its_label() {
+        let archive = model::parse_archive(
+            r#"{"schema_version": 2, "sessions": [
+                {"name": "api", "project": "api", "project_link": "phux", "windows": []}
+            ]}"#,
+        )
+        .expect("archive parses");
+        let plan = model::restore_plan(&archive, &[]).expect("restore plan");
+        let attrs = session_attrs(&plan.creates[0], ImportKind::Archive);
+        assert!(attrs.contains(&("project".to_owned(), "api".to_owned())));
+        assert!(attrs.contains(&(
+            phux_core::project_identity::attr::LINK.to_owned(),
+            "phux".to_owned()
+        )));
     }
 
     #[test]

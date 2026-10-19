@@ -1,5 +1,5 @@
 //! The titlebar: traffic lights, then the main menu trigger naming the
-//! session (and its machine when it is not this Mac), the sidebar toggle,
+//! session behind a mark for its machine, the sidebar toggle,
 //! tabs when they live up here, and a short cluster of actions.
 //!
 //! The full bar holds all of it; a slim strip, as the terminal skin wears
@@ -19,6 +19,7 @@ use crate::settings::TabPosition;
 
 use super::super::color::from_hex;
 use super::super::desk::{self, Desk};
+use super::super::machine_name;
 use super::super::menus;
 use super::super::notifications::{Kind, Notification};
 use super::super::skin::Look;
@@ -78,7 +79,7 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
             .map(|tab| desk::tab_title(desk, tab))
             .unwrap_or_else(|| "phux".to_owned());
         match desk.remote.as_deref() {
-            Some(host) => format!("{title} · {host}"),
+            Some(host) => format!("{title} · {}", machine_name::display(host)),
             None => title,
         }
     });
@@ -126,6 +127,8 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
                 .when(fit < 1., |lead| lead.overflow_hidden().opacity(fit))
                 .when(fit > 0., |lead| {
                     lead.child(main_menu(desk, look, cx))
+                        // The trigger hugs its name; the buttons stay at the rail's end.
+                        .child(div().flex_1())
                         .when(!quick, |lead| {
                             lead.child(icon_button(
                                 "sidebar",
@@ -198,6 +201,19 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                     .when(desk.native_agents_offered(), |actions| {
                         actions.child(native_agents_toggle(desk, cx))
                     })
+                    .when(desk.prefs.agent_fleet, |actions| {
+                        actions.child(div().debug_selector(|| "agent-fleet".into()).child(
+                            icon_button(
+                                "agent-fleet",
+                                IconName::LayoutDashboard,
+                                "Agent Fleet",
+                                None,
+                                cx.listener(|desk, _, window, cx| {
+                                    desk.execute("agent-fleet", window, cx)
+                                }),
+                            ),
+                        ))
+                    })
                     .child(bell(desk, look, cx)),
             )
         })
@@ -224,7 +240,7 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                     cx.listener(|desk, _, window, cx| desk.execute("plain-terminal", window, cx)),
                 )),
         )
-        .child(update_button(desk, cx))
+        .children(update_button(desk, cx))
 }
 
 /// Snap every agent pane to its conversation or back to its terminal; lit
@@ -260,8 +276,9 @@ fn native_agents_toggle(desk: &Desk, cx: &mut Context<Desk>) -> impl IntoElement
         )
 }
 
-/// The main menu trigger: the session this window shows, its machine when
-/// that is not this Mac, and a chevron. It opens the glass main menu.
+/// The main menu trigger: the session this window shows, led by a small
+/// mark for the machine it runs on, and a chevron. It opens the glass main
+/// menu, whose header switches sessions on any machine.
 fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
     let session = if desk.session.is_empty() {
         "phux".to_owned()
@@ -270,22 +287,25 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
     };
     let open = desk.menu_open(menus::MAIN);
     let hover = look.hover;
-    let tip = match desk.remote.as_deref() {
-        Some(host) => format!("{session} on {host}"),
-        None => format!("{session} on this Mac"),
-    };
+    let tip = format!(
+        "{session} on {}",
+        match desk.remote.as_deref() {
+            Some(host) => machine_name::display(host),
+            None => "this Mac".to_owned(),
+        }
+    );
+    let muted = from_hex(&look.chrome.muted);
     div()
         .id("main-menu")
         .debug_selector(|| "main-menu-rail".into())
         .relative()
-        .flex_1()
         .min_w_0()
         .max_w(px(196.))
-        .h(px(28.))
+        .h(px(tabs::tab_height(look.skin.chrome.titlebar)))
         .px(px(9.))
         .flex()
         .items_center()
-        .gap(px(5.))
+        .gap(px(6.))
         .rounded_full()
         .occlude()
         .cursor_pointer()
@@ -296,6 +316,16 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
         .child(desk.anchors.probe(menus::MAIN))
         .child(
             div()
+                .debug_selector(|| "main-menu-machine".into())
+                .flex_shrink_0()
+                .child(
+                    Icon::new(menus::machine_icon(desk.remote.as_deref()))
+                        .size(px(12.))
+                        .text_color(muted),
+                ),
+        )
+        .child(
+            div()
                 .min_w_0()
                 .truncate()
                 .text_size(px(12.))
@@ -303,20 +333,11 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
                 .text_color(look.ink)
                 .child(session),
         )
-        .children(desk.remote.clone().map(|host| {
-            div()
-                .flex_shrink_0()
-                .max_w(px(80.))
-                .truncate()
-                .text_size(px(11.))
-                .text_color(from_hex(&look.chrome.muted))
-                .child(host)
-        }))
         .child(
             Icon::new(IconName::ChevronDown)
                 .size(px(12.))
                 .flex_shrink_0()
-                .text_color(from_hex(&look.chrome.muted)),
+                .text_color(muted),
         )
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(|desk, _, window, cx| desk.open_main_menu(window, cx)))
@@ -326,16 +347,16 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
         .into_any_element()
 }
 
-fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> AnyElement {
+fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> Option<AnyElement> {
     let entity = desk.updates.clone();
-    let Some(action) = entity.read(cx).desktop_action() else {
-        return div().into_any_element();
-    };
-    Button::new("desktop-update-ready")
-        .label(action.label())
-        .small()
-        .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.desktop_act(cx)))
-        .into_any_element()
+    let action = entity.read(cx).desktop_action()?;
+    Some(
+        Button::new("desktop-update-ready")
+            .label(action.label())
+            .small()
+            .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.desktop_act(cx)))
+            .into_any_element(),
+    )
 }
 
 /// The titlebar's way into the notification list, with the unread count.

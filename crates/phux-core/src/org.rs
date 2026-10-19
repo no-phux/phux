@@ -164,6 +164,15 @@ pub enum Event {
         /// New revision.
         revision: Revision,
     },
+    /// A session's project link was set or cleared.
+    SessionProjectSet {
+        /// Key.
+        key: SessionKey,
+        /// New label; `None` cleared it.
+        project: Option<String>,
+        /// New revision.
+        revision: Revision,
+    },
     /// A session's lifetime changed.
     SessionLifetimeChanged {
         /// Key.

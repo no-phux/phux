@@ -23,6 +23,10 @@ enum Step {
         s: usize,
         name: u8,
     },
+    SetProject {
+        s: usize,
+        project: Option<u8>,
+    },
     SetLifetime {
         s: usize,
         ephemeral: bool,
@@ -85,6 +89,8 @@ fn step() -> impl Strategy<Value = Step> {
         (any::<bool>(), 0..6_u8)
             .prop_map(|(ephemeral, name)| Step::CreateSession { ephemeral, name }),
         (i(), 0..6_u8).prop_map(|(s, name)| Step::Rename { s, name }),
+        (i(), proptest::option::of(0..3_u8))
+            .prop_map(|(s, project)| Step::SetProject { s, project }),
         (i(), any::<bool>()).prop_map(|(s, ephemeral)| Step::SetLifetime { s, ephemeral }),
         i().prop_map(|s| Step::Delete { s }),
         (i(), any::<bool>(), any::<bool>()).prop_map(|(s, retain, inbox)| Step::CreateResource {
@@ -145,7 +151,11 @@ impl World {
             .map_or(ActivationId::FIRST, |a| a.id)
     }
 
-    #[expect(clippy::too_many_lines, reason = "one arm per step kind")]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::cognitive_complexity,
+        reason = "one flat arm per step kind"
+    )]
     fn op_for(&mut self, step: &Step) -> Option<(Actor, Op)> {
         let sessions = self.sessions();
         let resources = self.resources();
@@ -172,6 +182,16 @@ impl World {
                     Op::SessionRename {
                         session: s,
                         name: format!("s{name}"),
+                    },
+                )
+            }
+            Step::SetProject { s, project } => {
+                let s = pick(&sessions, *s)?;
+                (
+                    owner,
+                    Op::SessionSetProject {
+                        session: s,
+                        project: project.map(|p| format!("p{p}")),
                     },
                 )
             }

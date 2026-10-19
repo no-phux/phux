@@ -105,6 +105,26 @@ pub(super) fn work_rows(desk: &Desk) -> Vec<Row> {
         .collect()
 }
 
+/// Catalog visibility and runtime prerequisites, separate from grouping rows.
+fn command_offered(
+    command: &crate::settings::CommandSpec,
+    desk: &Desk,
+    organizing: bool,
+    monitoring: bool,
+) -> bool {
+    if !command.is_listed() || matches!(command.id, "palette" | "goto") {
+        return false;
+    }
+    if command.needs_organization() && !organizing {
+        return false;
+    }
+    match command.id {
+        "performance-monitor-stop" => monitoring,
+        "agent-fleet" => desk.prefs.agent_fleet,
+        _ => true,
+    }
+}
+
 pub(super) fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
     const ESSENTIALS: &[&str] = &["new", "native-agent", "split-right", "folder", "find"];
     let organizing = desk
@@ -115,12 +135,7 @@ pub(super) fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
     let mut sections: Vec<Section> = Vec::new();
     for command in crate::settings::builtin_commands()
         .iter()
-        .filter(|command| {
-            command.is_listed()
-                && !matches!(command.id, "palette" | "goto")
-                && (organizing || !command.needs_organization())
-                && (monitoring || command.id != "performance-monitor-stop")
-        })
+        .filter(|command| command_offered(command, desk, organizing, monitoring))
     {
         let mut keywords = String::from(command.id);
         for word in command.keywords {

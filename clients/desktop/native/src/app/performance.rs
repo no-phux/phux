@@ -1,28 +1,92 @@
 //! Window-scoped, opt-in desktop process monitoring. Dropping the view cancels
 //! its timer; the task only ever holds GPUI's weak entity handle.
 
+mod formatting;
+mod memory_view;
+mod rendering;
+
+#[cfg(test)]
+mod tests;
+
+use formatting::*;
+use rendering::*;
+
+#[cfg(feature = "ui-fixtures")]
+use gpui::AppContext as _;
+
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    App, ClipboardItem, Context, FocusHandle, KeyBinding, SharedString, Task, Window, WindowBounds,
-    WindowOptions, div, px, size,
+    App, ClipboardItem, Context, Entity, FocusHandle, Focusable, KeyBinding, SharedString,
+    Subscription, Task, Window, WindowBounds, WindowOptions, div, px, size,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Sizable, TitleBar};
+use gpui_kit::component::chart::LineChart;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, TitleBar};
 use phux_perf::{MetricSnapshot, MetricValue, PerfReport, Unit};
 
 use crate::telemetry::{Sample, Sampler};
 
-gpui::actions!(performance, [CloseMonitor]);
+gpui::actions!(performance, [CloseMonitor, ToggleSampling, FilterMetrics]);
+
+/// Two minutes of small numeric samples, never a history of full reports.
+const HISTORY_LIMIT: usize = 120;
+
+#[derive(Clone, Copy)]
+struct Reading {
+    second: u64,
+    cpu: Option<f64>,
+    rss: Option<f64>,
+    footprint: Option<f64>,
+    native_in_use: Option<f64>,
+}
+
+impl Reading {
+    fn new(sample: &Sample) -> Self {
+        Self {
+            second: sample.report.uptime_ms / 1000,
+            cpu: sample.cpu_percent,
+            rss: sample.resident_bytes.map(|bytes| bytes as f64 / 1_048_576.),
+            footprint: sample
+                .footprint_bytes
+                .map(|bytes| bytes as f64 / 1_048_576.),
+            native_in_use: sample
+                .native_heap
+                .map(|heap| heap.in_use_bytes as f64 / 1_048_576.),
+        }
+    }
+}
+
+fn remember(history: &mut VecDeque<Reading>, sample: &Sample) {
+    if history.len() == HISTORY_LIMIT {
+        history.pop_front();
+    }
+    history.push_back(Reading::new(sample));
+}
 
 /// Kit installs the Root; only the window owns the returned content entity.
 pub(crate) fn open(cx: &mut App) -> anyhow::Result<gpui_kit::AnyWindowHandle> {
-    cx.bind_keys([KeyBinding::new(
-        "cmd-w",
-        CloseMonitor,
-        Some("PerformanceMonitor"),
-    )]);
+    open_with_focus(crate::diag::may_activate(), cx)
+}
+
+fn open_with_focus(focus: bool, cx: &mut App) -> anyhow::Result<gpui_kit::AnyWindowHandle> {
+    cx.bind_keys([
+        KeyBinding::new("cmd-w", CloseMonitor, Some("PerformanceMonitor")),
+        KeyBinding::new("ctrl-w", CloseMonitor, Some("PerformanceMonitor")),
+        KeyBinding::new("escape", CloseMonitor, Some("PerformanceMonitor")),
+        KeyBinding::new(
+            "space",
+            ToggleSampling,
+            Some("PerformanceMonitor && !Input"),
+        ),
+        KeyBinding::new("cmd-f", FilterMetrics, Some("PerformanceMonitor")),
+        KeyBinding::new("ctrl-f", FilterMetrics, Some("PerformanceMonitor")),
+    ]);
     let mut titlebar = TitleBar::title_bar_options();
     titlebar.title = Some("phux Performance Monitor".into());
     let (handle, _) = gpui_kit::open_window(
@@ -31,7 +95,7 @@ pub(crate) fn open(cx: &mut App) -> anyhow::Result<gpui_kit::AnyWindowHandle> {
             window_bounds: Some(WindowBounds::centered(size(px(940.), px(760.)), cx)),
             window_min_size: Some(size(px(760.), px(480.))),
             titlebar: Some(titlebar),
-            focus: crate::diag::may_activate(),
+            focus,
             kind: crate::diag::window_kind(),
             show: true,
             ..TitleBar::window_options()
@@ -42,14 +106,92 @@ pub(crate) fn open(cx: &mut App) -> anyhow::Result<gpui_kit::AnyWindowHandle> {
     Ok(handle)
 }
 
+/// Native scene captures only; not evidence of compositor presentation or glass.
+#[cfg(feature = "ui-fixtures")]
+pub(super) fn preview(capture: Option<std::path::PathBuf>, cx: &mut App) -> anyhow::Result<()> {
+    let handle = open_with_focus(false, cx)?
+        .downcast::<gpui_kit::component::Root>()
+        .expect("Kit Root");
+    let Some(directory) = capture else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(&directory)?;
+    cx.spawn(async move |cx| {
+        for (tab, name) in ["overview", "memory", "metrics"].into_iter().enumerate() {
+            handle
+                .update(cx, |root, window, cx| {
+                    let monitor = root
+                        .view()
+                        .clone()
+                        .downcast::<PerformanceMonitor>()
+                        .expect("monitor content");
+                    monitor.update(cx, |monitor, cx| {
+                        monitor.tab = tab;
+                        cx.notify();
+                    });
+                    window.refresh();
+                })
+                .expect("preview window");
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+            // An unfocused fixture may be occluded by the user's windows.
+            // Build its current scene explicitly rather than capture an old one.
+            cx.update_window(*handle, |_, window, cx| window.draw(cx).clear(cx))
+                .expect("draw current preview scene");
+            #[cfg(target_os = "macos")]
+            if tab == 0 {
+                // Attribute a settled native window before PNG readback buffers
+                // contaminate the sample. Only this disposable fixture is read.
+                let map = smol::unblock(|| {
+                    std::process::Command::new("/usr/bin/vmmap")
+                        .args(["-summary", &std::process::id().to_string()])
+                        .output()
+                })
+                .await
+                .expect("native memory map");
+                assert!(
+                    map.status.success(),
+                    "vmmap: {}",
+                    String::from_utf8_lossy(&map.stderr)
+                );
+                std::fs::write(directory.join("memory-before-capture.txt"), map.stdout)
+                    .expect("write native memory attribution");
+            }
+            handle
+                .update(cx, |_, window, _| {
+                    window
+                        .render_to_image()
+                        .expect("monitor scene capture")
+                        .save(directory.join(format!("{name}.png")))
+                        .expect("write monitor PNG");
+                })
+                .expect("capture window");
+        }
+        cx.update(|cx| cx.quit());
+    })
+    .detach();
+    Ok(())
+}
+
 struct PerformanceMonitor {
     sampler: Sampler,
     latest: Sample,
+    frames: crate::devtools::frames::Summary,
     sampled_at: Instant,
     interval: Option<PerfReport>,
     interval_seconds: Option<f64>,
     paused: bool,
     copy_status: Option<SharedString>,
+    history: VecDeque<Reading>,
+    tab: usize,
+    recording: bool,
+    reclaiming: bool,
+    baseline: Reading,
+    query: Entity<InputState>,
+    _query: Subscription,
+    server: (
+        Option<crate::devtools::server::ServerSample>,
+        Option<String>,
+    ),
     focus: FocusHandle,
     timer: Option<Task<()>>,
     /// Keeps the server poller reading while the monitor is open.
@@ -60,16 +202,34 @@ impl PerformanceMonitor {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut sampler = Sampler::new();
         let latest = sampler.sample();
+        let mut history = VecDeque::with_capacity(HISTORY_LIMIT);
+        remember(&mut history, &latest);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Filter metrics…"));
+        let subscription = cx.subscribe(&query, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        let baseline = Reading::new(&latest);
         let mut monitor = Self {
             sampler,
             latest,
+            frames: crate::devtools::frames::last_second(),
             sampled_at: Instant::now(),
             interval: None,
             interval_seconds: None,
             paused: false,
             copy_status: None,
+            history,
+            tab: 0,
+            recording: false,
+            reclaiming: false,
+            baseline,
+            query,
+            _query: subscription,
+            server: crate::devtools::get().poller.latest(),
             focus,
             timer: None,
             _server: crate::devtools::get()
@@ -87,6 +247,10 @@ impl PerformanceMonitor {
     }
 
     fn capture_trace(&mut self, cx: &mut Context<Self>) {
+        if self.recording {
+            return;
+        }
+        self.recording = true;
         self.copy_status = Some("Recording a 5-second trace of the desktop and server…".into());
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -95,6 +259,7 @@ impl PerformanceMonitor {
             })
             .await;
             let _ = this.update(cx, |monitor, cx| {
+                monitor.recording = false;
                 monitor.copy_status = Some(match result {
                     Ok(trace) => {
                         cx.write_to_clipboard(ClipboardItem::new_string(
@@ -116,62 +281,6 @@ impl PerformanceMonitor {
             });
         })
         .detach();
-    }
-
-    fn server_row(&self, cx: &App) -> impl IntoElement {
-        let (sample, error) = crate::devtools::get().poller.latest();
-        let cpu = sample
-            .as_ref()
-            .and_then(|sample| sample.cpu_percent)
-            .map_or_else(unavailable, |value| format!("{value:.1}%"));
-        let rss = memory(sample.as_ref().and_then(|sample| sample.report.rss_bytes));
-        let heap = sample
-            .as_ref()
-            .and_then(|sample| sample.report.alloc)
-            .map_or_else(unavailable, |alloc| signed_memory(alloc.live_bytes));
-        let detail = match (&sample, error) {
-            (_, Some(error)) => error,
-            (Some(sample), None) => format!("PID {} · via `phux perf --json`", sample.report.pid),
-            (None, None) if crate::devtools::get().cli.is_none() => {
-                "No phux CLI is known to this desktop".to_owned()
-            }
-            (None, None) => "Waiting for the first reading".to_owned(),
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Server process"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(detail),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .child(summary_card("Server CPU", cpu, "One core = 100%", cx))
-                    .child(summary_card("Server memory", rss, "Resident set (RSS)", cx))
-                    .child(summary_card(
-                        "Server heap",
-                        heap,
-                        "Live heap; needs PHUX_DEV=1 on the server",
-                        cx,
-                    )),
-            )
     }
 
     fn start_timer(&mut self, cx: &mut Context<Self>) {
@@ -197,8 +306,10 @@ impl PerformanceMonitor {
         self.interval_seconds = Some(now.duration_since(self.sampled_at).as_secs_f64());
         self.interval = Some(latest.report.delta(&self.latest.report));
         self.latest = latest;
+        self.frames = crate::devtools::frames::last_second();
+        self.server = crate::devtools::get().poller.latest();
+        remember(&mut self.history, &self.latest);
         self.sampled_at = now;
-        self.copy_status = None;
     }
 
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
@@ -207,13 +318,22 @@ impl PerformanceMonitor {
         if self.paused {
             // Cancelling, rather than keeping a paused loop, means no wakeups.
             self.timer = None;
+            self._server = None;
         } else {
             // A fresh baseline excludes time spent paused from CPU and rates.
             self.sampler = Sampler::new();
             self.latest = self.sampler.sample();
+            self.frames = crate::devtools::frames::last_second();
             self.sampled_at = Instant::now();
             self.interval = None;
             self.interval_seconds = None;
+            // Do not join the chart across an unobserved pause.
+            self.history.clear();
+            self._server = crate::devtools::get()
+                .cli
+                .as_ref()
+                .map(|cli| crate::devtools::get().poller.watch(cli));
+            self.server = crate::devtools::get().poller.latest();
             self.start_timer(cx);
         }
         cx.notify();
@@ -225,9 +345,17 @@ impl PerformanceMonitor {
             "paused": self.paused,
             "cpu_percent": self.latest.cpu_percent,
             "resident_bytes": self.latest.resident_bytes,
+            "physical_footprint_bytes": self.latest.footprint_bytes,
+            "native_heap": self.latest.native_heap,
+            "baseline": {
+                "uptime_seconds": self.baseline.second,
+                "rss_mib": self.baseline.rss,
+                "footprint_mib": self.baseline.footprint,
+                "native_in_use_mib": self.baseline.native_in_use,
+            },
             "peak_resident_bytes": self.latest.peak_resident_bytes,
-            "frames": crate::devtools::frames::last_second(),
-            "server": crate::devtools::get().poller.latest().0.map(|sample| serde_json::json!({
+            "frames": self.frames,
+            "server": self.server.0.as_ref().map(|sample| serde_json::json!({
                 "cpu_percent": sample.cpu_percent,
                 "report": sample.report,
             })),
@@ -245,363 +373,5 @@ impl PerformanceMonitor {
             }
         }
         cx.notify();
-    }
-
-    fn metrics(&self, cx: &App) -> impl IntoElement {
-        let mut rows = div().flex().flex_col().w_full();
-        let mut previous_layer = "";
-        for metric in &self.latest.report.metrics {
-            let layer = metric.name.split('.').next().unwrap_or("other");
-            if layer != previous_layer {
-                rows = rows.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .mt_2()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .bg(cx.theme().muted)
-                        .child(
-                            match layer {
-                                "desktop" => "Desktop · rendering and UI",
-                                "runtime" => "Runtime · publications and requests",
-                                "kernel" => "Kernel · desktop client terminal state",
-                                _ => layer,
-                            }
-                            .to_owned(),
-                        ),
-                );
-                previous_layer = layer;
-            }
-            let interval_metric = self.interval.as_ref().and_then(|r| r.metric(&metric.name));
-            let [rate, mean, p95] = metric_values(metric, interval_metric, self.interval_seconds);
-            rows = rows.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_sm()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(metric.name.clone()),
-                    )
-                    .child(value_cell(rate))
-                    .child(value_cell(mean))
-                    .child(value_cell(p95)),
-            );
-        }
-        rows
-    }
-}
-
-impl gpui::Render for PerformanceMonitor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let cpu = self
-            .latest
-            .cpu_percent
-            .filter(|value| value.is_finite())
-            .map_or_else(unavailable, |value| format!("{value:.1}%"));
-        let interval_label = self.interval_seconds.map_or_else(
-            || "Interval metrics · waiting for next sample".to_owned(),
-            |seconds| format!("Interval metrics · {seconds:.2} s"),
-        );
-        let status = if self.paused {
-            "Paused · readings frozen"
-        } else {
-            "Live · sampling every second"
-        };
-
-        div()
-            .id("performance-monitor")
-            .key_context("PerformanceMonitor")
-            .track_focus(&self.focus)
-            .on_action(|_: &CloseMonitor, window, _| window.remove_window())
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .text_left()
-            .child(TitleBar::new().child(
-                div().text_sm().child("phux Performance Monitor"),
-            ))
-            .child(
-                div()
-                    .p_4()
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .flex_shrink_0()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Desktop process"))
-                                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!(
-                                        "PID {} · {status}", self.latest.report.pid,
-                                    ))),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(Button::new("performance-pause").small().label(if self.paused { "Resume" } else { "Pause" }).on_click(cx.listener(|monitor, _, _, cx| monitor.toggle_pause(cx))))
-                                    .child(Button::new("performance-hud").small().ghost().label(if crate::devtools::hud_visible() { "Hide HUD" } else { "Show HUD" }).on_click(cx.listener(|monitor, _, _, cx| monitor.toggle_hud(cx))))
-                                    .child(Button::new("performance-trace").small().ghost().label("Capture Trace").on_click(cx.listener(|monitor, _, _, cx| monitor.capture_trace(cx))))
-                                    .child(Button::new("performance-copy").small().ghost().label("Copy JSON").on_click(cx.listener(|monitor, _, _, cx| monitor.copy_json(cx)))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(summary_card("CPU", cpu, "One core = 100%", cx))
-                            .child(summary_card("Current memory", memory(self.latest.resident_bytes), "Resident set (RSS)", cx))
-                            .child(summary_card("Peak memory", memory(self.latest.peak_resident_bytes), "Process lifetime high-water mark", cx))
-                            .child(summary_card("Heap", self.latest.report.alloc.map_or_else(unavailable, |alloc| signed_memory(alloc.live_bytes)), "Live heap; dev mode only", cx)),
-                    )
-                    .child(self.server_row(cx))
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Terminal child processes are not included. — means unavailable or not sampled yet."))
-                    .when_some(self.copy_status.clone(), |this, message| this.child(div().text_sm().text_color(cx.theme().muted_foreground).child(message)))
-                    .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD).child(interval_label))
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Rates and timing distributions cover the last active interval. Gauges show current values. Copy JSON includes cumulative totals; p95 is a histogram estimate.")),
-            )
-            .child(
-                div()
-                    .mx_4()
-                    .flex()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(div().flex_1().child("Metric"))
-                    .child(value_cell("Rate / current".to_owned()))
-                    .child(value_cell("Mean".to_owned()))
-                    .child(value_cell("p95".to_owned())),
-            )
-            .child(
-                div()
-                    .id("performance-metrics-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px_4()
-                    .pb_4()
-                    .child(self.metrics(cx)),
-            )
-    }
-}
-
-fn summary_card(
-    title: &'static str,
-    value: String,
-    detail: &'static str,
-    cx: &App,
-) -> impl IntoElement {
-    div()
-        .flex_1()
-        .min_w_0()
-        .p_3()
-        .rounded_lg()
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().muted)
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(title),
-        )
-        .child(
-            div()
-                .text_2xl()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(value),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(detail),
-        )
-}
-
-fn value_cell(value: String) -> impl IntoElement {
-    div().w(px(120.)).flex_shrink_0().text_right().child(value)
-}
-
-fn unavailable() -> String {
-    "—".to_owned()
-}
-
-fn memory(bytes: Option<u64>) -> String {
-    bytes.map_or_else(unavailable, |value| {
-        format!("{:.1} MiB", value as f64 / 1_048_576.)
-    })
-}
-
-fn signed_memory(bytes: i64) -> String {
-    let magnitude = memory(Some(bytes.unsigned_abs()));
-    if bytes < 0 {
-        format!("-{magnitude}")
-    } else {
-        magnitude
-    }
-}
-
-fn quantity(value: u64, unit: Unit) -> String {
-    match unit {
-        Unit::Micros if value >= 1_000 => format!("{:.2} ms", value as f64 / 1_000.),
-        Unit::Micros => format!("{value} µs"),
-        Unit::Bytes if value >= 1_048_576 => format!("{:.1} MiB", value as f64 / 1_048_576.),
-        Unit::Bytes if value >= 1_024 => format!("{:.1} KiB", value as f64 / 1_024.),
-        Unit::Bytes => format!("{value} B"),
-        Unit::Count => value.to_string(),
-    }
-}
-
-fn rate(value: u64, unit: Unit, seconds: f64) -> String {
-    let per_second = value as f64 / seconds;
-    match unit {
-        Unit::Bytes if per_second >= 1_048_576. => format!("{:.1} MiB/s", per_second / 1_048_576.),
-        Unit::Bytes if per_second >= 1_024. => format!("{:.1} KiB/s", per_second / 1_024.),
-        Unit::Bytes => format!("{per_second:.1} B/s"),
-        Unit::Micros => format!("{per_second:.1} µs/s"),
-        Unit::Count => format!("{per_second:.1}/s"),
-    }
-}
-
-fn metric_values(
-    current: &MetricSnapshot,
-    interval: Option<&MetricSnapshot>,
-    seconds: Option<f64>,
-) -> [String; 3] {
-    if let MetricValue::Gauge(value) = &current.value {
-        return [quantity(*value, current.unit), unavailable(), unavailable()];
-    }
-    let Some((interval, seconds)) = interval.zip(seconds.filter(|seconds| *seconds > 0.)) else {
-        return [unavailable(), unavailable(), unavailable()];
-    };
-    match &interval.value {
-        MetricValue::Histogram(histogram) => {
-            let stat = |value: u64| {
-                if histogram.is_empty() {
-                    unavailable()
-                } else {
-                    quantity(value, current.unit)
-                }
-            };
-            [
-                rate(histogram.count, Unit::Count, seconds),
-                stat(histogram.mean()),
-                stat(histogram.percentile(95)),
-            ]
-        }
-        MetricValue::Counter(value) => [
-            rate(*value, current.unit, seconds),
-            unavailable(),
-            unavailable(),
-        ],
-        MetricValue::Gauge(value) => [quantity(*value, current.unit), unavailable(), unavailable()],
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::{Entity, TestAppContext, WindowHandle};
-    use gpui_kit::component::Root;
-
-    fn monitor(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<PerformanceMonitor>) {
-        let handle = cx.update(|cx| {
-            gpui_kit::init(cx);
-            open(cx).unwrap().downcast::<Root>().unwrap()
-        });
-        let monitor = handle
-            .update(cx, |root, _, _| {
-                root.view()
-                    .clone()
-                    .downcast::<PerformanceMonitor>()
-                    .unwrap()
-            })
-            .unwrap();
-        (handle, monitor)
-    }
-
-    #[gpui::test]
-    fn pause_cancels_sampling_and_resume_starts_a_fresh_interval(cx: &mut TestAppContext) {
-        let (_, monitor) = monitor(cx);
-        monitor.update(cx, |monitor, cx| {
-            assert!(monitor.timer.is_some());
-            assert!(monitor.latest.cpu_percent.is_none());
-            monitor.sampled_at = Instant::now() - Duration::from_secs(30);
-            monitor.sample();
-            assert!(monitor.interval.is_some());
-            assert!(monitor.interval_seconds.unwrap() >= 30.);
-
-            monitor.toggle_pause(cx);
-            assert!(monitor.paused);
-            assert!(monitor.timer.is_none());
-            // A stale timestamp represents the entire time spent paused.
-            monitor.sampled_at = Instant::now() - Duration::from_secs(120);
-            monitor.toggle_pause(cx);
-            assert!(!monitor.paused);
-            assert!(monitor.timer.is_some());
-            assert!(monitor.latest.cpu_percent.is_none());
-            assert!(monitor.interval.is_none());
-            assert!(monitor.interval_seconds.is_none());
-            assert!(monitor.sampled_at.elapsed() < Duration::from_secs(1));
-        });
-    }
-
-    #[gpui::test]
-    fn command_w_releases_the_monitor_and_its_sampling_task(cx: &mut TestAppContext) {
-        let (handle, monitor) = monitor(cx);
-        let weak = monitor.downgrade();
-        drop(monitor);
-        cx.run_until_parked();
-        cx.simulate_keystrokes(*handle, "cmd-w");
-        cx.run_until_parked();
-        assert!(
-            weak.upgrade().is_none(),
-            "sampling must not retain a closed monitor"
-        );
-    }
-
-    #[test]
-    fn idle_and_unsampled_histograms_do_not_fabricate_zero_latency() {
-        let metric = MetricSnapshot {
-            name: "desktop.paint".to_owned(),
-            unit: Unit::Micros,
-            value: MetricValue::Histogram(Default::default()),
-        };
-        assert_eq!(metric_values(&metric, None, None), ["—", "—", "—"]);
-        assert_eq!(
-            metric_values(&metric, Some(&metric), Some(2.)),
-            ["0.0/s", "—", "—"],
-        );
     }
 }

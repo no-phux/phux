@@ -181,6 +181,38 @@ pub fn creation_attrs(dir: &Path, host: &str, label: Option<&str>) -> Vec<(Strin
     discover(dir, host, label).map_or_else(Vec::new, |project| project.to_attrs())
 }
 
+/// The session attribute holding its explicit project link.
+///
+/// Set by `SESSION_SET_PROJECT` (`phux project link`). Not the free-text
+/// `project` attribute a recipe or archive writes, and not part of the
+/// repository identity.
+pub const LINK_ATTR: &str = phux_core::project_identity::attr::LINK;
+
+/// The explicit project link in a session's attributes.
+#[must_use]
+pub fn link_of_attrs(attrs: &[(String, String)]) -> Option<&str> {
+    attrs
+        .iter()
+        .find(|(name, _)| name == LINK_ATTR)
+        .map(|(_, value)| value.as_str())
+}
+
+/// The explicit project link a listed session carries.
+#[must_use]
+pub fn link_of_session(session: &SessionInfo) -> Option<&str> {
+    link_of_attrs(&session.attrs)
+}
+
+/// Set, replace or (with `None`) remove the link in `attrs`, first, where
+/// the server lists it, so a later full listing reads the same. Every other
+/// pair, the `project` label included, is left alone.
+pub fn set_link_attr(attrs: &mut Vec<(String, String)>, link: Option<&str>) {
+    attrs.retain(|(name, _)| name != LINK_ATTR);
+    if let Some(link) = link {
+        attrs.insert(0, (LINK_ATTR.to_owned(), link.to_owned()));
+    }
+}
+
 /// The identity a listed session's attributes carry.
 #[must_use]
 pub fn of_session(session: &SessionInfo) -> Option<SessionProject> {

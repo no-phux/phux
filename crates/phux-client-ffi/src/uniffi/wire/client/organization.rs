@@ -275,6 +275,23 @@ impl RemoteClient {
         submitted(self.connected()?.rename_session(key, &name))
     }
 
+    /// Link a session into a named project, or clear its link with `None`.
+    /// A server without `SESSION_PROJECT` refuses `organization_unavailable`.
+    ///
+    /// # Errors
+    /// See the module docs.
+    pub fn set_session_project(
+        &self,
+        session_key_text: String,
+        project: Option<String>,
+    ) -> Result<String, WireError> {
+        let key = session_key(&session_key_text)?;
+        submitted(
+            self.connected()?
+                .set_session_project(key, project.as_deref()),
+        )
+    }
+
     /// Make a session persistent or ephemeral.
     ///
     /// # Errors

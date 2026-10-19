@@ -16,6 +16,7 @@ mod fleet;
 mod host;
 mod hud;
 mod keys;
+mod machine_name;
 mod menus;
 mod motion;
 mod native_launch;
@@ -86,6 +87,12 @@ pub fn open(options: AppOptions, cx: &mut App) -> anyhow::Result<WindowHandle<Ro
 #[cfg(feature = "ui-fixtures")]
 pub fn open_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
     ui::menu::preview(cx)
+}
+
+/// Preview or capture the real monitor without a daemon or production state.
+#[cfg(feature = "ui-fixtures")]
+pub fn preview_performance_monitor(capture: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
+    performance::preview(capture, cx)
 }
 
 /// Measure native menu creation without opening visible windows.

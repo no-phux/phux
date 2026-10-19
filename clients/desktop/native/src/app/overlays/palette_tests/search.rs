@@ -3,6 +3,20 @@
 use super::*;
 
 #[gpui::test]
+fn allocation_settings_are_discoverable_without_a_development_launch(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-p");
+    type_text(cx, "allocation");
+    keys(cx, "enter");
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk.settings_page),
+        Some(crate::app::settings_panel::Page::Performance)
+    );
+    assert!(cx.debug_bounds("settings-panel").is_some());
+}
+
+#[gpui::test]
 fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext) {
     let (handle, _) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
@@ -12,9 +26,11 @@ fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext)
         .debug_bounds("palette-result-find")
         .expect("last essential action");
     let panel = cx.debug_bounds("palette-panel").unwrap();
-    assert!(
-        last.bottom() <= panel.bottom(),
-        "last action stays inside the panel"
+    // The row's 6pt kit padding, the list's 4pt inset, the card's 1pt border.
+    assert_eq!(
+        panel.bottom() - last.bottom(),
+        gpui::px(11.),
+        "the panel ends the list's inset below its last row"
     );
 }
 

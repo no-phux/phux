@@ -708,6 +708,9 @@ pub(crate) const EVENT_TAG_INTAKE_CHANGED: u8 = 0x1a;
 pub(crate) const EVENT_TAG_RESOURCE_RENAMED: u8 = 0x1b;
 /// Wire tag for [`AgentEvent::NativeAgentResult`].
 pub(crate) const EVENT_TAG_NATIVE_AGENT_RESULT: u8 = 0x1c;
+/// Wire tag for [`AgentEvent::SessionProjectSet`] (`docs/spec/L1.md` §5.7),
+/// after `NATIVE_AGENT_RESULT`.
+pub(crate) const EVENT_TAG_SESSION_PROJECT_SET: u8 = 0x1d;
 }
 
 /// Wire tag for one [`Command`] variant inside the `COMMAND` envelope (SPEC
@@ -763,7 +766,8 @@ enum CommandTag {
     SessionKill = 0x37,
     NativeAgent = 0x38,
     PerfControl = 0x39,
-    GetFile = 0x3a,
+    SessionSetProject = 0x3a,
+    GetFile = 0x3b,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -821,6 +825,9 @@ pub(crate) const COMMAND_TAG_REPORT_AGENT_STATE: u8 = CommandTag::ReportAgentSta
 pub(crate) const COMMAND_TAG_GET_PERF: u8 = CommandTag::GetPerf as u8;
 /// Wire tag for [`Command::PerfControl`].
 pub(crate) const COMMAND_TAG_PERF_CONTROL: u8 = CommandTag::PerfControl as u8;
+/// Wire tag for [`Command::SessionSetProject`]: an organization command gated
+/// on `features_ext.SESSION_PROJECT`.
+pub(crate) const COMMAND_TAG_SESSION_SET_PROJECT: u8 = CommandTag::SessionSetProject as u8;
 /// Wire tag for [`Command::Transcribe`].
 pub(crate) const COMMAND_TAG_TRANSCRIBE: u8 = CommandTag::Transcribe as u8;
 /// Wire tag for [`Command::AppendResourceOutput`].

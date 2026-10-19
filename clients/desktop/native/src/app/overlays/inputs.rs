@@ -14,6 +14,10 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
     match desk.modal.clone() {
         Modal::None => {}
         Modal::Capture => desk.prepare_capture(window, cx),
+        Modal::AgentFleet => {
+            desk.fleet_view.open();
+            window.focus(&desk.focus, cx);
+        }
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
@@ -76,6 +80,17 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
                 );
             }
             name.update(cx, |input, cx| input.focus(window, cx));
+        }
+        Modal::Project { current, .. } => {
+            let input = modal_input(
+                desk,
+                InputSlot::Project,
+                current.as_deref().unwrap_or_default(),
+                "Project name",
+                window,
+                cx,
+            );
+            input.update(cx, |input, cx| input.focus(window, cx));
         }
         Modal::AddHost => {
             let target = modal_input(
@@ -213,6 +228,7 @@ impl Desk {
                     .map(|input| input.read(cx).value().to_string());
                 self.apply_session(name, directory, window, cx);
             }
+            (InputSlot::Project, Some(_)) => self.link_project(Some(value), window, cx),
             (InputSlot::HostTarget | InputSlot::HostName, Some(_)) => {
                 let target = self.input_value(InputSlot::HostTarget, cx);
                 let name = self.input_value(InputSlot::HostName, cx);

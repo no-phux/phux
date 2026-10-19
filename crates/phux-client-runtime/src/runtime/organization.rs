@@ -81,6 +81,21 @@ impl Client {
             .with(|control| control.rename_session(session, name))
     }
 
+    /// Link a session into a named project, or clear its link; see
+    /// [`ControlPlane::set_session_project`].
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError`].
+    pub fn set_session_project(
+        &self,
+        session: SessionKey,
+        project: Option<&str>,
+    ) -> Result<OperationId, SubmitError> {
+        self.inner
+            .with(|control| control.set_session_project(session, project))
+    }
+
     /// Make a session persistent or ephemeral.
     ///
     /// # Errors

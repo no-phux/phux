@@ -121,6 +121,7 @@ impl Desk {
             collapsed: Default::default(),
             hosts: Vec::new(),
             fleet: Default::default(),
+            fleet_view: Default::default(),
             host_adding: None,
             drag_region: None,
             menu: None,
@@ -194,6 +195,9 @@ impl Desk {
             cx.notify();
             return;
         }
+        if self.resume_link(cx) {
+            return;
+        }
         let connected = match self.remote.as_deref() {
             Some(host) => {
                 Connection::connect_remote_with_key(host, self.session.clone(), self.home_key)
@@ -236,6 +240,48 @@ impl Desk {
         cx.notify();
     }
 
+    /// Resume host state without dialing or replacing retained runtime views.
+    fn resume_link(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some((mut connection, workspace)) = self.take_warm_link() else {
+            return false;
+        };
+        let same_home = connection.home_matches(&self.session, self.home_key);
+        let mut workspace = workspace;
+        if !same_home && let Some(workspace) = workspace.as_mut() {
+            workspace.release_all(&connection);
+        }
+        if !connection.activate_home(self.session.clone(), self.home_key, self.expected_authority) {
+            if let Some(workspace) = workspace.as_mut() {
+                workspace.release_all(&connection);
+            }
+            connection.close();
+            return false;
+        }
+        let workspace = if let Some(workspace) = workspace.filter(|_| same_home) {
+            self.layout_key = self.home_key;
+            workspace
+        } else {
+            let mut workspace = Workspace::new(self.session.clone(), WorkspaceOptions::default());
+            workspace.preserve_empty();
+            workspace.restore(self.last_saved.clone());
+            workspace
+        };
+        self.arm_wake(&connection, cx);
+        self.link = Some(Link {
+            connection,
+            workspace,
+        });
+        self.connect_error = None;
+        self.runtime_chrome = self.read_runtime_chrome();
+        let epoch = self
+            .link
+            .as_ref()
+            .map_or(0, |link| link.connection.connection_epoch());
+        self.apply_activity(&[], Vec::new(), epoch, cx);
+        cx.notify();
+        true
+    }
+
     pub(super) fn arm_wake(&mut self, connection: &Connection, cx: &mut Context<Self>) {
         let rx = connection.activity();
         self._wake = Some(cx.spawn(async move |this, cx| {
@@ -268,6 +314,16 @@ impl Desk {
     /// what belonged to it: agent alerts, the find bar, and pending uploads
     /// with a notice.
     pub(super) fn release_link(&mut self, replacing: bool) {
+        self._wake = None;
+        if let Some(link) = self.link.as_mut() {
+            link.workspace.release_all(&link.connection);
+            link.connection.close();
+        }
+        self.clear_projection(replacing);
+    }
+
+    /// Drop presentation and pending UI operations independently of the socket.
+    pub(in crate::app) fn clear_projection(&mut self, replacing: bool) {
         self.capture.cancel_pending();
         let uploading = !self.uploads.is_empty() || self.uploads_reading > 0;
         self.uploads.clear();
@@ -276,10 +332,6 @@ impl Desk {
             self.refuse_paste(
                 "The terminal changed before the upload finished. Nothing was pasted.",
             );
-        }
-        if let Some(link) = self.link.as_mut() {
-            link.workspace.release_all(&link.connection);
-            link.connection.close();
         }
         self.panes.clear();
         if replacing {

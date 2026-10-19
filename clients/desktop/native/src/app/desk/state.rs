@@ -255,8 +255,9 @@ impl Desk {
             return;
         }
         self.clock_at = Some(at);
+        let timer = cx.background_executor().timer(wait);
         self._clock = Some(cx.spawn(async move |this, cx| {
-            smol::Timer::after(wait).await;
+            timer.await;
             let _ = this.update(cx, |desk, cx| {
                 desk._clock = None;
                 desk.feed.expire_peek(Instant::now());

@@ -6,6 +6,7 @@ use super::*;
 fn surface(modal: &Modal) -> &'static str {
     match modal {
         Modal::NativeLaunch => "native-launch-panel",
+        Modal::AgentFleet => "agent-fleet-panel",
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
@@ -33,6 +34,12 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
             current: "work".into(),
             target: None,
         },
+        Modal::Project {
+            host: None,
+            session: phux_protocol::ids::SessionKey::new([1; 16]).unwrap(),
+            name: "work".into(),
+            current: Some("phux".into()),
+        },
         Modal::AddHost,
         Modal::RemoveHost {
             name: "mini".into(),
@@ -40,8 +47,10 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
         Modal::KillSession {
             name: "work".into(),
             session: 1,
+            target: None,
         },
         Modal::Notifications,
+        Modal::AgentFleet,
         Modal::NativeLaunch,
         Modal::Path,
         Modal::Goto,

@@ -9,6 +9,7 @@ use super::{InputSlot, sheet};
 use crate::app::color::from_hex;
 use crate::app::desk::Desk;
 use crate::app::skin::Look;
+use crate::app::ui::ghost_button;
 use crate::settings::theme::Palette;
 
 pub(super) fn dialog_card(title: &str, colors: &Palette, look: &Look) -> gpui::Div {
@@ -142,6 +143,79 @@ pub(super) fn add_host_dialog(
                 })),
             cx,
         ))
+        .into_any_element()
+}
+
+/// Link a session into a project: type a name, or pick one already in use
+/// on any machine. A linked session can be unlinked back to its repository.
+pub(super) fn project_dialog(
+    desk: &Desk,
+    session: &str,
+    linked: bool,
+    colors: &Palette,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let Some(input) = desk.input_entity(InputSlot::Project) else {
+        return div().into_any_element();
+    };
+    let current = desk.input_value(InputSlot::Project, cx);
+    let mut known: Vec<String> = desk
+        .work_catalog()
+        .into_iter()
+        .filter_map(|work| work.project.map(|(_, name)| name))
+        .filter(|name| *name != current.trim())
+        .collect();
+    known.sort();
+    known.dedup();
+    let choices = (!known.is_empty()).then(|| {
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(px(6.))
+            .children(known.into_iter().enumerate().map(|(index, name)| {
+                let label = name.clone();
+                ghost_button(("project-choice", index), label).on_click(cx.listener(
+                    move |desk, _, window, cx| desk.link_project(Some(name.clone()), window, cx),
+                ))
+            }))
+    });
+    dialog_card(&format!("Link {session} to a Project"), colors, look)
+        .child(
+            div()
+                .text_xs()
+                .text_color(from_hex(&colors.muted))
+                .child("A project's sessions are listed together, from every machine. Use a repository's name to join its sessions."),
+        )
+        .child(Input::new(&input))
+        .children(choices)
+        .child(
+            div()
+                .pt(px(8.))
+                .flex()
+                .gap(px(8.))
+                .when(linked, |row| {
+                    row.child(ghost_button("project-unlink", "Unlink").on_click(cx.listener(
+                        |desk, _, window, cx| desk.link_project(None, window, cx),
+                    )))
+                })
+                .child(div().flex_1())
+                .child(
+                    Button::new("dialog-cancel")
+                        .label("Cancel")
+                        .ghost()
+                        .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx))),
+                )
+                .child(
+                    Button::new("project-ok")
+                        .label("Link")
+                        .primary()
+                        .on_click(cx.listener(|desk, _, window, cx| {
+                            let name = desk.input_value(InputSlot::Project, cx);
+                            desk.link_project(Some(name), window, cx);
+                        })),
+                ),
+        )
         .into_any_element()
 }
 

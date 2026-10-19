@@ -25,7 +25,14 @@ There is no string registry and no second listener.
   Enter's newline and Tab's tab character on macOS, send key atoms on key-down.
   Control/Option-as-Alt keys also send on key-down.
 - Pointer and scroll use `Geometry::hit`, the same device-pixel edges as
-  paint. GPUI capture keeps releases and drags on the originating view.
+  paint. GPUI capture keeps releases on the originating view, and a
+  window-wide move listener keeps a selection drag or a captured application
+  button on it past the pane's edge, clamped to the nearest cell. A selection
+  drag is quantized to fifths of a cell, not whole cells, so the cell under
+  the release is in or out by where in it the pointer stopped. Held above or
+  below the grid it scrolls the view on a 40 ms timer, one row a tick per
+  line past the edge (at most eight), and extends the selection over the
+  rows that scroll in; release, a cancel, or a replaced connection stops it.
   Initial hits in grid padding are rejected. The selection gesture and
   `INPUT_MOUSE` carry that cell in the integer pixel grid the resize reports
   as `cell_px`, so selection, copy, and a program's cursor land on the painted
@@ -39,13 +46,27 @@ There is no string registry and no second listener.
   does not. A captured application-mouse release is still sent when the live
   frame is briefly missing or a different size; a replaced connection or an
   unknown-delivery fence is not.
-- Copy/Paste bind to `copy_selection` and `paste_text`. `Terminal::request`
-  runs Copy, Paste, CopyText and Open once on this entity, without a keyboard
-  focus check, and does not retain the action for a later render. A clipboard
-  paste is the user's own action, so it is trusted. One that fits a single
-  `APPLY_INPUT` is acknowledged; a larger one, or one for a satellite pane,
-  goes as one atomic `INPUT_PASTE` and is never split. Outcomes stay with the
-  connection's event drain.
+- Command-C and Command-V fall back to `copy_selection` and the platform
+  paste when the host binds neither; a host that binds Copy and Paste sees
+  the chords first. Both pastes read the whole clipboard item, so a copied
+  file or image pastes as its path ([`attach`](src/attach.rs)).
+  `Terminal::request` runs Copy, Paste, CopyText and Open once on this
+  entity, without a keyboard focus check, and does not retain the action for
+  a later render. A clipboard paste is the user's own action, so it is
+  trusted. One that fits a single `APPLY_INPUT` is acknowledged; a larger
+  one, or one for a satellite pane, goes as one atomic `INPUT_PASTE` and is
+  never split. Outcomes stay with the connection's event drain.
+- A paste is held for the shell to confirm (`InputEvent::ConfirmPaste`) by
+  Ghostty's `clipboard-paste-bracketed-safe` rule, the TUI's too: only when
+  the program has DEC 2004 bracketed paste off and the text has a line
+  break, or when the text holds the bracket terminator `ESC [ 201 ~`. A
+  shell, editor or coding agent that brackets pastes takes a multi-line
+  paste at once.
+- Typing (a key press or committed text sent to the PTY) clears a
+  selection the view shows, as Ghostty's `selection-clear-on-typing`.
+  Command chords, so Copy, never clear it. On Linux a finished mouse
+  selection is also the primary selection, and a middle click the program
+  does not take pastes it.
 - ACP conversation controls do **not** enter this terminal input path.
   `ControlPlane::native_agent_command` targets the exact AgentSession/activation,
   current turn or current question. Kit owns its text fields and dialogs;
@@ -84,7 +105,9 @@ does the same after keyboard scroll, prompt jumps, follow, select-all and
 find.
 
 Clipboard copy uses the runtime's bounded selection API (1 MiB cap) and never
-copies a truncated string. The editable text model holds only pending IME text
+copies a truncated string; a larger selection is refused with a notice
+(`copy_too_large`), and an empty or whitespace-only one leaves the clipboard
+alone. The editable text model holds only pending IME text
 (4096 UTF-8 bytes). UTF-16 ranges snap to complete graphemes. Candidate bounds
 are the painted cursor rectangle. A wide tail uses the head cell.
 
@@ -95,5 +118,5 @@ or Num Lock, so layout-independent physical keys and keypad fidelity are **not
 qualified**. Option-as-Alt defaults off. Manual acceptance remains for real OS
 IMEs (CJK, dead keys), candidate placement under scale changes, focus loss
 mid-composition, menus, cross-app clipboard, VoiceOver and hardware layouts.
-Selection autoscroll and search UI are not implemented here. Link activation
+Search UI is not implemented here. Link activation
 is the painted-frame Command-click described above.

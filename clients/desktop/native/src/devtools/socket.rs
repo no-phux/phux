@@ -308,6 +308,8 @@ fn perf(reset: bool) -> Value {
         "hud": snapshot.hud,
         "dev": snapshot.dev,
         "socket": snapshot.socket,
+        "physical_footprint_bytes": snapshot.physical_footprint_bytes,
+        "native_heap": snapshot.native_heap,
         "server_socket": super::get().cli.as_ref().map(super::ServerCli::socket),
     })
 }

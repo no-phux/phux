@@ -1602,6 +1602,7 @@ async fn negotiate_hello(
                 ServerFeatureExt::SessionKill,
                 ServerFeatureExt::NativeAgent,
                 ServerFeatureExt::PerfControl,
+                ServerFeatureExt::SessionProject,
                 ServerFeatureExt::FileDownload,
             ]))
             .with_compression(compression),

@@ -6,6 +6,7 @@ mod appearance;
 mod connections;
 mod input;
 mod layout;
+mod performance;
 
 #[cfg(test)]
 pub(super) use connections::machine_action;
@@ -40,10 +41,11 @@ pub(crate) enum Page {
     Ghostty,
     Updates,
     Connections,
+    Performance,
 }
 
 impl Page {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Appearance,
         Self::Layout,
         Self::Keyboard,
@@ -51,6 +53,7 @@ impl Page {
         Self::Ghostty,
         Self::Updates,
         Self::Connections,
+        Self::Performance,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -61,6 +64,7 @@ impl Page {
             Self::Ghostty => "Ghostty integration",
             Self::Updates => "Updates",
             Self::Connections => "Hosts & connections",
+            Self::Performance => "Performance",
         }
     }
     pub fn description(self) -> &'static str {
@@ -72,6 +76,7 @@ impl Page {
             Self::Ghostty => "Import or reload your Ghostty preferences",
             Self::Updates => "Version, downloads and updates",
             Self::Connections => "Your machines, connection status and recovery",
+            Self::Performance => "Live Rust allocation counting and diagnostic controls",
         }
     }
 
@@ -82,7 +87,7 @@ impl Page {
                  animations motion laser cursor native agents conversation chat acp transcript"
             }
             Self::Layout => {
-                "sidebar tabs top bottom side background opacity glass blur solid opaque notifications alerts"
+                "sidebar tabs top bottom side background opacity glass blur solid opaque notifications alerts experimental agent fleet dashboard overview"
             }
             Self::Keyboard => {
                 "option alt keys keybind shortcuts chord input conflicts duplicate source"
@@ -94,6 +99,9 @@ impl Page {
             Self::Updates => "version release install update download channel",
             Self::Connections => {
                 "hosts machines remote ssh local add remove retry reconnect status endpoint"
+            }
+            Self::Performance => {
+                "performance heap rust allocation allocations counting counters profiling diagnostics"
             }
         }
     }
@@ -339,6 +347,7 @@ pub(crate) fn panel(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
         Page::Ghostty => input::ghostty_page(desk, &handle),
         Page::Updates => super::updates::page(&desk.updates, &look, &desk.prefs.font_family, cx),
         Page::Connections => connections::connection_page(desk, &handle),
+        Page::Performance => performance::page(&handle),
     };
     let settings = Settings::new(SharedString::from(format!("phux-settings-{page:?}")))
         .sidebar_width(px(0.))

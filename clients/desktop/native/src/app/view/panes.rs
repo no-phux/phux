@@ -58,6 +58,19 @@ pub(super) fn main_column(
         })
 }
 
+/// The height of the chrome under the panes: the bottom tab strip while tabs
+/// sit there, then the status line. A sibling of the main column ends this
+/// far up to share the pane cards' bottom edge.
+pub(super) fn bottom_chrome(desk: &Desk, look: &Look) -> f32 {
+    let chrome = &look.skin.chrome;
+    let tabs = if super::tabs_at(desk, &look.skin, TabPosition::Bottom) {
+        chrome.titlebar
+    } else {
+        0.
+    };
+    tabs + chrome.status.max(0.)
+}
+
 fn workspace_body(
     desk: &mut Desk,
     look: &Look,
@@ -68,6 +81,7 @@ fn workspace_body(
     let zoomed = desk.active_tab().and_then(|tab| tab.zoomed_id.clone());
     let root = desk.active_tab().map(|tab| tab.root.clone());
     div()
+        .debug_selector(|| "workspace-body".into())
         .flex_grow(1.)
         .min_h(px(0.))
         .relative()
@@ -116,7 +130,10 @@ fn empty_state(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEle
         Some(Status::Idle | Status::Connecting | Status::Negotiated) => muted(
             look,
             match desk.remote.as_deref() {
-                Some(host) => format!("Connecting to {host}…"),
+                Some(host) => format!(
+                    "Connecting to {}…",
+                    super::super::machine_name::display(host)
+                ),
                 None => format!("Connecting to {}…", desk.socket.display()),
             },
         )

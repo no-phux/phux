@@ -77,6 +77,7 @@ pub(super) fn archive_from_snapshot(
                 cwd: directories.get(&session.name).cloned().or(pane_cwd),
                 host: pane_host.or_else(|| hosts.get(&session.name).cloned()),
                 project: projects.get(&session.name).cloned(),
+                project_link: None,
                 command: None,
                 windows,
             }

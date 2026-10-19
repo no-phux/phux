@@ -15,6 +15,10 @@ pub struct Sample {
     pub cpu_percent: Option<f64>,
     /// Native current resident memory, not the lifetime high-water mark.
     pub resident_bytes: Option<u64>,
+    /// macOS physical footprint (Activity Monitor's memory accounting).
+    pub footprint_bytes: Option<u64>,
+    /// Actual allocated blocks and reserved capacity across native malloc zones.
+    pub native_heap: Option<phux_perf::alloc::native::HeapStats>,
     /// Lifetime peak resident memory from the report's process section.
     pub peak_resident_bytes: Option<u64>,
     /// Cumulative kernel, runtime, painter and window metrics at capture.
@@ -39,8 +43,11 @@ impl Sampler {
     pub fn sample(&mut self) -> Sample {
         let report = crate::diag::report();
         let at = Instant::now();
-        let resident_bytes = ProcessStats::current_rss_bytes();
-        self.sample_at(at, report, resident_bytes)
+        let resident_bytes = report.rss_bytes;
+        let mut sample = self.sample_at(at, report, resident_bytes);
+        sample.footprint_bytes = ProcessStats::physical_footprint_bytes();
+        sample.native_heap = phux_perf::alloc::native::stats();
+        sample
     }
 
     fn sample_at(
@@ -73,6 +80,8 @@ impl Sampler {
         Sample {
             cpu_percent,
             resident_bytes,
+            footprint_bytes: None,
+            native_heap: None,
             peak_resident_bytes: report.process.map(|process| process.max_rss_bytes),
             report,
         }

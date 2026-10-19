@@ -56,10 +56,12 @@ pub(crate) fn child_row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::St
     row(id, look).pl(px(CHILD_INSET))
 }
 
-/// A row's centred leading slot.
+/// A row's centred leading slot, set a point low to meet the label's
+/// lowercase rather than its line box.
 pub(crate) fn row_icon(icon: impl IntoElement) -> gpui::Div {
     div()
         .relative()
+        .top(px(1.))
         .w(px(ICON))
         .flex_shrink_0()
         .flex()

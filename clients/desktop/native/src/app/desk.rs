@@ -109,6 +109,7 @@ pub enum Modal {
     Goto,
     Settings,
     Notifications,
+    AgentFleet,
     NativeLaunch,
     Path,
     MoveResources,
@@ -120,10 +121,20 @@ pub enum Modal {
         current: String,
         target: Option<SessionRenameTarget>,
     },
+    /// Link a session into a named project. Projects meet by name across
+    /// machines, so each machine's server keeps the link for its own session.
+    Project {
+        /// The machine whose server holds the session.
+        host: Option<String>,
+        session: SessionKey,
+        name: String,
+        current: Option<String>,
+    },
     /// Kill a whole session: every member ends and the session is deleted.
     KillSession {
         name: String,
         session: u32,
+        target: Option<SessionRenameTarget>,
     },
     WindowSession,
     /// Every open native window, its session, host and tabs.
@@ -138,8 +149,8 @@ pub enum Modal {
     RemoveHost {
         name: String,
     },
-    /// A line-breaking paste held because the placement's terminal is
-    /// running a command.
+    /// A paste held because the placement's program would read its line
+    /// breaks as Enter.
     Paste {
         placement_id: String,
         /// The terminal the paste was held for; a retargeted placement
@@ -213,7 +224,7 @@ pub struct Desk {
     /// Painted tab centers, including scroll offsets, for the current orientation.
     pub(crate) tab_geometry: Rc<RefCell<TabGeometry>>,
     viewport: gpui::Size<gpui::Pixels>,
-    _wake: Option<Task<()>>,
+    pub(in crate::app) _wake: Option<Task<()>>,
     /// Runtime state the desk chrome shows, as of the last activity drain.
     runtime_chrome: RuntimeChrome,
     _clock: Option<Task<()>>,
@@ -247,6 +258,7 @@ pub struct Desk {
     /// The remote registry as last read, for the sidebar's Hosts section.
     pub(crate) hosts: Vec<host::RemoteHost>,
     pub(crate) fleet: super::fleet::Fleet,
+    pub(crate) fleet_view: super::fleet::dashboard::State,
     /// A host enrollment in flight, by the target it was given.
     pub(crate) host_adding: Option<String>,
     /// The titlebar's window-drag surface, created once.
@@ -369,7 +381,7 @@ struct RuntimeChrome {
 
 /// Terminal damage, delivered input, and agent metadata that repeated every
 /// badge (`agents_noted` false). Chrome, toasts, and layout stay put.
-fn paint_batch(events: &[Event], agents_noted: bool) -> bool {
+pub(super) fn paint_batch(events: &[Event], agents_noted: bool) -> bool {
     !events.is_empty()
         && events.iter().all(|event| {
             crate::connection::paint_wake(event)
@@ -474,6 +486,18 @@ fn session_failure(create: bool) -> &'static str {
     }
 }
 
+/// Why a project name cannot be stored, before it is sent. The server keeps
+/// the same rule; a session attribute holds at most 256 bytes.
+fn project_refusal(name: &str) -> Option<&'static str> {
+    if name.len() > 256 {
+        Some("Project names are at most 256 bytes.")
+    } else if name.chars().any(char::is_control) {
+        Some("Project names cannot contain control characters.")
+    } else {
+        None
+    }
+}
+
 /// The modal a command opens, which the same command closes.
 fn listed_modal(id: &str) -> Option<Modal> {
     Some(match id {
@@ -483,6 +507,7 @@ fn listed_modal(id: &str) -> Option<Modal> {
         "windows" => Modal::Windows,
         "settings" => Modal::Settings,
         "notifications" => Modal::Notifications,
+        "agent-fleet" => Modal::AgentFleet,
         _ => return None,
     })
 }

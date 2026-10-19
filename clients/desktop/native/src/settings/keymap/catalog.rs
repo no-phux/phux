@@ -29,8 +29,8 @@ const CATALOG: &str = "\
     split-left | Split Left | Panes |  | Open a terminal to the left of the focused pane. |
     split-up | Split Up | Panes |  | Open a terminal above the focused pane. |
     view | Mirror Pane | Panes | cmd+alt+d | Show the focused terminal in another pane. | duplicate open another view
-    close | Close Pane | Panes | cmd+w | Detach this pane; its terminal keeps running. |
-    close-tab | Close Tab | Tabs | cmd+shift+w | Detach this tab; its terminals keep running. |
+    close | Close Pane | Panes | cmd+w | End this pane's process and remove all its views. |
+    close-tab | Close Tab | Tabs | cmd+shift+w | End every process in this tab and remove their views. |
     zoom | Zoom Pane | Panes | cmd+shift+enter | Expand the focused pane or restore its splits. |
     equalize | Equalize Splits | Panes | cmd+ctrl+= | Give the active tab's panes equal space. | balance
     pane-left | Focus Pane Left | Panes | cmd+alt+left | Focus the neighboring pane on the left. |
@@ -55,6 +55,7 @@ const CATALOG: &str = "\
     paste-cwd | Paste Working Directory | Terminal |  | Insert the focused terminal's working directory. | cwd path
     terminate | Terminate Terminal Process… | Terminal |  | Confirm termination of the focused terminal process. | kill
     attention | Jump to Agent Needing Attention | Agents | cmd+shift+a | Focus the next agent that needs your attention. |
+    agent-fleet | Agent Fleet | Agents |  | Open the live agent overview. Enable Agent fleet in Settings > Layout & notifications first. | dashboard overview grid mission control
     native-agents | Toggle Native Agents | Agents | cmd+ctrl+a | Snap every agent pane to its native conversation, or back to its terminal. | conversation chat transcript acp tui harness native
     conversation | Toggle Conversation | Agents |  | Show the focused agent pane's conversation, or its terminal. | chat transcript native acp
     sidebar | Toggle Sidebar | View | cmd+b | Show or hide the navigation sidebar. |
@@ -82,8 +83,8 @@ const CATALOG: &str = "\
     scroll-bottom | Scroll to Bottom | Terminal | cmd+end | Return to the latest terminal output. |
     clear | Clear Screen | Terminal | cmd+k | Send the clear-screen control to the terminal. |
     select-all | Select All | Terminal | cmd+a | Select all available terminal text. |
-    copy | Copy | Terminal |  | Copy the terminal selection to the clipboard. |
-    paste | Paste | Terminal |  | Insert clipboard text into the focused terminal. |
+    copy | Copy | Terminal | cmd+c | Copy the terminal selection to the clipboard. |
+    paste | Paste | Terminal | cmd+v | Insert the clipboard into the focused terminal; a copied file or image goes in as its path. |
     paste-selection | Paste Selection | Terminal |  | Insert the selected terminal text as input. |
     prompt-prev | Jump to Previous Prompt | Terminal | cmd+up | Scroll to the previous shell prompt marker. |
     prompt-next | Jump to Next Prompt | Terminal | cmd+down | Scroll to the next shell prompt marker. |

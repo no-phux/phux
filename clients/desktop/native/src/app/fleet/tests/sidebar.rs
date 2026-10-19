@@ -348,7 +348,14 @@ fn only_the_caret_changes_disclosure_and_equal_names_on_other_hosts_stay_open(
     let caret = cx.debug_bounds("disclose-work-mini-8").unwrap();
     cx.simulate_click(caret.center(), gpui::Modifiers::none());
     draw(cx);
-    assert!(cx.debug_bounds("catalog-pane-mini-@1").is_some());
+    assert!(
+        cx.debug_bounds("pane-@1").is_some(),
+        "the promoted host is already active"
+    );
+    assert!(
+        cx.debug_bounds("catalog-pane-Local-@1").is_some(),
+        "the other host remains expanded"
+    );
 }
 
 #[gpui::test]
@@ -377,4 +384,49 @@ fn hiding_the_active_host_is_an_explicit_filter_not_a_navigation(cx: &mut TestAp
     cx.simulate_click(reset.center(), gpui::Modifiers::none());
     draw(cx);
     assert!(cx.debug_bounds("work-Local-7").is_some());
+}
+
+#[gpui::test]
+fn the_main_menu_header_switches_to_a_session_on_any_machine(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, VisualTestContext};
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut VisualTestContext::from_window(*handle, cx);
+    desk.update(cx, |desk, cx| {
+        install(desk, connection(1, vec![session(7, "main")]));
+        observe(
+            &mut desk.fleet,
+            Some("mini"),
+            connection(2, vec![session(8, "remote")]),
+        );
+        desk.hosts.push(super::super::host::RemoteHost {
+            name: "mini".into(),
+            endpoint: "quic://fixture.invalid:1".into(),
+        });
+        cx.notify();
+    });
+    draw(cx);
+    assert!(
+        shown(cx, "main-menu-machine"),
+        "the trigger marks its machine"
+    );
+    click_on(cx, "main-menu-rail");
+    let menu = desk.read_with(cx, |desk, _| desk.menu_window()).unwrap();
+    {
+        let menu_cx = &mut VisualTestContext::from_window(menu, cx);
+        draw(menu_cx);
+        click_on(menu_cx, "glass-menu-header");
+        assert!(shown(menu_cx, "glass-menu-session-Local-7"));
+        assert!(shown(menu_cx, "glass-menu-machines"));
+        let remote = menu_cx
+            .debug_bounds("glass-menu-session-mini-8")
+            .expect("the session list spans machines");
+        menu_cx.simulate_click(remote.center(), Modifiers::none());
+        menu_cx.run_until_parked();
+    }
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.remote.as_deref(), Some("mini"));
+        assert_eq!(desk.session, "remote");
+    });
 }

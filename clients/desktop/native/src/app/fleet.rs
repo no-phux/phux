@@ -1,5 +1,7 @@
 //! Work-first inventory across authorities. Browsing never acquires terminal views.
 
+mod connections;
+
 use std::collections::{HashMap, HashSet};
 
 use gpui::{Context, Task};
@@ -10,6 +12,10 @@ use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 use super::desk::Desk;
 use super::notifications::Kind;
 use crate::connection::{AgentState, Connection};
+
+mod agents;
+pub(crate) mod dashboard;
+pub(crate) use agents::Agent;
 
 /// A route chooses a connection; persistent identity chooses work on that authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,9 +56,38 @@ pub(crate) struct Work {
 
 struct Observer {
     connection: Option<Connection>,
+    workspace: Option<crate::workspace::Workspace>,
     last: Vec<Work>,
     error: Option<String>,
     _wake: Option<Task<()>>,
+}
+
+impl Observer {
+    /// Refresh catalog rows only when something users can see has changed.
+    fn refresh_inventory(&mut self, host: &Option<String>) -> bool {
+        let Some(connection) = self.connection.as_ref() else {
+            return false;
+        };
+        let (mut last, mut error) = (Vec::new(), connection.error.clone());
+        if available(connection) {
+            last = work_on(connection, host.clone());
+            error = None;
+        } else {
+            last.clone_from(&self.last);
+            for work in &mut last {
+                work.online = false;
+            }
+            if connection.status.is_terminal() && error.is_none() {
+                error = Some("Disconnected. Retry to refresh this host.".into());
+            }
+        }
+        if self.last == last && self.error == error {
+            return false;
+        }
+        self.last = last;
+        self.error = error;
+        true
+    }
 }
 
 impl Drop for Observer {
@@ -101,25 +136,28 @@ impl Fleet {
         let Some(connection) = observer.connection.as_mut() else {
             return false;
         };
-        connection.drain();
-        let (mut last, mut error) = (Vec::new(), connection.error.clone());
-        if available(connection) {
-            last = work_on(connection, host.clone());
-            error = None;
-        } else {
-            last.clone_from(&observer.last);
-            for work in &mut last {
-                work.online = false;
-            }
-            if connection.status.is_terminal() && error.is_none() {
-                error = Some("Disconnected. Retry to refresh this host.".into());
-            }
-        }
-        if observer.last == last && observer.error == error {
+        let events = connection.drain();
+        let graph_changed = events.iter().any(|event| event.changes_session_graph());
+        let agents_noted = connection.agents_noted();
+        // Receipts belong to the projection that initiated them, never a later one.
+        connection.take_path_answers();
+        connection.take_file_upload_receipts();
+        if super::desk::paint_batch(&events, connection.agents_noted())
+            && observer
+                .workspace
+                .as_ref()
+                .is_none_or(|workspace| workspace.restored() && !workspace.awaiting_output(&events))
+        {
             return false;
         }
-        observer.last = last;
-        observer.error = error;
+        if let Some(workspace) = observer.workspace.as_mut() {
+            workspace.set_home_session(connection.session_name().to_owned());
+            workspace.handle(&events, connection);
+            workspace.settle(connection);
+        }
+        if !observer.refresh_inventory(host) && !agents_noted && !graph_changed {
+            return false;
+        }
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -171,18 +209,24 @@ fn work_on(connection: &Connection, host: Option<String>) -> Vec<Work> {
             .iter()
             .map(|session| {
                 let record = session.key.and_then(|key| replica.session(&key));
-                let project = record
-                    .and_then(|record| {
-                        let id = attr(&record.attrs, "project.id")?;
-                        let name = attr(&record.attrs, "project.name").unwrap_or(id);
-                        Some((id.to_owned(), name.to_owned()))
-                    })
+                // A project a person linked the session into wins over the
+                // repository it was created in, which wins over a recipe's
+                // label; groups go by name, so a link named for a repository
+                // joins that repository's sessions.
+                let label = |labels: &HashMap<u32, String>| {
+                    labels
+                        .get(&session.id)
+                        .map(|label| (format!("label:{label}"), label.clone()))
+                };
+                let project = label(&connection.links)
                     .or_else(|| {
-                        connection
-                            .projects
-                            .get(&session.id)
-                            .map(|label| (format!("label:{label}"), label.clone()))
-                    });
+                        record.and_then(|record| {
+                            let id = attr(&record.attrs, "project.id")?;
+                            let name = attr(&record.attrs, "project.name").unwrap_or(id);
+                            Some((id.to_owned(), name.to_owned()))
+                        })
+                    })
+                    .or_else(|| label(&connection.projects));
                 let panes: Vec<_> = connection
                     .panes()
                     .iter()
@@ -263,7 +307,8 @@ impl Desk {
         self.fleet.held.retain(|host| routes.contains(host));
         for host in routes {
             let held = self.fleet.held.contains(&host);
-            if held
+            if (host == self.remote && self.link.is_some())
+                || held
                 || self
                     .fleet
                     .observers
@@ -280,28 +325,14 @@ impl Desk {
                 .unwrap_or_default();
             let mut observer = Observer {
                 connection: None,
+                workspace: None,
                 last,
                 error: None,
                 _wake: None,
             };
             match Connection::browse(&self.socket, host.as_deref()) {
                 Ok(connection) => {
-                    let rx = connection.activity();
-                    let source = host.clone();
-                    observer._wake = Some(cx.spawn(async move |desk, cx| {
-                        while rx.recv().await.is_ok() {
-                            if desk
-                                .update(cx, |desk, cx| {
-                                    if desk.fleet.drain(&source) {
-                                        cx.notify();
-                                    }
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }));
+                    observer._wake = Some(self.fleet_wake(&connection, host.clone(), cx));
                     observer.connection = Some(connection);
                 }
                 Err(error) => observer.error = Some(error.to_string()),
@@ -309,27 +340,6 @@ impl Desk {
             self.fleet.observers.insert(host, observer);
         }
         self.fleet.revision = self.fleet.revision.wrapping_add(1);
-    }
-
-    /// Preserve the source we are leaving before a new projection replaces it.
-    /// Its inventory observer may still be dialing, even though this window
-    /// already knows the full local topology.
-    pub(crate) fn retain_work_inventory(&mut self) {
-        let Some(link) = &self.link else { return };
-        if !available(&link.connection) {
-            return;
-        }
-        let last = work_on(&link.connection, self.remote.clone());
-        self.fleet
-            .observers
-            .entry(self.remote.clone())
-            .or_insert_with(|| Observer {
-                connection: None,
-                last: Vec::new(),
-                error: None,
-                _wake: None,
-            })
-            .last = last;
     }
 
     pub(crate) fn work_catalog(&self) -> Vec<Work> {
@@ -385,7 +395,12 @@ impl Desk {
 
     /// Revalidate the catalog destination before replacing the active projection.
     pub(crate) fn navigate_work(&mut self, destination: Destination, cx: &mut Context<Self>) {
-        if self.work_is_active(&destination) {
+        if self.work_is_active(&destination)
+            && self
+                .link
+                .as_ref()
+                .is_some_and(|link| available(&link.connection))
+        {
             return;
         }
         let listed = self
@@ -495,6 +510,7 @@ impl Desk {
                 connection.close();
             }
             observer._wake = None;
+            observer.workspace = None;
             for work in &mut observer.last {
                 work.online = false;
             }
@@ -514,6 +530,7 @@ impl Desk {
                 .is_some_and(|connection| connection.client.status().is_terminal())
             {
                 observer.connection = None;
+                observer.workspace = None;
                 observer._wake = None;
                 for work in &mut observer.last {
                     work.online = false;

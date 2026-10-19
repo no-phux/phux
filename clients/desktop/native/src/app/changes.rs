@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{Context, Entity, Focusable, Subscription, Task, Window};
-use gpui_kit::component::diff::{DiffMode, DiffState};
+use gpui_kit::component::diff::{DiffConflictResolution, DiffMode, DiffState};
 use gpui_kit::component::input::TextareaState;
 use phux_protocol::ids::ResourceId;
 
@@ -131,6 +131,8 @@ pub(crate) struct Changes {
     pub source: Source,
     comparisons: Comparisons,
     pub diff: Option<(Entity<DiffState>, Subscription)>,
+    /// Small authored choices, retained without the parsed diff while closed.
+    suspended_conflicts: Vec<SuspendedConflict>,
     /// The file last revealed, kept in view across reloads.
     pub focus: Option<String>,
     /// Viewed files, per comparison, and the fingerprint each was viewed at.
@@ -152,6 +154,12 @@ pub(crate) struct Changes {
     _poll: Option<Task<()>>,
 }
 
+struct SuspendedConflict {
+    path: String,
+    fingerprint: u64,
+    choices: Vec<(usize, DiffConflictResolution)>,
+}
+
 impl Default for Changes {
     fn default() -> Self {
         Self {
@@ -165,6 +173,7 @@ impl Default for Changes {
             source: Source::Changes,
             comparisons: Comparisons::default(),
             diff: None,
+            suspended_conflicts: Vec::new(),
             focus: None,
             viewed: HashMap::new(),
             collapsed: HashSet::new(),
@@ -183,6 +192,69 @@ impl Default for Changes {
 }
 
 impl Changes {
+    fn suspend_conflicts(&mut self, cx: &gpui::App) {
+        if !matches!(self.view, View::Repo(_)) {
+            return;
+        }
+        let Some((state, _)) = &self.diff else {
+            return;
+        };
+        let state = state.read(cx);
+        self.suspended_conflicts = state
+            .files()
+            .iter()
+            .filter_map(|file| {
+                let path = file.path().to_string();
+                let choices: Vec<_> = (0..file.conflicts().len())
+                    .filter_map(|index| {
+                        state
+                            .conflict_resolution(&path, index)
+                            .map(|choice| (index, choice))
+                    })
+                    .collect();
+                if choices.is_empty() {
+                    return None;
+                }
+                Some(SuspendedConflict {
+                    fingerprint: self.loaded(self.source).print(&path)?,
+                    path,
+                    choices,
+                })
+            })
+            .collect();
+    }
+
+    fn restore_conflicts(&mut self, state: &Entity<DiffState>, cx: &mut gpui::App) {
+        // A folder change first installs an empty Loading view. Keep authored
+        // choices until a successful read establishes the checkout identity.
+        if !matches!(self.view, View::Repo(_)) {
+            return;
+        }
+        let suspended = std::mem::take(&mut self.suspended_conflicts);
+        let suspended: Vec<_> = suspended
+            .into_iter()
+            .filter(|saved| self.loaded(self.source).print(&saved.path) == Some(saved.fingerprint))
+            .collect();
+        state.update(cx, |state, cx| {
+            for saved in suspended {
+                for (index, choice) in saved.choices {
+                    state.resolve_conflict(&saved.path, index, Some(choice), cx);
+                }
+            }
+        });
+    }
+
+    /// Closing keeps authored review state, not parsed patches or Kit's copy
+    /// of the diff. Fence an in-flight read before dropping those allocations.
+    fn release_preview(&mut self) {
+        self._poll = None;
+        self.generation += 1;
+        self.reading = false;
+        self.diff = None;
+        self.comparisons = Comparisons::default();
+        self.view = View::Loading;
+    }
+
     /// Whether a panel field holds the keyboard, so the terminal must not take it.
     pub(crate) fn has_keys(&self, window: &Window, cx: &gpui::App) -> bool {
         let focused =
@@ -222,6 +294,11 @@ impl Changes {
     /// Drop the shown comparison's marks whose file changed or left, and
     /// return the paths still listed: they must unfold.
     pub(crate) fn lapse_viewed(&mut self) -> Vec<String> {
+        // An empty loading/error preview is not evidence that a viewed file
+        // changed. Compare fingerprints only after a successful checkout read.
+        if !matches!(self.view, View::Repo(_)) {
+            return Vec::new();
+        }
         let (source, loaded) = (self.source, self.comparisons.get(self.source));
         let mut unfold = Vec::new();
         self.viewed.retain(|(side, path), print| {
@@ -284,15 +361,17 @@ impl Desk {
             self.refresh_changes(true, cx);
             self.arm_changes_poll(cx);
         } else {
-            self.changes._poll = None;
+            self.changes.suspend_conflicts(cx);
+            self.changes.release_preview();
         }
         cx.notify();
     }
 
     fn arm_changes_poll(&mut self, cx: &mut Context<Self>) {
+        let executor = cx.background_executor().clone();
         self.changes._poll = Some(cx.spawn(async move |this, cx| {
             loop {
-                smol::Timer::after(POLL).await;
+                executor.timer(POLL).await;
                 let Ok(open) = this.update(cx, |desk, cx| {
                     if desk.changes.open {
                         desk.refresh_changes(false, cx);
@@ -428,32 +507,8 @@ impl Changes {
         self.comments.clear();
         self.draft = None;
         self.viewed.clear();
+        self.suspended_conflicts.clear();
         self.review_root = Some(root.to_owned());
-    }
-}
-
-#[cfg(test)]
-impl Desk {
-    /// Show `status` with these patches, as a read of a checkout would.
-    pub(crate) fn show_checkout(
-        &mut self,
-        status: Status,
-        changes: &str,
-        staged: &str,
-        cx: &mut Context<Self>,
-    ) {
-        let parse = |text: &str| {
-            let patch = git::PatchText {
-                text: text.to_owned(),
-                reduced: false,
-            };
-            Loaded::parse(patch, Vec::new())
-        };
-        let comparisons = Comparisons {
-            changes: parse(changes),
-            staged: parse(staged),
-        };
-        self.set_changes_view(View::Repo(status), comparisons, cx);
     }
 }
 
@@ -495,41 +550,4 @@ fn expand_home(cwd: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn review_notes_belong_to_one_checkout() {
-        use gpui_kit::component::diff::{DiffLineRange, DiffSide};
-        let mut changes = Changes::default();
-        changes.bind_review(std::path::Path::new("/first"));
-        changes.comments.push(Comment {
-            id: 1,
-            source: Source::Changes,
-            range: DiffLineRange::new("f.rs", DiffSide::Modified, 1, 1),
-            body: "Review only the first checkout".into(),
-        });
-        changes.bind_review(std::path::Path::new("/first"));
-        assert_eq!(changes.comments.len(), 1);
-        changes.bind_review(std::path::Path::new("/second"));
-        assert!(changes.comments.is_empty());
-    }
-
-    #[test]
-    fn a_home_relative_folder_expands_and_others_stay() {
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
-        assert_eq!(expand_home("~"), home);
-        assert_eq!(expand_home("~/src/phux"), home.join("src/phux"));
-        assert_eq!(expand_home("/tmp/x"), PathBuf::from("/tmp/x"));
-        assert_eq!(expand_home("~other/x"), PathBuf::from("~other/x"));
-    }
-
-    #[test]
-    fn auto_layout_splits_only_a_wide_diff() {
-        assert_eq!(Layout::Auto.mode(SPLIT_WIDTH - 1.), DiffMode::Unified);
-        assert_eq!(Layout::Auto.mode(SPLIT_WIDTH), DiffMode::Split);
-        assert_eq!(Layout::Unified.mode(2000.), DiffMode::Unified);
-        assert_eq!(Layout::Split.mode(10.), DiffMode::Split);
-        assert_eq!(Layout::Unified.next(), Layout::Auto);
-    }
-}
+mod tests;

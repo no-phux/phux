@@ -2299,6 +2299,7 @@ fn machine_fixture() -> Vec<phux_core::host_list::HostJson> {
         members: 0,
         exec: phux_core::session_list::ExecCounts::default(),
         project: None,
+        project_link: None,
         key: None,
     };
     let host = |name: &str, label: &str, kind, sessions: Vec<SessionJson>| HostJson {

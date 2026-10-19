@@ -281,6 +281,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         org @ (Command::GetOrganization { .. }
         | Command::SessionCreate { .. }
         | Command::SessionRename { .. }
+        | Command::SessionSetProject { .. }
         | Command::SessionSetLifetime { .. }
         | Command::SessionDelete { .. }
         | Command::SessionKill { .. }
@@ -1123,6 +1124,7 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
             }
             org @ (AgentEvent::SessionCreated { .. }
             | AgentEvent::SessionRenamed { .. }
+            | AgentEvent::SessionProjectSet { .. }
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::SessionLifetimeChanged { .. }
             | AgentEvent::MembershipChanged { .. }

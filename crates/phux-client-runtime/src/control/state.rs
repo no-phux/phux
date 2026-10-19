@@ -2,10 +2,28 @@
 
 use super::{
     CLIPBOARD_QUEUE_BYTES, CommandResult, ControlPlane, EVENT_QUEUE_CAP, ErrorCode, Event, Pending,
-    ServerFeature, Status,
+    ServerFeature, SessionRecovery, Status,
 };
 
 impl ControlPlane {
+    /// Choose who validates the home session before the next reconnect attaches.
+    /// This does not replace the current socket or change its selected session.
+    pub const fn set_session_recovery(&mut self, recovery: SessionRecovery) {
+        self.options.session_recovery = recovery;
+    }
+
+    /// Begin following native conversations after an inventory-only connection
+    /// becomes a working client. Repeated calls do not repeat the catalog read.
+    pub fn watch_agent_sessions(&mut self) {
+        if self.options.subscribe_agent_sessions {
+            return;
+        }
+        self.options.subscribe_agent_sessions = true;
+        if self.handshake_ready {
+            self.queue_refresh_topology();
+        }
+    }
+
     pub(super) fn fail_pending_spawns(&mut self) {
         let spawns: Vec<_> = self
             .pending

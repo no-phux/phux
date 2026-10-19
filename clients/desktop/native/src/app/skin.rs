@@ -144,7 +144,7 @@ pub enum Surface {
     Capsule,
     /// The selected titlebar tab.
     Tab,
-    /// The selected side-rail tab.
+    /// The selected side-rail tab, cornered as the list rows around it.
     SideTab,
 }
 
@@ -175,13 +175,13 @@ pub trait Surfaced: Styled + Sized {
             ),
             Surface::Capsule => (None, look.capsule, look.border, &look.capsule_shadow),
             Surface::Tab => (
-                Some(shape.tab_radius[0]),
+                Some(shape.tab_radius),
                 look.active,
                 look.border,
                 &look.tab_shadow,
             ),
             Surface::SideTab => (
-                Some(shape.tab_radius[1]),
+                Some(super::ui::list::row_radius(&look.skin)),
                 look.active,
                 look.border,
                 &look.tab_shadow,

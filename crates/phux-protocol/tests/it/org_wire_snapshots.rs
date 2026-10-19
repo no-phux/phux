@@ -196,6 +196,22 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
             }),
         ),
         (
+            "snap_org_session_set_project",
+            command(Command::SessionSetProject {
+                operation: op(),
+                session: session(),
+                project: Some("phux".to_owned()),
+            }),
+        ),
+        (
+            "snap_org_session_clear_project",
+            command(Command::SessionSetProject {
+                operation: op(),
+                session: session(),
+                project: None,
+            }),
+        ),
+        (
             "snap_org_session_set_lifetime",
             command(Command::SessionSetLifetime {
                 operation: op(),
@@ -502,6 +518,22 @@ fn event_fixtures() -> Vec<(&'static str, FrameKind)> {
                 session: session(),
                 name: "play".to_owned(),
                 revision: rev(2),
+            }),
+        ),
+        (
+            "snap_org_event_session_project_set",
+            event(AgentEvent::SessionProjectSet {
+                session: session(),
+                project: Some("phux".to_owned()),
+                revision: rev(2),
+            }),
+        ),
+        (
+            "snap_org_event_session_project_cleared",
+            event(AgentEvent::SessionProjectSet {
+                session: session(),
+                project: None,
+                revision: rev(3),
             }),
         ),
         (

@@ -86,11 +86,12 @@ const fn command_variant(command: &Command) -> usize {
         Command::SessionKill { .. } => 43,
         Command::NativeAgent { .. } => 44,
         Command::PerfControl { .. } => 45,
-        Command::GetFile { .. } => 46,
+        Command::SessionSetProject { .. } => 46,
+        Command::GetFile { .. } => 47,
     }
 }
 
-const COMMAND_VARIANTS: usize = 47;
+const COMMAND_VARIANTS: usize = 48;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -141,6 +142,14 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
                 operation: operation(),
                 session: session_key(),
                 name: "play".to_owned(),
+            },
+            &C_SESSION_ORGANIZE,
+        ),
+        (
+            Command::SessionSetProject {
+                operation: operation(),
+                session: session_key(),
+                project: Some("phux".to_owned()),
             },
             &C_SESSION_ORGANIZE,
         ),
@@ -1236,10 +1245,10 @@ fn only_organization_commands_need_the_v2_verbs() {
             assert!(rule.subject.requires_owner_uds(), "{command:?}");
         } else if command.is_organization() {
             let method = command_method(encoded_command_tag(&command)).unwrap();
-            let gate = if matches!(command, Command::SessionKill { .. }) {
-                crate::caps::ServerFeatureExt::SessionKill
-            } else {
-                crate::caps::ServerFeatureExt::Organization
+            let gate = match command {
+                Command::SessionKill { .. } => crate::caps::ServerFeatureExt::SessionKill,
+                Command::SessionSetProject { .. } => crate::caps::ServerFeatureExt::SessionProject,
+                _ => crate::caps::ServerFeatureExt::Organization,
             };
             assert_eq!(
                 method.gate,

@@ -694,6 +694,11 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
             expected: rev,
             document: ArrangementDoc::default(),
         }),
+        command(Command::SessionSetProject {
+            operation: op,
+            session: k.session,
+            project: Some("phux".to_owned()),
+        }),
     ]
 }
 
@@ -1351,6 +1356,7 @@ fn rows(world: &mut World) -> Vec<Row> {
         on_global(org[11].clone(), "organize"),
         on_alpha(&org[12], "inventory"),
         on_alpha(&org[13], "organize"),
+        on_alpha(&org[14], "organize"),
     ]);
     rows.push(on_terminal(
         command(Command::ReleaseInput { terminal_id: t }),

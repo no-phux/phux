@@ -630,6 +630,18 @@ impl OrgFixture {
                 record.revision = revision;
                 Ok((ok(Committed::new(*operation, revision)), None))
             }
+            Command::SessionSetProject {
+                operation,
+                session,
+                project,
+            } => {
+                self.session_ref(session).ok_or(Refusal::NotFound)?;
+                let revision = self.bump();
+                let record = self.session_mut(session).ok_or(Refusal::NotFound)?;
+                crate::project_identity::set_link_attr(&mut record.attrs, project.as_deref());
+                record.revision = revision;
+                Ok((ok(Committed::new(*operation, revision)), None))
+            }
             Command::SessionSetLifetime {
                 operation,
                 session,
@@ -1048,6 +1060,7 @@ const fn command_name(command: &Command) -> &'static str {
     match command {
         Command::SessionCreate { .. } => "session_create",
         Command::SessionRename { .. } => "session_rename",
+        Command::SessionSetProject { .. } => "session_set_project",
         Command::SessionSetLifetime { .. } => "session_set_lifetime",
         Command::SessionDelete { .. } => "session_delete",
         Command::SessionKill { .. } => "session_kill",

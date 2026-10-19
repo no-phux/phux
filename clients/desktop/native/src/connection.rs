@@ -166,6 +166,9 @@ pub struct Connection {
     conversation_heads: HashMap<ResourceId, ResourceId>,
     /// Project label from each session's typed organization attributes.
     pub projects: HashMap<u32, String>,
+    /// The project a person linked each session into, which outranks its
+    /// repository.
+    pub links: HashMap<u32, String>,
     /// Canonical checkout root for new terminals in that session.
     pub directories: HashMap<u32, String>,
     /// The arrangement group that shows each terminal, by name.

@@ -4,7 +4,9 @@
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, IntoElement, MouseButton, Window, div, px};
 
-use super::dialogs::{add_host_dialog, confirm, paste_question, rename_dialog, session_dialog};
+use super::dialogs::{
+    add_host_dialog, confirm, paste_question, project_dialog, rename_dialog, session_dialog,
+};
 use super::launcher;
 use super::notifications::notifications_panel;
 use super::path_panel::path_panel;
@@ -19,6 +21,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
         Modal::Capture => crate::app::capture::panel(desk, &look, window, cx),
+        Modal::AgentFleet => crate::app::fleet::dashboard::panel(desk, &look, window, cx),
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
@@ -30,7 +33,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         }
         Modal::Settings => launcher::palette(desk, colors, window, cx),
         Modal::Notifications => {
-            let panel = notifications_panel(desk, colors, &look, cx);
+            let panel = notifications_panel(desk, colors, &look, window, cx);
             return match desk.anchors.get("notifications") {
                 Some(bell) => popover(bell, window, cx, panel),
                 None => backdrop(colors, window, cx, panel),
@@ -39,9 +42,12 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         Modal::NativeLaunch => crate::app::native_launch::panel(desk, &look, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, &look, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
+        Modal::Project { name, current, .. } => {
+            project_dialog(desk, &name, current.is_some(), colors, &look, cx)
+        }
         Modal::KillSession { name, .. } => confirm(
             format!("Kill {name}?"),
-            "This ends every process in the session, for every client, and deletes it. Closing a pane, tab, or window never does this.",
+            "This ends every process in the session, for every client, and deletes it. Closing a pane or tab ends its processes too; closing a window only detaches.",
             "Kill Session",
             colors,
             &look,
@@ -60,7 +66,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         ),
         Modal::Terminate { title, .. } => confirm(
             format!("Terminate {title}?"),
-            "This ends the process for every view and every client attached to it. Closing a pane only detaches.",
+            "This ends the process for every view and every client attached to it. Close Pane does the same without this confirmation.",
             "Terminate",
             colors,
             &look,
@@ -69,7 +75,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         ),
         Modal::Paste { title, paste, .. } => confirm(
             paste_question(&title, paste.lines()),
-            "It is running a command, so each line goes to that program as input, not to a shell prompt.",
+            "Its program is not expecting a paste, so each line break arrives as Enter and runs the line before it.",
             "Paste",
             colors,
             &look,
@@ -175,7 +181,29 @@ pub(crate) fn corner(look: &Look, glass: f32) -> gpui::Pixels {
     px(glass * look.skin.shape.kit_radius / kit)
 }
 
-/// An inset row inside a [`card`]: its corner follows the card's.
-pub(super) fn inset_radius(look: &Look) -> gpui::Pixels {
-    px((look.skin.shape.card_radius - 4.).max(0.))
+/// A box `inset` points inside a [`card`]'s outer edge: its corner is
+/// concentric with the card's, down to half a kit corner.
+pub(super) fn inset_radius(look: &Look, inset: f32) -> gpui::Pixels {
+    let shape = &look.skin.shape;
+    px((shape.card_radius - inset).max(shape.kit_radius / 2.))
+}
+
+/// The line box GPUI gives `size` text at the default line height.
+pub(super) fn line_height(window: &Window, size: gpui::Pixels) -> gpui::Pixels {
+    gpui::TextStyle {
+        font_size: size.into(),
+        ..Default::default()
+    }
+    .line_height_in_pixels(window.rem_size())
+}
+
+/// How far below the top of a `line`-high line box GPUI paints the baseline
+/// of `size` text in the UI font: half the leading, then the ascent.
+pub(super) fn baseline(cx: &gpui::App, size: gpui::Pixels, line: gpui::Pixels) -> gpui::Pixels {
+    use gpui_kit::component::ActiveTheme;
+    let text = cx.text_system();
+    let font = text.resolve_font(&gpui::font(cx.theme().font_family.clone()));
+    let ascent = text.ascent(font, size);
+    let descent = text.descent(font, size).abs();
+    (line - ascent - descent) / 2. + ascent
 }

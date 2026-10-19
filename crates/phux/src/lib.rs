@@ -2632,6 +2632,48 @@ mod tests {
         }
     }
 
+    /// `project link` and `unlink` take a session, `--json` and the verb's
+    /// own `--remote`, and dial a server, so `--socket` is theirs too.
+    #[test]
+    fn project_link_and_unlink_parse_their_target_and_remote() {
+        use crate::commands::ProjectAction;
+        let cli = crate::parse_cli([
+            "phux", "project", "link", "notes", "phux", "--json", "--remote", "me@mini",
+        ])
+        .expect("link parses");
+        let command = cli.command.as_ref().expect("a verb");
+        let Command::Project {
+            action:
+                ProjectAction::Link {
+                    session,
+                    name,
+                    json,
+                    remote,
+                },
+        } = command
+        else {
+            panic!("{command:?}");
+        };
+        assert_eq!(
+            (session.as_str(), name.as_str(), *json),
+            ("notes", "phux", true)
+        );
+        assert_eq!(remote.remote.as_deref(), Some("me@mini"));
+        assert_eq!(crate::commands::verb_remote(command), Some("me@mini"));
+
+        let cli = crate::parse_cli(["phux", "project", "unlink", "notes", "--socket", "/tmp/x"])
+            .expect("unlink parses");
+        let command = cli.command.as_ref().expect("a verb");
+        assert!(matches!(
+            command,
+            Command::Project {
+                action: ProjectAction::Unlink { session, json: false, .. }
+            } if session == "notes"
+        ));
+        assert!(crate::commands::socketless_verb(command).is_none());
+        crate::parse_cli(["phux", "project", "link", "notes"]).expect_err("link needs a NAME");
+    }
+
     /// A scoped flag given before the verb gets the teaching hint: the
     /// interception recognizes `--json` (and any other per-verb long flag)
     /// in clap's unknown-argument refusal.

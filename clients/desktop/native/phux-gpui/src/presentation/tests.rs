@@ -468,8 +468,14 @@ fn a_pending_receipt_does_not_keep_the_runtime_alive() {
 fn an_unchanged_frame_does_not_take_another_owner_turn() {
     let (client, view, surface) = ready();
     let first = capture(&client, view, &surface).unwrap();
-    let requests = phux_client_runtime::perf::REQUEST_WALL.count();
-    let second = capture(&client, view, &surface).unwrap();
-    assert_eq!(phux_client_runtime::perf::REQUEST_WALL.count(), requests);
-    assert!(Arc::ptr_eq(&first.frame(), &second.frame()));
+    // The request counter is process-wide and other tests run alongside
+    // this one. A capture that took an owner turn would move it on every
+    // attempt, so one quiet attempt is the proof.
+    let quiet = (0..20).any(|_| {
+        let requests = phux_client_runtime::perf::REQUEST_WALL.count();
+        let second = capture(&client, view, &surface).unwrap();
+        assert!(Arc::ptr_eq(&first.frame(), &second.frame()));
+        phux_client_runtime::perf::REQUEST_WALL.count() == requests
+    });
+    assert!(quiet, "an unchanged frame took an owner turn");
 }

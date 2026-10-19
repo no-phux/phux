@@ -9,7 +9,7 @@ use crate::app::color::from_hex;
 use crate::app::desk::{Desk, display_title};
 use crate::app::fleet::Work;
 use crate::app::skin::Look;
-use crate::app::ui::list::{Emphasis, row_detail, row_label};
+use crate::app::ui::list::{Emphasis, ROW_GAP, row_detail, row_label};
 use crate::app::ui::menu::Anchor;
 use crate::app::ui::{ghost_icon, row};
 use crate::app::view::ResourceDrag;
@@ -30,6 +30,11 @@ pub(super) fn disclosure_key(work: &Work) -> String {
     )
 }
 
+const HEADER_GAP: f32 = 4.;
+/// Title and caption lines, set close so they read as one entry.
+const TITLE_LINE: f32 = 18.;
+const DETAIL_LINE: f32 = 16.;
+
 pub(super) fn session_block(
     desk: &Desk,
     work: &Work,
@@ -38,6 +43,9 @@ pub(super) fn session_block(
 ) -> AnyElement {
     let target = work.destination.clone();
     let current = desk.work_is_active(&target);
+    // Session actions target any session on the active connection, including
+    // empty/inactive sessions. Selection is not mutation authority.
+    let actionable = work.online && target.host == desk.remote;
     let key = disclosure_key(work);
     let collapsed = desk.collapsed.contains(&key);
     let selector = format!("work-{}-{}", target.host_label(), work.id);
@@ -48,7 +56,7 @@ pub(super) fn session_block(
         .group("session")
         .h(px(44.))
         .min_h(px(44.))
-        .gap(px(4.))
+        .gap(px(HEADER_GAP))
         .when(current, |row| row.bg(look.active))
         .child(
             div()
@@ -57,7 +65,14 @@ pub(super) fn session_block(
                 .role(gpui::Role::Button)
                 .aria_label(if collapsed { "Expand session" } else { "Collapse session" })
                 .cursor_pointer()
-                .child(session_slot(if collapsed { "▸" } else { "▾" }, None, look))
+                // The whole row's height to hit; the caret sits on the title's line.
+                .self_stretch()
+                .flex()
+                .items_center()
+                .pb(px(DETAIL_LINE))
+                // The title starts on its children's icon column.
+                .mr(px(ROW_GAP - HEADER_GAP))
+                .child(session_slot(collapsed, None, look))
                 .on_click(cx.listener(move |desk, _, _, cx| {
                     cx.stop_propagation();
                     desk.toggle_session_collapsed(&toggle_key, cx);
@@ -66,13 +81,13 @@ pub(super) fn session_block(
         // Metadata gets a stable second line, never the name's horizontal space.
         .child(div().flex_1().min_w_0().flex().flex_col().gap(px(1.))
             .child(row_label(display_title(&target.name), if current { Emphasis::Current } else { Emphasis::Normal }, look)
-                .flex_none().w_full()
+                .flex_none().w_full().line_height(px(TITLE_LINE))
                 .debug_selector({ let target = target.clone(); let id = work.id; move || format!("session-label-{}-{id}", target.host_label()) }))
-            .child(row_detail(detail, look).max_w_full().w_full()
+            .child(row_detail(detail, look).max_w_full().w_full().line_height(px(DETAIL_LINE))
                 .debug_selector({ let target = target.clone(); let id = work.id; move || format!("session-detail-{}-{id}", target.host_label()) })))
         .child(div().w(px(8.)).flex_shrink_0().child(crate::app::ui::status::state_dot(work.attention, None)))
         // Reserve the same actions slot on every row, selected or not.
-        .child(session_actions(desk, work, current, look, cx))
+        .child(session_actions(work, actionable, cx))
         .when_some(work.destination.key.filter(|_| current), |row, destination| {
             let name = work.destination.name.clone();
             let wash = from_hex(&look.chrome.accent_wash);
@@ -81,7 +96,7 @@ pub(super) fn session_block(
                     desk.move_resources_to(drag.keys.clone(), destination, name.clone(), window, cx);
                 }))
         })
-        .when(current, |row| {
+        .when(actionable, |row| {
             let name = work.destination.name.clone();
             let id = work.id;
             row.on_mouse_down(MouseButton::Right, cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
@@ -141,32 +156,19 @@ fn session_description(desk: &Desk, work: &Work) -> (String, String) {
     let tip = format!(
         "{} · {} · {detail}{role}",
         work.destination.name,
-        work.destination.host.as_deref().unwrap_or("This Mac")
+        crate::app::machine_name::label(work.destination.host.as_deref())
     );
     (detail, tip)
 }
 
-fn session_actions(
-    desk: &Desk,
-    work: &Work,
-    current: bool,
-    _: &Look,
-    cx: &mut Context<Desk>,
-) -> impl IntoElement {
+fn session_actions(work: &Work, actionable: bool, cx: &mut Context<Desk>) -> impl IntoElement {
     let id = work.id;
     let name = work.destination.name.clone();
     let selector = format!("session-actions-{}-{id}", work.destination.host_label());
     div()
         .debug_selector(move || selector.clone())
         .flex_shrink_0()
-        .invisible()
-        .when(current, |slot| {
-            slot.group_hover("session", |style| style.visible())
-        })
-        .when(
-            current && desk.menu_open(&format!("session-{id}")),
-            |slot| slot.visible(),
-        )
+        .when(!actionable, |slot| slot.invisible())
         .child(
             ghost_icon(
                 format!("session-menu-{}-{id}", work.destination.host_label()),

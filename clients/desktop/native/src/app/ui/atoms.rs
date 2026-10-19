@@ -68,7 +68,9 @@ pub(crate) fn shadow(color: Hsla, y: f32, blur: f32, spread: f32, inset: bool) -
 }
 
 /// Light catching a card's top edge: a hairline brightest at the centre,
-/// `inset` points in from either corner. None when `color` is clear.
+/// `inset` points in from either side of the box it is placed in. Lay it on
+/// the card's border row, not under it, or the edge paints two hairlines
+/// thick. None when `color` is clear.
 pub(crate) fn specular(color: Hsla, inset: f32) -> Option<gpui::Div> {
     let half = |from: Hsla, to: Hsla| {
         div().flex_1().h_full().bg(linear_gradient(
