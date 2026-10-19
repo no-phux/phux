@@ -1807,6 +1807,15 @@ fn fold_org_event<W: crate::attach::RenderSink>(
                 ..FrameOutcome::default()
             };
         }
+        AgentEvent::SessionProjectSet {
+            session, project, ..
+        } => {
+            return FrameOutcome {
+                session_project_set: Some((*session, project.clone())),
+                chrome_dirty: true,
+                ..FrameOutcome::default()
+            };
+        }
         AgentEvent::ArrangementChanged {
             owner: ArrangementOwner::Session(session),
             ..

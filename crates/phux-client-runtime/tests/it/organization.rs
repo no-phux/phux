@@ -28,6 +28,7 @@ fn hello(organization: bool) -> FrameKind {
         ServerFeatureExtSet::with(&[
             ServerFeatureExt::Organization,
             ServerFeatureExt::SessionKill,
+            ServerFeatureExt::SessionProject,
         ])
     } else {
         ServerFeatureExtSet::new()
@@ -401,6 +402,11 @@ fn without_organization_nothing_is_read_and_submissions_are_not_sent() {
             .any(|(_, c)| matches!(c, Command::CloseTabResources { .. }))
     );
     assert_eq!(plane.kill_session(skey(1)), Err(SubmitError::Unsupported));
+    assert!(!plane.session_project_supported());
+    assert_eq!(
+        plane.set_session_project(skey(1), Some("phux")),
+        Err(SubmitError::Unsupported)
+    );
 }
 
 #[test]
@@ -458,6 +464,63 @@ fn kill_session_is_one_server_command_resolved_like_any_other() {
     assert!(matches!(
         outcomes.as_slice(),
         [(op, OrgOutcome::Committed(receipt))] if *op == operation && receipt.members == Some(1)
+    ));
+}
+
+#[test]
+fn set_session_project_sends_one_command_and_the_event_updates_the_record() {
+    let mut plane = seeded();
+    let _ = commands(&mut plane);
+    assert!(plane.session_project_supported());
+    let operation = plane
+        .set_session_project(skey(1), Some("phux"))
+        .expect("SESSION_PROJECT advertised");
+    let sent = commands(&mut plane);
+    let [
+        (
+            id,
+            Command::SessionSetProject {
+                session, project, ..
+            },
+        ),
+    ] = sent.as_slice()
+    else {
+        panic!("expected one SESSION_SET_PROJECT, got {sent:?}");
+    };
+    assert_eq!((*session, project.as_deref()), (skey(1), Some("phux")));
+    answer(
+        &mut plane,
+        *id,
+        CommandResult::OkWith(CommandValue::Committed(Box::new(Committed::new(
+            operation,
+            Revision::new(3),
+        )))),
+    );
+    let seq = plane.organization().journal_seq() + 1;
+    event(
+        &mut plane,
+        Some(seq),
+        AgentEvent::SessionProjectSet {
+            session: skey(1),
+            project: Some("phux".to_owned()),
+            revision: Revision::new(3),
+        },
+    );
+    let record = plane.organization().session(&skey(1)).expect("record");
+    assert!(
+        record
+            .attrs
+            .iter()
+            .any(|(k, v)| k == "project" && v == "phux"),
+        "{:?}",
+        record.attrs
+    );
+
+    plane.set_session_project(skey(1), None).expect("clear");
+    let sent = commands(&mut plane);
+    assert!(matches!(
+        sent.as_slice(),
+        [(_, Command::SessionSetProject { project: None, .. })]
     ));
 }
 

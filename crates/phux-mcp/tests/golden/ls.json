@@ -81,6 +81,7 @@
       "members": 4,
       "name": "work",
       "project": null,
+      "project_label": null,
       "windows": 1
     }
   ],

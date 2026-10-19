@@ -293,7 +293,13 @@ fn host_list_lines(doc: &HostListJson) -> Vec<String> {
         let rows = host
             .sessions
             .iter()
-            .map(|row| (glance_of_row(row), row.project.clone()))
+            .map(|row| {
+                let project = RowProject {
+                    identity: row.project.clone(),
+                    label: row.project_label.clone(),
+                };
+                (glance_of_row(row), project)
+            })
             .collect();
         lines.extend(
             collapse_by_project(rows)
@@ -404,12 +410,17 @@ fn glance_lines(sources: Sources<'_>) -> Vec<String> {
         .map(|(row, _)| row)
         .filter(|row| row.to_organize != Some(0))
         .map(|row| {
-            let project = sources
+            let session = sources
                 .snapshot
                 .sessions
                 .iter()
-                .find(|session| session.name == row.name)
-                .and_then(phux_client::project_identity::of_session);
+                .find(|session| session.name == row.name);
+            let project = RowProject {
+                identity: session.and_then(phux_client::project_identity::of_session),
+                label: session
+                    .and_then(phux_client::project_identity::label_of_session)
+                    .map(str::to_owned),
+            };
             (row, project)
         })
         .collect();
@@ -507,14 +518,26 @@ const GLANCE_ROWS: usize = 20;
 /// each group name-sorted. Past [`GLANCE_ROWS`], one line counts what was
 /// left out; a quiet session never displaces one that needs you.
 fn collapse(rows: Vec<SessionGlance>) -> Vec<String> {
-    collapse_by_project(rows.into_iter().map(|row| (row, None)).collect())
+    collapse_by_project(
+        rows.into_iter()
+            .map(|row| (row, RowProject::default()))
+            .collect(),
+    )
+}
+
+/// What groups one glance row (ADR-0168): its repository identity and its
+/// explicit project label, which outranks the identity.
+#[derive(Debug, Clone, Default)]
+struct RowProject {
+    identity: Option<SessionProject>,
+    label: Option<String>,
 }
 
 /// [`collapse`], then the shown rows of one project (ADR-0168) grouped
 /// under a `NAME (project)` header: the primary checkout two spaces in,
 /// its linked worktrees four. A project with one shown session stays a
 /// plain line.
-fn collapse_by_project(mut rows: Vec<(SessionGlance, Option<SessionProject>)>) -> Vec<String> {
+fn collapse_by_project(mut rows: Vec<(SessionGlance, RowProject)>) -> Vec<String> {
     rows.sort_by(|(a, _), (b, _)| {
         (a.needs_you() == 0)
             .cmp(&(b.needs_you() == 0))
@@ -545,13 +568,13 @@ fn collapse_by_project(mut rows: Vec<(SessionGlance, Option<SessionProject>)>) -
 
 /// Glance lines for `rows` in order, each project of two or more rows under
 /// one header.
-fn project_grouped_glance(rows: &[(SessionGlance, Option<SessionProject>)]) -> Vec<String> {
+fn project_grouped_glance(rows: &[(SessionGlance, RowProject)]) -> Vec<String> {
     use phux_client::project_groups::{Block, GroupRow, group_rows};
     let group: Vec<GroupRow<'_>> = rows
         .iter()
         .map(|(row, project)| GroupRow {
-            project: project.as_ref(),
-            label: None,
+            project: project.identity.as_ref(),
+            label: project.label.as_deref(),
             needs_you: usize::try_from(row.needs_you()).unwrap_or(usize::MAX),
         })
         .collect();
@@ -1080,6 +1103,7 @@ mod tests {
                 ..ExecCounts::default()
             },
             project: None,
+            project_label: None,
             key: None,
         };
         let doc = HostListJson::new(vec![
@@ -1196,6 +1220,7 @@ mod tests {
             members,
             exec,
             project: None,
+            project_label: None,
             key: None,
         };
         assert_eq!(
@@ -1520,6 +1545,49 @@ mod tests {
         assert_eq!(super::collapse(few).len(), 3, "no count line when it fits");
     }
 
+    /// A session linked into a project by name glances under that
+    /// project's header beside its git sessions; a label naming no
+    /// identity groups on its own.
+    #[test]
+    fn a_linked_session_glances_under_its_project() {
+        use phux_client::glance::SessionGlance;
+        use phux_core::project_identity::SessionProject;
+        let phux = SessionProject {
+            id: "github.com/no-phux/phux".to_owned(),
+            name: "phux".to_owned(),
+            checkout: "/w".to_owned(),
+            branch: None,
+            linked_worktree: false,
+            host: Some("mini".to_owned()),
+        };
+        let glance = |name: &str| SessionGlance {
+            name: name.to_owned(),
+            running: 1,
+            ..SessionGlance::default()
+        };
+        let row = |identity, label: Option<&str>| super::RowProject {
+            identity,
+            label: label.map(str::to_owned),
+        };
+        let lines = super::collapse_by_project(vec![
+            (glance("main"), row(Some(phux), None)),
+            (glance("notes"), row(None, Some("phux"))),
+            (glance("ops-a"), row(None, Some("ops"))),
+            (glance("ops-b"), row(None, Some("ops"))),
+        ]);
+        assert_eq!(
+            lines,
+            [
+                "phux (project)",
+                "  main: 1 running",
+                "  notes: 1 running",
+                "ops (project)",
+                "  ops-a: 1 running",
+                "  ops-b: 1 running",
+            ]
+        );
+    }
+
     /// ADR-0168: sessions of one repository glance under one header, the
     /// primary checkout first and its linked worktrees indented beneath;
     /// a project with one session stays a plain line.
@@ -1546,11 +1614,15 @@ mod tests {
             running: 1,
             ..SessionGlance::default()
         };
+        let of = |identity| super::RowProject {
+            identity,
+            label: None,
+        };
         let lines = super::collapse_by_project(vec![
-            (glance("feat-auth", 1), Some(feat)),
-            (glance("scratch", 0), None),
-            (glance("phux", 0), Some(main)),
-            (glance("other", 0), Some(lone)),
+            (glance("feat-auth", 1), of(Some(feat))),
+            (glance("scratch", 0), of(None)),
+            (glance("phux", 0), of(Some(main))),
+            (glance("other", 0), of(Some(lone))),
         ]);
         assert_eq!(
             lines,

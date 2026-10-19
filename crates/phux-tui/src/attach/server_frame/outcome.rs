@@ -154,6 +154,9 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) session_rename: Option<(String, String)>,
     /// A `SESSION_RENAMED` event (ADR-0161): the session's key and new name.
     pub(in crate::attach) session_renamed: Option<(SessionKey, String)>,
+    /// A `SESSION_PROJECT_SET` event: the session's key and its new project
+    /// label (`None` cleared it).
+    pub(in crate::attach) session_project_set: Option<(SessionKey, Option<String>)>,
     /// A `phux.session.project/v1` write. `Absent` means this frame did not speak.
     pub(in crate::attach) project_tag: ProjectTagFrame,
     /// Transient status-bar notices raised by this frame.

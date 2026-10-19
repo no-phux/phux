@@ -727,6 +727,40 @@ pub async fn delete_session(
     commit(conn, FIRST_REQUEST_ID, command).await
 }
 
+/// Whether the server behind `conn` takes `SESSION_SET_PROJECT`.
+#[must_use]
+pub fn session_project_supported(conn: &Connection) -> bool {
+    conn.negotiated_bootstrap().is_some_and(|negotiated| {
+        negotiated
+            .server_features_ext
+            .contains(ServerFeatureExt::SessionProject)
+    })
+}
+
+/// `phux project link` / `unlink`: set or clear a session's project label
+/// (`SESSION_SET_PROJECT`; the last writer wins).
+///
+/// # Errors
+///
+/// [`OrgError::Unsupported`] unless the server advertises
+/// `SESSION_PROJECT`, with nothing sent; `INVALID_ARGUMENT` for a blank,
+/// over-long or control-character label; transport failures.
+pub async fn set_session_project(
+    conn: &mut Connection,
+    session: SessionKey,
+    project: Option<&str>,
+) -> Result<Committed, OrgError> {
+    if !session_project_supported(conn) {
+        return Err(OrgError::Unsupported);
+    }
+    let command = Command::SessionSetProject {
+        operation: mint_operation(),
+        session,
+        project: project.map(str::to_owned),
+    };
+    commit(conn, FIRST_REQUEST_ID, command).await
+}
+
 /// `phux relaunch`: start a new activation of an inactive resource.
 ///
 /// # Errors
