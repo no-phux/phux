@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/no-phux/phux/compare/claude-plugin-v0.6.0...claude-plugin-v0.6.1) (2026-10-19)
+
+
+### Documentation
+
+* conserve live contracts and make historical decisions searchable ([#1643](https://github.com/no-phux/phux/issues/1643)) ([bb4e5da](https://github.com/no-phux/phux/commit/bb4e5daf69896fded96136a954377513b387e5da))
+
 ## [0.6.0](https://github.com/no-phux/phux/compare/claude-plugin-v0.5.0...claude-plugin-v0.6.0) (2026-10-16)
 
 

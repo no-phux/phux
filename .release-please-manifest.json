@@ -1,9 +1,9 @@
 {
-  ".": "0.108.1",
+  ".": "0.109.0",
   "clients/desktop": "0.40.0",
-  "integrations/pi": "0.7.0",
+  "integrations/pi": "0.7.1",
   "integrations/opencode-v2": "0.6.2",
-  "integrations/claude": "0.6.0",
-  "integrations/omp": "0.3.0",
+  "integrations/claude": "0.6.1",
+  "integrations/omp": "0.3.1",
   "integrations/grok": "0.2.0"
 }
