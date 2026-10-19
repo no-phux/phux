@@ -16,14 +16,17 @@ impl Connection {
     }
 
     /// Kill `session` with one `SESSION_KILL`. The result is
-    /// [`Event::OrganizationOperation`] for the returned operation; `None`
-    /// when the server does not take the command.
-    #[must_use]
-    pub fn kill_session(&self, session: SessionKey) -> Option<OperationId> {
-        if self.closed {
-            return None;
+    /// [`Event::OrganizationOperation`] for the returned operation.
+    ///
+    /// # Errors
+    /// A sentence when the connection or journal refuses the submission.
+    pub fn kill_session(&self, session: SessionKey) -> Result<OperationId, String> {
+        if self.closed || self.status != Status::Attached {
+            return Err("Not connected.".to_owned());
         }
-        self.client.kill_session(session).ok()
+        self.client
+            .kill_session(session)
+            .map_err(|error| error.to_string())
     }
 
     /// Ask the runtime to drop the socket and redial. A terminal client cannot reopen.

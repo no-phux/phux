@@ -29,8 +29,8 @@ const CATALOG: &str = "\
     split-left | Split Left | Panes |  | Open a terminal to the left of the focused pane. |
     split-up | Split Up | Panes |  | Open a terminal above the focused pane. |
     view | Mirror Pane | Panes | cmd+alt+d | Show the focused terminal in another pane. | duplicate open another view
-    close | Close Pane | Panes | cmd+w | Detach this pane; its terminal keeps running. |
-    close-tab | Close Tab | Tabs | cmd+shift+w | Detach this tab; its terminals keep running. |
+    close | Close Pane | Panes | cmd+w | End this pane's process and remove all its views. |
+    close-tab | Close Tab | Tabs | cmd+shift+w | End every process in this tab and remove their views. |
     zoom | Zoom Pane | Panes | cmd+shift+enter | Expand the focused pane or restore its splits. |
     equalize | Equalize Splits | Panes | cmd+ctrl+= | Give the active tab's panes equal space. | balance
     pane-left | Focus Pane Left | Panes | cmd+alt+left | Focus the neighboring pane on the left. |

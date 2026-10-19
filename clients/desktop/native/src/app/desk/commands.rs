@@ -60,7 +60,7 @@ impl Desk {
             "close" => self.fold_pane(window, cx),
             "close-tab" => {
                 if let Some(id) = self.active_tab_id() {
-                    self.workspace_call(|link| link.workspace.close_tab(&link.connection, &id));
+                    self.workspace_call(|link| link.workspace.terminate_tab(&link.connection, &id));
                 }
             }
             "zoom" => self.workspace_call(|link| link.workspace.toggle_zoom()),

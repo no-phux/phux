@@ -75,6 +75,7 @@ fn switching_authorities_preserves_the_other_hosts_catalog_and_clears_old_dialog
         desk.modal = super::super::desk::Modal::KillSession {
             name: "main".into(),
             session: 7,
+            target: None,
         };
         let target = desk
             .work_catalog()
