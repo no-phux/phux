@@ -25,7 +25,11 @@ const DOC_INPUTS: Record<string, Surface[]> = {
 };
 
 /** Shipped agent skills are product inputs, not documentation. */
-const PRODUCT_PROSE = [".agents/skills/{using-phux,using-phux-mcp}/**", "integrations/*/skills/**"];
+const PRODUCT_PROSE = [
+  ".agents/skills/{using-phux,using-phux-mcp}/**",
+  "integrations/*/skills/**",
+  "integrations/muse/SKILL.md",
+];
 
 const ROUTES: Record<string, Surface[]> = {
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
@@ -46,6 +50,7 @@ const ROUTES: Record<string, Surface[]> = {
   "tools/src/integrations/**": ["integrations"],
   "tools/src/cargo/build-features.ts": ["phux"],
   ".agents/skills/{using-phux,using-phux-mcp}/**": ["phux"],
+  ".agents/lib/**": ["integrations"],
   "clients/{phux-web,phux-vt-web}/**": ["web"],
   "clients/phux-vt-web/vendor/**": ["web", "web_engine"],
   "scripts/build-vt-wasm.sh": ["web", "web_engine"],

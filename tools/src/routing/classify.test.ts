@@ -48,6 +48,8 @@ test.each<[string[], Surface[]]>([
   [["tools/src/web/browser.ts"], ["web"]],
   [["clients/phux-vt-web/vendor/ghostty-vt.wasm"], ["web", "web_engine"]],
   [["integrations/pi/src/index.ts"], ["integrations"]],
+  [[".agents/lib/phux-agent.sh"], ["integrations"]],
+  [["integrations/muse/SKILL.md"], ["integrations"]],
   [["integrations/claude/skills/phux/SKILL.md"], ["integrations"]],
   [["crates/phux-server/src/lib.rs"], ["phux", "web"]],
   [["crates/phux-config-core/src/lib.rs"], ["phux", "web", "desktop"]],
@@ -142,6 +144,7 @@ test("docs_only holds only for documentation no build reads", () => {
     [["docs/consumers/agents.md"], true],
     [["CHANGELOG.md"], false],
     [[".agents/skills/using-phux/SKILL.md"], false],
+    [["integrations/muse/SKILL.md"], false],
     [[".github/workflows/ci.yml"], false],
     [[], false],
   ]);
