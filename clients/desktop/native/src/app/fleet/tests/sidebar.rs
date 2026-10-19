@@ -1,6 +1,65 @@
 use super::*;
 
 #[gpui::test]
+fn session_names_keep_their_column_when_counts_and_hosts_are_long(cx: &mut TestAppContext) {
+    use gpui::{VisualTestContext, px};
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut VisualTestContext::from_window(*handle, cx);
+    let host = "remote-with-a-long-machine-name";
+    desk.update(cx, |desk, cx| {
+        install(
+            desk,
+            with_pane(connection(1, vec![session(7, "local-session-name")])),
+        );
+        observe(
+            &mut desk.fleet,
+            Some(host),
+            with_pane(connection(2, vec![session(8, "remote-session-name")])),
+        );
+        desk.prefs.sidebar_visible = true;
+        cx.notify();
+    });
+    for width in [crate::settings::SIDEBAR_MIN, 248., 320.] {
+        desk.update(cx, |desk, cx| {
+            desk.update_prefs(|prefs| prefs.sidebar_width = width, cx)
+        });
+        draw(cx);
+        for (row_selector, label_selector, detail_selector, actions_selector) in [
+            (
+                "work-Local-7",
+                "session-label-Local-7",
+                "session-detail-Local-7",
+                "session-actions-Local-7",
+            ),
+            (
+                "work-remote-with-a-long-machine-name-8",
+                "session-label-remote-with-a-long-machine-name-8",
+                "session-detail-remote-with-a-long-machine-name-8",
+                "session-actions-remote-with-a-long-machine-name-8",
+            ),
+        ] {
+            let row = cx.debug_bounds(row_selector).unwrap();
+            let label = cx.debug_bounds(label_selector).unwrap();
+            let detail = cx.debug_bounds(detail_selector).unwrap();
+            let actions = cx.debug_bounds(actions_selector).unwrap();
+            assert!(
+                label.size.width >= px(80.),
+                "{row_selector}: metadata must not squeeze away the session name at {width}"
+            );
+            assert_eq!(detail.size.width, label.size.width);
+            assert!(
+                detail.origin.y >= label.bottom(),
+                "counts have a separate stable line"
+            );
+            assert_eq!(row.size.height, px(44.));
+            assert!(actions.right() <= row.right() - px(crate::app::ui::list::ROW_INSET));
+            assert!(row.right() <= px(width as f32));
+        }
+    }
+}
+
+#[gpui::test]
 fn switching_hosts_retains_local_inventory_before_its_observer_is_ready(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (desk, _) = fixture(cx);

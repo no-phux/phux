@@ -11,7 +11,7 @@ use crate::app::fleet::Work;
 use crate::app::skin::Look;
 use crate::app::ui::list::{Emphasis, row_detail, row_label};
 use crate::app::ui::menu::Anchor;
-use crate::app::ui::{badge, ghost_icon, row};
+use crate::app::ui::{ghost_icon, row};
 use crate::app::view::ResourceDrag;
 
 use super::rows::{catalog_pane_row, pane_row, record_row};
@@ -46,6 +46,9 @@ pub(super) fn session_block(
     let header = row(SharedString::from(selector.clone()), look)
         .debug_selector(move || selector.clone())
         .group("session")
+        .h(px(44.))
+        .min_h(px(44.))
+        .gap(px(4.))
         .when(current, |row| row.bg(look.active))
         .child(
             div()
@@ -60,9 +63,13 @@ pub(super) fn session_block(
                     desk.toggle_session_collapsed(&toggle_key, cx);
                 })),
         )
-        .child(row_label(display_title(&target.name), if current { Emphasis::Current } else { Emphasis::Normal }, look))
-        .when(work.imported, |row| row.child(badge("imported", look)))
-        .child(row_detail(detail, look))
+        // Metadata gets a stable second line, never the name's horizontal space.
+        .child(div().flex_1().min_w_0().flex().flex_col().gap(px(1.))
+            .child(row_label(display_title(&target.name), if current { Emphasis::Current } else { Emphasis::Normal }, look)
+                .flex_none().w_full()
+                .debug_selector({ let target = target.clone(); let id = work.id; move || format!("session-label-{}-{id}", target.host_label()) }))
+            .child(row_detail(detail, look).max_w_full().w_full()
+                .debug_selector({ let target = target.clone(); let id = work.id; move || format!("session-detail-{}-{id}", target.host_label()) })))
         .child(div().w(px(8.)).flex_shrink_0().child(crate::app::ui::status::state_dot(work.attention, None)))
         // Reserve the same actions slot on every row, selected or not.
         .child(session_actions(desk, work, current, look, cx))
@@ -116,6 +123,9 @@ fn session_description(desk: &Desk, work: &Work) -> (String, String) {
         work.terminals,
         if work.terminals == 1 { "pane" } else { "panes" }
     )];
+    if work.imported {
+        words.push("imported".into());
+    }
     words.extend(host_word(desk, work.destination.host.as_deref()));
     if !work.online {
         words.push("offline".into());
@@ -145,7 +155,9 @@ fn session_actions(
 ) -> impl IntoElement {
     let id = work.id;
     let name = work.destination.name.clone();
+    let selector = format!("session-actions-{}-{id}", work.destination.host_label());
     div()
+        .debug_selector(move || selector.clone())
         .flex_shrink_0()
         .invisible()
         .when(current, |slot| {
