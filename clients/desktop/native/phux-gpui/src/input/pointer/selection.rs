@@ -57,11 +57,17 @@ impl TerminalInput {
         if running {
             return;
         }
+        // A timer from an earlier run (the pointer came back in, or another
+        // drag began) stops at its next tick instead of doubling the speed.
+        self.autoscroll_run = self.autoscroll_run.wrapping_add(1);
+        let run = self.autoscroll_run;
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(AUTOSCROLL_TICK).await;
                 let more = this
-                    .update(cx, |state, cx| state.autoscroll_tick(cx))
+                    .update(cx, |state, cx| {
+                        state.autoscroll_run == run && state.autoscroll_tick(cx)
+                    })
                     .unwrap_or(false);
                 if !more {
                     break;
@@ -83,6 +89,9 @@ impl TerminalInput {
             return false;
         };
         let rows = autoscroll_rows(metrics.bounds, metrics.line_height, position.y);
+        if rows == 0 {
+            return true;
+        }
         let Ok(client) = self.client() else {
             self.autoscroll = None;
             return false;

@@ -51,7 +51,8 @@ pub fn copy_too_large() -> InputNotice {
     InputNotice {
         title: "Selection not copied",
         body: format!(
-            "It is over {} MiB. Open Scrollback as a File takes all of it.",
+            "It is too large for the clipboard (over {} MiB, or too many rows). \
+             Open Scrollback as a File takes all of it.",
             COPY_LIMIT / (1024 * 1024)
         ),
     }

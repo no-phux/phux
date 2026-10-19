@@ -135,6 +135,9 @@ impl TerminalInput {
         if self.gesture != 0 {
             return self.drag_selection(event.position, event.modifiers, window, cx);
         }
+        if let Some(button) = self.reported_button {
+            return self.drag_reported(button, event, window, cx);
+        }
         // Cell-quantized clients send one position per cell (input spec §3.1).
         // A move that stays in that cell must not take the control lock.
         if self.repeated_motion(event.position) {
@@ -146,10 +149,6 @@ impl TerminalInput {
             return Ok(true);
         }
         self.admit_focused(window, cx, false)?;
-        if let Some(button) = self.reported_button {
-            self.send_captured_mouse(MouseAction::Motion, button, event.position, event.modifiers)?;
-            return Ok(true);
-        }
         if !self.hit(event.position) {
             return Ok(false);
         }
@@ -159,6 +158,28 @@ impl TerminalInput {
             event.position,
             event.modifiers,
         )
+    }
+
+    /// Motion while a program holds a captured button, inside the pane or
+    /// past its edge clamped to the nearest cell: one report per cell.
+    fn drag_reported(
+        &mut self,
+        button: WireButton,
+        event: &MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, InputError> {
+        let cell = self
+            .surface(event.position, true)
+            .ok()
+            .map(|surface| (surface.row, surface.col));
+        if repeats_cell(self.last_motion_cell, cell) {
+            return Ok(true);
+        }
+        self.last_motion_cell = cell;
+        self.admit_focused(window, cx, false)?;
+        self.send_captured_mouse(MouseAction::Motion, button, event.position, event.modifiers)?;
+        Ok(true)
     }
 
     pub fn mouse_up(

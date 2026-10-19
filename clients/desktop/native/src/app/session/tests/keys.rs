@@ -187,4 +187,22 @@ fn clipboard_chords_belong_to_the_focused_terminal_or_text_field(cx: &mut TestAp
         assert_eq!(fixture.inputs[0].read(cx).value(), "from the clipboard");
         assert_eq!(fixture.commands, ["copy", "paste"], "the field pasted");
     });
+
+    // Unbound, the chords fall through to the terminal surface's own
+    // Command-C and Command-V instead of vanishing.
+    desktop.update(cx, |desktop, cx| {
+        desktop.install_bindings(Vec::new(), &Default::default(), false, cx);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        fixture.read(cx).terminal.clone().focus(window, cx);
+    })
+    .unwrap();
+    for key in ["cmd-c", "cmd-v"] {
+        cx.simulate_keystrokes(handle, key);
+        cx.run_until_parked();
+    }
+    fixture.read_with(cx, |fixture, _| {
+        assert_eq!(fixture.commands, ["copy", "paste"]);
+        assert_eq!(fixture.keys, ["c", "v"]);
+    });
 }

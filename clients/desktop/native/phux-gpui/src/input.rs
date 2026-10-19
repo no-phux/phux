@@ -161,6 +161,8 @@ pub struct TerminalInput {
     drag_cell: Option<(u16, u16, u8)>,
     /// Where a selection drag is held past the grid, while it autoscrolls.
     autoscroll: Option<(Point<Pixels>, gpui::Modifiers)>,
+    /// Which autoscroll timer is current; an older one stops.
+    autoscroll_run: u64,
     reported_button: Option<phux_protocol::input::mouse::MouseButton>,
     /// OSC 8 and row URLs for the frame last painted, plus a Command-click
     /// captured from that frame.
@@ -216,6 +218,7 @@ impl TerminalInput {
             gesture: 0,
             drag_cell: None,
             autoscroll: None,
+            autoscroll_run: 0,
             reported_button: None,
             painted_links: link::PaintedLinks::default(),
             last_motion_cell: None,
