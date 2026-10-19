@@ -63,8 +63,11 @@ impl AllocStats {
     }
 }
 
-/// Start counting from zero.
+/// Start counting from zero; already counting, keep counting.
 pub fn enable() {
+    if ENABLED.load(Relaxed) {
+        return;
+    }
     ALLOCS.store(0, Relaxed);
     ALLOC_BYTES.store(0, Relaxed);
     FREES.store(0, Relaxed);
@@ -73,7 +76,8 @@ pub fn enable() {
     ENABLED.store(true, Relaxed);
 }
 
-/// Stop counting; the last figures stay readable through [`stats`].
+/// Stop counting. [`stats`] then reports nothing rather than frozen figures
+/// a reader would take for current ones.
 pub fn disable() {
     ENABLED.store(false, Relaxed);
 }
@@ -90,11 +94,11 @@ pub fn installed() -> bool {
     INSTALLED.load(Relaxed)
 }
 
-/// Current figures, or `None` when accounting has never been enabled or no
-/// [`Counting`] allocator is installed.
+/// Current figures, or `None` when accounting is off or no [`Counting`]
+/// allocator is installed.
 #[must_use]
 pub fn stats() -> Option<AllocStats> {
-    if !installed() || (!enabled() && ALLOCS.load(Relaxed) == 0) {
+    if !installed() || !enabled() {
         return None;
     }
     Some(AllocStats {
@@ -111,7 +115,11 @@ fn size_i64(size: usize) -> i64 {
 }
 
 fn note_alloc(size: usize) {
-    INSTALLED.store(true, Relaxed);
+    // Load first: a store on every allocation would bounce this cache line
+    // between cores even with accounting off.
+    if !INSTALLED.load(Relaxed) {
+        INSTALLED.store(true, Relaxed);
+    }
     if !ENABLED.load(Relaxed) {
         return;
     }
@@ -250,5 +258,6 @@ mod tests {
         assert_eq!(after.live_bytes, 0);
         assert_eq!(after.peak_bytes, 8192);
         assert!(installed());
+        assert_eq!(stats(), None, "off reports nothing, not frozen figures");
     }
 }

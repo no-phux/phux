@@ -255,13 +255,14 @@ const COUNTER_INTERVAL: Duration = Duration::from_millis(50);
 ///
 /// A capture is already armed, or the trace file could not be written.
 pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<TraceResult> {
+    // Arm here first: a refused request must not start a server trace too.
+    if !phux_perf::trace::start(phux_perf::trace::DEFAULT_MAX_EVENTS) {
+        anyhow::bail!("a trace is already recording in the desktop");
+    }
     let server = with_server.then(|| get().cli.clone()).flatten().map(|cli| {
         let seconds = format!("{:.3}", duration.as_secs_f64());
         std::thread::spawn(move || server_trace(&cli, &seconds))
     });
-    if !phux_perf::trace::start(phux_perf::trace::DEFAULT_MAX_EVENTS) {
-        anyhow::bail!("a trace is already recording in the desktop");
-    }
     let started = Instant::now();
     while started.elapsed() < duration {
         sample_counters();
@@ -277,7 +278,7 @@ pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<Tr
     let desktop_json = capture.to_chrome_json("phux desktop", &tables());
     let desktop = dir.join(format!("desktop-{stamp}-{pid}.json"));
     std::fs::write(&desktop, &desktop_json)?;
-    let (server, server_error) = match server.map(std::thread::JoinHandle::join) {
+    let (mut server, mut server_error) = match server.map(std::thread::JoinHandle::join) {
         None if with_server => (
             None,
             Some("no phux CLI is known to this desktop".to_owned()),
@@ -287,14 +288,23 @@ pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<Tr
         Some(Ok(Err(error))) => (None, Some(format!("{error:#}"))),
         Some(Err(_)) => (None, Some("the server trace thread panicked".to_owned())),
     };
-    let path = match &server {
-        Some(server_path) => {
-            let server_json = std::fs::read_to_string(server_path)?;
+    // The server names a path on its own host; over a forwarded socket it
+    // is not readable here. That loses the merge, not the desktop's trace.
+    let server_json = server.as_ref().map(std::fs::read_to_string);
+    let path = match server_json {
+        Some(Ok(server_json)) => {
             let merged =
                 phux_perf::trace::merge_chrome_json([desktop_json.as_str(), server_json.as_str()]);
             let path = dir.join(format!("phux-{stamp}-{pid}.json"));
             std::fs::write(&path, merged)?;
             path
+        }
+        Some(Err(error)) => {
+            server_error = Some(format!(
+                "the server wrote {} but it is not readable here: {error}",
+                server.take().unwrap_or_default().display()
+            ));
+            desktop.clone()
         }
         None => desktop.clone(),
     };
@@ -311,7 +321,9 @@ pub fn capture_trace(duration: Duration, with_server: bool) -> anyhow::Result<Tr
 
 /// `phux perf trace --seconds S --json` against the desktop's server.
 fn server_trace(cli: &ServerCli, seconds: &str) -> anyhow::Result<PathBuf> {
-    let stdout = cli.run(&["perf", "trace", "--seconds", seconds, "--json"])?;
+    let timeout = server::REPORT_TIMEOUT
+        + Duration::from_secs_f64(seconds.parse::<f64>().unwrap_or(0.0).max(0.0) + 60.0);
+    let stdout = cli.run(&["perf", "trace", "--seconds", seconds, "--json"], timeout)?;
     let value: serde_json::Value = serde_json::from_slice(&stdout)?;
     value["path"]
         .as_str()

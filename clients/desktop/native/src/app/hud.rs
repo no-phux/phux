@@ -13,6 +13,7 @@ use gpui::{AnyElement, SharedString, div, hsla, px};
 use phux_perf::alloc::AllocStats;
 
 use crate::devtools::frames::{self, Frame, Summary};
+use crate::devtools::server::ServerSummary;
 use crate::telemetry::Sampler;
 
 /// Frames drawn in the sparkline: two seconds at 60 Hz.
@@ -87,16 +88,8 @@ fn readings() -> (Option<f64>, Option<u64>, Option<AllocStats>, Option<f64>) {
 pub(crate) fn lines() -> Lines {
     let summary = frames::last_second();
     let (cpu, rss, alloc, allocs_per_sec) = readings();
-    let (server, server_error) = crate::devtools::get().poller.latest();
-    compose(
-        &summary,
-        cpu,
-        rss,
-        alloc,
-        allocs_per_sec,
-        server.as_ref(),
-        server_error,
-    )
+    let server = crate::devtools::get().poller.summary();
+    compose(&summary, cpu, rss, alloc, allocs_per_sec, &server)
 }
 
 fn compose(
@@ -105,8 +98,7 @@ fn compose(
     rss: Option<u64>,
     alloc: Option<AllocStats>,
     allocs_per_sec: Option<f64>,
-    server: Option<&crate::devtools::server::ServerSample>,
-    server_error: Option<String>,
+    server: &ServerSummary,
 ) -> Lines {
     let frames = format!(
         "{:>3.0} fps  build p50 {} p99 {} max {}  jank {}",
@@ -129,16 +121,16 @@ fn compose(
             allocs_per_sec.map_or_else(dash, count),
         )
     });
-    let server = match (server, server_error) {
-        (_, Some(error)) => Some(format!("server: {}", first_line(&error))),
-        (Some(sample), None) => Some(format!(
+    let server = match (&server.error, server.sampled) {
+        (Some(error), _) => Some(format!("server: {}", first_line(error))),
+        (None, true) => Some(format!(
             "server cpu {}  rss {}",
-            sample
+            server
                 .cpu_percent
                 .map_or_else(dash, |cpu| format!("{cpu:.0}%")),
-            sample.report.rss_bytes.map_or_else(dash, bytes),
+            server.rss_bytes.map_or_else(dash, bytes),
         )),
-        (None, None) => None,
+        (None, false) => None,
     };
     Lines {
         frames,
@@ -286,8 +278,7 @@ mod tests {
             Some(200 * 1024 * 1024),
             Some(alloc),
             Some(12_345.0),
-            None,
-            None,
+            &ServerSummary::default(),
         );
         assert_eq!(
             lines.frames,
@@ -305,10 +296,26 @@ mod tests {
             None,
             None,
             None,
-            None,
-            Some("no server\nmore".to_owned()),
+            &ServerSummary {
+                error: Some("no server\nmore".to_owned()),
+                ..ServerSummary::default()
+            },
         );
         assert_eq!(failed.heap, None);
         assert_eq!(failed.server.as_deref(), Some("server: no server"));
+        let server = compose(
+            &summary,
+            None,
+            None,
+            None,
+            None,
+            &ServerSummary {
+                cpu_percent: Some(4.4),
+                rss_bytes: Some(40 * 1024 * 1024),
+                error: None,
+                sampled: true,
+            },
+        );
+        assert_eq!(server.server.as_deref(), Some("server cpu 4%  rss 40MiB"));
     }
 }

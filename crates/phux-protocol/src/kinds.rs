@@ -744,7 +744,13 @@ static C_GET_PERF_RESET: Rule = Rule::verbs(
     &[Verb::Observe, Verb::Bind],
     GLOBAL,
 );
-static C_PERF_CONTROL: Rule = Rule::verbs("`PERF_CONTROL`", &[Verb::Observe, Verb::Bind], GLOBAL);
+// Owner socket only: a trace writes files on the server host and heap
+// accounting taxes every allocation, which no remote grant should reach.
+static C_PERF_CONTROL: Rule = Rule::verbs(
+    "`PERF_CONTROL`",
+    &[Verb::Observe, Verb::Bind],
+    GLOBAL_OWNER_UDS,
+);
 static C_APPEND_RESOURCE_OUTPUT: Rule = Rule::verbs(
     "`APPEND_RESOURCE_OUTPUT`",
     &[Verb::Bind, Verb::Input],
