@@ -29,6 +29,7 @@ production state or install an unreleased build.
   - [ACP-owned sessions](./acp.md): provider readiness, native intents, human permissions, uncertain outcomes.
 - [Remote machines](./remote.md): `phux host add`, what is exposed, relays, linking machines.
 - [Clients](./clients.md): terminal UI, desktop, browser, phones.
+  - [Desktop performance](../clients/desktop/PERFORMANCE.md): live CPU and memory profiling, baselines, and allocation controls.
   - [Quick Capture](./desktop-capture.md): launch from a thought without losing keyboard focus.
   - [Desktop Changes](./desktop-changes.md): review, stage, and commit the focused checkout.
   - [Desktop agent panes](./desktop-panes.md): identity, harness marks, and stable geometry.

@@ -90,7 +90,7 @@ See [Command palette](USAGE.md#command-palette).
 
 ### Performance monitor
 
-See [Performance monitor](USAGE.md#performance-monitor).
+See [Performance monitor](PERFORMANCE.md).
 
 ### Updates
 
