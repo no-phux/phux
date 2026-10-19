@@ -511,7 +511,7 @@ fn set_session_project_sends_one_command_and_the_event_updates_the_record() {
         record
             .attrs
             .iter()
-            .any(|(k, v)| k == "project" && v == "phux"),
+            .any(|(k, v)| k == "project.link" && v == "phux"),
         "{:?}",
         record.attrs
     );

@@ -168,20 +168,33 @@ fn session_create_refusals() {
     assert!(h.reg.org().session_by_name("x").is_none());
 }
 
-/// A project label is set, kept on an identical write, refused when blank,
-/// over-long or holding a control character, cleared with `None`, and has
-/// no inverse, like a rename.
+/// A project link is set, kept on an identical write, refused when blank,
+/// padded, over-long or holding a control character, cleared with `None`
+/// without touching the free-text label, and has no inverse, like a rename.
 #[test]
-fn session_set_project_links_and_clears_the_label() {
+fn session_set_project_links_and_clears_only_the_link() {
     let mut h = Harness::new();
-    let s = h.create_session("a", SessionLifetime::Persistent);
+    // A recipe's free-text label, which a link must never touch.
+    let recipe = Attrs {
+        project: Some("checkout-dir".to_owned()),
+        ..Attrs::default()
+    };
+    let created = h
+        .run(Op::SessionCreate {
+            name: "a".to_owned(),
+            lifetime: SessionLifetime::Persistent,
+            attrs: recipe,
+            resource: None,
+        })
+        .expect("create");
+    let s = crate::support::created(&created).0.expect("session");
     let project = |project: Option<&str>| Op::SessionSetProject {
         session: s,
         project: project.map(str::to_owned),
     };
     let r1 = h.session(s).revision;
     let linked = h.run(project(Some("phux"))).expect("link");
-    assert_eq!(h.session(s).attrs.project.as_deref(), Some("phux"));
+    assert_eq!(h.session(s).attrs.project_link.as_deref(), Some("phux"));
     assert_eq!(h.session(s).revision, r1.next());
     assert!(matches!(
         linked.transition.events.as_slice(),
@@ -195,6 +208,8 @@ fn session_set_project_links_and_clears_the_label() {
         "",
         "  ",
         "a\nb",
+        " phux",
+        "phux ",
         &"x".repeat(phux_core::project_identity::MAX_ATTR_BYTES + 1),
     ] {
         assert!(matches!(
@@ -213,8 +228,14 @@ fn session_set_project_links_and_clears_the_label() {
         .err(),
         Some(Refusal::NotFound)
     );
+    assert_eq!(
+        h.session(s).attrs.project.as_deref(),
+        Some("checkout-dir"),
+        "linking leaves the recipe label"
+    );
     let link_op = h.run(project(None)).expect("unlink");
-    assert_eq!(h.session(s).attrs.project, None);
+    assert_eq!(h.session(s).attrs.project_link, None);
+    assert_eq!(h.session(s).attrs.project.as_deref(), Some("checkout-dir"));
     assert!(matches!(
         link_op.transition.events.as_slice(),
         [Event::SessionProjectSet { project: None, .. }]

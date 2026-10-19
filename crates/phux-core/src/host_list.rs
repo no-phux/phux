@@ -100,7 +100,7 @@ mod tests {
                     members: 0,
                     exec: crate::session_list::ExecCounts::default(),
                     project: None,
-                    project_label: None,
+                    project_link: None,
                     key: None,
                 }],
             },

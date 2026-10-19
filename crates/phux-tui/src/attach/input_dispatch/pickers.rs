@@ -381,8 +381,8 @@ pub(in crate::attach) fn session_picker_rows(
 }
 
 /// Attached-host sessions grouped by project (ADR-0168): a session's
-/// linked project label (or legacy `phux.session.project/v1` tag), else its
-/// identity. Groups sort by name;
+/// explicit project link, else its identity, else its
+/// `phux.session.project/v1` label. Groups sort by name;
 /// in each, primary checkouts lead and their linked worktrees follow marked
 /// `└`. A group header counts the panes that need you. Sessions in no
 /// project sit under `Sessions`. Each row is an [`attached_session_row`].
@@ -404,8 +404,8 @@ fn project_grouped_session_items(
         .zip(&identities)
         .map(|(session, identity)| GroupRow {
             project: identity.as_ref(),
-            label: phux_client::project_identity::label_of_session(session)
-                .or_else(|| peers.project_tags.get(&session.id).map(String::as_str)),
+            link: phux_client::project_identity::link_of_session(session),
+            label: peers.project_tags.get(&session.id).map(String::as_str),
             needs_you: counts.needs_you.get(&session.id).copied().unwrap_or(0),
         })
         .collect();

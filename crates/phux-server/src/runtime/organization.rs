@@ -1395,17 +1395,24 @@ mod tests {
             let attrs = page(&state, OrgFilter::Session(session)).sessions[0]
                 .attrs
                 .clone();
-            assert_eq!(attrs, vec![("project".to_owned(), "other".to_owned())]);
-            assert!(matches!(
-                handle(&state, CLIENT, link(6, Some(" ")), &root),
-                CommandResult::Refused(WireRefusal::InvalidArgument { .. })
-            ));
+            let pair = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+            assert_eq!(
+                attrs,
+                vec![pair("project.link", "other"), pair("project", "phux")],
+                "the link rides beside the create's free-text label"
+            );
+            for (n, bad) in [(6, " "), (8, " other"), (9, "other ")] {
+                assert!(matches!(
+                    handle(&state, CLIENT, link(n, Some(bad)), &root),
+                    CommandResult::Refused(WireRefusal::InvalidArgument { .. })
+                ));
+            }
             let cleared = committed(handle(&state, CLIENT, link(7, None), &root));
             assert_eq!(cleared.revision.get(), linked.revision.get() + 1);
-            assert!(
-                page(&state, OrgFilter::Session(session)).sessions[0]
-                    .attrs
-                    .is_empty()
+            assert_eq!(
+                page(&state, OrgFilter::Session(session)).sessions[0].attrs,
+                vec![pair("project", "phux")],
+                "unlinking leaves the label"
             );
         });
     }

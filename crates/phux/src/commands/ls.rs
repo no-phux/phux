@@ -296,7 +296,7 @@ fn host_list_lines(doc: &HostListJson) -> Vec<String> {
             .map(|row| {
                 let project = RowProject {
                     identity: row.project.clone(),
-                    label: row.project_label.clone(),
+                    link: row.project_link.clone(),
                 };
                 (glance_of_row(row), project)
             })
@@ -417,8 +417,8 @@ fn glance_lines(sources: Sources<'_>) -> Vec<String> {
                 .find(|session| session.name == row.name);
             let project = RowProject {
                 identity: session.and_then(phux_client::project_identity::of_session),
-                label: session
-                    .and_then(phux_client::project_identity::label_of_session)
+                link: session
+                    .and_then(phux_client::project_identity::link_of_session)
                     .map(str::to_owned),
             };
             (row, project)
@@ -526,11 +526,11 @@ fn collapse(rows: Vec<SessionGlance>) -> Vec<String> {
 }
 
 /// What groups one glance row (ADR-0168): its repository identity and its
-/// explicit project label, which outranks the identity.
+/// explicit project link, which outranks the identity.
 #[derive(Debug, Clone, Default)]
 struct RowProject {
     identity: Option<SessionProject>,
-    label: Option<String>,
+    link: Option<String>,
 }
 
 /// [`collapse`], then the shown rows of one project (ADR-0168) grouped
@@ -574,7 +574,8 @@ fn project_grouped_glance(rows: &[(SessionGlance, RowProject)]) -> Vec<String> {
         .iter()
         .map(|(row, project)| GroupRow {
             project: project.identity.as_ref(),
-            label: project.label.as_deref(),
+            link: project.link.as_deref(),
+            label: None,
             needs_you: usize::try_from(row.needs_you()).unwrap_or(usize::MAX),
         })
         .collect();
@@ -1103,7 +1104,7 @@ mod tests {
                 ..ExecCounts::default()
             },
             project: None,
-            project_label: None,
+            project_link: None,
             key: None,
         };
         let doc = HostListJson::new(vec![
@@ -1220,7 +1221,7 @@ mod tests {
             members,
             exec,
             project: None,
-            project_label: None,
+            project_link: None,
             key: None,
         };
         assert_eq!(
@@ -1546,7 +1547,7 @@ mod tests {
     }
 
     /// A session linked into a project by name glances under that
-    /// project's header beside its git sessions; a label naming no
+    /// project's header beside its git sessions; a link naming no
     /// identity groups on its own.
     #[test]
     fn a_linked_session_glances_under_its_project() {
@@ -1565,9 +1566,9 @@ mod tests {
             running: 1,
             ..SessionGlance::default()
         };
-        let row = |identity, label: Option<&str>| super::RowProject {
+        let row = |identity, link: Option<&str>| super::RowProject {
             identity,
-            label: label.map(str::to_owned),
+            link: link.map(str::to_owned),
         };
         let lines = super::collapse_by_project(vec![
             (glance("main"), row(Some(phux), None)),
@@ -1616,7 +1617,7 @@ mod tests {
         };
         let of = |identity| super::RowProject {
             identity,
-            label: None,
+            link: None,
         };
         let lines = super::collapse_by_project(vec![
             (glance("feat-auth", 1), of(Some(feat))),

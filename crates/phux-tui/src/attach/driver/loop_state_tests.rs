@@ -1840,10 +1840,7 @@ async fn session_project_set_event_relabels_the_peer_row_by_key() {
             .iter()
             .find(|session| session.key == Some(peer))
             .unwrap();
-        assert_eq!(
-            phux_client::project_identity::label_of_session(row),
-            project
-        );
+        assert_eq!(phux_client::project_identity::link_of_session(row), project);
         assert!(row.attrs.contains(&("host".to_owned(), "mini".to_owned())));
     }
 }

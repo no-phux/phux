@@ -757,21 +757,35 @@ fn session_rename(tx: &mut Tx<'_>, key: SessionKey, name: &str) -> Result<Out, R
     Ok(Out::ok(Some(revision)))
 }
 
-/// Last writer wins, as for a rename. `None` clears the label.
+/// A session name's rules, and no surrounding whitespace, so `" phux"`
+/// cannot become a project apart from `"phux"`.
+fn check_project_link(link: &str) -> Result<(), Refusal> {
+    check_name("project", link)?;
+    if link.trim() != link {
+        return Err(Refusal::invalid(
+            "project",
+            "has leading or trailing whitespace",
+        ));
+    }
+    Ok(())
+}
+
+/// Last writer wins, as for a rename. `None` clears the link; the
+/// free-text [`Attrs::project`] label is never touched.
 fn session_set_project(
     tx: &mut Tx<'_>,
     key: SessionKey,
     project: Option<&str>,
 ) -> Result<Out, Refusal> {
     let current = tx.session(key).ok_or(Refusal::NotFound)?;
-    if let Some(label) = project {
-        check_name("project", label)?;
+    if let Some(link) = project {
+        check_project_link(link)?;
     }
-    if current.attrs.project.as_deref() == project {
+    if current.attrs.project_link.as_deref() == project {
         return Ok(Out::ok(Some(current.revision)));
     }
     let s = tx.session_mut(key).ok_or(Refusal::NotFound)?;
-    s.attrs.project = project.map(str::to_owned);
+    s.attrs.project_link = project.map(str::to_owned);
     let revision = s.revision;
     tx.events.push(Event::SessionProjectSet {
         key,

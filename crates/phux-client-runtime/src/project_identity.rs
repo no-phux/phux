@@ -181,31 +181,35 @@ pub fn creation_attrs(dir: &Path, host: &str, label: Option<&str>) -> Vec<(Strin
     discover(dir, host, label).map_or_else(Vec::new, |project| project.to_attrs())
 }
 
-/// The session attribute holding its explicit project label
-/// (`SESSION_SET_PROJECT`, `phux project link`).
-pub const LABEL_ATTR: &str = "project";
+/// The session attribute holding its explicit project link.
+///
+/// Set by `SESSION_SET_PROJECT` (`phux project link`). Not the free-text
+/// `project` attribute a recipe or archive writes, and not part of the
+/// repository identity.
+pub const LINK_ATTR: &str = phux_core::project_identity::attr::LINK;
 
-/// The explicit project label in a session's attributes.
+/// The explicit project link in a session's attributes.
 #[must_use]
-pub fn label_of_attrs(attrs: &[(String, String)]) -> Option<&str> {
+pub fn link_of_attrs(attrs: &[(String, String)]) -> Option<&str> {
     attrs
         .iter()
-        .find(|(name, _)| name == LABEL_ATTR)
+        .find(|(name, _)| name == LINK_ATTR)
         .map(|(_, value)| value.as_str())
 }
 
-/// The explicit project label a listed session carries.
+/// The explicit project link a listed session carries.
 #[must_use]
-pub fn label_of_session(session: &SessionInfo) -> Option<&str> {
-    label_of_attrs(&session.attrs)
+pub fn link_of_session(session: &SessionInfo) -> Option<&str> {
+    link_of_attrs(&session.attrs)
 }
 
-/// Set, replace or (with `None`) remove the label in `attrs`, first, where
-/// the server lists it, so a later full listing reads the same.
-pub fn set_label_attr(attrs: &mut Vec<(String, String)>, label: Option<&str>) {
-    attrs.retain(|(name, _)| name != LABEL_ATTR);
-    if let Some(label) = label {
-        attrs.insert(0, (LABEL_ATTR.to_owned(), label.to_owned()));
+/// Set, replace or (with `None`) remove the link in `attrs`, first, where
+/// the server lists it, so a later full listing reads the same. Every other
+/// pair, the `project` label included, is left alone.
+pub fn set_link_attr(attrs: &mut Vec<(String, String)>, link: Option<&str>) {
+    attrs.retain(|(name, _)| name != LINK_ATTR);
+    if let Some(link) = link {
+        attrs.insert(0, (LINK_ATTR.to_owned(), link.to_owned()));
     }
 }
 

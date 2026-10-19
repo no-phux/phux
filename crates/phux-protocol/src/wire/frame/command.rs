@@ -501,7 +501,8 @@ pub enum Command {
         operation: OperationId,
         /// The session.
         session: SessionKey,
-        /// The project label, at most 256 bytes; `None` clears it.
+        /// The project link (session attribute `project.link`), at most 256
+        /// bytes with no surrounding whitespace; `None` clears it.
         project: Option<String>,
     },
     /// Change a session's lifetime; `Ephemeral` on an empty session deletes
@@ -1153,7 +1154,7 @@ pub enum AgentEvent {
         /// Its revision after the change.
         revision: Revision,
     },
-    /// A session's project label was set, or cleared (`project: None`).
+    /// A session's project link was set, or cleared (`project: None`).
     SessionProjectSet {
         /// The session.
         session: SessionKey,

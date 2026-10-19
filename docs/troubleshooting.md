@@ -145,6 +145,11 @@ a backup before changing an existing schema. Never rename away the store
 and start empty as a silent fallback: that loses execution ownership and
 receipts. See [store behavior](../crates/phux-server/src/org_store.rs) and
 [restore options](./reference/cli.md#phux-restore).
+A stored receipt for an operation an older server does not know, such as
+`session_set_project` (`phux project link`) or `session_kill`, stops that
+server from loading the store until the receipt ages out: a newer server
+prunes receipts past 24 hours or 10,000 entries when it commits. An older
+server also ignores a session's project link.
 
 A refused remote policy during hot handoff must keep adopted local work
 served, disable/report the remote door, and avoid killing adopted PTYs.

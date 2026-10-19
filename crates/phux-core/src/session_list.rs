@@ -99,7 +99,7 @@ pub struct SessionJson {
     /// (`phux project link`); it outranks [`Self::project`] for grouping.
     /// `null` when unlinked.
     #[serde(default)]
-    pub project_label: Option<String>,
+    pub project_link: Option<String>,
     /// The session record's full 26-character persistent key, the text a
     /// workload `session:<key>` scope names; `null` from a server that
     /// keeps no organization records.
@@ -312,7 +312,7 @@ mod tests {
                 linked_worktree: true,
                 host: Some("mini".to_owned()),
             }),
-            project_label: Some("phux".to_owned()),
+            project_link: Some("phux".to_owned()),
             key: Some("0123456789ABCDEFGHJKMNPQRS".to_owned()),
         }])
         .with_terminals(vec!["@7".to_owned(), "@9".to_owned()])
@@ -383,7 +383,7 @@ mod tests {
                         "checkout": "/w/phux-feat", "branch": "feat",
                         "linked_worktree": true, "host": "mini"
                     },
-                    "project_label": "phux",
+                    "project_link": "phux",
                     "key": "0123456789ABCDEFGHJKMNPQRS"
                 }],
                 "terminals": ["@7", "@9"],
