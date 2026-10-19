@@ -250,6 +250,24 @@ update or reconnect rather than attributed to a new connection.
 
 ### Native agents
 
+**Native Agents** (`native-agents`, ⌃⌘A, the titlebar toggle, View menu,
+and Settings > Appearance) snaps every agent pane to its conversation, or
+back to its terminal. This window preference (`nativeAgents` in the saved
+display object) also opens conversations published by later agents. Each
+pane can still switch back until the preference changes again; `conversation`
+toggles only the focused pane. Without this explicit preference, passive
+stream discovery never switches faces or keyboard focus.
+
+An agent with no AgentSession offers its harness's documented plugin install
+command to copy (Claude Code, Grok, OMP, Pi, OpenCode), or **New Agent…** for
+harnesses without a hook plugin. Nothing is installed by the app.
+
+Prompts appear in accent bubbles and replies as markdown under the harness
+mark. Thinking and tool calls fold to one line; live thinking and failed
+calls start open, and your fold choice holds for that entry. A working turn
+shows a shimmer line, a blocked turn a "needs you" line. Stop and Send share
+the composer card. These use GPUI Kit components, not vendored chat code.
+
 **New ACP Agent** lists configured ACP-capable integrations and their host
 prerequisites. Launch creates one server-owned host and one headless provider
 session; desktop and mobile observe and control that same AgentSession.

@@ -142,6 +142,9 @@ pub struct DisplayPrefs {
     pub skin_id: String,
     /// Plain terminal: wear the terminal skin whatever `skin_id` says.
     pub plain: bool,
+    /// Native agents: every pane with an agent conversation shows it
+    /// instead of its terminal until that pane is toggled back.
+    pub native_agents: bool,
     /// Skin motion: pane folds, skin shifts, cursor effects. macOS reduce
     /// motion also turns it off.
     pub animations: bool,
@@ -172,6 +175,7 @@ pub fn default_display() -> DisplayPrefs {
         cursor_laser: true,
         skin_id: "glass".to_owned(),
         plain: false,
+        native_agents: false,
         animations: true,
     }
 }
@@ -293,6 +297,7 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         cursor_laser: flag("cursorLaser", fallback.cursor_laser),
         skin_id: string("skinId", fallback.skin_id),
         plain: flag("plainTerminal", fallback.plain),
+        native_agents: flag("nativeAgents", fallback.native_agents),
         animations: flag("animations", fallback.animations),
     })
 }
@@ -323,6 +328,7 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "cursorLaser": display.cursor_laser,
         "skinId": display.skin_id,
         "plainTerminal": display.plain,
+        "nativeAgents": display.native_agents,
         "animations": display.animations,
     })
 }
@@ -470,6 +476,14 @@ mod tests {
         assert_eq!(parse_display(&value), plain);
         assert_eq!(parse_display(&json!({"skinId": "neon"})).skin_id, "glass");
         assert!(!parse_display(&json!({"plainTerminal": "yes"})).plain);
+        assert!(!parsed.native_agents);
+        let native = DisplayPrefs {
+            native_agents: true,
+            ..default_display()
+        };
+        assert_eq!(display_value(&native)["nativeAgents"], true);
+        assert_eq!(parse_display(&display_value(&native)), native);
+        assert!(!parse_display(&json!({"nativeAgents": "yes"})).native_agents);
         assert!(parse_display(&json!({"animations": "no"})).animations);
     }
 }

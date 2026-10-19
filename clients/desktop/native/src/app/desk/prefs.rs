@@ -107,7 +107,7 @@ impl Desk {
     /// A modal, or the focused pane's find bar, owns the keyboard.
     pub(crate) fn text_field_has_keys(&self) -> bool {
         self.focused_placement()
-            .is_some_and(|placement| self.conversation_visible(&placement.id))
+            .is_some_and(|placement| self.conversation_has_keys(&placement.id))
             || settings::text_field_has_keys(
                 !matches!(self.modal, Modal::None),
                 self.find.as_ref().map(|find| find.placement_id.as_str()),
@@ -192,6 +192,9 @@ impl Desk {
         self.sync_skin(true, cx);
         if self.prefs.animations != before.animations {
             self.set_motion_spans();
+        }
+        if self.prefs.native_agents != before.native_agents {
+            self.snap_conversations(self.prefs.native_agents);
         }
         cx.notify();
         true

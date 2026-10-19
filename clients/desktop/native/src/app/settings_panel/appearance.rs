@@ -154,6 +154,10 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
         .shown_chord("plain-terminal")
         .map(|chord| format!(" Toggle it with {chord}."))
         .unwrap_or_default();
+    let native_chord = desk
+        .shown_chord("native-agents")
+        .map(|chord| format!(" Toggle it with {chord}."))
+        .unwrap_or_default();
     let cards = handle.clone();
     SettingGroup::new()
         .title("Look")
@@ -169,6 +173,17 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
                 format!("Opaque and square, with no sidebar or status bar.{plain_chord}"),
             )
             .keywords(["plain", "ghostty", "minimal", "terminal", "skin"]),
+        )
+        .item(
+            toggle(
+                handle,
+                "Native agents",
+                |prefs| &mut prefs.native_agents,
+                format!(
+                    "Agent panes open as conversations instead of terminals; each pane can still switch back.{native_chord}"
+                ),
+            )
+            .keywords(["native", "agent", "conversation", "chat", "acp", "transcript"]),
         )
         .item(
             toggle(

@@ -83,6 +83,8 @@ impl Desk {
             "paste-cwd" => self.paste_cwd(),
             "terminate" => self.ask_terminate(),
             "attention" => self.next_attention(),
+            "native-agents" => self.toggle_native_agents(window, cx),
+            "conversation" => self.toggle_focused_conversation(window, cx),
             "changes" => self.toggle_changes(cx),
             "sidebar" => {
                 self.update_prefs(|prefs| prefs.sidebar_visible = !prefs.sidebar_visible, cx)
