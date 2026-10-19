@@ -168,6 +168,66 @@ fn session_create_refusals() {
     assert!(h.reg.org().session_by_name("x").is_none());
 }
 
+/// A project label is set, kept on an identical write, refused when blank,
+/// over-long or holding a control character, cleared with `None`, and has
+/// no inverse, like a rename.
+#[test]
+fn session_set_project_links_and_clears_the_label() {
+    let mut h = Harness::new();
+    let s = h.create_session("a", SessionLifetime::Persistent);
+    let project = |project: Option<&str>| Op::SessionSetProject {
+        session: s,
+        project: project.map(str::to_owned),
+    };
+    let r1 = h.session(s).revision;
+    let linked = h.run(project(Some("phux"))).expect("link");
+    assert_eq!(h.session(s).attrs.project.as_deref(), Some("phux"));
+    assert_eq!(h.session(s).revision, r1.next());
+    assert!(matches!(
+        linked.transition.events.as_slice(),
+        [Event::SessionProjectSet { key, project: Some(p), revision }]
+            if *key == s && p == "phux" && *revision == r1.next()
+    ));
+    let same = h.run(project(Some("phux"))).expect("idempotent link");
+    assert!(same.transition.events.is_empty());
+    assert_eq!(h.session(s).revision, r1.next());
+    for bad in [
+        "",
+        "  ",
+        "a\nb",
+        &"x".repeat(phux_core::project_identity::MAX_ATTR_BYTES + 1),
+    ] {
+        assert!(matches!(
+            h.run(project(Some(bad))),
+            Err(Refusal::InvalidArgument {
+                field: "project",
+                ..
+            })
+        ));
+    }
+    assert_eq!(
+        h.run(Op::SessionSetProject {
+            session: SessionKey::from_bytes([7; 16]),
+            project: None,
+        })
+        .err(),
+        Some(Refusal::NotFound)
+    );
+    let link_op = h.run(project(None)).expect("unlink");
+    assert_eq!(h.session(s).attrs.project, None);
+    assert!(matches!(
+        link_op.transition.events.as_slice(),
+        [Event::SessionProjectSet { project: None, .. }]
+    ));
+    assert!(matches!(
+        h.run(Op::OrganizationUndo {
+            original: link_op.operation,
+            expected: vec![],
+        }),
+        Err(Refusal::Unsupported { .. })
+    ));
+}
+
 #[test]
 fn session_rename_and_lifetime() {
     let mut h = Harness::new();

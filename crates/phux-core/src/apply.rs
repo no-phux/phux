@@ -147,6 +147,9 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
             resource,
         } => session_create(tx, fresh, name, *lifetime, attrs, resource.as_ref()),
         Op::SessionRename { session, name } => session_rename(tx, *session, name),
+        Op::SessionSetProject { session, project } => {
+            session_set_project(tx, *session, project.as_deref())
+        }
         Op::SessionSetLifetime { session, lifetime } => {
             session_set_lifetime(tx, *session, *lifetime)
         }
@@ -749,6 +752,30 @@ fn session_rename(tx: &mut Tx<'_>, key: SessionKey, name: &str) -> Result<Out, R
     tx.events.push(Event::SessionRenamed {
         key,
         name: name.to_owned(),
+        revision,
+    });
+    Ok(Out::ok(Some(revision)))
+}
+
+/// Last writer wins, as for a rename. `None` clears the label.
+fn session_set_project(
+    tx: &mut Tx<'_>,
+    key: SessionKey,
+    project: Option<&str>,
+) -> Result<Out, Refusal> {
+    let current = tx.session(key).ok_or(Refusal::NotFound)?;
+    if let Some(label) = project {
+        check_name("project", label)?;
+    }
+    if current.attrs.project.as_deref() == project {
+        return Ok(Out::ok(Some(current.revision)));
+    }
+    let s = tx.session_mut(key).ok_or(Refusal::NotFound)?;
+    s.attrs.project = project.map(str::to_owned);
+    let revision = s.revision;
+    tx.events.push(Event::SessionProjectSet {
+        key,
+        project: project.map(str::to_owned),
         revision,
     });
     Ok(Out::ok(Some(revision)))
