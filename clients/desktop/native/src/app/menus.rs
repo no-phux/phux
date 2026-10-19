@@ -473,9 +473,13 @@ fn session_menu(desk: &Desk, id: u32, name: &str, cx: &mut Context<Desk>) -> Men
             .gap(),
         );
     }
+    let links_projects = connection.organization()
+        && connection
+            .client
+            .with_control(|control| control.session_project_supported());
     if let Some(key) = session
         .and_then(|session| session.key)
-        .filter(|_| connection.organization())
+        .filter(|_| links_projects)
     {
         let current = connection.projects.get(&id).cloned();
         let name = name.to_owned();
