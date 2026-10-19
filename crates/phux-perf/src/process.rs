@@ -84,6 +84,13 @@ impl ProcessStats {
     /// peak-RSS contract. Returns `None` on native query failure or an
     /// unsupported target; never substitutes peak RSS for current RSS.
     #[must_use]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux")),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "runtime native query; only the unsupported-platform stub is const"
+        )
+    )]
     pub fn current_rss_bytes() -> Option<u64> {
         current_rss_bytes()
     }
@@ -92,6 +99,13 @@ impl ProcessStats {
     /// allocations. This is the physical footprint, not RSS or Rust heap size.
     /// Unavailable on other platforms; never substitutes a different measure.
     #[must_use]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "runtime native query; only the unsupported-platform stub is const"
+        )
+    )]
     pub fn physical_footprint_bytes() -> Option<u64> {
         physical_footprint_bytes()
     }

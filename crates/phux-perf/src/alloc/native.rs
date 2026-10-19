@@ -16,6 +16,13 @@ pub struct HeapStats {
 /// Query native malloc zones without enabling allocation counting. Unsupported
 /// platforms return `None`; no guessed RSS-minus-heap breakdown is substituted.
 #[must_use]
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "runtime native API; only the unsupported-platform stub is const"
+    )
+)]
 pub fn stats() -> Option<HeapStats> {
     platform::stats()
 }
@@ -26,6 +33,13 @@ pub fn stats() -> Option<HeapStats> {
 /// thread. Returns the allocator's released-byte count, not an RSS delta.
 /// Unsupported platforms return `None`; a supported no-op returns `Some(0)`.
 #[must_use]
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "runtime allocator action; only the unsupported-platform stub is const"
+    )
+)]
 pub fn release_unused() -> Option<u64> {
     platform::release_unused()
 }
