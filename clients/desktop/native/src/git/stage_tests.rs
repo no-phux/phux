@@ -263,6 +263,101 @@ fn file_actions_treat_wildcards_as_literal_paths() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn non_utf8_patch_bytes_are_refused_without_mutating_the_index() {
+    let dir = repo("non-utf8-patch");
+    write(&dir, "tracked.txt", "base\nsafe\n");
+    commit_all(&dir, "base");
+    std::fs::write(dir.join("new.txt"), b"\xff\nsafe\n").unwrap();
+    let before = git(&dir, &["ls-files", "--stage"]);
+    let error = read_patch(&dir, Source::Changes, &["new.txt".into()], 3).unwrap_err();
+    assert!(error.contains("non-UTF-8"), "{error}");
+    assert_eq!(git(&dir, &["ls-files", "--stage"]), before);
+
+    // Whole-file staging is byte preserving; only text patch construction
+    // refuses the unsupported encoding. Status remains available too.
+    apply(&dir, &Op::Stage(vec!["new.txt".into()])).unwrap();
+    let bytes = command(&dir, &["show", ":new.txt"]).output().unwrap();
+    assert!(bytes.status.success());
+    assert_eq!(bytes.stdout, b"\xff\nsafe\n");
+    let staged = git(&dir, &["ls-files", "--stage"]);
+    assert!(read_patch(&dir, Source::Staged, &[], 3).is_err());
+    assert_eq!(git(&dir, &["ls-files", "--stage"]), staged);
+
+    std::fs::write(dir.join("tracked.txt"), b"\xff\nsafe\n").unwrap();
+    assert!(read_patch(&dir, Source::Changes, &[], 3).is_err());
+    assert!(read_status(&dir).unwrap().is_some());
+    let bytes = command(&dir, &["show", ":tracked.txt"]).output().unwrap();
+    assert!(bytes.status.success());
+    assert_eq!(bytes.stdout, b"base\nsafe\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn line_actions_preserve_the_current_index_mode_in_both_directions() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = repo("content-only-mode");
+    git(&dir, &["config", "core.filemode", "true"]);
+    write(&dir, "f.txt", "one\ntwo\nthree\n");
+    std::fs::set_permissions(dir.join("f.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
+    commit_all(&dir, "base");
+    write(&dir, "f.txt", "ONE\ntwo\nTHREE\n");
+    std::fs::set_permissions(dir.join("f.txt"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let selection = Selection::lines(Side::Old, 1, 1).with_end_side(Side::New);
+    let patch = read_patch(&dir, Source::Changes, &[], 3).unwrap();
+    assert!(patch.text.contains("old mode 100644\nnew mode 100755\n"));
+    apply_selection(&dir, Source::Changes, &[], &selection);
+    assert!(git(&dir, &["ls-files", "--stage"]).starts_with("100644 "));
+    assert_eq!(git(&dir, &["show", ":f.txt"]), "ONE\ntwo\nthree\n");
+
+    apply(&dir, &Op::StageAll).unwrap();
+    let patch = read_patch(&dir, Source::Staged, &[], 3).unwrap();
+    assert!(patch.text.contains("old mode 100644\nnew mode 100755\n"));
+    apply_selection(&dir, Source::Staged, &[], &selection);
+    assert!(git(&dir, &["ls-files", "--stage"]).starts_with("100755 "));
+    assert_eq!(git(&dir, &["ls-files"]), "f.txt\n");
+    assert_eq!(git(&dir, &["show", ":f.txt"]), "one\ntwo\nTHREE\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+        "ONE\ntwo\nTHREE\n"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn partial_unstaging_refuses_a_rename_without_relocating_index_paths() {
+    let dir = repo("content-only-rename");
+    write(
+        &dir,
+        "old.txt",
+        "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n",
+    );
+    commit_all(&dir, "base");
+    git(&dir, &["mv", "old.txt", "new.txt"]);
+    write(
+        &dir,
+        "new.txt",
+        "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n",
+    );
+    apply(&dir, &Op::StageAll).unwrap();
+    let before = git(&dir, &["ls-files", "--stage"]);
+    let patch = read_patch(&dir, Source::Staged, &[], 3).unwrap();
+    assert!(
+        patch
+            .text
+            .contains("rename from old.txt\nrename to new.txt\n"),
+        "{}",
+        patch.text
+    );
+    assert!(line_staging_refusal(&patch.text).is_some());
+    let selection = Selection::lines(Side::Old, 1, 1).with_end_side(Side::New);
+    assert!(partial_patch(&patch.text, selection, true).is_none());
+    assert_eq!(git(&dir, &["ls-files", "--stage"]), before);
+    assert_eq!(git(&dir, &["ls-files"]), "new.txt\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(unix)]
 #[test]
 fn conflict_reads_and_writes_refuse_symlinks_in_any_component() {

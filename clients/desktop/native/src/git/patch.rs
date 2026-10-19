@@ -50,8 +50,12 @@ impl Selection {
 /// becomes context. Reverse, for `-R` unstaging: an unselected `+` becomes
 /// context and an unselected `-` is dropped. A new or deleted file whose cut
 /// keeps lines on both sides becomes a plain modification.
+/// Renames and copies are refused; line selection never moves index paths.
 #[must_use]
 pub fn partial_patch(file: &str, selection: Selection, reverse: bool) -> Option<String> {
+    if line_staging_refusal(file).is_some() {
+        return None;
+    }
     let (header, hunks) = parse(file)?;
     let lines: Vec<&Line> = hunks.iter().flat_map(|hunk| &hunk.lines).collect();
     let span = Span::of(&lines, selection);
@@ -81,6 +85,20 @@ pub fn partial_patch(file: &str, selection: Selection, reverse: bool) -> Option<
         }
     }
     (!body.is_empty()).then(|| file_header(&header, old && new) + &body)
+}
+
+/// Why this file cannot be staged by line. Whole-file actions still work.
+#[must_use]
+pub fn line_staging_refusal(file: &str) -> Option<&'static str> {
+    let relocated = file
+        .lines()
+        .take_while(|line| !line.starts_with("@@ "))
+        .any(|line| {
+            ["rename from ", "rename to ", "copy from ", "copy to "]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+        });
+    relocated.then_some("Renames and copies cannot be staged or unstaged by line. Use the whole-file action or the terminal instead.")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -285,11 +303,18 @@ const EXISTENCE: [&str; 3] = ["new file mode ", "deleted file mode ", "index "];
 /// The file header, as a modification's when a new or deleted file keeps
 /// lines on both sides.
 fn file_header(header: &[&str], both: bool) -> String {
+    // These describe file metadata, not selected content. Git preserves the
+    // current index mode when a content patch carries no mode transition.
+    let header: Vec<&str> = header
+        .iter()
+        .copied()
+        .filter(|line| !line.starts_with("old mode ") && !line.starts_with("new mode "))
+        .collect();
     let creates_or_deletes = header
         .iter()
         .any(|line| EXISTENCE[..2].iter().any(|mode| line.starts_with(mode)));
     let lines = if both && creates_or_deletes {
-        as_modification(header)
+        as_modification(&header)
     } else {
         header.iter().map(|line| (*line).to_owned()).collect()
     };

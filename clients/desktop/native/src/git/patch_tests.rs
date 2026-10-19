@@ -1,7 +1,20 @@
 //! Cutting one file's diff to a selection. Hunk headers pass through as
 //! they are: `git apply --recount` counts the lines.
 
-use super::{Selection, Side, partial_patch};
+use super::{Selection, Side, line_staging_refusal, partial_patch};
+
+#[test]
+fn rename_and_copy_metadata_refuses_line_actions_in_both_directions() {
+    for kind in ["rename", "copy"] {
+        let file = format!(
+            "diff --git a/old.txt b/new.txt\n{kind} from old.txt\n{kind} to new.txt\n--- a/old.txt\n+++ b/new.txt\n@@ -1 +1 @@\n-old\n+new\n"
+        );
+        assert!(line_staging_refusal(&file).is_some());
+        for reverse in [false, true] {
+            assert!(partial_patch(&file, Selection::lines(Side::New, 1, 1), reverse).is_none());
+        }
+    }
+}
 
 const HEAD: &str =
     "diff --git a/f.txt b/f.txt\nindex 1111111..2222222 100644\n--- a/f.txt\n+++ b/f.txt\n";

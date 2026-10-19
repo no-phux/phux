@@ -111,6 +111,10 @@ impl Desk {
             .loaded(self.changes.source)
             .sections
             .get(range.path().as_ref());
+        if let Some(reason) = section.and_then(|file| crate::git::line_staging_refusal(file)) {
+            self.post(Kind::Info, "Line staging unavailable", Some(reason.into()));
+            return;
+        }
         let cut = section
             .and_then(|file| crate::git::partial_patch(file, review::selection(&range), reverse));
         let Some(patch) = cut else {

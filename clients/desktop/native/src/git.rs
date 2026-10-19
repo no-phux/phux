@@ -8,12 +8,12 @@
 //! them off the UI thread.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 mod patch;
 mod stage;
 
-pub use patch::{Selection, Side, partial_patch};
+pub use patch::{Selection, Side, line_staging_refusal, partial_patch};
 pub use stage::{
     MAX_PATCH_BYTES, MAX_UNTRACKED, PatchText, Source, read_file, read_patch, split_files,
 };
@@ -190,28 +190,33 @@ fn command(dir: &Path, args: &[&str]) -> Command {
 
 /// Run git; a non-zero exit is an error carrying git's own message.
 fn run(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
-    let (code, stdout, stderr) = exec(dir, args, stdin)?;
-    if code == Some(0) {
-        Ok(stdout)
+    let output = exec(dir, args, stdin)?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
-        Err(failure(&stderr, &stdout))
+        Err(failure(
+            &String::from_utf8_lossy(&output.stderr),
+            &String::from_utf8_lossy(&output.stdout),
+        ))
     }
 }
 
 /// `git diff` exits 1 when `--no-index` finds a difference.
 fn run_diff(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let (code, stdout, stderr) = exec(dir, args, None)?;
-    match code {
-        Some(0 | 1) => Ok(stdout),
-        _ => Err(failure(&stderr, &stdout)),
+    let output = exec(dir, args, None)?;
+    match output.status.code() {
+        Some(0 | 1) => String::from_utf8(output.stdout).map_err(|_| {
+            "This diff contains non-UTF-8 data. Review and stage it in the terminal instead."
+                .to_owned()
+        }),
+        _ => Err(failure(
+            &String::from_utf8_lossy(&output.stderr),
+            &String::from_utf8_lossy(&output.stdout),
+        )),
     }
 }
 
-fn exec(
-    dir: &Path,
-    args: &[&str],
-    stdin: Option<&str>,
-) -> Result<(Option<i32>, String, String), String> {
+fn exec(dir: &Path, args: &[&str], stdin: Option<&str>) -> Result<Output, String> {
     use std::io::Write as _;
     let mut command = command(dir, args);
     command.stdin(if stdin.is_some() {
@@ -226,14 +231,9 @@ fn exec(
         pipe.write_all(text.as_bytes())
             .map_err(|error| format!("Could not write to git: {error}"))?;
     }
-    let output = child
+    child
         .wait_with_output()
-        .map_err(|error| format!("git did not finish: {error}"))?;
-    Ok((
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    ))
+        .map_err(|error| format!("git did not finish: {error}"))
 }
 
 /// Git's message, trimmed to what fits in a notice.

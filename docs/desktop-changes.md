@@ -97,6 +97,10 @@ commit posts git's own message and keeps your text.
   comparison, the diff reloads and returns to the file you last opened.
 - Very large comparisons are fetched with less surrounding context. New files
   over 1 MiB, binary files, and more than 200 new files are not previewed.
+- Non-UTF-8 diffs must be reviewed and staged in the terminal; patch bytes are
+  never replaced for display and then written to the index. Line actions move
+  content only, not executable-bit changes. Renames and copies require the
+  whole-file action or the terminal rather than line staging.
 - Notes and viewed marks last until the window closes or follows another checkout.
 - The panel does not discard changes, push, pull, or switch branches.
 
