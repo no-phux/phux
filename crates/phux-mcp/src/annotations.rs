@@ -237,6 +237,7 @@ mod tests {
             "phux_status",
             "phux_doctor",
             "phux_whoami",
+            "phux_perf",
             "phux_agent_list",
             "phux_agent_show",
             "phux_resource_show",
@@ -273,6 +274,7 @@ mod tests {
             "phux_insert_pane",
             "phux_relaunch",
             "phux_organize",
+            "phux_perf_trace",
         ] {
             let hints = annotation(tool);
             assert!(

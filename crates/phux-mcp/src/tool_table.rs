@@ -13,8 +13,8 @@
 use phux_protocol::ids::ResourceId;
 use phux_protocol::kinds::{self, Verb, Verbs};
 use phux_protocol::wire::frame::{
-    APPROVAL_DECIDE_KEY_PREFIX, FrameKind, RESOURCE_TAGS_KEY, SESSION_CREATE_KEY, SESSION_NAME_KEY,
-    Scope, WHOAMI_KEY,
+    APPROVAL_DECIDE_KEY_PREFIX, Command, FrameKind, RESOURCE_TAGS_KEY, SESSION_CREATE_KEY,
+    SESSION_NAME_KEY, Scope, WHOAMI_KEY,
 };
 
 /// Which CLI verb a tool mirrors, if any.
@@ -73,6 +73,13 @@ const RESOLVE: &str = "GET_STATE";
 /// config-reload doorbell, which needs `SIGNAL`; an ordinary write's hints
 /// come from the row the classifier gives one ([`kinds::frame_rule`]).
 pub(crate) const METADATA_WRITE: &str = "SET_METADATA (ordinary key)";
+
+/// A `GET_PERF` that resets nothing: the report read alone.
+///
+/// Named apart from `GET_PERF` because that method's rows include
+/// `{ reset: true }`, which needs `BIND`; a plain read's hints come from the
+/// row the classifier gives one ([`kinds::command_rule`]).
+pub(crate) const PERF_READ: &str = "GET_PERF (no reset)";
 
 /// Why an agent read stays on the CLI: the detector projection.
 const DETECTOR: &str = "the detector projection (manifest replay over the pane's screen, plus \
@@ -437,6 +444,22 @@ pub(crate) const TOOLS: &[Row] = &[
         "the `whoami` feature check and the refusal document are the CLI command's",
         Touches::Wire(&[WHOAMI_KEY]),
     ),
+    residue(
+        "phux_perf",
+        "perf",
+        "the report document and the dev-mode desktop's socket discovery are the CLI command's",
+        // `source: desktop` reads the desktop's dev socket, which is not a
+        // catalog method, and sends the server nothing.
+        Touches::Wire(&[PERF_READ]),
+    ),
+    residue(
+        "phux_perf_trace",
+        "perf trace",
+        "the capture window, the trace file, and the merged desktop timeline are the CLI \
+         command's",
+        // `source: desktop` asks the desktop, which sends `PERF_CONTROL` itself.
+        Touches::Wire(&["PERF_CONTROL"]),
+    ),
     cli(
         "phux_resource_show",
         "resource show",
@@ -599,6 +622,10 @@ fn method_facts(name: &str) -> Option<(Verbs, bool, bool)> {
     if name == METADATA_WRITE {
         let verbs = kinds::frame_rule(&ordinary_metadata_write()).verb_set();
         // A row that admits no verb is a denial: conservatively a write.
+        return Some((verbs, verbs.is_empty() || verbs.mutates(), false));
+    }
+    if name == PERF_READ {
+        let verbs = kinds::command_rule(&Command::GetPerf { reset: false }).verb_set();
         return Some((verbs, verbs.is_empty() || verbs.mutates(), false));
     }
     let method = kinds::method_named(name)?;
