@@ -82,27 +82,26 @@ pub(crate) fn group(mut work: Vec<Work>, grouping: SidebarGrouping) -> Vec<Group
                     .as_ref()
                     .map_or_else(|| "Other".to_owned(), |(_, name)| name.clone()),
             ),
-            SidebarGrouping::Machine => Some(
-                work.destination
-                    .host
-                    .clone()
-                    .unwrap_or_else(|| "This Mac".into()),
-            ),
+            SidebarGrouping::Machine => Some(super::super::machine_name::label(
+                work.destination.host.as_deref(),
+            )),
             SidebarGrouping::None => None,
         }
     };
     match grouping {
-        // Work without a project sinks below the projects.
+        // Work without a project sinks below the projects. Projects meet by
+        // name, so a linked project and a repository of that name are one.
         SidebarGrouping::Project => work.sort_by(|a, b| {
+            let name = |work: &Work| work.project.as_ref().map(|(_, name)| name.clone());
             (
                 a.project.is_none(),
-                &a.project,
+                name(a),
                 &a.destination.name,
                 &a.destination.host,
             )
                 .cmp(&(
                     b.project.is_none(),
-                    &b.project,
+                    name(b),
                     &b.destination.name,
                     &b.destination.host,
                 ))
@@ -248,7 +247,7 @@ fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
 /// The machine a row names: nothing on this Mac or under a machine heading.
 fn host_word(desk: &Desk, host: Option<&str>) -> Option<String> {
     (desk.prefs.sidebar_grouping != SidebarGrouping::Machine)
-        .then(|| host.map(str::to_owned))
+        .then(|| host.map(super::super::machine_name::display))
         .flatten()
 }
 
@@ -338,7 +337,7 @@ fn unavailable(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> Vec<AnyEleme
         .into_iter()
         .filter(|(host, _)| desk.prefs.sidebar_shows_host(host.as_deref()))
         .map(|(host, error)| {
-            let name = host.as_deref().unwrap_or("This Mac").to_owned();
+            let name = super::super::machine_name::label(host.as_deref());
             let selector = format!("unavailable-{}", host.as_deref().unwrap_or("Local"));
             let tip = format!("{error} · Click to retry");
             row(SharedString::from(selector.clone()), look)

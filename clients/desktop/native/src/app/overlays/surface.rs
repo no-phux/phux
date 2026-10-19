@@ -4,7 +4,9 @@
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, IntoElement, MouseButton, Window, div, px};
 
-use super::dialogs::{add_host_dialog, confirm, paste_question, rename_dialog, session_dialog};
+use super::dialogs::{
+    add_host_dialog, confirm, paste_question, project_dialog, rename_dialog, session_dialog,
+};
 use super::launcher;
 use super::notifications::notifications_panel;
 use super::path_panel::path_panel;
@@ -39,6 +41,9 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         Modal::NativeLaunch => crate::app::native_launch::panel(desk, &look, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, &look, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
+        Modal::Project { name, current, .. } => {
+            project_dialog(desk, &name, current.is_some(), colors, &look, cx)
+        }
         Modal::KillSession { name, .. } => confirm(
             format!("Kill {name}?"),
             "This ends every process in the session, for every client, and deletes it. Closing a pane or tab ends its processes too; closing a window only detaches.",

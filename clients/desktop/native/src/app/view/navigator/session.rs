@@ -144,7 +144,7 @@ fn session_description(desk: &Desk, work: &Work) -> (String, String) {
     let tip = format!(
         "{} · {} · {detail}{role}",
         work.destination.name,
-        work.destination.host.as_deref().unwrap_or("This Mac")
+        crate::app::machine_name::label(work.destination.host.as_deref())
     );
     (detail, tip)
 }

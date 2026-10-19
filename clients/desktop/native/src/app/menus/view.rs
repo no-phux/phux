@@ -78,9 +78,10 @@ fn host_filter_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
     }];
     items.extend(hosts.into_iter().map(|host| {
         let shown = desk.prefs.sidebar_shows_host(host.as_deref());
-        let label = host.clone().unwrap_or_else(|| "This Mac".into());
+        let name = host.clone().unwrap_or_else(|| "This Mac".into());
+        let label = super::machine_name::label(host.as_deref());
         let handle = handle.clone();
-        MenuItem::action(label.clone(), move |_, cx| {
+        MenuItem::action(label, move |_, cx| {
             let _ = handle.update(cx, |desk, cx| {
                 desk.update_prefs(
                     |prefs| prefs.set_sidebar_host_visible(host.clone(), !shown),
@@ -89,7 +90,7 @@ fn host_filter_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
             });
         })
         .checked(shown)
-        .selector(format!("show-host-{label}"))
+        .selector(format!("show-host-{name}"))
     }));
     MenuPage::titled("Visible machines", items)
 }

@@ -240,6 +240,43 @@ impl Desk {
             })
     }
 
+    /// Link the project dialog's session into `project`, or unlink it with
+    /// `None` or a blank name. A refusal keeps the dialog open.
+    pub fn link_project(
+        &mut self,
+        project: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Modal::Project { session, .. } = self.modal.clone() else {
+            return;
+        };
+        let project = project
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty());
+        let submitted = match project.as_deref().and_then(project_refusal) {
+            Some(refused) => Err(refused.to_owned()),
+            None => self
+                .link
+                .as_ref()
+                .filter(|link| link.connection.organization())
+                .ok_or_else(|| "This server cannot link sessions to projects.".to_owned())
+                .and_then(|link| {
+                    link.connection
+                        .client
+                        .set_session_project(session, project.as_deref())
+                        .map_err(|error| error.to_string())
+                }),
+        };
+        if let Err(failure) = submitted {
+            self.post(Kind::Error, "Could not link the project", Some(failure));
+            cx.notify();
+            return;
+        }
+        self.close_modal(window, cx);
+        self.after_command(window, cx);
+    }
+
     /// Ask to kill the focused pane's session.
     pub(super) fn ask_kill_session(&mut self) {
         let Some((name, session)) = self.focused_session("kill") else {

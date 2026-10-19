@@ -171,17 +171,19 @@ fn work_on(connection: &Connection, host: Option<String>) -> Vec<Work> {
             .iter()
             .map(|session| {
                 let record = session.key.and_then(|key| replica.session(&key));
-                let project = record
-                    .and_then(|record| {
-                        let id = attr(&record.attrs, "project.id")?;
-                        let name = attr(&record.attrs, "project.name").unwrap_or(id);
-                        Some((id.to_owned(), name.to_owned()))
-                    })
+                // A project a person linked the session into wins over the
+                // repository it was created in; groups go by name, so a link
+                // named for a repository joins that repository's sessions.
+                let project = connection
+                    .projects
+                    .get(&session.id)
+                    .map(|label| (format!("label:{label}"), label.clone()))
                     .or_else(|| {
-                        connection
-                            .projects
-                            .get(&session.id)
-                            .map(|label| (format!("label:{label}"), label.clone()))
+                        record.and_then(|record| {
+                            let id = attr(&record.attrs, "project.id")?;
+                            let name = attr(&record.attrs, "project.name").unwrap_or(id);
+                            Some((id.to_owned(), name.to_owned()))
+                        })
                     });
                 let panes: Vec<_> = connection
                     .panes()

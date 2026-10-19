@@ -61,7 +61,10 @@ fn machine_item(
     let disconnect = !current && !matches!(reach, Reach::Unavailable(_));
     let handle = handle.clone();
     SettingItem::new(
-        host.unwrap_or("This computer").to_owned(),
+        host.map_or_else(
+            || "This computer".to_owned(),
+            super::super::machine_name::display,
+        ),
         SettingField::render(move |_, _, _| {
             let (open, drop) = (target.clone(), target.clone());
             div()

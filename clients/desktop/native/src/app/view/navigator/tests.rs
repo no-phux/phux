@@ -104,3 +104,24 @@ fn a_lone_group_needs_no_heading() {
     );
     assert!(group(Vec::new(), SidebarGrouping::Project).is_empty());
 }
+
+#[test]
+fn a_linked_project_meets_the_repository_of_its_name_across_machines() {
+    let mut linked = work("mobile", Some("mini"), None);
+    linked.project = Some(("label:phux".into(), "phux".into()));
+    let mut docs = work("docs", None, None);
+    docs.project = Some(("label:docs".into(), "docs".into()));
+    let catalog = vec![
+        work("desk", None, Some("phux")),
+        docs,
+        linked,
+        work("api", Some("studio"), Some("phux")),
+    ];
+    assert_eq!(
+        labels(&group(catalog, SidebarGrouping::Project)),
+        [
+            (Some("docs"), vec!["docs"]),
+            (Some("phux"), vec!["api", "desk", "mobile"]),
+        ]
+    );
+}
