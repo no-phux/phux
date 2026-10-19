@@ -116,9 +116,11 @@ impl Histogram {
         self.record(u64::try_from(n).unwrap_or(u64::MAX));
     }
 
-    /// Record a duration in microseconds.
+    /// Record a duration in microseconds, and as a span when a
+    /// [`crate::trace`] capture is armed.
     pub fn record_duration(&self, d: std::time::Duration) {
         self.record(crate::duration_us(d));
+        crate::trace::record_histogram(std::ptr::from_ref(self) as usize, d);
     }
 
     /// Record the microseconds elapsed since `start`.
