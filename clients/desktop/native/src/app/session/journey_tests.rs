@@ -3,6 +3,7 @@
 mod agent_fleet;
 mod agent_stream;
 mod capture;
+mod clipboard;
 mod federation;
 mod identity;
 mod layouts;

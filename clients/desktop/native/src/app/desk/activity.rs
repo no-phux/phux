@@ -19,6 +19,7 @@ impl Desk {
             )
         };
         crate::diag::DRAIN_EVENTS.add(events.len() as u64);
+        self.deliver_clipboard_writes(&events, cx);
         let had_uploads = !uploads.is_empty();
         if had_uploads {
             self.finish_uploads(uploads);

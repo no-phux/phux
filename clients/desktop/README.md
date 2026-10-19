@@ -59,6 +59,12 @@ first, then ends all its processes and deletes the session.
 On Linux, Super replaces ⌘; `Ctrl-Shift-P/T/W/F` also work, and
 `Ctrl-Shift-C/V` copy and paste without intercepting the shell's `Ctrl-C`.
 
+Programs such as Claude Code can copy text with OSC 52. Live clipboard
+writes from the terminal with keyboard focus in the active window go to
+this computer's clipboard, including when the terminal runs on a remote
+host. Background panes, replayed history and clipboard read requests do
+not change or read the clipboard.
+
 If you have a Ghostty config, the first launch adopts fonts, colors, theme,
 padding, option-as-alt, and your `keybind` lines where an equivalent command
 exists. **Settings > Ghostty** re-applies it and lists the lines it could not
