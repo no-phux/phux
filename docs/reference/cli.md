@@ -3359,11 +3359,11 @@ Global flags:
 ```text
 Link a session into a named project, on any machine.
 
-The label is stored on the server that owns SESSION, so every client (desktop,
-TUI, `phux ls`) sees it, and groups sessions by project name across hosts: an
-explicit link outranks the git repository a session was created in, and a link
-named like a repository joins that repository's group. Relinking replaces the
-label; the last writer wins.
+The link is stored on the server that owns SESSION, so every client (desktop,
+TUI, `phux ls`) sees it, and groups sessions by project name across hosts: a
+link outranks the git repository a session was created in, and a link named like
+a repository joins that repository's group. Relinking replaces the link; the
+last writer wins. NAME is trimmed.
 
 Usage: phux project link [--json] [--remote <[USER@]HOST[:PORT]>] <SESSION> <NAME>
 
@@ -3479,6 +3479,9 @@ Global flags:
 
 ```text
 Clear a session's project link; it groups by its repository again.
+
+Only the link is cleared, never the free-text project a recipe or archive
+recorded.
 
 Usage: phux project unlink [--json] [--remote <[USER@]HOST[:PORT]>] <SESSION>
 
