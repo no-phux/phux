@@ -270,6 +270,37 @@ pub async fn get_perf_on(
     }
 }
 
+/// `PERF_CONTROL`: start or stop a span trace, or switch heap accounting.
+/// The reply is the server's JSON object (for a stopped trace, the path it
+/// wrote). Send only after seeing `features_ext.PERF_CONTROL`.
+///
+/// # Errors
+///
+/// Transport failure, a refusal (no trace recording, one already
+/// recording, an unwritable state directory), or an unexpected reply.
+pub async fn perf_control_on(
+    conn: &mut Connection,
+    op: phux_protocol::wire::frame::PerfOp,
+) -> Result<serde_json::Value, AttachError> {
+    const REQUEST_ID: u32 = 0;
+    let (result, _interleaved) = conn
+        .request(REQUEST_ID, Command::PerfControl { op })
+        .await?
+        .into_parts();
+    match result {
+        CommandResult::OkWith(CommandValue::Json(json)) => {
+            serde_json::from_str(&json).map_err(|err| {
+                AttachError::Protocol(format!("PERF_CONTROL returned unparseable JSON: {err}"))
+            })
+        }
+        CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
+        other => Err(AttachError::Protocol(crate::explain::explain_unexpected(
+            "PERF_CONTROL",
+            &other,
+        ))),
+    }
+}
+
 /// The protocol version triple the server selected in `HELLO_OK`. A
 /// negotiated connection answers without a second `HELLO`; only a raw
 /// transport performs the exchange here.
@@ -312,6 +343,25 @@ pub async fn probe_hello_features(
     }
     match raw_hello(conn).await? {
         FrameKind::HelloOk { server_caps, .. } => Ok(Some(server_caps.features)),
+        _ => unreachable!("raw_hello returns only HELLO_OK"),
+    }
+}
+
+/// The `features_ext` word the server advertised, like
+/// [`probe_hello_features`]. A raw connection sends its one `HELLO` here, so
+/// call one probe or the other, not both.
+///
+/// # Errors
+///
+/// As [`probe_hello`].
+pub async fn probe_hello_features_ext(
+    conn: &mut Connection,
+) -> Result<phux_protocol::caps::ServerFeatureExtSet, AttachError> {
+    if let Some(negotiated) = conn.negotiated_bootstrap() {
+        return Ok(negotiated.server_features_ext);
+    }
+    match raw_hello(conn).await? {
+        FrameKind::HelloOk { server_caps, .. } => Ok(server_caps.features_ext),
         _ => unreachable!("raw_hello returns only HELLO_OK"),
     }
 }

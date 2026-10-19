@@ -1601,6 +1601,7 @@ async fn negotiate_hello(
                 ServerFeatureExt::Organization,
                 ServerFeatureExt::SessionKill,
                 ServerFeatureExt::NativeAgent,
+                ServerFeatureExt::PerfControl,
             ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
