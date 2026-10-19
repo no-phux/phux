@@ -38,6 +38,9 @@ pub(super) fn session_block(
 ) -> AnyElement {
     let target = work.destination.clone();
     let current = desk.work_is_active(&target);
+    // Session actions target any session on the active connection, including
+    // empty/inactive sessions. Selection is not mutation authority.
+    let actionable = work.online && target.host == desk.remote;
     let key = disclosure_key(work);
     let collapsed = desk.collapsed.contains(&key);
     let selector = format!("work-{}-{}", target.host_label(), work.id);
@@ -72,7 +75,7 @@ pub(super) fn session_block(
                 .debug_selector({ let target = target.clone(); let id = work.id; move || format!("session-detail-{}-{id}", target.host_label()) })))
         .child(div().w(px(8.)).flex_shrink_0().child(crate::app::ui::status::state_dot(work.attention, None)))
         // Reserve the same actions slot on every row, selected or not.
-        .child(session_actions(desk, work, current, look, cx))
+        .child(session_actions(work, actionable, cx))
         .when_some(work.destination.key.filter(|_| current), |row, destination| {
             let name = work.destination.name.clone();
             let wash = from_hex(&look.chrome.accent_wash);
@@ -81,7 +84,7 @@ pub(super) fn session_block(
                     desk.move_resources_to(drag.keys.clone(), destination, name.clone(), window, cx);
                 }))
         })
-        .when(current, |row| {
+        .when(actionable, |row| {
             let name = work.destination.name.clone();
             let id = work.id;
             row.on_mouse_down(MouseButton::Right, cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
@@ -146,27 +149,14 @@ fn session_description(desk: &Desk, work: &Work) -> (String, String) {
     (detail, tip)
 }
 
-fn session_actions(
-    desk: &Desk,
-    work: &Work,
-    current: bool,
-    _: &Look,
-    cx: &mut Context<Desk>,
-) -> impl IntoElement {
+fn session_actions(work: &Work, actionable: bool, cx: &mut Context<Desk>) -> impl IntoElement {
     let id = work.id;
     let name = work.destination.name.clone();
     let selector = format!("session-actions-{}-{id}", work.destination.host_label());
     div()
         .debug_selector(move || selector.clone())
         .flex_shrink_0()
-        .invisible()
-        .when(current, |slot| {
-            slot.group_hover("session", |style| style.visible())
-        })
-        .when(
-            current && desk.menu_open(&format!("session-{id}")),
-            |slot| slot.visible(),
-        )
+        .when(!actionable, |slot| slot.invisible())
         .child(
             ghost_icon(
                 format!("session-menu-{}-{id}", work.destination.host_label()),

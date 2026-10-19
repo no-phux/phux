@@ -41,7 +41,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
         Modal::KillSession { name, .. } => confirm(
             format!("Kill {name}?"),
-            "This ends every process in the session, for every client, and deletes it. Closing a pane, tab, or window never does this.",
+            "This ends every process in the session, for every client, and deletes it. Closing a pane or tab ends its processes too; closing a window only detaches.",
             "Kill Session",
             colors,
             &look,
@@ -60,7 +60,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         ),
         Modal::Terminate { title, .. } => confirm(
             format!("Terminate {title}?"),
-            "This ends the process for every view and every client attached to it. Closing a pane only detaches.",
+            "This ends the process for every view and every client attached to it. Close Pane does the same without this confirmation.",
             "Terminate",
             colors,
             &look,
@@ -69,7 +69,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         ),
         Modal::Paste { title, paste, .. } => confirm(
             paste_question(&title, paste.lines()),
-            "It is running a command, so each line goes to that program as input, not to a shell prompt.",
+            "Its program is not expecting a paste, so each line break arrives as Enter and runs the line before it.",
             "Paste",
             colors,
             &look,

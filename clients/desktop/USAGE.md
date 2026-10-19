@@ -34,6 +34,15 @@ Use **↑/↓** to choose and **Return** to run. **Escape** clears a nonempty
 search, then closes the panel; clicking outside also closes it. Commands that
 open a dialog move the keyboard into that dialog.
 
+### Fullscreen
+
+Use **⌃⌘F**, **Toggle Full Screen** in the command palette, or the green
+window button to enter or leave native fullscreen. On macOS, the menu bar
+and Dock auto-hide so the window fills the display; moving the pointer to
+the corresponding screen edge reveals them. Exiting restores the window
+through the normal macOS fullscreen transition. **Maximize Window** only
+zooms the window within the desktop and is separate from fullscreen.
+
 ### Performance monitor
 
 Open the command palette and search **Performance Monitor**, **CPU**, **memory**,
@@ -181,7 +190,7 @@ session, not to a new cross-server Workspace record.
 | ⌘T, ⌘O           | New terminal in the focused pane's folder; open a folder                    |
 | ⌘D / ⇧⌘D         | Split right / down (a new terminal)                                         |
 | ⌥⌘D              | Another view of the focused terminal                                        |
-| ⌘W / ⇧⌘W         | Close pane / tab (detaches; the process keeps running)                      |
+| ⌘W / ⇧⌘W         | Close pane / tab (ends the processes and removes their views)               |
 | ⌥⌘ arrows, ⌘[ ⌘] | Focus the pane in a direction, cycle panes                                  |
 | ⇧⌘↩              | Zoom the focused pane                                                       |
 | ⌘1–⌘9, ⇧⌘[ ⇧⌘]   | Select a tab                                                                |
@@ -189,6 +198,7 @@ session, not to a new cross-server Workspace record.
 | ⌘E               | Find the selected text                                                      |
 | ⌘L               | Scroll back to live output                                                  |
 | ⌘↑ / ⌘↓          | Jump to the previous / next shell prompt (needs OSC 133 prompt marks)       |
+| ⌘C / ⌘V          | Copy the selection / paste (a copied file or image pastes as its path)      |
 | ⌘A               | Select everything, scrollback included                                      |
 | ⇧⌘A              | Jump to the agent that most needs you                                       |
 | ⌘B, ⌘,           | Toggle the sidebar, open Settings                                           |
@@ -245,6 +255,19 @@ panes, the sidebar edge, or tabs to rearrange; double-click a tab to rename it.
 Splits grow in and closed panes fold away; the PTY is resized once, when the
 motion settles. Cycling panes, directional navigation, and revealing a
 terminal keep the zoom on the pane receiving keyboard input.
+Drag to select; double-click selects a word, triple-click a line, Option-drag
+a rectangle, and Shift-drag selects even in a program that takes the mouse.
+A drag can leave the pane: held above or below it, the terminal scrolls and
+keeps selecting, faster the farther out the pointer is. The selection stays
+until you click or type in that pane. Command-C copies it as plain text, soft
+wraps joined and trailing blanks trimmed (a selection over 1 MiB says so;
+**Open Scrollback as a File** takes everything). Right-click, or Shift-right-click
+in a program that takes the mouse, for Copy, Paste, Select All and the pane's
+actions. A paste goes to the program as a paste: a shell, editor or coding
+agent that turns on bracketed paste takes many lines at once and runs none of
+them. Only a program that would read the lines as typed keys, where each line
+break is Enter, asks first. On Linux a selection is also the primary
+selection, so a middle click pastes it.
 Dropping files onto a pane pastes their shell-quoted paths, and Command-V of a
 copied file pastes its path rather than its name. Command-V of a clipboard
 image (a screenshot, a copied picture) saves it under the temporary directory
@@ -257,8 +280,10 @@ path as one shell-quoted word and presses nothing else, and only into the pane
 it opened on. **Terminate Terminal Process** (palette only) ends one process.
 **Kill Session** (the palette, or a session's menu in the sidebar) asks first,
 then ends every terminal in the session and deletes it; a notification reports any
-terminal that did not end, and why. Closing a pane, tab or window never ends
-work. New sessions are persistent: they stay, empty, after their last
+terminal that did not end, and why. **Close Pane** (⌘W, pane menu) ends its
+process for every client; **Close Tab** (⇧⌘W, tab menu or close button) ends
+all its processes. Typing `exit` removes the pane too. Closing a window or
+moving a pane to another window only detaches its views and keeps work running. New sessions are persistent: they stay, empty, after their last
 terminal exits. Organization session layouts and display preferences persist
 under `$XDG_STATE_HOME/phux-desktop/sessions/<socket-and-session-key-hash>/`,
 so renaming a session does not change its saved tabs or splits. Older servers
@@ -266,7 +291,7 @@ retain the name-scoped directory. Existing name-scoped and unscoped layouts
 are read-only migration fallbacks; explicit `--layout` paths stay unchanged.
 Terminal identity is still checked against the server incarnation.
 Unavailable saved panes retain their split positions until they can attach;
-closing one explicitly removes it. Replacing the daemon retires its old view
+process-close requests are refused while disconnected rather than hiding live work. Replacing the daemon retires its old view
 handles rather than rebinding their numeric terminal IDs. Unsupported or
 damaged layout files are preserved without automatic writes, with a notice in
 the window. Back up and remove the affected layout file to start a fresh one.

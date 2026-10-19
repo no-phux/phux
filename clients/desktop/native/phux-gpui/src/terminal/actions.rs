@@ -15,7 +15,8 @@ use gpui::{self, ClipboardItem};
 pub enum HostAction {
     /// Copy this view's selection, as Command-C.
     Copy,
-    /// Paste the clipboard's text, as Command-V.
+    /// Paste the clipboard, as Command-V: text, or a copied file or image
+    /// as its path.
     Paste,
     /// Send a paste the person confirmed after it was held.
     PasteConfirmed(crate::input::HeldPaste),
@@ -26,7 +27,8 @@ pub enum HostAction {
 }
 
 /// Failures are as quiet as Command-C with nothing selected: the terminal's
-/// own state already shows why (no selection, not ready). Copy and Paste are
+/// own state already shows why (no selection, not ready). A selection too
+/// large for the clipboard says so, since nothing on screen would. Copy and Paste are
 /// addressed to this terminal, so they do not need its keyboard focus.
 /// `Some` when the shell should show a refusal. The action is not kept.
 pub(super) fn run(
@@ -35,12 +37,10 @@ pub(super) fn run(
     cx: &mut gpui::App,
 ) -> Option<InputNotice> {
     match action {
-        HostAction::Copy => {
-            input.update(cx, |state, cx| {
-                let _ = state.copy_requested(cx);
-            });
-            None
-        }
+        HostAction::Copy => input.update(cx, |state, cx| {
+            (state.copy_requested(cx) == Err(crate::input::InputError::TooLarge))
+                .then(crate::input::copy_too_large)
+        }),
         HostAction::Paste => input.update(cx, |state, cx| state.paste_command(cx)),
         HostAction::PasteConfirmed(paste) => {
             input.update(cx, |state, _| state.paste_confirmed(&paste.text));

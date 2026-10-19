@@ -78,8 +78,8 @@ impl Desk {
         }
     }
 
-    /// Fold the focused pane away, then release it. A second close of a pane
-    /// already folding does nothing.
+    /// Fold the focused pane, then request process termination. Keep its view
+    /// until the server confirms closure; a refusal restores the visible pane.
     pub(super) fn fold_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.focused_id() else {
             return;
@@ -87,12 +87,12 @@ impl Desk {
         if !self.motion.leave(&id, Instant::now()) {
             return;
         }
-        let span = self.motion.leave_span();
+        let timer = cx.background_executor().timer(self.motion.leave_span());
         cx.spawn_in(window, async move |this, cx| {
-            smol::Timer::after(span).await;
+            timer.await;
             let _ = this.update_in(cx, |desk, window, cx| {
                 desk.motion.left(&id);
-                desk.workspace_call(|link| link.workspace.close_pane(&link.connection, Some(&id)));
+                desk.workspace_call(|link| link.workspace.terminate_pane(&link.connection, &id));
                 desk.after_command(window, cx);
             });
         })
@@ -192,14 +192,19 @@ impl Desk {
         queued == Some(true)
     }
 
-    /// Queue a bracketed paste when the terminal takes input. `None` when not connected.
+    /// Queue a paste when the terminal takes input. `None` when not connected.
+    ///
+    /// Every caller pastes on the person's own request (Paste Selection,
+    /// Insert Path, a dropped file, Send Notes), so it is trusted like
+    /// Command-V: the server brackets it for the program and does not refuse
+    /// a line break, which an untrusted paste would drop on the floor.
     pub(super) fn queue_paste(&self, terminal: &ResourceId, text: &str) -> Option<bool> {
         let client = self.client()?;
         let queued = client.with_control(|control| {
             if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {
                 return false;
             }
-            let _ = control.apply_paste(terminal, text);
+            let _ = control.apply_user_paste(terminal, text);
             true
         });
         if queued {

@@ -138,6 +138,10 @@ impl Desktop {
             // Root's focus traversal runs before bubbling terminal input.
             KeyBinding::new("tab", NoAction, Some("PhuxTerminal")),
             KeyBinding::new("shift-tab", NoAction, Some("PhuxTerminal")),
+            // Off macOS, Root's Ctrl-C copies a conversation selection. In a
+            // terminal Ctrl-C is the shell's interrupt, always.
+            #[cfg(not(target_os = "macos"))]
+            KeyBinding::new("ctrl-c", NoAction, Some("PhuxTerminal")),
             KeyBinding::new("tab", OpenPathDirectory, Some("PathPicker > Input")),
         ]);
         let updates = cx.new(|cx| {
@@ -366,6 +370,9 @@ fn next_peer<T: PartialEq + Copy>(
 fn binding_context(stroke: &str) -> &'static str {
     match stroke {
         "tab" | "shift-tab" => "Desk || PhuxTerminal",
+        // Outside a terminal these belong to text: Kit's fields and its
+        // window root, which copies a selection in a conversation.
+        "cmd-c" | "cmd-v" => "PhuxTerminal",
         _ => "Desk",
     }
 }

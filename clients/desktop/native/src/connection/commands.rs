@@ -20,10 +20,17 @@ impl Connection {
     /// when the server does not take the command.
     #[must_use]
     pub fn kill_session(&self, session: SessionKey) -> Option<OperationId> {
-        if self.closed {
-            return None;
+        self.try_kill_session(session).ok()
+    }
+
+    /// Submit a session kill while preserving the failure for the UI.
+    pub(crate) fn try_kill_session(&self, session: SessionKey) -> Result<OperationId, String> {
+        if self.closed || self.status != Status::Attached {
+            return Err("Not connected.".to_owned());
         }
-        self.client.kill_session(session).ok()
+        self.client
+            .kill_session(session)
+            .map_err(|error| error.to_string())
     }
 
     /// Ask the runtime to drop the socket and redial. A terminal client cannot reopen.

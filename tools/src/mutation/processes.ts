@@ -1,7 +1,7 @@
 // Bounded shutdown for an invocation whose descendants may leave its process
 // group: cargo-mutants starts Cargo and tests in groups of their own.
 import type { Subprocess } from "bun";
-import { capture } from "../lib/process.ts";
+import { ProcessError } from "../lib/process.ts";
 
 /** pid -> (parent pid, start time). */
 export type Snapshot = Map<number, { parent: number; birth: string }>;
@@ -16,8 +16,24 @@ export function parseSnapshot(text: string): Snapshot {
 }
 
 /** Start times keep a reused PID from being mistaken for an owned process. */
-function snapshot(): Snapshot {
-  return parseSnapshot(capture(["ps", "-axo", "pid=,ppid=,lstart="], { timeoutMs: 1000 }));
+async function snapshot(): Promise<Snapshot> {
+  const argv = ["ps", "-axo", "pid=,ppid=,lstart="];
+  // Busy macOS hosts can need more than a second to enumerate processes.
+  // Keep discovery bounded without blocking child reaping or signal handlers.
+  const child = Bun.spawn(argv, {
+    timeout: 5000,
+    killSignal: "SIGKILL",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (code !== 0) {
+    throw new ProcessError(argv, stderr || `exit ${code} (signal: ${String(child.signalCode)})`);
+  }
+  return parseSnapshot(stdout);
 }
 
 /** Owned PIDs still running as the process they were when first seen. */
@@ -56,7 +72,7 @@ const ascending = (left: number, right: number) => left - right;
 
 /** SIGINT `child` for graceful cleanup, then SIGKILL every tracked descendant still alive. */
 export async function stopInvocation(child: Subprocess, graceMs = 5000): Promise<Cleanup> {
-  let processes = snapshot();
+  let processes = await snapshot();
   const owned = new Map<number, string>();
   // Never adopt a PID Bun has already reaped: it could belong to a new process.
   const leader = processes.get(child.pid);
@@ -69,11 +85,11 @@ export async function stopInvocation(child: Subprocess, graceMs = 5000): Promise
   const deadline = performance.now() + graceMs;
   while (living(owned, processes).size > 0 && performance.now() < deadline) {
     await Bun.sleep(50);
-    processes = snapshot();
+    processes = await snapshot();
     trackDescendants(owned, processes);
   }
   // Refresh immediately before escalation, including any late descendants.
-  processes = snapshot();
+  processes = await snapshot();
   trackDescendants(owned, processes);
   // Descendants first, so the leader cannot respawn them.
   const remaining = [...living(owned, processes)].toSorted(

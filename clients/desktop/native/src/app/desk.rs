@@ -124,6 +124,7 @@ pub enum Modal {
     KillSession {
         name: String,
         session: u32,
+        target: Option<SessionRenameTarget>,
     },
     WindowSession,
     /// Every open native window, its session, host and tabs.
@@ -138,8 +139,8 @@ pub enum Modal {
     RemoveHost {
         name: String,
     },
-    /// A line-breaking paste held because the placement's terminal is
-    /// running a command.
+    /// A paste held because the placement's program would read its line
+    /// breaks as Enter.
     Paste {
         placement_id: String,
         /// The terminal the paste was held for; a retargeted placement

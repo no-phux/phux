@@ -43,8 +43,8 @@ pub enum TerminalEvent {
     /// Local files or image bytes to upload into this terminal.
     /// The shell pastes the server path only after the receipt.
     Upload(crate::attach::UploadBatch),
-    /// A line-breaking paste held while this terminal runs a command. The
-    /// shell asks first and sends it with [`HostAction::PasteConfirmed`].
+    /// A paste the program would read as typed keys, held because it breaks
+    /// a line. The shell asks first and sends it with [`HostAction::PasteConfirmed`].
     ConfirmPaste(crate::input::HeldPaste),
 }
 
@@ -306,6 +306,7 @@ impl Render for Terminal {
         let (down, up, press, movement) =
             (input.clone(), input.clone(), input.clone(), input.clone());
         let (release, release_out, wheel) = (input.clone(), input.clone(), input.clone());
+        let captured = input.clone();
 
         div()
             .id(self.element_id.clone())
@@ -342,6 +343,11 @@ impl Render for Terminal {
                 }),
             )
             .on_mouse_move(move |event, window, cx| {
+                // A drag this view captured is delivered by the window-wide
+                // listener below, inside the pane or not.
+                if movement.read(cx).capturing() {
+                    return;
+                }
                 movement.update(cx, |state, cx| {
                     let _ = state.mouse_move(event, window, cx);
                 });
@@ -375,12 +381,12 @@ impl Render for Terminal {
                 });
             })
             // Right and middle presses reach mouse-reporting programs (vim mouse=a, tmux).
-            .on_mouse_down(MouseButton::Right, other_press(&input))
-            .on_mouse_down(MouseButton::Middle, other_press(&input))
-            .on_mouse_up(MouseButton::Right, other_release(&input))
-            .on_mouse_up(MouseButton::Middle, other_release(&input))
-            .on_mouse_up_out(MouseButton::Right, other_release(&input))
-            .on_mouse_up_out(MouseButton::Middle, other_release(&input))
+            .on_mouse_down(MouseButton::Right, input_host::other_press(&input))
+            .on_mouse_down(MouseButton::Middle, input_host::other_press(&input))
+            .on_mouse_up(MouseButton::Right, input_host::other_release(&input))
+            .on_mouse_up(MouseButton::Middle, input_host::other_release(&input))
+            .on_mouse_up_out(MouseButton::Right, input_host::other_release(&input))
+            .on_mouse_up_out(MouseButton::Middle, input_host::other_release(&input))
             .on_scroll_wheel(move |event, window, cx| {
                 let handled = wheel.update(cx, |state, cx| state.scroll(event, window, cx).unwrap_or(false));
                 if handled {
@@ -391,6 +397,17 @@ impl Render for Terminal {
                 canvas(
                     move |bounds, window, cx| paint::prepare(frame, settings, fraction, bounds, &scene, window, cx),
                     move |bounds, prepared, window, cx| {
+                        // Hover-gated listeners stop at the pane's edge. A
+                        // selection drag or captured button keeps following
+                        // the pointer past it, so a drag can overshoot and
+                        // autoscroll.
+                        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+                            if phase == gpui::DispatchPhase::Bubble && captured.read(cx).capturing() {
+                                captured.update(cx, |state, cx| {
+                                    let _ = state.mouse_move(event, window, cx);
+                                });
+                            }
+                        });
                         let mut report = prepared.paint(bounds, window, cx);
                         if let Some((laser, color)) = beam
                             && report.frame.is_some()
@@ -434,32 +451,6 @@ impl Render for Terminal {
                 )
                 .size_full(),
             )
-    }
-}
-
-/// A right or middle press: reported to a mouse-reporting program, otherwise left to the window.
-fn other_press(
-    input: &gpui::Entity<crate::input::TerminalInput>,
-) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App) + 'static {
-    let input = input.clone();
-    move |event, window, cx| {
-        let handled = input.update(cx, |state, cx| {
-            state.mouse_down(event, window, cx).unwrap_or(false)
-        });
-        if handled {
-            cx.stop_propagation();
-        }
-    }
-}
-
-fn other_release(
-    input: &gpui::Entity<crate::input::TerminalInput>,
-) -> impl Fn(&gpui::MouseUpEvent, &mut Window, &mut gpui::App) + 'static {
-    let input = input.clone();
-    move |event, window, cx| {
-        input.update(cx, |state, cx| {
-            let _ = state.mouse_up(event, window, cx);
-        });
     }
 }
 

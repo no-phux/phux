@@ -30,8 +30,10 @@ on the tab or terminal they are in, and the bell opens an inbox of agent
 alerts and held approvals. `⌘P` opens one palette over sessions, actions,
 and settings; `>` switches it to commands.
 
-Closing a pane, tab, or window detaches. Only **Terminate Terminal Process**
-and **Kill Session** end anything, and Kill Session asks first.
+Closing a pane or tab ends its processes and removes their views for every
+client. Typing `exit` removes the pane too. Closing a window or moving a pane
+to another window only detaches; work keeps running. **Kill Session** asks
+first, then ends all its processes and deletes the session.
 
 | Keys             | Action                                                   |
 | ---------------- | -------------------------------------------------------- |
@@ -39,7 +41,7 @@ and **Kill Session** end anything, and Kill Session asks first.
 | ⌘T, ⌘O           | new terminal in the focused pane's folder; open a folder |
 | ⌘D, ⇧⌘D          | split right, split down                                  |
 | ⌥⌘D              | another view of the focused terminal                     |
-| ⌘W, ⇧⌘W          | close pane, close tab (the process keeps running)        |
+| ⌘W, ⇧⌘W          | close pane, close tab (ends the processes)               |
 | ⌥⌘ arrows, ⌘[ ⌘] | focus a direction, cycle panes                           |
 | ⇧⌘↩              | zoom                                                     |
 | ⌘1-⌘9, ⇧⌘[ ⇧⌘]   | select a tab                                             |

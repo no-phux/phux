@@ -39,7 +39,10 @@ gpui_kit::assets::icon_assets!(
         Brain,
         Wrench,
         Square,
-        MessagesSquare
+        MessagesSquare,
+        // The terminal's right-click menu.
+        ClipboardPaste,
+        ScanText
     ]
 );
 
