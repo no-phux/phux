@@ -270,6 +270,18 @@ fn tool_annotations_equal_the_kind_table() {
         }
         if let tool_table::Touches::Wire(methods) = row.touches {
             for method in methods {
+                if *method == tool_table::PERF_READ {
+                    // `GET_PERF`'s reset row needs `BIND`; the plain read
+                    // is asked of its own row.
+                    let read = phux_protocol::wire::frame::Command::GetPerf { reset: false };
+                    assert!(
+                        !phux_protocol::kinds::command_rule(&read)
+                            .verb_set()
+                            .mutates(),
+                        "{name} is read-only but a plain GET_PERF mutates"
+                    );
+                    continue;
+                }
                 let spec = phux_protocol::kinds::method_named(method)
                     .unwrap_or_else(|| panic!("{name}: {method} is not in the kind table"));
                 assert!(!spec.mutating(), "{name} is read-only but {method} mutates");
