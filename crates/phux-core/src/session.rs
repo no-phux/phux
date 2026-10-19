@@ -17,7 +17,8 @@ pub const MAX_NAME_BYTES: usize = 256;
 /// Descriptive session attributes. They never organize or authorize.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attrs {
-    /// Project label.
+    /// Free-text project label a recipe or archive records; not the
+    /// explicit [`Self::project_link`].
     #[serde(default)]
     pub project: Option<String>,
     /// Working directory new resources default to.
@@ -32,6 +33,11 @@ pub struct Attrs {
     /// Opaque mission task id, lowercase hex. Set by `phux mission start`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission_task: Option<String>,
+    /// The project the session was explicitly linked into
+    /// ([`crate::Op::SessionSetProject`], `phux project link`). Distinct
+    /// from [`Self::project`]: clients group by it ahead of the repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_link: Option<String>,
 }
 
 /// A session record.

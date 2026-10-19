@@ -206,7 +206,7 @@ impl super::SessionLoop {
                 .iter_mut()
                 .find(|session| session.key == Some(key))
             {
-                phux_client::project_identity::set_label_attr(
+                phux_client::project_identity::set_link_attr(
                     &mut session.attrs,
                     project.as_deref(),
                 );

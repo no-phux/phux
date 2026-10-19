@@ -469,7 +469,7 @@ impl OrganizationReplica {
                 revision,
             } => {
                 self.with_session(session, |s| {
-                    crate::project_identity::set_label_attr(&mut s.attrs, project.as_deref());
+                    crate::project_identity::set_link_attr(&mut s.attrs, project.as_deref());
                     s.revision = *revision;
                 });
                 ReplicaAction::Changed
@@ -797,11 +797,13 @@ mod tests {
     }
 
     #[test]
-    fn a_project_event_sets_replaces_and_clears_the_project_attr() {
+    fn a_project_event_sets_replaces_and_clears_only_the_link_attr() {
         let mut replica = OrganizationReplica::new();
         replica.begin_seed(OrgFilter::All);
-        let work = SessionRecord::new(skey(1), "work", Revision::new(2))
-            .with_attrs(vec![("host".to_owned(), "mini".to_owned())]);
+        let work = SessionRecord::new(skey(1), "work", Revision::new(2)).with_attrs(vec![
+            ("project".to_owned(), "checkout-dir".to_owned()),
+            ("host".to_owned(), "mini".to_owned()),
+        ]);
         replica.apply_page(page(5, vec![work], vec![]));
         let set = |project: Option<&str>, revision| AgentEvent::SessionProjectSet {
             session: skey(1),
@@ -818,7 +820,11 @@ mod tests {
         );
         assert_eq!(
             attrs(&replica),
-            vec![pair("project", "phux"), pair("host", "mini")]
+            vec![
+                pair("project.link", "phux"),
+                pair("project", "checkout-dir"),
+                pair("host", "mini")
+            ]
         );
         assert_eq!(
             replica.session(&skey(1)).unwrap().revision,
@@ -827,10 +833,18 @@ mod tests {
         replica.apply_event(Some(7), &set(Some("ghostty"), 4));
         assert_eq!(
             attrs(&replica),
-            vec![pair("project", "ghostty"), pair("host", "mini")]
+            vec![
+                pair("project.link", "ghostty"),
+                pair("project", "checkout-dir"),
+                pair("host", "mini")
+            ]
         );
         replica.apply_event(Some(8), &set(None, 5));
-        assert_eq!(attrs(&replica), vec![pair("host", "mini")]);
+        assert_eq!(
+            attrs(&replica),
+            vec![pair("project", "checkout-dir"), pair("host", "mini")],
+            "unlinking leaves the recipe's free-text label"
+        );
         assert_eq!(
             replica.session(&skey(1)).unwrap().revision,
             Revision::new(5)

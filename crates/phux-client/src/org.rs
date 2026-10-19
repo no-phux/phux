@@ -737,7 +737,7 @@ pub fn session_project_supported(conn: &Connection) -> bool {
     })
 }
 
-/// `phux project link` / `unlink`: set or clear a session's project label
+/// `phux project link` / `unlink`: set or clear a session's project link
 /// (`SESSION_SET_PROJECT`; the last writer wins).
 ///
 /// # Errors

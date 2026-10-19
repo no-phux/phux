@@ -164,7 +164,7 @@ pub enum Event {
         /// New revision.
         revision: Revision,
     },
-    /// A session's project label was set or cleared.
+    /// A session's project link was set or cleared.
     SessionProjectSet {
         /// Key.
         key: SessionKey,

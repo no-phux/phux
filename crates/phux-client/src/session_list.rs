@@ -305,10 +305,10 @@ pub fn session_json(
                 )
             })
             .or_else(|| crate::project_identity::of_session(s)),
-        project_label: record
+        project_link: record
             .map_or_else(
-                || crate::project_identity::label_of_session(s),
-                |record| crate::project_identity::label_of_attrs(&record.attrs),
+                || crate::project_identity::link_of_session(s),
+                |record| crate::project_identity::link_of_attrs(&record.attrs),
             )
             .map(str::to_owned),
         key: record.map(|record| record.key.to_string()),

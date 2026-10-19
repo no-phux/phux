@@ -379,8 +379,8 @@ pub(super) fn session_roster(
         out.push(entry);
         projects.push(RowProject {
             project: phux_client::project_identity::of_session(session),
-            label: phux_client::project_identity::label_of_session(session)
-                .or_else(|| peers.project_tags.get(&session.id).map(String::as_str)),
+            link: phux_client::project_identity::link_of_session(session),
+            label: peers.project_tags.get(&session.id).map(String::as_str),
         });
     }
     let satellites = satellite_roster(peers.hosts);
@@ -390,7 +390,8 @@ pub(super) fn session_roster(
         out.push(entry);
         projects.push(RowProject {
             project: session.and_then(|session| session.project.clone()),
-            label: session.and_then(|session| session.project_label.as_deref()),
+            link: session.and_then(|session| session.project_link.as_deref()),
+            label: None,
         });
     }
     group_roster(&out, &projects, peers.collapsed_projects)
@@ -400,6 +401,7 @@ pub(super) fn session_roster(
 #[derive(Default)]
 struct RowProject<'a> {
     project: Option<SessionProject>,
+    link: Option<&'a str>,
     label: Option<&'a str>,
 }
 
@@ -417,6 +419,7 @@ fn group_roster(
         .zip(projects)
         .map(|(entry, row)| GroupRow {
             project: row.project.as_ref(),
+            link: row.link,
             label: row.label,
             needs_you: entry.blocked,
         })
@@ -736,7 +739,7 @@ mod tests {
                     members: 0,
                     exec: phux_core::session_list::ExecCounts::default(),
                     project: None,
-                    project_label: None,
+                    project_link: None,
                     key: None,
                 })
                 .collect(),
@@ -1259,13 +1262,22 @@ mod tests {
 
     /// A session linked into a project by name (`phux project link`), here
     /// or on another machine, joins the group of that project's git
-    /// sessions; the label rides the session's `project` attribute.
+    /// sessions; the link rides the session's `project.link` attribute. A
+    /// recipe's free-text `project` label naming something else leaves a
+    /// git session in its repository's group.
     #[test]
     fn a_linked_session_joins_its_project_group_across_machines() {
         use phux_core::host_list::HostKind;
         let mut f = fixture();
         f.sessions.push(sinfo(3, "scratch"));
-        tag(&mut f, 1, &identity(false, "mini"));
+        let mut here = identity(false, "mini").to_attrs();
+        here.push(("project".to_owned(), "phux-checkout".to_owned()));
+        let session = f
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == SessionId::new(1))
+            .expect("fixture session");
+        *session = session.clone().with_attrs(here);
         let peer = f
             .sessions
             .iter_mut()
@@ -1273,10 +1285,10 @@ mod tests {
             .expect("fixture session");
         *peer = peer
             .clone()
-            .with_attrs(vec![("project".to_owned(), "phux".to_owned())]);
+            .with_attrs(vec![("project.link".to_owned(), "phux".to_owned())]);
         let origin = crate::attach::hosts::AttachOrigin::Remote("mini".to_owned());
         let mut laptop = machine("local", "laptop", HostKind::Local, true, &["docs", "notes"]);
-        laptop.sessions[0].project_label = Some("phux".to_owned());
+        laptop.sessions[0].project_link = Some("phux".to_owned());
         let hosts = vec![laptop];
         let peers = PeerInputs {
             origin: Some(&origin),

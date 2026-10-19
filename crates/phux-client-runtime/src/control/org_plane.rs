@@ -615,9 +615,10 @@ impl ControlPlane {
     }
 
     /// Link a session into a named project, or clear its link
-    /// (`SESSION_SET_PROJECT`; the last writer wins). The label is the
-    /// session's `"project"` attribute; clients group sessions across hosts
-    /// by it.
+    /// (`SESSION_SET_PROJECT`; the last writer wins). The link is the
+    /// session's `"project.link"` attribute, separate from the free-text
+    /// `"project"` label; clients group sessions across hosts by it ahead of
+    /// the repository identity.
     ///
     /// # Errors
     ///

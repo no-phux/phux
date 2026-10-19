@@ -638,7 +638,7 @@ impl OrgFixture {
                 self.session_ref(session).ok_or(Refusal::NotFound)?;
                 let revision = self.bump();
                 let record = self.session_mut(session).ok_or(Refusal::NotFound)?;
-                crate::project_identity::set_label_attr(&mut record.attrs, project.as_deref());
+                crate::project_identity::set_link_attr(&mut record.attrs, project.as_deref());
                 record.revision = revision;
                 Ok((ok(Committed::new(*operation, revision)), None))
             }
