@@ -82,9 +82,12 @@ pub(crate) fn group(mut work: Vec<Work>, grouping: SidebarGrouping) -> Vec<Group
                     .as_ref()
                     .map_or_else(|| "Other".to_owned(), |(_, name)| name.clone()),
             ),
-            SidebarGrouping::Machine => Some(super::super::machine_name::label(
-                work.destination.host.as_deref(),
-            )),
+            SidebarGrouping::Machine => Some(
+                work.destination
+                    .host
+                    .clone()
+                    .unwrap_or_else(|| "This Mac".into()),
+            ),
             SidebarGrouping::None => None,
         }
     };
@@ -214,7 +217,12 @@ fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let mut rows = Vec::new();
     for group in groups {
         if let Some(label) = &group.label {
-            rows.push(section_label(label, look).into_any_element());
+            // Machines group by their saved name and read as what they resolve to.
+            let label = match desk.prefs.sidebar_grouping {
+                SidebarGrouping::Machine => super::super::machine_name::display(label),
+                _ => label.clone(),
+            };
+            rows.push(section_label(&label, look).into_any_element());
         }
         for work in group.work {
             rows.push(session_block(desk, &work, look, cx));

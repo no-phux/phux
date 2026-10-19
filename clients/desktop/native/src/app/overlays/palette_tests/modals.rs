@@ -35,6 +35,7 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
             target: None,
         },
         Modal::Project {
+            host: None,
             session: phux_protocol::ids::SessionKey::new([1; 16]).unwrap(),
             name: "work".into(),
             current: Some("phux".into()),

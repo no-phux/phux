@@ -149,6 +149,7 @@ impl Connection {
             conversations: HashMap::new(),
             conversation_heads: HashMap::new(),
             projects: HashMap::new(),
+            links: HashMap::new(),
             directories: HashMap::new(),
             groups: HashMap::new(),
             approvals: Vec::new(),

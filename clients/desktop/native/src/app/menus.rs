@@ -481,7 +481,8 @@ fn session_menu(desk: &Desk, id: u32, name: &str, cx: &mut Context<Desk>) -> Men
         .and_then(|session| session.key)
         .filter(|_| links_projects)
     {
-        let current = connection.projects.get(&id).cloned();
+        let current = connection.links.get(&id).cloned();
+        let host = desk.remote.clone();
         let name = name.to_owned();
         items.push(
             MenuItem::action(
@@ -489,6 +490,7 @@ fn session_menu(desk: &Desk, id: u32, name: &str, cx: &mut Context<Desk>) -> Men
                 on_desk(&handle, move |desk, window, cx| {
                     desk.open_modal(
                         Modal::Project {
+                            host: host.clone(),
                             session: key,
                             name: name.clone(),
                             current: current.clone(),

@@ -248,9 +248,18 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Modal::Project { session, .. } = self.modal.clone() else {
+        let Modal::Project { host, session, .. } = self.modal.clone() else {
             return;
         };
+        if host != self.remote {
+            self.post(
+                Kind::Refusal,
+                "Session moved",
+                Some("This window now shows another machine. Reopen Link to Project from the session.".into()),
+            );
+            self.close_modal(window, cx);
+            return;
+        }
         let project = project
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty());

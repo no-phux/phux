@@ -124,6 +124,8 @@ pub enum Modal {
     /// Link a session into a named project. Projects meet by name across
     /// machines, so each machine's server keeps the link for its own session.
     Project {
+        /// The machine whose server holds the session.
+        host: Option<String>,
         session: SessionKey,
         name: String,
         current: Option<String>,
