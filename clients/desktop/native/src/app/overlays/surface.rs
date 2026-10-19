@@ -69,7 +69,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         ),
         Modal::Paste { title, paste, .. } => confirm(
             paste_question(&title, paste.lines()),
-            "It is running a command, so each line goes to that program as input, not to a shell prompt.",
+            "Its program is not expecting a paste, so each line break arrives as Enter and runs the line before it.",
             "Paste",
             colors,
             &look,

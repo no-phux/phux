@@ -189,6 +189,7 @@ session, not to a new cross-server Workspace record.
 | ⌘E               | Find the selected text                                                      |
 | ⌘L               | Scroll back to live output                                                  |
 | ⌘↑ / ⌘↓          | Jump to the previous / next shell prompt (needs OSC 133 prompt marks)       |
+| ⌘C / ⌘V          | Copy the selection / paste (a copied file or image pastes as its path)      |
 | ⌘A               | Select everything, scrollback included                                      |
 | ⇧⌘A              | Jump to the agent that most needs you                                       |
 | ⌘B, ⌘,           | Toggle the sidebar, open Settings                                           |
@@ -245,6 +246,19 @@ panes, the sidebar edge, or tabs to rearrange; double-click a tab to rename it.
 Splits grow in and closed panes fold away; the PTY is resized once, when the
 motion settles. Cycling panes, directional navigation, and revealing a
 terminal keep the zoom on the pane receiving keyboard input.
+Drag to select; double-click selects a word, triple-click a line, Option-drag
+a rectangle, and Shift-drag selects even in a program that takes the mouse.
+A drag can leave the pane: held above or below it, the terminal scrolls and
+keeps selecting, faster the farther out the pointer is. The selection stays
+until you click or type in that pane. Command-C copies it as plain text, soft
+wraps joined and trailing blanks trimmed (a selection over 1 MiB says so;
+**Open Scrollback as a File** takes everything). Right-click, or Shift-right-click
+in a program that takes the mouse, for Copy, Paste, Select All and the pane's
+actions. A paste goes to the program as a paste: a shell, editor or coding
+agent that turns on bracketed paste takes many lines at once and runs none of
+them. Only a program that would read the lines as typed keys, where each line
+break is Enter, asks first. On Linux a selection is also the primary
+selection, so a middle click pastes it.
 Dropping files onto a pane pastes their shell-quoted paths, and Command-V of a
 copied file pastes its path rather than its name. Command-V of a clipboard
 image (a screenshot, a copied picture) saves it under the temporary directory

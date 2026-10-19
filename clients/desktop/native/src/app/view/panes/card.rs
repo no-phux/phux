@@ -75,8 +75,16 @@ fn terminal_body(
     // A cached view keeps its last paint until this entity is notified.
     // Chrome refreshes (hover, clock, sidebar) must not reacquire and
     // reshape the terminal. GPUI requires a definite size for that cache.
+    // A right press the terminal did not report to its program bubbles here.
     div()
         .size_full()
+        .on_mouse_down(
+            gpui::MouseButton::Right,
+            cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                desk.open_terminal_menu(&placement_id, event.position, window, cx);
+            }),
+        )
         .child(entity.cached(gpui::StyleRefinement::default().size_full()))
         .into_any_element()
 }
