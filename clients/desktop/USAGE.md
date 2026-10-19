@@ -69,18 +69,30 @@ resident memory and lifetime peak resident memory are separate readings.
 An em dash means unavailable or no interval yet, not zero.
 
 **Overview**, **Memory**, and **Metrics** separate quick readings from the raw
-instrumentation. Overview has hoverable Longbridge Kit CPU and RSS charts;
-Memory adds a macOS physical-footprint chart, the reading closest to Activity
-Monitor's memory accounting. Charts retain at most 120 numeric samples, not
+instrumentation. Overview has hoverable Longbridge Kit CPU and app-memory charts.
+App memory means macOS physical footprint (closest to Activity Monitor), or RSS
+on Linux. Memory also shows native malloc blocks in use and reserved capacity
+on macOS, without requiring Rust counting. Capacity is not resident RAM.
+Charts retain at most 120 numeric samples, not
 full reports, and restart after a pause. The content scrolls even in a short
-window. Space pauses or resumes; Escape, ⌘W or Ctrl-W closes the monitor.
+window. Space pauses or resumes unless you are typing in a field; Escape, ⌘W
+or Ctrl-W closes the monitor. ⌘F or Ctrl-F opens the metric filter; every search
+word must match the metric name.
+
+**Set baseline** compares later memory readings with the current snapshot and
+restarts chart history without resetting counters. Repeat the same workload
+and compare after it settles. **Release unused heap** asks macOS malloc, off
+the UI thread, to return unused pages. It leaves live allocations intact and
+reports the allocator's returned-byte count, which is not necessarily the
+footprint reduction. It is best-effort, macOS-only, and disabled while paused.
 
 Footprint, RSS and tracked Rust heap overlap: do not add them or subtract heap
 from RSS to infer GPU memory. Native AppKit, Metal, window surfaces and
 allocator-retained pages are outside the Rust allocation counter. The Memory
 tab explains the measurements and gives the process-specific `vmmap -summary`
 command for native attribution. Rust counting requires an isolated development
-launch with `PHUX_DEV=1`, or **Settings > Performance > Count Rust allocations**.
+launch with `PHUX_DEV=1`, **Settings > Performance > Count Rust allocations**,
+or **Count allocations** directly in the monitor's Memory tab.
 The setting applies immediately across desktop windows without a restart and
 lasts only for this run. It does not enable a dev socket or change the server.
 Turn it off after profiling to remove counting overhead. Opening the monitor

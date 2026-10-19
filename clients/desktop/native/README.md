@@ -21,7 +21,7 @@ and lock so the GPUI dependency graph never enters the other phux crates.
 | `connection` | one runtime `Client` per window and its sole event/path-answer drain |
 | `phux-gpui` | embeddable grid painter, input handler, drawable-presented fence receipts |
 | `perf` | always-on painter/key-to-paint metrics (`phux_perf` statics) |
-| `telemetry` | on-demand process CPU intervals and native current/peak resident memory |
+| `telemetry` | on-demand CPU, RSS, physical footprint and native malloc readings |
 | `phux-gpui/fonts`, `hotkeys`, `chrome` | bundled Paper Mono, global quick-terminal chords, titlebar drag |
 
 `workspace`, `settings` and `connection` hold no GPUI types, so their rules
@@ -86,6 +86,13 @@ resolution failure still opens the window, with the reason shown.
   **Settings > Performance > Count Rust allocations** enables or disables the
   desktop's counter live, across windows, for this run only. It does not enable
   the dev socket, change the server or require a restart.
+  Memory also offers inline counting, baseline comparisons, native malloc
+  in-use/capacity readings and a deliberate off-thread **Release unused heap**
+  action. Native malloc totals include pre-existing native allocations; they
+  overlap with footprint and Rust counts and are not a GPU breakdown.
+  The dev socket's `perf` response and Perfetto captures include these native
+  memory measures. ⌘F / Ctrl-F filters the metrics without intercepting spaces
+  typed into the field.
   Closing Changes releases parsed comparisons and its Kit diff entity while
   preserving review notes, drafts and viewed marks; stale reads cannot restore
   the closed preview.
@@ -127,3 +134,17 @@ just desktop-app      # debug build against a same-checkout CLI
 
 Never point a development build at the production socket or replace the
 installed app.
+
+Preview the monitor without a server or an installed app:
+
+```sh
+cargo run --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --features ui-fixtures --example performance_monitor
+```
+
+Append `-- clients/desktop/.cache/monitor-preview` to capture all three tabs
+as PNGs and exit. The fixture never activates its window. These are native
+scene/layout captures, not compositor-presentation evidence; capture buffers
+themselves affect memory, so use the separate ignored memory observations for
+allocator measurements. On macOS it also saves `memory-before-capture.txt`, a
+`vmmap -summary` snapshot of only its own process before allocating PNG buffers.

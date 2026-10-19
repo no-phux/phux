@@ -12,6 +12,8 @@ fn allocation_counting_toggles_live_without_enabling_dev_mode(cx: &mut gpui::Tes
     assert!(alloc::installed());
     assert!(!alloc::enabled());
     assert!(alloc::stats().is_none());
+    let sample = phux_desktop::telemetry::Sampler::new().sample();
+    assert_eq!(sample.native_heap.is_some(), cfg!(target_os = "macos"));
     cx.update(|cx| devtools::set_allocation_counting(true, cx));
     let before = alloc::stats().expect("enabled counter");
     let block = std::hint::black_box(vec![0x5a_u8; 32 * 1024]);

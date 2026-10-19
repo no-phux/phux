@@ -692,6 +692,7 @@ mod tests {
         use phux_perf::ProcessStats;
         cx.update(gpui_kit::init);
         let before = ProcessStats::physical_footprint_bytes();
+        let heap_before = phux_perf::alloc::native::stats();
         let text = format!(
             "diff --git a/large.rs b/large.rs\n--- a/large.rs\n+++ b/large.rs\n@@ -1,50000 +1,50000 @@\n{}-old\n+new\n",
             " context line of a large source file\n".repeat(49_999)
@@ -717,13 +718,20 @@ mod tests {
         let subscription = cx.update(|cx| cx.subscribe(&state, |_, _: &DiffEvent, _| {}));
         changes.diff = Some((state, subscription));
         let loaded = ProcessStats::physical_footprint_bytes();
+        let heap_loaded = phux_perf::alloc::native::stats();
         changes.release_preview();
+        // Dropping an Entity queues its destruction; a production UI turn
+        // flushes it before returning. Drive that turn in this isolated probe.
+        cx.update(|_| {});
         cx.run_until_parked();
         assert!(weak.upgrade().is_none());
         assert!(changes.comparisons.changes.sections.is_empty());
+        let closed = ProcessStats::physical_footprint_bytes();
+        let heap_closed = phux_perf::alloc::native::stats();
+        let returned = phux_perf::alloc::native::release_unused();
+        let relieved = ProcessStats::physical_footprint_bytes();
         eprintln!(
-            "preview memory bytes: baseline={before:?}, loaded={loaded:?}, closed={:?}, released_patch_text={patch_bytes}",
-            ProcessStats::physical_footprint_bytes()
+            "preview memory bytes: baseline={before:?}, loaded={loaded:?}, closed={closed:?}, relieved={relieved:?}, returned={returned:?}, released_patch_text={patch_bytes}; malloc baseline={heap_before:?}, loaded={heap_loaded:?}, closed={heap_closed:?}"
         );
     }
 
