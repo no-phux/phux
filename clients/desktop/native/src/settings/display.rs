@@ -145,6 +145,8 @@ pub struct DisplayPrefs {
     /// Native agents: every pane with an agent conversation shows it
     /// instead of its terminal until that pane is toggled back.
     pub native_agents: bool,
+    /// Experimental tiled agent overview, enabled from Layout settings.
+    pub agent_fleet: bool,
     /// Skin motion: pane folds, skin shifts, cursor effects. macOS reduce
     /// motion also turns it off.
     pub animations: bool,
@@ -176,6 +178,7 @@ pub fn default_display() -> DisplayPrefs {
         skin_id: "glass".to_owned(),
         plain: false,
         native_agents: false,
+        agent_fleet: false,
         animations: true,
     }
 }
@@ -298,6 +301,7 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         skin_id: string("skinId", fallback.skin_id),
         plain: flag("plainTerminal", fallback.plain),
         native_agents: flag("nativeAgents", fallback.native_agents),
+        agent_fleet: flag("agentFleet", fallback.agent_fleet),
         animations: flag("animations", fallback.animations),
     })
 }
@@ -329,6 +333,7 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "skinId": display.skin_id,
         "plainTerminal": display.plain,
         "nativeAgents": display.native_agents,
+        "agentFleet": display.agent_fleet,
         "animations": display.animations,
     })
 }
@@ -344,6 +349,24 @@ fn round_to(value: f64, steps: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_fleet_is_opt_in_and_round_trips_without_coercion() {
+        for value in [
+            json!({}),
+            json!({"agentFleet": "true"}),
+            json!({"agentFleet": 1}),
+            json!({"agentFleet": null}),
+        ] {
+            assert!(!parse_display(&value).agent_fleet);
+        }
+        let on = DisplayPrefs {
+            agent_fleet: true,
+            ..default_display()
+        };
+        assert_eq!(display_value(&on)["agentFleet"], true);
+        assert_eq!(parse_display(&display_value(&on)), on);
+    }
 
     #[test]
     fn tab_placement_round_trips_without_changing_other_preferences() {

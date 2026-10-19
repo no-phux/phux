@@ -10,6 +10,10 @@ use super::desk::Desk;
 use super::notifications::Kind;
 use crate::connection::{AgentState, Connection};
 
+mod agents;
+pub(crate) mod dashboard;
+pub(crate) use agents::Agent;
+
 /// A route chooses a connection; persistent identity chooses work on that authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Destination {
@@ -90,7 +94,8 @@ impl Fleet {
         let Some(connection) = observer.connection.as_mut() else {
             return false;
         };
-        connection.drain();
+        let events = connection.drain();
+        let graph_changed = events.iter().any(|event| event.changes_session_graph());
         let (mut last, mut error) = (Vec::new(), connection.error.clone());
         if available(connection) {
             last = work_on(connection, host.clone());
@@ -104,7 +109,11 @@ impl Fleet {
                 error = Some("Disconnected. Retry to refresh this host.".into());
             }
         }
-        if observer.last == last && observer.error == error {
+        if observer.last == last
+            && observer.error == error
+            && !connection.agents_noted()
+            && !graph_changed
+        {
             return false;
         }
         observer.last = last;
@@ -321,7 +330,12 @@ impl Desk {
 
     /// Revalidate the catalog destination before replacing the active projection.
     pub(crate) fn navigate_work(&mut self, destination: Destination, cx: &mut Context<Self>) {
-        if self.work_is_active(&destination) {
+        if self.work_is_active(&destination)
+            && self
+                .link
+                .as_ref()
+                .is_some_and(|link| available(&link.connection))
+        {
             return;
         }
         let listed = self

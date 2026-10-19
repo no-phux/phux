@@ -55,6 +55,7 @@ const CATALOG: &str = "\
     paste-cwd | Paste Working Directory | Terminal |  | Insert the focused terminal's working directory. | cwd path
     terminate | Terminate Terminal Process… | Terminal |  | Confirm termination of the focused terminal process. | kill
     attention | Jump to Agent Needing Attention | Agents | cmd+shift+a | Focus the next agent that needs your attention. |
+    agent-fleet | Agent Fleet | Agents |  | Open the live agent overview. Enable Agent fleet in Settings > Layout & notifications first. | dashboard overview grid mission control
     native-agents | Toggle Native Agents | Agents | cmd+ctrl+a | Snap every agent pane to its native conversation, or back to its terminal. | conversation chat transcript acp tui harness native
     conversation | Toggle Conversation | Agents |  | Show the focused agent pane's conversation, or its terminal. | chat transcript native acp
     sidebar | Toggle Sidebar | View | cmd+b | Show or hide the navigation sidebar. |

@@ -82,7 +82,7 @@ impl Page {
                  animations motion laser cursor native agents conversation chat acp transcript"
             }
             Self::Layout => {
-                "sidebar tabs top bottom side background opacity glass blur solid opaque notifications alerts"
+                "sidebar tabs top bottom side background opacity glass blur solid opaque notifications alerts experimental agent fleet dashboard overview"
             }
             Self::Keyboard => {
                 "option alt keys keybind shortcuts chord input conflicts duplicate source"

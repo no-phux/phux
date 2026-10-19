@@ -77,6 +77,7 @@ impl Desk {
         }
         self.capture_receipts(events, cx);
         self.settle_project_terminal();
+        self.settle_fleet_terminal();
         self.reveal_pending_native(cx);
         self.take_notices();
         self.note_agents();

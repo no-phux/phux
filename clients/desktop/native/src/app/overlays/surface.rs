@@ -19,6 +19,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
     let card = match desk.modal.clone() {
         Modal::None => return div().into_any_element(),
         Modal::Capture => crate::app::capture::panel(desk, &look, window, cx),
+        Modal::AgentFleet => crate::app::fleet::dashboard::panel(desk, &look, window, cx),
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession

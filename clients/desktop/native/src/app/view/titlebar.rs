@@ -198,6 +198,19 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                     .when(desk.native_agents_offered(), |actions| {
                         actions.child(native_agents_toggle(desk, cx))
                     })
+                    .when(desk.prefs.agent_fleet, |actions| {
+                        actions.child(div().debug_selector(|| "agent-fleet".into()).child(
+                            icon_button(
+                                "agent-fleet",
+                                IconName::LayoutDashboard,
+                                "Agent Fleet",
+                                None,
+                                cx.listener(|desk, _, window, cx| {
+                                    desk.execute("agent-fleet", window, cx)
+                                }),
+                            ),
+                        ))
+                    })
                     .child(bell(desk, look, cx)),
             )
         })

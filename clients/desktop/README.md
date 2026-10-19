@@ -102,6 +102,11 @@ See [Coming from Ghostty](USAGE.md#coming-from-ghostty).
 
 See [Native agents](USAGE.md#native-agents).
 
+### Agent fleet
+
+See [Agent fleet](AGENT_FLEET.md) for the opt-in live overview, navigation,
+and animation controls.
+
 ## Development
 
 ```sh

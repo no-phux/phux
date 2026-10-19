@@ -109,6 +109,7 @@ pub enum Modal {
     Goto,
     Settings,
     Notifications,
+    AgentFleet,
     NativeLaunch,
     Path,
     MoveResources,
@@ -247,6 +248,7 @@ pub struct Desk {
     /// The remote registry as last read, for the sidebar's Hosts section.
     pub(crate) hosts: Vec<host::RemoteHost>,
     pub(crate) fleet: super::fleet::Fleet,
+    pub(crate) fleet_view: super::fleet::dashboard::State,
     /// A host enrollment in flight, by the target it was given.
     pub(crate) host_adding: Option<String>,
     /// The titlebar's window-drag surface, created once.
@@ -483,6 +485,7 @@ fn listed_modal(id: &str) -> Option<Modal> {
         "windows" => Modal::Windows,
         "settings" => Modal::Settings,
         "notifications" => Modal::Notifications,
+        "agent-fleet" => Modal::AgentFleet,
         _ => return None,
     })
 }

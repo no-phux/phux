@@ -1,5 +1,6 @@
 //! Real desktop window lifecycles against an explicitly supplied checkout CLI.
 
+mod agent_fleet;
 mod agent_stream;
 mod capture;
 mod federation;
@@ -119,9 +120,13 @@ impl Server {
     /// its stdout. Panics on failure.
     fn output(&self, args: &[&str], stdin: &[u8]) -> Vec<u8> {
         use std::io::Write as _;
-        let mut child = Command::new(&self.binary)
-            .arg("--socket")
-            .arg(&self.socket)
+        let mut command = Command::new(&self.binary);
+        // Workload enrollment edits this fixture's private configuration;
+        // unlike the other verbs it is local-only and rejects --socket.
+        if args.first() != Some(&"workload") {
+            command.arg("--socket").arg(&self.socket);
+        }
+        let mut child = command
             .args(args)
             .env("HOME", &self.root)
             .env("XDG_CONFIG_HOME", self.root.join("config"))
