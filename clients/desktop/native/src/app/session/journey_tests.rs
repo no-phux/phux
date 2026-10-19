@@ -1,5 +1,6 @@
 //! Real desktop window lifecycles against an explicitly supplied checkout CLI.
 
+mod agent_fleet;
 mod agent_stream;
 mod capture;
 mod federation;

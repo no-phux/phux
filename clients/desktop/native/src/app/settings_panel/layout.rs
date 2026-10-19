@@ -151,6 +151,12 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
                 ),
         )
         .group(sidebar_hosts(desk, handle))
+        .group(SettingGroup::new().title("Experimental").item(toggle(
+            handle,
+            "Agent fleet",
+            |prefs| &mut prefs.agent_fleet,
+            "A live tiled overview of agents across your machines. Open from the titlebar or Agent Fleet command. Motion follows Appearance > Animations and system Reduce Motion.",
+        )))
         .group(SettingGroup::new().title("Notifications").item(toggle(
             handle,
             "Agent notifications",

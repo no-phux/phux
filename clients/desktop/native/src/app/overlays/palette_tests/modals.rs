@@ -6,6 +6,7 @@ use super::*;
 fn surface(modal: &Modal) -> &'static str {
     match modal {
         Modal::NativeLaunch => "native-launch-panel",
+        Modal::AgentFleet => "agent-fleet-panel",
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
@@ -43,6 +44,7 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
             target: None,
         },
         Modal::Notifications,
+        Modal::AgentFleet,
         Modal::NativeLaunch,
         Modal::Path,
         Modal::Goto,

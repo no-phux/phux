@@ -3,6 +3,29 @@
 use super::*;
 
 #[gpui::test]
+fn fleet_command_is_disclosed_only_after_the_in_app_opt_in(cx: &mut TestAppContext) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-shift-p");
+    type_text(cx, "Agent Fleet");
+    assert_ne!(selected_command(&desk, cx), Some("agent-fleet"));
+    desk.update(cx, |desk, cx| {
+        desk.update_prefs(|prefs| prefs.agent_fleet = true, cx)
+    });
+    render(cx);
+    assert_eq!(selected_command(&desk, cx), Some("agent-fleet"));
+    keys(cx, "enter");
+    assert_eq!(modal(&desk, cx), Modal::AgentFleet);
+    keys(cx, "escape");
+    desk.update(cx, |desk, cx| {
+        desk.update_prefs(|prefs| prefs.agent_fleet = false, cx)
+    });
+    keys(cx, "cmd-shift-p");
+    type_text(cx, "Agent Fleet");
+    assert_ne!(selected_command(&desk, cx), Some("agent-fleet"));
+}
+
+#[gpui::test]
 fn navigation_details_are_explicit_and_preserve_search_focus(cx: &mut TestAppContext) {
     use super::super::{Row, Section, Target};
     let (handle, desk) = fixture(cx);
