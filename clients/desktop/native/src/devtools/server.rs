@@ -4,8 +4,9 @@
 //! same here keeps `GET_PERF` out of the runtime's event path and means the
 //! HUD, the monitor and the dev socket see exactly what `phux perf` prints.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -19,25 +20,52 @@ pub struct ServerCli {
 }
 
 impl ServerCli {
-    /// Run `phux --socket SOCKET ARGS` and return stdout.
+    /// Run `phux --socket SOCKET ARGS` and return stdout, killing the CLI if
+    /// it has not finished within `timeout`.
     ///
     /// # Errors
     ///
-    /// The CLI could not run, or it exited non-zero (its stderr is the error).
-    pub fn run(&self, args: &[&str]) -> anyhow::Result<Vec<u8>> {
-        let output = Command::new(&self.phux)
+    /// The CLI could not run, ran out of time, or exited non-zero (its stderr
+    /// is the error).
+    pub fn run(&self, args: &[&str], timeout: Duration) -> anyhow::Result<Vec<u8>> {
+        let mut child = Command::new(&self.phux)
             .arg("--socket")
             .arg(&self.socket)
             .args(args)
-            .output()?;
-        if !output.status.success() {
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        // Drain both pipes while waiting, so a large report cannot fill a
+        // pipe and deadlock the wait.
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!(
+                    "`phux {}` did not finish within {}s",
+                    args.join(" "),
+                    timeout.as_secs()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let stdout = stdout.join().unwrap_or_default();
+        if !status.success() {
+            let stderr = stderr.join().unwrap_or_default();
             anyhow::bail!(
                 "`phux {}` failed: {}",
                 args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(&stderr).trim()
             );
         }
-        Ok(output.stdout)
+        Ok(stdout)
     }
 
     /// One `GET_PERF` through the CLI.
@@ -46,7 +74,7 @@ impl ServerCli {
     ///
     /// See [`Self::run`]; or the CLI printed something that is not a report.
     pub fn report(&self) -> anyhow::Result<PerfReport> {
-        let stdout = self.run(&["perf", "--json"])?;
+        let stdout = self.run(&["perf", "--json"], REPORT_TIMEOUT)?;
         Ok(PerfReport::from_json(
             String::from_utf8_lossy(&stdout).trim(),
         )?)
@@ -57,6 +85,31 @@ impl ServerCli {
     pub fn socket(&self) -> &Path {
         &self.socket
     }
+}
+
+/// How long one `phux perf --json` may take.
+pub const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Read a child's pipe to the end on its own thread.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    })
+}
+
+/// What the HUD shows of the server, copied out without cloning a report.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ServerSummary {
+    pub cpu_percent: Option<f64>,
+    pub rss_bytes: Option<u64>,
+    /// Why the last read failed, if it did.
+    pub error: Option<String>,
+    /// Whether any reading has arrived yet.
+    pub sampled: bool,
 }
 
 /// The server's latest report and its CPU over the interval before it.
@@ -133,6 +186,18 @@ impl ServerPoller {
     pub fn latest(&self) -> (Option<ServerSample>, Option<String>) {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         (state.latest.clone(), state.error.clone())
+    }
+
+    /// The figures the HUD shows, without cloning the report.
+    #[must_use]
+    pub fn summary(&self) -> ServerSummary {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        ServerSummary {
+            cpu_percent: state.latest.as_ref().and_then(|s| s.cpu_percent),
+            rss_bytes: state.latest.as_ref().and_then(|s| s.report.rss_bytes),
+            error: state.error.clone(),
+            sampled: state.latest.is_some(),
+        }
     }
 }
 

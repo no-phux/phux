@@ -1261,14 +1261,11 @@ fn rows(world: &mut World) -> Vec<Row> {
             port_range: None,
             linger_secs: 0,
         })),
+        denied(command(Command::PerfControl {
+            op: PerfOp::TraceStop,
+        })),
         on_global(command(Command::GetPerf { reset: false }), "observe"),
         on_global(command(Command::GetPerf { reset: true }), "observe,bind"),
-        on_global(
-            command(Command::PerfControl {
-                op: PerfOp::TraceStop,
-            }),
-            "observe,bind",
-        ),
         // Through the parent alone: a grant naming only the child fails.
         row(
             command(Command::AppendResourceOutput {
@@ -1665,6 +1662,14 @@ fn shutdown_and_open_listener_deny_remote_paired_signal_global() {
             transport: ListenerTransport::Quic,
             port_range: None,
             linger_secs: 0,
+        }
+    ));
+    let observe_bind = scoped(&["observe@global", "bind@global"]);
+    assert!(!admits_command(
+        &world,
+        &observe_bind,
+        Command::PerfControl {
+            op: PerfOp::AllocOn,
         }
     ));
     assert!(admits_command(&world, &grant, Command::Upgrade));
