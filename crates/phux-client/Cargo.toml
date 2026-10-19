@@ -47,10 +47,11 @@ phux-client-runtime.workspace = true
 regex = "1"
 # Input operation ids (ADR-0053).
 uuid = { workspace = true }
+# `download`: verify the whole-file digest `GET_FILE` returns.
+sha2 = "0.11"
 
 [dev-dependencies]
 phux-server.workspace = true
-sha2 = "0.11"
 tempfile.workspace = true
 # The scripted QUIC and WebSocket servers in `tests/connection`.
 quinn = { workspace = true }

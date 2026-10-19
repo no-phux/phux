@@ -38,6 +38,7 @@ pub mod commands;
 mod committed_close;
 pub mod delegation;
 mod directory;
+mod download;
 mod ephemeral_listener;
 pub mod idempotent_create;
 pub mod input_lane;

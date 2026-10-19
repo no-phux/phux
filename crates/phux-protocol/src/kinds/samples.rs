@@ -87,10 +87,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::NativeAgent { .. } => 44,
         Command::PerfControl { .. } => 45,
         Command::SessionSetProject { .. } => 46,
+        Command::GetFile { .. } => 47,
     }
 }
 
-const COMMAND_VARIANTS: usize = 47;
+const COMMAND_VARIANTS: usize = 48;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -464,6 +465,15 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 sha256: None,
             },
             &C_PUT_FILE,
+        ),
+        (
+            Command::GetFile {
+                host: None,
+                path: "/tmp/deck.pptx".to_owned(),
+                offset: 0,
+                max_bytes: 1,
+            },
+            &C_GET_FILE,
         ),
         (
             Command::ReportAsked {

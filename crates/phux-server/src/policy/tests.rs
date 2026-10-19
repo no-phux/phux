@@ -496,6 +496,12 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
             final_chunk: false,
             sha256: None,
         }),
+        command(Command::GetFile {
+            host: None,
+            path: "/tmp/deck.pptx".to_owned(),
+            offset: 0,
+            max_bytes: 1,
+        }),
         command(Command::Transcribe {
             upload_id: upload,
             terminal_id: t.clone(),
@@ -1241,6 +1247,15 @@ fn rows(world: &mut World) -> Vec<Row> {
                 data: vec![1],
                 final_chunk: false,
                 sha256: None,
+            }),
+            "input",
+        ),
+        on_global(
+            command(Command::GetFile {
+                host: None,
+                path: "/tmp/deck.pptx".to_owned(),
+                offset: 0,
+                max_bytes: 1,
             }),
             "input",
         ),

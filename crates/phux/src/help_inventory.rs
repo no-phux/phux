@@ -150,6 +150,8 @@ fn long_help_has_one_complete_grouped_inventory() {
 /// `relaunch`, `restore`, `mv`) and `archive`: four lines of discoverable
 /// lifecycle verbs are worth more than hiding them (R20). It rose to 99
 /// with `mail` and `claim` (ADR-0187): agents find coordination at the root.
+/// It rose to 100 with `download`: the pull sits beside `upload`, where
+/// someone looking for the push will find it.
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
     let long = root_long_help();
@@ -161,7 +163,7 @@ fn root_long_help_fits_eighty_columns_and_stays_short() {
     }
     let lines = long.lines().count();
     assert!(
-        lines <= 99,
+        lines <= 100,
         "root help grew to {lines} lines; the page is meant to be one screen"
     );
     assert!(

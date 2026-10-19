@@ -80,6 +80,8 @@ pub mod workspace_place;
 pub mod upgrade;
 // Headless uploads through the managed runtime, shared by native consumers.
 pub mod upload;
+// Headless downloads over one connection, the inverse of `upload`.
+pub mod download;
 // The scripted server every client-side test speaks to.
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;

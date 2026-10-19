@@ -847,7 +847,7 @@ fn verify_completed(path: &Path, chunk: &PutFileChunk) -> Result<(), (ErrorCode,
     Ok(())
 }
 
-fn digest_reader(
+pub(super) fn digest_reader(
     reader: &mut impl Read,
 ) -> Result<sha2::digest::Output<Sha256>, (ErrorCode, String)> {
     let mut digest = Sha256::new();

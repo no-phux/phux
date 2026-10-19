@@ -264,6 +264,27 @@ tests](../crates/phux-server/src/runtime/upload.rs) own continuation and
 quota behavior; [CLI](./reference/cli.md#phux-upload) and
 [environment](./reference/environment.md) own syntax and limits.
 
+`GET_FILE` is the pull, behind `features_ext.FILE_DOWNLOAD`. It addresses a
+machine, not a pane: an optional `host` names a satellite of the serving hub,
+and no `host` reads the server itself, the way `PATH_QUERY` browses. The
+client names an absolute path and the server reads any regular file its own
+user can read, in chunks of at most 8 MiB. That is deliberately no narrower
+than the server grants already: a consumer holding `INPUT` on this server can
+type `cat` into any of its shells, so the command is classified `INPUT` on
+the server. A hub relays a named host only when that satellite advertises
+`FILE_DOWNLOAD`; otherwise it refuses `UNSUPPORTED_SATELLITE_ROUTE` and
+forwards nothing, so an older satellite never sees an unknown tag. Each
+chunk is one stateless request that returns the file's current size, the
+bytes, and, on the chunk that reaches the end, a whole-file SHA-256; a
+client resumes from its own offset and must not expose a file whose digest
+differs. There is no size cap and no sandbox on the reading side; the
+destination disk is the client's. The disk read runs in the bulk command
+lane beside `PUT_FILE`, off the connection dispatcher. The
+[download implementation](../crates/phux-server/src/runtime/download.rs) and
+the [client helper](../crates/phux-client/src/download.rs) own the read and
+the exclusive, verify-then-publish write;
+[`phux download`](./reference/cli.md#phux-download) owns syntax.
+
 ## Minimal client
 
 1. Framing and tagged fields, including skipping unknown ids.

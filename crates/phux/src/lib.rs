@@ -1540,6 +1540,26 @@ fn dispatch(
                 remote: remote.remote,
             },
         ),
+        Some(Command::Download {
+            source,
+            local,
+            force,
+            timeout,
+            json,
+            remote,
+        }) => commands::download::run(
+            commands::download::DownloadArgs {
+                source,
+                local,
+                force,
+                timeout,
+                json,
+            },
+            commands::server_target::ServerSpec {
+                socket,
+                remote: remote.remote,
+            },
+        ),
         Some(Command::Paste {
             target,
             text,

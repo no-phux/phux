@@ -18,28 +18,29 @@ use super::{
     AgentEvent, ApprovalOutcome, COMMAND_RESULT_TAG_ERROR, COMMAND_RESULT_TAG_OK,
     COMMAND_RESULT_TAG_OK_WITH, COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT,
     COMMAND_TAG_APPLY_INPUT, COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_CLOSE_TAB_RESOURCES,
-    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_PERF,
-    COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
-    COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES,
-    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL, COMMAND_TAG_PUT_FILE,
-    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
-    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
-    COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE,
-    COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID,
-    COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command,
-    CommandResult, CommandValue, ControlAction, EVENT_TAG_APPROVAL_DECIDED,
-    EVENT_TAG_APPROVAL_REQUESTED, EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED,
-    EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE,
-    EVENT_TAG_INPUT_ACTIVITY, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
-    EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL,
-    EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
-    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition,
-    ListenerTransport, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
-    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, PerfOp, ReportedAgentState, ResourceEventType,
-    ResourceLifecycle, STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event,
-    decode_key_event, decode_mouse_event, decode_optional_u32, decode_paste_event,
-    decode_terminal_id, encode_focus_event, encode_key_event, encode_mouse_event,
-    encode_paste_event, encode_terminal_id,
+    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_FILE,
+    COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE,
+    COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF,
+    COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL,
+    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
+    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
+    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE,
+    COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_CHUNK,
+    COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON,
+    COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue,
+    ControlAction, EVENT_TAG_APPROVAL_DECIDED, EVENT_TAG_APPROVAL_REQUESTED, EVENT_TAG_ASKED,
+    EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
+    EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_INPUT_ACTIVITY, EVENT_TAG_JOURNAL_GAP,
+    EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP,
+    EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode, FileChunk, FileUploadAck,
+    INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE,
+    InputMode, KillConditions, KillPrecondition, ListenerTransport, MAX_APPEND_BYTES,
+    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    MAX_FILE_UPLOAD_SIZE, PerfOp, ReportedAgentState, ResourceEventType, ResourceLifecycle,
+    STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event, decode_key_event,
+    decode_mouse_event, decode_optional_u32, decode_paste_event, decode_terminal_id,
+    encode_focus_event, encode_key_event, encode_mouse_event, encode_paste_event,
+    encode_terminal_id,
 };
 
 // `Command` and `CommandResult`: a tag, then a positional body.
@@ -243,6 +244,18 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
                     e.write_u8(*byte);
                 }
             });
+        }
+        Command::GetFile {
+            host,
+            path,
+            offset,
+            max_bytes,
+        } => {
+            enc.write_u8(COMMAND_TAG_GET_FILE);
+            enc.write_option(host.as_deref(), Encoder::write_str);
+            enc.write_str(path);
+            enc.write_u64_be(*offset);
+            enc.write_u32_be(*max_bytes);
         }
         Command::ReportAsked {
             terminal_id,
@@ -485,6 +498,7 @@ fn decode_live_affordance_command(
         COMMAND_TAG_GET_TERMINAL_STATE => decode_get_terminal_state_command(dec)?,
         COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS => decode_subscribe_terminal_events_command(dec)?,
         COMMAND_TAG_PUT_FILE => decode_put_file_command(dec)?,
+        COMMAND_TAG_GET_FILE => decode_get_file_command(dec)?,
         COMMAND_TAG_TRANSCRIBE => Command::Transcribe {
             upload_id: decode_file_upload_id(dec)?,
             terminal_id: decode_terminal_id(dec)?,
@@ -720,6 +734,26 @@ fn decode_put_file_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError
     })
 }
 
+fn decode_get_file_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let host = if dec.read_u8()? == 0 {
+        None
+    } else {
+        Some(dec.read_str()?.to_owned())
+    };
+    let path = dec.read_str()?.to_owned();
+    let offset = dec.read_u64_be()?;
+    let max_bytes = dec.read_u32_be()?;
+    if usize::try_from(max_bytes).is_ok_and(|max| max > MAX_FILE_UPLOAD_CHUNK) {
+        return Err(DecodeError::FileUploadLimitExceeded);
+    }
+    Ok(Command::GetFile {
+        host,
+        path,
+        offset,
+        max_bytes,
+    })
+}
+
 fn decode_file_upload_id(dec: &mut Decoder<'_>) -> Result<FileUploadId, DecodeError> {
     let mut id_bytes = [0; 16];
     for byte in &mut id_bytes {
@@ -884,6 +918,16 @@ fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {
             enc.write_u64_be(ack.next_offset);
             enc.write_option(ack.path.as_deref(), Encoder::write_str);
         }
+        CommandValue::FileChunk(chunk) => {
+            enc.write_u8(COMMAND_VALUE_TAG_FILE_CHUNK);
+            enc.write_u64_be(chunk.size);
+            enc.write_bytes(&chunk.data);
+            enc.write_option(chunk.sha256.as_ref(), |e, digest| {
+                for byte in digest {
+                    e.write_u8(*byte);
+                }
+            });
+        }
         CommandValue::OrganizationPage(page) => {
             enc.write_u8(super::COMMAND_VALUE_TAG_ORGANIZATION_PAGE);
             super::org::encode_organization_page(page, enc);
@@ -922,6 +966,16 @@ fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue, DecodeErr
                 next_offset,
                 path,
             }))
+        }
+        COMMAND_VALUE_TAG_FILE_CHUNK => {
+            let size = dec.read_u64_be()?;
+            let data = dec.read_bytes()?;
+            if data.len() > MAX_FILE_UPLOAD_CHUNK {
+                return Err(DecodeError::FileUploadLimitExceeded);
+            }
+            let data = data.to_vec();
+            let sha256 = decode_optional_sha256(dec)?;
+            Ok(CommandValue::FileChunk(FileChunk { size, data, sha256 }))
         }
         super::COMMAND_VALUE_TAG_ORGANIZATION_PAGE => Ok(CommandValue::OrganizationPage(Box::new(
             super::org::decode_organization_page(dec)?,

@@ -33,7 +33,7 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, CloseReason, Command, CommandResult, CommandValue, ControlAction,
     DetachReason, DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
-    DirectoryListingResult, ErrorCode, FileUploadAck, InputMode, ListenerTransport,
+    DirectoryListingResult, ErrorCode, FileChunk, FileUploadAck, InputMode, ListenerTransport,
     MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
     MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, MoveError,
     MoveResult, PerfOp, ReportedAgentState, ResourceLifecycle, Scope, SpawnError, SpawnResource,
@@ -2079,6 +2079,71 @@ fn command_put_file_and_ack_round_trip_with_limits() {
     over_chunk.encode(&mut over_chunk_bytes);
     assert_eq!(
         FrameKind::decode(&over_chunk_bytes).unwrap_err(),
+        DecodeError::FileUploadLimitExceeded
+    );
+}
+
+#[test]
+fn get_file_and_file_chunk_round_trip_within_the_chunk_cap() {
+    let frame = FrameKind::Command {
+        request_id: 0x0a0b_0c0e,
+        command: Command::GetFile {
+            host: Some("mini".to_owned()),
+            path: "/Users/me/Decks/talk.pptx".to_owned(),
+            offset: 8 * 1024 * 1024,
+            max_bytes: 4096,
+        },
+    };
+    let mut encoded = BytesMut::new();
+    frame.encode(&mut encoded);
+    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+    assert_eq!(decoded, frame);
+    assert!(tail.is_empty());
+
+    for sha256 in [None, Some([0x7d; 32])] {
+        let reply = FrameKind::CommandResult {
+            request_id: 0x0a0b_0c0e,
+            result: CommandResult::OkWith(CommandValue::FileChunk(FileChunk {
+                size: 9_000_000,
+                data: b"chunk".to_vec(),
+                sha256,
+            })),
+        };
+        let mut encoded = BytesMut::new();
+        reply.encode(&mut encoded);
+        let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+        assert_eq!(decoded, reply);
+        assert!(tail.is_empty());
+    }
+
+    let over_request = FrameKind::Command {
+        request_id: 3,
+        command: Command::GetFile {
+            host: None,
+            path: "/x".to_owned(),
+            offset: 0,
+            max_bytes: u32::try_from(MAX_FILE_UPLOAD_CHUNK + 1).unwrap(),
+        },
+    };
+    let mut over_request_bytes = BytesMut::new();
+    over_request.encode(&mut over_request_bytes);
+    assert_eq!(
+        FrameKind::decode(&over_request_bytes).unwrap_err(),
+        DecodeError::FileUploadLimitExceeded
+    );
+
+    let over_reply = FrameKind::CommandResult {
+        request_id: 4,
+        result: CommandResult::OkWith(CommandValue::FileChunk(FileChunk {
+            size: 0,
+            data: vec![0; MAX_FILE_UPLOAD_CHUNK + 1],
+            sha256: None,
+        })),
+    };
+    let mut over_reply_bytes = BytesMut::new();
+    over_reply.encode(&mut over_reply_bytes);
+    assert_eq!(
+        FrameKind::decode(&over_reply_bytes).unwrap_err(),
         DecodeError::FileUploadLimitExceeded
     );
 }

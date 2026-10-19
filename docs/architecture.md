@@ -20,7 +20,8 @@ terminal, and its input encoder; libghostty's `Terminal` is `!Send`, which
 is the reason for the single-threaded runtime. Around that runtime: a
 writer thread per pane, a shared poller that wakes quiet PTY readers (a
 busy pane gets its own reader thread), one input-lane thread that routes
-and encodes keystrokes, and blocking pools for uploads and path searches.
+and encodes keystrokes, and blocking pools for uploads, downloads, and path
+searches.
 Shared state is a `ServerState` behind a mutex; never hold its synchronous
 lock across an await or send a live `!Send` terminal across threads. Input
 lanes receive Send mode snapshots, not another borrower of the terminal.
@@ -219,6 +220,14 @@ records explain history; [look them up deliberately](#historical-decisions).
 - `wire-schema.json` is generated from the codec and test-pinned; the code is
   the specification.
 - `phux-core` and `phux-protocol` stay independent; the server bridges them.
+- File transfer rides the command envelope, never PTY input or a second
+  transport, and addresses a machine by host name, not a pane. `PUT_FILE`
+  writes only into a server-chosen sandbox because a client-named write is
+  an execution surface; `GET_FILE` reads any file the serving user can read
+  because an `INPUT` holder on that server can already `cat` it, so the read
+  is classified `INPUT` on the server rather than fenced by a path allow-list
+  ([protocol](./protocol.md#file-transfer),
+  [#1657](https://github.com/no-phux/phux/pull/1657)).
 
 **Clients**
 

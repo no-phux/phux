@@ -181,8 +181,9 @@ pub(crate) struct RemoteOpt {
     /// socket, ssh-style: `--remote me@mini`. Same target and resolution as
     /// `phux attach --remote`: a registered host is dialed directly over
     /// QUIC or WSS, and an unregistered one is paired over your ssh trust
-    /// first and remembered (except `upload` and calls with `--json`: these
-    /// never pair and refuse unregistered hosts, naming remedies). PORT
+    /// first and remembered (except `upload`, `download`, and calls with
+    /// `--json`: these never pair and refuse unregistered hosts, naming
+    /// remedies). PORT
     /// defaults to 8788. Cannot combine with `--socket`.
     #[usage(long, value_name = "[USER@]HOST[:PORT]")]
     pub(crate) remote: Option<String>,
@@ -216,6 +217,7 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
         | Command::Rename { remote, .. }
         | Command::Detach { remote, .. }
         | Command::Upload { remote, .. }
+        | Command::Download { remote, .. }
         | Command::Project {
             action: ProjectAction::Link { remote, .. } | ProjectAction::Unlink { remote, .. },
         } => remote.remote.as_deref(),
@@ -264,6 +266,7 @@ pub(crate) mod confirm;
 pub(crate) mod coord;
 pub(crate) mod detach;
 pub(crate) mod doctor;
+pub(crate) mod download;
 pub(crate) mod enroll;
 pub(crate) mod gen_reference_docs;
 pub(crate) mod git;
@@ -1822,6 +1825,34 @@ Upload dials configured remote transports headlessly; it never pairs over SSH. T
         #[usage(long, default = "60", value_name = "SECS")]
         timeout: u64,
         /// Print the structured receipt on stdout, including non-success outcomes.
+        #[usage(long)]
+        json: bool,
+        #[usage(flatten)]
+        remote: RemoteOpt,
+    },
+
+    /// Download a file from a server or one of its satellites
+    #[usage(
+        help_heading = "Machines",
+        display_order = 46,
+        long_help = "Download a file from the server you connect to, or from one of its satellites, to this client's filesystem.
+
+SOURCE is an absolute path on that server (`/Users/me/deck.pptx`) or `HOST:/path` for a satellite the server federates; any regular file the serving user can read. LOCAL defaults to SOURCE's file name in the current directory, and a directory LOCAL receives the file under its name. An existing LOCAL is refused unless --force replaces it. Bytes land in a fresh sibling `.phux-part` file and move into place only after the whole-file SHA-256 verifies, so a refusal leaves nothing behind.
+
+Download dials configured remote transports headlessly; it never pairs over SSH. The timeout covers resolution and transfer. Completed prints LOCAL; --json prints the receipt for completed or refused outcomes. Refused exits nonzero."
+    )]
+    Download {
+        /// Absolute path on the server, or `HOST:/path` on a satellite.
+        source: String,
+        /// Destination file or directory on this client's filesystem.
+        local: Option<std::path::PathBuf>,
+        /// Replace an existing LOCAL.
+        #[usage(long)]
+        force: bool,
+        /// Overall deadline in seconds, bounded to 1..=3600.
+        #[usage(long, default = "60", value_name = "SECS")]
+        timeout: u64,
+        /// Print the structured receipt on stdout, including refusals.
         #[usage(long)]
         json: bool,
         #[usage(flatten)]

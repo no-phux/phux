@@ -1096,6 +1096,9 @@ pub enum ServerFeatureExt {
     /// link. Advertised only beside [`Self::Organization`]; a client MUST see
     /// the bit before sending the command.
     SessionProject = 0x0000_0100,
+    /// The server answers `GET_FILE`: bounded chunks of any host file the
+    /// serving user can read, addressed to this server or a named satellite.
+    FileDownload = 0x0000_0200,
 }
 
 impl ServerFeatureExt {
@@ -1110,6 +1113,7 @@ impl ServerFeatureExt {
         Self::NativeAgent,
         Self::PerfControl,
         Self::SessionProject,
+        Self::FileDownload,
     ];
 
     /// The `docs/spec/proto.md` §6.2 constant, e.g. `"PATH_QUERY"`.
@@ -1125,6 +1129,7 @@ impl ServerFeatureExt {
             Self::NativeAgent => "NATIVE_AGENT",
             Self::PerfControl => "PERF_CONTROL",
             Self::SessionProject => "SESSION_PROJECT",
+            Self::FileDownload => "FILE_DOWNLOAD",
         }
     }
 
@@ -1148,7 +1153,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::SessionKill as u32
         | ServerFeatureExt::NativeAgent as u32
         | ServerFeatureExt::PerfControl as u32
-        | ServerFeatureExt::SessionProject as u32;
+        | ServerFeatureExt::SessionProject as u32
+        | ServerFeatureExt::FileDownload as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

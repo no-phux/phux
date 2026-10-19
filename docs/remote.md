@@ -40,7 +40,7 @@ repairs whatever broke.
 ## What is reachable
 
 Session-level commands take `--remote NAME`: `ls`, `new`, `kill`, `rename`,
-`detach`, `upload`, `whoami`. Pane-level commands (`snapshot`, `send-keys`,
+`detach`, `upload`, `download`, `whoami`. Pane-level commands (`snapshot`, `send-keys`,
 `run`, `wait`) act on the server they connect to. To script panes on
 another machine, run `phux` there over SSH, or link the machines (below) so
 its panes appear here as `mini/@7`.

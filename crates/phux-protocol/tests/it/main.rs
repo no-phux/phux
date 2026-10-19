@@ -4,6 +4,7 @@
 mod common;
 
 mod decode_fuzz;
+mod file_transfer_snapshots;
 mod frame_wire_snapshots;
 mod hot_path_alloc;
 mod kinds_table;

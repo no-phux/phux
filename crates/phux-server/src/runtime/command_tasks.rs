@@ -115,6 +115,10 @@ impl CommandTasks {
                     .saturating_add(extension.capacity())
                     .saturating_add(terminal_id.host().map_or(0, |host| host.as_str().len())),
             ),
+            Command::GetFile { host, path, .. } => Some(
+                path.capacity()
+                    .saturating_add(host.as_ref().map_or(0, String::capacity)),
+            ),
             Command::Transcribe { terminal_id, .. } => {
                 Some(terminal_id.host().map_or(0, |host| host.as_str().len()))
             }

@@ -363,6 +363,22 @@ pub enum Command {
         /// Expected whole-file SHA-256 digest; required on the final chunk.
         sha256: Option<[u8; 32]>,
     },
+    /// Read one bounded chunk of a file the serving user can read, on this
+    /// server or on the named satellite. The reply is
+    /// [`CommandValue::FileChunk`]; the chunk that reaches the end carries
+    /// the whole-file SHA-256.
+    GetFile {
+        /// A satellite of the serving hub whose filesystem is read; `None`
+        /// reads the serving server's own.
+        host: Option<String>,
+        /// Absolute UTF-8 path on that host.
+        path: String,
+        /// Byte offset at which this chunk begins.
+        offset: u64,
+        /// Most bytes to return, at most
+        /// [`MAX_FILE_UPLOAD_CHUNK`](super::MAX_FILE_UPLOAD_CHUNK).
+        max_bytes: u32,
+    },
     /// Report that an agent in `terminal_id` is blocked on a question
     /// (ADR-0036); the server emits [`AgentEvent::Asked`].
     ReportAsked {
@@ -965,6 +981,17 @@ pub struct FileUploadAck {
     pub path: Option<String>,
 }
 
+/// One [`Command::GetFile`] reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChunk {
+    /// The file's length when this chunk was read.
+    pub size: u64,
+    /// Bytes from the requested offset; empty at or past the end.
+    pub data: Vec<u8>,
+    /// Whole-file SHA-256, present only on the chunk that reaches the end.
+    pub sha256: Option<[u8; 32]>,
+}
+
 /// A successful command's payload (SPEC §5, `CommandValue`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -982,6 +1009,8 @@ pub enum CommandValue {
     Bytes(Vec<u8>),
     /// Acknowledgement for a sandboxed file-upload chunk.
     FileUpload(FileUploadAck),
+    /// One chunk of a host file (reply to `GET_FILE`).
+    FileChunk(FileChunk),
     /// One page of the organization (reply to `GET_ORGANIZATION`).
     OrganizationPage(Box<OrganizationPage>),
     /// An arrangement and its revision (reply to `ARRANGEMENT_GET`).
