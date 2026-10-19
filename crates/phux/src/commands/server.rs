@@ -177,6 +177,14 @@ fn prepare_process(
 ) -> Result<PathBuf, ExitCode> {
     // Durable crash capture for this long-running, often detached process.
     phux_server::telemetry::install_server_panic_hook();
+    // `PHUX_DEV=1` turns on heap accounting from the first allocation.
+    if phux_perf::dev::init_from_env() {
+        tracing::info!(
+            alloc_installed = phux_perf::alloc::installed(),
+            "dev mode on ({}): heap accounting enabled",
+            phux_perf::dev::ENV
+        );
+    }
 
     let socket_path = socket.unwrap_or_else(default_socket_path);
     // Fail before the banner when the path cannot fit in a `sockaddr_un`.

@@ -2892,7 +2892,15 @@ lifetime; with `--watch SECS` the verb polls and prints each interval on its
 own, so counters become rates and a stall shows up in the second it happened.
 Does not start a server.
 
-Usage: phux perf [FLAGS]
+`phux perf trace` records a span trace of the server for Perfetto; `phux perf
+alloc on|off` switches its heap accounting.
+
+Usage: phux perf [FLAGS] [SUBCOMMAND]
+
+Commands:
+  alloc  Switch the server's heap accounting on or off
+  trace  Record a span trace of the server and save it as Chrome trace JSON
+  help   Print this message or the help of the given subcommand(s)
 
 Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
@@ -2905,6 +2913,56 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux perf alloc`
+
+```text
+Switch the server's heap accounting on or off
+
+Heap figures appear in `phux perf` while accounting is on. A server started with
+`PHUX_DEV=1` starts with it on. A server binary without the counting allocator
+answers `installed: false` and reports no heap.
+
+Usage: phux perf alloc [--json] <STATE>
+
+Arguments:
+  <STATE>  `on` or `off`.
+           [possible values: on, off]
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux perf trace`
+
+```text
+Record a span trace of the server and save it as Chrome trace JSON
+
+Arms the server's span capture, waits, then stops it. The server writes the
+trace under its state directory, beside the server log, and this prints the
+path; open it in <https://ui.perfetto.dev>. Ctrl-C ends the wait early and still
+saves the trace.
+
+Usage: phux perf trace [FLAGS]
+
+Flags:
+      --seconds <SECS>  Seconds to record.
+                        (default: 5)
+  -o, --out <PATH>      Copy the trace here as well.
+      --json            Emit stable, versioned JSON on stdout instead of the
+                        human view. On failure, stdout stays empty and stderr
+                        carries one JSON error object.
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux play`

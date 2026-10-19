@@ -538,6 +538,15 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
             },
         ),
         (
+            "snap_command_perf_control_trace_stop",
+            FrameKind::Command {
+                request_id: 0x0000_0012,
+                command: Command::PerfControl {
+                    op: phux_protocol::wire::frame::PerfOp::TraceStop,
+                },
+            },
+        ),
+        (
             "snap_command_result_error_precondition_failed",
             FrameKind::CommandResult {
                 request_id: 0x0000_0011,

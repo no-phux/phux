@@ -36,7 +36,7 @@ use phux_protocol::wire::frame::{
     DirectoryListingResult, ErrorCode, FileUploadAck, InputMode, ListenerTransport,
     MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
     MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, MoveError,
-    MoveResult, ReportedAgentState, ResourceLifecycle, Scope, SpawnError, SpawnResource,
+    MoveResult, PerfOp, ReportedAgentState, ResourceLifecycle, Scope, SpawnError, SpawnResource,
     SpawnResult, StateScope, TerminalSignal, ViewportInfo,
 };
 use phux_protocol::wire::info::{
@@ -1698,6 +1698,22 @@ fn command_variants_round_trip() {
         },
         Command::GetPerf { reset: false },
         Command::GetPerf { reset: true },
+        Command::PerfControl {
+            op: PerfOp::TraceStart,
+        },
+        Command::PerfControl {
+            op: PerfOp::TraceStop,
+        },
+        Command::PerfControl {
+            op: PerfOp::AllocOn,
+        },
+        Command::PerfControl {
+            op: PerfOp::AllocOff,
+        },
+        // An undefined op still round-trips; the server refuses it by name.
+        Command::PerfControl {
+            op: PerfOp::Unknown(0xEE),
+        },
         Command::OpenListener {
             transport: ListenerTransport::Quic,
             port_range: None,
