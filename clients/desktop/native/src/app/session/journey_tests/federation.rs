@@ -32,6 +32,18 @@ fn federated_work_round_trip_preserves_layouts_and_never_spawns_when_browsing(
     .unwrap();
     wait_for(cx, |cx| placement_count(&desk, cx) == 2);
     let expected = snapshot(&desk, cx);
+    let (local_client, local_views) = desk.read_with(cx, |desk, _| {
+        let link = desk.link.as_ref().unwrap();
+        (
+            link.connection.client.clone(),
+            link.workspace
+                .tabs
+                .iter()
+                .flat_map(|tab| crate::workspace::layout::placements(&tab.root))
+                .map(|placement| placement.view_id)
+                .collect::<Vec<_>>(),
+        )
+    });
     wait_for(cx, |cx| {
         desk.read_with(cx, |desk, _| {
             desk.work_catalog().iter().any(|work| {
@@ -55,6 +67,22 @@ fn federated_work_round_trip_preserves_layouts_and_never_spawns_when_browsing(
     desk.update(cx, |desk, cx| desk.navigate_work(target, cx));
     wait_for(cx, |cx| {
         attached(&desk, cx) && home_key(&desk, cx) == remote_key
+    });
+    let remote_client = desk.read_with(cx, |desk, _| {
+        desk.link.as_ref().unwrap().connection.client.clone()
+    });
+    // A hidden host still advances its replicas while GPUI renders the other host.
+    local.output(&["paste", "journey-A"], b"printf 'WARM-HOST-%s\\n' OUTPUT");
+    local.run(&["send-keys", "journey-A", "Enter"]);
+    wait_for(cx, |_| {
+        local_views.iter().flatten().any(|view| {
+            local_client
+                .view_slot(*view)
+                .and_then(|slot| slot.acquire())
+                .is_some_and(|frame| {
+                    (0..frame.rows).any(|row| frame.row_text(row).contains("WARM-HOST-OUTPUT"))
+                })
+        })
     });
     assert_eq!(
         placement_count(&desk, cx),
@@ -114,6 +142,23 @@ fn federated_work_round_trip_preserves_layouts_and_never_spawns_when_browsing(
         expected.tabs,
         "A -> B -> A restores the exact split tree and placement identities"
     );
+    desk.read_with(cx, |desk, _| {
+        let link = desk.link.as_ref().unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &local_client,
+            &link.connection.client
+        ));
+        assert_eq!(
+            link.workspace
+                .tabs
+                .iter()
+                .flat_map(|tab| crate::workspace::layout::placements(&tab.root))
+                .map(|placement| placement.view_id)
+                .collect::<Vec<_>>(),
+            local_views,
+            "returning to a host retains runtime views instead of bootstrapping them again"
+        );
+    });
     desktop.read_with(cx, |desktop, _| {
         assert_eq!(desktop.windows.len(), 1);
         assert!(desktop.windows[0].remote.is_none());
@@ -153,6 +198,10 @@ fn federated_work_round_trip_preserves_layouts_and_never_spawns_when_browsing(
             })
     });
     desk.read_with(cx, |desk, _| {
+        assert!(std::sync::Arc::ptr_eq(
+            &remote_client,
+            &desk.link.as_ref().unwrap().connection.client
+        ));
         assert_eq!(
             desk.prefs, expected_display,
             "destination layout restores work, not old sidebar preferences"

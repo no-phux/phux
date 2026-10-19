@@ -32,6 +32,13 @@ window shows one session; the sidebar switches. Agents that need attention
 are marked where they are. `⌘P` opens a palette over sessions, actions, and
 settings. Updates are checked from the app and installed on restart.
 
+Each window keeps one live runtime per host. Navigation promotes its inventory
+connection; leaving retains its last workspace and terminal replicas. Hidden
+hosts drain model updates without retaining GPUI terminal entities or painting
+terminal output. Returning to the same session reuses its runtime views;
+selecting another session uses the live socket. Disconnect, forgetting a host,
+and window close release retained connections.
+
 It uses the installed `phux` CLI to start or reach the server, so install
 the CLI first (the desktop installer does this if you have not). It never
 creates sessions on its own and never stops the server; quitting the app

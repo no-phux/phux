@@ -73,7 +73,7 @@ impl Connection {
                 client_name: "phux-desktop-catalog".to_owned(),
                 viewport: (0, 0),
                 attach: None,
-                attach_role: None,
+                attach_role: Some(RolePolicy::PRIMARY),
                 auto_attach_foreign_spawns: false,
                 subscribe_agent_sessions: false,
                 ..ControlOptions::default()
@@ -82,6 +82,56 @@ impl Connection {
         let mut connection = Self::from_client(client, String::new());
         connection.browsing = true;
         Ok(connection)
+    }
+
+    /// Whether a retained workspace belongs to this exact destination.
+    pub(crate) fn home_matches(&self, session: &str, key: Option<SessionKey>) -> bool {
+        !self.browsing
+            && match key {
+                Some(key) => self.home_key == Some(key),
+                None => self.home_key.is_none() && self.session == session,
+            }
+    }
+
+    /// Promote inventory or select another session on the already negotiated socket.
+    /// A fresh organization replica must validate keyed destinations before acquisition.
+    pub(crate) fn activate_home(
+        &mut self,
+        session: String,
+        key: Option<SessionKey>,
+        authority: Option<phux_protocol::ids::AuthorityId>,
+    ) -> bool {
+        if self.closed || self.status.is_terminal() {
+            return false;
+        }
+        let same = self.home_matches(&session, key);
+        self.session = session;
+        self.home_key = key;
+        self.pinned_home = key.is_some();
+        self.expected_authority = authority;
+        self.client.with_control(|control| {
+            control.set_session_recovery(if key.is_some() {
+                SessionRecovery::CallerValidated
+            } else {
+                SessionRecovery::Automatic
+            })
+        });
+        if !same {
+            self.key_bootstrap_pending = key.is_some();
+            self.pinned_verified_epoch = None;
+        }
+        if self.browsing {
+            self.browsing = false;
+            self.client.with_control(ControlPlane::watch_agent_sessions);
+            self.client.watch_approvals();
+        }
+        if self.pinned_home {
+            self.attach_pinned_home();
+        } else if !same {
+            self.client
+                .attach_session(AttachTarget::ByName(self.session.clone()));
+        }
+        true
     }
 
     fn from_client(client: Client, session: String) -> Self {

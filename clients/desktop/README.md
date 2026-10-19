@@ -25,7 +25,9 @@ in, or the most recent session. It never creates a session on its own.
 The sidebar lists every session on this machine and on each host
 registered with `phux host add`, grouped by repository, by machine, or
 flat. One window shows one session; selecting another restores its layout
-in place without touching the processes. Agents that need you are marked
+in place without touching the processes. Connections stay open across host
+switches, retaining the last session on each host while only the selected
+session is drawn. Agents that need you are marked
 on the tab or terminal they are in, and the bell opens an inbox of agent
 alerts and held approvals. `⌘P` opens one palette over sessions, actions,
 and settings; `>` switches it to commands.

@@ -215,7 +215,7 @@ pub struct Desk {
     /// Painted tab centers, including scroll offsets, for the current orientation.
     pub(crate) tab_geometry: Rc<RefCell<TabGeometry>>,
     viewport: gpui::Size<gpui::Pixels>,
-    _wake: Option<Task<()>>,
+    pub(in crate::app) _wake: Option<Task<()>>,
     /// Runtime state the desk chrome shows, as of the last activity drain.
     runtime_chrome: RuntimeChrome,
     _clock: Option<Task<()>>,
@@ -372,7 +372,7 @@ struct RuntimeChrome {
 
 /// Terminal damage, delivered input, and agent metadata that repeated every
 /// badge (`agents_noted` false). Chrome, toasts, and layout stay put.
-fn paint_batch(events: &[Event], agents_noted: bool) -> bool {
+pub(super) fn paint_batch(events: &[Event], agents_noted: bool) -> bool {
     !events.is_empty()
         && events.iter().all(|event| {
             crate::connection::paint_wake(event)

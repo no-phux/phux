@@ -241,3 +241,90 @@ fn attach_refusals_end_the_attempt_but_unrelated_replies_do_not() {
         Err(ControlError::Refused(_))
     ));
 }
+
+#[test]
+fn promoting_inventory_can_start_agent_streams_without_reconnecting() {
+    let (mut plane, attach_id) = negotiated();
+    let agent = ResourceId::local(31);
+    let mut snapshot = two_session_snapshot(false);
+    snapshot.resources.push(
+        ResourceInfo::new(agent.clone(), WindowId::new(0), 0, 0)
+            .with_kind(phux_protocol::ResourceKind::AgentSession)
+            .with_parent(Some(terminal()))
+            .with_agent(Some(phux_protocol::AgentFacet::new("claude", "working"))),
+    );
+    plane
+        .feed(FrameKind::Attached {
+            attach_id,
+            snapshot: snapshot.clone(),
+            initial_client_id: ClientId::new(1),
+        })
+        .unwrap();
+    let stream_id = StreamId::new(u64::from(attach_id)).unwrap();
+    let bootstrap_id = BootstrapId::new(u64::from(attach_id)).unwrap();
+    plane
+        .feed(FrameKind::BootstrapBegin {
+            terminal_id: terminal(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 20,
+            rows: 4,
+            base_seq: 0,
+        })
+        .unwrap();
+    plane
+        .feed(FrameKind::BootstrapReady {
+            terminal_id: terminal(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        })
+        .unwrap();
+    plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
+    assert!(plane.take_outbound().iter().all(|bytes| !matches!(
+        decode(bytes),
+        FrameKind::Command {
+            command: Command::AttachResource { .. },
+            ..
+        }
+    )));
+    plane.watch_agent_sessions();
+    let request_id = plane
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match decode(bytes) {
+            FrameKind::Command {
+                request_id,
+                command: Command::GetState { .. },
+            } => Some(request_id),
+            frame => {
+                assert!(!matches!(
+                    frame,
+                    FrameKind::Attach { .. } | FrameKind::Hello { .. }
+                ));
+                None
+            }
+        })
+        .unwrap();
+    plane.watch_agent_sessions();
+    assert!(plane.take_outbound().is_empty());
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+        })
+        .unwrap();
+    let subscribed: Vec<_> = plane
+        .take_outbound()
+        .iter()
+        .filter_map(|bytes| match decode(bytes) {
+            FrameKind::Command {
+                command: Command::AttachResource { terminal_id, .. },
+                ..
+            } => Some(terminal_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(subscribed, vec![agent]);
+}

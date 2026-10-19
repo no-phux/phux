@@ -18,7 +18,7 @@ and lock so the GPUI dependency graph never enters the other phux crates.
 | `app/overlays/launcher` | native command/navigation presentation over Kit's query and selection state |
 | `workspace` | tabs, split trees, focus, size ownership, restore, layout persistence |
 | `settings` | display preferences, Ghostty config, themes, key chords |
-| `connection` | one runtime `Client` per window and its sole event/path-answer drain |
+| `connection` | one runtime `Client` per host in a window and its sole event/path-answer drain |
 | `phux-gpui` | embeddable grid painter, input handler, drawable-presented fence receipts |
 | `perf` | always-on painter/key-to-paint metrics (`phux_perf` statics) |
 | `telemetry` | on-demand process CPU intervals and native current/peak resident memory |
