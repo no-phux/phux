@@ -16,6 +16,8 @@
 
 ### Bug Fixes
 
+- Hide the macOS menu bar and Dock in native fullscreen instead of reserving
+  the top menu-bar strip, while keeping native Spaces and window restoration.
 - Preserve an ACP conversation's editor, pending receipts and question drafts
   when a graceful server handoff recreates desktop layout placements. Rebind
   only to the same endpoint, parent, AgentSession and ACP activation; a
