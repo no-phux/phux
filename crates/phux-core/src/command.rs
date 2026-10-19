@@ -106,6 +106,14 @@ pub enum Op {
         /// New unique label.
         name: String,
     },
+    /// Link a session into a named project ([`crate::session::Attrs::project`]),
+    /// or clear the link with `None`. Last writer wins.
+    SessionSetProject {
+        /// Target.
+        session: SessionKey,
+        /// The project label.
+        project: Option<String>,
+    },
     /// Switch lifetime. `Ephemeral` on an empty session deletes it.
     SessionSetLifetime {
         /// Target.

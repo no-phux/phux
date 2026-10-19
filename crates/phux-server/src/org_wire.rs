@@ -459,6 +459,15 @@ pub fn event(e: &phux_core::Event, org: &phux_core::Org) -> Option<frame::AgentE
             name: name.clone(),
             revision: revision(*r),
         },
+        E::SessionProjectSet {
+            key,
+            project,
+            revision: r,
+        } => frame::AgentEvent::SessionProjectSet {
+            session: session_key(*key)?,
+            project: project.clone(),
+            revision: revision(*r),
+        },
         E::SessionLifetimeChanged {
             key,
             lifetime: l,

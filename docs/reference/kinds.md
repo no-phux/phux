@@ -57,6 +57,7 @@ Addressed to the server or the connection rather than to one resource.
 | `DELEGATE_AGENT` | command `0x35` | TERMINATE (owner socket only) | yes | none | shipped |
 | `REVOKE_DELEGATION` | command `0x36` | TERMINATE (owner socket only) | yes | none | shipped |
 | `SESSION_KILL` | command `0x37` | TERMINATE | yes | `session_kill` (features_ext) | shipped |
+| `SESSION_SET_PROJECT` | command `0x3a` | ORGANIZE | yes | `session_project` (features_ext) | shipped |
 
 ## Server events
 
@@ -77,6 +78,7 @@ Addressed to the server or the connection rather than to one resource.
 | `lease_changed` | `0x19` |
 | `intake_changed` | `0x1a` |
 | `resource_renamed` | `0x1b` |
+| `session_project_set` | `0x1d` |
 
 ## Substrate methods
 
@@ -272,7 +274,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `NATIVE_AGENT { type: register/receive/complete/publish/close }` | BIND | `ParentOfNamed` |
 | `GET_ORGANIZATION` | INVENTORY | `OrganizationView` |
 | `SESSION_CREATE` | CREATE | `Global { owner_uds_only: false }` |
-| `SESSION_RENAME`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | ORGANIZE | `KeyedSession` |
+| `SESSION_RENAME`, `SESSION_SET_PROJECT`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | ORGANIZE | `KeyedSession` |
 | `SESSION_DELETE`, `SESSION_KILL` | TERMINATE | `KeyedSession` |
 | `RESOURCE_CREATE` | CREATE | `KeyedSession` |
 | `RESOURCE_MOVE`, `RESOURCE_MOVE_MANY` | ORGANIZE | `MoveSessions` |

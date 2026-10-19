@@ -1350,6 +1350,7 @@ struct Fields {
     socket_path: Option<String>,
     expires_at: Option<u64>,
     launch_mode: Option<u8>,
+    project: Option<String>,
 }
 
 impl Fields {
@@ -1371,6 +1372,9 @@ impl Fields {
                 field::org::RESOURCE => out.resource = Some(read_key(value, ResourceKey::new)?),
                 field::org::EXPECTED => out.expected = Some(Revision::new(read_u64(value)?)),
                 field::org::NAME => out.name = Some(bounded_str(value, MAX_ORG_NAME_BYTES)?),
+                field::org::PROJECT => {
+                    out.project = Some(bounded_str(value, MAX_ORG_NAME_BYTES)?);
+                }
                 field::org::LIFETIME => out.lifetime = Some(read_u8(value)?),
                 field::org::ATTR => {
                     let pair = decode_pair(value, MAX_ORG_NAME_BYTES)?;
@@ -1502,6 +1506,12 @@ fn write_name(enc: &mut Encoder<'_>, name: &str) {
     enc.write_field(field::org::NAME, name.as_bytes());
 }
 
+fn write_project(enc: &mut Encoder<'_>, project: Option<&str>) {
+    if let Some(project) = project {
+        enc.write_field(field::org::PROJECT, project.as_bytes());
+    }
+}
+
 fn write_actor(enc: &mut Encoder<'_>, field_id: u32, actor: &ActorRef) {
     enc.write_field_with(field_id, |e| encode_actor_ref(actor, e));
 }
@@ -1541,6 +1551,7 @@ const fn org_command_tag(command: &Command) -> Option<u8> {
         Command::DelegateAgent { .. } => super::COMMAND_TAG_DELEGATE_AGENT,
         Command::RevokeDelegation { .. } => super::COMMAND_TAG_REVOKE_DELEGATION,
         Command::SessionKill { .. } => super::COMMAND_TAG_SESSION_KILL,
+        Command::SessionSetProject { .. } => super::COMMAND_TAG_SESSION_SET_PROJECT,
         _ => return None,
     })
 }
@@ -1594,6 +1605,15 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
             write_name(enc, name);
+        }
+        Command::SessionSetProject {
+            operation,
+            session,
+            project,
+        } => {
+            write_operation(enc, operation);
+            write_session(enc, field::org::SESSION, session);
+            write_project(enc, project.as_deref());
         }
         Command::SessionSetLifetime {
             operation,
@@ -1773,6 +1793,7 @@ pub(in crate::wire) fn decode_org_command(
         super::COMMAND_TAG_DELEGATE_AGENT,
         super::COMMAND_TAG_REVOKE_DELEGATION,
         super::COMMAND_TAG_SESSION_KILL,
+        super::COMMAND_TAG_SESSION_SET_PROJECT,
     ];
     if !(COMMAND_TAG_GET_ORGANIZATION..=COMMAND_TAG_ARRANGEMENT_REPLACE).contains(&tag)
         && !after_reserved.contains(&tag)
@@ -1880,6 +1901,11 @@ pub(in crate::wire) fn decode_org_command(
         super::COMMAND_TAG_SESSION_KILL => Command::SessionKill {
             operation: f.operation()?,
             session: f.session()?,
+        },
+        super::COMMAND_TAG_SESSION_SET_PROJECT => Command::SessionSetProject {
+            operation: f.operation()?,
+            session: f.session()?,
+            project: f.project,
         },
         _ => return Ok(None),
     };
@@ -2308,6 +2334,16 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
             write_u64(enc, field::org::REVISION, revision.get());
             EVENT_TAG_SESSION_RENAMED
         }
+        AgentEvent::SessionProjectSet {
+            session,
+            project,
+            revision,
+        } => {
+            write_session(enc, field::org::SESSION, session);
+            write_project(enc, project.as_deref());
+            write_u64(enc, field::org::REVISION, revision.get());
+            super::EVENT_TAG_SESSION_PROJECT_SET
+        }
         AgentEvent::SessionDeleted {
             session,
             name,
@@ -2431,8 +2467,8 @@ pub(in crate::wire) fn encode_org_event(event: &AgentEvent, enc: &mut Encoder<'_
 /// not an organization event, or a body that is malformed or names an
 /// unknown enum value; the caller keeps either as [`AgentEvent::Unknown`].
 pub(in crate::wire) fn decode_org_event(tag: u8, body: &[u8]) -> Option<AgentEvent> {
-    (EVENT_TAG_SESSION_CREATED..=EVENT_TAG_RESOURCE_RENAMED)
-        .contains(&tag)
+    ((EVENT_TAG_SESSION_CREATED..=EVENT_TAG_RESOURCE_RENAMED).contains(&tag)
+        || tag == super::EVENT_TAG_SESSION_PROJECT_SET)
         .then(|| org_event(tag, body).ok())
         .flatten()
 }
@@ -2450,6 +2486,11 @@ fn org_event(tag: u8, body: &[u8]) -> Result<AgentEvent, DecodeError> {
             session: f.session()?,
             revision: req(f.revision)?,
             name: req(f.name)?,
+        },
+        super::EVENT_TAG_SESSION_PROJECT_SET => AgentEvent::SessionProjectSet {
+            session: f.session()?,
+            revision: req(f.revision)?,
+            project: f.project,
         },
         EVENT_TAG_SESSION_DELETED => AgentEvent::SessionDeleted {
             session: f.session()?,

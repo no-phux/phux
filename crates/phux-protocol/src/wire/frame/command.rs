@@ -493,6 +493,17 @@ pub enum Command {
         /// The new name; at most 256 bytes.
         name: String,
     },
+    /// Link a session into a named project, or clear the link with `None`;
+    /// a label change only, last writer wins. Gated on
+    /// `features_ext.SESSION_PROJECT`.
+    SessionSetProject {
+        /// Caller-generated operation id.
+        operation: OperationId,
+        /// The session.
+        session: SessionKey,
+        /// The project label, at most 256 bytes; `None` clears it.
+        project: Option<String>,
+    },
     /// Change a session's lifetime; `Ephemeral` on an empty session deletes
     /// it.
     SessionSetLifetime {
@@ -731,6 +742,7 @@ impl Command {
             | Self::SignalTerminal { operation_id, .. } => operation_id.as_ref(),
             Self::SessionCreate { operation, .. }
             | Self::SessionRename { operation, .. }
+            | Self::SessionSetProject { operation, .. }
             | Self::SessionSetLifetime { operation, .. }
             | Self::SessionDelete { operation, .. }
             | Self::SessionKill { operation, .. }
@@ -760,6 +772,7 @@ impl Command {
             Self::GetOrganization { .. }
                 | Self::SessionCreate { .. }
                 | Self::SessionRename { .. }
+                | Self::SessionSetProject { .. }
                 | Self::SessionSetLifetime { .. }
                 | Self::SessionDelete { .. }
                 | Self::SessionKill { .. }
@@ -1137,6 +1150,15 @@ pub enum AgentEvent {
         session: SessionKey,
         /// The new name.
         name: String,
+        /// Its revision after the change.
+        revision: Revision,
+    },
+    /// A session's project label was set, or cleared (`project: None`).
+    SessionProjectSet {
+        /// The session.
+        session: SessionKey,
+        /// The new label.
+        project: Option<String>,
         /// Its revision after the change.
         revision: Revision,
     },
