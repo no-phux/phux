@@ -1099,6 +1099,10 @@ pub enum ServerFeatureExt {
     /// The server answers `GET_FILE`: bounded chunks of any host file the
     /// serving user can read, addressed to this server or a named satellite.
     FileDownload = 0x0000_0200,
+    /// The server answers `CHECKOUT`: typed Git reads and index writes on
+    /// the checkout a named Terminal is in, resolved from the Terminal's
+    /// live working directory.
+    Checkout = 0x0000_0400,
 }
 
 impl ServerFeatureExt {
@@ -1114,6 +1118,7 @@ impl ServerFeatureExt {
         Self::PerfControl,
         Self::SessionProject,
         Self::FileDownload,
+        Self::Checkout,
     ];
 
     /// The `docs/spec/proto.md` §6.2 constant, e.g. `"PATH_QUERY"`.
@@ -1130,6 +1135,7 @@ impl ServerFeatureExt {
             Self::PerfControl => "PERF_CONTROL",
             Self::SessionProject => "SESSION_PROJECT",
             Self::FileDownload => "FILE_DOWNLOAD",
+            Self::Checkout => "CHECKOUT",
         }
     }
 
@@ -1154,7 +1160,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::NativeAgent as u32
         | ServerFeatureExt::PerfControl as u32
         | ServerFeatureExt::SessionProject as u32
-        | ServerFeatureExt::FileDownload as u32;
+        | ServerFeatureExt::FileDownload as u32
+        | ServerFeatureExt::Checkout as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

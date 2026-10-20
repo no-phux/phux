@@ -217,6 +217,7 @@ pub(super) struct Extensions {
     directory_listings: Vec<DirectoryListing>,
     pending_paths: HashMap<u32, String>,
     path_answers: Vec<PathAnswer>,
+    pub(super) checkout_answers: Vec<super::CheckoutResponse>,
 }
 
 impl ControlPlane {
@@ -534,6 +535,7 @@ impl ControlPlane {
     }
 
     pub(super) fn reset_extension_correlations(&mut self, message: &str) {
+        self.reset_checkouts(message);
         for (request_id, root) in self.extensions.pending_paths.drain() {
             self.extensions.path_answers.push(PathAnswer {
                 request_id,

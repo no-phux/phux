@@ -257,6 +257,14 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             enc.write_u64_be(*offset);
             enc.write_u32_be(*max_bytes);
         }
+        Command::Checkout {
+            terminal_id,
+            request,
+        } => {
+            enc.write_u8(super::COMMAND_TAG_CHECKOUT);
+            encode_terminal_id(terminal_id, enc);
+            enc.write_bytes(&crate::checkout::encode_request(request));
+        }
         Command::ReportAsked {
             terminal_id,
             id,
@@ -499,6 +507,7 @@ fn decode_live_affordance_command(
         COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS => decode_subscribe_terminal_events_command(dec)?,
         COMMAND_TAG_PUT_FILE => decode_put_file_command(dec)?,
         COMMAND_TAG_GET_FILE => decode_get_file_command(dec)?,
+        super::COMMAND_TAG_CHECKOUT => decode_checkout_command(dec)?,
         COMMAND_TAG_TRANSCRIBE => Command::Transcribe {
             upload_id: decode_file_upload_id(dec)?,
             terminal_id: decode_terminal_id(dec)?,
@@ -754,6 +763,23 @@ fn decode_get_file_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError
     })
 }
 
+fn decode_checkout_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let terminal_id = decode_terminal_id(dec)?;
+    let request =
+        crate::checkout::decode_request(dec.read_bytes()?).map_err(checkout_decode_error)?;
+    Ok(Command::Checkout {
+        terminal_id,
+        request,
+    })
+}
+
+const fn checkout_decode_error(error: crate::checkout::CheckoutDecodeError) -> DecodeError {
+    match error {
+        crate::checkout::CheckoutDecodeError::TooLarge => DecodeError::CheckoutLimitExceeded,
+        crate::checkout::CheckoutDecodeError::Invalid => DecodeError::InvalidCheckoutPayload,
+    }
+}
+
 fn decode_file_upload_id(dec: &mut Decoder<'_>) -> Result<FileUploadId, DecodeError> {
     let mut id_bytes = [0; 16];
     for byte in &mut id_bytes {
@@ -944,6 +970,10 @@ fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {
             enc.write_u8(super::COMMAND_VALUE_TAG_DELEGATION);
             super::org::encode_delegation(delegation, enc);
         }
+        CommandValue::Checkout(answer) => {
+            enc.write_u8(super::COMMAND_VALUE_TAG_CHECKOUT);
+            enc.write_bytes(&crate::checkout::encode_answer(answer));
+        }
     }
 }
 
@@ -988,6 +1018,9 @@ fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue, DecodeErr
         ))),
         super::COMMAND_VALUE_TAG_DELEGATION => Ok(CommandValue::Delegation(Box::new(
             super::org::decode_delegation(dec)?,
+        ))),
+        super::COMMAND_VALUE_TAG_CHECKOUT => Ok(CommandValue::Checkout(Box::new(
+            crate::checkout::decode_answer(dec.read_bytes()?).map_err(checkout_decode_error)?,
         ))),
         other => Err(DecodeError::unknown_enum("CommandValue", other)),
     }

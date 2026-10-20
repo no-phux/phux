@@ -1519,6 +1519,19 @@ impl RelaySession {
                 ),
             });
         }
+        if let Command::Checkout { .. } = command
+            && !self
+                .satellite_features_ext
+                .contains(ServerFeatureExt::Checkout)
+        {
+            return Some(CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                message: format!(
+                    "satellite {} lacks CHECKOUT; nothing was forwarded",
+                    self.host
+                ),
+            });
+        }
         self.keyed_capability_rejection(command)
     }
 
@@ -3804,6 +3817,7 @@ macro_rules! single_target {
             | Command::ReleaseInput { terminal_id }
             | Command::SignalTerminal { terminal_id, .. }
             | Command::PutFile { terminal_id, .. }
+            | Command::Checkout { terminal_id, .. }
             | Command::ReportAsked { terminal_id, .. }
             | Command::ReportAgentState { terminal_id, .. }
             | Command::KillResource { terminal_id, .. }
@@ -5228,6 +5242,60 @@ mod tests {
             matches!(forwarded(wire), Command::GetFile { host: None, .. }),
             "a capable satellite receives the read with no host"
         );
+    }
+
+    /// `CHECKOUT` on a satellite Terminal routes to that satellite with the
+    /// id made local, and reaches only a satellite that advertises
+    /// `CHECKOUT`; an older one is refused and never sees the unknown tag.
+    #[test]
+    fn hub_relays_checkout_only_to_a_satellite_that_advertises_it() {
+        let request = phux_protocol::checkout::CheckoutRequest::Diff {
+            path: "src/main.rs".to_owned(),
+            area: phux_protocol::checkout::CheckoutArea::Staged,
+        };
+        let (target, local) = route_to_satellite(&Command::Checkout {
+            terminal_id: ResourceId::satellite(host(), 9),
+            request: request.clone(),
+        })
+        .expect("CHECKOUT routes to its satellite");
+        assert_eq!(target, host());
+        assert_eq!(
+            local,
+            Command::Checkout {
+                terminal_id: ResourceId::local(9),
+                request,
+            }
+        );
+
+        let mut older = RelaySession::new(host(), BootstrapLimits::default());
+        let (reply, mut rx) = oneshot::channel();
+        let wire = older.handle_request_checked(RelayRequest::Command {
+            command: local.clone(),
+            reply,
+            subscribe: None,
+        });
+        assert!(wire.is_none(), "an older satellite never sees CHECKOUT");
+        assert!(matches!(
+            rx.try_recv().expect("typed refusal"),
+            CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                ref message,
+            } if message.contains("lacks CHECKOUT")
+        ));
+        assert!(older.pending.is_empty());
+
+        let mut newer = RelaySession::new(host(), BootstrapLimits::default());
+        newer.set_satellite_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Checkout]));
+        let (reply, _rx) = oneshot::channel();
+        let wire = newer.handle_request_checked(RelayRequest::Command {
+            command: local,
+            reply,
+            subscribe: None,
+        });
+        assert!(matches!(
+            forwarded(wire),
+            Command::Checkout { terminal_id, .. } if terminal_id == ResourceId::local(9)
+        ));
     }
 
     #[test]

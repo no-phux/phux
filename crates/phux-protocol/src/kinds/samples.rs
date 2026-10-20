@@ -88,10 +88,11 @@ const fn command_variant(command: &Command) -> usize {
         Command::PerfControl { .. } => 45,
         Command::SessionSetProject { .. } => 46,
         Command::GetFile { .. } => 47,
+        Command::Checkout { .. } => 48,
     }
 }
 
-const COMMAND_VARIANTS: usize = 48;
+const COMMAND_VARIANTS: usize = 49;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -474,6 +475,15 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 max_bytes: 1,
             },
             &C_GET_FILE,
+        ),
+        (
+            Command::Checkout {
+                terminal_id: terminal(),
+                request: crate::checkout::CheckoutRequest::Stage {
+                    paths: vec!["src/main.rs".to_owned()],
+                },
+            },
+            &C_CHECKOUT,
         ),
         (
             Command::ReportAsked {
