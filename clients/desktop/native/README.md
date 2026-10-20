@@ -148,3 +148,15 @@ scene/layout captures, not compositor-presentation evidence; capture buffers
 themselves affect memory, so use the separate ignored memory observations for
 allocator measurements. On macOS it also saves `memory-before-capture.txt`, a
 `vmmap -summary` snapshot of only its own process before allocating PNG buffers.
+
+Capture every Settings page, and the Updates page in each of its states, from
+a real window with disposable state and no server:
+
+```sh
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/settings.XXXXXX")
+HOME=$tmp XDG_CONFIG_HOME=$tmp/config XDG_STATE_HOME=$tmp/state \
+  cargo run --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --features ui-fixtures --example settings_preview -- clients/desktop/.cache/settings-preview
+```
+
+It refuses a `HOME` outside the temporary directory and any named server.

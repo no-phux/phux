@@ -8,8 +8,10 @@ fn release(version: &str, protocol: &str) -> Release {
     }
 }
 
+/// An installed desktop with shipped preferences, not the user's config.
 fn installed(version: &str) -> Updater {
     let mut updater = Updater::new();
+    updater.prefs = Preferences::default();
     updater.current = Some(release(version, &updates::own_protocol()));
     updater.development = false;
     updater
@@ -27,6 +29,13 @@ fn runtime(protocol_current: Option<&str>) -> RuntimeRelease {
     }
 }
 
+fn staged(version: &str, protocol: &str) -> Staged {
+    Staged {
+        app: "/Applications/.phux-desktop-update/Phux.app".into(),
+        release: release(version, protocol),
+    }
+}
+
 #[test]
 fn a_failed_check_clears_stale_targets_but_preserves_independent_success() {
     let mut updater = installed("0.2.0");
@@ -38,96 +47,213 @@ fn a_failed_check_clears_stale_targets_but_preserves_independent_success() {
     assert!(!updater.busy);
     assert!(updater.desktop_available());
     assert!(updater.message.contains("phux: offline"));
+    assert_eq!(updater.runtime_status().0, "Failed");
     updater.record_check(Err(anyhow::anyhow!("rate limited")), None);
     assert!(updater.target.is_none());
     assert!(updater.runtime.is_none());
     assert!(!updater.desktop_available());
+    assert_eq!(updater.summary().0, "Could not check for updates");
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn one_action_carries_desktop_and_phux_together() {
+    let mut updater = installed("0.2.0");
+    let protocol = updates::own_protocol();
+    updater.record_check(Ok(release("0.3.0", &protocol)), Some(Ok(runtime(None))));
+    assert_eq!(updater.action(), Some(UpdateAction::Both));
+    assert_eq!(UpdateAction::Both.label(), "Update phux & Desktop");
+    // The click downloads first; a successful stage goes on to phux.
+    updater.chained = true;
+    updater.busy = true;
+    assert_eq!(updater.action(), None);
+    assert!(updater.record_stage(Ok(staged("0.3.0", &protocol))));
+    assert!(!updater.chained);
+    assert_eq!(updater.action(), Some(UpdateAction::Both));
+    // The same protocol needs no warning: phux moves because it is due.
+    assert!(updater.notices().is_empty());
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn a_desktop_only_update_downloads_then_restarts() {
+    let mut updater = installed("0.2.0");
+    updater.prefs.manage_runtime = false;
+    let protocol = updates::own_protocol();
+    updater.record_check(Ok(release("0.3.0", &protocol)), None);
+    assert_eq!(
+        updater.action(),
+        Some(UpdateAction::Desktop { staged: false })
+    );
+    assert_eq!(updater.action().unwrap().label(), "Update Desktop");
+    // A download the user did not chain stays staged for quit or restart.
+    assert!(!updater.record_stage(Ok(staged("0.3.0", &protocol))));
+    assert_eq!(
+        updater.action(),
+        Some(UpdateAction::Desktop { staged: true })
+    );
+    assert_eq!(updater.action().unwrap().label(), "Restart to update");
+    assert_eq!(updater.desktop_status().0, "Downloaded");
+    // A check after staging keeps the staged bundle.
+    updater.record_check(Ok(release("0.3.0", &protocol)), None);
+    assert_eq!(
+        updater.action(),
+        Some(UpdateAction::Desktop { staged: true })
+    );
 }
 
 #[test]
-fn an_available_update_downloads_then_offers_restart() {
-    let mut updater = installed("0.2.0");
-    let protocol = updates::own_protocol();
-    updater.record_check(Ok(release("0.3.0", &protocol)), None);
-    assert_eq!(updater.desktop_action(), Some(DesktopAction::Download));
-    updater.busy = true;
-    assert_eq!(updater.desktop_action(), None);
-    updater.record_stage(Ok(Staged {
-        app: "/Applications/.phux-desktop-update/Phux.app".into(),
-        release: release("0.3.0", &protocol),
-    }));
-    assert!(!updater.busy);
-    assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
-    assert_eq!(DesktopAction::Restart.label(), "Restart to update");
-    let (detail, failed) = updater.desktop_detail().unwrap();
-    assert!(!failed);
-    assert!(detail.contains("installs when you quit"), "{detail}");
-    // A check after staging keeps the staged bundle.
-    updater.record_check(Ok(release("0.3.0", &protocol)), None);
-    assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
+fn a_phux_only_update_hands_off_without_a_restart() {
+    let mut updater = installed("0.3.0");
+    updater.record_check(
+        Ok(release("0.3.0", &updates::own_protocol())),
+        Some(Ok(runtime(None))),
+    );
+    assert_eq!(updater.action(), Some(UpdateAction::Phux { retry: false }));
+    assert_eq!(updater.runtime_status().0, "Update ready");
+    let installed = updates::RuntimeInstalled {
+        message: String::new(),
+        reconnect: true,
+        retry_handoff: false,
+    };
+    assert!(updater.record_runtime(Ok(installed)));
+    assert_eq!(updater.runtime_generation, 1);
+    let runtime = updater.runtime.as_ref().unwrap();
+    assert_eq!(
+        (runtime.current.as_str(), runtime.available),
+        ("2.0.0", false)
+    );
+    assert_eq!(updater.runtime_status().0, "Up to date");
+    assert_eq!(updater.action(), None);
+    assert_eq!(updater.summary().0, "Everything is up to date");
+}
+
+#[test]
+fn a_refused_handoff_offers_the_retry_and_keeps_the_desktop_staged() {
+    let mut updater = installed("0.3.0");
+    updater.runtime = Some(runtime(None));
+    updater.staged = Some(staged("0.4.0", &updates::own_protocol()));
+    let refused = updates::RuntimeInstalled {
+        message: "phux installed. Server handoff: refused.".into(),
+        reconnect: false,
+        retry_handoff: true,
+    };
+    // No reconnect means no restart onto a server that did not move.
+    assert!(!updater.record_runtime(Ok(refused)));
+    assert!(updater.pending_handoff);
+    assert!(updater.staged.is_some());
+    assert_eq!(updater.runtime_status().0, "Handoff pending");
+    let notices = updater.notices();
+    assert!(
+        notices
+            .iter()
+            .any(|(text, failed)| !failed && text.contains("refused")),
+        "{notices:?}"
+    );
+    updater.staged = None;
+    assert_eq!(updater.action(), Some(UpdateAction::Phux { retry: true }));
+    assert_eq!(updater.action().unwrap().label(), "Retry server handoff");
+}
+
+#[test]
+fn a_failed_phux_install_is_a_phux_failure() {
+    let mut updater = installed("0.3.0");
+    updater.runtime = Some(runtime(None));
+    assert!(!updater.record_runtime(Err(anyhow::anyhow!("checksum mismatch"))));
+    assert_eq!(updater.runtime_status().0, "Failed");
+    assert_eq!(updater.summary().0, "The update did not finish");
+    assert_eq!(
+        updater.notices(),
+        vec![("phux: Update failed: checksum mismatch".to_owned(), true)]
+    );
 }
 
 #[test]
 fn a_failed_stage_is_shown_as_a_desktop_failure() {
     let mut updater = installed("0.2.0");
     updater.record_check(Ok(release("0.3.0", "0.9")), None);
-    updater.record_stage(Err(anyhow::anyhow!("checksum mismatch")));
+    updater.chained = true;
+    assert!(!updater.record_stage(Err(anyhow::anyhow!("checksum mismatch"))));
     assert!(updater.staged.is_none());
-    let (detail, failed) = updater.desktop_detail().unwrap();
-    assert!(failed);
-    assert_eq!(detail, "Update failed: checksum mismatch");
+    assert_eq!(updater.desktop_status().0, "Failed");
+    assert_eq!(
+        updater.notices(),
+        vec![("Desktop: Update failed: checksum mismatch".to_owned(), true)]
+    );
 }
 
 #[test]
 fn switching_the_desktop_channel_drops_a_staged_update() {
     let mut updater = installed("0.2.0");
-    updater.staged = Some(Staged {
-        app: PathBuf::from("/x/Phux.app"),
-        release: release("0.3.0", "0.9"),
-    });
-    // The loaded preferences come from the user's config; switch away
-    // from whichever channel they hold.
+    updater.staged = Some(staged("0.3.0", "0.9"));
     let mut prefs = updater.prefs.clone();
-    prefs.desktop = if prefs.desktop == updates::Channel::Next {
-        updates::Channel::Stable
-    } else {
-        updates::Channel::Next
-    };
+    prefs.desktop = updates::Channel::Next;
     updater.adopt_preferences(prefs);
     assert!(updater.staged.is_none());
 }
 
 #[test]
-fn a_protocol_change_is_named_and_couples_a_managed_runtime() {
+fn a_protocol_change_is_named_until_phux_lands_on_it() {
     let mut updater = installed("0.2.0");
+    updater.prefs.manage_runtime = false;
     updater.record_check(Ok(release("0.3.0", "99.0")), None);
     let (now, next) = updater.protocol_change().unwrap();
     assert_eq!(
         (now.as_str(), next.as_str()),
         (updates::own_protocol().as_str(), "99.0")
     );
-    let (detail, _) = updater.desktop_detail().unwrap();
-    assert!(detail.contains("must be updated too"), "{detail}");
-    updater.staged = Some(Staged {
-        app: PathBuf::from("/x/Phux.app"),
-        release: release("0.3.0", "99.0"),
-    });
-    assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
+    let warned = |updater: &Updater| {
+        updater
+            .notices()
+            .iter()
+            .any(|(text, _)| text.contains("wire protocol 99.0"))
+    };
+    assert!(warned(&updater));
     updater.prefs.manage_runtime = true;
     updater.runtime = Some(runtime(None));
-    assert_eq!(
-        updater.desktop_action(),
-        Some(DesktopAction::RuntimeThenRestart)
-    );
+    assert!(!warned(&updater), "managed phux moves with the update");
     // A runtime update that lands elsewhere cannot fix the mismatch.
     let mut elsewhere = runtime(None);
     elsewhere.protocol_target = Some("98.0".into());
     updater.runtime = Some(elsewhere);
-    assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
-    // A server already on the incoming protocol needs no coupling.
+    assert!(warned(&updater));
+    // A server already on the incoming protocol has nothing to warn about.
     updater.runtime = Some(runtime(Some("99.0")));
     assert_eq!(updater.protocol_change(), None);
-    assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
+    assert!(!warned(&updater));
+}
+
+#[test]
+fn a_package_managed_phux_names_its_own_command() {
+    let mut updater = installed("0.3.0");
+    let mut packaged = runtime(None);
+    packaged.mutable = false;
+    packaged.native_command = Some("brew upgrade phux".into());
+    updater.runtime = Some(packaged);
+    assert_eq!(updater.action(), None);
+    assert_eq!(updater.runtime_status().0, "Package managed");
+    assert!(
+        updater
+            .notices()
+            .iter()
+            .any(|(text, failed)| !failed && text.ends_with("brew upgrade phux"))
+    );
+}
+
+#[test]
+fn progress_names_each_products_step() {
+    let mut updater = installed("0.2.0");
+    updater.runtime = Some(runtime(None));
+    updater.target = Some(release("0.3.0", &updates::own_protocol()));
+    updater.busy = true;
+    updater.chained = true;
+    updater.work = Work::Downloading;
+    assert_eq!(updater.desktop_status().0, "Downloading…");
+    assert_eq!(updater.runtime_status().0, "Up next");
+    updater.staged = Some(staged("0.3.0", &updates::own_protocol()));
+    updater.work = Work::Installing;
+    assert_eq!(updater.desktop_status().0, "Restarts next");
+    assert_eq!(updater.runtime_status().0, "Installing…");
 }
 
 #[test]
@@ -151,13 +277,13 @@ fn development_and_unmanaged_runtime_cannot_install(cx: &mut gpui::TestAppContex
     updater.update(cx, |updater, cx| {
         updater.prefs.manage_runtime = true;
         updater.runtime = Some(runtime(None));
-        updater.install_runtime(cx);
+        assert_eq!(updater.action(), None);
+        updater.act(cx);
         assert!(!updater.busy);
         updater.development = false;
         updater.prefs.manage_runtime = false;
-        updater.install_runtime(cx);
-        assert!(!updater.busy);
-        updater.desktop_act(cx);
+        assert_eq!(updater.action(), None);
+        updater.act(cx);
         assert!(!updater.busy);
     });
 }
@@ -170,13 +296,10 @@ fn development_builds_never_stage_or_swap(cx: &mut gpui::TestAppContext) {
         updater.current = Some(release("0.2.0", "0.9"));
         updater.target = Some(release("0.3.0", "0.9"));
         assert!(updater.development);
-        assert_eq!(updater.desktop_action(), None);
-        updater.desktop_act(cx);
+        assert_eq!(updater.action(), None);
+        updater.act(cx);
         assert!(!updater.busy);
-        updater.staged = Some(Staged {
-            app: PathBuf::from("/x/Phux.app"),
-            release: release("0.3.0", "0.9"),
-        });
+        updater.staged = Some(staged("0.3.0", "0.9"));
         updater.apply_staged();
         assert!(!updater.handed_off);
     });
@@ -188,11 +311,29 @@ fn linux_install_action_is_manual_and_never_stages(cx: &mut gpui::TestAppContext
     use gpui::AppContext;
     let updater = cx.new(|_| installed("0.2.0"));
     updater.update(cx, |updater, cx| {
+        updater.prefs.manage_runtime = false;
         updater.target = Some(release("0.3.0", &updates::own_protocol()));
-        updater.desktop_act(cx);
+        updater.act(cx);
         assert!(!updater.busy);
         assert!(updater.staged.is_none());
         assert!(!updater.handed_off);
         assert!(updater.message.contains("PHUX_REQUIRE_SIGNATURE=1"));
     });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_moves_phux_alone_and_names_the_desktop_installer() {
+    let mut updater = installed("0.2.0");
+    updater.record_check(
+        Ok(release("0.3.0", &updates::own_protocol())),
+        Some(Ok(runtime(None))),
+    );
+    assert_eq!(updater.action(), Some(UpdateAction::Phux { retry: false }));
+    assert!(
+        updater
+            .notices()
+            .iter()
+            .any(|(text, _)| text.contains("PHUX_REQUIRE_SIGNATURE=1"))
+    );
 }
