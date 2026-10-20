@@ -609,9 +609,14 @@ impl SessionLoop {
         initial_pick: EntryPick,
         carried_sidebar: Option<CarriedSidebar>,
     ) -> Result<Self, AttachError> {
+        // The TUI scrolls its local replica and never pages lazily, so pull
+        // the whole bounded history now: a cursor parked at the default
+        // 128-row window just expires server-side after 30 s.
+        let defaults = HistoryCacheConfig::default();
         let history_config = HistoryCacheConfig {
             request_max_bytes: negotiated.limits.max_history_page_bytes(),
-            ..HistoryCacheConfig::default()
+            prefetch_rows: defaults.max_materialized_rows,
+            ..defaults
         };
         let mut settings = TuiSettings::load_tolerant();
         let configured_sidebar_width = settings.sidebar.width;
