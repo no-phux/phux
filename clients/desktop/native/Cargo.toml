@@ -41,6 +41,7 @@ phux-client-core = { path = "../../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
 phux-client-ffi = { path = "../../../crates/phux-client-ffi", default-features = false }
 phux-config-core = { path = "../../../crates/phux-config-core" }
+phux-git = { path = "../../../crates/phux-git" }
 phux-perf = { path = "../../../crates/phux-perf" }
 phux-protocol = { path = "../../../crates/phux-protocol" }
 # The terminal view, painter, input and presentation, on this host's patched GPUI.

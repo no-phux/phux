@@ -506,6 +506,32 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
+    /// Run one checkout method on the checkout `terminal_id` is in, resolved
+    /// by the server that owns the Terminal from its live working directory.
+    /// Zero means nothing was sent: disconnected, the server lacks
+    /// `checkout`, an unparseable id, a malformed or oversized request, or a
+    /// full answer queue. Every non-zero request is answered exactly once in
+    /// `take_checkout_answers`.
+    pub fn checkout_query(&self, terminal_id: String, request: WireCheckoutRequest) -> u32 {
+        self.with_terminal(&terminal_id, |client, id| {
+            client.checkout(id.clone(), request.into())
+        })
+        .unwrap_or(0)
+    }
+
+    /// Drain correlated checkout answers, including disconnect cancellations.
+    pub fn take_checkout_answers(&self) -> Vec<WireCheckoutAnswer> {
+        self.runtime_client()
+            .map(|client| {
+                client
+                    .take_checkout_answers()
+                    .into_iter()
+                    .map(|answer| crate::projection::checkout::result(answer).into())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn kill_terminal(&self, terminal_id: String) {
         let _ = self.with_terminal(&terminal_id, Client::kill_terminal);
     }

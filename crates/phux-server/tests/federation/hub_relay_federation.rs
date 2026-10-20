@@ -31,6 +31,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
+mod checkout;
 mod conditional_kill;
 mod consumer_filters;
 mod detach_fence;

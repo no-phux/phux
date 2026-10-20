@@ -2,9 +2,10 @@
 
 use super::{Client, ResourceId};
 use crate::control::{
-    ControlPlane, DirectoryListing, FileUploadReceipt, GlobalMetadata, PathAnswer,
-    TranscribeReceipt,
+    CheckoutResponse, ControlPlane, DirectoryListing, FileUploadReceipt, GlobalMetadata,
+    PathAnswer, TranscribeReceipt,
 };
+use phux_protocol::checkout::CheckoutRequest;
 use phux_protocol::ids::SatelliteHost;
 
 impl Client {
@@ -88,6 +89,21 @@ impl Client {
     #[must_use]
     pub fn take_path_answers(&self) -> Vec<PathAnswer> {
         self.inner.with(ControlPlane::take_path_answers)
+    }
+
+    /// Run one checkout method on the checkout `terminal_id` is in. Returns
+    /// zero, sending nothing, when the server lacks `CHECKOUT`, the request
+    /// is malformed or too large, or the bounded answer queue is full.
+    #[must_use]
+    pub fn checkout(&self, terminal_id: ResourceId, request: CheckoutRequest) -> u32 {
+        self.inner
+            .with(|control| control.checkout(terminal_id, request))
+    }
+
+    /// Drain correlated checkout answers, including disconnect cancellations.
+    #[must_use]
+    pub fn take_checkout_answers(&self) -> Vec<CheckoutResponse> {
+        self.inner.with(ControlPlane::take_checkout_answers)
     }
 
     /// Subscribe to and read one `Global` metadata key; see

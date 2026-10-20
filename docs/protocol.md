@@ -285,6 +285,41 @@ the [client helper](../crates/phux-client/src/download.rs) own the read and
 the exclusive, verify-then-publish write;
 [`phux download`](./reference/cli.md#phux-download) owns syntax.
 
+### Checkout methods
+
+`CHECKOUT` (command tag `0x3c`, behind `features_ext.CHECKOUT` = `0x400`)
+reads and stages the Git checkout a Terminal is in: status with per-file
+line counts, one file's diff, a page of history, branches, a directory
+listing, the start of a file, the branch's pull request and checks (through
+the host's `gh`), and stage or unstage. It names a Terminal and one typed
+request; the server that owns the Terminal resolves the checkout from the
+Terminal's live working directory, so a client never names a host path.
+Paths in requests and answers are relative to the checkout's top level; an
+absolute path, `..`, anything under `.git`, or a path crossing a symbolic
+link is refused. The command is classified `INPUT` on the named Terminal
+(not on the server, as `GET_FILE` is), since an `INPUT` holder can already
+run `git diff` or `git add` there. The reach is the whole checkout: a
+Terminal whose working directory is inside a large repository, such as
+dotfiles tracked at `$HOME`, lets its `INPUT` holders read every file in that
+repository outside `.git`. Index writes that overrun their deadline are
+stopped with `SIGTERM` before `SIGKILL`, so Git can remove `index.lock`.
+
+The request and its answer cross the wire as bounded JSON inside the command
+envelope (requests at most 64 KiB, answers at most 4 MiB, text at most
+1 MiB and cut flagged `truncated`). Answers skip unknown fields and fold
+unknown enum values to `unknown`, so a newer server can add detail. A
+refusal is a typed answer (`not_a_repository`, `invalid_path`, `timeout`,
+`gh_unavailable`, `no_pull_request`, ...), not a command error; a missing
+Terminal or a denied grant stays a command error. Git and `gh` run off the
+dispatcher under a deadline and an output cap, with
+`GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0` and `GIT_LITERAL_PATHSPECS=1`.
+A hub relays a satellite Terminal's checkout only to a satellite that
+advertises `CHECKOUT`; otherwise it refuses `UNSUPPORTED_SATELLITE_ROUTE`.
+The [request and answer types](../crates/phux-protocol/src/checkout.rs), the
+[server handler](../crates/phux-server/src/runtime/checkout.rs), and the
+shared [`phux-git`](../crates/phux-git/src/checkout.rs) module own the
+details.
+
 ## Minimal client
 
 1. Framing and tagged fields, including skipping unknown ids.

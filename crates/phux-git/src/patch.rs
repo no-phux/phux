@@ -12,8 +12,9 @@ pub enum Side {
     New,
 }
 
-/// Selected source lines with the kit's `DiffLineRange` semantics: from
-/// `start` on `side` to `end` on `end_side` (1-based). On one side it covers
+/// Selected source lines with the kit's `DiffLineRange` semantics.
+///
+/// From `start` on `side` to `end` on `end_side` (1-based). On one side it covers
 /// that side's lines between the two numbers, in either order; across sides
 /// it covers the patch body between them, as a unified view shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,7 +28,7 @@ pub struct Selection {
 impl Selection {
     /// Lines `start` to `end`, in either order, on one side.
     #[must_use]
-    pub fn lines(side: Side, start: usize, end: usize) -> Self {
+    pub const fn lines(side: Side, start: usize, end: usize) -> Self {
         Self {
             side,
             start,
@@ -37,7 +38,7 @@ impl Selection {
     }
 
     #[must_use]
-    pub fn with_end_side(mut self, side: Side) -> Self {
+    pub const fn with_end_side(mut self, side: Side) -> Self {
         self.end_side = side;
         self
     }
@@ -57,7 +58,7 @@ pub fn partial_patch(file: &str, selection: Selection, reverse: bool) -> Option<
         return None;
     }
     let (header, hunks) = parse(file)?;
-    let lines: Vec<&Line> = hunks.iter().flat_map(|hunk| &hunk.lines).collect();
+    let lines: Vec<&Line<'_>> = hunks.iter().flat_map(|hunk| &hunk.lines).collect();
     let span = Span::of(&lines, selection);
     let mut chosen = lines
         .iter()
@@ -65,7 +66,7 @@ pub fn partial_patch(file: &str, selection: Selection, reverse: bool) -> Option<
         .map(|(ix, line)| line.kind != Kind::Context && span.covers(ix, line));
     let (mut body, mut old, mut new) = (String::new(), false, false);
     for hunk in &hunks {
-        let out: Vec<Out> = hunk
+        let out: Vec<Out<'_>> = hunk
             .lines
             .iter()
             .filter_map(|line| keep(line, chosen.next().unwrap_or(false), reverse))
@@ -78,7 +79,9 @@ pub fn partial_patch(file: &str, selection: Selection, reverse: bool) -> Option<
         body.push_str(hunk.header);
         body.push('\n');
         for (prefix, text, no_eol) in end_lines_last(out) {
-            body.push_str(&format!("{prefix}{text}\n"));
+            body.push(prefix);
+            body.push_str(text);
+            body.push('\n');
             if no_eol {
                 body.push_str("\\ No newline at end of file\n");
             }
@@ -119,7 +122,7 @@ struct Line<'a> {
 }
 
 impl Line<'_> {
-    fn number(&self, side: Side) -> Option<usize> {
+    const fn number(&self, side: Side) -> Option<usize> {
         match side {
             Side::Old => self.old,
             Side::New => self.new,
@@ -137,7 +140,7 @@ type Out<'a> = (char, &'a str, bool);
 
 /// The lines before the first hunk, then the hunks. Lines keep a `\r`.
 fn parse(file: &str) -> Option<(Vec<&str>, Vec<Hunk<'_>>)> {
-    let (mut header, mut hunks) = (Vec::new(), Vec::<Hunk>::new());
+    let (mut header, mut hunks) = (Vec::new(), Vec::<Hunk<'_>>::new());
     let (mut old, mut new) = (0, 0);
     for raw in file.split_inclusive('\n') {
         let raw = raw.strip_suffix('\n').unwrap_or(raw);
@@ -171,7 +174,7 @@ fn parse(file: &str) -> Option<(Vec<&str>, Vec<Hunk<'_>>)> {
     (!hunks.is_empty()).then_some((header, hunks))
 }
 
-fn next(line: &mut usize) -> usize {
+const fn next(line: &mut usize) -> usize {
     *line += 1;
     *line - 1
 }
@@ -205,13 +208,12 @@ fn body_line(raw: &str) -> Option<(Kind, &str)> {
 }
 
 /// The forward or reverse rule for one line.
-fn keep<'a>(line: &Line<'a>, chosen: bool, reverse: bool) -> Option<Out<'a>> {
+const fn keep<'a>(line: &Line<'a>, chosen: bool, reverse: bool) -> Option<Out<'a>> {
     let prefix = match (line.kind, chosen, reverse) {
-        (Kind::Context, ..) => ' ',
         (Kind::Removed, true, _) => '-',
         (Kind::Added, true, _) => '+',
         (Kind::Added, false, false) | (Kind::Removed, false, true) => return None,
-        (Kind::Added, false, true) | (Kind::Removed, false, false) => ' ',
+        (Kind::Context, ..) | (Kind::Added, false, true) | (Kind::Removed, false, false) => ' ',
     };
     Some((prefix, line.text, line.no_eol))
 }
@@ -247,7 +249,7 @@ enum Span {
 }
 
 impl Span {
-    fn of(lines: &[&Line], selection: Selection) -> Self {
+    fn of(lines: &[&Line<'_>], selection: Selection) -> Self {
         let Selection {
             side,
             start,
@@ -267,7 +269,7 @@ impl Span {
         }
     }
 
-    fn covers(&self, ix: usize, line: &Line) -> bool {
+    fn covers(&self, ix: usize, line: &Line<'_>) -> bool {
         match self {
             Self::Side { side, low, high } => line
                 .number(*side)
@@ -280,7 +282,7 @@ impl Span {
 
 /// The patch index of `line` on `side`, or of the nearest line there: the
 /// next for a start, the previous for an end, as the kit clips a range.
-fn endpoint(lines: &[&Line], side: Side, line: usize, start: bool) -> Option<usize> {
+fn endpoint(lines: &[&Line<'_>], side: Side, line: usize, start: bool) -> Option<usize> {
     let numbered = || {
         lines
             .iter()
@@ -318,7 +320,10 @@ fn file_header(header: &[&str], both: bool) -> String {
     } else {
         header.iter().map(|line| (*line).to_owned()).collect()
     };
-    lines.iter().map(|line| format!("{line}\n")).collect()
+    lines
+        .iter()
+        .flat_map(|line| [line.as_str(), "\n"])
+        .collect()
 }
 
 /// `header` without mode or index lines, and with the real path, its `a/`

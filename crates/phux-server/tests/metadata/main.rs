@@ -14,6 +14,7 @@
 
 mod agent_asked;
 mod agent_events;
+mod checkout;
 mod common;
 mod event_journal;
 mod flood_counters;

@@ -32,6 +32,7 @@ use phux_protocol::wire::{
 #[cfg(test)]
 mod actor_conformance;
 pub mod attach;
+mod checkout;
 pub mod client;
 mod command_tasks;
 pub mod commands;

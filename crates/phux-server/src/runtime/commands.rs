@@ -49,7 +49,7 @@ pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
 }
 
 /// The `TERMINAL_NOT_FOUND` refusal for `terminal_id`.
-fn terminal_not_found(terminal_id: &phux_protocol::ids::ResourceId) -> CommandResult {
+pub(super) fn terminal_not_found(terminal_id: &phux_protocol::ids::ResourceId) -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::TerminalNotFound,
         message: format!("no such terminal: {terminal_id:?}"),
@@ -803,6 +803,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::SignalTerminal { .. } => "signal_terminal",
         Command::PutFile { .. } => "put_file",
         Command::GetFile { .. } => "get_file",
+        Command::Checkout { .. } => "checkout",
         Command::GetPerf { .. } => "get_perf",
         Command::PerfControl { .. } => "perf_control",
         Command::Transcribe { .. } => "transcribe",
@@ -1202,6 +1203,10 @@ async fn dispatch_local(
             )
             .await
         }
+        Command::Checkout {
+            terminal_id,
+            request,
+        } => super::checkout::handle(state, &terminal_id, request).await,
         Command::GetFile {
             host: _,
             path,

@@ -133,3 +133,17 @@ fn stage_unstage_and_commit_round_trip_through_git() {
     assert_eq!(read_status(Path::new("/")).unwrap(), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_rename_cut_off_before_its_source_is_dropped() {
+    let out = [
+        "# branch.head main",
+        "1 .M N... 100644 100644 100644 aaa bbb kept.rs",
+        "2 R. N... 100644 100644 100644 aaa bbb R100 new.rs",
+        "",
+    ]
+    .join("\0");
+    let status = parse_status(PathBuf::from("/tmp/phux"), &out);
+    let paths: Vec<_> = status.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, ["kept.rs"]);
+}

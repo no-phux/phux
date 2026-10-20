@@ -14,6 +14,7 @@ pub mod agent;
 // desktop app) has no reader for it.
 #[cfg(any(feature = "c-abi", feature = "uniffi"))]
 pub mod agent_records;
+pub mod checkout;
 pub mod event;
 pub mod grid;
 pub mod id;

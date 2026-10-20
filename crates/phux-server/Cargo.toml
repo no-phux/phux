@@ -85,6 +85,9 @@ libc = "0.2"
 bytes.workspace = true
 # In-process performance telemetry (`GET_PERF`, `phux perf`).
 phux-perf.workspace = true
+# Typed checkout methods run the shared Git module on the checkout a
+# Terminal is in.
+phux-git.workspace = true
 # `FuturesUnordered` for concurrent per-pane attach snapshots.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # WebSocket transport; TLS is terminated by rustls below, not by tungstenite.

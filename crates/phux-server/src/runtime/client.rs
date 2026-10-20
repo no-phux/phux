@@ -136,6 +136,10 @@ pub(super) enum Route {
     InputLane,
     /// The connection's bulk worker, retaining this many payload bytes.
     Bulk(usize),
+    /// Its own task beside the dispatcher: a checkout runs Git or `gh` for
+    /// seconds, and neither control frames nor uploads should queue behind
+    /// it.
+    Detached,
     /// The command handler.
     Handler,
 }
@@ -150,6 +154,9 @@ pub(super) fn route(command: &Command, has_input_lane: bool) -> Route {
     );
     if has_input_lane && local_input {
         return Route::InputLane;
+    }
+    if matches!(command, Command::Checkout { .. }) {
+        return Route::Detached;
     }
     super::command_tasks::CommandTasks::retained_bytes(command).map_or(Route::Handler, Route::Bulk)
 }
@@ -225,6 +232,11 @@ impl CommandDispatch<'_> {
             }
             (Route::Bulk(retained), _) => {
                 self.submit_bulk(request_id, command, retained, command_started)
+                    .await;
+                return None;
+            }
+            (Route::Detached, _) => {
+                self.submit_detached(request_id, command, command_started)
                     .await;
                 return None;
             }
@@ -327,6 +339,48 @@ impl CommandDispatch<'_> {
                 }))
                 .await;
         }
+    }
+}
+
+/// Detached commands in flight across every connection. Each local checkout
+/// is bounded again by its worker pool; this bounds relayed ones waiting on a
+/// satellite.
+static DETACHED_COMMANDS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(64)));
+
+impl CommandDispatch<'_> {
+    /// Run `command` on its own task so the dispatcher keeps reading. The
+    /// connection's cancellation ends it; its result is still correlated by
+    /// `request_id`.
+    async fn submit_detached(
+        &self,
+        request_id: u32,
+        command: Command,
+        command_started: std::time::Instant,
+    ) {
+        let Ok(slot) = DETACHED_COMMANDS.clone().try_acquire_owned() else {
+            let _ = self
+                .out_tx
+                .send(Outbound::Frame(FrameKind::CommandResult {
+                    request_id,
+                    result: CommandResult::Error {
+                        code: ErrorCode::ResourceExhausted,
+                        message: "too many long-running commands in flight; retry".to_owned(),
+                    },
+                }))
+                .await;
+            return;
+        };
+        let ctx = self.context();
+        tokio::task::spawn_local(async move {
+            let _slot = slot;
+            let token = ctx.token.clone();
+            tokio::select! {
+                biased;
+                () = token.cancelled() => {}
+                () = run_handler(&ctx, request_id, command, command_started) => {}
+            }
+        });
     }
 }
 
@@ -1604,6 +1658,7 @@ async fn negotiate_hello(
                 ServerFeatureExt::PerfControl,
                 ServerFeatureExt::SessionProject,
                 ServerFeatureExt::FileDownload,
+                ServerFeatureExt::Checkout,
             ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),

@@ -502,6 +502,10 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
             offset: 0,
             max_bytes: 1,
         }),
+        command(Command::Checkout {
+            terminal_id: t.clone(),
+            request: phux_protocol::checkout::CheckoutRequest::Status,
+        }),
         command(Command::Transcribe {
             upload_id: upload,
             terminal_id: t.clone(),
@@ -1256,6 +1260,15 @@ fn rows(world: &mut World) -> Vec<Row> {
                 path: "/tmp/deck.pptx".to_owned(),
                 offset: 0,
                 max_bytes: 1,
+            }),
+            "input",
+        ),
+        on_terminal(
+            command(Command::Checkout {
+                terminal_id: t.clone(),
+                request: phux_protocol::checkout::CheckoutRequest::Stage {
+                    paths: vec!["a.txt".to_owned()],
+                },
             }),
             "input",
         ),
