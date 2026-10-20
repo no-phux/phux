@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.7.1](https://github.com/no-phux/phux/compare/pi-extension-v0.7.0...pi-extension-v0.7.1) (2026-10-19)
+
+
+### Documentation
+
+* conserve live contracts and make historical decisions searchable ([#1643](https://github.com/no-phux/phux/issues/1643)) ([bb4e5da](https://github.com/no-phux/phux/commit/bb4e5daf69896fded96136a954377513b387e5da))
+
 ## [0.7.0](https://github.com/no-phux/phux/compare/pi-extension-v0.6.0...pi-extension-v0.7.0) (2026-10-16)
 
 
