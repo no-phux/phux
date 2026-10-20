@@ -103,8 +103,21 @@ pub(crate) fn prepare(conn: &Connection) -> Result<(), Error> {
     // Additive tables leave `user_version` alone, so an older binary still
     // opens the store and ignores them.
     conn.execute_batch(crate::coord::SCHEMA)?;
+    conn.execute_batch(LAUNCH_INTENT)?;
     Ok(())
 }
+
+/// Facts a queued run needs when a slot frees. Additive: no `user_version` bump.
+const LAUNCH_INTENT: &str = "
+CREATE TABLE IF NOT EXISTS launch_intent (
+    run_id BLOB NOT NULL PRIMARY KEY REFERENCES run(id),
+    model TEXT NOT NULL,
+    max_agents INTEGER NOT NULL CHECK (max_agents >= 1),
+    worktree_path TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    repo_root TEXT NOT NULL
+);
+";
 
 pub(crate) fn user_version(conn: &Connection) -> Result<i64, Error> {
     conn.pragma_query_value(None, "user_version", |row| row.get(0))

@@ -20,6 +20,9 @@
 //!
 //! An unresolved `credential_lost` signal projects the objective to
 //! `needs_you`. The store will not leave that objective `working`.
+//! Agent projection adds `done_unchecked`, `done`, and `failed` without
+//! bumping `user_version`. The keeper stays up while any objective is
+//! `working` or `queued`.
 //!
 //! The same keeper holds agent coordination: mail between agents and claims
 //! on paths (ADR-0187). Those tables are additive and do not change
@@ -49,8 +52,8 @@ pub use coord::{
 };
 pub use error::Error;
 pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, SignalKind};
-pub use service::{Endpoint, KeeperExit, run_keeper};
-pub use start::{StartApplied, StartBinding, StartPlan, StartRequest};
+pub use service::{Endpoint, KeeperExit, run_keeper, run_keeper_with};
+pub use start::{LaunchQueued, OpenRun, StartApplied, StartBinding, StartPlan, StartRequest};
 pub use store::{
     AddObjective, Applied, DB_FILE, EditObjective, ListFilter, Objective, RaiseSignal,
     RevisionEdit, Signal, StateEdit, Store, store_path,

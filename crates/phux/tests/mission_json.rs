@@ -29,24 +29,27 @@ fn bare_mission_prints_help() {
     assert!(text.contains("phux.mission/v1"), "{text}");
     assert!(text.contains("add"), "{text}");
     assert!(text.contains("edit"), "{text}");
-    assert!(!text.contains("--socket"), "{text}");
+    assert!(
+        text.contains("--socket"),
+        "the keeper watches this server; {text}"
+    );
     assert!(!text.to_ascii_lowercase().contains("delegate"), "{text}");
 
     let flagged = mission(&xdg, &["mission", "--help"]);
     assert_eq!(flagged.status.code(), Some(0), "{}", stderr(&flagged));
     let flagged_text = String::from_utf8_lossy(&flagged.stdout);
     assert!(flagged_text.contains("phux.mission/v1"), "{flagged_text}");
-    assert!(!flagged_text.contains("--socket"), "{flagged_text}");
+    assert!(flagged_text.contains("--socket"), "{flagged_text}");
     assert!(!flagged_text.to_ascii_lowercase().contains("delegate"));
 
     let add_help = mission(&xdg, &["mission", "add", "--help"]);
     assert_eq!(add_help.status.code(), Some(0), "{}", stderr(&add_help));
     let add_text = String::from_utf8_lossy(&add_help.stdout);
-    assert!(!add_text.contains("--socket"), "{add_text}");
+    assert!(add_text.contains("--socket"), "{add_text}");
 }
 
 #[test]
-fn mission_refuses_a_socket_because_it_never_dials() {
+fn mission_socket_names_the_server_the_keeper_watches() {
     let xdg = common::XdgDirs::fresh("mission");
     let output = mission(
         &xdg,
@@ -57,10 +60,21 @@ fn mission_refuses_a_socket_because_it_never_dials() {
             "/tmp/phux-mission-unused.sock",
         ],
     );
-    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
-    let err = String::from_utf8_lossy(&output.stderr);
-    assert!(err.contains("mission"), "{err}");
-    assert!(err.contains("--socket"), "{err}");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("No tasks"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let pid_path = xdg.state.join("phux-dev/work/keeper.pid");
+    if let Ok(text) = std::fs::read_to_string(&pid_path)
+        && let Ok(pid) = text.trim().parse::<u32>()
+        && pid != 0
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
 }
 
 #[test]

@@ -52,6 +52,10 @@ pub struct StartRequest {
     pub worktree_path: String,
     /// Branch this start would use.
     pub branch: String,
+    /// Git repository root. Empty when the caller has none. Kept so a queued
+    /// run can be launched later without the keeper's working directory.
+    #[serde(default)]
+    pub repo_root: String,
     /// Present when the caller has launched a worker.
     pub launch: Option<StartBinding>,
 }
@@ -95,6 +99,63 @@ pub struct StartApplied {
     pub queue_position: Option<u64>,
     /// Set when a worker was launched.
     pub binding: Option<StartBinding>,
+}
+
+/// A live run the keeper can project or launch.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OpenRun {
+    /// Display alias.
+    pub alias: Alias,
+    /// Objective id.
+    pub objective_id: OpaqueId,
+    /// Objective revision.
+    pub revision: u64,
+    /// Objective state.
+    pub state: ObjectiveState,
+    /// Run id.
+    pub run_id: OpaqueId,
+    /// `running` or `queued`.
+    pub run_state: String,
+    /// Per-task attempt number.
+    pub ordinal: u64,
+    /// Harness kind.
+    pub agent_kind: String,
+    /// Model, or empty.
+    pub model: String,
+    /// Cap recorded with the run.
+    pub max_agents: u32,
+    /// Git repository root. Empty when the run predates launch intent.
+    pub repo_root: String,
+    /// Worktree path from the binding, or the path the queue would use.
+    pub worktree_path: String,
+    /// Branch from the binding, or the branch the queue would use.
+    pub branch: String,
+    /// Bound terminal id, decimal. Absent while queued.
+    pub terminal_id: Option<String>,
+    /// Organization session key. Absent while queued.
+    pub session_key: Option<String>,
+    /// An unresolved `credential_lost` signal is open.
+    pub credential_lost: bool,
+}
+
+/// Admit the oldest queued run once a worker pane exists.
+///
+/// `commit_start` rechecks the cap. Replaying `operation_id` returns the
+/// first launch and does not read a different terminal id.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LaunchQueued {
+    /// Task whose queued run should start.
+    pub alias: Alias,
+    /// Fail when the stored revision is not this value. Required.
+    pub expected_revision: u64,
+    /// Idempotency key.
+    pub operation_id: OperationId,
+    /// Recorded on the event row.
+    pub actor: String,
+    /// Cap on running agents.
+    pub max_agents: u32,
+    /// The worker pane that was launched.
+    pub launch: StartBinding,
 }
 
 impl Store {
@@ -195,6 +256,7 @@ impl Store {
         if let Some(binding) = &request.launch {
             insert_binding(&tx, run_id, binding)?;
         }
+        insert_intent(&tx, run_id, &request)?;
         let requested = if launching {
             ObjectiveState::Working
         } else {
@@ -249,6 +311,153 @@ impl Store {
         tx.commit()?;
         Ok(applied_from(snapshot, request.operation_id, false))
     }
+
+    /// Live runs, oldest first. Queued runs carry no terminal id.
+    pub fn open_runs(&self) -> Result<Vec<OpenRun>, Error> {
+        let mut statement = self.conn.prepare(
+            "SELECT objective.display_alias, objective.id, objective.revision, objective.state,
+                    run.id, run.state, run.ordinal, run.agent_kind,
+                    COALESCE(launch_intent.model, ''),
+                    COALESCE(launch_intent.max_agents, 0),
+                    COALESCE(launch_intent.repo_root, ''),
+                    COALESCE(binding.worktree_path, launch_intent.worktree_path, ''),
+                    COALESCE(binding.branch, launch_intent.branch, ''),
+                    binding.terminal_id, binding.session_key,
+                    EXISTS (
+                        SELECT 1 FROM signal
+                        WHERE signal.objective_id = objective.id
+                          AND signal.kind = 'credential_lost'
+                          AND signal.resolved_at IS NULL
+                    )
+             FROM run
+             JOIN objective ON objective.id = run.objective_id
+             LEFT JOIN binding ON binding.run_id = run.id
+             LEFT JOIN launch_intent ON launch_intent.run_id = run.id
+             WHERE run.ended_at IS NULL AND run.state IN ('running', 'queued')
+               AND objective.archived = 0
+             ORDER BY run.started_at, run.rowid",
+        )?;
+        let rows = statement.query_map([], map_open_run)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
+    }
+
+    /// The stored launch when `operation_id` repeats an admitted promotion.
+    pub fn replay_launch(&self, operation_id: &OperationId) -> Result<Option<StartApplied>, Error> {
+        match load_operation(&self.conn, operation_id)? {
+            None => Ok(None),
+            Some((_, result)) => {
+                let snapshot: StartSnapshot = serde_json::from_str(&result)?;
+                Ok(Some(applied_from(snapshot, *operation_id, true)))
+            }
+        }
+    }
+
+    /// Move the oldest queued run to `running` and bind `request.launch`.
+    ///
+    /// The cap is rechecked. A launch that arrives after the cap filled is
+    /// [`Error::AtCapacity`] with nothing written. Replaying the operation
+    /// id returns the first result.
+    pub fn launch_queued(&mut self, request: LaunchQueued) -> Result<StartApplied, Error> {
+        let actor = crate::id::parse_actor(&request.actor)?;
+        if request.max_agents == 0 {
+            return Err(Error::invalid_text("max_agents", "must be at least 1"));
+        }
+        let digest = digest(
+            "launch",
+            &serde_json::json!({
+                "alias": request.alias.display(),
+                "branch": &request.launch.branch,
+                "expected_revision": request.expected_revision,
+                "max_agents": request.max_agents,
+                "worktree_path": &request.launch.worktree_path,
+            }),
+        )?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((stored, result)) = load_operation(&tx, &request.operation_id)? {
+            if stored != digest {
+                return Err(Error::OperationConflict {
+                    operation_id: request.operation_id.to_hex(),
+                });
+            }
+            let snapshot: StartSnapshot = serde_json::from_str(&result)?;
+            return Ok(applied_from(snapshot, request.operation_id, true));
+        }
+        let current = load_checked(&tx, &request.alias, request.expected_revision)?;
+        let queued = oldest_queued(&tx, current.id)?;
+        let Some((run_id, ordinal, agent_kind, model)) = queued else {
+            return Err(Error::invalid_text("run", "is not queued"));
+        };
+        if let Some((alias, taken)) = bound_holder(
+            &tx,
+            current.id,
+            &request.launch.worktree_path,
+            &request.launch.branch,
+        )? {
+            return Err(Error::WorktreeBound { path: taken, alias });
+        }
+        let running = count_runs(&tx, "running")?;
+        let limit = u64::from(request.max_agents);
+        if running >= limit {
+            return Err(Error::AtCapacity { running, limit });
+        }
+        let now = timestamp();
+        tx.execute(
+            "UPDATE run SET state = 'running' WHERE id = ?1 AND state = 'queued' AND ended_at IS NULL",
+            params![run_id.as_slice()],
+        )?;
+        insert_binding(&tx, run_id, &request.launch)?;
+        let projected = project_state(&tx, current.id, ObjectiveState::Working)?;
+        let previous = current.revision;
+        let mut updated = current;
+        updated.state = projected;
+        updated.revision = bump(previous)?;
+        now.clone_into(&mut updated.updated_at);
+        write_objective(&tx, &updated, previous)?;
+        let event_kind = if projected == ObjectiveState::NeedsYou {
+            "needs_you"
+        } else {
+            "launched"
+        };
+        let snapshot = StartSnapshot {
+            objective: updated,
+            agent_kind,
+            model,
+            run_id,
+            ordinal,
+            run_state: "running".to_owned(),
+            disposition: "started".to_owned(),
+            queue_position: None,
+            binding: Some(request.launch),
+        };
+        let result_json = serde_json::to_string(&snapshot)?;
+        tx.execute(
+            "INSERT INTO operation (id, kind, digest, objective_id, result_json, created_at)
+             VALUES (?1, 'launch', ?2, ?3, ?4, ?5)",
+            params![
+                request.operation_id.as_slice(),
+                digest,
+                snapshot.objective.id.as_slice(),
+                &result_json,
+                now,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO event (ts, actor, objective_id, operation_id, kind, json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                now,
+                actor,
+                snapshot.objective.id.as_slice(),
+                request.operation_id.as_slice(),
+                event_kind,
+                &result_json,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(applied_from(snapshot, request.operation_id, false))
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -294,6 +503,7 @@ fn start_digest(request: &StartRequest) -> Result<String, Error> {
             "expected_revision": request.expected_revision,
             "max_agents": request.max_agents,
             "model": &request.model,
+            "repo_root": &request.repo_root,
             "worktree_path": &request.worktree_path,
         }),
     )
@@ -470,6 +680,97 @@ fn insert_run(
     Ok(())
 }
 
+fn insert_intent(
+    tx: &Transaction<'_>,
+    run_id: OpaqueId,
+    request: &StartRequest,
+) -> Result<(), Error> {
+    let max_agents = i64::from(request.max_agents);
+    tx.execute(
+        "INSERT INTO launch_intent (run_id, model, max_agents, worktree_path, branch, repo_root)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            run_id.as_slice(),
+            request.model,
+            max_agents,
+            request.worktree_path,
+            request.branch,
+            request.repo_root,
+        ],
+    )?;
+    Ok(())
+}
+
+fn oldest_queued(
+    tx: &Transaction<'_>,
+    objective_id: OpaqueId,
+) -> Result<Option<(OpaqueId, u64, String, String)>, Error> {
+    let row: Option<(Vec<u8>, i64, String, String)> = tx
+        .query_row(
+            "SELECT run.id, run.ordinal, run.agent_kind, COALESCE(launch_intent.model, '')
+             FROM run
+             LEFT JOIN launch_intent ON launch_intent.run_id = run.id
+             WHERE run.objective_id = ?1 AND run.state = 'queued' AND run.ended_at IS NULL
+             ORDER BY run.started_at, run.rowid
+             LIMIT 1",
+            params![objective_id.as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((id, ordinal, agent_kind, model)) = row else {
+        return Ok(None);
+    };
+    let ordinal = u64::try_from(ordinal).map_err(|_| Error::Corrupt("ordinal".to_owned()))?;
+    Ok(Some((
+        OpaqueId::from_slice(&id)?,
+        ordinal,
+        agent_kind,
+        model,
+    )))
+}
+
+fn map_open_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<OpenRun> {
+    let alias: String = row.get(0)?;
+    let objective_id: Vec<u8> = row.get(1)?;
+    let revision: i64 = row.get(2)?;
+    let state: String = row.get(3)?;
+    let run_id: Vec<u8> = row.get(4)?;
+    let run_state: String = row.get(5)?;
+    let ordinal: i64 = row.get(6)?;
+    let agent_kind: String = row.get(7)?;
+    let model: String = row.get(8)?;
+    let max_agents: i64 = row.get(9)?;
+    let repo_root: String = row.get(10)?;
+    let worktree_path: String = row.get(11)?;
+    let branch: String = row.get(12)?;
+    let terminal_id: Option<String> = row.get(13)?;
+    let session_key: Option<String> = row.get(14)?;
+    let credential_lost: i64 = row.get(15)?;
+    let stored = |err: Error| rusqlite::Error::ToSqlConversionFailure(Box::new(err));
+    Ok(OpenRun {
+        alias: Alias::parse(&alias).map_err(stored)?,
+        objective_id: OpaqueId::from_slice(&objective_id).map_err(stored)?,
+        revision: u64::try_from(revision).map_err(|_| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(Error::Corrupt("revision".to_owned())))
+        })?,
+        state: ObjectiveState::parse(&state).map_err(stored)?,
+        run_id: OpaqueId::from_slice(&run_id).map_err(stored)?,
+        run_state,
+        ordinal: u64::try_from(ordinal).map_err(|_| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(Error::Corrupt("ordinal".to_owned())))
+        })?,
+        agent_kind,
+        model,
+        max_agents: u32::try_from(max_agents).unwrap_or(0),
+        repo_root,
+        worktree_path,
+        branch,
+        terminal_id,
+        session_key,
+        credential_lost: credential_lost != 0,
+    })
+}
+
 fn insert_binding(
     tx: &Transaction<'_>,
     run_id: OpaqueId,
@@ -494,10 +795,10 @@ fn insert_binding(
 
 #[cfg(test)]
 mod tests {
-    use super::{StartBinding, StartPlan, StartRequest};
+    use super::{LaunchQueued, StartBinding, StartPlan, StartRequest};
     use crate::error::Error;
     use crate::id::{Alias, ObjectiveState, OperationId};
-    use crate::store::{AddObjective, RevisionEdit, Store};
+    use crate::store::{AddObjective, RevisionEdit, StateEdit, Store};
 
     fn open() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -528,6 +829,7 @@ mod tests {
             actor: "tester".to_owned(),
             worktree_path,
             branch,
+            repo_root: "/tmp/repo".to_owned(),
         }
     }
 
@@ -713,6 +1015,104 @@ mod tests {
         assert_eq!(
             again.binding.as_ref().expect("binding").terminal_id,
             first.binding.expect("binding").terminal_id
+        );
+    }
+
+    #[test]
+    fn launch_queued_admits_one_runner_and_a_replay_does_not_write() {
+        let (_dir, mut store) = open();
+        let first = store.add(add("phux", "Billing")).expect("add");
+        let second = store.add(add("phux", "Next")).expect("add");
+        admit(
+            &mut store,
+            first.objective.alias.clone(),
+            OperationId::generate().expect("id"),
+        );
+        let mut queued = start_req(
+            second.objective.alias.clone(),
+            OperationId::generate().expect("id"),
+            false,
+        );
+        queued.expected_revision = second.objective.revision;
+        let queued = store.commit_start(queued).expect("queue");
+        let blocked = store.launch_queued(LaunchQueued {
+            alias: second.objective.alias.clone(),
+            expected_revision: queued.objective.revision,
+            operation_id: OperationId::derive_bytes(b"promote"),
+            actor: "keeper".to_owned(),
+            max_agents: 1,
+            launch: binding_for(&second.objective.alias, "/tmp/phux-2", "mission/2"),
+        });
+        assert!(matches!(blocked, Err(Error::AtCapacity { .. })));
+        assert_eq!(
+            store.show(&second.objective.alias).expect("show").state,
+            ObjectiveState::Queued
+        );
+
+        let failed = store
+            .record_state(StateEdit {
+                alias: first.objective.alias.clone(),
+                state: ObjectiveState::Failed,
+                expected_revision: store.show(&first.objective.alias).expect("show").revision,
+                operation_id: OperationId::generate().expect("id"),
+                actor: "keeper".to_owned(),
+                event_kind: Some("failed".to_owned()),
+            })
+            .expect("fail");
+        assert!(failed.objective.state.frees_slot());
+        let open = store.open_runs().expect("open");
+        assert!(open.iter().all(|run| run.alias != first.objective.alias));
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].run_state, "queued");
+
+        let operation_id = OperationId::derive_bytes(b"promote-after");
+        let expected = queued.objective.revision;
+        let launch = binding_for(&second.objective.alias, "/tmp/phux-2", "mission/2");
+        let admitted = store
+            .launch_queued(LaunchQueued {
+                alias: second.objective.alias.clone(),
+                expected_revision: expected,
+                operation_id,
+                actor: "keeper".to_owned(),
+                max_agents: 1,
+                launch: launch.clone(),
+            })
+            .expect("launch");
+        assert!(!admitted.idempotent_replay);
+        assert_eq!(admitted.objective.state, ObjectiveState::Working);
+        assert_eq!(admitted.run_state, "running");
+        assert_eq!(
+            admitted.binding.as_ref().expect("binding").terminal_id,
+            launch.terminal_id
+        );
+        let kinds = store.event_kinds().expect("events");
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|kind| kind.as_str() == "launched")
+                .count(),
+            1
+        );
+        let replay = store.replay_launch(&operation_id).expect("replay");
+        let replay = replay.expect("stored");
+        assert!(replay.idempotent_replay);
+        assert_eq!(store.event_kinds().expect("events"), kinds);
+        let mut other = launch.clone();
+        other.terminal_id = "99".to_owned();
+        let again = store
+            .launch_queued(LaunchQueued {
+                alias: second.objective.alias,
+                expected_revision: expected,
+                operation_id,
+                actor: "keeper".to_owned(),
+                max_agents: 1,
+                launch: other,
+            })
+            .expect("replay write");
+        assert!(again.idempotent_replay);
+        assert_eq!(
+            again.binding.expect("binding").terminal_id,
+            launch.terminal_id
         );
     }
 }

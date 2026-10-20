@@ -2610,6 +2610,7 @@ dependencies = [
  "qrcode",
  "rcgen",
  "ring",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

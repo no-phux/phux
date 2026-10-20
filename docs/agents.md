@@ -21,6 +21,9 @@ For every pane, phux keeps an agent record: the agent's `kind` (`claude`,
 | `done`    | finished and said so                                 |
 | `unknown` | no agent found, or the agent left                    |
 
+`phux mission` projects `working`, `blocked`, and `done` into the task.
+See [Work and missions](./organization.md#work-and-missions).
+
 The state comes from the strongest source available:
 
 1. a declaration (`phux agent set --state ...`), for the occupant it describes

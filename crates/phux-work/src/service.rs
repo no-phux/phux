@@ -60,10 +60,27 @@ pub enum KeeperExit {
 
 /// Serve `endpoint` until one of the [`KeeperExit`] conditions.
 ///
+/// `on_serving` runs once the socket is bound and the store is open, before
+/// the accept loop. The keeper stays up past `idle_exit` while any objective
+/// is `working` or `queued`.
+///
 /// # Errors
 ///
 /// The lock, socket, or poll failed before or while serving.
 pub fn run_keeper(endpoint: &Endpoint, idle_exit: Duration) -> Result<KeeperExit, Error> {
+    run_keeper_with(endpoint, idle_exit, || {})
+}
+
+/// [`run_keeper`] with a hook invoked once this process is the keeper.
+///
+/// # Errors
+///
+/// The lock, socket, or poll failed before or while serving.
+pub fn run_keeper_with(
+    endpoint: &Endpoint,
+    idle_exit: Duration,
+    on_serving: impl FnOnce() + Send,
+) -> Result<KeeperExit, Error> {
     if let Some(parent) = nonempty_parent(&endpoint.store) {
         fs::create_dir_all(parent)?;
         lock::set_private_dir(parent)?;
@@ -98,8 +115,13 @@ pub fn run_keeper(endpoint: &Endpoint, idle_exit: Duration) -> Result<KeeperExit
             return Ok(KeeperExit::StoreFailed);
         }
     };
+    let _pid = write_pid(endpoint);
+    on_serving();
     loop {
         let Some(stream) = next_connection(&listener, idle_exit)? else {
+            if store.has_open_work().unwrap_or(true) {
+                continue;
+            }
             return Ok(KeeperExit::Idle);
         };
         // A client that hangs up or times out costs only its own request.
@@ -185,6 +207,11 @@ fn handle(store: &mut Store, request: Request) -> Response {
         Request::PlanStart(request) => store.plan_start(&request).map(Response::StartPlan),
         Request::ReplayStart(request) => store.replay_start(&request).map(Response::StartReplay),
         Request::CommitStart(request) => store.commit_start(request).map(Response::StartApplied),
+        Request::OpenRuns => store.open_runs().map(Response::OpenRuns),
+        Request::LaunchQueued(request) => store.launch_queued(request).map(Response::StartApplied),
+        Request::ReplayLaunch { operation_id } => store
+            .replay_launch(&operation_id)
+            .map(Response::StartReplay),
         Request::SendMail(request) => store.send_mail(&request).map(Response::Sent),
         Request::ReadMail(request) => store.read_mail(&request).map(Response::Mail),
         Request::AckMail(request) => store.ack_mail(&request).map(Response::Acked),
@@ -224,6 +251,21 @@ fn next_connection(listener: &UnixListener, idle: Duration) -> Result<Option<Uni
             Err(err) => return Err(err.into()),
         }
     }
+}
+
+struct PidFile(PathBuf);
+
+impl Drop for PidFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn write_pid(endpoint: &Endpoint) -> Option<PidFile> {
+    let path = endpoint.store.parent()?.join("keeper.pid");
+    let pid = std::process::id().to_string();
+    fs::write(&path, pid).ok()?;
+    Some(PidFile(path))
 }
 
 struct RemoveOnDrop<'a>(&'a Path);

@@ -44,7 +44,7 @@ pub struct TaskDocument {
     pub title: String,
     /// Task description. Empty when none was given.
     pub description: String,
-    /// `todo`, `working`, `queued`, or `needs_you`.
+    /// `todo`, `working`, `queued`, `needs_you`, `done_unchecked`, `done`, or `failed`.
     pub state: String,
     /// Structural revision, starting at 1.
     pub revision: u64,

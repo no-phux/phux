@@ -1,8 +1,9 @@
 //! `phux mission`: tasks in the local work store.
 //!
 //! `list`, `show`, `edit`, `archive`, `restore`, and `keeper` call the
-//! store's keeper and do not contact a phux server. `start` and
-//! `add --start` also dial the phux server to create the worktree session.
+//! store's keeper. The keeper watches the phux server and projects each
+//! bound agent's state into the task. `start` and `add --start` also dial
+//! the phux server to create the worktree session.
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -127,11 +128,18 @@ pub(crate) enum MissionAction {
     ///
     /// The one process that opens this state directory's work store. The
     /// other verbs start it on demand, so it rarely needs running by hand.
-    /// It exits after `--idle-exit` seconds without a request.
+    /// While a task is working or queued, the keeper stays up and projects
+    /// that task's agent into its state. It exits after `--idle-exit` seconds
+    /// without a request only when nothing is working or queued.
     Keeper {
-        /// Seconds without a request before exiting. Default 600.
+        /// Seconds without a request before exiting, when no task is working
+        /// or queued. Default 600.
         #[usage(long, value_name = "SECS")]
         idle_exit: Option<u64>,
+        /// phux server socket to project from. Defaults to `PHUX_SOCKET`,
+        /// then this profile's socket.
+        #[usage(long, value_name = "PATH")]
+        server_socket: Option<std::path::PathBuf>,
     },
 }
 
@@ -171,11 +179,15 @@ fn print_help() -> ExitCode {
 }
 
 fn run_action(action: MissionAction, socket: Option<std::path::PathBuf>) -> ExitCode {
-    if let MissionAction::Keeper { idle_exit } = action {
-        return keeper(idle_exit);
+    if let MissionAction::Keeper {
+        idle_exit,
+        server_socket,
+    } = action
+    {
+        return keeper(idle_exit, server_socket.or(socket));
     }
     let json = wants_json(&action);
-    let store = match client(json) {
+    let store = match client_watching(json, socket.clone()) {
         Ok(client) => client,
         Err(code) => return code,
     };
@@ -265,7 +277,7 @@ const fn wants_json(action: &MissionAction) -> bool {
     }
 }
 
-fn endpoint() -> Endpoint {
+pub(crate) fn endpoint() -> Endpoint {
     Endpoint::new(
         &phux_config::instance::state_dir(),
         &phux_config::instance::runtime_dir(),
@@ -273,6 +285,13 @@ fn endpoint() -> Endpoint {
 }
 
 pub(crate) fn client(json: bool) -> Result<Client, ExitCode> {
+    client_watching(json, None)
+}
+
+pub(crate) fn client_watching(
+    json: bool,
+    socket: Option<std::path::PathBuf>,
+) -> Result<Client, ExitCode> {
     let endpoint = endpoint();
     let program = phux_config::instance::running_executable().map_err(|err| {
         fail(
@@ -281,19 +300,22 @@ pub(crate) fn client(json: bool) -> Result<Client, ExitCode> {
         )
     })?;
     let log = endpoint.store.parent().map(|dir| dir.join("keeper.log"));
-    let launcher = Launcher {
-        program,
-        args: vec!["mission".into(), "keeper".into()],
-        log,
-    };
+    let mut args = vec!["mission".into(), "keeper".into()];
+    if let Some(socket) = socket {
+        args.push("--server-socket".into());
+        args.push(socket.into());
+    }
+    let launcher = Launcher { program, args, log };
     Ok(Client::new(endpoint, Some(launcher)))
 }
 
-fn keeper(idle_exit: Option<u64>) -> ExitCode {
+fn keeper(idle_exit: Option<u64>, server_socket: Option<std::path::PathBuf>) -> ExitCode {
     let idle = idle_exit
         .or_else(|| std::env::var(KEEPER_IDLE_ENV).ok()?.parse().ok())
         .map_or(KEEPER_IDLE_EXIT, Duration::from_secs);
-    match phux_work::run_keeper(&endpoint(), idle) {
+    match phux_work::run_keeper_with(&endpoint(), idle, move || {
+        super::mission_project::spawn(server_socket);
+    }) {
         Ok(KeeperExit::StoreFailed) => ExitCode::from(1),
         Ok(KeeperExit::Idle | KeeperExit::AlreadyRunning | KeeperExit::Stale) => ExitCode::SUCCESS,
         Err(err) => {

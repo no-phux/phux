@@ -120,7 +120,8 @@ pub struct RevisionEdit {
 }
 
 /// Direct state write. An unresolved `credential_lost` signal overrides
-/// any requested state with `needs_you`.
+/// any requested state with `needs_you`. A write that does not change the
+/// stored state appends nothing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateEdit {
     /// Task to edit.
@@ -133,6 +134,9 @@ pub struct StateEdit {
     pub operation_id: OperationId,
     /// Recorded on the event row.
     pub actor: String,
+    /// Event kind. Absent stores `objective_state`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_kind: Option<String>,
 }
 
 /// Record a signal. `credential_lost` projects the objective to `needs_you`.
@@ -340,10 +344,12 @@ impl Store {
     /// [`Error::NotFound`], [`Error::RevisionConflict`], and operation conflicts.
     pub fn record_state(&mut self, request: StateEdit) -> Result<Applied, Error> {
         let actor = parse_actor(&request.actor)?;
+        let event_kind = canonical_event_kind(request.event_kind.as_deref())?;
         let digest = digest(
             "state",
             &serde_json::json!({
                 "alias": request.alias.display(),
+                "event_kind": event_kind,
                 "expected_revision": request.expected_revision,
                 "state": request.state.as_str(),
             }),
@@ -351,24 +357,65 @@ impl Store {
         let alias = request.alias;
         let expected = request.expected_revision;
         let requested = request.state;
-        self.mutate("state", &digest, request.operation_id, &actor, |tx, now| {
-            let current = load_checked(tx, &alias, expected)?;
-            let projected = project_state(tx, current.id, requested)?;
-            let objective = if projected == current.state {
-                current
-            } else {
-                let previous = current.revision;
-                let mut updated = current;
-                updated.state = projected;
-                updated.revision = bump(previous)?;
-                now.clone_into(&mut updated.updated_at);
-                write_objective(tx, &updated, previous)?;
-                updated
-            };
-            Ok(MutationBody {
+        let operation_id = request.operation_id;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(objective) = replay(&tx, &operation_id, &digest)? {
+            return Ok(Applied {
                 objective,
-                event_kind: "objective_state",
-            })
+                operation_id,
+                idempotent_replay: true,
+            });
+        }
+        let now = timestamp();
+        let current = load_checked(&tx, &alias, expected)?;
+        let projected = project_state(&tx, current.id, requested)?;
+        if projected == current.state {
+            return Ok(Applied {
+                objective: current,
+                operation_id,
+                idempotent_replay: false,
+            });
+        }
+        let previous = current.revision;
+        let mut updated = current;
+        updated.state = projected;
+        updated.revision = bump(previous)?;
+        now.clone_into(&mut updated.updated_at);
+        write_objective(&tx, &updated, previous)?;
+        if projected.frees_slot() {
+            end_running(&tx, updated.id, &now)?;
+        }
+        let result_json = serde_json::to_string(&updated)?;
+        tx.execute(
+            "INSERT INTO operation (id, kind, digest, objective_id, result_json, created_at)
+             VALUES (?1, 'state', ?2, ?3, ?4, ?5)",
+            params![
+                operation_id.as_slice(),
+                digest,
+                updated.id.as_slice(),
+                &result_json,
+                now,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO event (ts, actor, objective_id, operation_id, kind, json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                now,
+                actor,
+                updated.id.as_slice(),
+                operation_id.as_slice(),
+                event_kind,
+                &result_json,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Applied {
+            objective: updated,
+            operation_id,
+            idempotent_replay: false,
         })
     }
 
@@ -431,6 +478,23 @@ impl Store {
         )?;
         let rows = statement.query_map(params![objective.id.as_slice()], map_signal)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
+    }
+
+    /// Whether any active objective is `working` or `queued`.
+    ///
+    /// The keeper stays up while this is true.
+    pub(crate) fn has_open_work(&self) -> Result<bool, Error> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM objective
+                 WHERE archived = 0 AND state IN ('working', 'queued')
+                 LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
     }
 
     #[cfg(test)]
@@ -720,6 +784,35 @@ pub(crate) fn project_state(
     }
 }
 
+pub(crate) fn canonical_event_kind(kind: Option<&str>) -> Result<&'static str, Error> {
+    match kind {
+        None | Some("objective_state") => Ok("objective_state"),
+        Some("launched") => Ok("launched"),
+        Some("agent_working") => Ok("agent_working"),
+        Some("needs_you") => Ok("needs_you"),
+        Some("done_unchecked") => Ok("done_unchecked"),
+        Some("failed") => Ok("failed"),
+        Some("terminal_lost") => Ok("terminal_lost"),
+        Some(other) => Err(Error::invalid_text(
+            "event",
+            &format!("unknown event kind {other}"),
+        )),
+    }
+}
+
+pub(crate) fn end_running(
+    tx: &Transaction<'_>,
+    objective_id: OpaqueId,
+    now: &str,
+) -> Result<(), Error> {
+    tx.execute(
+        "UPDATE run SET state = 'ended', ended_at = ?2
+         WHERE objective_id = ?1 AND ended_at IS NULL AND state = 'running'",
+        params![objective_id.as_slice(), now],
+    )?;
+    Ok(())
+}
+
 fn unresolved_credential_lost(tx: &Transaction<'_>, objective_id: OpaqueId) -> Result<bool, Error> {
     let found: Option<i64> = tx
         .query_row(
@@ -926,6 +1019,7 @@ mod tests {
             "operation",
             "run",
             "signal",
+            "launch_intent",
         ] {
             assert!(
                 tables.iter().any(|table| table == name),
@@ -1065,6 +1159,7 @@ mod tests {
                 expected_revision: 1,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
+                event_kind: None,
             })
             .expect("state");
         assert_eq!(working.objective.state, ObjectiveState::Working);
@@ -1091,6 +1186,7 @@ mod tests {
                 expected_revision: raised.objective.revision,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
+                event_kind: None,
             })
             .expect("state again");
         assert_eq!(again.objective.state, ObjectiveState::NeedsYou);
@@ -1227,6 +1323,109 @@ mod tests {
             .expect("list");
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "kept");
+    }
+
+    #[test]
+    fn new_states_round_trip_and_an_unknown_state_is_corrupt() {
+        let (_dir, mut store) = open();
+        let added = store.add(add("phux", "one")).expect("add");
+        let alias = added.objective.alias;
+        let mut revision = added.objective.revision;
+        for state in [
+            ObjectiveState::DoneUnchecked,
+            ObjectiveState::Done,
+            ObjectiveState::Failed,
+        ] {
+            let applied = store
+                .record_state(StateEdit {
+                    alias: alias.clone(),
+                    state,
+                    expected_revision: revision,
+                    operation_id: OperationId::generate().expect("id"),
+                    actor: "keeper".to_owned(),
+                    event_kind: None,
+                })
+                .expect("state");
+            assert_eq!(applied.objective.state, state);
+            assert_eq!(store.show(&alias).expect("show").state, state);
+            revision = applied.objective.revision;
+        }
+        store
+            .conn
+            .execute(
+                "UPDATE objective SET state = 'nope' WHERE display_alias = ?1",
+                rusqlite::params![alias.display()],
+            )
+            .expect("corrupt");
+        let err = store.show(&alias).expect_err("unknown state");
+        assert!(
+            err.to_string().contains("nope") || format!("{err:?}").contains("nope"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn one_transition_records_the_actor_and_a_replay_or_no_op_writes_nothing() {
+        let (_dir, mut store) = open();
+        let added = store.add(add("phux", "one")).expect("add");
+        let alias = added.objective.alias;
+        let operation_id = OperationId::derive_bytes(b"working-observation");
+        let applied = store
+            .record_state(StateEdit {
+                alias: alias.clone(),
+                state: ObjectiveState::Working,
+                expected_revision: 1,
+                operation_id,
+                actor: "keeper".to_owned(),
+                event_kind: Some("agent_working".to_owned()),
+            })
+            .expect("state");
+        assert!(!applied.idempotent_replay);
+        assert_eq!(applied.objective.state, ObjectiveState::Working);
+        let events = event_rows(&store);
+        assert_eq!(
+            events,
+            vec![
+                ("tester".to_owned(), "objective_created".to_owned()),
+                ("keeper".to_owned(), "agent_working".to_owned()),
+            ]
+        );
+        let replay = store
+            .record_state(StateEdit {
+                alias: alias.clone(),
+                state: ObjectiveState::Working,
+                expected_revision: 1,
+                operation_id,
+                actor: "keeper".to_owned(),
+                event_kind: Some("agent_working".to_owned()),
+            })
+            .expect("replay");
+        assert!(replay.idempotent_replay);
+        assert_eq!(event_rows(&store), events);
+        let noop = store
+            .record_state(StateEdit {
+                alias,
+                state: ObjectiveState::Working,
+                expected_revision: applied.objective.revision,
+                operation_id: OperationId::derive_bytes(b"same-state"),
+                actor: "keeper".to_owned(),
+                event_kind: Some("agent_working".to_owned()),
+            })
+            .expect("noop");
+        assert!(!noop.idempotent_replay);
+        assert_eq!(noop.objective.revision, applied.objective.revision);
+        assert_eq!(event_rows(&store), events);
+    }
+
+    fn event_rows(store: &Store) -> Vec<(String, String)> {
+        let mut statement = store
+            .conn
+            .prepare("SELECT actor, kind FROM event ORDER BY seq")
+            .expect("prepare");
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query");
+        rows.collect::<Result<Vec<_>, _>>().expect("rows")
     }
 
     fn spawn_self(env: &[(&str, &str)], path: &Path) -> std::process::Child {
