@@ -11,7 +11,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -430,10 +430,11 @@ fn deliver(
         enqueue(spool, body)?;
     }
     let listed = list_entries(spool)?;
-    send_all(&listed, creds, url, now)
+    send_all(spool, &listed, creds, url, now)
 }
 
 fn send_all(
+    spool: &Path,
     listed: &Listed,
     creds: &Creds,
     url: &str,
@@ -449,6 +450,7 @@ fn send_all(
             continue;
         }
         match post_one(
+            spool,
             creds,
             url,
             &entry.stored.idempotency_key,
@@ -568,6 +570,7 @@ fn capture_id(body: &[u8]) -> Option<String> {
 }
 
 fn post_one(
+    spool: &Path,
     creds: &Creds,
     url: &str,
     idempotency_key: &str,
@@ -583,19 +586,24 @@ fn post_one(
         ("x-ideas-sig", signature.as_str()),
         ("x-ideas-source", SOURCE_CLI),
     ];
-    post(url, &headers, body.as_bytes())
+    post(spool, url, &headers, body.as_bytes())
 }
 
-fn post(url: &str, headers: &[(&str, &str)], body: &[u8]) -> Result<(u16, Vec<u8>), String> {
+fn post(
+    spool: &Path,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<(u16, Vec<u8>), String> {
     for (name, value) in headers {
         if !token_ok(name) || !token_ok(value) {
             return Err("refusing to send an ideas request with an invalid header".to_owned());
         }
     }
     if url.starts_with("https://") {
-        curl(url, "=https", headers, body)
+        curl(spool, url, "=https", headers, body)
     } else if loopback_http(url) {
-        curl(url, "=http", headers, body)
+        curl(spool, url, "=http", headers, body)
     } else {
         Err(
             "ideas capture only posts to https://ingest.phux.sh, or to a loopback http server in tests"
@@ -615,21 +623,64 @@ fn loopback_http(url: &str) -> bool {
     host == "127.0.0.1" || host == "localhost"
 }
 
+/// Curl invocation plus the spool files it reads and writes.
+///
+/// The body, the response, and the signature headers live in the ideas
+/// spool (mode 0700, held under the spool lock). Each file is created with
+/// `O_EXCL` and mode 0600 before curl runs, so a planted name cannot be a
+/// symlink curl would follow. Drop removes them.
+struct PreparedCurl {
+    command: Command,
+    response: TempFile,
+    body: TempFile,
+    headers: TempFile,
+}
+
 fn curl(
+    spool: &Path,
     url: &str,
     proto: &str,
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> Result<(u16, Vec<u8>), String> {
+    let mut prepared = prepare_curl(spool, url, proto, headers, body)?;
+    // Owned by `prepared` until this function returns, so Drop runs after curl.
+    let _body = &prepared.body;
+    let _headers = &prepared.headers;
+    let output = prepared.command.output().map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
+            "`curl` is not on PATH; ideas capture needs it to reach the server".to_owned()
+        } else {
+            format!("could not run `curl`: {err}")
+        }
+    })?;
+    let code = String::from_utf8_lossy(&output.stdout);
+    let code = code.trim();
+    if code.is_empty() || code == "000" || !output.status.success() {
+        return Err(curl_failure(&output));
+    }
+    let status: u16 = code
+        .parse()
+        .map_err(|_| format!("`curl` returned an unreadable status `{code}`"))?;
+    Ok((
+        status,
+        read_limited(&prepared.response.path, MAX_RESPONSE_BYTES),
+    ))
+}
+
+fn prepare_curl(
+    spool: &Path,
+    url: &str,
+    proto: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<PreparedCurl, String> {
     // A file, not stdin: curl would otherwise chunk a pipe and the body
-    // length would not be the signed bytes.
-    let body_path = temp_path("body");
-    let out = temp_path("http");
-    let _body_guard = TempFile {
-        path: body_path.clone(),
-    };
-    let _out_guard = TempFile { path: out.clone() };
-    write_private(&body_path, body)?;
+    // length would not be the signed bytes. The response file exists before
+    // `-o`, so curl opens that regular file.
+    let body_file = scratch_file(spool, "body", body)?;
+    let response = scratch_file(spool, "http", b"")?;
+    let headers_file = scratch_file(spool, "headers", &header_file_bytes(headers))?;
     let mut command = Command::new("curl");
     command
         .arg("-q")
@@ -652,36 +703,35 @@ fn curl(
         .arg("Content-Type: text/plain; charset=utf-8")
         .arg("-H")
         .arg("Expect:")
+        .arg("-H")
+        .arg(format!("@{}", headers_file.path.display()))
         .arg("--data-binary")
-        .arg(format!("@{}", body_path.display()))
+        .arg(format!("@{}", body_file.path.display()))
         .arg("-o")
-        .arg(&out)
+        .arg(&response.path)
         .arg("-w")
-        .arg("%{http_code}");
-    for (name, value) in headers {
-        command.arg("-H").arg(format!("{name}: {value}"));
-    }
-    command
+        .arg("%{http_code}")
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let output = command.output().map_err(|err| {
-        if err.kind() == io::ErrorKind::NotFound {
-            "`curl` is not on PATH; ideas capture needs it to reach the server".to_owned()
-        } else {
-            format!("could not run `curl`: {err}")
-        }
-    })?;
-    let code = String::from_utf8_lossy(&output.stdout);
-    let code = code.trim();
-    if code.is_empty() || code == "000" || !output.status.success() {
-        return Err(curl_failure(&output));
+    Ok(PreparedCurl {
+        command,
+        response,
+        body: body_file,
+        headers: headers_file,
+    })
+}
+
+fn header_file_bytes(headers: &[(&str, &str)]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (name, value) in headers {
+        bytes.extend(name.as_bytes());
+        bytes.extend(b": ");
+        bytes.extend(value.as_bytes());
+        bytes.push(b'\n');
     }
-    let status: u16 = code
-        .parse()
-        .map_err(|_| format!("`curl` returned an unreadable status `{code}`"))?;
-    Ok((status, read_limited(&out, MAX_RESPONSE_BYTES)))
+    bytes
 }
 
 fn curl_failure(output: &std::process::Output) -> String {
@@ -699,9 +749,14 @@ fn curl_failure(output: &std::process::Output) -> String {
     }
 }
 
-fn temp_path(suffix: &str) -> PathBuf {
+fn scratch_file(dir: &Path, suffix: &str, bytes: &[u8]) -> Result<TempFile, String> {
     let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("phux-idea-{}-{seq}.{suffix}", std::process::id()))
+    let path = dir.join(format!(".phux-idea-{}-{seq}.{suffix}", std::process::id()));
+    if let Err(err) = write_private(&path, bytes) {
+        let _ = fs::remove_file(&path);
+        return Err(err);
+    }
+    Ok(TempFile { path })
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -877,9 +932,11 @@ fn ensure_private_dir(dir: &Path) -> Result<(), String> {
             dir.display()
         ));
     }
-    fs::create_dir_all(dir).map_err(|err| format!("could not create {}: {err}", dir.display()))?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-        .map_err(|err| format!("could not chmod {}: {err}", dir.display()))
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|err| format!("could not create {}: {err}", dir.display()))
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1245,6 +1302,117 @@ mod tests {
         );
         assert!(prepare_body(&format!("{max}b"), false).is_err());
         assert!(prepare_body(&max, true).is_err());
+    }
+
+    #[test]
+    fn private_tag_survives_spool_write_and_replay() {
+        let root = tempfile::tempdir().expect("temp");
+        let creds = creds(root.path());
+        let spool = root.path().join("ideas").join("spool");
+        let body = prepare_body("keep this off the triage model", true).expect("private");
+        assert_eq!(body, "#private\nkeep this off the triage model");
+        let queued = deliver(&spool, &creds, &closed_url(), Some(&body), unix_now).expect("queue");
+        assert_eq!(queued.queued, 1);
+        let mode = fs::metadata(&spool)
+            .expect("spool meta")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+        let files = spool_files(&spool);
+        assert_eq!(files.len(), 1);
+        let entry = load_entry(&files[0]).expect("spooled");
+        assert_eq!(entry.stored.body, body);
+
+        let mock = Mock::spawn(201, "Created", "{\"id\":\"01PRIVATETAGCAPTURE00000000\"}");
+        let sent = deliver(&spool, &creds, &mock.url(), None, || 1_700_000_300).expect("replay");
+        assert_eq!(sent.sent, vec!["01PRIVATETAGCAPTURE00000000".to_owned()]);
+        let hits = mock.hits();
+        assert_eq!(hits.len(), 1, "the queued private idea is posted once");
+        assert_eq!(hits[0].body, body.as_bytes());
+        assert!(spool_files(&spool).is_empty());
+        let leftovers: Vec<_> = fs::read_dir(&spool)
+            .expect("spool")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "scratch files are removed after the post: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn signature_is_not_on_the_curl_argv() {
+        let root = tempfile::tempdir().expect("temp");
+        let creds = creds(root.path());
+        let spool = root.path().join("ideas").join("spool");
+        ensure_private_dir(&spool).expect("spool");
+        let signature = sign(
+            &creds.secret,
+            VECTOR_TS,
+            VECTOR_IDEM,
+            VECTOR_BODY.as_bytes(),
+        );
+        assert_eq!(signature, VECTOR_SIG);
+        let headers = [
+            ("Idempotency-Key", VECTOR_IDEM),
+            ("x-ideas-key-id", creds.key_id.as_str()),
+            ("x-ideas-ts", VECTOR_TS),
+            ("x-ideas-sig", signature.as_str()),
+            ("x-ideas-source", SOURCE_CLI),
+        ];
+        let prepared = prepare_curl(
+            &spool,
+            "http://127.0.0.1:9/ideas/capture",
+            "=http",
+            &headers,
+            VECTOR_BODY.as_bytes(),
+        )
+        .expect("prepare");
+        let args: Vec<String> = prepared
+            .command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let flat = args.join("\n");
+        assert!(
+            !flat.contains(&signature),
+            "the signature must not be a curl argument"
+        );
+        assert!(
+            !flat.contains(SECRET_HEX),
+            "the secret must not be a curl argument"
+        );
+        assert!(!flat.contains(VECTOR_BODY));
+        let header_arg = args
+            .windows(2)
+            .find(|pair| pair[0] == "-H" && pair[1].starts_with('@'))
+            .map(|pair| pair[1].as_str())
+            .expect("signature headers are passed as -H @file");
+        let header_path = Path::new(&header_arg[1..]);
+        let paths = [
+            prepared.body.path.as_path(),
+            prepared.response.path.as_path(),
+            header_path,
+        ];
+        for path in paths {
+            assert_eq!(path.parent(), Some(spool.as_path()));
+            let meta = path.symlink_metadata().expect("scratch meta");
+            assert!(meta.file_type().is_file());
+            assert_eq!(
+                meta.permissions().mode() & 0o777,
+                0o600,
+                "{}",
+                path.display()
+            );
+        }
+        let header_text = fs::read_to_string(header_path).expect("headers");
+        assert!(header_text.contains(&signature));
+        assert!(header_text.contains("x-ideas-sig: "));
+        assert_eq!(
+            fs::read(&prepared.body.path).expect("body"),
+            VECTOR_BODY.as_bytes()
+        );
     }
 
     #[test]
