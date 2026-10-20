@@ -47,6 +47,10 @@ fn the_slim_strip_fades_controls_and_shows_tabs_only_when_several() {
     assert!(mid > 0. && mid < 1.);
     assert_eq!(tab_height(GLASS.chrome.titlebar), 30.);
     assert!(tab_height(TERMINAL.chrome.titlebar) < TERMINAL.chrome.titlebar);
+    assert!(
+        tab_height(TERMINAL.chrome.titlebar) >= 28.,
+        "plain tabs are the desk's tabs, not a squeezed strip"
+    );
     assert!(tabs_shown(&GLASS, 1));
     assert!(!tabs_shown(&TERMINAL, 1));
     assert!(tabs_shown(&TERMINAL, 2));
@@ -430,4 +434,68 @@ fn a_hidden_sidebar_slides_out_with_motion_and_goes_at_once_without(cx: &mut Tes
         cx.debug_bounds("sidebar-footer").is_none(),
         "then it is gone"
     );
+}
+
+#[gpui::test]
+fn plain_terminal_keeps_side_tabs_in_a_rail_of_their_own(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1000.), px(500.)));
+    desk.update(cx, |desk, cx| {
+        let workspace = &mut desk.link.as_mut().unwrap().workspace;
+        workspace.tabs = tabs(2);
+        workspace.active_id = "fixture-a".into();
+        cx.notify();
+    });
+    run(&desk, "tabs-side", cx);
+    run(&desk, "plain-terminal", cx);
+    desk.read_with(cx, |desk, _| {
+        assert!(!desk.sidebar_shown(), "the plain terminal has no sidebar");
+        assert_eq!(desk.tab_position(), TabPosition::Side);
+        assert!(desk.tab_rail());
+    });
+    let rail = cx
+        .debug_bounds("tab-rail")
+        .expect("side tabs keep the side");
+    assert!(cx.debug_bounds("top-tabs").is_none(), "one place for tabs");
+    assert!(cx.debug_bounds("sidebar-tab-shelf").is_none());
+    let (a, b) = (
+        cx.debug_bounds("tab-fixture-a").unwrap(),
+        cx.debug_bounds("tab-fixture-b").unwrap(),
+    );
+    assert_eq!(rail.origin.x, px(0.));
+    assert_eq!(rail.size.width, px(RAIL_WIDTH));
+    assert!(a.right() <= rail.right() && a.origin.y >= rail.origin.y);
+    assert_eq!(a.origin.x, b.origin.x);
+    assert!(a.origin.y < b.origin.y);
+    let body = cx.debug_bounds("workspace-body").unwrap();
+    assert!(body.origin.x >= rail.right(), "panes start past the rail");
+    cx.simulate_click(b.center(), Modifiers::none());
+    draw(cx);
+    assert_eq!(
+        desk.read_with(cx, |desk, _| desk
+            .link
+            .as_ref()
+            .unwrap()
+            .workspace
+            .active_id
+            .clone()),
+        "fixture-b"
+    );
+    // A lone tab hides, as it does on top in the plain terminal.
+    desk.update(cx, |desk, cx| {
+        desk.link.as_mut().unwrap().workspace.tabs = tabs(1);
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("tab-rail").is_none());
+    // Back on the glass the tabs return to the sidebar's shelf.
+    desk.update(cx, |desk, cx| {
+        desk.link.as_mut().unwrap().workspace.tabs = tabs(2);
+        cx.notify();
+    });
+    run(&desk, "plain-terminal", cx);
+    assert!(cx.debug_bounds("tab-rail").is_none());
+    assert!(cx.debug_bounds("sidebar-tab-shelf").is_some());
 }

@@ -382,6 +382,16 @@ fn tab_shelf(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEleme
         .flex_shrink_0()
         .flex()
         .flex_col()
+        .child(tab_list(desk, look, cx))
+}
+
+/// The labelled, scrolling side tabs that fill their shelf or rail.
+pub(super) fn tab_list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
         .px(px(8.))
         .child(section_label("Tabs", look).flex_shrink_0())
         .child(

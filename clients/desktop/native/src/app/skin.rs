@@ -276,13 +276,15 @@ mod tests {
     }
 
     #[test]
-    fn terminal_is_solid_and_casts_no_shadow() {
+    fn terminal_is_solid_and_its_panes_cast_no_shadow() {
         let colors = palette(&theme_by_id(default_theme_id(), &[]));
         let look = Look::of(&TERMINAL, &colors, &default_display());
         assert_eq!(look.sheet.a, 1.);
         assert_eq!(look.card.a, 1.);
         assert!(look.pane_shadow.is_empty());
-        assert!(look.popover_shadow.is_empty());
+        // Menus and the selected tab keep the desk's lift.
+        assert_eq!(look.popover_shadow.len(), 2);
+        assert!(!look.tab_shadow.is_empty());
         assert_eq!(
             background_appearance(TERMINAL.material.backdrop),
             WindowBackgroundAppearance::Opaque

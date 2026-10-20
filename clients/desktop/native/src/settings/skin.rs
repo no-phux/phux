@@ -350,7 +350,8 @@ pub const GLASS: Skin = Skin {
     },
 };
 
-/// A plain terminal: opaque, square, a slim drag strip and nothing else.
+/// A plain terminal: opaque square panes under a slim strip, wearing the
+/// desk's tabs and controls.
 pub const TERMINAL: Skin = Skin {
     id: "terminal",
     name: "Terminal",
@@ -368,10 +369,12 @@ pub const TERMINAL: Skin = Skin {
             divider: 0.12,
             ..GLASS.material.washes
         },
+        // Panes stay flat and square; the chrome above them keeps the
+        // desk's lift, so tabs, menus and capsules read the same in both.
         pane_shadow: Shadow::NONE,
-        popover_shadow: [Shadow::NONE; 2],
-        capsule_shadow: Shadow::NONE,
-        tab_shadow: Shadow::NONE,
+        popover_shadow: GLASS.material.popover_shadow,
+        capsule_shadow: GLASS.material.capsule_shadow,
+        tab_shadow: GLASS.material.tab_shadow,
         // Plain keeps one cue, a faint veil: no inset and no shadow.
         depth: Depth {
             veil: 0.05,
@@ -380,17 +383,14 @@ pub const TERMINAL: Skin = Skin {
     },
     shape: Shape {
         radius: 0.,
-        card_radius: 10.,
-        popover_radius: 12.,
-        tab_radius: 6.,
-        kit_radius: 6.,
-        kit_radius_lg: 10.,
         gutter: 0.,
         gap: 0.,
         divider: 1.,
+        // Tabs, cards, popovers and controls keep the desk's shape.
+        ..GLASS.shape
     },
     chrome: Chrome {
-        titlebar: 28.,
+        titlebar: 38.,
         sidebar: 0.,
         tabs: TabsWhen::Many,
         sheen: false,
@@ -565,7 +565,7 @@ mod tests {
     #[test]
     fn lerp_interpolates_numbers_and_snaps_switches_at_halfway() {
         let early = GLASS.lerp(&TERMINAL, 0.25);
-        assert_eq!(early.chrome.titlebar, 40.);
+        assert_eq!(early.chrome.titlebar, 42.5);
         assert_eq!(early.shape.radius, 9.);
         assert_eq!(early.motion.pane_enter_ms, 225);
         assert_eq!(early.id, "glass");
@@ -598,7 +598,9 @@ mod tests {
         assert_eq!(glass.motion.pane_enter(), Duration::from_millis(260));
         assert_eq!(glass.motion.pane_leave(), Duration::from_millis(190));
         assert!(glass.shadows());
-        assert!(!terminal.shadows());
+        assert!(terminal.shadows(), "plain chrome keeps the desk's lift");
+        assert_eq!(terminal.material.pane_shadow, Shadow::NONE);
+        assert_eq!(terminal.shape.tab_radius, glass.shape.tab_radius);
         assert!(!terminal.motion.cursor_effects);
         assert_eq!(terminal.material.backdrop, Backdrop::Opaque);
     }
@@ -622,7 +624,7 @@ mod tests {
         assert_eq!(shift.span, TERMINAL.motion.shift());
         assert_eq!(shift.skin(start), GLASS);
         let mid = shift.skin(start + shift.span / 2);
-        assert!(mid.chrome.titlebar < 44. && mid.chrome.titlebar > 28.);
+        assert!(mid.chrome.titlebar < 44. && mid.chrome.titlebar > 38.);
         assert!(!shift.done(start + shift.span / 2));
         assert_eq!(shift.skin(start + shift.span), TERMINAL);
         assert!(shift.done(start + shift.span));

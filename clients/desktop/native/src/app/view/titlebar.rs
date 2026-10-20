@@ -32,7 +32,7 @@ pub(super) const TRAFFIC_LIGHTS: f32 = 78.;
 pub(super) const MENU_RAIL: f32 = 256.;
 /// Titlebar heights between which its controls fade in: a slim drag strip
 /// holds only the traffic lights and a title.
-const SLIM_BAR: f32 = 30.;
+const SLIM_BAR: f32 = 38.;
 const FULL_BAR: f32 = 42.;
 
 /// How much of the full titlebar's controls fit a bar `titlebar` points
