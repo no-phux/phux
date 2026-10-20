@@ -75,6 +75,7 @@ fn tab_and_background_terminal_share_selection_and_busy_guard(cx: &mut TestAppCo
     let cx = &mut VisualTestContext::from_window(handle, cx);
     desk.update(cx, selectable_work);
     run(&desk, "tabs-side", cx);
+    run(&desk, "expand-sessions", cx);
     let modifier = Modifiers {
         platform: true,
         ..Modifiers::none()

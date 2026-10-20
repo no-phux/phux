@@ -251,5 +251,6 @@ fn click_on(cx: &mut gpui::VisualTestContext, selector: &str) {
 
 mod catalog;
 mod dashboard;
+mod disclosure;
 mod machines;
 mod sidebar;

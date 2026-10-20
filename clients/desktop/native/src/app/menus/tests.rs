@@ -17,6 +17,8 @@ fn pane_and_session_menus_use_palette_titles() {
         "group-projects",
         "group-machines",
         "group-none",
+        "expand-sessions",
+        "collapse-sessions",
         "main-menu",
     ] {
         assert!(!title(id).is_empty());

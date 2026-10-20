@@ -12,6 +12,9 @@ use super::atoms::muted;
 
 /// A row's minimum height.
 pub(crate) const ROW: f32 = 30.;
+/// A nested row's height: a step tighter than its parent, so a session's
+/// terminals read as its contents rather than as more sessions.
+pub(crate) const CHILD_ROW: f32 = 26.;
 /// A row's leading slot width.
 pub(crate) const ICON: f32 = 16.;
 /// The row's breathing room at either edge and between its slots.
@@ -53,7 +56,7 @@ pub(crate) fn row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::Stateful
 
 /// A tab or terminal nested under its session, with the same label column.
 pub(crate) fn child_row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::Stateful<gpui::Div> {
-    row(id, look).pl(px(CHILD_INSET))
+    row(id, look).min_h(px(CHILD_ROW)).pl(px(CHILD_INSET))
 }
 
 /// A row's centred leading slot, set a point low to meet the label's

@@ -16,6 +16,7 @@ fn sidebar_tabs_and_background_rows_share_columns_and_keep_actions_inside(cx: &m
         cx.notify();
     });
     run(&desk, "tabs-side", cx);
+    run(&desk, "expand-sessions", cx);
     for width in [200., 320.] {
         desk.update(cx, |desk, cx| {
             desk.update_prefs(|prefs| prefs.sidebar_width = width, cx);

@@ -1,11 +1,15 @@
 //! The sidebar, the one navigator: every session across this Mac and saved
-//! machines, grouped by project, by machine, or not at all. Disclosure and
-//! host visibility never follow selection. Sidebar tabs occupy a separate,
-//! fixed-height shelf so they cannot displace the tree. Where work runs is a word on its row,
-//! not a chip; what needs a person is a mark on its row, not a list.
+//! machines, grouped by project, by machine, or not at all. A session is one
+//! line, folded until its caret opens it; empty sessions sink below the ones
+//! holding work. Disclosure and host visibility never follow selection.
+//! Sidebar tabs occupy a separate, fixed-height shelf so they cannot displace
+//! the tree. Where work runs is a word on its row only where its name alone
+//! is ambiguous; what needs a person is a mark on its row, not a list.
 //!
 //! Groupings are views of the same catalog ([`Desk::work_catalog`]); they
 //! never add, hide or reorder work within a session.
+
+use std::collections::HashSet;
 
 use gpui::prelude::*;
 use gpui::{
@@ -17,7 +21,6 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable};
 
-use crate::connection::AgentState;
 use crate::settings::{SidebarGrouping, TabPosition};
 
 use super::super::color::from_hex;
@@ -26,7 +29,6 @@ use super::super::fleet::Work;
 use super::super::menus;
 use super::super::skin::Look;
 use super::super::ui::list::{Emphasis, row_detail, row_label};
-use super::super::ui::status::state_dot;
 use super::super::ui::{dot, ghost_button, ghost_icon, muted, row, row_icon, section_label};
 use super::tabs;
 
@@ -98,17 +100,21 @@ pub(crate) fn group(mut work: Vec<Work>, grouping: SidebarGrouping) -> Vec<Group
     match grouping {
         // Work without a project sinks below the projects. Projects meet by
         // name, so a linked project and a repository of that name are one.
+        // Within a group, empty sessions sink below the ones holding work, so
+        // a session moves when it gains its first terminal or loses its last.
         SidebarGrouping::Project => work.sort_by(|a, b| {
             let name = |work: &Work| work.project.as_ref().map(|(_, name)| name.clone());
             (
                 a.project.is_none(),
                 name(a),
+                a.terminals == 0,
                 &a.destination.name,
                 &a.destination.host,
             )
                 .cmp(&(
                     b.project.is_none(),
                     name(b),
+                    b.terminals == 0,
                     &b.destination.name,
                     &b.destination.host,
                 ))
@@ -117,17 +123,22 @@ pub(crate) fn group(mut work: Vec<Work>, grouping: SidebarGrouping) -> Vec<Group
             (
                 a.destination.host.is_some(),
                 &a.destination.host,
+                a.terminals == 0,
                 &a.destination.name,
             )
                 .cmp(&(
                     b.destination.host.is_some(),
                     &b.destination.host,
+                    b.terminals == 0,
                     &b.destination.name,
                 ))
         }),
         SidebarGrouping::None => work.sort_by(|a, b| {
-            (&a.destination.name, &a.destination.host)
-                .cmp(&(&b.destination.name, &b.destination.host))
+            (a.terminals == 0, &a.destination.name, &a.destination.host).cmp(&(
+                b.terminals == 0,
+                &b.destination.name,
+                &b.destination.host,
+            ))
         }),
     }
     let mut groups: Vec<Group> = Vec::new();
@@ -208,15 +219,38 @@ fn footer(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
         )
 }
 
-fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
-    let work = desk
-        .work_catalog()
+/// The catalog under the host filter: what the list can show.
+fn visible_work(desk: &Desk) -> Vec<Work> {
+    desk.work_catalog()
         .into_iter()
         .filter(|work| {
             desk.prefs
                 .sidebar_shows_host(work.destination.host.as_deref())
         })
-        .collect();
+        .collect()
+}
+
+/// The disclosure keys of every listed session that has rows to show.
+pub(crate) fn foldable_sessions(desk: &Desk) -> Vec<String> {
+    visible_work(desk)
+        .iter()
+        .filter(|work| session::foldable(work))
+        .map(session::disclosure_key)
+        .collect()
+}
+
+/// Session names listed more than once, on different machines.
+fn repeated_names(work: &[Work]) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    work.iter()
+        .map(|work| work.destination.name.clone())
+        .filter(|name| !seen.insert(name.clone()))
+        .collect()
+}
+
+fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    let work = visible_work(desk);
+    let repeated = repeated_names(&work);
     let groups = group(work, desk.prefs.sidebar_grouping);
     let mut rows = Vec::new();
     for group in groups {
@@ -229,7 +263,8 @@ fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
             rows.push(section_label(&label, look).into_any_element());
         }
         for work in group.work {
-            rows.push(session_block(desk, &work, look, cx));
+            let ambiguous = repeated.contains(&work.destination.name);
+            rows.push(session_block(desk, &work, ambiguous, look, cx));
         }
     }
     let empty = rows.is_empty();
@@ -266,41 +301,30 @@ fn empty_words(desk: &Desk) -> &'static str {
     }
 }
 
-/// The machine a row names: nothing on this Mac or under a machine heading.
-fn host_word(desk: &Desk, host: Option<&str>) -> Option<String> {
-    (desk.prefs.sidebar_grouping != SidebarGrouping::Machine)
-        .then(|| host.map(super::super::machine_name::display))
-        .flatten()
+/// The machine a row names, only where its name alone is ambiguous: the same
+/// session name on two machines. A machine heading already says it.
+fn host_word(desk: &Desk, host: Option<&str>, ambiguous: bool) -> Option<String> {
+    (ambiguous && desk.prefs.sidebar_grouping != SidebarGrouping::Machine)
+        .then(|| super::super::machine_name::label(host))
 }
 
-/// A session's leading slot: its caret, or a lit dot while something in it
-/// needs a person. The caret turns, on the chrome spring, rather than swap.
-fn session_slot(
-    key: &str,
-    collapsed: bool,
-    attention: Option<AgentState>,
-    moves: bool,
-    look: &Look,
-) -> gpui::Div {
-    row_icon(match attention {
-        Some(state) => state_dot(Some(state), None).into_any_element(),
-        None => {
-            let turn = if collapsed {
-                0.
-            } else {
-                std::f32::consts::FRAC_PI_2
-            };
-            Icon::new(IconName::ChevronRight)
-                .size(px(12.))
-                .text_color(from_hex(&look.chrome.muted))
-                .with_spring(
-                    SharedString::from(format!("disclose-caret-{key}")),
-                    super::chrome_spring(moves, turn),
-                    |caret, turn| caret.rotate(gpui::radians(turn)),
-                )
-                .into_any_element()
-        }
-    })
+/// A session's caret. It turns, on the chrome spring, rather than swap.
+fn session_caret(key: &str, collapsed: bool, moves: bool, look: &Look) -> gpui::Div {
+    let turn = if collapsed {
+        0.
+    } else {
+        std::f32::consts::FRAC_PI_2
+    };
+    row_icon(
+        Icon::new(IconName::ChevronRight)
+            .size(px(12.))
+            .text_color(from_hex(&look.chrome.muted))
+            .with_spring(
+                SharedString::from(format!("disclose-caret-{key}")),
+                super::chrome_spring(moves, turn),
+                |caret, turn| caret.rotate(gpui::radians(turn)),
+            ),
+    )
 }
 
 /// A stable filter control: clicking work never changes these exclusions.

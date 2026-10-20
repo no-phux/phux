@@ -124,8 +124,14 @@ each face in the searchable dropdown, with bundled fonts pinned first.
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
 Click a session's name to select it; only its caret expands or collapses its
-contents. Switching restores tabs and splits, not the destination's old window
-display settings: the current filter, grouping, sidebar width and tab placement stay put. Selection never folds other sessions or changes the host filter.
+contents. Sessions start folded to one line each: name, terminal count, and a
+dot while something in it needs you. Option-click a caret to open or fold
+every session, or use **Expand All Sessions** and **Collapse All Sessions** in
+**Sidebar view** or the palette. Empty sessions sink below the ones holding
+work. A machine's name appears on a session only when the same session name
+runs on another machine, and terminals sharing a label show their id (`@3`). Switching restores tabs and splits, not the destination's old window
+display settings: the current filter, grouping, sidebar width and tab placement
+stay put. Selection never opens or folds a session or changes the host filter.
 **Settings > Layout & notifications > Sidebar machines**, or **Sidebar view >
 Visible machines**, controls which machines appear. All are shown by default;
 exclusions are saved, do not disconnect hosts, and do not limit Work search.

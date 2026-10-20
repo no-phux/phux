@@ -265,8 +265,9 @@ pub struct Desk {
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.
     pending_project_terminal: Option<ResourceId>,
-    /// Explicitly folded sessions, keyed by host, authority and session identity.
-    pub(crate) collapsed: std::collections::HashSet<String>,
+    /// Sessions opened to show their terminals, keyed by host, authority and
+    /// session identity. Sessions start folded so a long list stays a list.
+    pub(crate) expanded: std::collections::HashSet<String>,
     /// When each part of the chrome last opened or closed (the sidebar, the
     /// Changes panel, a session's rows): see [`Desk::disclose`].
     pub(crate) disclosures: HashMap<String, Instant>,
