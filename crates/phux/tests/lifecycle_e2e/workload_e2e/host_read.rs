@@ -1,5 +1,7 @@
-/// The host-scoped read ceiling a CI runner or another member holds.
+/// Inventory plus observe of every terminal on this host.
 ///
+/// The runbook does not mint this: CI gets inventory only, and a person gets
+/// observe only on explicitly shared sessions. Keep this wider-scope regression.
 /// `phux ls` is `GET_STATE { SERVER }`, which the kind catalog admits only
 /// with `inventory` and then returns what that verb covers. `observe` is
 /// what lets the same key read a terminal. `input` is absent on purpose.
@@ -31,7 +33,7 @@ fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
     register_loopback_remote(dir.path());
     let socket = dir.path().join("s.sock");
     let socket_arg = socket.to_str().expect("utf-8 socket");
-    let terminal = create_read_terminal(dir.path(), socket_arg);
+    let terminal = create_read_terminal(dir.path(), socket_arg, "observe-list");
 
     let identity = original.identity();
     let listed = await_remote_listing(dir.path(), socket_arg, &identity);
@@ -63,7 +65,7 @@ fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
 }
 
 /// A live terminal whose output is readable without INPUT or BIND.
-fn create_read_terminal(dir: &Path, socket: &str) -> phux_protocol::ids::ResourceId {
+fn create_read_terminal(dir: &Path, socket: &str, session: &str) -> phux_protocol::ids::ResourceId {
     let created = phux(
         dir,
         &[
@@ -72,7 +74,7 @@ fn create_read_terminal(dir: &Path, socket: &str) -> phux_protocol::ids::Resourc
             "new",
             "--json",
             "-s",
-            "observe-list",
+            session,
             "--",
             "/bin/sh",
             "-c",
@@ -229,24 +231,43 @@ struct HostReadKey {
 
 impl HostReadKey {
     fn enroll(dir: &Path, name: &str, replaces: Option<&str>) -> Self {
+        Self::enroll_scoped(
+            dir,
+            name,
+            replaces,
+            &[HOST_READ_SCOPE],
+            "automation",
+            HOST_READ_EXPIRES_IN,
+        )
+    }
+
+    fn enroll_scoped(
+        dir: &Path,
+        name: &str,
+        replaces: Option<&str>,
+        scopes: &[&str],
+        principal: &str,
+        expires_in: i64,
+    ) -> Self {
         let client = client_key();
         let cert = dir.join(format!("{name}.pem"));
         let key = dir.join(format!("{name}.key"));
         std::fs::write(&key, &client.key_pem).expect("write client key");
         std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-        let enrolled = enroll_host_read_key(dir, &client, &cert, replaces);
+        let enrolled =
+            enroll_scoped_read_key(dir, &client, &cert, replaces, scopes, principal, expires_in);
         let id = enrolled["credential_id"]
             .as_str()
             .expect("credential_id")
             .to_owned();
-        assert_eq!(enrolled["principal"], "automation");
-        assert_eq!(enrolled["scopes"], serde_json::json!([HOST_READ_SCOPE]));
+        assert_eq!(enrolled["principal"], principal);
+        assert_eq!(enrolled["scopes"], serde_json::json!(scopes));
         assert_eq!(enrolled["replaced"], replaces.is_some());
         let expires_at = enrolled["expires_at"].as_i64().expect("expires_at");
-        let skew = (expires_at - (chrono::Utc::now().timestamp() + HOST_READ_EXPIRES_IN)).abs();
+        let skew = (expires_at - (chrono::Utc::now().timestamp() + expires_in)).abs();
         assert!(
             skew < 120,
-            "expires_at {expires_at} is not ~{HOST_READ_EXPIRES_IN}s out"
+            "expires_at {expires_at} is not ~{expires_in}s out"
         );
         Self { cert, key, id }
     }
@@ -259,28 +280,31 @@ impl HostReadKey {
     }
 }
 
-/// Enroll `client` at [`HOST_READ_SCOPE`] for [`HOST_READ_EXPIRES_IN`] seconds
-/// as an automation, the flags an operator passes for a CI runner.
-fn enroll_host_read_key(
+/// Enroll a sandbox CSR with explicit scopes, holder kind, and lifetime.
+fn enroll_scoped_read_key(
     dir: &Path,
     client: &ClientKey,
     cert_out: &Path,
     replaces: Option<&str>,
+    scopes: &[&str],
+    principal: &str,
+    expires_in: i64,
 ) -> serde_json::Value {
-    let expires = HOST_READ_EXPIRES_IN.to_string();
+    let expires = expires_in.to_string();
     let mut args = vec![
         "workload",
         "add-key",
         "--json",
         "--cert-out",
         cert_out.to_str().expect("utf-8 path"),
-        "--scope",
-        HOST_READ_SCOPE,
         "--expires-in",
         expires.as_str(),
         "--principal",
-        "automation",
+        principal,
     ];
+    for scope in scopes {
+        args.extend(["--scope", scope]);
+    }
     if let Some(id) = replaces {
         args.extend(["--replace", id]);
     }
