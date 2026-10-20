@@ -27,8 +27,8 @@ ADR-0095 boundary retires with Blackbird. The retirement stands.
 
 [ADR-0173][adr-0173-keeper] lines 62–64: one keeper process per store is
 the only writer, and another host's tasks are reached through that host's
-keeper. The org has one store, so it has one home keeper. That keeper runs
-on the Mac mini (S-D10). Other hosts are clients of it.
+keeper. S-D10 is the policy that names one home keeper for the org, on the
+Mac mini. Other hosts are clients of it.
 
 The archive copy of ADR-0173 is still [Proposed][adr-0173-status]. S-D7
 accepts it on this page. The snapshot is left as it was.
@@ -46,9 +46,10 @@ Accepted (forward-compat). The coordinator is a separate
 `phux-coordinator/1` endpoint. Terminal streams never carry its frames
 ([endpoint][adr-0097-endpoint]). Each activation takes a short-lived
 certificate from an external fencing witness
-([witness][adr-0097-witness]). Another host reaches the home keeper on
-that endpoint. The existing QUIC attach stays the terminal stream, and
-this decision adds no wire ADR. [ADR-0092][adr-0092-authority] (still
+([witness][adr-0097-witness]). Once the coordinator ships (MC-5.1),
+another host reaches the home keeper on that endpoint. The existing
+QUIC attach stays the terminal stream, and this decision adds no wire
+ADR. [ADR-0092][adr-0092-authority] (still
 [Proposed][adr-0092-status]) is the authority that endpoint serves.
 [ADR-0132][adr-0132-clients] (still [Proposed][adr-0132-status]) makes
 swarm members coordinator clients: they authenticate to
@@ -158,9 +159,10 @@ origin and revokes it live. This is the launch path for a paired human and
 for an observe-only host credential.
 
 A per-agent grant that keeps the human principal across hosts is not in
-the tree. A reverse join is owner authority, a relay is route authority,
-and a delegated credential is a local socket
-([ADR-0116][adr-0116-relay]). That grant is after launch (S-D2).
+the tree. A reverse join is owner authority
+([uplink](../crates/phux-server/src/uplink.rs), [splice][code-uplink]).
+A relay is route authority ([ADR-0116][adr-0116-relay]), and a delegated
+credential is a local socket. That grant is after launch (S-D2).
 
 ## Launch cut
 
@@ -176,7 +178,8 @@ Ops hub runners gain no new session-start features now. They fold into
 
 ## Decisions
 
-Accepted defaults:
+Accepted defaults. On 2026-10-20 at 10:52am PT, Patrick replied "defaults"
+to Chief of Staff, accepting S-D1 through S-D10 as written in the plan.
 
 - **S-D1. Membership.** jamesponwith is a member under the one home keeper,
   in this org rather than a separate federating org. Until a roster names
