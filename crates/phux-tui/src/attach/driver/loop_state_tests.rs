@@ -133,6 +133,61 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
     }
 }
 
+/// #1475: a reopen pressed before the layout read is applied to the
+/// arrangement that read adopts, then saved. An organization server does
+/// not place hidden members on its own, so the extra window is the queued
+/// edit and nothing else.
+#[tokio::test(flavor = "current_thread")]
+async fn a_deferred_reopen_is_saved_when_the_layout_read_lands() {
+    use crate::attach::input_dispatch::DeferredArrangementEdit;
+
+    let (mut state, mut client, mut server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.organization_supported = true;
+    state.mirror.members.insert(ResourceId::local(2));
+    state
+        .deferred_arrangement_edits
+        .push(DeferredArrangementEdit::ReopenViews);
+    let _ = frames_sent(&mut client, &mut server).await;
+    let request_id = state.layout_get_request_id.expect("layout get in flight");
+    let stored = state.mirror.workspace.encode_cbor().unwrap();
+    assert_eq!(state.mirror.workspace.groups.len(), 1);
+    server
+        .send(&FrameKind::MetadataValue {
+            request_id,
+            value: Some(stored),
+        })
+        .await
+        .unwrap();
+    let reply = client.recv().await.unwrap();
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            reply,
+            false,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(state.layout_read_complete);
+    assert!(
+        state.deferred_arrangement_edits.is_empty(),
+        "the read consumes the queue"
+    );
+    assert_eq!(state.mirror.workspace.groups.len(), 2);
+    let saved = frames_sent(&mut client, &mut server).await;
+    let layout = saved.into_iter().find_map(|frame| match frame {
+        FrameKind::SetMetadata { value, .. } => Some(ArrangementDoc::decode_cbor(&value).unwrap()),
+        _ => None,
+    });
+    let layout = layout.expect("the queued reopen is saved once the read lands");
+    assert_eq!(layout.groups.len(), 2);
+    drop(client);
+    drop(server);
+}
+
 // ---- phux-c2td.20: orphaned satellite spawns ------------------------------
 
 /// `edge/@9`, the satellite pane a parked window spawned.

@@ -24,7 +24,7 @@ use phux_protocol::wire::frame::{
     OrgFilter, OrganizationPage, RecordRevision, ResourceRecord, SessionRecord,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::org_wire as ow;
 use crate::state::{ClientId, ServerState, SharedState};
@@ -141,6 +141,19 @@ pub(super) fn handle(
     }
 }
 
+/// Owner, expected revision, and group count of an arrangement replace,
+/// captured before `op` moves into the command.
+const fn arrangement_save_fields(op: &Op) -> Option<(phux_core::ArrangementOwner, u64, usize)> {
+    match op {
+        Op::ArrangementReplace {
+            owner,
+            expected,
+            groups,
+        } => Some((*owner, expected.get(), groups.len())),
+        _ => None,
+    }
+}
+
 /// Commit a mutating command, run its effects, and answer.
 fn mutate(
     state: &SharedState,
@@ -161,6 +174,16 @@ fn mutate(
     let relaunch_held = state.with(|s| relaunch_engine_held(s, &op));
     if let Some(refusal) = relaunch_held {
         return CommandResult::Refused(ow::refusal(&refusal));
+    }
+    let arrangement_save = arrangement_save_fields(&op);
+    if let Some((owner, expected, groups)) = arrangement_save {
+        debug!(
+            ?owner,
+            expected,
+            groups,
+            path = "arrangement",
+            "arrangement save attempt"
+        );
     }
     // R17: a replaced session arrangement is published under the TUI layout
     // key for older readers.
@@ -189,9 +212,31 @@ fn mutate(
         Ok::<_, Refusal>((answer, commit.applied.effects, detached))
     });
     let (answer, effects, detached) = match committed {
-        Ok(committed) => committed,
+        Ok(committed) => {
+            if let Some((owner, expected, groups)) = arrangement_save {
+                debug!(
+                    ?owner,
+                    expected,
+                    groups,
+                    path = "arrangement",
+                    "arrangement save committed"
+                );
+            }
+            committed
+        }
         Err(refusal) => {
-            debug!(?client_id, %refusal, "organization command refused");
+            if let Some((owner, expected, groups)) = arrangement_save {
+                info!(
+                    ?owner,
+                    expected,
+                    groups,
+                    reason = %refusal,
+                    path = "arrangement",
+                    "arrangement save refused"
+                );
+            } else {
+                debug!(?client_id, %refusal, "organization command refused");
+            }
             return CommandResult::Refused(ow::refusal(&refusal));
         }
     };
@@ -1615,6 +1660,89 @@ mod tests {
             };
             assert_eq!(value.document, document);
         });
+    }
+
+    /// A stale `ARRANGEMENT_REPLACE` is refused and the refusal is visible at
+    /// info, which is what a default `phux=info` log shows.
+    #[test]
+    fn a_stale_arrangement_replace_is_logged() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log").extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Buf {
+            type Writer = Self;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let state = SharedState::new();
+        let root = CancellationToken::new();
+        let (session, pane) = state.with_mut(|s| s.seed_session("work"));
+        let (key, resource) = state.with(|s| {
+            let record = s.registry().session(session).unwrap();
+            (
+                ow::arrangement_key(record.arrangement.unwrap()).unwrap(),
+                ow::resource_key(s.registry().resource_key(pane).unwrap()).unwrap(),
+            )
+        });
+        let document = ArrangementDoc {
+            groups: vec![phux_protocol::wire::frame::ArrangementGroup {
+                id: [1; 16],
+                name: None,
+                tree: phux_protocol::wire::frame::ArrangementNode::Leaf(
+                    phux_protocol::wire::frame::EntryRef {
+                        entry: [2; 16],
+                        target: phux_protocol::wire::frame::EntryTarget::Member(resource),
+                    },
+                ),
+            }],
+        };
+        let replace = |n, expected| Command::ArrangementReplace {
+            operation: op(n),
+            arrangement: key,
+            expected: Revision::new(expected),
+            document: document.clone(),
+        };
+        assert_eq!(
+            committed(handle(&state, CLIENT, replace(1, 1), &root))
+                .revision
+                .get(),
+            2
+        );
+
+        let buf = Buf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(buf.clone())
+            .finish();
+        let refused = tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            handle(&state, CLIENT, replace(2, 1), &root)
+        });
+        assert_eq!(
+            refused,
+            CommandResult::Refused(WireRefusal::Conflict {
+                current: Revision::new(2)
+            })
+        );
+        let log = String::from_utf8(buf.0.lock().expect("log").clone()).unwrap();
+        assert!(
+            log.contains("arrangement save refused") && log.contains("conflict"),
+            "{log}"
+        );
     }
 
     #[test]

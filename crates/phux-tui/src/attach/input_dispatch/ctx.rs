@@ -42,6 +42,11 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub workspace: &'a mut ArrangementDoc,
     /// A correlated initial layout GET confirmed valid metadata or absence.
     pub layout_read_complete: bool,
+    /// `close-view` / `reopen-views` pressed before that read. Applied to
+    /// the adopted workspace when the read completes, then saved. `None` in
+    /// a caller that cannot hold them: the keystroke is dropped instead of
+    /// editing the fallback layout.
+    pub deferred_arrangement_edits: Option<&'a mut Vec<super::deferred::DeferredArrangementEdit>>,
     /// Set when the session's arrangement is a record the driver writes over
     /// its control connection: a layout broadcast raises it instead of
     /// sending `SET_METADATA`, and the driver writes after the batch.

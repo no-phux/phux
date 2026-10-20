@@ -390,6 +390,7 @@ impl super::SessionLoop {
             focus_history: self.focus_history.clone(),
             workspace: &mut self.mirror.workspace,
             layout_read_complete: self.layout_read_complete,
+            deferred_arrangement_edits: Some(&mut self.deferred_arrangement_edits),
             arrangement_write_owed: self
                 .arrangement
                 .is_some()

@@ -26,6 +26,7 @@ use crate::render::overlay::OverlayState;
 use crate::render::{ChromeBreakpoints, Theme};
 
 use super::ctx::{DispatchCtx, DragGrab};
+use super::deferred::DeferredArrangementEdit;
 use super::dispatch::dispatch_input_events;
 use super::effects::{ActionEffects, PendingSessionRename, ReattachTarget, apply_action_effects};
 use super::run_action::run_action;
@@ -60,6 +61,7 @@ pub(super) struct CtxFixture {
     pub(super) focus_history: FocusHistory,
     pub(super) workspace: ArrangementDoc,
     pub(super) layout_read_complete: bool,
+    pub(super) deferred_arrangement_edits: Vec<DeferredArrangementEdit>,
     pub(super) viewport: (u16, u16),
     pub(super) cell_px: (u16, u16),
     pub(super) next_request_id: u32,
@@ -127,6 +129,7 @@ impl Default for CtxFixture {
             focus_history: FocusHistory::default(),
             workspace: ArrangementDoc::single(tid(1)),
             layout_read_complete: true,
+            deferred_arrangement_edits: Vec::new(),
             viewport: (80, 24),
             cell_px: (1, 1),
             next_request_id: 1,
@@ -198,6 +201,7 @@ impl CtxFixture {
             focus_history: self.focus_history.clone(),
             workspace: &mut self.workspace,
             layout_read_complete: self.layout_read_complete,
+            deferred_arrangement_edits: Some(&mut self.deferred_arrangement_edits),
             arrangement_write_owed: None,
             viewport: self.viewport,
             cell_px: self.cell_px,

@@ -139,11 +139,26 @@ impl super::SessionLoop {
         conn: &mut Connection,
     ) -> Result<(), AttachError> {
         if !self.layout_read_complete {
+            tracing::info!(
+                reason = "layout read fence",
+                groups = self.mirror.workspace.groups.len(),
+                "arrangement save skipped"
+            );
             return Ok(());
         }
         let Some(session) = self.peers.focused_session else {
+            tracing::info!(
+                reason = "no focused session",
+                groups = self.mirror.workspace.groups.len(),
+                "arrangement save skipped"
+            );
             return Ok(());
         };
+        tracing::debug!(
+            %session,
+            groups = self.mirror.workspace.groups.len(),
+            "arrangement save attempt"
+        );
         let workspace = self.mirror.workspace.clone();
         if self.write_arrangement(&workspace).await {
             return Ok(());

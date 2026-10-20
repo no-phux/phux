@@ -70,7 +70,7 @@ impl super::SessionLoop {
             // No record yet, outside the first read: nothing to adopt.
             (Ok(None), None) => return Ok(None),
             (Err(err), first) => {
-                tracing::warn!(error = %err, "arrangement read failed");
+                tracing::warn!(%session, error = %err, reason = %err, "arrangement read failed");
                 self.apply_notices(
                     vec![Notice::warn(format!("layout not loaded: {err}"))],
                     repaint,
@@ -130,7 +130,14 @@ impl super::SessionLoop {
         let Some(link) = self.arrangement.as_mut() else {
             return false;
         };
+        let session = link.session();
         if !link.loaded() {
+            tracing::info!(
+                %session,
+                groups = document.groups.len(),
+                reason = "layout not loaded",
+                "arrangement save refused"
+            );
             self.arrangement_read_owed = true;
             self.show_notices([Notice::warn(
                 "layout not saved: the stored layout is not loaded yet".to_owned(),
@@ -138,8 +145,20 @@ impl super::SessionLoop {
             return true;
         }
         if let Err(err) = link.write(document).await {
-            tracing::warn!(error = %err, "arrangement write failed");
+            tracing::info!(
+                %session,
+                groups = document.groups.len(),
+                reason = %err,
+                "arrangement save refused"
+            );
             self.show_notices([Notice::warn(format!("layout not saved: {err}"))]);
+        } else {
+            tracing::debug!(
+                %session,
+                groups = document.groups.len(),
+                path = "arrangement",
+                "arrangement save committed"
+            );
         }
         true
     }

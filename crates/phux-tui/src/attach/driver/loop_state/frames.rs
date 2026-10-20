@@ -88,8 +88,29 @@ impl super::SessionLoop {
             } else if key_absent && !self.mirror.workspace.groups.is_empty() {
                 outcome.emit_set_metadata = true;
             }
+            // #1475: apply only the hidden-view edits the user made while
+            // the fence was down, onto the arrangement just adopted, then
+            // save. This is not a heal — a member they did not reopen stays
+            // hidden.
+            if self.flush_deferred_arrangement_edits() {
+                outcome.layout_replaced = true;
+                outcome.emit_set_metadata = true;
+            }
         }
         Ok(outcome)
+    }
+
+    /// Apply hidden-view edits queued while the layout read was outstanding.
+    /// `true` when the adopted workspace changed and must be saved.
+    fn flush_deferred_arrangement_edits(&mut self) -> bool {
+        crate::attach::input_dispatch::apply_deferred_arrangement_edits(
+            &mut self.deferred_arrangement_edits,
+            &mut self.mirror.workspace,
+            &self.mirror.members,
+            &self.mirror.panes,
+            &mut self.mirror.zoomed,
+            &mut self.mirror.focused_resource,
+        )
     }
 
     // ---- inbound frames -------------------------------------------------

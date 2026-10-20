@@ -10,6 +10,7 @@
 mod args;
 mod chrome_drag;
 mod ctx;
+mod deferred;
 mod dispatch;
 mod effects;
 // The handler modules the action registry's rows name (ADR-0172).
@@ -25,6 +26,7 @@ mod tests_actions;
 mod tests_events;
 
 pub(super) use ctx::{DispatchCtx, DragGrab};
+pub(super) use deferred::{DeferredArrangementEdit, apply_deferred_arrangement_edits};
 pub(super) use dispatch::{dispatch_input_events, predict_now_ms, sync_overlays_to_focused_pane};
 pub use effects::ReattachTarget;
 pub(super) use effects::{PendingSessionRename, encode_layout_or_log};

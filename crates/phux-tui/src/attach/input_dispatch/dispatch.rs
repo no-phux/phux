@@ -33,6 +33,7 @@ use crate::render::overlay::{
 use super::args::switch_session_args;
 use super::chrome_drag;
 use super::ctx::{DispatchCtx, DividerGrab, DragGrab, WindowStrip};
+use super::deferred::DeferredArrangementEdit;
 use super::effects::{ChordOutcome, apply_action_effects, consume_chord};
 use super::run_action::run_action;
 
@@ -40,6 +41,12 @@ mod mouse;
 #[cfg(test)]
 pub(super) use mouse::{bar_click_action, sidebar_click_action};
 pub(super) use mouse::{drag_resize, open_context_menu, quantize_cell};
+
+/// Hidden-view edits. Unlike `edits_workspace`, these are queued and
+/// applied once the stored layout is known, then saved.
+fn defers_for_layout_read(action: &str) -> bool {
+    matches!(action, "close-view" | "reopen-views")
+}
 
 fn edits_workspace(action: &str) -> bool {
     matches!(
@@ -291,6 +298,40 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(true)
     }
 
+    /// Queue a hidden-view edit until the layout read completes. With no
+    /// queue the keystroke is dropped: the fallback workspace is never edited.
+    fn defer_arrangement_edit(&mut self, action: &str) {
+        let edit = match action {
+            "close-view" => {
+                let Some(target) = self.focused_resource.clone() else {
+                    tracing::info!(
+                        action = "close-view",
+                        reason = "no focused view",
+                        "arrangement save skipped"
+                    );
+                    return;
+                };
+                DeferredArrangementEdit::CloseView { target }
+            }
+            "reopen-views" => DeferredArrangementEdit::ReopenViews,
+            _ => return,
+        };
+        if let Some(queue) = self.ctx.deferred_arrangement_edits.as_deref_mut() {
+            tracing::info!(
+                action,
+                reason = "layout read fence",
+                "arrangement save deferred"
+            );
+            queue.push(edit);
+        } else {
+            tracing::info!(
+                action,
+                reason = "layout read fence",
+                "arrangement save skipped"
+            );
+        }
+    }
+
     /// Run an action through the path every trigger shares; true iff the
     /// action or floating overlay dismissal needs a full repaint.
     async fn run_resolved(
@@ -304,7 +345,18 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return Ok(true);
         }
         if !self.ctx.layout_read_complete && edits_workspace(&resolved.action) {
-            tracing::debug!(action = %resolved.action, "waiting for initial shared layout read");
+            tracing::info!(
+                action = %resolved.action,
+                reason = "layout read fence",
+                "arrangement save skipped"
+            );
+            return Ok(dismissed);
+        }
+        // #1475: these two edit the arrangement but were not in the fence
+        // list, so they mutated the fallback layout and the save was then
+        // dropped. Hold them until the read adopts the stored arrangement.
+        if !self.ctx.layout_read_complete && defers_for_layout_read(&resolved.action) {
+            self.defer_arrangement_edit(&resolved.action);
             return Ok(dismissed);
         }
         let effects = run_action(
