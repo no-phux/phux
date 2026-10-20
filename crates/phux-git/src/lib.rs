@@ -277,10 +277,13 @@ pub fn parse_status(root: PathBuf, out: &str) -> Status {
         };
         match kind {
             "1" => tracked(rest, 7, None, &mut entries),
-            // A rename's source is the next record.
+            // A rename's source is the next record; output cut before it
+            // leaves a rename that cannot be shown truthfully, so drop it.
             "2" => {
-                let from = records.next().map(str::to_owned);
-                tracked(rest, 8, from, &mut entries);
+                let Some(from) = records.next().filter(|from| !from.is_empty()) else {
+                    continue;
+                };
+                tracked(rest, 8, Some(from.to_owned()), &mut entries);
             }
             "u" => {
                 if let Some(path) = rest.splitn(10, ' ').nth(9) {

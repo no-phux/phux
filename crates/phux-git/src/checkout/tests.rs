@@ -21,7 +21,7 @@ fn repo(name: &str) -> PathBuf {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = run_git(dir, args, 1 << 20, None).unwrap();
+    let out = run_git(dir, args, 1 << 20, None, Mode::Read).unwrap();
     assert!(out.status.success(), "git {args:?}: {}", out.stderr);
     String::from_utf8(out.stdout).unwrap()
 }
@@ -56,7 +56,9 @@ fn open_finds_the_top_level_from_a_subdirectory_and_refuses_elsewhere() {
     std::fs::create_dir_all(&outside).unwrap();
     // A temp directory may itself sit in a checkout on some hosts; only
     // assert the refusal when it does not.
-    if run_git(&outside, &["rev-parse"], 64, None).is_ok_and(|out| !out.status.success()) {
+    if run_git(&outside, &["rev-parse"], 64, None, Mode::Read)
+        .is_ok_and(|out| !out.status.success())
+    {
         assert_eq!(Checkout::open(&outside), Err(CheckoutError::NotARepository));
     }
     assert!(matches!(
@@ -438,4 +440,45 @@ fn commit_and_branch_records_parse() {
     assert_eq!((gone.ahead, gone.behind), (None, None));
     assert_eq!(tracking("ahead 3, behind 2"), (Some(3), Some(2)));
     assert_eq!(tracking(""), (Some(0), Some(0)));
+}
+
+#[test]
+fn an_overrunning_write_is_stopped_without_leaving_index_lock() {
+    let dir = repo("lock");
+    write(&dir, "slow.txt", "x\n");
+    git(&dir, &["config", "filter.slow.clean", "sleep 30; cat"]);
+    write(&dir, ".gitattributes", "slow.txt filter=slow\n");
+    let started = std::time::Instant::now();
+    let out = run_git(
+        &dir,
+        &["add", "--", "slow.txt"],
+        1024,
+        None,
+        Mode::Write(Duration::from_millis(500)),
+    );
+    assert!(matches!(out, Err(CheckoutError::Timeout)), "{out:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(
+        !dir.join(".git/index.lock").exists(),
+        "SIGTERM let git remove its lock"
+    );
+}
+
+#[test]
+fn a_spoofed_dotgit_name_is_refused_and_hidden() {
+    let dir = repo("dotgit");
+    write(&dir, "sub/.GIT/config", "x");
+    let checkout = Checkout::open(&dir).unwrap();
+    assert!(matches!(
+        checkout.read("sub/.GIT/config", 0),
+        Err(CheckoutError::InvalidPath(_))
+    ));
+    let names: Vec<_> = checkout
+        .tree("sub")
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert!(names.is_empty(), "{names:?}");
 }

@@ -6,16 +6,19 @@
 //! lock (`GIT_OPTIONAL_LOCKS=0`).
 
 use std::io::Read as _;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::bounded::{Bounded, Run, RunError};
+use crate::bounded::{Bounded, Run, RunError, Stop};
 use crate::{Area, failure, parse_status};
 
+mod beneath;
 mod parse;
 mod pr;
 mod types;
 
+pub use beneath::relative;
+use beneath::{io_error, path_list};
 #[cfg(test)]
 use parse::tracking;
 use parse::{
@@ -29,8 +32,10 @@ pub use types::{
     ListingEntry, LogPage, Snapshot,
 };
 
-/// The longest a `git` child may run.
+/// The longest a `git` read may run.
 pub const GIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest an index write may run; clean filters and hooks can be slow.
+pub const GIT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest `gh` may run; it talks to the network.
 pub const GH_TIMEOUT: Duration = Duration::from_secs(20);
 /// Most text a diff or file read returns.
@@ -165,7 +170,9 @@ impl Checkout {
                 self.git(&args, MAX_TEXT_BYTES)?
             }
             Area::Untracked => {
-                self.resolve(path, Final::AllowSymlink)?;
+                // `--no-index` reads the path itself; this check narrows,
+                // but cannot close, a swap racing it (phux bead).
+                self.resolve(path)?;
                 let mut args = vec!["diff", "--no-index"];
                 args.extend(DIFF_FLAGS);
                 args.extend(["--", "/dev/null", path]);
@@ -257,44 +264,33 @@ impl Checkout {
     /// The entries of `dir` (empty for the top level), tracked and untracked
     /// alike, without `.git`.
     pub fn tree(&self, dir: &str) -> Result<Listing> {
-        let (path, prefix) = if dir.is_empty() {
-            (self.root.clone(), String::new())
+        let (rel, prefix) = if dir.is_empty() {
+            ("", String::new())
         } else {
             let dir = relative(dir)?.trim_end_matches('/');
-            (self.resolve(dir, Final::NoSymlink)?, format!("{dir}/"))
+            (dir, format!("{dir}/"))
         };
-        let read = std::fs::read_dir(&path)
+        let opened = beneath::open_dir(&self.root, rel).map_err(|walk| walk.into_error(dir))?;
+        let (found, mut truncated) = beneath::list(opened, MAX_SCANNED_ENTRIES)
             .map_err(|error| io_error(&format!("Could not list {dir}"), &error))?;
-        let mut entries = Vec::new();
-        let mut truncated = false;
-        for entry in read.flatten() {
-            if entries.len() >= MAX_SCANNED_ENTRIES {
-                truncated = true;
-                break;
-            }
-            let Ok(name) = entry.file_name().into_string() else {
-                continue;
-            };
-            if name.eq_ignore_ascii_case(".git") {
-                continue;
-            }
-            let Ok(meta) = entry.path().symlink_metadata() else {
-                continue;
-            };
-            let kind = if meta.file_type().is_symlink() {
-                EntryKind::Symlink
-            } else if meta.is_dir() {
-                EntryKind::Directory
-            } else {
-                EntryKind::File
-            };
-            entries.push(ListingEntry {
-                size: (kind == EntryKind::File).then_some(meta.len()),
-                name,
-                kind,
-                ignored: false,
-            });
-        }
+        let mut entries: Vec<ListingEntry> = found
+            .into_iter()
+            .map(|found| {
+                let kind = if found.symlink {
+                    EntryKind::Symlink
+                } else if found.directory {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::File
+                };
+                ListingEntry {
+                    size: (kind == EntryKind::File).then_some(found.size),
+                    name: found.name,
+                    kind,
+                    ignored: false,
+                }
+            })
+            .collect();
         entries.sort_by(|a, b| {
             (a.kind != EntryKind::Directory, &a.name)
                 .cmp(&(b.kind != EntryKind::Directory, &b.name))
@@ -309,13 +305,11 @@ impl Checkout {
     /// a regular file as UTF-8 text.
     pub fn read(&self, path: &str, max_bytes: u32) -> Result<FileText> {
         let rel = relative(path)?;
-        let file = self.resolve(rel, Final::NoSymlink)?;
         let cap = match usize::try_from(max_bytes) {
             Ok(0) | Err(_) => MAX_TEXT_BYTES,
             Ok(bytes) => bytes.min(MAX_TEXT_BYTES),
         };
-        let opened = open_no_follow(&file)
-            .map_err(|error| io_error(&format!("Could not read {path}"), &error))?;
+        let opened = beneath::open_file(&self.root, rel).map_err(|walk| walk.into_error(path))?;
         let meta = opened
             .metadata()
             .map_err(|error| io_error(&format!("Could not read {path}"), &error))?;
@@ -341,7 +335,7 @@ impl Checkout {
         let paths = path_list(paths)?;
         let mut args = vec!["add", "--"];
         args.extend(paths);
-        self.git_ok(&args, 64 * 1024).map(drop)
+        self.git_write(&args)
     }
 
     /// Return `paths` in the index to `HEAD`; before the first commit, take
@@ -354,7 +348,7 @@ impl Checkout {
             vec!["rm", "--cached", "-q", "-r", "--ignore-unmatch", "--"]
         };
         args.extend(paths);
-        self.git_ok(&args, 64 * 1024).map(drop)
+        self.git_write(&args)
     }
 
     fn has_head(&self) -> Result<bool> {
@@ -376,12 +370,15 @@ impl Checkout {
 
     /// Line counts for a small untracked text file.
     fn count_untracked(&self, path: &str) -> Option<(Option<u32>, Option<u32>, bool)> {
-        let file = self.root.join(path);
-        let meta = file.symlink_metadata().ok()?;
+        let file = beneath::open_file(&self.root, path).ok()?;
+        let meta = file.metadata().ok()?;
         if !meta.is_file() || meta.len() > MAX_TEXT_BYTES as u64 {
             return None;
         }
-        let bytes = std::fs::read(&file).ok()?;
+        let mut bytes = Vec::new();
+        file.take(MAX_TEXT_BYTES as u64)
+            .read_to_end(&mut bytes)
+            .ok()?;
         if is_binary(&bytes) {
             return Some((None, None, true));
         }
@@ -406,6 +403,7 @@ impl Checkout {
             &["--no-literal-pathspecs", "check-ignore", "-z", "--stdin"],
             MAX_LISTING_OUTPUT,
             Some(stdin),
+            Mode::Read,
         ) else {
             return;
         };
@@ -424,9 +422,9 @@ impl Checkout {
         }
     }
 
-    /// `root/rel` with every component checked: no symlink before the last,
-    /// and the last per `last`.
-    fn resolve(&self, rel: &str, last: Final) -> Result<PathBuf> {
+    /// `root/rel` with every component but the last checked not to be a
+    /// symlink; the last may be one, which Git shows as its target text.
+    fn resolve(&self, rel: &str) -> Result<PathBuf> {
         let mut path = self.root.clone();
         let components: Vec<_> = Path::new(rel).components().collect();
         for (index, component) in components.iter().enumerate() {
@@ -434,8 +432,7 @@ impl Checkout {
             let meta = path
                 .symlink_metadata()
                 .map_err(|_| CheckoutError::NotFound(format!("{rel} does not exist")))?;
-            let is_last = index + 1 == components.len();
-            if meta.file_type().is_symlink() && !(is_last && last == Final::AllowSymlink) {
+            if meta.file_type().is_symlink() && index + 1 < components.len() {
                 return Err(CheckoutError::InvalidPath(format!(
                     "{rel} crosses a symbolic link"
                 )));
@@ -445,7 +442,27 @@ impl Checkout {
     }
 
     fn git(&self, args: &[&str], max_stdout: usize) -> Result<Bounded> {
-        run_git(&self.root, args, max_stdout, None)
+        run_git(&self.root, args, max_stdout, None, Mode::Read)
+    }
+
+    /// Run an index write, stopped with `SIGTERM` first so Git can remove
+    /// `index.lock` if it overruns.
+    fn git_write(&self, args: &[&str]) -> Result<()> {
+        let out = run_git(
+            &self.root,
+            args,
+            64 * 1024,
+            None,
+            Mode::Write(GIT_WRITE_TIMEOUT),
+        )?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(CheckoutError::Git(failure(
+                &out.stderr,
+                &String::from_utf8_lossy(&out.stdout),
+            )))
+        }
     }
 
     /// Run git and require success.
@@ -462,14 +479,16 @@ impl Checkout {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Final {
-    AllowSymlink,
-    NoSymlink,
+/// Whether a git run reads (killed at [`GIT_TIMEOUT`]) or writes the index
+/// (stopped gracefully at its own deadline).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Read,
+    Write(Duration),
 }
 
 fn git_in(dir: &Path, args: &[&str], max_stdout: usize) -> Result<Bounded> {
-    run_git(dir, args, max_stdout, None)
+    run_git(dir, args, max_stdout, None, Mode::Read)
 }
 
 fn run_git(
@@ -477,17 +496,32 @@ fn run_git(
     args: &[&str],
     max_stdout: usize,
     stdin: Option<Vec<u8>>,
+    mode: Mode,
 ) -> Result<Bounded> {
-    let mut full = vec!["-c", "core.quotePath=false", "-c", "color.ui=false"];
+    // No fsmonitor: status and numstat would otherwise start or query a
+    // daemon configured by the checkout itself.
+    let mut full = vec![
+        "-c",
+        "core.quotePath=false",
+        "-c",
+        "color.ui=false",
+        "-c",
+        "core.fsmonitor=false",
+    ];
     full.extend_from_slice(args);
+    let (timeout, stop) = match mode {
+        Mode::Read => (GIT_TIMEOUT, Stop::Kill),
+        Mode::Write(timeout) => (timeout, Stop::Terminate),
+    };
     Run {
         program: "git",
         dir,
         args: &full,
         env: &GIT_ENV,
-        timeout: GIT_TIMEOUT,
+        timeout,
         max_stdout,
         stdin,
+        stop,
     }
     .exec()
     .map_err(|error| match error {
@@ -495,50 +529,6 @@ fn run_git(
         RunError::Spawn(error) => CheckoutError::Git(format!("Could not run git: {error}")),
         RunError::Wait(message) => CheckoutError::Git(format!("git did not finish: {message}")),
     })
-}
-
-/// A checkout-relative path: non-empty, plain components only, nothing
-/// named `.git`.
-pub fn relative(path: &str) -> Result<&str> {
-    let invalid = |why: &str| CheckoutError::InvalidPath(format!("{path:?} {why}"));
-    if path.is_empty() || path.len() > MAX_PATH_BYTES || path.contains('\0') {
-        return Err(invalid("is not a path inside this checkout"));
-    }
-    for component in Path::new(path).components() {
-        match component {
-            Component::Normal(name) if name.eq_ignore_ascii_case(".git") => {
-                return Err(invalid("is inside .git"));
-            }
-            Component::Normal(_) => {}
-            _ => return Err(invalid("is not a plain path inside this checkout")),
-        }
-    }
-    Ok(path)
-}
-
-fn path_list(paths: &[String]) -> Result<Vec<&str>> {
-    if paths.is_empty() || paths.len() > MAX_PATHS {
-        return Err(CheckoutError::InvalidRequest(format!(
-            "name between 1 and {MAX_PATHS} paths"
-        )));
-    }
-    paths.iter().map(|path| relative(path)).collect()
-}
-
-fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-}
-
-fn io_error(what: &str, error: &std::io::Error) -> CheckoutError {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        CheckoutError::NotFound(format!("{what}: {error}"))
-    } else {
-        CheckoutError::Io(format!("{what}: {error}"))
-    }
 }
 
 #[cfg(test)]

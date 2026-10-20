@@ -10,7 +10,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::{CheckoutError, GH_TIMEOUT, Result};
-use crate::bounded::{Run, RunError};
+use crate::bounded::{Run, RunError, Stop};
 
 const MAX_GH_OUTPUT: usize = 4 * 1024 * 1024;
 const FIELDS: &str = "number,title,state,url,headRefName,isDraft,reviewDecision,statusCheckRollup";
@@ -130,6 +130,7 @@ pub(super) fn view(root: &Path) -> Result<PullRequest> {
             timeout: GH_TIMEOUT,
             max_stdout: MAX_GH_OUTPUT,
             stdin: None,
+            stop: Stop::Kill,
         }
         .exec();
         last = match run {

@@ -296,8 +296,13 @@ request; the server that owns the Terminal resolves the checkout from the
 Terminal's live working directory, so a client never names a host path.
 Paths in requests and answers are relative to the checkout's top level; an
 absolute path, `..`, anything under `.git`, or a path crossing a symbolic
-link is refused. The command is classified `INPUT` on the named Terminal,
-since an `INPUT` holder can already run `git diff` or `git add` there.
+link is refused. The command is classified `INPUT` on the named Terminal
+(not on the server, as `GET_FILE` is), since an `INPUT` holder can already
+run `git diff` or `git add` there. The reach is the whole checkout: a
+Terminal whose working directory is inside a large repository, such as
+dotfiles tracked at `$HOME`, lets its `INPUT` holders read every file in that
+repository outside `.git`. Index writes that overrun their deadline are
+stopped with `SIGTERM` before `SIGKILL`, so Git can remove `index.lock`.
 
 The request and its answer cross the wire as bounded JSON inside the command
 envelope (requests at most 64 KiB, answers at most 4 MiB, text at most
