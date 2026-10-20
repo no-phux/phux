@@ -104,7 +104,7 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
                         "Tab placement",
                         resets(tab_position, handle, |prefs| &mut prefs.tab_position),
                     )
-                    .description("Keep tabs above or below your work, or in the sidebar’s fixed tab area."),
+                    .description("Keep tabs above or below your work, or at the side: the sidebar’s tab area, or a rail in plain terminal mode."),
                 )
                 .item(
                     SettingItem::new(

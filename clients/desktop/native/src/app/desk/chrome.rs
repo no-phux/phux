@@ -133,17 +133,32 @@ impl Desk {
     }
 
     /// Where the tabs are painted. Tabs in the sidebar return to the
-    /// titlebar while the sidebar is hidden, so they never disappear; quick
-    /// windows keep their compact titlebar regardless of the main layout.
+    /// titlebar while the person hides the sidebar, so they never disappear;
+    /// where the skin withdraws it (the plain terminal), they keep the side
+    /// in a rail of their own. Quick windows keep their compact titlebar
+    /// regardless of the main layout.
     pub(crate) fn tab_position(&self) -> TabPosition {
         if self.role == WindowRole::Quick {
             return TabPosition::Top;
         }
         match self.prefs.tab_position {
-            TabPosition::Side if !self.sidebar_shown() => TabPosition::Top,
+            TabPosition::Side if !self.sidebar_shown() && !self.tab_rail_wanted() => {
+                TabPosition::Top
+            }
             TabPosition::Bottom if !self.bottom_tabs_fit() => TabPosition::Top,
             position => position,
         }
+    }
+
+    /// Whether side tabs stand in a rail of their own: the skin has no
+    /// sidebar to hold them, so they keep to the side without one.
+    fn tab_rail_wanted(&self) -> bool {
+        self.skin().chrome.sidebar <= 0.
+    }
+
+    /// Whether side tabs show in the plain terminal's rail.
+    pub(crate) fn tab_rail(&self) -> bool {
+        self.tab_position() == TabPosition::Side && !self.sidebar_shown()
     }
 
     /// Side panels must not squeeze the tab scroller and its hit targets away.
