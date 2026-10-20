@@ -116,8 +116,8 @@ certificate; `phux ls --all` does, on the remote row.
 
 ## Rotate
 
-Make a new request. `--replace` revokes the previous id in the same
-registry write, so the client is never enrolled twice:
+Make a new request and use the recorded predecessor id. `--replace`
+revokes that id, when present and active, in the same registry write:
 
 ```sh
 phux workload add-key \
@@ -130,9 +130,16 @@ phux workload add-key \
   < /path/to/ci-runner-1-next.csr
 ```
 
-Replacement revokes the predecessor immediately, including its live
-connections. Install the new chain and key on that client to reconnect;
-do not expect an overlap with the old certificate.
+Before distributing the new chain, require `replaced: true` in the JSON
+response and verify the recorded predecessor is revoked in `phux workload
+list`. An unknown canonical id is accepted with `replaced: false`; command
+success alone does not prove the intended old certificate was withdrawn.
+If that check fails, find and revoke the actual predecessor before
+completing the rotation.
+
+A confirmed replacement revokes the predecessor immediately, including
+its live connections. Install the new chain and key on that client to
+reconnect; do not expect an overlap with the old certificate.
 
 Renew an expiring pairing bearer separately: mint a fresh bounded-lifetime
 credential with `phux pair --expires 7d` (or at most `30d`), distribute its
