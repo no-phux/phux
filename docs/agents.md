@@ -40,7 +40,8 @@ own this provenance rule.
 
 Rules ship for Claude Code, Codex, OpenCode, pi, OMP, Grok, Amp, Cursor,
 Gemini CLI, Goose, and Aider. No match means `idle`, never `blocked`. Add or
-override rules in `~/.config/phux/agent-rules/`.
+override rules in `~/.config/phux/agent-rules/`. How this differs from Herdr and cmux
+is in [phux vs tmux, Herdr, and cmux](./compare.md#compared-with-herdr).
 
 ```sh
 phux agent list                 # every pane's agent and state
