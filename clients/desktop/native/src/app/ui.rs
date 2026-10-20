@@ -10,6 +10,7 @@
 //! |---|---|
 //! | [`atoms`] | text tones, dots, badges, shadows and highlights |
 //! | [`buttons`] | ghost, icon and titlebar buttons |
+//! | [`layout_map`] | a split drawn small, cell by cell |
 //! | [`list`] | navigator and list rows, their icon slot, section labels |
 //! | [`status`] | agent state colours and the attention mark overlaid on rows and tabs |
 //! | [`anchor`] | where a trigger was painted, so a menu can drop from it |
@@ -20,6 +21,7 @@
 pub(crate) mod anchor;
 pub(crate) mod atoms;
 pub(crate) mod buttons;
+pub(crate) mod layout_map;
 pub(crate) mod list;
 pub(crate) mod menu;
 pub(crate) mod segmented;

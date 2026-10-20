@@ -20,7 +20,7 @@ use super::super::super::skin::{Look, Surface, Surfaced};
 use super::super::super::ui::status::harness_mark;
 use super::super::super::ui::{agent_swatch, ghost_button, pill, specular};
 use super::super::gloss;
-use super::controls::{drop_hint, pane_controls};
+use super::controls::{Offer, drop_hint, pane_controls};
 use super::depth::{depth_inset, pane_shadows, veils};
 
 /// How far down a pane the pointer reveals its controls.
@@ -118,8 +118,11 @@ pub(super) fn pane_view(
     };
     let tab = desk.active_tab();
     let zoomed = tab.is_some_and(|tab| tab.zoomed_id.is_some());
+    let panes = tab.map_or(0, |tab| layout::placements(&tab.root).len());
     // Focus only shows among several visible panes.
-    let shared = !zoomed && tab.is_some_and(|tab| layout::placements(&tab.root).len() > 1);
+    let shared = !zoomed && panes > 1;
+    // While zoomed, the rest of the tab waits behind this pane.
+    let behind = if zoomed { panes.saturating_sub(1) } else { 0 };
     let find = desk
         .find
         .as_ref()
@@ -188,17 +191,19 @@ pub(super) fn pane_view(
     let shine = look
         .lit
         .opacity(if focused { 0.7 } else { 0.35 } * gloss(&look.skin) * (1. - depth) * presence);
-    let controls_bar = controls.then(|| {
-        pane_controls(desk, placement, identity.origin, zoomed, &look, cx).into_any_element()
-    });
     let eligible = desk.conversation_eligible(&id);
-    let conversation_toggle = eligible && !desk.conversation_visible(&id) && !controls;
-    // Native agents is on, but this agent publishes no conversation yet.
+    // Native agents is on, but this agent publishes no conversation yet: the
+    // capsule offers the step that unlocks it.
     let setup = identity
         .origin
         .harness()
-        .filter(|_| desk.prefs.native_agents && !eligible && !controls)
+        .filter(|_| desk.prefs.native_agents && !eligible)
         .filter(|_| placement.terminal_id.is_some());
+    let controls_bar = controls.then(|| {
+        let offer = Offer { behind, setup };
+        pane_controls(desk, placement, identity.origin, zoomed, offer, &look, cx).into_any_element()
+    });
+    let conversation_toggle = eligible && !desk.conversation_visible(&id) && !controls;
     // While it sits back, the pane names its harness in the corner; forward,
     // the controls capsule does.
     let corner_mark = identity
@@ -210,52 +215,34 @@ pub(super) fn pane_view(
             harness_mark(harness, state, 14., &look).opacity(0.85 * depth)
         });
     let corner =
-        (corner_mark.is_some() || (fenced && !controls) || conversation_toggle || setup.is_some())
-            .then(|| {
-                let conversation_id = id.clone();
-                div()
-                    .absolute()
-                    .top(px(8.))
-                    .right(px(10.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .children(corner_mark)
-                    .when(fenced && !controls, |corner| {
-                        corner.child(pill(
-                            "Typing may not have arrived",
-                            &format!("{}22", colors.theme.warning),
-                            &colors.theme.warning,
-                            &look,
-                        ))
-                    })
-                    .children(setup.map(|harness| {
-                        let (label, tip) = match harness.plugin_install() {
-                            Some(command) => ("Set up conversation", format!("Copy `{command}`")),
-                            None => (
-                                "Launch natively",
-                                format!(
-                                    "{} has no phux plugin; start it as an ACP agent",
-                                    harness.label()
-                                ),
-                            ),
-                        };
-                        ghost_button(format!("conversation-setup-{id}"), label)
-                            .icon(gpui_kit::assets::IconName::MessagesSquare)
-                            .tooltip(tip)
-                            .on_click(cx.listener(move |desk, _, window, cx| {
-                                desk.offer_native_setup(harness, window, cx);
-                            }))
-                    }))
-                    .when(conversation_toggle, |corner| {
-                        corner.child(
-                            ghost_button(format!("conversation-open-{id}"), "Conversation")
-                                .on_click(cx.listener(move |desk, _, window, cx| {
-                                    desk.toggle_conversation(&conversation_id, window, cx);
-                                })),
-                        )
-                    })
-            });
+        (corner_mark.is_some() || (fenced && !controls) || conversation_toggle).then(|| {
+            let conversation_id = id.clone();
+            div()
+                .absolute()
+                .top(px(8.))
+                .right(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .children(corner_mark)
+                .when(fenced && !controls, |corner| {
+                    corner.child(pill(
+                        "Typing may not have arrived",
+                        &format!("{}22", colors.theme.warning),
+                        &colors.theme.warning,
+                        &look,
+                    ))
+                })
+                .when(conversation_toggle, |corner| {
+                    corner.child(
+                        ghost_button(format!("conversation-open-{id}"), "Conversation").on_click(
+                            cx.listener(move |desk, _, window, cx| {
+                                desk.toggle_conversation(&conversation_id, window, cx);
+                            }),
+                        ),
+                    )
+                })
+        });
     let drag_id = id.clone();
     let drop_id = id.clone();
     let exit_id = id.clone();
