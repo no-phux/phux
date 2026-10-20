@@ -10,6 +10,8 @@ use std::io::Read;
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -91,12 +93,12 @@ impl Run<'_> {
                 let _ = pipe.write_all(&bytes);
             });
         }
-        let stdout = reader(child.stdout.take(), self.max_stdout);
-        let stderr = reader(child.stderr.take(), MAX_STDERR_BYTES);
+        let stdout = Capture::start(child.stdout.take(), self.max_stdout);
+        let stderr = Capture::start(child.stderr.take(), MAX_STDERR_BYTES);
         let status = wait(&mut child, &stdout, Instant::now() + self.timeout)?;
         let grace = Instant::now() + DRAIN_GRACE;
-        let (stdout, truncated) = join(stdout, grace);
-        let (stderr, _) = join(stderr, grace);
+        let (stdout, truncated) = stdout.finish(grace);
+        let (stderr, _) = stderr.finish(grace);
         Ok(Bounded {
             status,
             stdout,
@@ -106,39 +108,71 @@ impl Run<'_> {
     }
 }
 
-type Reader = Option<JoinHandle<(Vec<u8>, bool)>>;
-
-/// Read at most `cap` bytes; the flag says more were available.
-fn reader(pipe: Option<impl Read + Send + 'static>, cap: usize) -> Reader {
-    let pipe = pipe?;
-    Some(std::thread::spawn(move || {
-        let limit = u64::try_from(cap).unwrap_or(u64::MAX).saturating_add(1);
-        let mut bytes = Vec::new();
-        let _ = pipe.take(limit).read_to_end(&mut bytes);
-        let truncated = bytes.len() > cap;
-        bytes.truncate(cap);
-        (bytes, truncated)
-    }))
+/// One output pipe read on its own thread into a shared, capped buffer, so
+/// the bytes read so far survive a reader that never sees end of stream.
+struct Capture {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    capped: Arc<AtomicBool>,
+    reader: Option<JoinHandle<()>>,
 }
 
-/// The reader's bytes once it finishes. A descendant still holding the pipe
-/// past `grace` leaves the thread detached to finish whenever it closes.
-fn join(reader: Reader, grace: Instant) -> (Vec<u8>, bool) {
-    let Some(handle) = reader else {
-        return (Vec::new(), false);
-    };
-    while !handle.is_finished() {
-        if Instant::now() >= grace {
-            return (Vec::new(), false);
+impl Capture {
+    fn start(pipe: Option<impl Read + Send + 'static>, cap: usize) -> Self {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let capped = Arc::new(AtomicBool::new(false));
+        let reader = pipe.map(|mut pipe| {
+            let (bytes, capped) = (Arc::clone(&bytes), Arc::clone(&capped));
+            std::thread::spawn(move || {
+                let mut chunk = vec![0_u8; 64 * 1024];
+                loop {
+                    let read = match pipe.read(&mut chunk) {
+                        Ok(0) => return,
+                        Ok(read) => read,
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => return,
+                    };
+                    let room = {
+                        let mut held = bytes.lock().unwrap_or_else(PoisonError::into_inner);
+                        let room = cap.saturating_sub(held.len());
+                        held.extend_from_slice(&chunk[..read.min(room)]);
+                        room
+                    };
+                    if read > room {
+                        capped.store(true, Ordering::Release);
+                        return;
+                    }
+                }
+            })
+        });
+        Self {
+            bytes,
+            capped,
+            reader,
         }
-        std::thread::sleep(POLL);
     }
-    handle.join().unwrap_or_default()
+
+    /// Whether more than the cap was written.
+    fn capped(&self) -> bool {
+        self.capped.load(Ordering::Acquire)
+    }
+
+    /// The bytes read, once the reader ends or `grace` passes. A descendant
+    /// still holding the pipe past `grace` leaves the reader detached; what
+    /// it read so far is kept.
+    fn finish(self, grace: Instant) -> (Vec<u8>, bool) {
+        if let Some(reader) = self.reader {
+            while !reader.is_finished() && Instant::now() < grace {
+                std::thread::sleep(POLL);
+            }
+        }
+        let bytes = std::mem::take(&mut *self.bytes.lock().unwrap_or_else(PoisonError::into_inner));
+        (bytes, self.capped.load(Ordering::Acquire))
+    }
 }
 
-/// Wait for exit, killing the child at the deadline or once stdout filled
+/// Wait for exit, killing the child at the deadline or once stdout passed
 /// its cap (nothing more would be read, and a blocked writer never exits).
-fn wait(child: &mut Child, stdout: &Reader, deadline: Instant) -> Result<ExitStatus, RunError> {
+fn wait(child: &mut Child, stdout: &Capture, deadline: Instant) -> Result<ExitStatus, RunError> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
@@ -148,9 +182,7 @@ fn wait(child: &mut Child, stdout: &Reader, deadline: Instant) -> Result<ExitSta
                 return Err(RunError::Wait(error.to_string()));
             }
         }
-        if stdout.as_ref().is_some_and(JoinHandle::is_finished) {
-            // The reader stops only at end of stream or at the cap; at the
-            // cap the child may block forever on a full pipe.
+        if stdout.capped() {
             kill(child);
             return child
                 .wait()
@@ -209,6 +241,23 @@ mod tests {
         assert_eq!(out.stdout.len(), 1024);
         assert!(out.truncated);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn output_exactly_at_the_cap_is_whole() {
+        let out = sh("printf 1234", Duration::from_secs(5), 4).unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"1234");
+        assert!(!out.truncated);
+    }
+
+    #[test]
+    fn a_descendant_holding_the_pipe_does_not_lose_the_output() {
+        let started = Instant::now();
+        let out = sh("printf kept; sleep 5 &", Duration::from_secs(5), 64).unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"kept");
+        assert!(started.elapsed() < Duration::from_secs(4));
     }
 
     #[test]

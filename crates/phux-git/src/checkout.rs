@@ -260,7 +260,7 @@ impl Checkout {
         let (path, prefix) = if dir.is_empty() {
             (self.root.clone(), String::new())
         } else {
-            let dir = relative(dir)?;
+            let dir = relative(dir)?.trim_end_matches('/');
             (self.resolve(dir, Final::NoSymlink)?, format!("{dir}/"))
         };
         let read = std::fs::read_dir(&path)
