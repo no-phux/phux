@@ -48,6 +48,7 @@ production state or install an unreleased build.
 
 - [Architecture](./architecture.md): process model, crates, clients, the decisions behind them.
 - [Organization](./organization.md): durable records, transaction ordering, execution and restore authority.
+- [Substrate](./substrate.md): principals, the org's home keeper, and one-way adapters.
 - [Protocol](./protocol.md): framing, handshake, capabilities, replica recovery and bounded retries.
 - [Development](./development.md): environments, build cache, per-area setup, gates, CI.
 - [Releasing](./releasing.md): what ships, how, and the manual controls.

@@ -64,7 +64,9 @@ dials out to the hub instead. **Joining trusts the hub with full satellite
 owner authority**, not an ordinary scoped observer grant: each reverse
 stream is spliced into the satellite owner socket. The hub must be paired;
 the satellite may remain in local mode. Join only a hub you trust to run
-commands as the satellite's serving user.
+commands as the satellite's serving user. The
+[substrate decision](./substrate.md) keeps that join between one person's
+own machines.
 
 ```sh
 phux host ticket sandbox     # on the hub: a code good for ten minutes
