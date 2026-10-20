@@ -328,6 +328,15 @@ fn tree_lists_files_and_directories_with_ignored_marks() {
     );
     assert_eq!(top.entries[3].size, Some(3));
 
+    write(&dir, "src/scratch.log", "x");
+    let src = checkout.tree("src/").unwrap();
+    assert_eq!(src.entries.len(), 2);
+    assert!(
+        src.entries
+            .iter()
+            .any(|e| e.name == "scratch.log" && e.ignored)
+    );
+    std::fs::remove_file(dir.join("src/scratch.log")).unwrap();
     let src = checkout.tree("src").unwrap();
     assert_eq!(src.entries.len(), 1);
     assert_eq!(src.entries[0].name, "main.rs");

@@ -91,8 +91,18 @@ async fn run_bounded(cwd: PathBuf, request: CheckoutRequest) -> CheckoutAnswer {
     }
 }
 
+/// Index writes run one at a time: two clients staging at once would
+/// otherwise race for `index.lock` and one would fail spuriously. Reads take
+/// no lock (`GIT_OPTIONAL_LOCKS=0`) and run beside them.
+static INDEX_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Run `request` against the checkout containing `cwd`. Blocking.
 fn answer(cwd: &std::path::Path, request: CheckoutRequest) -> CheckoutAnswer {
+    let _write = request.mutates().then(|| {
+        INDEX_WRITES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    });
     let result = Checkout::open(cwd).and_then(|checkout| dispatch(&checkout, request));
     result.unwrap_or_else(|error| refusal(&error))
 }
