@@ -15,3 +15,4 @@ mod plugin_surfaces_e2e;
 mod quic_restore_e2e;
 mod resize_e2e;
 mod spatial_e2e;
+mod update_notice_e2e;

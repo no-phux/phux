@@ -33,9 +33,21 @@ pub const AMBIENT_PHUX_KEYS: &[&str] = &[
     "PHUX_LOG",
 ];
 
+/// Non-empty value disables the TUI release check and its toast.
+///
+/// Any non-empty value is an opt-out (`phux-tui`'s `update_notice`). The
+/// harness sets [`NO_UPDATE_CHECK_VALUE`] on every spawned `phux` so a
+/// published release cannot paint over a scripted attach and consume the
+/// next key.
+pub const NO_UPDATE_CHECK_ENV: &str = "PHUX_NO_UPDATE_CHECK";
+
+/// The value [`disable_update_check`] writes. Any non-empty value opts out.
+pub const NO_UPDATE_CHECK_VALUE: &str = "1";
+
 /// `PHUX_*` keys the test harness itself sets for every child (`just e2e`'s
-/// auto-spawn idle backstop), which must survive the scrub.
-pub const HARNESS_PHUX_KEYS: &[&str] = &["PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE"];
+/// auto-spawn idle backstop, and the release-check opt-out), which must
+/// survive the scrub.
+pub const HARNESS_PHUX_KEYS: &[&str] = &["PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE", NO_UPDATE_CHECK_ENV];
 
 /// Whether an inherited variable is phux process state. Every `PHUX_*` key
 /// but the harness's own is, so a path variable added later (workload
@@ -70,14 +82,24 @@ pub fn scrub_ambient_phux(cmd: &mut Command) {
 /// `Command::new(bin)` with [`scrub_ambient_phux`] already applied and
 /// `XDG_STATE_HOME` / `XDG_CONFIG_HOME` pointed at this test process's
 /// [`isolated_xdg`] directories. A caller that sets either key afterwards
-/// wins; `env_clear` drops both.
+/// wins; `env_clear` drops both and drops [`NO_UPDATE_CHECK_ENV`]. Call
+/// [`disable_update_check`] again after `env_clear`.
 pub fn phux_cmd(bin: impl AsRef<OsStr>) -> Command {
     let mut cmd = Command::new(bin);
     scrub_ambient_phux(&mut cmd);
     let xdg = isolated_xdg();
     cmd.env("XDG_STATE_HOME", &xdg.state)
         .env("XDG_CONFIG_HOME", &xdg.config);
+    disable_update_check(&mut cmd);
     cmd
+}
+
+/// Turn the TUI release check and its toast off for this child.
+///
+/// Set this after `env_clear`. A private `XDG_STATE_HOME` is not enough: the
+/// attach still looks up the latest release and a cached answer still paints.
+pub fn disable_update_check(cmd: &mut Command) {
+    cmd.env(NO_UPDATE_CHECK_ENV, NO_UPDATE_CHECK_VALUE);
 }
 
 /// A private `XDG_STATE_HOME` and `XDG_CONFIG_HOME` pair under the cargo
@@ -178,8 +200,22 @@ mod tests {
             "XDG_STATE_HOME",
             "MY_PHUX_THING",
             "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE",
+            super::NO_UPDATE_CHECK_ENV,
         ] {
             assert!(!super::is_ambient_phux_key(OsStr::new(key)), "{key}");
         }
+    }
+
+    #[test]
+    fn phux_cmd_disables_the_release_check() {
+        let cmd = super::phux_cmd("phux");
+        let value = cmd
+            .get_envs()
+            .find_map(|(key, value)| (key == super::NO_UPDATE_CHECK_ENV).then_some(value));
+        assert_eq!(
+            value,
+            Some(Some(OsStr::new(super::NO_UPDATE_CHECK_VALUE))),
+            "every harness-spawned phux must opt out of the release check"
+        );
     }
 }
