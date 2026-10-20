@@ -235,6 +235,66 @@ fn a_journal_gap_rereads_level_state() {
     );
 }
 
+#[test]
+fn a_done_that_lands_during_the_exit_grace_projects_done_unchecked() {
+    let root = tempfile::tempdir().expect("temp");
+    let repo = root.path().join("repo");
+    // Stay up long enough to be identified, then exit 0. The projector logs
+    // the grace before it will record `failed`. Publishing `done` in that
+    // window is the late record the re-read has to see.
+    let harness = Harness::new(root.path(), "sleep 3\nexit 0\n", None, true);
+    let _stop = StopKeeper(harness.guard.xdg.state.clone());
+    let started = mission_json(
+        &harness.guard,
+        &repo,
+        &[
+            "mission", "add", "--start", "--agent", "fake", "--repo", "demo", "Late", "--json",
+        ],
+        &[],
+    );
+    let pane = started["binding"]["terminal_id"].as_str().unwrap();
+    let log = work_dir(&harness.guard.xdg.state).join("keeper.log");
+    wait_for_log(&log, "keeper holding an exit for a late done record");
+    publish_done(&harness.guard, pane);
+    let done = wait_state(&harness.guard, &repo, "demo/1", "done_unchecked");
+    assert_valid(&done);
+    let events = event_rows(&harness.guard.xdg.state);
+    assert!(
+        events.iter().any(|(_, kind)| kind == "done_unchecked"),
+        "late done should record done_unchecked, got {events:?}"
+    );
+    assert!(
+        events.iter().all(|(_, kind)| kind != "failed"),
+        "late done was recorded as failed: {events:?}"
+    );
+}
+
+#[test]
+fn an_exit_with_no_done_record_projects_failed() {
+    let root = tempfile::tempdir().expect("temp");
+    let repo = root.path().join("repo");
+    let harness = Harness::new(root.path(), "sleep 0.6\nexit 0\n", None, true);
+    let _stop = StopKeeper(harness.guard.xdg.state.clone());
+    mission_json(
+        &harness.guard,
+        &repo,
+        &[
+            "mission", "add", "--start", "--agent", "fake", "--repo", "demo", "Bare", "--json",
+        ],
+        &[],
+    );
+    wait_state(&harness.guard, &repo, "demo/1", "failed");
+    let events = event_rows(&harness.guard.xdg.state);
+    assert!(
+        events.iter().any(|(_, kind)| kind == "failed"),
+        "exit with no done should record failed, got {events:?}"
+    );
+    assert!(
+        events.iter().all(|(_, kind)| kind != "done_unchecked"),
+        "exit with no done recorded done_unchecked: {events:?}"
+    );
+}
+
 struct Harness {
     guard: ServerGuard,
     log_dir: PathBuf,
@@ -376,6 +436,42 @@ fn mission_json(guard: &ServerGuard, repo: &Path, args: &[&str], env: &[(&str, &
     let doc: Value = serde_json::from_str(&stdout).expect("json");
     assert_valid(&doc);
     doc
+}
+
+fn wait_for_log(path: &Path, needle: &str) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if text.contains(needle) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "keeper log never contained {needle}\n{text}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn publish_done(guard: &ServerGuard, pane: &str) {
+    let target = format!("@{pane}");
+    let deadline = Instant::now() + Duration::from_millis(2_000);
+    loop {
+        let (code, stdout, stderr) =
+            guard.run(&["agent", "set", &target, "--name", "fake", "--state", "done"]);
+        let last = format!("code={code} stdout={stdout} stderr={stderr}");
+        // `agent set` confirms the write by printing the stored record. Exit
+        // status stays 0 when the server refuses the read-back, so the body
+        // has to name `done`.
+        if code == 0 && stdout.contains("\"state\":\"done\"") {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "could not publish done during the exit grace: {last}"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
 }
 
 fn report(guard: &ServerGuard, pane: &str, state: &str) {

@@ -158,8 +158,14 @@ impl<'de> Deserialize<'de> for OperationId {
 ///
 /// `NeedsYou` is the needs-you state. An unresolved [`SignalKind::CredentialLost`]
 /// projects every objective that carries it into this state. `Done` is reserved
-/// for merge cleanup and is not written from agent state. The spellings are
-/// additive: they do not bump the store `user_version`.
+/// for merge cleanup and is not written from agent state. The spellings do not
+/// bump the store `user_version`.
+///
+/// # Downgrade
+///
+/// `done_unchecked`, `done`, and `failed` have no serde fallback. An older
+/// binary still opens the file (`user_version` stays 1) and then cannot read a
+/// row in one of those states: its parser treats the spelling as corrupt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectiveState {

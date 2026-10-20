@@ -21,8 +21,9 @@
 //! An unresolved `credential_lost` signal projects the objective to
 //! `needs_you`. The store will not leave that objective `working`.
 //! Agent projection adds `done_unchecked`, `done`, and `failed` without
-//! bumping `user_version`. The keeper stays up while any objective is
-//! `working` or `queued`.
+//! bumping `user_version`. Those spellings have no serde fallback, so an
+//! older binary cannot read a row that uses one of them. The keeper stays
+//! up while any objective is `working` or `queued`.
 //!
 //! The same keeper holds agent coordination: mail between agents and claims
 //! on paths (ADR-0187). Those tables are additive and do not change

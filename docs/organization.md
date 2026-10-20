@@ -107,7 +107,13 @@ operation id writes nothing.
 `needs_you` keeps the agent slot. `done_unchecked` and `failed` free it, and
 the keeper then starts the oldest queued task through the same worktree and
 brief path as `mission start`. The keeper stays up while any task is
-`working` or `queued`.
+`working` or `queued`. On exit it waits a short bounded grace and re-reads
+that terminal's agent record before recording `failed`, so a `done` that
+lands in the same moment becomes `done_unchecked`.
+
+`done_unchecked`, `done`, and `failed` do not bump the work store
+`user_version`, and they have no serde fallback. An older binary opens the
+file and then cannot read a task row in one of those states.
 
 The transition is pure in
 [state.rs](../crates/phux-mission/src/state.rs) and applied by

@@ -1,4 +1,9 @@
 //! Schema v1. `PRAGMA user_version` is 1 after a successful open.
+//!
+//! Additive tables do not bump `user_version`, so an older binary still opens
+//! the file and ignores them. The objective states `done_unchecked`, `done`,
+//! and `failed` are not in that category: they have no serde fallback, and an
+//! older binary cannot read a row that stores one of them.
 
 use rusqlite::{Connection, Transaction};
 
@@ -101,7 +106,9 @@ pub(crate) fn prepare(conn: &Connection) -> Result<(), Error> {
         }
     }
     // Additive tables leave `user_version` alone, so an older binary still
-    // opens the store and ignores them.
+    // opens the store and ignores them. `done_unchecked`, `done`, and `failed`
+    // do not: an older binary has no serde fallback for those spellings and
+    // cannot read a row that stores one.
     conn.execute_batch(crate::coord::SCHEMA)?;
     conn.execute_batch(LAUNCH_INTENT)?;
     Ok(())
