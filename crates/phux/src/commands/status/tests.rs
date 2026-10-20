@@ -25,6 +25,7 @@ fn fabricated() -> StatusReport {
         pid: Some(4242),
         since_unix_secs: Some(1_754_000_000),
         protocol: (1, 2, 3),
+        client_protocol: (1, 2, 3),
         features: vec!["acknowledged_input", "report_agent_state"],
         sessions: vec![session("scratch", 1, 0), session("work", 3, 2)],
         satellite_terminals: vec!["build-box/@1".to_owned()],
@@ -72,6 +73,7 @@ fn json_render_is_pinned() {
     assert_eq!(doc["protocol"]["major"], 1);
     assert_eq!(doc["protocol"]["minor"], 2);
     assert_eq!(doc["protocol"]["patch"], 3);
+    assert_eq!(doc["client_protocol"]["minor"], 2);
     assert_eq!(
         doc["features"],
         serde_json::json!(["acknowledged_input", "report_agent_state"]),
@@ -95,6 +97,21 @@ fn json_render_is_pinned() {
 /// A degraded fleet view surfaces in both formats: an indented
 /// `partial view:` line in the human report, the notice in the JSON
 /// `unreachable` list.
+/// A server on another minor or patch prints its own version, with this
+/// client's beside it, in both formats.
+#[test]
+fn a_skewed_server_reports_its_version_and_the_clients() {
+    let mut report = fabricated();
+    report.protocol = (1, 0, 0);
+    report.client_protocol = (1, 4, 2);
+    let lines = render_human(&report, 1_754_000_000);
+    assert_eq!(lines[2], "protocol: 1.0.0 (this client: 1.4.2)");
+    let doc = status_document(&report);
+    assert_eq!(doc["protocol"]["minor"], 0, "the server's, not ours");
+    assert_eq!(doc["client_protocol"]["minor"], 4);
+    assert_eq!(doc["client_protocol"]["patch"], 2);
+}
+
 #[test]
 fn degradation_surfaces_in_both_formats() {
     let mut report = fabricated();

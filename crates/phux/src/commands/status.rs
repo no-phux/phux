@@ -17,6 +17,7 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_client::state::Degradation;
+use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
@@ -40,8 +41,11 @@ pub(crate) struct StatusReport {
     /// Socket bind time (the socket file's mtime), seconds since the epoch;
     /// `None` when the file cannot be statted.
     since_unix_secs: Option<i64>,
-    /// The protocol version triple the server selected in `HELLO_OK`.
+    /// The protocol version triple the server answered `HELLO_OK` with. On
+    /// the same major it may be older or newer than [`Self::client_protocol`].
     protocol: (u16, u16, u16),
+    /// This client's own protocol triple, [`phux_protocol::PROTOCOL_VERSION`].
+    client_protocol: (u16, u16, u16),
     /// The additive server features `HELLO_OK` advertised, as their
     /// `snake_case` names — the capability probe for callers that cannot speak
     /// the wire themselves.
@@ -130,6 +134,11 @@ fn build_report(
         pid,
         since_unix_secs,
         protocol,
+        client_protocol: (
+            PROTOCOL_VERSION.major,
+            PROTOCOL_VERSION.minor,
+            PROTOCOL_VERSION.patch,
+        ),
         features: features.iter().map(ServerFeature::snake_name).collect(),
         sessions,
         satellite_terminals,
@@ -188,8 +197,7 @@ fn render_human(report: &StatusReport, now_unix_secs: i64) -> Vec<String> {
             )
         },
     ));
-    let (major, minor, patch) = report.protocol;
-    lines.push(format!("protocol: {major}.{minor}.{patch}"));
+    lines.push(protocol_line(report.protocol, report.client_protocol));
     lines.push(format!(
         "clients: {} attached",
         total_clients(&report.sessions)
@@ -222,6 +230,18 @@ fn render_human(report: &StatusReport, now_unix_secs: i64) -> Vec<String> {
     lines
 }
 
+/// `protocol: <server>`, naming this client's own version only when the two
+/// differ (same major interoperates, so a skew is informational).
+fn protocol_line(server: (u16, u16, u16), client: (u16, u16, u16)) -> String {
+    let (major, minor, patch) = server;
+    let line = format!("protocol: {major}.{minor}.{patch}");
+    if server == client {
+        return line;
+    }
+    let (major, minor, patch) = client;
+    format!("{line} (this client: {major}.{minor}.{patch})")
+}
+
 /// `secs` since the epoch as a fixed-format UTC timestamp. UTC rather than
 /// local time so the render is deterministic (testable) and greppable across
 /// machines; the relative `up ...` beside it is what a human actually reads.
@@ -250,6 +270,7 @@ fn format_uptime(secs: i64) -> String {
 /// positively, mirroring `phux ls --json`.
 fn status_document(report: &StatusReport) -> serde_json::Value {
     let (major, minor, patch) = report.protocol;
+    let (client_major, client_minor, client_patch) = report.client_protocol;
     serde_json::json!({
         "schema_version": STATUS_SCHEMA_VERSION,
         "running": true,
@@ -257,6 +278,11 @@ fn status_document(report: &StatusReport) -> serde_json::Value {
         "socket": report.socket.display().to_string(),
         "since_unix_secs": report.since_unix_secs,
         "protocol": { "major": major, "minor": minor, "patch": patch },
+        "client_protocol": {
+            "major": client_major,
+            "minor": client_minor,
+            "patch": client_patch,
+        },
         "features": report.features,
         "clients": total_clients(&report.sessions),
         "sessions": report.sessions.iter().map(|s| serde_json::json!({

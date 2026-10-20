@@ -6,21 +6,19 @@ use phux_protocol::wire::frame::FrameKind;
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 
-/// The protocol version triple the server selected in `HELLO_OK`. A
-/// negotiated connection answers without a second `HELLO`; only a raw
-/// transport performs the exchange here.
+/// The protocol version triple the server answered `HELLO_OK` with.
+///
+/// It may differ from this client's on minor or patch. A negotiated
+/// connection answers from its kept `HELLO_OK` without a second `HELLO`; only
+/// a raw transport performs the exchange here.
 ///
 /// # Errors
 ///
 /// Transport failure, a refusal (version incompatibility), or an unexpected
 /// reply.
 pub async fn probe_hello(conn: &mut Connection) -> Result<(u16, u16, u16), AttachError> {
-    if conn.negotiated_bootstrap().is_some() {
-        return Ok((
-            phux_protocol::PROTOCOL_VERSION.major,
-            phux_protocol::PROTOCOL_VERSION.minor,
-            phux_protocol::PROTOCOL_VERSION.patch,
-        ));
+    if let Some(protocol) = conn.server_protocol() {
+        return Ok(protocol);
     }
     match raw_hello(conn).await? {
         FrameKind::HelloOk {
