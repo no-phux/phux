@@ -97,6 +97,13 @@ pub enum DecodeError {
     #[error("invalid NATIVE_AGENT JSON payload")]
     InvalidNativeAgentPayload,
 
+    /// A `CHECKOUT` request or answer exceeded its JSON byte bound.
+    #[error("CHECKOUT payload exceeds protocol limits")]
+    CheckoutLimitExceeded,
+    /// A `CHECKOUT` request or answer was not JSON matching the typed DTO.
+    #[error("invalid CHECKOUT JSON payload")]
+    InvalidCheckoutPayload,
+
     /// A `SPAWN_RESOURCE` body broke its kind's field rules
     /// (`docs/spec/L1.md` §3.1).
     #[error(

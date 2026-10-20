@@ -135,6 +135,7 @@ The kind's facet.
 | `APPLY_INPUT` | command `0x14` | INPUT | yes | `acknowledged_input` | shipped |
 | `PUT_FILE` | command `0x15` | INPUT | yes | `file_upload` | shipped |
 | `GET_FILE` | command `0x3b` | INPUT | yes | `file_download` (features_ext) | shipped |
+| `CHECKOUT` | command `0x3c` | INPUT | yes | `checkout` (features_ext) | shipped |
 | `TRANSCRIBE` | command `0x19` | INPUT | yes | `transcribe` | shipped |
 | `GET_TERMINAL_STATE` | command `0x0c` | INVENTORY | no | none | shipped |
 | `ACQUIRE_INPUT` | command `0x0f` | BIND | yes | none | shipped |
@@ -262,6 +263,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `REPORT_ASKED`, `REPORT_AGENT_STATE` | BIND | `NamedTerminal` |
 | `PUT_FILE` | INPUT | `NamedTerminal` |
 | `GET_FILE` | INPUT | `Global { owner_uds_only: false }` |
+| `CHECKOUT` | INPUT | `NamedTerminal` |
 | `TRANSCRIBE` | INPUT | `NamedTerminal` |
 | `DETACH_CLIENTS { session: Some }` | SIGNAL | `ResolvedGroup` |
 | `DETACH_CLIENTS { session: None }` | SIGNAL | `Global { owner_uds_only: false }` |

@@ -24,9 +24,11 @@ use crate::projection::{agent, event, grid, id, outcome, status, topology};
 
 use super::keymap::{self, KeyMods, KeyPress};
 
+mod checkout;
 mod client;
 mod graph;
 mod types;
 
+pub use checkout::*;
 pub use graph::*;
 pub use types::*;

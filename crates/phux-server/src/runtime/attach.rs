@@ -1765,7 +1765,7 @@ fn path_to_string(path: &std::path::Path) -> Option<String> {
 
 /// Ask `handle`'s Terminal engine for its PTY child's live CWD. `None` for a
 /// non-Terminal, a gone actor, or an unsupported query.
-async fn query_pane_cwd(handle: ResourceHandle) -> Option<String> {
+pub(crate) async fn query_pane_cwd(handle: ResourceHandle) -> Option<String> {
     let terminal = handle.terminal().ok()?;
     let (reply, rx) = tokio::sync::oneshot::channel();
     terminal.pwd.send(PwdRequest { reply }).await.ok()?;

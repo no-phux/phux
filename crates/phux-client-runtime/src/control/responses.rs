@@ -562,6 +562,9 @@ impl ControlPlane {
             Pending::Extension => {
                 self.push_event(Event::CommandResult { request_id, result });
             }
+            Pending::Checkout(terminal_id) => {
+                self.resolve_checkout(request_id, terminal_id, result);
+            }
             pending @ (Pending::PutFile(_) | Pending::Transcribe(_)) => {
                 self.resolve_extension_result(&pending, request_id, result);
             }

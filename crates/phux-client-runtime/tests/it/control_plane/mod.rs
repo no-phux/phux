@@ -35,6 +35,7 @@ use crate::embedded::*;
 
 mod agent_sessions;
 mod approvals;
+mod checkout;
 mod geometry;
 mod native_agent;
 mod observation;

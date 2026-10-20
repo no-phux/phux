@@ -609,6 +609,7 @@ fn command_terminal(command: &Command) -> Option<&WireResourceId> {
         | Command::ReportAsked { terminal_id, .. }
         | Command::ReportAgentState { terminal_id, .. }
         | Command::PutFile { terminal_id, .. }
+        | Command::Checkout { terminal_id, .. }
         | Command::Transcribe { terminal_id, .. }
         | Command::AppendResourceOutput { terminal_id, .. } => Some(terminal_id),
         Command::ResourceTerminate { target, .. } => Some(&target.resource),

@@ -768,6 +768,7 @@ enum CommandTag {
     PerfControl = 0x39,
     SessionSetProject = 0x3a,
     GetFile = 0x3b,
+    Checkout = 0x3c,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -817,6 +818,8 @@ wire_tags! { Command;
 pub(crate) const COMMAND_TAG_PUT_FILE: u8 = CommandTag::PutFile as u8;
 /// Wire tag for [`Command::GetFile`].
 pub(crate) const COMMAND_TAG_GET_FILE: u8 = CommandTag::GetFile as u8;
+/// Wire tag for [`Command::Checkout`].
+pub(crate) const COMMAND_TAG_CHECKOUT: u8 = CommandTag::Checkout as u8;
 /// Wire tag for [`Command::Shutdown`].
 pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = CommandTag::Shutdown as u8;
 /// Wire tag for [`Command::ReportAgentState`].
@@ -958,6 +961,8 @@ pub(crate) const COMMAND_VALUE_TAG_COMMITTED: u8 = 0x08;
 pub(crate) const COMMAND_VALUE_TAG_DELEGATION: u8 = 0x09;
 /// Wire tag for [`CommandValue::FileChunk`].
 pub(crate) const COMMAND_VALUE_TAG_FILE_CHUNK: u8 = 0x0a;
+/// Wire tag for [`CommandValue::Checkout`].
+pub(crate) const COMMAND_VALUE_TAG_CHECKOUT: u8 = 0x0b;
 }
 
 // Wire tags for the `AttachTarget` tagged union (SPEC §13).

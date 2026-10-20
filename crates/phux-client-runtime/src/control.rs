@@ -55,6 +55,7 @@ use crate::publication::Publication;
 mod agent_delivery;
 mod agents;
 mod approvals;
+mod checkout;
 mod commands;
 mod events;
 mod extensions;
@@ -71,6 +72,7 @@ mod roster;
 mod state;
 mod topology;
 
+pub use checkout::{CheckoutFailure, CheckoutOutcome, CheckoutResponse, MAX_CHECKOUT_ANSWERS};
 pub use events::{
     AgentPublication, AgentRecordMode, AgentSessionInfo, DeliveryOutcome, Event, Observation,
     Status,
@@ -366,6 +368,8 @@ enum Pending {
     PutFile(u64),
     /// A one-shot transcription request for a completed upload.
     Transcribe(u64),
+    /// A checkout method on this Terminal's checkout.
+    Checkout(ResourceId),
     /// The runtime's own subscription to an `AgentSession` stream.
     AgentSubscription(ResourceId),
     /// The runtime's release of an `AgentSession` stream whose pane it

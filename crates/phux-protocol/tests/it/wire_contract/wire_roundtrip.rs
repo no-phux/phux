@@ -3244,3 +3244,90 @@ fn agent_attach_cursor_preserves_legacy_bytes_and_uses_a_canonical_role_slot() {
         );
     }
 }
+
+#[test]
+fn checkout_requests_and_answers_round_trip_and_are_bounded() {
+    use phux_protocol::checkout::{
+        CheckoutAnswer, CheckoutArea, CheckoutEntry, CheckoutRefusal, CheckoutRefusalCode,
+        CheckoutRequest, CheckoutStatus, MAX_CHECKOUT_REQUEST_BYTES,
+    };
+    let terminal = phux_protocol::ids::ResourceId::satellite("mini", 7);
+    for request in [
+        CheckoutRequest::Status,
+        CheckoutRequest::Diff {
+            path: "src/main.rs".to_owned(),
+            area: CheckoutArea::Untracked,
+        },
+        CheckoutRequest::Log {
+            skip: 100,
+            limit: 50,
+            path: Some("README.md".to_owned()),
+        },
+        CheckoutRequest::Tree { dir: String::new() },
+        CheckoutRequest::PullRequest,
+        CheckoutRequest::Unstage {
+            paths: vec!["a b.txt".to_owned(), "ü.rs".to_owned()],
+        },
+    ] {
+        let frame = FrameKind::Command {
+            request_id: 9,
+            command: Command::Checkout {
+                terminal_id: terminal.clone(),
+                request,
+            },
+        };
+        let mut encoded = BytesMut::new();
+        frame.encode(&mut encoded);
+        let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+        assert_eq!(decoded, frame);
+        assert!(tail.is_empty());
+    }
+
+    for answer in [
+        CheckoutAnswer::Status(CheckoutStatus {
+            root: "/work/phux".to_owned(),
+            branch: Some("main".to_owned()),
+            ahead: 1,
+            entries: vec![CheckoutEntry {
+                path: "new.rs".to_owned(),
+                from: Some("old.rs".to_owned()),
+                area: CheckoutArea::Staged,
+                code: "R".to_owned(),
+                added: Some(2),
+                deleted: None,
+                binary: false,
+            }],
+            ..CheckoutStatus::default()
+        }),
+        CheckoutAnswer::Refused(CheckoutRefusal {
+            code: CheckoutRefusalCode::NotARepository,
+            message: "not a checkout".to_owned(),
+        }),
+    ] {
+        let reply = FrameKind::CommandResult {
+            request_id: 9,
+            result: CommandResult::OkWith(CommandValue::Checkout(Box::new(answer))),
+        };
+        let mut encoded = BytesMut::new();
+        reply.encode(&mut encoded);
+        let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
+        assert_eq!(decoded, reply);
+        assert!(tail.is_empty());
+    }
+
+    let oversized = FrameKind::Command {
+        request_id: 10,
+        command: Command::Checkout {
+            terminal_id: terminal,
+            request: CheckoutRequest::Stage {
+                paths: vec!["x".repeat(MAX_CHECKOUT_REQUEST_BYTES)],
+            },
+        },
+    };
+    let mut bytes = BytesMut::new();
+    oversized.encode(&mut bytes);
+    assert_eq!(
+        FrameKind::decode(&bytes).unwrap_err(),
+        DecodeError::CheckoutLimitExceeded
+    );
+}

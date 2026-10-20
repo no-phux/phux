@@ -60,6 +60,7 @@ Cargo manifests define the actual edges.
 | `phux-core`           | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O                                                 |
 | `phux-config-core`    | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths                                                        |
 | `phux-perf`           | lock-free histograms and counters behind `GET_PERF` and `phux perf`                                                                                   |
+| `phux-git`            | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging; shared by the desktop Changes panel and `CHECKOUT` |
 | `phux-agent-rules`    | agent detection manifests: regions, rules, `phux agent explain`                                                                                       |
 | `phux-crash`          | fatal-signal handler that restores the terminal before re-raising                                                                                     |
 | `portable-pty-adopt`  | rebuild portable-pty handles from inherited fds after `execve`                                                                                        |
@@ -228,6 +229,12 @@ records explain history; [look them up deliberately](#historical-decisions).
   is classified `INPUT` on the server rather than fenced by a path allow-list
   ([protocol](./protocol.md#file-transfer),
   [#1657](https://github.com/no-phux/phux/pull/1657)).
+- Checkout methods are typed requests keyed by a Terminal, not a generic
+  exec or a string-named invoke. The server resolves the checkout from the
+  Terminal's live working directory and runs the shared `phux-git` module,
+  so mobile, remote desktop, TUI and MCP read one contract; a client never
+  names a host path. They are `INPUT` on that Terminal for the same reason
+  `GET_FILE` is `INPUT` ([protocol](./protocol.md#checkout-methods)).
 
 **Clients**
 

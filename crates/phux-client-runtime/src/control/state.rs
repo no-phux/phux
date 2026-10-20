@@ -116,6 +116,7 @@ impl ControlPlane {
                 | Pending::OrgArrangement(_)
                 | Pending::PutFile(_)
                 | Pending::Transcribe(_)
+                | Pending::Checkout(_)
                 | Pending::AgentSubscription(_)
                 | Pending::AgentRelease => {}
                 Pending::Extension => {
