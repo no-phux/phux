@@ -1,0 +1,32 @@
+id = "com.phux.usage"
+name = "phux Plan Usage"
+version = "0.1.0"
+min_phux_version = "0.108.1"
+description = "Publishes this host's AI plan limits (Claude Code, Codex, Grok Build) as the phux.usage/v1 Global metadata key every client can read."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "refresh"
+title = "Refresh plan usage"
+description = "Asks every vendor now and republishes phux.usage/v1."
+contexts = ["workspace"]
+command = ["sh", "scripts/publish.sh", "--refresh"]
+
+[[actions]]
+id = "show"
+title = "Show plan usage"
+description = "Prints this host's plan limits without publishing."
+contexts = ["workspace"]
+command = ["sh", "scripts/show.sh"]
+
+[[events]]
+id = "publish-on-attach"
+title = "Publish plan usage when a client attaches"
+on = "client-attached"
+command = ["sh", "scripts/publish.sh"]
+
+[[events]]
+id = "publish-on-agent-state"
+title = "Publish plan usage when an agent changes state"
+on = "agent-state-changed"
+command = ["sh", "scripts/publish.sh"]

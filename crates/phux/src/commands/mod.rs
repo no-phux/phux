@@ -287,6 +287,7 @@ pub(crate) mod partial;
 pub(crate) mod paste;
 pub(crate) mod perf;
 pub(crate) mod perf_desktop;
+pub(crate) mod plan_usage;
 pub(crate) mod play;
 pub(crate) mod plugin;
 pub(crate) mod project;
@@ -1481,6 +1482,37 @@ pub(crate) enum Command {
     Deny {
         /// The approval id `phux approvals` lists.
         id: String,
+    },
+
+    /// Show the AI plan limits this host can see
+    ///
+    /// Reads each signed-in subscription's limit windows from the vendor's
+    /// own credentials: Claude Code (its OAuth usage endpoint), Codex (the
+    /// rate limits its session ledgers record, or ChatGPT's usage endpoint
+    /// when they are old) and Grok Build (its credits allowance). Prints
+    /// utilization and reset times per plan. Credentials are only read,
+    /// never refreshed, and go only to the vendor that issued them;
+    /// requests are spaced at least two minutes apart per vendor and back
+    /// off on rate limits, with the last reading reused in between.
+    ///
+    /// `--publish` also writes the result to the server's `phux.usage/v1`
+    /// Global metadata key, which every client can read and watch; the usage
+    /// plugin runs this from its hooks. A client may set
+    /// `phux.usage.refresh/v1` to ask the next publish to skip the
+    /// two-minute spacing. Does not start a server.
+    #[usage(help_heading = "Agents", display_order = 74)]
+    Usage {
+        #[usage(flatten)]
+        json: JsonOpt,
+
+        /// Write the snapshot to the server's `phux.usage/v1` key.
+        #[usage(long)]
+        publish: bool,
+
+        /// Ask every vendor now instead of reusing a reading under two
+        /// minutes old (a rate-limit backoff still applies).
+        #[usage(long)]
+        refresh: bool,
     },
 
     /// Update phux to the latest stable or next release, keeping sessions alive.

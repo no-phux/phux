@@ -22,8 +22,9 @@
 # override: your own config.toml still wins per key, and an update to
 # this layer reaches you without re-scaffolding.
 
-# The demo plugin set: workspace autosave/restore (continuum) and the
-# agent bench helpers (agent-tools). `-append` contributes entries to
+# The demo plugin set: workspace autosave/restore (continuum), the agent
+# bench helpers (agent-tools), and plan usage (usage), which publishes this
+# host's AI plan limits as the phux.usage/v1 key every client reads. `-append` contributes entries to
 # [[plugins]] without erasing what your config or another layer declares;
 # assign a plain `plugins = [...]` in your own config to opt out entirely.
 #
@@ -31,10 +32,13 @@
 # directory, so this wiring works no matter where your config.toml lives —
 # provided the distro stays inside a phux checkout (the manifests live
 # under the sibling examples/plugins/ tree). If you copy starter elsewhere,
-# copy those plugin directories too and update these two paths.
+# copy those plugin directories too and update these paths.
 
 [[plugins-append]]
 manifest = "../../examples/plugins/continuum/phux-plugin.toml"
 
 [[plugins-append]]
 manifest = "../../examples/plugins/agent-tools/phux-plugin.toml"
+
+[[plugins-append]]
+manifest = "../../examples/plugins/usage/phux-plugin.toml"

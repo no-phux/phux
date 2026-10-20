@@ -134,6 +134,9 @@ phux plugin disable NAME
 ```
 
 [`examples/plugins`](../examples/plugins) has working plugins to copy.
+[`usage`](../examples/plugins/usage) is the pattern for publishing a host
+fact to every client: its hooks run a command that writes a Global metadata
+key ([plan usage](./agents.md#plan-usage)).
 
 ## Projects
 

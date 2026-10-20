@@ -71,6 +71,7 @@ Cargo manifests define the actual edges.
 | `phux-record`         | asciicast codec, VT replay, GIF/APNG export                                                                                                           |
 | `phux-mission`        | mission documents over the work store                                                                                                                 |
 | `phux-plugin`         | plugin action runtime contracts                                                                                                                       |
+| `phux-usage`          | plan-usage collector behind `phux usage`: vendor limit sources and the `phux.usage/v1` document; no wire, no server                                   |
 | `phux-relay`          | quictun bound to phux's ALPNs and state directory                                                                                                     |
 | `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication                      |
 | `phux-client`         | headless client: the connection facade and the verbs behind the CLI and MCP                                                                           |
@@ -250,6 +251,11 @@ records explain history; [look them up deliberately](#historical-decisions).
   tickets.
 - Humans outrank agents on input leases. Scoped grants can be held for
   approval; the owner never is.
+- Plan usage is a plugin publishing a Global L3 key (`phux.usage/v1`), not a
+  wire verb or server code: last-writer-wins host facts belong in metadata,
+  and clients watch it with the generic `SUBSCRIBE_METADATA`. Declared
+  producers and feeds (ADR-0177) remain the upgrade path if a fact outgrows
+  one key ([agents](./agents.md#plan-usage)).
 
 **Not doing**
 

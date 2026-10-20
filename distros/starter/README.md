@@ -36,8 +36,9 @@ rewrites a missing herdr path to starter when the new file is there.
 ## What you get
 
 - **Plugins, additively.** `[[plugins-append]]` wires
-  `examples/plugins/continuum` (workspace autosave/restore) and
-  `examples/plugins/agent-tools` (bench helpers) without erasing plugin
+  `examples/plugins/continuum` (workspace autosave/restore),
+  `examples/plugins/agent-tools` (bench helpers), and
+  `examples/plugins/usage` (plan usage for every client) without erasing plugin
   entries from your own config or another layer. Their actions appear in
   the command palette (`prefix Space`) as `plugin:` rows. To drop them,
   assign a plain `plugins = [...]` in your config - replacement wins over
@@ -81,5 +82,5 @@ accent = "magenta"              # replace one slot, keep the rest
 Relative `manifest` paths in a layer resolve against the layer file's
 own directory, which is what lets this layer reference the sibling
 `examples/plugins/` tree. If you copy `distros/starter/` out of a phux
-checkout, copy those two plugin directories too and update the
-`[[plugins-append]]` paths in `herdr.toml`.
+checkout, copy those plugin directories too and update the
+`[[plugins-append]]` paths in `starter.toml`.

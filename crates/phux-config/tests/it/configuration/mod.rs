@@ -8,3 +8,4 @@ mod plugin;
 mod provenance;
 mod satellite;
 mod scaffold;
+mod usage_plugin;
