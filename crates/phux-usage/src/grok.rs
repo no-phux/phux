@@ -69,14 +69,18 @@ fn parse_billing(body: &[u8]) -> Result<Vec<Window>, Failure> {
         .filter(|c| c.is_object())
         .ok_or_else(|| Failure::Failed("xAI billing reply had no allowance".to_owned()))?;
     let cents = |key: &str| number(config.get(key).and_then(|c| c.get("val")));
-    let used = number(config.get("creditUsagePercent")).or_else(|| {
-        let limit = cents("monthlyLimit").filter(|limit| *limit > 0.0)?;
-        Some(cents("used").unwrap_or(0.0) / limit * 100.0)
-    });
+    let period = config.get("currentPeriod").filter(|p| p.is_object());
+    // proto3 JSON omits zero scalars: a fresh period arrives with no
+    // `creditUsagePercent` at all, which is 0%, not unknown.
+    let used = number(config.get("creditUsagePercent"))
+        .or_else(|| {
+            let limit = cents("monthlyLimit").filter(|limit| *limit > 0.0)?;
+            Some(cents("used").unwrap_or(0.0) / limit * 100.0)
+        })
+        .or_else(|| period.map(|_| 0.0));
     let Some(used) = used else {
         return Err(Failure::Failed("xAI billing reply had no usage".to_owned()));
     };
-    let period = config.get("currentPeriod");
     let bound = |key: &str, legacy: &str| {
         text(period.and_then(|p| p.get(key)))
             .or_else(|| text(config.get(legacy)))
@@ -189,6 +193,14 @@ mod tests {
         assert_eq!(windows[0].minutes, 10_080);
         assert_eq!(windows[0].used_percent, 100.0);
         assert_eq!(windows[0].resets_at_ms, iso_ms("2026-10-20T02:39:37.078Z"));
+    }
+
+    #[test]
+    fn a_fresh_period_with_the_zero_omitted_reads_as_zero() {
+        let fresh = r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-10-20T02:39:37.078+00:00","end":"2026-10-27T02:39:37.078+00:00"},"isUnifiedBillingUser":true,"prepaidBalance":{"val":0}}}"#;
+        let windows = parse_billing(fresh.as_bytes()).unwrap();
+        assert_eq!(windows[0].used_percent, 0.0);
+        assert_eq!(windows[0].id, "7d");
     }
 
     #[test]

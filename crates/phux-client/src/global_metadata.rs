@@ -71,7 +71,7 @@ mod tests {
     use super::*;
     use crate::testkit::{ScriptSpec, ScriptedServer};
 
-    async fn scripted(spec: ScriptSpec) -> (Connection, tokio::task::JoinHandle<()>) {
+    fn scripted(spec: ScriptSpec) -> (Connection, tokio::task::JoinHandle<()>) {
         let (client, server) = tokio::net::UnixStream::pair().expect("pair");
         let server = tokio::spawn(async move {
             ScriptedServer::on_stream(server, spec).run().await;
@@ -82,7 +82,7 @@ mod tests {
     #[tokio::test]
     async fn reads_present_and_absent_keys_in_order() {
         let spec = ScriptSpec::new().stored_metadata(Scope::Global, "a/v1", b"1".to_vec());
-        let (mut conn, server) = scripted(spec).await;
+        let (mut conn, server) = scripted(spec);
         let values = read(&mut conn, &["missing/v1", "a/v1"])
             .await
             .expect("read");
@@ -93,7 +93,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_write_lands_before_it_returns() {
-        let (mut conn, server) = scripted(ScriptSpec::new()).await;
+        let (mut conn, server) = scripted(ScriptSpec::new());
         write(&mut conn, "a/v1", b"2".to_vec())
             .await
             .expect("write");
@@ -106,7 +106,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_write_is_an_error_and_a_refused_read_is_absent() {
         let spec = ScriptSpec::new().refuse_metadata(ErrorCode::PermissionDenied, "no");
-        let (mut conn, server) = scripted(spec).await;
+        let (mut conn, server) = scripted(spec);
         let refused = write(&mut conn, "a/v1", b"2".to_vec()).await;
         assert!(
             matches!(refused, Err(WriteError::Refused(_))),

@@ -1488,8 +1488,8 @@ pub(crate) enum Command {
     ///
     /// Reads each signed-in subscription's limit windows from the vendor's
     /// own credentials: Claude Code (its OAuth usage endpoint), Codex (the
-    /// rate limits its session ledgers record, or ChatGPT's usage endpoint
-    /// when they are old) and Grok Build (its credits allowance). Prints
+    /// rate limits its session ledgers record, or the live chatgpt.com usage
+    /// endpoint when they are old) and Grok Build (its credits allowance). Prints
     /// utilization and reset times per plan. Credentials are only read,
     /// never refreshed, and go only to the vendor that issued them;
     /// requests are spaced at least two minutes apart per vendor and back

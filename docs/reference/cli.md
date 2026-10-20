@@ -5132,11 +5132,11 @@ Show the AI plan limits this host can see
 
 Reads each signed-in subscription's limit windows from the vendor's own
 credentials: Claude Code (its OAuth usage endpoint), Codex (the rate limits its
-session ledgers record, or ChatGPT's usage endpoint when they are old) and Grok
-Build (its credits allowance). Prints utilization and reset times per plan.
-Credentials are only read, never refreshed, and go only to the vendor that
-issued them; requests are spaced at least two minutes apart per vendor and back
-off on rate limits, with the last reading reused in between.
+session ledgers record, or the live chatgpt.com usage endpoint when they are
+old) and Grok Build (its credits allowance). Prints utilization and reset times
+per plan. Credentials are only read, never refreshed, and go only to the vendor
+that issued them; requests are spaced at least two minutes apart per vendor and
+back off on rate limits, with the last reading reused in between.
 
 `--publish` also writes the result to the server's `phux.usage/v1` Global
 metadata key, which every client can read and watch; the usage plugin runs this
