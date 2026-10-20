@@ -287,16 +287,19 @@ fn branches_list_locals_first_with_tracking() {
         .iter()
         .map(|b| (b.name.as_str(), b.remote))
         .collect();
-    assert_eq!(
-        names,
-        [("main", false), ("feature", false), ("origin/main", true)]
-    );
-    let main = &list.branches[0];
+    // Locals first, then remotes; within each, newest first, and commits in
+    // the same second tie, so only the grouping is fixed here.
+    assert_eq!(names.len(), 3);
+    assert!(names[..2].contains(&("main", false)));
+    assert!(names[..2].contains(&("feature", false)));
+    assert_eq!(names[2], ("origin/main", true));
+    let branch = |name: &str| list.branches.iter().find(|b| b.name == name).unwrap();
+    let main = branch("main");
     assert!(main.current);
     assert_eq!(main.upstream.as_deref(), Some("origin/main"));
     assert_eq!((main.ahead, main.behind), (Some(1), Some(0)));
     assert_eq!(main.subject, "ahead");
-    let feature = &list.branches[1];
+    let feature = branch("feature");
     assert!(!feature.current && feature.upstream.is_none() && feature.ahead.is_none());
 }
 
