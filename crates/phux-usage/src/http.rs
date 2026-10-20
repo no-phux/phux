@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 /// are fetched in parallel, so one slow vendor cannot starve the publish.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// The largest reply accepted.
+const MAX_REPLY_BYTES: u64 = 1024 * 1024;
+
 /// A completed HTTP exchange.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reply {
@@ -102,8 +105,10 @@ fn split_status(out: &[u8]) -> Option<Reply> {
 /// A curl config with every value quoted under curl's escape rules, so no
 /// byte of a header value can start another option.
 fn curl_config(url: &str, headers: &[(&str, String)]) -> String {
+    // `proto = "=https"`: no redirect or typo can carry a token over
+    // anything but TLS. `max-filesize`: a reply is a few kilobytes.
     let mut config = format!(
-        "url = {}\nmax-time = {}\nwrite-out = {}\n",
+        "url = {}\nproto = \"=https\"\nmax-filesize = {MAX_REPLY_BYTES}\nmax-time = {}\nwrite-out = {}\n",
         quote(url),
         REQUEST_TIMEOUT.as_secs(),
         quote(&format!("{STATUS_MARK}%{{http_code}}")),
@@ -145,9 +150,11 @@ mod tests {
         );
         assert!(config.contains("url = \"https://x/y?a=1\"\n"));
         assert!(config.contains("header = \"Authorization: Bearer a\\\"b\\nc\"\n"));
+        assert!(config.contains("proto = \"=https\"\n"));
+        assert!(config.contains("max-filesize = 1048576\n"));
         assert_eq!(
             config.lines().count(),
-            4,
+            6,
             "a newline in a value never adds an option"
         );
     }

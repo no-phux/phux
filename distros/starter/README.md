@@ -42,7 +42,17 @@ rewrites a missing herdr path to starter when the new file is there.
   entries from your own config or another layer. Their actions appear in
   the command palette (`prefix Space`) as `plugin:` rows. To drop them,
   assign a plain `plugins = [...]` in your config - replacement wins over
-  inherited appends.
+  inherited appends. `phux plugin disable` edits only your own file, so it
+  refuses a plugin this layer provides.
+- **Plan usage.** `usage` publishes this host's AI plan limits (Claude
+  Code, Codex, Grok Build) as the `phux.usage/v1` key on every client
+  attach and agent state change. It reads those agents' local sign-ins,
+  sends each token only to its own vendor over HTTPS, and publishes plan
+  names, percentages, reset times and an opaque account fingerprint that
+  any client with `observe@global` (the owner and every paired device) can
+  read. To turn it off, list the plugins you keep in `plugins = [...]`; see
+  [its README](../../examples/plugins/usage/README.md#turning-it-off) and
+  [plan usage](../../docs/agents.md#plan-usage).
 - **Agent identity.** `agent-tools` ships integration templates whose
   `[launch]` command runs `claude`/`codex`/`gemini` through
   `scripts/phux-agent-wrap.sh`. The wrapper writes a `phux.agent/v1` L3

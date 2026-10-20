@@ -17,6 +17,11 @@ use crate::model::Plan;
 pub const MIN_INTERVAL_MS: i64 = 120_000;
 /// A reading older than this is reported `stale`.
 pub const STALE_AFTER_MS: i64 = 30 * 60_000;
+/// A hook-driven publish this soon after the last run does nothing.
+pub const RUN_INTERVAL_MS: i64 = 10_000;
+/// After the Keychain refuses or lacks Claude Code's item, do not ask
+/// `security` again for this long.
+pub const CREDENTIAL_COOLDOWN_MS: i64 = 15 * 60_000;
 /// First 429 backoff; doubles per consecutive 429.
 const BACKOFF_BASE_MS: i64 = 3 * 60_000;
 /// Backoff ceiling.
@@ -41,6 +46,17 @@ pub struct State {
     /// The newest `phux.usage.refresh/v1` value already honored.
     #[serde(default)]
     pub refresh_seen: Option<String>,
+    /// When the last collection ran (Unix ms).
+    #[serde(default)]
+    pub last_run_ms: i64,
+}
+
+impl State {
+    /// Whether a run at `now_ms` comes within [`RUN_INTERVAL_MS`] of the last.
+    #[must_use]
+    pub const fn ran_recently(&self, now_ms: i64) -> bool {
+        self.last_run_ms != 0 && now_ms - self.last_run_ms < RUN_INTERVAL_MS
+    }
 }
 
 /// One network source's history.
@@ -64,6 +80,13 @@ pub struct SourceState {
     /// Whether that failure was the vendor refusing the credential.
     #[serde(default)]
     pub rejected: bool,
+    /// The plan identity of the last attempt (no windows), so a run that is
+    /// not due reports the plan without reading credentials.
+    #[serde(default)]
+    pub identity: Option<Plan>,
+    /// No credential-store lookup before this (Unix ms).
+    #[serde(default)]
+    pub credentials_retry_at_ms: i64,
 }
 
 impl SourceState {
@@ -123,19 +146,42 @@ impl Store {
     ///
     /// When the directory or lock file cannot be created or locked.
     pub fn open(dir: &Path) -> std::io::Result<(Self, State)> {
+        let lock = Self::lock_file(dir)?;
+        lock.lock()?;
+        Ok(Self::read(dir, lock))
+    }
+
+    /// Like [`Self::open`], but `None` at once when another run holds the
+    /// lock: a hook must not wait on one, it would hold a hook slot.
+    ///
+    /// # Errors
+    ///
+    /// When the directory or lock file cannot be created or locked.
+    pub fn try_open(dir: &Path) -> std::io::Result<Option<(Self, State)>> {
+        let lock = Self::lock_file(dir)?;
+        match lock.try_lock() {
+            Ok(()) => Ok(Some(Self::read(dir, lock))),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(err)) => Err(err),
+        }
+    }
+
+    fn lock_file(dir: &Path) -> std::io::Result<File> {
         create_private_dir(dir)?;
-        let lock = File::options()
+        File::options()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(dir.join("lock"))?;
-        lock.lock()?;
+            .open(dir.join("lock"))
+    }
+
+    fn read(dir: &Path, lock: File) -> (Self, State) {
         let path = dir.join("state.json");
         let state = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        Ok((Self { path, _lock: lock }, state))
+        (Self { path, _lock: lock }, state)
     }
 
     /// Replace the state file atomically.
@@ -189,6 +235,27 @@ mod tests {
 
         source.succeeded(crate::test_plan());
         assert_eq!((source.rate_limited, source.retry_at_ms), (0, 0));
+    }
+
+    #[test]
+    fn a_held_lock_makes_try_open_step_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = Store::try_open(dir.path()).unwrap().expect("free lock");
+        assert!(
+            Store::try_open(dir.path()).unwrap().is_none(),
+            "held elsewhere"
+        );
+        drop(held);
+        assert!(Store::try_open(dir.path()).unwrap().is_some(), "released");
+    }
+
+    #[test]
+    fn runs_inside_ten_seconds_of_the_last_are_recent() {
+        let mut state = State::default();
+        assert!(!state.ran_recently(5), "never ran");
+        state.last_run_ms = 100_000;
+        assert!(state.ran_recently(100_000 + RUN_INTERVAL_MS - 1));
+        assert!(!state.ran_recently(100_000 + RUN_INTERVAL_MS));
     }
 
     #[test]

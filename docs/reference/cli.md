@@ -719,9 +719,11 @@ that issued them; requests are spaced at least two minutes apart per vendor and
 back off on rate limits, with the last reading reused in between.
 
 `--publish` also writes the result to the server's `phux.usage/v1` Global
-metadata key, which every client can read and watch; the usage plugin runs this
-from its hooks. A client may set `phux.usage.refresh/v1` to ask the next publish
-to skip the two-minute spacing. Does not start a server.
+metadata key, which every client allowed `observe@global` can read and watch;
+the usage plugin runs this from its hooks. A publish does nothing when another
+is running or the last ran under ten seconds ago (unless `--refresh`), so bursts
+of hooks stay cheap. A client may set `phux.usage.refresh/v1`; the next
+hook-driven publish then skips the two-minute spacing. Does not start a server.
 
 Usage: phux agent usage [FLAGS]
 

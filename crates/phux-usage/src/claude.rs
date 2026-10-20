@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::model::{Plan, Status, Window};
-use crate::state::SourceState;
+use crate::model::{Plan, Window};
+use crate::state::{CREDENTIAL_COOLDOWN_MS, SourceState};
 use crate::util::{fingerprint, iso_ms, number, text};
-use crate::{Failure, Request, Sources, identity, polled, with_last_good};
+use crate::{Failure, Request, Sources, cached, identity, polled, remembered};
 
 /// State key.
 pub(crate) const SOURCE: &str = "claude";
@@ -31,12 +31,23 @@ const WINDOWS: [(&str, &str, &str, u32); 4] = [
     ("seven_day_sonnet", "7d_sonnet", "7d sonnet", 10_080),
 ];
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct Credentials {
     token: String,
     expires_at_ms: Option<i64>,
     subscription: Option<String>,
     tier: Option<String>,
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("token", &"<redacted>")
+            .field("expires_at_ms", &self.expires_at_ms)
+            .field("subscription", &self.subscription)
+            .field("tier", &self.tier)
+            .finish()
+    }
 }
 
 /// `{"claudeAiOauth": {accessToken, expiresAt, subscriptionType, rateLimitTier}}`.
@@ -51,16 +62,19 @@ fn parse_credentials(bytes: &[u8]) -> Option<Credentials> {
     })
 }
 
-fn read_credentials(sources: &Sources) -> Option<Credentials> {
-    // No Claude Code directory, no Claude Code: never touch the Keychain of
-    // a home that has not run it.
-    if !sources.claude_dir.is_dir() {
-        return None;
-    }
-    if sources.keychain
-        && let Some(creds) = keychain_secret().as_deref().and_then(parse_credentials)
-    {
-        return Some(creds);
+/// The Keychain item, else `.credentials.json`. A Keychain miss starts a
+/// cooldown, so a host without the item does not run `security` per hook.
+fn read_credentials(
+    sources: &Sources,
+    source: &mut SourceState,
+    now: i64,
+    keychain: impl FnOnce() -> Option<Vec<u8>>,
+) -> Option<Credentials> {
+    if sources.keychain && now >= source.credentials_retry_at_ms {
+        if let Some(creds) = keychain().as_deref().and_then(parse_credentials) {
+            return Some(creds);
+        }
+        source.credentials_retry_at_ms = now + CREDENTIAL_COOLDOWN_MS;
     }
     let bytes = std::fs::read(sources.claude_dir.join(".credentials.json")).ok()?;
     parse_credentials(&bytes)
@@ -145,20 +159,38 @@ pub(crate) fn collect(
     source: &mut SourceState,
     request: Request<'_>,
 ) -> Option<Plan> {
-    let creds = read_credentials(sources)?;
+    collect_with(sources, source, request, keychain_secret)
+}
+
+fn collect_with(
+    sources: &Sources,
+    source: &mut SourceState,
+    request: Request<'_>,
+    keychain: impl FnOnce() -> Option<Vec<u8>>,
+) -> Option<Plan> {
+    // No Claude Code directory, no Claude Code: never touch the Keychain of
+    // a home that has not run it.
+    if !sources.claude_dir.is_dir() {
+        return None;
+    }
+    let now = request.now_ms;
+    // Not due: report the remembered plan without touching credentials.
+    if !source.due(now, request.eager) {
+        return remembered(source, now);
+    }
+    let creds = read_credentials(sources, source, now, keychain)?;
     let base = Plan {
         plan: creds.subscription.clone(),
         label: label(creds.subscription.as_deref(), creds.tier.as_deref()),
         account: account_id(sources).as_deref().and_then(fingerprint),
         ..identity("claude", "claude-code", "oauth")
     };
-    if creds.expires_at_ms.is_some_and(|at| at <= request.now_ms) {
-        return Some(with_last_good(
-            source,
-            base,
-            Status::Unavailable,
-            Some("sign-in expired; run claude to refresh it".to_owned()),
-        ));
+    if creds.expires_at_ms.is_some_and(|at| at <= now) {
+        // Counts as an attempt, so the next look waits out the interval.
+        source.attempted(now);
+        source.identity = Some(base.clone());
+        source.failed("sign-in expired; run claude to refresh it".to_owned(), true);
+        return Some(cached(source, base, now));
     }
     Some(polled(source, base, request, || {
         let reply = request
@@ -184,6 +216,7 @@ pub(crate) fn collect(
 mod tests {
     use super::*;
     use crate::Script;
+    use crate::model::Status;
 
     const CREDS: &str = r#"{"claudeAiOauth":{"accessToken":"sk-ant-test","refreshToken":"rt",
         "expiresAt":1783600000000,"scopes":["user:inference"],
@@ -290,6 +323,67 @@ mod tests {
         assert_eq!(plan.status, Status::Unavailable);
         assert!(plan.error.unwrap().contains("expired"));
         assert!(script.requests().is_empty());
+    }
+
+    #[test]
+    fn a_run_that_is_not_due_reads_no_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let sources = sources(dir.path());
+        std::fs::create_dir_all(&sources.claude_dir).unwrap();
+        let creds = sources.claude_dir.join(".credentials.json");
+        std::fs::write(&creds, CREDS).unwrap();
+        let script = Script::default().reply(USAGE_URL, 200, USAGE);
+        let mut state = SourceState::default();
+        let first = collect(&sources, &mut state, request(&script, 1_000)).unwrap();
+
+        // The credential is gone; a run inside the interval never looks.
+        std::fs::remove_file(&creds).unwrap();
+        let quiet = collect(&sources, &mut state, request(&script, 2_000)).unwrap();
+        assert_eq!(
+            quiet.label.as_deref(),
+            Some("Max 20x"),
+            "label from the last run"
+        );
+        assert_eq!(quiet.windows, first.windows);
+        assert_eq!(quiet.status, Status::Ok);
+        assert_eq!(script.requests().len(), 1);
+    }
+
+    #[test]
+    fn a_keychain_miss_waits_out_a_cooldown() {
+        use std::cell::Cell;
+        let dir = tempfile::tempdir().unwrap();
+        let mut sources = sources(dir.path());
+        sources.keychain = true;
+        std::fs::create_dir_all(&sources.claude_dir).unwrap();
+        let asked = Cell::new(0);
+        let miss = || {
+            asked.set(asked.get() + 1);
+            None
+        };
+        let script = Script::default();
+        let mut state = SourceState::default();
+        assert!(collect_with(&sources, &mut state, request(&script, 1_000), miss).is_none());
+        assert_eq!(
+            state.credentials_retry_at_ms,
+            1_000 + CREDENTIAL_COOLDOWN_MS
+        );
+        assert!(collect_with(&sources, &mut state, request(&script, 2_000), miss).is_none());
+        assert_eq!(asked.get(), 1, "no second `security` inside the cooldown");
+        let after = 1_000 + CREDENTIAL_COOLDOWN_MS;
+        assert!(collect_with(&sources, &mut state, request(&script, after), miss).is_none());
+        assert_eq!(asked.get(), 2);
+
+        let found = || Some(CREDS.as_bytes().to_vec());
+        let script = Script::default().reply(USAGE_URL, 200, USAGE);
+        let next = after + CREDENTIAL_COOLDOWN_MS;
+        let plan = collect_with(&sources, &mut state, request(&script, next), found).unwrap();
+        assert_eq!(plan.status, Status::Ok);
+        let shown = format!("{:?}", parse_credentials(CREDS.as_bytes()).unwrap());
+        assert!(
+            !shown.contains("sk-ant"),
+            "Debug redacts the token: {shown}"
+        );
     }
 
     #[test]

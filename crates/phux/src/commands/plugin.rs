@@ -14,8 +14,8 @@ use crate::commands::PluginAction;
 use json::{print_plugin_json, print_plugins_json, print_validation_json};
 use registry::{
     RegistryEntry, find_entry, load_registry, load_registry_from_path, manifest_path_for_config,
-    push_entry, read_config_document, reject_symlinked_config, remove_entry, set_enabled,
-    update_entry, write_config_document,
+    own_index, push_entry, read_config_document, reject_symlinked_config, remove_entry,
+    set_enabled, update_entry, write_config_document,
 };
 
 pub(crate) fn run_plugin(action: &PluginAction) -> ExitCode {
@@ -99,8 +99,12 @@ fn upsert_config_entry(
     let mut updated = false;
     for entry in load_registry_from_path(&config_path)? {
         if entry.manifest.id == manifest.id {
-            update_entry(&mut doc, entry.index, &stored_manifest, enabled)?;
-            updated = true;
+            // Only a table of this file's own is edited; an inherited entry
+            // is left to its layer and gets one here instead.
+            if let Some(own) = own_index(&config_path, &entry.manifest_path)? {
+                update_entry(&mut doc, own, &stored_manifest, enabled)?;
+                updated = true;
+            }
             break;
         }
     }
@@ -109,6 +113,7 @@ fn upsert_config_entry(
     }
     write_config_document(&config_path, &doc)?;
     Ok(RegistryEntry {
+        key: "plugins",
         index: 0,
         manifest_text: stored_manifest,
         manifest_path: manifest.manifest_path.clone(),
@@ -130,7 +135,7 @@ fn run_unlink(id: &str, json: bool) -> ExitCode {
         Ok(doc) => doc,
         Err(err) => return fail(json, &err),
     };
-    if let Err(err) = remove_entry(&mut doc, entry.index) {
+    if let Err(err) = remove_entry(&mut doc, entry.key, entry.index) {
         return fail(json, &err);
     }
     if let Err(err) = write_config_document(&config_path, &doc) {
@@ -157,7 +162,7 @@ fn run_set_enabled(id: &str, enabled: bool, json: bool) -> ExitCode {
         Ok(doc) => doc,
         Err(err) => return fail(json, &err),
     };
-    if let Err(err) = set_enabled(&mut doc, entry.index, enabled) {
+    if let Err(err) = set_enabled(&mut doc, entry.key, entry.index, enabled) {
         return fail(json, &err);
     }
     if let Err(err) = write_config_document(&config_path, &doc) {
@@ -184,6 +189,7 @@ fn validate_manifest(path: &Path, json: bool) -> ExitCode {
     match plugin::load_plugin_manifest(path) {
         Ok(manifest) if json => {
             let entry = RegistryEntry {
+                key: "plugins",
                 index: 0,
                 manifest_text: path.to_string_lossy().into_owned(),
                 manifest_path: manifest.manifest_path.clone(),
