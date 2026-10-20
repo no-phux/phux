@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
+use phux_client::attach::connection::Connection;
 use phux_client::kill::{KillError, ShutdownOutcome};
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
@@ -88,6 +89,15 @@ pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
             Err(err) => return report_no_server(&err, &socket_path, "kill --server"),
         };
 
+        // An older server drops the SHUTDOWN tag silently, which would read
+        // as a stop that never happens; refuse before sending.
+        if !shutdown_supported(&conn) {
+            error!(
+                "{}",
+                phux_client::explain::server_too_old("kill --server", "SHUTDOWN")
+            );
+            return ExitCode::from(2);
+        }
         let result = phux_client::kill::shutdown(&mut conn, 1).await;
         drop(conn);
         match result {
@@ -271,11 +281,38 @@ fn summary_line(killed: u32, target: &str) -> String {
     }
 }
 
+/// Whether the server behind `conn` advertises `SHUTDOWN`.
+fn shutdown_supported(conn: &Connection) -> bool {
+    conn.negotiated_bootstrap()
+        .is_some_and(|negotiated| negotiated.server_features.contains(ServerFeature::Shutdown))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{REMOTE_SHUTDOWN_REFUSAL, run, run_kill, summary_line};
+    use super::{REMOTE_SHUTDOWN_REFUSAL, run, run_kill, shutdown_supported, summary_line};
     use crate::commands::confirm;
     use crate::commands::server_target::ServerSpec;
+
+    /// `kill --server` sends `SHUTDOWN` only to a server that advertises it.
+    #[tokio::test]
+    async fn shutdown_needs_the_shutdown_bit() {
+        use phux_client::attach::connection::Connection;
+        use phux_client::testkit::{ScriptSpec, serve_one};
+        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+
+        for (features, supported) in [
+            (ServerFeatureSet::new(), false),
+            (ServerFeatureSet::with(&[ServerFeature::Shutdown]), true),
+        ] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (socket, server) =
+                serve_one(dir.path(), ScriptSpec::new().server_features(features));
+            let conn = Connection::connect(&socket).await.expect("connect");
+            assert_eq!(shutdown_supported(&conn), supported, "{features:?}");
+            drop(conn);
+            server.await.expect("scripted server task");
+        }
+    }
 
     /// `kill --server --remote` is refused before any dial, with exit 2 and
     /// the reason named: the server only accepts SHUTDOWN locally.
