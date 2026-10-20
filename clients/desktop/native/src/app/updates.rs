@@ -70,6 +70,18 @@ enum Tone {
     Bad,
 }
 
+/// Whether two `major.minor` wire protocols interoperate: the major is the
+/// compatibility line, so any minor on it speaks to any other. Text without
+/// a `.` is compared whole, so an unknown shape is treated as a change.
+fn same_protocol_line(a: &str, b: &str) -> bool {
+    fn major(protocol: &str) -> &str {
+        protocol
+            .split_once('.')
+            .map_or(protocol, |(major, _)| major)
+    }
+    major(a) == major(b)
+}
+
 /// The failure line a check left for `prefix`, without its prefix.
 fn failure(message: &str, prefix: &str) -> Option<String> {
     message
@@ -303,9 +315,10 @@ impl Updater {
             .or(self.target.as_ref().filter(|_| self.desktop_available()))
     }
 
-    /// `(speaking now, incoming)` when the incoming desktop speaks another wire
-    /// protocol than the local server. Without a runtime check, the server is
-    /// assumed to speak what this desktop links.
+    /// `(speaking now, incoming)` when the incoming desktop is on another wire
+    /// protocol major than the local server. A minor difference on the same
+    /// major interoperates and is not a change. Without a runtime check, the
+    /// server is assumed to speak what this desktop links.
     pub fn protocol_change(&self) -> Option<(String, String)> {
         let incoming = self.incoming()?;
         let now = self
@@ -313,7 +326,7 @@ impl Updater {
             .as_ref()
             .and_then(|runtime| runtime.protocol_current.clone())
             .unwrap_or_else(updates::own_protocol);
-        (incoming.protocol != now).then(|| (now, incoming.protocol.clone()))
+        (!same_protocol_line(&incoming.protocol, &now)).then(|| (now, incoming.protocol.clone()))
     }
 
     /// Restart must first move phux: the protocol changes and phux is managed here.
@@ -326,7 +339,7 @@ impl Updater {
             runtime
                 .protocol_target
                 .as_deref()
-                .is_none_or(|target| target == incoming)
+                .is_none_or(|target| same_protocol_line(target, &incoming))
         });
         lands && self.prefs.manage_runtime && self.runtime_available()
     }

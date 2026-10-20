@@ -63,8 +63,10 @@ or more.
    (two words of feature bits, `features` and `features_ext`), a server
    instance id, the selected profile, and size limits.
 
-Before `HELLO_OK`, only `HELLO` and `PING` are accepted. The Rust clients
-also refuse a `patch` mismatch; the server does not.
+Before `HELLO_OK`, only `HELLO` and `PING` are accepted. Clients accept a
+`HELLO_OK` on their own major with any minor or patch, older or newer, and
+keep the server's version beside its feature bits; only another major is
+refused.
 
 A client sends `PING` (`0x7F`); the server replies with `PONG` (`0xFF`)
 carrying the same nonce. `PONG` is server-to-client only; the classifier

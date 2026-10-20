@@ -2,9 +2,19 @@
 
 use super::*;
 
-fn hello_ok_patch(patch: u16, selected_profile: phux_protocol::BootstrapProfile) -> FrameKind {
+fn hello_ok_version(
+    major: u16,
+    patch: u16,
+    selected_profile: phux_protocol::BootstrapProfile,
+) -> FrameKind {
     let mut frame = hello_ok(ServerCapabilities::new(), selected_profile);
-    if let FrameKind::HelloOk { protocol_patch, .. } = &mut frame {
+    if let FrameKind::HelloOk {
+        protocol_major,
+        protocol_patch,
+        ..
+    } = &mut frame
+    {
+        *protocol_major = major;
         *protocol_patch = patch;
     }
     frame
@@ -32,7 +42,20 @@ fn hello_ok_accepts_matching_patch_and_native_features() {
 }
 
 #[test]
-fn hello_ok_refuses_mismatched_patch_and_incomplete_native_profiles() {
+fn hello_ok_accepts_another_patch_on_the_same_major() {
+    let client = new_client();
+    let frame = hello_ok_version(
+        PROTOCOL_VERSION.major,
+        PROTOCOL_VERSION.patch.wrapping_add(1),
+        phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+    );
+    negotiate_frame(client, &frame);
+    assert!(unsafe { (*client).inner.protocol_ready });
+    unsafe { phux_client_free(client) };
+}
+
+#[test]
+fn hello_ok_refuses_another_major_and_incomplete_native_profiles() {
     let incomplete = phux_protocol::BootstrapProfile::NativeState {
         codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
         features: phux_protocol::EngineFeatureSet::with(&[
@@ -40,11 +63,12 @@ fn hello_ok_refuses_mismatched_patch_and_incomplete_native_profiles() {
         ]),
     };
     for frame in [
-        hello_ok_patch(
-            PROTOCOL_VERSION.patch.wrapping_add(1),
+        hello_ok_version(
+            PROTOCOL_VERSION.major.wrapping_add(1),
+            PROTOCOL_VERSION.patch,
             phux_protocol::BootstrapProfile::SynthesizedVtRaw,
         ),
-        hello_ok_patch(PROTOCOL_VERSION.patch, incomplete),
+        hello_ok_version(PROTOCOL_VERSION.major, PROTOCOL_VERSION.patch, incomplete),
     ] {
         let client = new_client();
         assert_eq!(feed(client, &frame), PhuxClientResult::ProtocolError);

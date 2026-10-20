@@ -75,7 +75,10 @@ pub struct ServerInfo {
     pub features_ext: ServerFeatureExtSet,
     /// The layers the server advertised.
     pub layers: LayerSet,
-    /// The protocol triple the server selected.
+    /// The server's protocol triple from `HELLO_OK`. Any minor or patch on
+    /// this client's major is accepted, so this may be older or newer than
+    /// [`PROTOCOL_VERSION`]; degrade by it when no feature bit names the
+    /// behavior.
     pub protocol: (u16, u16, u16),
     /// The bootstrap profile the server selected.
     pub profile: BootstrapProfile,
@@ -156,12 +159,26 @@ mod tests {
     }
 
     #[test]
-    fn another_protocol_patch_is_refused() {
+    fn a_newer_minor_on_the_same_major_is_accepted_and_recorded() {
+        let offered = ClientCapabilities::new();
+        let newer = (
+            PROTOCOL_VERSION.major,
+            PROTOCOL_VERSION.minor.wrapping_add(1),
+            PROTOCOL_VERSION.patch.wrapping_add(3),
+        );
+        let info = answer(&offered, newer)
+            .accept(&offered)
+            .expect("same major interoperates");
+        assert_eq!(info.protocol, newer, "the server's version, not ours");
+    }
+
+    #[test]
+    fn another_protocol_major_is_refused() {
         let offered = ClientCapabilities::new();
         let skewed = (
-            PROTOCOL_VERSION.major,
+            PROTOCOL_VERSION.major.wrapping_add(1),
             PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch.wrapping_add(1),
+            PROTOCOL_VERSION.patch,
         );
         assert!(matches!(
             answer(&offered, skewed).accept(&offered),

@@ -4,13 +4,26 @@ use super::*;
 
 #[test]
 fn refusals_are_terminal_and_a_requested_detach_closes() {
+    // Another major is a different compatibility line.
     let mut plane = ControlPlane::new(ControlOptions::default());
     plane.connection_opened();
     plane.take_outbound();
+    let mut other_major = hello_ok(PROTOCOL_VERSION.patch);
+    if let FrameKind::HelloOk { protocol_major, .. } = &mut other_major {
+        *protocol_major = PROTOCOL_VERSION.major.wrapping_add(1);
+    }
     assert!(matches!(
-        plane.feed(hello_ok(PROTOCOL_VERSION.patch.wrapping_add(1))),
+        plane.feed(other_major),
         Err(ControlError::Refused(_))
     ));
+
+    // An older or newer patch on the same major is the same line.
+    let mut plane = ControlPlane::new(ControlOptions::default());
+    plane.connection_opened();
+    plane.take_outbound();
+    plane
+        .feed(hello_ok(PROTOCOL_VERSION.patch.wrapping_add(1)))
+        .expect("a newer patch interoperates");
 
     let mut plane = ControlPlane::new(ControlOptions::default());
     plane.connection_opened();
