@@ -140,13 +140,19 @@ impl App {
         }
         self.failure_reason.replace(Some(message.to_owned()));
         self.session.fail_protocol(message);
-        self.mark_connection("disconnected");
+        let refused = self.session.is_version_refused();
+        if refused {
+            mark_incompatible(&self.canvas, message);
+        } else {
+            self.mark_connection("disconnected");
+        }
         self.signal_failed(message);
         self.bindings.get_mut().dispose();
         self.tx.close();
         let reconnect = self.reconnect.get_mut().take();
         self.self_owner.get_mut().take();
-        if let Some(config) = reconnect {
+        // A protocol-major refusal answers every redial the same way.
+        if let Some(config) = reconnect.filter(|_| !refused) {
             spawn_reconnect(config);
         }
     }

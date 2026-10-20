@@ -30,10 +30,10 @@ async fn hello_ok_rejects_version_drift_and_oversized_limits_before_payload() {
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
     );
-    let FrameKind::HelloOk { protocol_patch, .. } = &mut wrong_version else {
+    let FrameKind::HelloOk { protocol_major, .. } = &mut wrong_version else {
         unreachable!();
     };
-    *protocol_patch = protocol_patch.saturating_add(1);
+    *protocol_major = protocol_major.saturating_add(1);
     let mut session = Connection::new(&vt, 80, 24);
     assert!(session.on_frame(wrong_version).fatal.is_some());
 
@@ -143,4 +143,59 @@ async fn session_accepts_native_snapshot_and_rejects_the_unadvertised_checkpoint
         "unadvertised native must fail before ATTACH/payload"
     );
     assert!(session.selected_profile().is_none());
+}
+
+fn hello_ok_version(major: u16, minor: u16, patch: u16) -> FrameKind {
+    let mut frame = hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    );
+    if let FrameKind::HelloOk {
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        ..
+    } = &mut frame
+    {
+        (*protocol_major, *protocol_minor, *protocol_patch) = (major, minor, patch);
+    }
+    frame
+}
+
+#[wasm_bindgen_test]
+async fn hello_ok_on_another_minor_is_accepted_and_recorded() {
+    let vt = Vt::load().await.expect("load engine");
+    let v = PROTOCOL_VERSION;
+    let mut session = Connection::new(&vt, 80, 24);
+    let outcome = session.on_frame(hello_ok_version(v.major, v.minor + 1, v.patch + 2));
+    assert!(outcome.fatal.is_none(), "{:?}", outcome.fatal);
+    let recorded = session.server_protocol().expect("recorded");
+    assert_eq!(
+        (recorded.major, recorded.minor, recorded.patch),
+        (v.major, v.minor + 1, v.patch + 2)
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_protocol_major_refusal_stops_the_client_for_good() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Connection::new(&vt, 80, 24);
+    let outcome = session.on_frame(hello_ok_version(PROTOCOL_VERSION.major + 1, 0, 0));
+    let message = outcome.fatal.expect("another major is fatal");
+    assert!(session.is_version_refused());
+    assert!(phux_web::session::is_version_refusal(&message), "{message}");
+
+    let mut session = Connection::new(&vt, 80, 24);
+    let outcome = session.on_frame(FrameKind::Error {
+        request_id: None,
+        code: phux_protocol::wire::frame::ErrorCode::VersionIncompatible,
+        message: "client protocol 9.0 unsupported".to_owned(),
+    });
+    let message = outcome.fatal.expect("VERSION_INCOMPATIBLE is fatal");
+    assert!(session.is_version_refused());
+    assert!(
+        message.contains("client protocol 9.0 unsupported"),
+        "{message}"
+    );
+    assert!(phux_web::session::is_version_refusal(&message), "{message}");
 }

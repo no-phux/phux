@@ -352,10 +352,26 @@ pub(super) fn spawn_reconnect(config: ReconnectConfig) {
                     client.enable_auto_reconnect(config.wt_url.as_deref(), &config.ws_url);
                     return;
                 }
-                Err(_) => TimeoutFuture::new(1_000).await,
+                Err(error) => {
+                    if let Some(message) = error.as_string().filter(|m| is_version_refusal(m)) {
+                        mark_incompatible(&config.canvas, &message);
+                        return;
+                    }
+                    TimeoutFuture::new(1_000).await;
+                }
             }
         }
     });
+}
+
+/// Stop on a protocol-major refusal and say why: the canvas is marked
+/// `incompatible` with the reason in [`ERROR_ATTRIBUTE`], and the console
+/// carries it too.
+pub(super) fn mark_incompatible(canvas: &HtmlCanvasElement, message: &str) {
+    web_sys::console::error_1(&JsValue::from_str(&format!("phux-web: {message}")));
+    let _ = canvas.set_attribute(CONNECTION_ATTRIBUTE, "incompatible");
+    let _ = canvas.set_attribute(ERROR_ATTRIBUTE, message);
+    let _ = canvas.set_attribute("title", message);
 }
 
 pub(super) fn websocket(ws_url: &str, bearer_hex: Option<&str>) -> Result<WebSocket, JsValue> {

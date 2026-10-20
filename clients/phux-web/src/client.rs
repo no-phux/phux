@@ -42,6 +42,7 @@ use crate::framing::FrameBuffer;
 use crate::input::WheelAction;
 use crate::search::{Search, find_matches, reveal_row};
 use crate::selection::{Selection, cell_at};
+use crate::session::is_version_refusal;
 use crate::touch::{TouchGesture, TouchMode, TouchStep};
 use crate::{Mark, Metrics, Overlay, render_cursor_row_appearance, render_selected_appearance};
 
@@ -98,8 +99,14 @@ struct AppEstablishment {
 }
 
 /// Canvas attribute naming the connection state: `connected` once attached,
-/// `disconnected` after the transport or protocol fails.
+/// `disconnected` after the transport or protocol fails (while it redials),
+/// `incompatible` when the server is on another protocol major and no redial
+/// can help.
 pub const CONNECTION_ATTRIBUTE: &str = "data-phux-connection";
+
+/// Canvas attribute holding why the connection stopped for good, set with
+/// `incompatible`.
+pub const ERROR_ATTRIBUTE: &str = "data-phux-error";
 
 /// Canvas attribute holding the title the program set (OSC 0/2).
 pub const TITLE_ATTRIBUTE: &str = "data-phux-title";

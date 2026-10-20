@@ -16,6 +16,7 @@ use phux_client_core::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
     EngineEffectBuffer, EngineStatus, HistoryApplyOutcome,
 };
+use phux_client_core::handshake::{HelloOkError, validate_hello_ok};
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{
     AgentSessionDeclaration, EffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason,
@@ -32,11 +33,11 @@ use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, Command, CommandResult, CommandValue, FrameKind,
+    AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ErrorCode, FrameKind,
     HistoryRejectionReason, HistoryTombstoneReason, LiveTarget, OrgFilter, OrganizationPage,
     PathQueryResult, PathResults, SpawnResult, TerminateMode, ViewportInfo,
 };
-use phux_protocol::{PROTOCOL_VERSION, ResourceKind};
+use phux_protocol::{PROTOCOL_VERSION, ResourceKind, Version};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecoder, Terminal, Vt};
 
 mod attach;
@@ -113,50 +114,14 @@ fn synthesized_client_caps() -> ClientCapabilities {
         .with_bootstrap(synthesized_bootstrap_caps())
 }
 
-fn validate_hello_ok(
-    offered: ClientCapabilities,
-    protocol_major: u16,
-    protocol_minor: u16,
-    protocol_patch: u16,
-    selected_profile: BootstrapProfile,
-    bootstrap_limits: BootstrapLimits,
-) -> Result<(), &'static str> {
-    if (protocol_major, protocol_minor, protocol_patch)
-        != (
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch,
-        )
-    {
-        return Err("HELLO_OK selected a different protocol version");
-    }
-    let profile_offered = match selected_profile {
-        BootstrapProfile::NativeState { codec, features } => {
-            offered
-                .bootstrap
-                .profiles
-                .contains(BootstrapProfileKind::NativeState)
-                && offered.bootstrap.native_codecs.contains(codec)
-                && features.supports_native()
-                && offered.bootstrap.native_features.intersect(features) == features
-        }
-        BootstrapProfile::SynthesizedVtRaw => offered
-            .bootstrap
-            .profiles
-            .contains(BootstrapProfileKind::SynthesizedVtRaw),
-        BootstrapProfile::SynthesizedVtStateSync => offered
-            .bootstrap
-            .profiles
-            .contains(BootstrapProfileKind::SynthesizedVtStateSync),
-        _ => false,
-    };
-    if !profile_offered {
-        return Err("HELLO_OK selected an unadvertised bootstrap profile");
-    }
-    if bootstrap_limits.intersect(offered.bootstrap.limits) != bootstrap_limits {
-        return Err("HELLO_OK selected bootstrap limits above the client offer");
-    }
-    Ok(())
+/// Leads every failure message for a protocol-major refusal, so a redial
+/// loop that sees only the message can tell it from a transient loss.
+pub const VERSION_REFUSAL: &str = "incompatible server protocol";
+
+/// Whether a connection failure `message` is a protocol-major refusal.
+#[must_use]
+pub fn is_version_refusal(message: &str) -> bool {
+    message.starts_with(VERSION_REFUSAL)
 }
 
 /// One `AgentSession` resource projected for the pane on screen: the badge
@@ -225,6 +190,8 @@ pub struct Connection {
     terminal_order: Vec<ResourceId>,
     bootstrap_limits: Option<BootstrapLimits>,
     selected_profile: Option<BootstrapProfile>,
+    /// The server's protocol from `HELLO_OK`: same major, any minor/patch.
+    server_protocol: Option<Version>,
     path_query_supported: bool,
     path_request_id: u32,
     path_pending: Option<u32>,
@@ -232,6 +199,9 @@ pub struct Connection {
     path_results: Option<PathResults>,
     path_error: Option<String>,
     failed: bool,
+    /// The server refused this client's protocol major (or answered on
+    /// another); no redial can succeed until one side is updated.
+    version_refused: bool,
     render_visible: bool,
     attach_ready: bool,
     layout: Option<Layout>,
@@ -288,6 +258,7 @@ impl Connection {
             terminal_order: Vec::new(),
             bootstrap_limits: None,
             selected_profile: None,
+            server_protocol: None,
             path_query_supported: false,
             path_request_id: 0,
             path_pending: None,
@@ -295,6 +266,7 @@ impl Connection {
             path_results: None,
             path_error: None,
             failed: false,
+            version_refused: false,
             render_visible: false,
             attach_ready: false,
             layout: None,
@@ -338,6 +310,20 @@ impl Connection {
     #[must_use]
     pub const fn is_failed(&self) -> bool {
         self.failed
+    }
+
+    /// Whether the failure was a protocol-major refusal, which a redial
+    /// cannot fix: the page should stop and say so instead of looping.
+    #[must_use]
+    pub const fn is_version_refused(&self) -> bool {
+        self.version_refused
+    }
+
+    /// The protocol the server answered `HELLO_OK` with, once negotiated.
+    /// It may be older or newer than this build's on the same major.
+    #[must_use]
+    pub const fn server_protocol(&self) -> Option<Version> {
+        self.server_protocol
     }
 
     /// Whether the aggregate attach and every terminal bootstrap reached READY.

@@ -103,6 +103,57 @@ async fn exported_start_retains_live_client_until_transport_failure() {
     canvas.remove();
 }
 
+/// A protocol-major refusal stops the client for good: the canvas says
+/// why, and the armed reconnect is dropped instead of redialing.
+#[wasm_bindgen_test]
+async fn a_version_refusal_marks_the_canvas_and_never_redials() {
+    let ws = open_websocket().await;
+    let vt = Vt::load().await.unwrap();
+    let tx = crate::client::WireTx::Ws(crate::client::WsTx::new(ws));
+    let canvas = test_canvas();
+    let (app, _ready) = crate::client::build_app(&vt, tx, canvas.clone(), 80, 24, false).unwrap();
+    // A redial to a closed port would fail and mark `disconnected`.
+    app.borrow()
+        .reconnect
+        .replace(Some(crate::client::ReconnectConfig {
+            wt_url: None,
+            ws_url: "ws://127.0.0.1:9/".to_owned(),
+            canvas: canvas.clone(),
+            cols: 80,
+            rows: 24,
+        }));
+    let mut refusal = bytes::BytesMut::new();
+    FrameKind::Error {
+        request_id: None,
+        code: phux_protocol::wire::frame::ErrorCode::VersionIncompatible,
+        message: "client protocol 9.0 is not supported".to_owned(),
+    }
+    .encode(&mut refusal);
+
+    assert_eq!(
+        crate::client::process_webtransport_chunk(&app, &mut FrameBuffer::new(), &refusal),
+        ReceiveFlow::Stop
+    );
+    assert!(app.borrow().session.is_version_refused());
+    assert!(
+        app.borrow().reconnect.borrow().is_none(),
+        "reconnect dropped"
+    );
+    TimeoutFuture::new(600).await;
+    assert_eq!(
+        canvas
+            .get_attribute(crate::client::CONNECTION_ATTRIBUTE)
+            .as_deref(),
+        Some("incompatible"),
+        "no redial replaced the verdict"
+    );
+    let reason = canvas
+        .get_attribute(crate::client::ERROR_ATTRIBUTE)
+        .unwrap_or_default();
+    assert!(reason.contains("client protocol 9.0"), "{reason}");
+    assert!(crate::session::is_version_refusal(&reason), "{reason}");
+}
+
 #[wasm_bindgen_test]
 async fn closed_ws_send_and_repeated_reconnect_teardown_release_every_app() {
     let ws = closed_websocket().await;

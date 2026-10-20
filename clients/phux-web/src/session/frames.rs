@@ -55,6 +55,14 @@ impl Connection {
     }
 
     fn reduce_frame(&mut self, frame: FrameKind) -> Outcome {
+        if let FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::VersionIncompatible,
+            message,
+        } = &frame
+        {
+            return self.version_refusal(message);
+        }
         if let Some(outcome) = self.reduce_discovery_reply(&frame) {
             return outcome;
         }
@@ -76,16 +84,24 @@ impl Connection {
                 if self.kernel.is_some() {
                     return self.protocol_failure("server sent duplicate HELLO_OK");
                 }
-                if let Err(message) = validate_hello_ok(
-                    self.offered_caps,
+                if let Err(error) = validate_hello_ok(
+                    &self.offered_caps,
                     protocol_major,
                     protocol_minor,
                     protocol_patch,
                     selected_profile,
                     bootstrap_limits,
                 ) {
-                    return self.protocol_failure(message);
+                    if matches!(error, HelloOkError::UnsupportedProtocol { .. }) {
+                        return self.version_refusal(&error.to_string());
+                    }
+                    return self.protocol_failure(&error.to_string());
                 }
+                self.server_protocol = Some(Version {
+                    major: protocol_major,
+                    minor: protocol_minor,
+                    patch: protocol_patch,
+                });
                 self.bootstrap_limits = Some(bootstrap_limits);
                 self.selected_profile = Some(selected_profile);
                 let history_config = HistoryCacheConfig {
@@ -281,5 +297,16 @@ impl Connection {
             } => self.reduce_resource_event(&id, &event),
             _ => Outcome::default(),
         }
+    }
+
+    /// Fail on a protocol-major mismatch, marked so the page stops redialing.
+    fn version_refusal(&mut self, detail: &str) -> Outcome {
+        self.version_refused = true;
+        let message = format!(
+            "{VERSION_REFUSAL}: this page speaks phux protocol {}.x and the server does not \
+             ({detail}); update the server or this client, then reload",
+            PROTOCOL_VERSION.major
+        );
+        self.protocol_failure(&message)
     }
 }

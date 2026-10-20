@@ -51,6 +51,7 @@ export const REQUIRED_TESTS = [
   // Unit tests in src/ that need a DOM and the live server.
   "exported_start_retains_live_client_until_transport_failure",
   "closed_ws_send_and_repeated_reconnect_teardown_release_every_app",
+  "a_version_refusal_marks_the_canvas_and_never_redials",
   "dropping_polled_establishment_disposes_app_reader_and_transport",
 ] as const;
 const AUTH_REQUIRED_TESTS = ["blackholed_wt_falls_back_to_authenticated_wss"];
