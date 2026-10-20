@@ -106,8 +106,9 @@ commit posts git's own message and keeps your text.
 
 ## Implementation guarantees
 
-`clients/desktop/native/src/git.rs` owns Git operations without a GPUI
-dependency. It invokes the user's `git`, parses porcelain-v2 branch/status
+The shared `crates/phux-git` crate owns Git operations without a GPUI
+dependency; the desktop re-exports it as `git`, and the server's
+[checkout methods](./protocol.md#checkout-methods) run the same code. It invokes the user's `git`, parses porcelain-v2 branch/status
 records and raw comparison patches, and applies stage, unstage, commit and
 conflict resolution. Line staging cuts the selected file's patch section and
 uses `git apply --cached --recount` (reversed for unstaging), preserving its

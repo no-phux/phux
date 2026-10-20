@@ -4989,6 +4989,7 @@ dependencies = [
  "phux-client-ffi",
  "phux-client-runtime",
  "phux-config-core",
+ "phux-git",
  "phux-gpui",
  "phux-perf",
  "phux-protocol",
@@ -5013,6 +5014,16 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "phux-git"
+version = "0.109.0"
+dependencies = [
+ "libc",
+ "memchr",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
