@@ -248,6 +248,88 @@ mod tests {
         );
     }
 
+    /// A revision race that exhausts the compare-and-swap is refused, logged
+    /// where the default info filter shows it, and leaves the stored groups
+    /// untouched.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_exhausted_revision_conflict_is_logged_and_not_committed() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log").extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Buf {
+            type Writer = Self;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let mut fixture = OrgFixture::new();
+        let work = fixture.session("work", SessionLifetime::Persistent);
+        let pane = fixture.shell(work);
+        let extra = fixture.shell(work);
+        fixture.arrangement(
+            work,
+            WireDoc {
+                groups: vec![ArrangementGroup {
+                    id: [7; 16],
+                    name: Some("main".to_owned()),
+                    tree: ArrangementNode::Leaf(EntryRef {
+                        entry: [1; 16],
+                        target: EntryTarget::Member(pane),
+                    }),
+                }],
+            },
+        );
+        let fixture = fixture.inject_conflicts(phux_client::org::MAX_CAS_ATTEMPTS);
+        let session = fixture.live_session(&work).unwrap();
+        let extra_live = fixture.live(&extra).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ScriptSpec::new()
+            .server_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::Organization]))
+            .organization(fixture);
+        let (socket, _server) = serve_one(dir.path(), spec);
+        let mut link = ArrangementLink::open(&Dial::uds(&socket), session)
+            .await
+            .unwrap()
+            .expect("the server advertises ORGANIZATION");
+        let mut document = link.read().await.unwrap().expect("an arrangement");
+        document.add_group("extra".to_owned(), extra_live);
+
+        let buf = Buf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(buf.clone())
+            .finish();
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+        let err = link.write(&document).await.unwrap_err();
+        assert!(
+            matches!(err, LayoutOpsError::Conflict),
+            "exhausted compare-and-swap: {err:?}"
+        );
+
+        let again = link.read().await.unwrap().expect("an arrangement");
+        assert_eq!(again.groups.len(), 1);
+        assert_eq!(again.groups[0].name, "main");
+        let log = String::from_utf8(buf.0.lock().expect("log").clone()).unwrap();
+        assert!(
+            log.contains("arrangement save refused") && log.contains("conflict"),
+            "{log}"
+        );
+    }
+
     /// Without `ORGANIZATION` there is no link: the driver keeps the key.
     #[tokio::test]
     async fn no_link_without_organization() {
