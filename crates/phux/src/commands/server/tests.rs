@@ -1,8 +1,20 @@
 use super::run::{
     broken_config_message, build_server_config, log_startup, open_server_log, select_connectors,
 };
-use super::spawn::{SpawnLock, parse_auto_spawn_idle};
+use super::spawn::{SpawnLock, parse_auto_spawn_idle, server_is_older};
 use super::*;
+
+#[test]
+fn only_an_older_server_is_handed_over() {
+    assert!(server_is_older("0.42.0", "0.43.0"));
+    assert!(server_is_older("0.43.9", "1.0.0"));
+    assert!(!server_is_older("0.43.0", "0.43.0"), "same build");
+    assert!(!server_is_older("0.44.0", "0.43.0"), "never downgrade");
+    assert!(!server_is_older("1.2.0", "1.0.5"), "never downgrade");
+    // Unorderable builds keep the any-difference rule.
+    assert!(server_is_older("0.43.0-dev", "0.43.0"));
+    assert!(server_is_older("0.43.0", "next"));
+}
 
 #[test]
 fn ensure_document_is_an_availability_result_not_a_handshake_claim() {

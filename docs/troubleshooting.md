@@ -39,10 +39,12 @@ starts a fresh server. `phux kill --server` reports "reaped a stale
 socket" in that case.
 
 **"incompatible protocol: client offered X, server requires Y".** The
-binary and the running server speak different protocol versions, usually
-because you updated and the old server is still running. `phux` upgrades
-the server automatically on attach; from a script, `phux upgrade` restarts
-the server onto the installed binary with its panes intact.
+binary and the running server are on different protocol majors, usually
+because you updated and the old server is still running. Any minor or
+patch on the same major interoperates, in either direction. `phux` upgrades
+an older server automatically on attach (a newer one is left running);
+from a script, `phux upgrade` restarts the server onto the installed binary
+with its panes intact.
 
 **"interactive use requires both stdin and stdout to be terminals".** You
 ran `phux` or `phux attach` from something that is not a terminal. Use the

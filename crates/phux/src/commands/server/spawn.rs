@@ -319,15 +319,37 @@ fn noting_failure(
     result
 }
 
+/// Whether a server running build `theirs` should be handed over to this
+/// binary, build `ours`: only when it is older. A newer server on the same
+/// protocol major interoperates with this client, and handing it over would
+/// downgrade it. A build that is not a plain `X.Y.Z` (a checkout or `next`
+/// build) cannot be ordered, so any difference keeps the original rule and
+/// upgrades: that is the replaced-binary case this hand-over exists for, and
+/// declining would strand an old server with no signal.
+pub(super) fn server_is_older(theirs: &str, ours: &str) -> bool {
+    use phux_client_runtime::release::Version;
+    if theirs == ours {
+        return false;
+    }
+    match (Version::parse(theirs), Version::parse(ours)) {
+        (Some(theirs), Some(ours)) => theirs < ours,
+        _ => true,
+    }
+}
+
 /// Hand a server running an older build over to this one in place
 /// (ADR-0032 re-exec, panes survive), for binaries replaced by a package
-/// manager. Best-effort: on refusal the old server keeps running.
+/// manager. A newer server is left alone. Best-effort: on refusal the old
+/// server keeps running.
 fn reconcile_version_skew(socket_path: &Path) {
     let ours = env!("CARGO_PKG_VERSION");
     let Some(theirs) = phux_server::health::running_version() else {
         return;
     };
-    if theirs == ours {
+    if !server_is_older(&theirs, ours) {
+        if theirs != ours {
+            tracing::debug!(theirs, ours, "running server is newer; leaving it in place");
+        }
         return;
     }
 
