@@ -570,6 +570,31 @@ impl RemoteClient {
         request_id
     }
 
+    /// Subscribe to one `Global` metadata key (`SUBSCRIBE_METADATA`) and
+    /// read its current value (`GET_METADATA`). Idempotent; the runtime also
+    /// subscribes and reads it again on every later attach. Values arrive
+    /// through `take_global_metadata`. Returns the read's request id, or 0
+    /// when nothing was sent (offline, an empty key, or more than 32 keys).
+    pub fn watch_global_metadata(&self, key: String) -> u32 {
+        self.runtime_client()
+            .map_or(0, |client| client.watch_global_metadata(key))
+    }
+
+    /// Drain the watched `Global` keys' values observed since the last
+    /// call, read replies and live changes alike, oldest first and newest
+    /// value per key. `value` is `None` when the key is absent or deleted.
+    pub fn take_global_metadata(&self) -> Vec<WireGlobalMetadata> {
+        self.runtime_client()
+            .map(|client| {
+                client
+                    .take_global_metadata()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Close several panes as one all-or-nothing `CLOSE_TAB_RESOURCES`
     /// (a whole session, say: its panes from `topology()`). Returns the
     /// request id the `WireEvent::TerminalsClosed` reply correlates by, or

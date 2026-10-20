@@ -119,6 +119,30 @@ adapter. [Awareness code](../integrations/runtime/src/awareness.ts) and
 pane and checkpoint bounds. Host adapters remain siblings over this neutral
 runtime; do not duplicate its state machine in each integration.
 
+## Plan usage
+
+`phux agent usage` prints the AI plan limits this host can see: Claude Code's
+5-hour and weekly windows, Codex's, and Grok Build's allowance, with
+utilization and reset times. It reads each vendor's own sign-in (Claude
+Code's Keychain item or `~/.claude/.credentials.json`, `~/.codex`,
+`~/.grok`) and never refreshes or writes a token; a token is sent only to
+the vendor that issued it. An expired sign-in shows as `unavailable` until
+that agent runs again. Requests to one vendor are at least two minutes apart
+and back off 3, 6, 12, then 15 minutes on rate limits; Codex usually needs
+no request, since its session ledgers record the limits.
+
+The [usage plugin](../examples/plugins/usage) (enabled by the starter
+distro) runs `phux agent usage --publish` when a client attaches or an agent
+changes state. That writes the `phux.usage/v1` Global metadata key, the
+same document as `phux agent usage --json`: per plan a `provider`, `plan`,
+`label`, an opaque 12-hex `account` fingerprint (never an email), `status`
+(`ok`, `stale`, `unavailable`, `error`), and `windows` of `{id, minutes,
+used_percent, resets_at_ms}`. Clients read and watch the key; readers ignore
+unknown fields. Setting `phux.usage.refresh/v1` to any new value asks the
+next publish to skip the two-minute spacing, never a backoff.
+[Collector](../crates/phux-usage) and [verb](../crates/phux/src/commands/plan_usage.rs)
+own the sources and the publish rule.
+
 ## ACP-owned sessions
 
 Agent Client Protocol (ACP) providers run under a server-owned guardian,

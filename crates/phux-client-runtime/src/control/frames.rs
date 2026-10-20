@@ -390,6 +390,9 @@ impl ControlPlane {
         let Some(frame) = self.take_project_tag_frame(frame) else {
             return Ok(());
         };
+        let Some(frame) = self.take_global_metadata_frame(frame) else {
+            return Ok(());
+        };
         match classify_engine_frame(frame)? {
             ClassifiedFrame::Engine(event) => self.apply_engine(event),
             ClassifiedFrame::Other(frame) => {

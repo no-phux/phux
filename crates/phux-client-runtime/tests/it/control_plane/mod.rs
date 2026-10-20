@@ -37,6 +37,7 @@ mod agent_sessions;
 mod approvals;
 mod checkout;
 mod geometry;
+mod global_metadata;
 mod native_agent;
 mod observation;
 mod recovery;

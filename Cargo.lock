@@ -2604,6 +2604,7 @@ dependencies = [
  "phux-relay",
  "phux-server",
  "phux-tui",
+ "phux-usage",
  "phux-work",
  "portable-pty",
  "qrcode",
@@ -3037,6 +3038,19 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "phux-usage"
+version = "0.109.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]

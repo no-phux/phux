@@ -64,7 +64,7 @@ fn the_curated_opinions_are_shipped_defaults() {
     assert_eq!(cfg.defaults, bare.defaults);
     assert_eq!(cfg.status, bare.status);
     assert_eq!(cfg.theme, bare.theme);
-    assert_eq!(cfg.plugins.len(), 2, "{:?}", cfg.plugins);
+    assert_eq!(cfg.plugins.len(), 3, "{:?}", cfg.plugins);
 }
 
 /// Layer-relative manifests become absolute, normalized, existing paths
@@ -78,6 +78,7 @@ fn plugin_manifests_absolutize_and_load() {
         .collect();
     assert!(manifests[0].ends_with("examples/plugins/continuum/phux-plugin.toml"));
     assert!(manifests[1].ends_with("examples/plugins/agent-tools/phux-plugin.toml"));
+    assert!(manifests[2].ends_with("examples/plugins/usage/phux-plugin.toml"));
     for manifest in &manifests {
         assert!(manifest.is_absolute(), "{manifest:?}");
         assert!(
@@ -122,9 +123,9 @@ manifest = "/home/me/extra/phux-plugin.toml"
         cfg.theme.slots.get("accent").map(String::as_str),
         Some("magenta")
     );
-    assert_eq!(cfg.plugins.len(), 3);
+    assert_eq!(cfg.plugins.len(), 4);
     assert_eq!(
-        cfg.plugins[2].manifest,
+        cfg.plugins[3].manifest,
         Path::new("/home/me/extra/phux-plugin.toml")
     );
 

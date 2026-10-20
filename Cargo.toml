@@ -75,6 +75,7 @@ phux-relay = { path = "crates/phux-relay" }
 # The phux-independent QUIC tunnel relay; members opt into its features.
 quictun = { path = "crates/quictun", default-features = false }
 phux-plugin = { path = "crates/phux-plugin" }
+phux-usage = { path = "crates/phux-usage" }
 # Fatal-signal (SIGSEGV/SIGBUS/SIGABRT) terminal restore. Apache-2.0 ONLY —
 # derived from upstream code, unlike every other crate here; see
 # crates/phux-crash/NOTICE.

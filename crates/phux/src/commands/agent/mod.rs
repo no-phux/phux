@@ -465,6 +465,36 @@ pub(crate) enum AgentAction {
     },
     /// Remove the claude-in-phux shim and shell activation.
     UninstallClaude,
+    /// Show the AI plan limits this host can see.
+    ///
+    /// Reads each signed-in subscription's limit windows from the vendor's
+    /// own credentials: Claude Code (its OAuth usage endpoint), Codex (the
+    /// rate limits its session ledgers record, or the live chatgpt.com usage
+    /// endpoint when they are old) and Grok Build (its credits allowance). Prints
+    /// utilization and reset times per plan. Credentials are only read,
+    /// never refreshed, and go only to the vendor that issued them;
+    /// requests are spaced at least two minutes apart per vendor and back
+    /// off on rate limits, with the last reading reused in between.
+    ///
+    /// `--publish` also writes the result to the server's `phux.usage/v1`
+    /// Global metadata key, which every client can read and watch; the usage
+    /// plugin runs this from its hooks. A client may set
+    /// `phux.usage.refresh/v1` to ask the next publish to skip the
+    /// two-minute spacing. Does not start a server.
+    Usage {
+        /// Print the `phux.usage/v1` document instead of the human view.
+        #[usage(long)]
+        json: bool,
+
+        /// Write the snapshot to the server's `phux.usage/v1` key.
+        #[usage(long)]
+        publish: bool,
+
+        /// Ask every vendor now instead of reusing a reading under two
+        /// minutes old (a rate-limit backoff still applies).
+        #[usage(long)]
+        refresh: bool,
+    },
     /// Internal: read one Claude Code hook payload from stdin and print the
     /// fields the generated shim splices into its `phux` calls, as one line
     /// of shell-safe tokens. Hidden because it is the wrapper's JSON reader,
@@ -646,6 +676,11 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             shim::run_install_claude(shell.as_deref(), real.as_deref())
         }
         AgentAction::UninstallClaude => shim::run_uninstall_claude(),
+        AgentAction::Usage {
+            json,
+            publish,
+            refresh,
+        } => crate::commands::plan_usage::run_usage(*json, *publish, *refresh, socket),
         AgentAction::HookPayload => hook_payload::run(),
         AgentAction::HookTranscript => hook_transcript::run(),
     }

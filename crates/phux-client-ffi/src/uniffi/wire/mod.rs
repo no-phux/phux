@@ -26,9 +26,11 @@ use super::keymap::{self, KeyMods, KeyPress};
 
 mod checkout;
 mod client;
+mod global_metadata;
 mod graph;
 mod types;
 
 pub use checkout::*;
+pub use global_metadata::WireGlobalMetadata;
 pub use graph::*;
 pub use types::*;

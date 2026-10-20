@@ -61,6 +61,7 @@ mod events;
 mod extensions;
 mod frames;
 mod geometry;
+mod global_metadata;
 mod input;
 mod kernel;
 pub mod keys;
@@ -83,6 +84,7 @@ pub use extensions::{
     TranscribeOutcome, TranscribeReceipt,
 };
 pub use geometry::TerminalResizeOutcome;
+pub use global_metadata::{GlobalMetadata, MAX_WATCHED_GLOBAL_KEYS};
 pub use input::mint_input_operation_id;
 pub use org_plane::{ArrangementSubmitError, mint_operation};
 pub use organization::{InboxView, IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
@@ -489,6 +491,8 @@ pub struct ControlPlane {
     roster: roster::RosterRecovery,
     /// In-flight `GET` of `phux.session.project/v1`.
     project_tag_pending: Option<u32>,
+    /// `Global` keys a binding asked to watch.
+    global_watch: global_metadata::GlobalWatch,
     /// The organization replica (`ORGANIZATION` servers only).
     organization: organization::OrganizationReplica,
     /// The organization operation journal and close batches.
@@ -564,6 +568,7 @@ impl ControlPlane {
             extensions: extensions::Extensions::default(),
             roster: roster::RosterRecovery::default(),
             project_tag_pending: None,
+            global_watch: global_metadata::GlobalWatch::default(),
             organization: organization::OrganizationReplica::new(),
             org: org_plane::OrgLane::default(),
             approvals: approvals::ApprovalWatch::default(),
