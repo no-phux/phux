@@ -33,6 +33,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.43.0](https://github.com/no-phux/phux/compare/desktop-v0.42.0...desktop-v0.43.0) (2026-10-20)
+
+
+### Features
+
+* **desktop:** keep side tabs and the desk's tab shape in plain terminal mode ([#1692](https://github.com/no-phux/phux/issues/1692)) ([85f39b4](https://github.com/no-phux/phux/commit/85f39b47f341125a242448abf18a346c79d397da))
+
 ## [0.42.0](https://github.com/no-phux/phux/compare/desktop-v0.41.0...desktop-v0.42.0) (2026-10-20)
 
 
