@@ -22,6 +22,7 @@ production state or install an unreleased build.
 
 - [Install](./install.md): installer, Homebrew, desktop app, updating, from source.
 - [Getting started](./getting-started.md): first session, keys, detaching, coming from tmux.
+- [phux vs tmux, Herdr, and cmux](./compare.md): which one fits the job, and what survives a restart in each.
 - [Concepts](./concepts.md): the server, sessions and panes, targets, what survives what.
 - [Configuration](./config.md): keys, themes, status bar, hooks, plugins, projects.
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, JSON and exit codes.
