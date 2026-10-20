@@ -392,8 +392,29 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             );
             Ok(FrameOutcome::default())
         }
-        other => Err(unexpected_frame(&other)),
+        other => unexpected_frame_outcome(&other),
     }
+}
+
+/// A frame no arm takes. A server-direction frame is dropped: a newer server
+/// on the same major may send a reply or notice this client never asked
+/// for, and ignoring it is safe. A duplicate `HELLO_OK` or a client-direction
+/// frame is a peer fault no version skew explains, and stays fatal.
+fn unexpected_frame_outcome(frame: &FrameKind) -> Result<FrameOutcome, AttachError> {
+    if !is_ignorable_server_frame(frame) {
+        return Err(unexpected_frame(frame));
+    }
+    tracing::debug!(
+        frame = frame_kind_label(frame),
+        "ignoring a server frame this client has no use for"
+    );
+    Ok(FrameOutcome::default())
+}
+
+/// Server-to-client frames carry the high type bit (`docs/spec/proto.md`
+/// §7); `HELLO_OK` is one, but only the handshake may carry it.
+const fn is_ignorable_server_frame(frame: &FrameKind) -> bool {
+    frame.type_byte() & 0x80 != 0 && !matches!(frame, FrameKind::HelloOk { .. })
 }
 
 /// The one rejection this dispatcher makes: a frame no server may send in the
@@ -403,3 +424,6 @@ fn unexpected_frame(frame: &FrameKind) -> AttachError {
         "frame is not valid from a server in the attached phase: {frame:?}",
     ))
 }
+
+#[cfg(test)]
+mod unexpected_frame_tests;
