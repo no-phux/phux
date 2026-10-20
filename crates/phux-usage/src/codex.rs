@@ -38,12 +38,26 @@ struct Reading {
 }
 
 /// What `auth.json` says about the account.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Default, PartialEq)]
 struct Auth {
     plan: Option<String>,
     account_id: Option<String>,
     access_token: Option<String>,
     expires_at_ms: Option<i64>,
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Auth")
+            .field("plan", &self.plan)
+            .field("account_id", &self.account_id)
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish()
+    }
 }
 
 fn parse_auth(bytes: &[u8]) -> Option<Auth> {
@@ -74,7 +88,9 @@ fn parse_auth(bytes: &[u8]) -> Option<Auth> {
 /// A `rate_limits` window: `{used_percent, window_minutes, resets_at}`
 /// (older builds send `resets_in_seconds`).
 fn rollout_window(window: &Value, at_ms: i64) -> Option<Window> {
-    let minutes = u32::try_from(window.get("window_minutes")?.as_u64()?).ok()?;
+    let minutes = u32::try_from(window.get("window_minutes")?.as_u64()?)
+        .ok()
+        .filter(|m| *m > 0)?;
     let resets_at_ms = seconds(window.get("resets_at"))
         .map(|s| s * 1000)
         .or_else(|| seconds(window.get("resets_in_seconds")).map(|s| at_ms + s * 1000));
@@ -214,7 +230,9 @@ fn parse_wham(body: &[u8]) -> Result<(Option<String>, Vec<Window>), Failure> {
         .iter()
         .filter_map(|key| {
             let window = limits?.get(*key)?;
-            let minutes = u32::try_from(window.get("limit_window_seconds")?.as_u64()? / 60).ok()?;
+            let minutes = u32::try_from(window.get("limit_window_seconds")?.as_u64()? / 60)
+                .ok()
+                .filter(|m| *m > 0)?;
             Some(Window::by_length(
                 minutes,
                 number(window.get("used_percent"))?,
@@ -301,7 +319,7 @@ pub(crate) fn collect(
             |reading| from_rollout(base.clone(), reading, now, Some(why.to_owned())),
         ));
     };
-    let account = auth.account_id.clone().unwrap_or_default();
+    let account = auth.account_id.clone();
     let live = polled(
         wham,
         Plan {
@@ -310,17 +328,17 @@ pub(crate) fn collect(
         },
         request,
         || {
+            let mut headers = vec![
+                ("Authorization", format!("Bearer {token}")),
+                ("User-Agent", USER_AGENT.to_owned()),
+                ("Accept", "application/json".to_owned()),
+            ];
+            if let Some(account) = account {
+                headers.push(("ChatGPT-Account-Id", account));
+            }
             let reply = request
                 .fetch
-                .get(
-                    WHAM_URL,
-                    &[
-                        ("Authorization", format!("Bearer {token}")),
-                        ("ChatGPT-Account-Id", account),
-                        ("User-Agent", USER_AGENT.to_owned()),
-                        ("Accept", "application/json".to_owned()),
-                    ],
-                )
+                .get(WHAM_URL, &headers)
                 .map_err(Failure::Failed)?;
             if reply.status != 200 {
                 return Err(Failure::from_status(reply.status, "ChatGPT"));
@@ -517,6 +535,16 @@ mod tests {
     #[test]
     fn wham_rejects_replies_without_windows() {
         assert!(parse_wham(br#"{"rate_limit":{"primary_window":null}}"#).is_err());
+        let zero =
+            br#"{"rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":0}}}"#;
+        assert!(parse_wham(zero).is_err(), "a zero-length window is dropped");
+        let zero = r#"{"timestamp":"2000-01-01T00:00:00Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":1.0,"window_minutes":0}}}}"#;
+        assert!(parse_line(zero).is_none());
+        let auth = parse_auth(auth_json(2_000).as_bytes()).unwrap();
+        assert!(
+            !format!("{auth:?}").contains("eyJ"),
+            "Debug redacts the token"
+        );
         assert!(parse_wham(b"nope").is_err());
     }
 }

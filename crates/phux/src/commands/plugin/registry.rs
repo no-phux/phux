@@ -7,6 +7,9 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 #[derive(Debug)]
 pub(super) struct RegistryEntry {
+    /// The array of tables in the user's file holding this entry: `plugins`
+    /// or `plugins-append`.
+    pub(super) key: &'static str,
     pub(super) index: usize,
     pub(super) manifest_text: String,
     pub(super) manifest_path: PathBuf,
@@ -31,6 +34,7 @@ pub(super) fn load_registry_from_path(config_path: &Path) -> Result<Vec<Registry
             return Err(format!("duplicate plugin id {:?}", manifest.id));
         }
         entries.push(RegistryEntry {
+            key: PLUGINS,
             index,
             manifest_text,
             manifest_path,
@@ -41,12 +45,57 @@ pub(super) fn load_registry_from_path(config_path: &Path) -> Result<Vec<Registry
     Ok(entries)
 }
 
+/// The registered plugin `id`, with `index` pointing at its own
+/// `[[plugins]]` table in `config_path`. A plugin an `extends` layer
+/// contributes has no table there to edit, so it is an error naming the
+/// way to drop it rather than an edit of whichever entry shares its index.
 pub(super) fn find_entry(config_path: &Path, id: &str) -> Result<RegistryEntry, String> {
-    load_registry_from_path(config_path)?
+    let mut entry = load_registry_from_path(config_path)?
         .into_iter()
         .find(|entry| entry.manifest.id == id)
-        .ok_or_else(|| format!("plugin {id:?} is not registered"))
+        .ok_or_else(|| format!("plugin {id:?} is not registered"))?;
+    (entry.key, entry.index) = own_index(config_path, &entry.manifest_path)?.ok_or_else(|| {
+        format!(
+            "plugin {id:?} comes from a config layer (`extends`), not {}; \
+             to drop it, assign `plugins = [...]` there listing the plugins to keep",
+            config_path.display()
+        )
+    })?;
+    Ok(entry)
 }
+
+/// Where `config_path` itself declares the plugin whose manifest is
+/// `manifest_path`: the array (`plugins` or `plugins-append`) and index.
+pub(super) fn own_index(
+    config_path: &Path,
+    manifest_path: &Path,
+) -> Result<Option<(&'static str, usize)>, String> {
+    let doc = read_config_document(config_path)?;
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let wanted = canonical(manifest_path);
+    for key in [PLUGINS, PLUGINS_APPEND] {
+        let Some(tables) = doc.get(key).and_then(Item::as_array_of_tables) else {
+            continue;
+        };
+        let found = tables.iter().position(|table| {
+            table
+                .get("manifest")
+                .and_then(Item::as_str)
+                .is_some_and(|text| {
+                    canonical(&plugin::resolve_manifest_path(Path::new(text), config_path))
+                        == wanted
+                })
+        });
+        if let Some(index) = found {
+            return Ok(Some((key, index)));
+        }
+    }
+    Ok(None)
+}
+
+const PLUGINS: &str = "plugins";
+const PLUGINS_APPEND: &str = "plugins-append";
 
 pub(super) fn read_config_document(config_path: &Path) -> Result<DocumentMut, String> {
     match std::fs::read_to_string(config_path) {
@@ -71,7 +120,7 @@ pub(super) fn push_entry(
     manifest: &str,
     enabled: bool,
 ) -> Result<(), String> {
-    let plugins = plugin_tables_mut(doc)?;
+    let plugins = plugin_tables_mut(doc, PLUGINS)?;
     let mut table = Table::new();
     table.insert("manifest", value(manifest));
     table.insert("enabled", value(enabled));
@@ -81,11 +130,11 @@ pub(super) fn push_entry(
 
 pub(super) fn update_entry(
     doc: &mut DocumentMut,
-    index: usize,
+    (key, index): (&'static str, usize),
     manifest: &str,
     enabled: bool,
 ) -> Result<(), String> {
-    let table = plugin_table_mut(doc, index)?;
+    let table = plugin_table_mut(doc, key, index)?;
     table.insert("manifest", value(manifest));
     table.insert("enabled", value(enabled));
     Ok(())
@@ -93,16 +142,21 @@ pub(super) fn update_entry(
 
 pub(super) fn set_enabled(
     doc: &mut DocumentMut,
+    key: &'static str,
     index: usize,
     enabled: bool,
 ) -> Result<(), String> {
-    let table = plugin_table_mut(doc, index)?;
+    let table = plugin_table_mut(doc, key, index)?;
     table.insert("enabled", value(enabled));
     Ok(())
 }
 
-pub(super) fn remove_entry(doc: &mut DocumentMut, index: usize) -> Result<(), String> {
-    let plugins = plugin_tables_mut(doc)?;
+pub(super) fn remove_entry(
+    doc: &mut DocumentMut,
+    key: &'static str,
+    index: usize,
+) -> Result<(), String> {
+    let plugins = plugin_tables_mut(doc, key)?;
     if index >= plugins.len() {
         return Err(format!("plugin registry index {index} disappeared"));
     }
@@ -120,19 +174,26 @@ pub(super) fn manifest_path_for_config(manifest_path: &Path, config_path: &Path)
     )
 }
 
-fn plugin_table_mut(doc: &mut DocumentMut, index: usize) -> Result<&mut Table, String> {
-    plugin_tables_mut(doc)?
+fn plugin_table_mut<'a>(
+    doc: &'a mut DocumentMut,
+    key: &'static str,
+    index: usize,
+) -> Result<&'a mut Table, String> {
+    plugin_tables_mut(doc, key)?
         .get_mut(index)
         .ok_or_else(|| format!("plugin registry index {index} disappeared"))
 }
 
-fn plugin_tables_mut(doc: &mut DocumentMut) -> Result<&mut ArrayOfTables, String> {
+fn plugin_tables_mut<'a>(
+    doc: &'a mut DocumentMut,
+    key: &'static str,
+) -> Result<&'a mut ArrayOfTables, String> {
     let item = doc
         .as_table_mut()
-        .entry("plugins")
+        .entry(key)
         .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()));
     item.as_array_of_tables_mut()
-        .ok_or_else(|| "`plugins` must be an array of tables".to_owned())
+        .ok_or_else(|| format!("`{key}` must be an array of tables"))
 }
 
 pub(super) fn reject_symlinked_config(path: &Path) -> Result<(), String> {
@@ -157,6 +218,60 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    fn write_plugin(dir: &Path, id: &str) -> PathBuf {
+        let root = dir.join(id);
+        std::fs::create_dir_all(&root).expect("plugin dir");
+        let manifest = root.join("phux-plugin.toml");
+        std::fs::write(
+            &manifest,
+            format!("id = \"{id}\"\nname = \"{id}\"\nversion = \"0.1.0\"\nmin_phux_version = \"0.0.1\"\n"),
+        )
+        .expect("manifest");
+        manifest
+    }
+
+    /// A layer-contributed plugin is refused by name; a plugin of the
+    /// file's own is found at its own table, not at its merged position.
+    #[test]
+    fn find_entry_edits_only_the_files_own_tables() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let layered = write_plugin(dir.path(), "layered");
+        let mine = write_plugin(dir.path(), "mine");
+        let layer = dir.path().join("layer.toml");
+        std::fs::write(
+            &layer,
+            format!("[[plugins-append]]\nmanifest = \"{}\"\n", layered.display()),
+        )
+        .expect("layer");
+        let config = dir.path().join("config.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "extends = [\"{}\"]\n\n[[plugins-append]]\nmanifest = \"{}\"\n",
+                layer.display(),
+                mine.display()
+            ),
+        )
+        .expect("config");
+        let refused = find_entry(&config, "layered").expect_err("inherited");
+        assert!(refused.contains("config layer"), "{refused}");
+        let entry = find_entry(&config, "mine").expect("own entry");
+        assert_eq!(
+            (entry.key, entry.index),
+            ("plugins-append", 0),
+            "its own table, not merged position 1"
+        );
+        let mut doc = read_config_document(&config).expect("read");
+        set_enabled(&mut doc, entry.key, entry.index, false).expect("disable");
+        write_config_document(&config, &doc).expect("write");
+        let reloaded = load_registry_from_path(&config).expect("reload");
+        let enabled: Vec<(&str, bool)> = reloaded
+            .iter()
+            .map(|e| (e.manifest.id.as_str(), e.enabled))
+            .collect();
+        assert_eq!(enabled, [("layered", true), ("mine", false)]);
+    }
 
     #[test]
     fn a_registry_write_keeps_the_config_file_mode() {

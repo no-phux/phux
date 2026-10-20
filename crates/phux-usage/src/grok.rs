@@ -18,11 +18,21 @@ pub(crate) const DEFAULT_PROXY: &str = "https://cli-chat-proxy.grok.com/v1";
 const TOKEN_AUTH: &str = "xai-grok-cli";
 const CLIENT_VERSION: &str = "0.1.0";
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct Session {
     key: String,
     user_id: Option<String>,
     expires_at_ms: Option<i64>,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("key", &"<redacted>")
+            .field("user_id", &self.user_id)
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish()
+    }
 }
 
 /// `auth.json` maps `issuer::client` to a session; take the OIDC one that
@@ -125,6 +135,14 @@ pub(crate) fn collect(
             Status::Unavailable,
             Some("sign-in expired; run grok to refresh it".to_owned()),
         ));
+    }
+    // The session token only ever travels over TLS, even to an override.
+    if !sources.grok_proxy.starts_with("https://") {
+        return Some(Plan {
+            status: Status::Error,
+            error: Some("GROK_CLI_CHAT_PROXY_BASE_URL must be an https:// URL".to_owned()),
+            ..base
+        });
     }
     let url = format!(
         "{}/billing?format=credits",
@@ -274,5 +292,40 @@ mod tests {
         .unwrap();
         assert_eq!(plan.status, Status::Unavailable);
         assert!(script.requests().is_empty());
+    }
+
+    #[test]
+    fn a_plain_http_proxy_never_receives_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sources = sources(dir.path());
+        sources.grok_proxy = "http://proxy.test/v1".to_owned();
+        std::fs::create_dir_all(&sources.grok_home).unwrap();
+        std::fs::write(
+            sources.grok_home.join("auth.json"),
+            auth("2100-01-01T00:00:00Z"),
+        )
+        .unwrap();
+        let script = Script::default();
+        let plan = collect(
+            &sources,
+            &mut SourceState::default(),
+            Request {
+                host: "h",
+                now_ms: 0,
+                eager: false,
+                fetch: &script,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.status, Status::Error);
+        assert!(script.requests().is_empty());
+        let shown = format!(
+            "{:?}",
+            parse_auth(auth("2100-01-01T00:00:00Z").as_bytes()).unwrap()
+        );
+        assert!(
+            shown.contains("<redacted>") && !shown.contains("eyJ"),
+            "{shown}"
+        );
     }
 }

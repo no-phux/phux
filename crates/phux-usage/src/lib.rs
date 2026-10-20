@@ -167,6 +167,7 @@ fn polled(
         return cached(source, identity, now);
     }
     source.attempted(now);
+    source.identity = Some(identity.clone());
     match read() {
         Ok(windows) => {
             let plan = Plan {
@@ -193,6 +194,12 @@ fn polled(
             cached(source, identity, now)
         }
     }
+}
+
+/// The plan as last seen, for a run that is not due: no credential read.
+fn remembered(source: &SourceState, now: i64) -> Option<Plan> {
+    let identity = source.identity.clone()?;
+    Some(cached(source, identity, now))
 }
 
 /// The last good windows with a status saying how much to trust them.

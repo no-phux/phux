@@ -123,23 +123,41 @@ runtime; do not duplicate its state machine in each integration.
 
 `phux agent usage` prints the AI plan limits this host can see: Claude Code's
 5-hour and weekly windows, Codex's, and Grok Build's allowance, with
-utilization and reset times. It reads each vendor's own sign-in (Claude
-Code's Keychain item or `~/.claude/.credentials.json`, `~/.codex`,
-`~/.grok`) and never refreshes or writes a token; a token is sent only to
-the vendor that issued it. An expired sign-in shows as `unavailable` until
-that agent runs again. Requests to one vendor are at least two minutes apart
-and back off 3, 6, 12, then 15 minutes on rate limits; Codex usually needs
-no request, since its session ledgers record the limits.
+utilization and reset times.
+
+What it reads, and where anything goes:
+
+| Vendor | Read on this host | Sent, and only to |
+| --- | --- | --- |
+| Claude Code | Keychain item `Claude Code-credentials` (via `/usr/bin/security`), else `~/.claude/.credentials.json`; account id from `~/.claude.json` | the access token, to `api.anthropic.com/api/oauth/usage` |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl` (the newest tails) and `~/.codex/auth.json` | when the ledgers are over 10 minutes old: the access token and account id, to `chatgpt.com/backend-api/wham/usage` |
+| Grok Build | `~/.grok/auth.json` | the session token and user id, to `cli-chat-proxy.grok.com` (an override must be `https://`) |
+
+Tokens are never refreshed, written, logged, or published, and travel only
+over HTTPS (`curl` reads them from stdin, not its command line). An expired
+sign-in shows as `unavailable` until that agent runs again. Requests to one
+vendor are at least two minutes apart and back off 3, 6, 12, then 15 minutes
+on rate limits; a missing Keychain item is not looked for again for 15
+minutes.
 
 The [usage plugin](../examples/plugins/usage) (enabled by the starter
 distro) runs `phux agent usage --publish` when a client attaches or an agent
-changes state. That writes the `phux.usage/v1` Global metadata key, the
+changes state. A publish that finds another one running, or that comes
+within ten seconds of the last, exits at once without touching the server
+or any credential. It writes the `phux.usage/v1` Global metadata key, the
 same document as `phux agent usage --json`: per plan a `provider`, `plan`,
 `label`, an opaque 12-hex `account` fingerprint (never an email), `status`
 (`ok`, `stale`, `unavailable`, `error`), and `windows` of `{id, minutes,
-used_percent, resets_at_ms}`. Clients read and watch the key; readers ignore
-unknown fields. Setting `phux.usage.refresh/v1` to any new value asks the
-next publish to skip the two-minute spacing, never a backoff.
+used_percent, resets_at_ms}`. The key is rewritten only when a number or
+status changes, or every five minutes. Any client whose grant includes
+`observe@global` can read it: the owner socket, and every paired device.
+Readers ignore unknown fields.
+
+Setting `phux.usage.refresh/v1` to a new value is only a hint: nothing
+watches it, so it is noticed by the next publish a hook triggers, which then
+skips the two-minute spacing (never a backoff). The plugin's `refresh`
+action publishes at once. To stop publishing, see the
+[plugin's README](../examples/plugins/usage/README.md#turning-it-off).
 [Collector](../crates/phux-usage) and [verb](../crates/phux/src/commands/plan_usage.rs)
 own the sources and the publish rule.
 

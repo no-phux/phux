@@ -63,6 +63,30 @@ fn read_key(socket: &Path) -> Option<Vec<u8>> {
     })
 }
 
+/// `phux --socket SOCKET agent usage FLAGS...`.
+fn usage(dir: &Path, socket: &str, flags: &[&str]) -> Output {
+    let mut args = vec!["--socket", socket, "agent", "usage"];
+    args.extend_from_slice(flags);
+    phux(dir, &args)
+}
+
+fn stored(socket: &Path) -> serde_json::Value {
+    serde_json::from_slice(&read_key(socket).expect("the key is set")).expect("JSON")
+}
+
+fn start_server(dir: &Path, socket: &str) -> Server {
+    Server(
+        common::phux_cmd(crate::runner::phux_bin())
+            .envs(env(dir))
+            .args(["server", "--socket", socket, "--exit-after-idle", "120"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn phux server"),
+    )
+}
+
 #[test]
 #[ignore = "spawns a real server; runs in the e2e lane"]
 fn publish_writes_the_usage_key_once_per_change() {
@@ -71,30 +95,11 @@ fn publish_writes_the_usage_key_once_per_change() {
     std::fs::create_dir_all(dir.path().join("home")).unwrap();
     let socket = dir.path().join("s.sock");
     let socket_arg = socket.to_str().expect("utf-8 path");
-    let _server = Server(
-        common::phux_cmd(crate::runner::phux_bin())
-            .envs(env(dir.path()))
-            .args(["server", "--socket", socket_arg, "--exit-after-idle", "120"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server"),
-    );
+    let _server = start_server(dir.path(), socket_arg);
 
     let start = Instant::now();
     let out = loop {
-        let out = phux(
-            dir.path(),
-            &[
-                "--socket",
-                socket_arg,
-                "agent",
-                "usage",
-                "--publish",
-                "--json",
-            ],
-        );
+        let out = usage(dir.path(), socket_arg, &["--publish", "--json"]);
         if out.status.success() {
             break out;
         }
@@ -113,55 +118,55 @@ fn publish_writes_the_usage_key_once_per_change() {
         serde_json::json!([]),
         "no credentials, no plans"
     );
+    let first = stored(&socket);
+    assert_eq!(first, printed, "the server holds exactly what was printed");
 
-    let stored: serde_json::Value =
-        serde_json::from_slice(&read_key(&socket).expect("the key is set")).expect("JSON");
-    assert_eq!(stored, printed, "the server holds exactly what was printed");
-
-    // Nothing changed: the stored document keeps its observation time.
-    let again = phux(
-        dir.path(),
-        &[
-            "--socket",
-            socket_arg,
-            "agent",
-            "usage",
-            "--publish",
-            "--json",
-        ],
-    );
+    // Inside ten seconds of the last run a hook publish does nothing.
+    let again = usage(dir.path(), socket_arg, &["--publish", "--json"]);
     assert!(again.status.success());
-    let kept: serde_json::Value = serde_json::from_slice(&read_key(&socket).unwrap()).unwrap();
-    assert_eq!(kept["observed_at_ms"], stored["observed_at_ms"]);
+    assert!(again.stdout.is_empty(), "skipped: {:?}", again.stdout);
+    assert_eq!(stored(&socket)["observed_at_ms"], first["observed_at_ms"]);
 
     // `--refresh` always rewrites.
-    let forced = phux(
+    let forced = usage(
         dir.path(),
-        &[
-            "--socket",
-            socket_arg,
-            "agent",
-            "usage",
-            "--publish",
-            "--refresh",
-            "--json",
-        ],
+        socket_arg,
+        &["--publish", "--refresh", "--json"],
     );
     assert!(forced.status.success());
-    let rewritten: serde_json::Value = serde_json::from_slice(&read_key(&socket).unwrap()).unwrap();
     let forced: serde_json::Value = serde_json::from_slice(&forced.stdout).unwrap();
-    assert_eq!(rewritten, forced);
+    assert_eq!(stored(&socket), forced);
 
-    // Without a server, publishing fails and says so.
-    let lonely = phux(
+    held_lock_skips_the_publish(dir.path(), &socket, &forced);
+
+    // A plain publish inside the interval is a quiet no-op even with no
+    // server; a forced one reaches for the server and fails, saying so.
+    let quiet = usage(dir.path(), "/nonexistent/phux.sock", &["--publish"]);
+    assert!(quiet.status.success(), "skipped before any connect");
+    let lonely = usage(
         dir.path(),
-        &[
-            "--socket",
-            "/nonexistent/phux.sock",
-            "agent",
-            "usage",
-            "--publish",
-        ],
+        "/nonexistent/phux.sock",
+        &["--publish", "--refresh"],
     );
     assert!(!lonely.status.success());
+}
+
+/// Another publish holds the state lock: this one steps aside at once,
+/// touching neither the server nor any credential, even with `--refresh`.
+fn held_lock_skips_the_publish(dir: &Path, socket: &Path, current: &serde_json::Value) {
+    let lock_path = std::fs::read_dir(dir.join("state"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("usage/lock"))
+        .find(|path| path.is_file())
+        .expect("the publish created its state lock");
+    let held = std::fs::File::options()
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    held.lock().unwrap();
+    let socket_arg = socket.to_str().expect("utf-8 path");
+    let blocked = usage(dir, socket_arg, &["--publish", "--refresh", "--json"]);
+    assert!(blocked.status.success(), "a held lock is not an error");
+    assert!(blocked.stdout.is_empty(), "it published nothing");
+    assert_eq!(&stored(socket), current);
 }
