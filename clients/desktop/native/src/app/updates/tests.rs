@@ -176,9 +176,10 @@ fn a_failed_stage_is_shown_as_a_desktop_failure() {
     assert!(!updater.record_stage(Err(anyhow::anyhow!("checksum mismatch"))));
     assert!(updater.staged.is_none());
     assert_eq!(updater.desktop_status().0, "Failed");
+    // Failures lead; Linux follows with its installer command.
     assert_eq!(
-        updater.notices(),
-        vec![("Desktop: Update failed: checksum mismatch".to_owned(), true)]
+        updater.notices().first(),
+        Some(&("Desktop: Update failed: checksum mismatch".to_owned(), true))
     );
 }
 
