@@ -2175,14 +2175,19 @@ fn a_certificate_due_for_renewal_warns_and_is_renewed() {
     assert_eq!(active, expected, "the orphan is revoked");
 }
 
-/// The host-scoped read ceiling a CI runner or another member holds.
+/// Inventory plus observe of every terminal on this host.
 ///
+/// The runbook does not mint this. A CI runner gets [`INVENTORY_HOST_SCOPE`],
+/// and a person gets `observe` only on sessions opted in one at a time.
 /// `phux ls` is `GET_STATE { SERVER }`, which the kind catalog admits only
 /// with `inventory` and then returns what that verb covers. `observe` is
 /// what lets the same key read a terminal. `input` is absent on purpose.
 const HOST_READ_SCOPE: &str = "inventory,observe@host";
 
-/// Seven days, the suggested CI-runner lifetime.
+/// Inventory of this host, with no `observe`. The CI runner scope.
+const INVENTORY_HOST_SCOPE: &str = "inventory@host";
+
+/// Seven days, the CI-runner lifetime the runbook passes as `--expires-in`.
 const HOST_READ_EXPIRES_IN: i64 = 7 * 24 * 60 * 60;
 
 /// `workload add-key --scope inventory,observe@host` on a paired loopback
@@ -2238,6 +2243,58 @@ fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
     assert_revoked(&mut live);
 }
 
+/// `workload add-key --scope inventory@host` on a paired loopback listener:
+/// `phux ls --all` lists a session (`GET_STATE { SERVER }`), and `GET_SCREEN`
+/// of a terminal is permission-denied. `observe` is not on this certificate.
+#[test]
+#[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
+fn inventory_host_key_lists_and_refuses_terminal_observe() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    paired(dir.path());
+    init_authority(dir.path());
+    let client = client_key();
+    let cert = dir.path().join("inventory-client.pem");
+    let key = dir.path().join("inventory-client.key");
+    std::fs::write(&key, &client.key_pem).expect("write client key");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    assert_inventory_host_enrollment(&enroll_scoped_automation(
+        dir.path(),
+        &client,
+        &cert,
+        INVENTORY_HOST_SCOPE,
+    ));
+
+    let _server = start_server(dir.path(), &["--quic", listeners::LOOPBACK_ANY_PORT], &[]);
+    register_loopback_remote(dir.path());
+    let socket = dir.path().join("s.sock");
+    let socket_arg = socket.to_str().expect("utf-8 socket");
+    let created = phux(
+        dir.path(),
+        &[
+            "--socket",
+            socket_arg,
+            "new",
+            "--empty",
+            "--json",
+            "-s",
+            "observe-list",
+        ],
+    );
+    assert!(
+        created.status.success(),
+        "new --empty: {}",
+        text(&created.stderr)
+    );
+
+    let identity = [
+        ("PHUX_WORKLOAD_CERT", cert.as_path()),
+        ("PHUX_WORKLOAD_KEY", key.as_path()),
+    ];
+    assert_remote_lists_session(&await_remote_listing(dir.path(), socket_arg, &identity));
+    assert_terminal_observe_refused(bound_quic_port(&socket), &cert, &key);
+}
+
 /// The enrollment is an automation at [`HOST_READ_SCOPE`] for
 /// [`HOST_READ_EXPIRES_IN`] seconds, with no `input` verb. Returns its id.
 fn assert_host_read_enrollment(enrolled: &serde_json::Value) -> String {
@@ -2260,6 +2317,25 @@ fn assert_host_read_enrollment(enrolled: &serde_json::Value) -> String {
         "{HOST_READ_SCOPE}"
     );
     id
+}
+
+/// The enrollment is an automation at [`INVENTORY_HOST_SCOPE`] for
+/// [`HOST_READ_EXPIRES_IN`] seconds. `observe` and `input` are both absent.
+fn assert_inventory_host_enrollment(enrolled: &serde_json::Value) {
+    assert_eq!(enrolled["principal"], "automation");
+    assert_eq!(
+        enrolled["scopes"],
+        serde_json::json!([INVENTORY_HOST_SCOPE])
+    );
+    let expires_at = enrolled["expires_at"].as_i64().expect("expires_at");
+    let skew = (expires_at - (chrono::Utc::now().timestamp() + HOST_READ_EXPIRES_IN)).abs();
+    assert!(
+        skew < 120,
+        "expires_at {expires_at} is not ~{HOST_READ_EXPIRES_IN}s out"
+    );
+    let verbs: Vec<&str> = INVENTORY_HOST_SCOPE.split([',', '@']).collect();
+    assert!(!verbs.contains(&"observe"), "{INVENTORY_HOST_SCOPE}");
+    assert!(!verbs.contains(&"input"), "{INVENTORY_HOST_SCOPE}");
 }
 
 /// The registered host answered, and its sessions include `observe-list`.
@@ -2346,9 +2422,52 @@ fn assert_route_input_refused(port: u16, cert: &Path, key: &Path) -> RawSession 
     live
 }
 
+/// A live `GET_SCREEN` on this certificate is permission-denied.
+///
+/// `GET_SCREEN` is `OBSERVE` of a named terminal, including scrollback
+/// (`request_scrollback: Some(0)`). An absent terminal and an unauthorized
+/// one are refused the same way, so the id does not have to exist.
+fn assert_terminal_observe_refused(port: u16, cert: &Path, key: &Path) {
+    use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
+
+    let mut live = RawSession::open_cert(port, cert, key);
+    live.await_hello_ok();
+    live.send_frame(&FrameKind::Command {
+        request_id: 9,
+        command: Command::GetScreen {
+            terminal_id: phux_protocol::ids::ResourceId::local(1),
+            request_scrollback: Some(0),
+            cells: false,
+            format: 0,
+        },
+    });
+    let screen = live.await_command_result(9);
+    assert!(
+        matches!(
+            screen,
+            CommandResult::Error {
+                code: ErrorCode::PermissionDenied,
+                ref message,
+            } if message == "permission denied"
+        ),
+        "terminal OBSERVE: {screen:?}"
+    );
+}
+
 /// Enroll `client` at [`HOST_READ_SCOPE`] for [`HOST_READ_EXPIRES_IN`] seconds
-/// as an automation, the flags an operator passes for a CI runner.
+/// as an automation. Wider than the CI runner scope the runbook mints.
 fn enroll_host_read_key(dir: &Path, client: &ClientKey, cert_out: &Path) -> serde_json::Value {
+    enroll_scoped_automation(dir, client, cert_out, HOST_READ_SCOPE)
+}
+
+/// Enroll `client` at `scope` for [`HOST_READ_EXPIRES_IN`] seconds as an
+/// automation, the `--expires-in` and `--principal` a CI runner example uses.
+fn enroll_scoped_automation(
+    dir: &Path,
+    client: &ClientKey,
+    cert_out: &Path,
+    scope: &str,
+) -> serde_json::Value {
     let expires = HOST_READ_EXPIRES_IN.to_string();
     let out = phux_with(
         dir,
@@ -2359,7 +2478,7 @@ fn enroll_host_read_key(dir: &Path, client: &ClientKey, cert_out: &Path) -> serd
             "--cert-out",
             cert_out.to_str().expect("utf-8 path"),
             "--scope",
-            HOST_READ_SCOPE,
+            scope,
             "--expires-in",
             expires.as_str(),
             "--principal",

@@ -1,46 +1,72 @@
 # Host-scoped read keys
 
-Give each CI runner host, and one other person's device, a certificate
-that can list sessions on this server and cannot type into them. The
-certificate is the existing `phux workload add-key` enrollment. There is
-no separate grant type.
+Give each CI runner host a certificate that can list sessions on this
+server and cannot read a terminal or type into one. Give jamesponwith's
+device a certificate that can list the same sessions and can read only
+the sessions Patrick opts in, one session at a time. Neither certificate
+can type. The certificate is the existing `phux workload add-key`
+enrollment. There is no separate grant type.
 
 Mint these on the serving host, as its owner. One certificate per runner
-host, and one for the other person's device. The examples use placeholder
-names only.
+host, and one for jamesponwith's device. `ci-runner-1` is a placeholder.
 
 ## What the scope is
 
+A CI runner lists this host and nothing more:
+
 ```sh
---scope inventory,observe@host
+--scope inventory@host
+```
+
+jamesponwith lists this host, and reads each session Patrick chooses to
+share. Each session is opted in explicitly, as its own scope:
+
+```sh
+--scope inventory@host \
+--scope observe@session:KEY
 ```
 
 `host` is this serving host. `host:NAME` names a satellite of this server,
-not the server itself.
+not the server itself. `session:KEY` names one session. `KEY` is that
+session's full key: 26 lowercase base32 digits, the `key` field of its
+row in `phux ls --json` (run that on the owner socket). The short `^`
+prefix on the human listing is not a selector. `--scope` is repeatable,
+one `<verb>[,<verb>...]@<selector>` per flag. Add another
+`--scope observe@session:KEY` for every further session. A session left
+off the command can still be listed and cannot be read.
+
+`observe@host` is screen and scrollback of every terminal on the host,
+secrets included. This runbook does not grant `observe@host` or
+`inventory,observe@host`.
 
 `phux ls` sends `GET_STATE { SERVER }`. That method is admitted only with
 `inventory`, and the snapshot keeps what `inventory` covers, so a
 certificate whose only verb is `observe` connects and can run `phux whoami`
-but `phux ls --all` reports the host unreachable. `observe` is included so
-the same certificate can read a terminal it may list. Do not add `input`,
-`create`, `bind`, `signal`, `organize`, `terminate`, or `*`.
+but `phux ls --all` reports the host unreachable. `inventory` is what
+lists. `observe` on a `session:` selector is what reads that session's
+terminals (`GET_SCREEN`), and only those. Do not add `input`, `create`,
+`bind`, `signal`, `organize`, `terminate`, or `*`.
 
 `--principal` is the kind of holder, not a username:
 
-| Holder | `--principal` | Suggested `--expires-in` |
+| Holder | `--principal` | `--expires-in` |
 | --- | --- | --- |
 | CI runner host `ci-runner-1` | `automation` | `604800` (7 days) |
-| Other member's device `member-device` | `human` | `2592000` (30 days) |
+| jamesponwith's device | `human` | `2592000` (30 days) |
 
-Record the printed `sha256:` credential id next to the placeholder
-(`ci-runner-1`, `member-device`) in the operator's own notes. The registry
-does not store that label.
+Every `add-key` below passes `--expires-in`. The flag's default is 90
+days (`7776000` seconds), longer than either holder should keep a
+certificate, which is why the lifetime is written out.
+
+Record the printed `sha256:` credential id next to the holder
+(`ci-runner-1`, jamesponwith's device) in the operator's own notes. The
+registry does not store that label.
 
 `phux pair --expires` is a different knob, on the pairing bearer, and it
 refuses a duration longer than 30 days. `add-key --expires-in` is the
-certificate lifetime. Its default is 90 days and its ceiling is 20 years;
-stay at or under 30 days so the certificate and the bearer rotate on the
-same calendar.
+certificate lifetime in seconds. Its ceiling is 20 years (`630720000`);
+these certificates stay at 7 or 30 days so the certificate and the bearer
+rotate on the same calendar.
 
 ## Mint
 
@@ -56,11 +82,11 @@ phux workload authority --init
 `--init` creates the CA when this host has none. An existing CA is left
 alone. The printed `sha256:` fingerprint is what clients pin.
 
-CI runner `ci-runner-1`, seven days, automation:
+CI runner `ci-runner-1`, seven days, automation. Inventory only:
 
 ```sh
 phux workload add-key \
-  --scope inventory,observe@host \
+  --scope inventory@host \
   --expires-in 604800 \
   --principal automation \
   --json \
@@ -68,16 +94,18 @@ phux workload add-key \
   < /path/to/ci-runner-1.csr
 ```
 
-Other member's device `member-device`, 30 days, human:
+jamesponwith's device, 30 days, human. `KEY` is one session's full key.
+Repeat the `observe@session:` line for each session Patrick shares:
 
 ```sh
 phux workload add-key \
-  --scope inventory,observe@host \
+  --scope inventory@host \
+  --scope observe@session:KEY \
   --expires-in 2592000 \
   --principal human \
   --json \
   --cert-stdout \
-  < /path/to/member-device.csr
+  < /path/to/jamesponwith.csr
 ```
 
 Stdout is one JSON document. `credential_id` is the `sha256:` id.
@@ -111,23 +139,42 @@ phux ls --all
 ```
 
 `phux download` and anything else that needs `input` is refused with
-permission denied. Listing the local owner socket does not exercise this
-certificate; `phux ls --all` does, on the remote row.
+permission denied. So is `GET_SCREEN` on the CI certificate: that command
+is `observe` of a terminal, and the runner's scope has no `observe`.
+Listing the local owner socket does not exercise this certificate; `phux
+ls --all` does, on the remote row.
 
 ## Rotate
 
 Make a new request. `--replace` revokes the previous id in the same
-registry write, so the client is never enrolled twice:
+registry write, so the client is never enrolled twice. Pass the same
+scopes the holder already has, and pass `--expires-in` again.
+
+CI runner, seven days:
 
 ```sh
 phux workload add-key \
-  --scope inventory,observe@host \
+  --scope inventory@host \
   --expires-in 604800 \
   --principal automation \
   --replace sha256:PREVIOUS \
   --json \
   --cert-stdout \
   < /path/to/ci-runner-1-next.csr
+```
+
+jamesponwith, 30 days, with each session still shared named again:
+
+```sh
+phux workload add-key \
+  --scope inventory@host \
+  --scope observe@session:KEY \
+  --expires-in 2592000 \
+  --principal human \
+  --replace sha256:PREVIOUS \
+  --json \
+  --cert-stdout \
+  < /path/to/jamesponwith-next.csr
 ```
 
 Install the new chain and key on that client before the old certificate
