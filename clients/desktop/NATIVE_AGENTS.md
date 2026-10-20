@@ -8,9 +8,10 @@ pane can still switch back until the preference changes again; `conversation`
 toggles only the focused pane. Without this explicit preference, passive
 stream discovery never switches faces or keyboard focus.
 
-An agent with no AgentSession offers its harness's documented plugin install
-command to copy (Claude Code, Grok, OMP, Pi, OpenCode), or **New Agent…** for
-harnesses without a hook plugin. Nothing is installed by the app.
+An agent with no AgentSession offers, in its pane's controls capsule, its
+harness's documented plugin install command to copy (**Set up conversation**:
+Claude Code, Grok, OMP, Pi, OpenCode), or **Launch natively** for harnesses
+without a hook plugin. Nothing is installed by the app.
 
 Prompts appear in accent bubbles and replies as markdown under the harness
 mark. Thinking and tool calls fold to one line; live thinking and failed

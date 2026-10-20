@@ -219,7 +219,12 @@ another.
 
 The window is one sheet of glass over the desktop blur; panes float on it as
 cards with no header. Move the pointer to a pane's top edge for its controls
-(split, zoom, close; double-click the capsule to zoom). Drag the gap between
+capsule: who runs there, the terminal/conversation switch (or, for an agent
+without one yet, **Set up conversation**), then split, zoom and the pane's
+menu (double-click the capsule to zoom). A zoomed pane shows the panes it
+hides as card edges stacked behind its top; click them to restore the split.
+A split tab carries a small map of its panes: the focused one lit, an agent's
+in its state's colour, and the ones a zoom hides faded. Drag the gap between
 panes, the sidebar edge, or tabs to rearrange; double-click a tab to rename it.
 Splits grow in and closed panes fold away; the PTY is resized once, when the
 motion settles. Cycling panes, directional navigation, and revealing a

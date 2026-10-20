@@ -16,16 +16,17 @@ use phux_protocol::ids::ResourceKey;
 
 use crate::connection::AgentState;
 use crate::settings::TabPosition;
-use crate::workspace::layout::{self, DeskTab};
+use crate::workspace::layout::{self, DeskTab, Placement};
 
 use super::super::color::from_hex;
 use super::super::desk::{self, Desk, Modal};
 use super::super::pane_identity::Harness;
 use super::super::skin::{Look, Surface, Surfaced};
+use super::super::ui::layout_map::layout_map;
 use super::super::ui::list::{CHILD_INSET, ROW, ROW_GAP, ROW_INSET, row_icon, row_radius};
 use super::super::ui::menu::Anchor;
 use super::super::ui::status::{attention_wash, harness_mark, state_dot, strongest};
-use super::super::ui::{attention_mark, ghost_icon};
+use super::super::ui::{agent_swatch, attention_mark, ghost_icon};
 use super::tab_glow;
 
 /// Both selected and inactive tabs reserve the surface's one-point rim.
@@ -304,13 +305,54 @@ fn tab_resource_key(desk: &Desk, tab: &DeskTab) -> Option<ResourceKey> {
     link.connection.pane(terminal)?.key
 }
 
-fn tab_detail(tab: &DeskTab, side: bool) -> Option<String> {
-    match (tab.zoomed_id.is_some(), layout::placements(&tab.root).len()) {
-        (true, _) => Some("⤢".to_owned()),
-        (false, 0 | 1) => None,
-        (false, count) if side => Some(count.to_string()),
-        _ => None,
+/// How a pane's cell in its tab's map is painted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CellTone {
+    /// The pane in front: focused, or the zoomed one.
+    Front,
+    /// Visible beside the front pane.
+    Beside,
+    /// Hidden behind a zoomed pane.
+    Hidden,
+}
+
+fn cell_tone(tab: &DeskTab, placement: &Placement) -> CellTone {
+    match tab.zoomed_id.as_deref() {
+        Some(zoomed) if zoomed == placement.id => CellTone::Front,
+        Some(_) => CellTone::Hidden,
+        None if tab.focused_id == placement.id => CellTone::Front,
+        None => CellTone::Beside,
     }
+}
+
+/// A split tab's map: each pane a cell in its own proportions, the front one
+/// lit (in the accent on the selected tab), an agent's cell in its state's
+/// colour, and the panes a zoom hides faded. None for a single pane.
+fn tab_map(desk: &Desk, tab: &DeskTab, selected: bool, look: &Look) -> Option<gpui::Div> {
+    if layout::placements(&tab.root).len() < 2 {
+        return None;
+    }
+    let accent = from_hex(&look.chrome.theme.accent);
+    let ink = look.ink;
+    let paint = |placement: &Placement| {
+        let agent = placement
+            .terminal_id
+            .as_ref()
+            .and_then(|id| desk.agent(id))
+            .map(|info| info.state)
+            .filter(|state| *state != AgentState::Unknown)
+            .map(|state| from_hex(agent_swatch(state)));
+        match (cell_tone(tab, placement), agent) {
+            (CellTone::Hidden, _) => ink.opacity(0.16),
+            (CellTone::Front, Some(swatch)) => swatch,
+            (CellTone::Front, None) if selected => accent,
+            (CellTone::Front, None) => ink.opacity(0.6),
+            (CellTone::Beside, Some(swatch)) => swatch.opacity(0.45),
+            (CellTone::Beside, None) => ink.opacity(if selected { 0.24 } else { 0.18 }),
+        }
+    };
+    let id = tab.id.clone();
+    Some(layout_map(&tab.root, 20., 14., &paint).debug_selector(move || format!("tab-map-{id}")))
 }
 
 /// Rename follows an ordinary double click, not an organization selection
@@ -360,7 +402,7 @@ fn tab_button(
         tab.id.clone(),
     );
     let side = position == TabPosition::Side;
-    let detail = tab_detail(tab, side);
+    let map = tab_map(desk, tab, selected, look);
     div()
         .id(tab_selector.clone())
         .debug_selector(move || tab_selector.to_string())
@@ -443,13 +485,7 @@ fn tab_button(
                 })
                 .child(desk::tab_title(desk, tab)),
         )
-        .children(detail.map(|detail| {
-            div()
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(from_hex(&look.chrome.muted))
-                .child(detail)
-        }))
+        .children(map)
         .child(if side {
             tab_more(desk, &tab.id, selected, cx).into_any_element()
         } else {
