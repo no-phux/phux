@@ -5,7 +5,8 @@ for the org lives in one home keeper. Hosts are phux servers. Linear,
 GitHub, beads, the ops Workers, and Grok Bot attach as clients or one-way
 adapters. phux is the only layer, and Blackbird stays frozen.
 
-This page is the live decision for [PHUX-360][phux-360]. Numbered ADRs stay
+This page is the live decision for [PHUX-360][phux-360], recorded in
+[#1689][pr-1689]. Numbered ADRs stay
 in the [historical snapshot](./architecture.md#historical-decisions) at
 `d21db2e3`, unchanged. Code ranges are pinned to main `792a9fe9`. Nothing
 here changes the wire.
@@ -208,6 +209,7 @@ Accepted defaults:
   machines are clients.
 
 [phux-360]: https://linear.app/phall/issue/PHUX-360/s-1-adr-the-substrate-is-phux-principals-hosts-one-home-keeper
+[pr-1689]: https://github.com/no-phux/phux/pull/1689
 [pr-1470]: https://github.com/no-phux/phux/pull/1470
 [adr-0092-status]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0092-durable-work-coordinator-authority.md#L15
 [adr-0092-authority]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0092-durable-work-coordinator-authority.md#L64-L73

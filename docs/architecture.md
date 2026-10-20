@@ -279,7 +279,8 @@ records explain history; [look them up deliberately](#historical-decisions).
   attach stays the terminal stream. Per-agent cross-host grants, that
   multi-host coordinator, the durable grant ledger, and org-to-org trust
   are after the 5 November 2026 launch
-  ([substrate](./substrate.md)).
+  ([substrate](./substrate.md),
+  [#1689](https://github.com/no-phux/phux/pull/1689)).
 
 **Not doing**
 
@@ -328,4 +329,5 @@ if a still-operative constraint exists only in history, promote it to its live
 home with evidence. New decisions extend the current architecture and link
 their PR rather than creating a second competing source of authority. The
 [substrate](./substrate.md) decision is that extension: principals, one home
-keeper, and one-way adapters, linked from [Decisions](#decisions).
+keeper, and one-way adapters, linked from [Decisions](#decisions) and
+[#1689](https://github.com/no-phux/phux/pull/1689).
