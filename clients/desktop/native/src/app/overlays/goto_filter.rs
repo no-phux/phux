@@ -55,6 +55,7 @@ pub(crate) enum GotoId {
     Work(crate::app::fleet::Destination),
     Command(&'static str),
     Setting(crate::app::settings_panel::Page),
+    Preference(crate::app::settings_panel::catalog::Key),
     Pane(ResourceId),
     Tab(String),
 }

@@ -7,9 +7,7 @@ use gpui_kit::component::command::CommandState;
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionKey;
 
-use super::{
-    PathItem, Section, goto_filter, goto_frecency, goto_id, prepare_goto, raise_window, section_ids,
-};
+use super::{PathItem, Section, goto_filter, goto_frecency, goto_id, raise_window, section_ids};
 use crate::app::desk::{Desk, Modal};
 
 impl Desk {
@@ -67,11 +65,10 @@ impl Desk {
             return;
         };
         let query = state.read(cx).query(cx).to_string();
-        prepare_goto(self, &query);
+        let (_, sections) = super::launcher::results(self, &query, cx);
         let index = state.read(cx).selected_index();
         let selected = index.and_then(|index| {
-            self.goto_search
-                .ranked()
+            sections
                 .get(index.section)
                 .and_then(|section| section.rows.get(index.row))
                 .and_then(goto_id)
@@ -173,6 +170,19 @@ impl Desk {
                 self.after_command(window, cx);
             }
             Target::Setting(page) => self.show_settings_page(page, window, cx),
+            Target::Preference(key, item) => {
+                if item.is_switch() {
+                    cx.defer(move |cx| {
+                        item.activate(cx);
+                    });
+                } else {
+                    self.palette_view.edit = Some(key);
+                    let focus = cx.focus_handle();
+                    window.focus(&focus, cx);
+                    self.palette_view.edit_focus = Some(focus);
+                }
+                cx.notify();
+            }
             Target::Move(key, name) => {
                 let selected = self.organization.selected.clone();
                 self.move_resources_to(selected, key, name, window, cx);
@@ -236,6 +246,10 @@ pub(super) enum Target {
     },
     Work(crate::app::fleet::Destination),
     Setting(crate::app::settings_panel::Page),
+    Preference(
+        crate::app::settings_panel::catalog::Key,
+        crate::app::settings_panel::catalog::Item,
+    ),
     Move(SessionKey, String),
     Path(PathItem),
 }

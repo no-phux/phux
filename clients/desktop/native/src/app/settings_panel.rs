@@ -3,14 +3,19 @@
 //! Settings stays open, and every control moves both ways with a reset.
 
 mod appearance;
+pub(super) mod catalog;
 mod connections;
 mod input;
 mod layout;
+mod palette;
 mod performance;
+
+pub(crate) use palette::{editor, entries};
 
 #[cfg(test)]
 pub(super) use connections::machine_action;
 
+use catalog::Item as SettingItem;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, SharedString, Subscription, WeakEntity, Window,
@@ -19,7 +24,7 @@ use gpui::{
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::group_box::GroupBoxVariant;
 use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectItem, SelectState};
-use gpui_kit::component::setting::{NumberFieldOptions, SettingField, SettingItem, Settings};
+use gpui_kit::component::setting::{NumberFieldOptions, SettingField, Settings};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::{ActiveTheme, IconName, IndexPath, Sizable};
 
@@ -336,32 +341,15 @@ fn sync_controls(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
 
 pub(crate) fn panel(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     sync_controls(desk, window, cx);
-    let handle = cx.weak_entity();
     let page = desk.settings_page.unwrap_or(Page::Appearance);
-    let look = desk.look();
-    let content = match page {
-        Page::Appearance => appearance::appearance_page(desk, &handle, cx),
-        Page::Layout => layout::window_page(desk, &handle),
-        Page::Keyboard => input::keyboard_page(desk, &handle),
-        Page::Spacing => layout::advanced_page(desk, &handle),
-        Page::Ghostty => input::ghostty_page(desk, &handle),
-        Page::Updates => super::updates::page(&desk.updates, &look, &desk.prefs.font_family, cx),
-        Page::Connections => connections::connection_page(desk, &handle),
-        Page::Performance => performance::page(&handle),
-    };
-    let settings = Settings::new(SharedString::from(format!("phux-settings-{page:?}")))
-        .sidebar_width(px(0.))
-        .sidebar_size_range(px(0.)..px(0.))
-        .sidebar_style(&gpui::StyleRefinement {
-            display: Some(gpui::Display::None),
-            ..Default::default()
-        })
-        .with_group_variant(GroupBoxVariant::Normal)
-        .page(content.title(page.title()));
+    let content = content(desk, page, &cx.weak_entity(), cx);
+    let settings = native_settings(
+        SharedString::from(format!("phux-settings-{page:?}")),
+        content.inner.title(page.title()),
+    );
     let viewport = window.viewport_size();
     let gutter = super::overlays::SHEET_GUTTER;
-    let top = super::overlays::sheet_top(viewport);
-    let height = (viewport.height.as_f32() - top - gutter).clamp(180., 600.);
+    let height = (viewport.height.as_f32() - 2. * gutter).clamp(0., 600.);
     let look = desk.look();
     super::overlays::card(
         &look,
@@ -393,6 +381,32 @@ pub(crate) fn panel(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
     )
     .child(div().flex_1().min_h_0().child(settings))
     .into_any_element()
+}
+
+fn content(desk: &Desk, page: Page, handle: &WeakEntity<Desk>, cx: &App) -> catalog::Content {
+    let look = desk.look();
+    match page {
+        Page::Appearance => appearance::appearance_page(desk, handle, cx),
+        Page::Layout => layout::window_page(desk, handle),
+        Page::Keyboard => input::keyboard_page(desk, handle),
+        Page::Spacing => layout::advanced_page(desk, handle),
+        Page::Ghostty => input::ghostty_page(desk, handle),
+        Page::Updates => super::updates::page(&desk.updates, &look, &desk.prefs.font_family, cx),
+        Page::Connections => connections::connection_page(desk, handle),
+        Page::Performance => performance::page(handle),
+    }
+}
+
+fn native_settings(id: SharedString, page: gpui_kit::component::setting::SettingPage) -> Settings {
+    Settings::new(id)
+        .sidebar_width(px(0.))
+        .sidebar_size_range(px(0.)..px(0.))
+        .sidebar_style(&gpui::StyleRefinement {
+            display: Some(gpui::Display::None),
+            ..Default::default()
+        })
+        .with_group_variant(GroupBoxVariant::Normal)
+        .page(page)
 }
 
 fn prefs_of(handle: &WeakEntity<Desk>, cx: &App) -> DisplayPrefs {
@@ -448,12 +462,13 @@ fn toggle(
     description: impl Into<String>,
 ) -> SettingItem {
     let (reader, writer) = (handle.clone(), handle.clone());
-    let field = SettingField::switch(
+    SettingItem::switch(
+        title,
         move |cx| read(pref, prefs_of(&reader, cx)),
         move |value, cx| set_prefs(&writer, cx, |prefs| *pref(prefs) = value),
+        Some(read(pref, settings::default_display())),
     )
-    .default_value(read(pref, settings::default_display()));
-    SettingItem::new(title, field).description(description.into())
+    .description(description.into())
 }
 
 fn stepper(
@@ -493,6 +508,7 @@ fn fact(title: impl Into<SharedString>, value: String) -> SettingItem {
         title,
         SettingField::render(move |_, _, _| div().text_sm().child(value.clone())),
     )
+    .information()
 }
 
 /// A slider with its value beside it, and a reset to the shipped default.

@@ -1,10 +1,11 @@
 //! Keyboard shortcuts, conflicts, and Ghostty configuration integration.
 
+use super::catalog::{Content as SettingPage, Group as SettingGroup, Item as SettingItem};
 use gpui::prelude::*;
 use gpui::{WeakEntity, div, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::setting::SettingField;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable};
 
 use crate::settings;
@@ -80,6 +81,7 @@ pub(super) fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPa
                         .into_any_element(),
                 }),
             )
+            .information()
             .description(notes([source.label().as_str(), applies.label()]))
             .keywords([group, settings::display_chord(&chord)])
         }));
@@ -132,6 +134,7 @@ fn conflicts_group(desk: &Desk) -> Option<SettingGroup> {
                     .child(shown.clone())
             }),
         )
+        .information()
         .description(format!(
             "Bound more than once: {lines}. The last line wins."
         ))
@@ -149,7 +152,7 @@ pub(super) fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPag
     let found = desk.ghostty_found;
     let font = desk.ghostty().font_family.clone();
     let ignored = desk.ghostty().unmapped.len();
-    let status = SettingItem::render(move |_, _, cx| {
+    let status = SettingItem::render("Ghostty config status", move |_, _, cx| {
         let muted = cx.theme().muted_foreground;
         div()
             .flex()
@@ -179,7 +182,7 @@ pub(super) fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPag
             })
     });
     let buttons = handle.clone();
-    let actions = SettingItem::render(move |_, _, _| {
+    let actions = SettingItem::render("Use Ghostty look or reload config", move |_, _, _| {
         div()
             .flex()
             .gap(px(8.))
@@ -202,7 +205,7 @@ pub(super) fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPag
         SettingGroup::new()
             .title("Config")
             .description("Use Ghostty look copies its theme, font, size, cell size and padding into these settings. Reload config reads the files again for keybinds and the Ghostty theme.")
-            .item(status)
+            .item(status.information())
             .item(actions),
     );
     let config = desk.ghostty();
@@ -251,6 +254,7 @@ fn diagnostic_group(
                             .child(text.clone())
                     }),
                 )
+                .information()
                 .description(diagnostic.reason)
                 .keywords(["skipped", "malformed", "unsupported", "ghostty"].map(str::to_owned))
             })),

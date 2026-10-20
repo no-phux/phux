@@ -107,10 +107,16 @@ fn query(desk: &Entity<Desk>, cx: &VisualTestContext) -> String {
 }
 
 fn selected_command(desk: &Entity<Desk>, cx: &VisualTestContext) -> Option<&'static str> {
+    let handle = desk.downgrade();
     desk.read_with(cx, |desk, cx| {
         let state = desk.palette_state.as_ref().unwrap().read(cx);
         let selected = state.selected_index()?;
-        let sections = rank_sections(command_sections(desk, cx), &state.query(cx));
+        let query = state.query(cx);
+        let mut sections = super::command_results(desk, cx, &query);
+        if !query.trim().is_empty() {
+            sections.extend(super::settings_sections(desk, &handle, cx));
+            sections = rank_sections(sections, &query);
+        }
         sections
             .get(selected.section)?
             .rows
@@ -170,3 +176,4 @@ mod capture;
 mod modals;
 mod navigation;
 mod search;
+mod settings;

@@ -198,6 +198,7 @@ impl GotoSearch {
         self.ranked_generation = generation;
     }
 
+    #[cfg(test)]
     pub(super) fn ranked(&self) -> &[Section] {
         &self.ranked
     }
@@ -260,6 +261,14 @@ fn rank_prepared(
 
 /// Rank owned rows with the same prepared fields Go To caches.
 pub(super) fn rank_sections(sections: Vec<Section>, query: &str) -> Vec<Section> {
+    rank_sections_with_boost(sections, query, |_| 0)
+}
+
+pub(super) fn rank_sections_with_boost(
+    sections: Vec<Section>,
+    query: &str,
+    boost: impl Fn(&Row) -> i64,
+) -> Vec<Section> {
     let parsed = PreparedQuery::parse(query);
     if parsed.is_empty() {
         return sections;
@@ -269,7 +278,7 @@ pub(super) fn rank_sections(sections: Vec<Section>, query: &str) -> Vec<Section>
         for row in section.rows {
             let fields = PreparedFields::from_row(&row);
             if let Some(score) = fields.score(&parsed) {
-                ranked.push((score, row));
+                ranked.push((score.saturating_add(boost(&row)), row));
             }
         }
     }
