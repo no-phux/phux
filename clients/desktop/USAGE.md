@@ -109,7 +109,9 @@ preferences. Side tabs live in a fixed-height, separately scrollable area at the
 foot of the sidebar. Switching sessions never inserts tabs into the session tree;
 hiding the sidebar returns them to the titlebar,
 and Quick Terminal keeps compact titlebar tabs. Bottom tabs sit below your work,
-including in Plain Terminal mode; a plain terminal still hides a lone tab.
+including in Plain Terminal mode. Plain Terminal has no sidebar, so side tabs
+stand in a rail of their own beside your work; a plain terminal still hides a
+lone tab, and its tabs keep the desk's shape.
 If side panels leave too little room for usable bottom tabs, they temporarily
 return to the titlebar; widening the window restores your Bottom preference.
 Selecting, closing,
