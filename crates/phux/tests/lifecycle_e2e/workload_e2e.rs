@@ -1632,7 +1632,8 @@ impl RawSession {
             seen.push(frame);
             hit
         });
-        found.unwrap_or_else(|| panic!("no command result {request_id}: {seen:?}"))
+        let missing = format!("no command result {request_id}: {seen:?}");
+        found.expect(&missing)
     }
 }
 
@@ -2191,10 +2192,6 @@ const HOST_READ_EXPIRES_IN: i64 = 7 * 24 * 60 * 60;
 #[test]
 #[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
 fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
-    use phux_protocol::input::InputEvent;
-    use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-    use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
-
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
     paired(dir.path());
@@ -2204,25 +2201,7 @@ fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
     let key = dir.path().join("client.key");
     std::fs::write(&key, &client.key_pem).expect("write client key");
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-    let enrolled = enroll_host_read_key(dir.path(), &client, &cert);
-    let id = enrolled["credential_id"]
-        .as_str()
-        .expect("credential_id")
-        .to_owned();
-    assert_eq!(enrolled["principal"], "automation");
-    assert_eq!(enrolled["scopes"], serde_json::json!([HOST_READ_SCOPE]));
-    let expires_at = enrolled["expires_at"].as_i64().expect("expires_at");
-    let skew = (expires_at - (chrono::Utc::now().timestamp() + HOST_READ_EXPIRES_IN)).abs();
-    assert!(
-        skew < 120,
-        "expires_at {expires_at} is not ~{HOST_READ_EXPIRES_IN}s out"
-    );
-    assert!(
-        !HOST_READ_SCOPE
-            .split([',', '@'])
-            .any(|verb| verb == "input"),
-        "{HOST_READ_SCOPE}"
-    );
+    let id = assert_host_read_enrollment(&enroll_host_read_key(dir.path(), &client, &cert));
 
     let _server = start_server(dir.path(), &["--quic", listeners::LOOPBACK_ANY_PORT], &[]);
     register_loopback_remote(dir.path());
@@ -2250,7 +2229,41 @@ fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
         ("PHUX_WORKLOAD_CERT", cert.as_path()),
         ("PHUX_WORKLOAD_KEY", key.as_path()),
     ];
-    let listed = await_remote_listing(dir.path(), socket_arg, &identity);
+    assert_remote_lists_session(&await_remote_listing(dir.path(), socket_arg, &identity));
+    assert_download_refused(dir.path(), &identity);
+    let mut live = assert_route_input_refused(bound_quic_port(&socket), &cert, &key);
+
+    let revoked = phux(dir.path(), &["workload", "revoke", &id]);
+    assert!(revoked.status.success(), "{}", text(&revoked.stderr));
+    assert_revoked(&mut live);
+}
+
+/// The enrollment is an automation at [`HOST_READ_SCOPE`] for
+/// [`HOST_READ_EXPIRES_IN`] seconds, with no `input` verb. Returns its id.
+fn assert_host_read_enrollment(enrolled: &serde_json::Value) -> String {
+    let id = enrolled["credential_id"]
+        .as_str()
+        .expect("credential_id")
+        .to_owned();
+    assert_eq!(enrolled["principal"], "automation");
+    assert_eq!(enrolled["scopes"], serde_json::json!([HOST_READ_SCOPE]));
+    let expires_at = enrolled["expires_at"].as_i64().expect("expires_at");
+    let skew = (expires_at - (chrono::Utc::now().timestamp() + HOST_READ_EXPIRES_IN)).abs();
+    assert!(
+        skew < 120,
+        "expires_at {expires_at} is not ~{HOST_READ_EXPIRES_IN}s out"
+    );
+    assert!(
+        !HOST_READ_SCOPE
+            .split([',', '@'])
+            .any(|verb| verb == "input"),
+        "{HOST_READ_SCOPE}"
+    );
+    id
+}
+
+/// The registered host answered, and its sessions include `observe-list`.
+fn assert_remote_lists_session(listed: &serde_json::Value) {
     let remote = listed["hosts"]
         .as_array()
         .expect("hosts")
@@ -2259,20 +2272,21 @@ fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
         .expect("the registered host");
     assert_eq!(remote["reachable"], true, "{remote}");
     assert!(remote["error"].is_null(), "{remote}");
-    let names: Vec<_> = remote["sessions"]
+    let present = remote["sessions"]
         .as_array()
         .expect("sessions")
         .iter()
         .filter_map(|session| session["name"].as_str())
-        .collect();
-    assert!(
-        names.contains(&"observe-list"),
-        "ls --all through the read key: {remote}"
-    );
+        .any(|name| name == "observe-list");
+    assert!(present, "ls --all through the read key: {remote}");
+}
 
-    let dest = dir.path().join("not-written");
+/// `GET_FILE` is `INPUT`. This certificate's download is permission-denied
+/// and writes nothing.
+fn assert_download_refused(dir: &Path, identity: &[(&str, &Path)]) {
+    let dest = dir.join("not-written");
     let download = phux_with(
-        dir.path(),
+        dir,
         &[
             "download",
             "--remote",
@@ -2284,7 +2298,7 @@ fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
             dest.to_str().expect("utf-8 dest"),
         ],
         b"",
-        &identity,
+        identity,
     );
     assert!(
         !download.status.success(),
@@ -2297,9 +2311,16 @@ fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
         "GET_FILE (INPUT) refusal: {download_text}"
     );
     assert!(!dest.exists(), "a refused download left a file");
+}
 
-    let port = bound_quic_port(&socket);
-    let mut live = RawSession::open_cert(port, &cert, &key);
+/// A live `ROUTE_INPUT` paste on this certificate is permission-denied.
+/// Returns the still-open connection so revocation can close it.
+fn assert_route_input_refused(port: u16, cert: &Path, key: &Path) -> RawSession {
+    use phux_protocol::input::InputEvent;
+    use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+    use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
+
+    let mut live = RawSession::open_cert(port, cert, key);
     live.await_hello_ok();
     live.send_frame(&FrameKind::Command {
         request_id: 7,
@@ -2322,10 +2343,7 @@ fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
         ),
         "terminal INPUT: {input:?}"
     );
-
-    let revoked = phux(dir.path(), &["workload", "revoke", &id]);
-    assert!(revoked.status.success(), "{}", text(&revoked.stderr));
-    assert_revoked(&mut live);
+    live
 }
 
 /// Enroll `client` at [`HOST_READ_SCOPE`] for [`HOST_READ_EXPIRES_IN`] seconds
