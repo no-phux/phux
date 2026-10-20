@@ -15,6 +15,11 @@ use crate::attach::arrangement_link::ArrangementLink;
 use crate::layout::ArrangementDoc;
 
 impl super::SessionLoop {
+    /// A failed control read is not an authoritative absent layout.
+    pub(super) fn arrangement_unloaded(&self) -> bool {
+        self.arrangement.as_ref().is_some_and(|link| !link.loaded())
+    }
+
     /// Open the arrangement link for `session` when the server advertises
     /// `ORGANIZATION` and a control dial exists. `true` when the link is set
     /// and owes its first read; `false` keeps the legacy key. The link
@@ -57,6 +62,15 @@ impl super::SessionLoop {
         };
         let session = link.session();
         let read = link.read().await;
+        // The first successful read after a failure must settle held edits
+        // as an initial read, including healing an authoritatively absent
+        // layout. A failed read still releases only the bootstrap fence.
+        if read.is_ok()
+            && self.layout_get_request_id.is_none()
+            && !self.deferred_arrangement_edits.is_empty()
+        {
+            self.layout_get_request_id = Some(self.take_request_id());
+        }
         let frame = match (read, self.layout_get_request_id) {
             // The attach's first read: the reply the layout GET would carry.
             (Ok(document), Some(request_id)) => FrameKind::MetadataValue {
@@ -70,7 +84,7 @@ impl super::SessionLoop {
             // No record yet, outside the first read: nothing to adopt.
             (Ok(None), None) => return Ok(None),
             (Err(err), first) => {
-                tracing::warn!(error = %err, "arrangement read failed");
+                tracing::warn!(%session, error = %err, reason = %err, "arrangement read failed");
                 self.apply_notices(
                     vec![Notice::warn(format!("layout not loaded: {err}"))],
                     repaint,
@@ -89,6 +103,25 @@ impl super::SessionLoop {
         };
         self.apply_frame_step(conn, out, sidebar, frame, false, repaint)
             .await
+    }
+
+    /// A hidden-view action can owe a retry on an otherwise quiet wire.
+    /// Settle it after uncorking rather than waiting for an unrelated frame.
+    pub(super) async fn settle_input_arrangement<W: crate::attach::RenderSink>(
+        &mut self,
+        conn: &mut Connection,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+    ) -> Result<Step, AttachError> {
+        let mut repaint = RepaintAccumulator::default();
+        if let Some(exit) = self
+            .settle_arrangement_read(conn, out, sidebar, &mut repaint)
+            .await?
+        {
+            return Ok(exit);
+        }
+        self.drain_repaint(out, sidebar, &mut repaint);
+        Ok(Step::Continue)
     }
 
     /// Hand the peer arrangement reads a sweep or an `ARRANGEMENT_CHANGED`
@@ -130,7 +163,14 @@ impl super::SessionLoop {
         let Some(link) = self.arrangement.as_mut() else {
             return false;
         };
+        let session = link.session();
         if !link.loaded() {
+            tracing::info!(
+                %session,
+                groups = document.groups.len(),
+                reason = "layout not loaded",
+                "arrangement save refused"
+            );
             self.arrangement_read_owed = true;
             self.show_notices([Notice::warn(
                 "layout not saved: the stored layout is not loaded yet".to_owned(),
@@ -138,8 +178,20 @@ impl super::SessionLoop {
             return true;
         }
         if let Err(err) = link.write(document).await {
-            tracing::warn!(error = %err, "arrangement write failed");
+            tracing::info!(
+                %session,
+                groups = document.groups.len(),
+                reason = %err,
+                "arrangement save refused"
+            );
             self.show_notices([Notice::warn(format!("layout not saved: {err}"))]);
+        } else {
+            tracing::debug!(
+                %session,
+                groups = document.groups.len(),
+                path = "arrangement",
+                "arrangement save committed"
+            );
         }
         true
     }

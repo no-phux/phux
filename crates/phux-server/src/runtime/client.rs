@@ -3741,8 +3741,30 @@ pub(crate) fn handle_set_metadata(
             let actor = s.actor_for(client_id);
             s.translate_layout_write(session, &value, &actor)
         });
+        debug!(
+            ?client_id,
+            request_id,
+            %key,
+            path = "metadata",
+            "arrangement save attempt"
+        );
         if let Err(reason) = translated {
-            debug!(?client_id, request_id, %key, %reason, "layout write not translated");
+            info!(
+                ?client_id,
+                request_id,
+                %key,
+                reason = %reason,
+                path = "metadata",
+                "arrangement save refused"
+            );
+        } else {
+            debug!(
+                ?client_id,
+                request_id,
+                %key,
+                path = "metadata",
+                "arrangement save committed"
+            );
         }
     }
     // ADR-0155: a push grant is stored like any key, but the server also
