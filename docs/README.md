@@ -29,6 +29,7 @@ production state or install an unreleased build.
 - [Coding agents](./agents.md): agent state, host integrations, MCP, safety.
   - [ACP-owned sessions](./acp.md): provider readiness, native intents, human permissions, uncertain outcomes.
 - [Remote machines](./remote.md): `phux host add`, what is exposed, relays, linking machines.
+  - [Host-scoped read keys](./runbooks/host-observe-keys.md): one read-only certificate per CI runner and one for another member, with no input.
 - [Clients](./clients.md): terminal UI, desktop, browser, phones.
   - [Desktop performance](../clients/desktop/PERFORMANCE.md): live CPU and memory profiling, baselines, and allocation controls.
   - [Quick Capture](./desktop-capture.md): launch from a thought without losing keyboard focus.

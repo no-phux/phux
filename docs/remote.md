@@ -125,6 +125,11 @@ phux workload revoke sha256:...
 phux host renew mini         # replace this machine's certificate before it expires
 ```
 
+A CI runner or another person who should list sessions and not type into
+them gets a separate certificate from `phux workload add-key`, not from
+`phux host add` (that ceiling includes input). The steps, the expiry, and
+how to rotate or revoke are in [Host-scoped read keys](./runbooks/host-observe-keys.md).
+
 Certificates minted by `host add` last 90 days. Attaching warns, and
 `phux doctor` reports, when one is within two weeks of expiry.
 

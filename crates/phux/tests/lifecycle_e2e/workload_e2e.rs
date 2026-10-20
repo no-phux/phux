@@ -1555,6 +1555,85 @@ impl RawSession {
     fn close_reason(&self) -> String {
         format!("{:?}", self.connection.1.close_reason())
     }
+
+    /// A loopback dial that presents `cert`/`key` and no bearer. A loopback
+    /// paired listener admits the certificate alone.
+    fn open_cert(port: u16, cert: &Path, key: &Path) -> Self {
+        use phux_protocol::wire::frame::FrameKind;
+
+        let dial = phux_dial::quic::QuicDial {
+            addr: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: phux_dial::CertTrust::SkipVerify,
+            identity: Some(phux_dial::TlsClientIdentity::PemFiles {
+                certificate: cert.to_owned(),
+                private_key: key.to_owned(),
+            }),
+            inner: None,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let mut connection = runtime
+            .block_on(phux_dial::quic::dial(&dial))
+            .expect("the TLS handshake completes on the client side");
+        let hello = FrameKind::Hello {
+            client_name: "observe-host-e2e".to_owned(),
+            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+            client_caps: phux_protocol::caps::ClientCapabilities::default(),
+        };
+        Self::write_frame(&runtime, &mut connection.2, &hello);
+        Self {
+            runtime,
+            connection,
+        }
+    }
+
+    fn write_frame(
+        runtime: &tokio::runtime::Runtime,
+        send: &mut (impl tokio::io::AsyncWrite + Unpin),
+        frame: &phux_protocol::wire::frame::FrameKind,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        let mut encoded = bytes::BytesMut::new();
+        frame.encode(&mut encoded);
+        runtime
+            .block_on(send.write_all(&encoded))
+            .expect("write frame");
+    }
+
+    fn send_frame(&mut self, frame: &phux_protocol::wire::frame::FrameKind) {
+        let Self {
+            runtime,
+            connection,
+        } = self;
+        Self::write_frame(runtime, &mut connection.2, frame);
+    }
+
+    /// The `COMMAND_RESULT` for `request_id`, failing if the server closes first.
+    fn await_command_result(
+        &mut self,
+        request_id: u32,
+    ) -> phux_protocol::wire::frame::CommandResult {
+        use phux_protocol::wire::frame::FrameKind;
+        let mut seen = Vec::new();
+        let found = std::iter::from_fn(|| self.next_frame()).find_map(|frame| {
+            let hit = match &frame {
+                FrameKind::CommandResult {
+                    request_id: id,
+                    result,
+                } if *id == request_id => Some(result.clone()),
+                _ => None,
+            };
+            seen.push(frame);
+            hit
+        });
+        found.unwrap_or_else(|| panic!("no command result {request_id}: {seen:?}"))
+    }
 }
 
 /// ADR-0116 enrollment end to end over a real paired QUIC listener: `phux
@@ -2093,6 +2172,216 @@ fn a_certificate_due_for_renewal_warns_and_is_renewed() {
     let mut expected = vec![host.first, newest];
     expected.sort();
     assert_eq!(active, expected, "the orphan is revoked");
+}
+
+/// The host-scoped read ceiling a CI runner or another member holds.
+///
+/// `phux ls` is `GET_STATE { SERVER }`, which the kind catalog admits only
+/// with `inventory` and then returns what that verb covers. `observe` is
+/// what lets the same key read a terminal. `input` is absent on purpose.
+const HOST_READ_SCOPE: &str = "inventory,observe@host";
+
+/// Seven days, the suggested CI-runner lifetime.
+const HOST_READ_EXPIRES_IN: i64 = 7 * 24 * 60 * 60;
+
+/// `workload add-key --scope inventory,observe@host` on a paired loopback
+/// listener: `phux ls --all` lists a session through that certificate,
+/// terminal input is permission-denied, and `phux workload revoke` closes
+/// the live connection.
+#[test]
+#[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
+fn host_scoped_read_key_lists_refuses_input_and_revoke_closes_it() {
+    use phux_protocol::input::InputEvent;
+    use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+    use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
+
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    paired(dir.path());
+    init_authority(dir.path());
+    let client = client_key();
+    let cert = dir.path().join("client.pem");
+    let key = dir.path().join("client.key");
+    std::fs::write(&key, &client.key_pem).expect("write client key");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    let enrolled = enroll_host_read_key(dir.path(), &client, &cert);
+    let id = enrolled["credential_id"]
+        .as_str()
+        .expect("credential_id")
+        .to_owned();
+    assert_eq!(enrolled["principal"], "automation");
+    assert_eq!(enrolled["scopes"], serde_json::json!([HOST_READ_SCOPE]));
+    let expires_at = enrolled["expires_at"].as_i64().expect("expires_at");
+    let skew = (expires_at - (chrono::Utc::now().timestamp() + HOST_READ_EXPIRES_IN)).abs();
+    assert!(
+        skew < 120,
+        "expires_at {expires_at} is not ~{HOST_READ_EXPIRES_IN}s out"
+    );
+    assert!(
+        !HOST_READ_SCOPE
+            .split([',', '@'])
+            .any(|verb| verb == "input"),
+        "{HOST_READ_SCOPE}"
+    );
+
+    let _server = start_server(dir.path(), &["--quic", listeners::LOOPBACK_ANY_PORT], &[]);
+    register_loopback_remote(dir.path());
+    let socket = dir.path().join("s.sock");
+    let socket_arg = socket.to_str().expect("utf-8 socket");
+    let created = phux(
+        dir.path(),
+        &[
+            "--socket",
+            socket_arg,
+            "new",
+            "--empty",
+            "--json",
+            "-s",
+            "observe-list",
+        ],
+    );
+    assert!(
+        created.status.success(),
+        "new --empty: {}",
+        text(&created.stderr)
+    );
+
+    let identity = [
+        ("PHUX_WORKLOAD_CERT", cert.as_path()),
+        ("PHUX_WORKLOAD_KEY", key.as_path()),
+    ];
+    let listed = await_remote_listing(dir.path(), socket_arg, &identity);
+    let remote = listed["hosts"]
+        .as_array()
+        .expect("hosts")
+        .iter()
+        .find(|host| host["name"] == REMOTE)
+        .expect("the registered host");
+    assert_eq!(remote["reachable"], true, "{remote}");
+    assert!(remote["error"].is_null(), "{remote}");
+    let names: Vec<_> = remote["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .filter_map(|session| session["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"observe-list"),
+        "ls --all through the read key: {remote}"
+    );
+
+    let dest = dir.path().join("not-written");
+    let download = phux_with(
+        dir.path(),
+        &[
+            "download",
+            "--remote",
+            REMOTE,
+            "--json",
+            "--timeout",
+            "15",
+            "/etc/hosts",
+            dest.to_str().expect("utf-8 dest"),
+        ],
+        b"",
+        &identity,
+    );
+    assert!(
+        !download.status.success(),
+        "INPUT was admitted: {}",
+        text(&download.stdout)
+    );
+    let download_text = format!("{}{}", text(&download.stdout), text(&download.stderr));
+    assert!(
+        download_text.contains("permission denied"),
+        "GET_FILE (INPUT) refusal: {download_text}"
+    );
+    assert!(!dest.exists(), "a refused download left a file");
+
+    let port = bound_quic_port(&socket);
+    let mut live = RawSession::open_cert(port, &cert, &key);
+    live.await_hello_ok();
+    live.send_frame(&FrameKind::Command {
+        request_id: 7,
+        command: Command::RouteInput {
+            terminal_id: phux_protocol::ids::ResourceId::local(1),
+            event: InputEvent::Paste(PasteEvent {
+                trust: PasteTrust::Trusted,
+                data: b"not-typed".to_vec(),
+            }),
+        },
+    });
+    let input = live.await_command_result(7);
+    assert!(
+        matches!(
+            input,
+            CommandResult::Error {
+                code: ErrorCode::PermissionDenied,
+                ref message,
+            } if message == "permission denied"
+        ),
+        "terminal INPUT: {input:?}"
+    );
+
+    let revoked = phux(dir.path(), &["workload", "revoke", &id]);
+    assert!(revoked.status.success(), "{}", text(&revoked.stderr));
+    assert_revoked(&mut live);
+}
+
+/// Enroll `client` at [`HOST_READ_SCOPE`] for [`HOST_READ_EXPIRES_IN`] seconds
+/// as an automation, the flags an operator passes for a CI runner.
+fn enroll_host_read_key(dir: &Path, client: &ClientKey, cert_out: &Path) -> serde_json::Value {
+    let expires = HOST_READ_EXPIRES_IN.to_string();
+    let out = phux_with(
+        dir,
+        &[
+            "workload",
+            "add-key",
+            "--json",
+            "--cert-out",
+            cert_out.to_str().expect("utf-8 path"),
+            "--scope",
+            HOST_READ_SCOPE,
+            "--expires-in",
+            expires.as_str(),
+            "--principal",
+            "automation",
+        ],
+        client.csr_pem.as_bytes(),
+        &[],
+    );
+    assert!(out.status.success(), "add-key: {}", text(&out.stderr));
+    json_doc(&out)
+}
+
+/// `phux ls --all --json` once the registered host answers with its sessions.
+fn await_remote_listing(dir: &Path, socket: &str, identity: &[(&str, &Path)]) -> serde_json::Value {
+    let start = Instant::now();
+    loop {
+        let out = phux_with(
+            dir,
+            &["--socket", socket, "ls", "--all", "--json"],
+            b"",
+            identity,
+        );
+        if out.status.success() {
+            let doc = json_doc(&out);
+            let ready = doc["hosts"].as_array().is_some_and(|hosts| {
+                hosts
+                    .iter()
+                    .any(|host| host["name"] == REMOTE && host["reachable"] == true)
+            });
+            if ready {
+                return doc;
+            }
+        }
+        assert!(
+            start.elapsed() < READY_DEADLINE,
+            "`phux ls --all` never listed {REMOTE}: {}",
+            text(&out.stderr) + &text(&out.stdout)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Swap the entry's identity for one the far host issued for `days`: a
