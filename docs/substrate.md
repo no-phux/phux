@@ -81,10 +81,13 @@ is a paired `human` credential, and that person's own host is not joined
 
 ### Audience binding
 
-A credential names one server. An agent credential also names one session.
-A hop does not forward it. Across a relay, authority is the tunnel's route
-authority; per-client authority across a relay is future work
-([ADR-0116][adr-0116-relay]).
+A credential names one server. A local delegated agent credential also
+names one session. A hop grants no authority on another server. A relay's
+[route admission][adr-0180-route] is not consumer authorization: every
+relayed session is TLS end to end with the origin server, which under
+`paired` authenticates the consumer's workload certificate and enforces
+its scope ([ADR-0180][adr-0180-session], [inner dial][code-relay-dial],
+[origin check][code-relay-auth]).
 
 ### Narrow delegation that keeps the human
 
@@ -161,8 +164,10 @@ for an observe-only host credential.
 A per-agent grant that keeps the human principal across hosts is not in
 the tree. A reverse join is owner authority
 ([uplink](../crates/phux-server/src/uplink.rs), [splice][code-uplink]).
-A relay is route authority ([ADR-0116][adr-0116-relay]), and a delegated
-credential is a local socket. That grant is after launch (S-D2).
+Relayed consumers already authenticate end to end at the origin
+([ADR-0180][adr-0180-session]); route admission adds no consumer authority.
+The delegated agent credential is still a local socket. That per-agent
+cross-host grant is after launch (S-D2).
 
 ## Launch cut
 
@@ -221,7 +226,6 @@ to Chief of Staff, accepting S-D1 through S-D10 as written in the plan.
 [adr-0097-endpoint]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md#L40-L46
 [adr-0097-witness]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md#L51-L58
 [adr-0106-user]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0106-identity-is-the-serving-user.md#L38-L40
-[adr-0116-relay]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0116-workload-auth-is-mtls.md#L74-L78
 [adr-0132-status]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0132-swarm-members-are-coordinator-clients.md#L14
 [adr-0132-clients]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0132-swarm-members-are-coordinator-clients.md#L47-L51
 [adr-0162-store]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0162-organization-records-persist-and-activations-reconcile.md#L9-L11
@@ -229,6 +233,8 @@ to Chief of Staff, accepting S-D1 through S-D10 as written in the plan.
 [adr-0163-kinds]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0163-actors-and-delegated-agent-grants.md#L123-L132
 [adr-0173-status]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0173-mission-control-is-a-client-composition.md#L15
 [adr-0173-keeper]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0173-mission-control-is-a-client-composition.md#L62-L64
+[adr-0180-session]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0180-the-relay-is-blind.md#L47-L59
+[adr-0180-route]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0180-the-relay-is-blind.md#L64-L73
 [adr-0187-retired]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0187-agents-coordinate-through-phux.md#L9-L16
 [code-keeper]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux-work/src/wire.rs#L1-L4
 [code-kind]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux-core/src/actor.rs#L22-L28
@@ -241,6 +247,8 @@ to Chief of Staff, accepting S-D1 through S-D10 as written in the plan.
 [code-enforce]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux-server/src/policy/enforce.rs#L304-L309
 [code-mint-test]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux-server/src/policy/tests.rs#L1378-L1380
 [code-uplink]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux-server/src/uplink.rs#L10-L13
+[code-relay-dial]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux-dial/src/quic.rs#L180-L199
+[code-relay-auth]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux-server/src/transport/inner_tls.rs#L125-L151
 [code-pair]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux/src/commands/pair.rs#L2013-L2018
 [code-workload-scope]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux/src/commands/workload.rs#L83-L100
 [code-workload-principal]: https://github.com/no-phux/phux/blob/792a9fe90fd02cdb281f5e550e48f052aca71134/crates/phux/src/commands/workload.rs#L120-L126
