@@ -42,6 +42,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub workspace: &'a mut ArrangementDoc,
     /// A correlated initial layout GET confirmed valid metadata or absence.
     pub layout_read_complete: bool,
+    /// An arrangement link is still unloaded. A held hidden-view action
+    /// sets this read-owed flag to request one retry, without spinning.
+    pub unloaded_arrangement_read: Option<&'a mut bool>,
     /// `close-view` / `reopen-views` pressed before that read. Applied to
     /// the adopted workspace when the read completes, then saved. `None` in
     /// a caller that cannot hold them: the keystroke is dropped instead of
