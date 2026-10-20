@@ -30,6 +30,17 @@ pub(super) struct RosterRecovery {
     /// refused with `PERMISSION_DENIED`, a stable answer for the connection.
     denied: HashSet<ResourceId>,
     reads: HashMap<u32, MetadataRead>,
+    /// Titles and cwds that changed while the topology read was in flight,
+    /// laid over its reply. Fencing the read on these instead would starve
+    /// the inventory while any pane's title animates.
+    relabels: HashMap<ResourceId, Relabel>,
+}
+
+/// A pane's labels newer than the in-flight topology read.
+#[derive(Debug, Default)]
+pub(super) struct Relabel {
+    pub title: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug)]
@@ -108,9 +119,7 @@ impl ControlPlane {
                 self.fence_topology_read();
                 self.queue_refresh_topology();
             }
-            AgentEvent::ResourceClosed { .. }
-            | AgentEvent::TitleChanged { .. }
-            | AgentEvent::CwdChanged { .. } => self.fence_topology_read(),
+            AgentEvent::ResourceClosed { .. } => self.fence_topology_read(),
             _ => {}
         }
     }
@@ -121,17 +130,43 @@ impl ControlPlane {
         }
     }
 
+    /// Where to record a label change the in-flight topology read may
+    /// predate; `None` when no read is in flight.
+    pub(super) fn relabel_in_flight(&mut self, terminal_id: &ResourceId) -> Option<&mut Relabel> {
+        self.roster.topology?;
+        Some(self.roster.relabels.entry(terminal_id.clone()).or_default())
+    }
+
     pub(super) fn resolve_topology_read(
         &mut self,
         result: CommandResult,
     ) -> Result<(), ControlError> {
         let stale = self.roster.topology.take().is_some_and(|(_, stale)| stale);
+        let relabels = std::mem::take(&mut self.roster.relabels);
         if stale {
             self.queue_refresh_topology();
         } else if let CommandResult::OkWith(CommandValue::State(snapshot)) = result {
             self.apply_topology_refresh(&snapshot)?;
+            self.overlay_relabels(relabels);
         }
         Ok(())
+    }
+
+    fn overlay_relabels(&mut self, relabels: HashMap<ResourceId, Relabel>) {
+        let Some(topology) = self.topology.as_mut() else {
+            return;
+        };
+        for (terminal_id, relabel) in relabels {
+            let Some(pane) = topology.pane_mut(&terminal_id) else {
+                continue;
+            };
+            if relabel.title.is_some() {
+                pane.title = relabel.title;
+            }
+            if relabel.cwd.is_some() {
+                pane.cwd = relabel.cwd;
+            }
+        }
     }
 
     pub(super) fn sync_agent_metadata(&mut self) {
