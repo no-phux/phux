@@ -44,8 +44,10 @@ impl GlobalWatch {
 
 impl ControlPlane {
     /// Subscribe to one `Global` metadata key and read its current value.
-    /// Values arrive through [`Self::take_global_metadata`]. Idempotent; the
-    /// key is subscribed and read again on every later attach.
+    /// Values arrive through [`Self::take_global_metadata`]. Idempotent. With
+    /// the automatic lifecycle the key is subscribed and read again on every
+    /// later attach and journal gap; a manually driven plane calls this again
+    /// after each attach instead.
     ///
     /// Returns the read's request id, or zero when nothing was sent: an
     /// empty key, more than [`MAX_WATCHED_GLOBAL_KEYS`] keys, or no L3
