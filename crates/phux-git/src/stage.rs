@@ -8,7 +8,7 @@ use super::{MAX_PREVIEW_BYTES, run, run_diff};
 
 /// At most this many untracked files are previewed.
 pub const MAX_UNTRACKED: usize = 200;
-/// A patch longer than this is read again with [`FALLBACK_CONTEXT`].
+/// A patch longer than this is read again with three lines of context.
 pub const MAX_PATCH_BYTES: usize = 8 * 1024 * 1024;
 const FALLBACK_CONTEXT: usize = 3;
 
@@ -33,7 +33,7 @@ pub enum Source {
 
 impl Source {
     #[must_use]
-    pub fn other(self) -> Self {
+    pub const fn other(self) -> Self {
         match self {
             Self::Changes => Self::Staged,
             Self::Staged => Self::Changes,
@@ -51,8 +51,9 @@ pub struct PatchText {
     pub reduced: bool,
 }
 
-/// Every changed file in `source` with `context` lines of context. Unmerged
-/// paths are left out (their combined diffs are not unified diffs); the
+/// Every changed file in `source` with `context` lines of context.
+///
+/// Unmerged paths are left out (their combined diffs are not unified diffs); the
 /// panel shows them from [`read_file`]. [`Source::Changes`] appends a
 /// new-file patch per previewable path in `untracked`.
 pub fn read_patch(

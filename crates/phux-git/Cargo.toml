@@ -1,0 +1,27 @@
+[package]
+name = "phux-git"
+description = "Std-only Git over the user's own `git`: checkout status, diffs, history, branches, files and index writes, shared by the desktop Changes panel and the server's checkout methods."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# Everything shells out to the user's `git` (and `gh` for pull requests), so
+# hooks, config, credentials and ignore rules behave as they do in the
+# terminal.
+[dependencies]
+# `kill(2)` on a timed-out child's process group, so hooks and credential
+# helpers it spawned die with it. Already in every consumer's graph.
+libc = "0.2.190"
+# `gh pr view --json` output. Workspace dependencies every consumer already
+# compiles.
+# Line counts for untracked files; already compiled into every consumer.
+memchr.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -2833,6 +2833,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-git"
+version = "0.109.0"
+dependencies = [
+ "libc",
+ "memchr",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "phux-mcp"
 version = "0.109.0"
 dependencies = [
@@ -2948,6 +2958,7 @@ dependencies = [
  "phux-config",
  "phux-core",
  "phux-dial",
+ "phux-git",
  "phux-perf",
  "phux-plugin",
  "phux-protocol",
