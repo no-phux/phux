@@ -225,7 +225,9 @@ Things that fail CI and are easy to forget:
 - A new `crates/*` directory not listed in [architecture](./architecture.md).
 
 Real-PTY tests set `PHUX_NO_UPDATE_CHECK=1` in the child environment so an
-update prompt cannot eat a scripted keystroke.
+update prompt cannot eat a scripted keystroke. The shared spawn path seals
+that opt-out after `env_clear`, and the variable also suppresses a cached
+notice.
 
 ### Worktrees
 

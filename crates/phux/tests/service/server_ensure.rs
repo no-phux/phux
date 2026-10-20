@@ -64,6 +64,7 @@ impl Fixture {
             .env("XDG_STATE_HOME", self.dir.path())
             .env("XDG_RUNTIME_DIR", self.dir.path())
             .env("PHUX_PROFILE", "ensure")
+            .env(common::NO_UPDATE_CHECK_ENV, common::NO_UPDATE_CHECK_VALUE)
             .env("SHELL", "/bin/sh")
             .env("TERM", "xterm-256color")
             .env("RUST_LOG", "off")

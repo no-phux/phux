@@ -3,7 +3,9 @@
 //! Self-update stays explicit (ADR-0074); the TUI only tells the user. The
 //! check shells out to `phux update --check` in the background once per
 //! attach (the `phux` crate depends on this one), is silent on failure, and
-//! is cached for `CACHE_TTL`. Opt out with `PHUX_NO_UPDATE_CHECK=1`.
+//! is cached for `CACHE_TTL`. Opt out with `PHUX_NO_UPDATE_CHECK` set to any
+//! non-empty value: the background check does not run, and a cached notice
+//! does not paint.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -130,8 +132,12 @@ fn short_sha(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
+fn value_opts_out(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
 fn opted_out() -> bool {
-    std::env::var_os(OPT_OUT_ENV).is_some_and(|value| !value.is_empty())
+    value_opts_out(std::env::var_os(OPT_OUT_ENV).as_deref())
 }
 
 fn unix_now() -> u64 {
@@ -239,9 +245,11 @@ async fn run_check() -> Option<String> {
 
 /// The notice to show now, once.
 ///
-/// `None` when there is no update, when the cached answer is stale (another
-/// build wrote it, or it was already shown), or when nothing has been checked
-/// yet. Marks the version announced so it is shown once.
+/// `None` when the process opted out (`PHUX_NO_UPDATE_CHECK`), when there is
+/// no update, when the cached answer is stale (another build wrote it, or it
+/// was already shown), or when nothing has been checked yet. Marks the
+/// version announced so it is shown once. An opt-out does not consume the
+/// cache: a later process without the variable can still announce it.
 #[must_use]
 pub fn take_pending_notice() -> Option<UpdateNotice> {
     take_pending_notice_at(&cache_path())
@@ -250,6 +258,15 @@ pub fn take_pending_notice() -> Option<UpdateNotice> {
 /// [`take_pending_notice`] against an explicit cache file, so tests can drive
 /// it without the real state directory.
 fn take_pending_notice_at(path: &Path) -> Option<UpdateNotice> {
+    pending_notice(path, opted_out())
+}
+
+/// Read a pending notice. `suppress` hides a cached newer release instead of
+/// only skipping the fetch that would have written the cache.
+fn pending_notice(path: &Path, suppress: bool) -> Option<UpdateNotice> {
+    if suppress {
+        return None;
+    }
     let doc = read_json(path)?;
     if doc.get("current").and_then(serde_json::Value::as_str) != Some(running_version()) {
         return None;
@@ -348,6 +365,40 @@ mod tests {
         assert!(
             take_pending_notice_at(&path).is_none(),
             "the version is announced once, not on every attach"
+        );
+    }
+
+    #[test]
+    fn the_opt_out_is_any_non_empty_phux_no_update_check() {
+        use std::ffi::OsStr;
+
+        assert_eq!(OPT_OUT_ENV, "PHUX_NO_UPDATE_CHECK");
+        assert!(value_opts_out(Some(OsStr::new("1"))));
+        assert!(value_opts_out(Some(OsStr::new("true"))));
+        assert!(!value_opts_out(Some(OsStr::new(""))));
+        assert!(!value_opts_out(None));
+    }
+
+    #[test]
+    fn an_opt_out_hides_a_cached_newer_release() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(CACHE_FILE);
+        seed(&path, true, None, running_version());
+
+        assert!(
+            pending_notice(&path, true).is_none(),
+            "PHUX_NO_UPDATE_CHECK must suppress a cached notice, not only the fetch"
+        );
+        // The opt-out must not consume the announcement. With the check
+        // enabled, the same cache still paints.
+        let shown = pending_notice(&path, false).expect("shown when the check is enabled");
+        assert_eq!(shown.latest, "next.d527f26");
+        assert!(
+            shown
+                .body()
+                .iter()
+                .any(|line| line.contains("is available")),
+            "the cached notice is what the toast would paint"
         );
     }
 

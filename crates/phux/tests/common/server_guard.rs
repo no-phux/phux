@@ -211,6 +211,25 @@ impl ServerSpawn {
     /// `Command` (isolation tables, extra flags).
     #[must_use]
     pub fn start_with(self, configure: impl FnOnce(&mut Command)) -> ServerGuard {
+        let (mut cmd, socket, xdg) = self.into_command(configure);
+        let child = cmd.spawn().expect("spawn phux server");
+        let spawned_at = Instant::now();
+        let guard = ServerGuard {
+            process: ServerProcess::from_child(child, socket.clone()),
+            socket,
+            xdg,
+            spawned_at,
+        };
+        wait_for_socket(&guard.socket);
+        guard
+    }
+
+    /// The `phux server` command [`Self::start_with`] spawns, before the child
+    /// exists. The release-check opt-out is applied after `configure`.
+    fn into_command(
+        self,
+        configure: impl FnOnce(&mut Command),
+    ) -> (Command, PathBuf, super::ambient::XdgDirs) {
         let socket = unique_socket(&self.prefix);
         let mut xdg = super::ambient::XdgDirs::fresh(&self.prefix);
         let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
@@ -236,16 +255,10 @@ impl ServerSpawn {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         configure(&mut cmd);
-        let child = cmd.spawn().expect("spawn phux server");
-        let spawned_at = Instant::now();
-        let guard = ServerGuard {
-            process: ServerProcess::from_child(child, socket.clone()),
-            socket,
-            xdg,
-            spawned_at,
-        };
-        wait_for_socket(&guard.socket);
-        guard
+        // After configure: `env_clear` on the builder or in the closure must
+        // not reopen the release check for this process or a client it spawns.
+        super::ambient::disable_update_check(&mut cmd);
+        (cmd, socket, xdg)
     }
 }
 
@@ -271,4 +284,31 @@ fn wait_for_socket(socket: &std::path::Path) {
         "phux server did not bind {} within {SERVER_DEADLINE:?}",
         socket.display()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    #[test]
+    fn server_spawn_keeps_the_release_check_off_after_env_clear() {
+        let (cmd, socket, _xdg) =
+            super::ServerSpawn::new("notice")
+                .env_clear()
+                .into_command(|cmd| {
+                    cmd.env_clear();
+                    cmd.env("PATH", "/usr/bin:/bin");
+                });
+        let _ = std::fs::remove_file(&socket);
+        let value = cmd.get_envs().find_map(|(key, value)| {
+            (key == super::super::ambient::NO_UPDATE_CHECK_ENV).then_some(value)
+        });
+        assert_eq!(
+            value,
+            Some(Some(OsStr::new(
+                super::super::ambient::NO_UPDATE_CHECK_VALUE
+            ))),
+            "a cleared server environment must still opt out of the release check"
+        );
+    }
 }

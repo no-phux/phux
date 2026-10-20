@@ -71,8 +71,9 @@ and [core refusal rules](../crates/phux-core/src/apply.rs) own these decisions.
 ## Work and missions
 
 Organization records own execution, not task scheduling. The separate
-[work store](../crates/phux-work/src/lib.rs) has one keeper writer per host;
-mission documents compose over its client and never open SQLite directly.
+[work store](../crates/phux-work/src/lib.rs) has one keeper writer per store,
+on the host that runs it. Mission documents compose over its client and
+never open SQLite directly.
 Operation ids deduplicate work/mail mutations and expected revisions refuse
 stale edits. Mail/path claims are advisory host-local coordination, not
 filesystem enforcement or an authenticated execution identity; see
@@ -84,8 +85,10 @@ agent cap and a revision-checked keeper commit. Queued is not launched. Its
 [CLI implementation](../crates/phux/src/commands/mission_start.rs),
 [pure launch planning](../crates/phux-mission/src/start.rs) and
 [keeper start transaction](../crates/phux-work/src/start.rs) own the sequence.
-This is not the proposed cross-host coordinator, autonomous Lead, or durable
-Capture dispatch service; do not infer those from historical design names.
+The org's one home keeper, and the cross-host work that waits until after
+launch, is the [substrate decision](./substrate.md). A multi-host
+coordinator, an autonomous Lead, and a durable grant ledger are not
+shipping contracts. Do not infer them from historical design names.
 
 ## Restore and executable authority
 

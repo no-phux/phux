@@ -38,7 +38,10 @@ mod ambient;
     unused_imports,
     reason = "re-exported for suites that spawn phux directly; others use ServerGuard"
 )]
-pub use ambient::{XdgDirs, ambient_phux_keys, isolated_xdg, phux_cmd};
+pub use ambient::{
+    NO_UPDATE_CHECK_ENV, NO_UPDATE_CHECK_VALUE, XdgDirs, ambient_phux_keys, disable_update_check,
+    isolated_xdg, phux_cmd,
+};
 
 mod server_guard;
 #[allow(
@@ -388,6 +391,32 @@ impl Drop for WatchChild {
     }
 }
 
+/// `phux attach <args...>` with the harness isolation env applied last.
+///
+/// `configure` may `env_clear`. The release-check opt-out is sealed
+/// afterwards: a private state dir still permits a live lookup, and a cached
+/// newer release still paints a modal that consumes the next scripted key.
+fn isolated_attach_command(
+    args: &[&str],
+    config: &Path,
+    configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
+) -> portable_pty::CommandBuilder {
+    let mut command = portable_pty::CommandBuilder::new(crate::runner::phux_bin());
+    for key in ambient::ambient_phux_keys() {
+        command.env_remove(key);
+    }
+    command.arg("attach");
+    command.args(args);
+    command.env("SHELL", "/bin/sh");
+    command.env("TERM", "xterm-256color");
+    command.env("RUST_LOG", "off");
+    command.env("XDG_CONFIG_HOME", config);
+    command.env("XDG_STATE_HOME", &ambient::isolated_xdg().state);
+    configure(config, &mut command);
+    command.env(ambient::NO_UPDATE_CHECK_ENV, ambient::NO_UPDATE_CHECK_VALUE);
+    command
+}
+
 /// The index of the first captured line satisfying `want`, for asserting the
 /// ORDER two observations arrived in rather than merely that both did.
 pub fn first_index(
@@ -455,21 +484,7 @@ impl PtyAttach {
             })
             .expect("open attach PTY");
         let config = tempfile::tempdir().expect("isolated config dir");
-        let mut command = portable_pty::CommandBuilder::new(crate::runner::phux_bin());
-        for key in ambient::ambient_phux_keys() {
-            command.env_remove(key);
-        }
-        command.arg("attach");
-        command.args(args);
-        command.env("SHELL", "/bin/sh");
-        command.env("TERM", "xterm-256color");
-        command.env("RUST_LOG", "off");
-        command.env("XDG_CONFIG_HOME", config.path());
-        command.env("XDG_STATE_HOME", &ambient::isolated_xdg().state);
-        // Private XDG state alone still permits a live release lookup and a
-        // delayed modal that consumes the next scripted key.
-        command.env("PHUX_NO_UPDATE_CHECK", "1");
-        configure(config.path(), &mut command);
+        let command = isolated_attach_command(args, config.path(), configure);
         let child = pair
             .slave
             .spawn_command(command)
@@ -553,5 +568,23 @@ mod tests {
             PathBuf::from("/nonexistent/phux-e4qx-absent.sock"),
         );
         drop(server);
+    }
+
+    /// A caller that clears the environment must not reopen the release check.
+    /// The opt-out is sealed after `configure`, which is what
+    /// [`super::PtyAttach::start_dialing`] spawns.
+    #[test]
+    fn attach_command_keeps_the_release_check_off_after_env_clear() {
+        let config = tempfile::tempdir().expect("config");
+        let command =
+            super::isolated_attach_command(&["work"], config.path(), |_config, command| {
+                command.env_clear();
+                command.env("PATH", "/usr/bin:/bin");
+            });
+        assert_eq!(
+            command.get_env(super::ambient::NO_UPDATE_CHECK_ENV),
+            Some(std::ffi::OsStr::new(super::ambient::NO_UPDATE_CHECK_VALUE)),
+            "env_clear in configure must not drop the release-check opt-out"
+        );
     }
 }
