@@ -65,7 +65,7 @@ pub struct Snapshot {
     pub behind: u32,
     /// Sorted by area, then path.
     pub changes: Vec<Change>,
-    /// More changes existed than [`MAX_ENTRIES`] or fit the output cap.
+    /// More changes existed than [`MAX_ENTRIES`](super::MAX_ENTRIES) or fit the output cap.
     pub truncated: bool,
 }
 
@@ -87,7 +87,7 @@ pub struct Change {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileDiff {
     pub text: String,
-    /// Cut at a line boundary to [`MAX_TEXT_BYTES`].
+    /// Cut at a line boundary to [`MAX_TEXT_BYTES`](super::MAX_TEXT_BYTES).
     pub truncated: bool,
     pub binary: bool,
 }
