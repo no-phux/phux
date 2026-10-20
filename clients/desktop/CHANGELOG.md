@@ -33,6 +33,14 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.42.0](https://github.com/no-phux/phux/compare/desktop-v0.41.0...desktop-v0.42.0) (2026-10-20)
+
+
+### Features
+
+* **desktop:** make the sidebar manageable with many sessions ([#1680](https://github.com/no-phux/phux/issues/1680)) ([8e0abb7](https://github.com/no-phux/phux/commit/8e0abb7e9dd62918ee74c6faf9111c00ce06ccf1))
+* **git:** extract the desktop Git module into a shared phux-git crate ([2fff84e](https://github.com/no-phux/phux/commit/2fff84e2444dcd8b91a47e7e0450d40635086644))
+
 ## [0.41.0](https://github.com/no-phux/phux/compare/desktop-v0.40.0...desktop-v0.41.0) (2026-10-20)
 
 
