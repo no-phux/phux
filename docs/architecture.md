@@ -233,8 +233,12 @@ records explain history; [look them up deliberately](#historical-decisions).
   exec or a string-named invoke. The server resolves the checkout from the
   Terminal's live working directory and runs the shared `phux-git` module,
   so mobile, remote desktop, TUI and MCP read one contract; a client never
-  names a host path. They are `INPUT` on that Terminal for the same reason
-  `GET_FILE` is `INPUT` ([protocol](./protocol.md#checkout-methods)).
+  names a host path. They are `INPUT` on that one Terminal, not on the
+  server as `GET_FILE` is: an `INPUT` holder on it can already run `git`
+  there. A Terminal whose working directory is inside a large checkout (say,
+  dotfiles tracked at `$HOME`) therefore exposes every file in that
+  checkout outside `.git` to that Terminal's `INPUT` holders
+  ([protocol](./protocol.md#checkout-methods)).
 
 **Clients**
 

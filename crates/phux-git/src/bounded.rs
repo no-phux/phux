@@ -4,11 +4,14 @@
 //! cannot be allowed to hold a server worker or memory that way. A child that
 //! outlives its deadline is killed, and one that writes past the cap is
 //! killed once the cap is reached, so neither a huge history nor a hung
-//! credential helper can pin the caller.
+//! credential helper can pin the caller. A write is stopped with `SIGTERM`
+//! first, so Git can remove its `index.lock` before the group is killed.
 
+use std::ffi::OsStr;
 use std::io::Read;
+use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::CommandExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -20,6 +23,8 @@ const MAX_STDERR_BYTES: usize = 64 * 1024;
 /// How long a finished child's pipes may stay open, held by a descendant it
 /// left behind, before the readers are abandoned.
 const DRAIN_GRACE: Duration = Duration::from_millis(250);
+/// How long a write stopped with `SIGTERM` has to clean up before `SIGKILL`.
+const TERM_GRACE: Duration = Duration::from_millis(1500);
 
 /// What a bounded run produced.
 #[derive(Debug)]
@@ -52,20 +57,24 @@ pub(super) struct Run<'a> {
     pub(super) max_stdout: usize,
     /// Bytes written to the child's stdin, which is otherwise closed.
     pub(super) stdin: Option<Vec<u8>>,
+    /// How a child past its deadline is stopped.
+    pub(super) stop: Stop,
 }
 
-/// Inherited variables that would point Git at another repository or index.
-const REDIRECTING_ENV: [&str; 5] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_COMMON_DIR",
-];
+/// How a child past its deadline is stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stop {
+    /// `SIGKILL` the group: a read leaves nothing behind.
+    Kill,
+    /// `SIGTERM` the group, then `SIGKILL` after [`TERM_GRACE`]: Git removes
+    /// its lock files on `SIGTERM`.
+    Terminate,
+}
 
 impl Run<'_> {
     pub(super) fn exec(&self) -> Result<Bounded, RunError> {
-        let mut command = Command::new(self.program);
+        let program = resolve_program(self.program)?;
+        let mut command = Command::new(program);
         command
             .current_dir(self.dir)
             .args(self.args)
@@ -78,8 +87,12 @@ impl Run<'_> {
             .stderr(Stdio::piped())
             // Its own group, so a kill reaches hooks and helpers it spawned.
             .process_group(0);
-        for key in REDIRECTING_ENV {
-            command.env_remove(key);
+        // No inherited `GIT_*` may point Git at another repository, index,
+        // config, or helper; only the variables this run sets survive.
+        for (key, _) in std::env::vars_os() {
+            if key.as_encoded_bytes().starts_with(b"GIT_") {
+                command.env_remove(key);
+            }
         }
         for (key, value) in self.env {
             command.env(key, value);
@@ -95,7 +108,19 @@ impl Run<'_> {
         }
         let stdout = Capture::start(child.stdout.take(), self.max_stdout);
         let stderr = Capture::start(child.stderr.take(), MAX_STDERR_BYTES);
-        let status = wait(&mut child, &stdout, Instant::now() + self.timeout)?;
+        let group = i32::try_from(child.id()).ok();
+        let status = wait(
+            &mut child,
+            &stdout,
+            Instant::now() + self.timeout,
+            self.stop,
+        )?;
+        let grace = Instant::now() + DRAIN_GRACE;
+        if !stdout.drained(grace) || !stderr.drained(grace) {
+            // A descendant still holds a pipe: end the group so neither it
+            // nor the reader threads outlive the run.
+            signal_group(group, libc::SIGKILL);
+        }
         let grace = Instant::now() + DRAIN_GRACE;
         let (stdout, truncated) = stdout.finish(grace);
         let (stderr, _) = stderr.finish(grace);
@@ -151,6 +176,20 @@ impl Capture {
         }
     }
 
+    /// Whether the reader ended by `grace`.
+    fn drained(&self, grace: Instant) -> bool {
+        let Some(reader) = &self.reader else {
+            return true;
+        };
+        while !reader.is_finished() {
+            if Instant::now() >= grace {
+                return false;
+            }
+            std::thread::sleep(POLL);
+        }
+        true
+    }
+
     /// Whether more than the cap was written.
     fn capped(&self) -> bool {
         self.capped.load(Ordering::Acquire)
@@ -172,7 +211,12 @@ impl Capture {
 
 /// Wait for exit, killing the child at the deadline or once stdout passed
 /// its cap (nothing more would be read, and a blocked writer never exits).
-fn wait(child: &mut Child, stdout: &Capture, deadline: Instant) -> Result<ExitStatus, RunError> {
+fn wait(
+    child: &mut Child,
+    stdout: &Capture,
+    deadline: Instant,
+    stop: Stop,
+) -> Result<ExitStatus, RunError> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
@@ -189,6 +233,9 @@ fn wait(child: &mut Child, stdout: &Capture, deadline: Instant) -> Result<ExitSt
                 .map_err(|error| RunError::Wait(error.to_string()));
         }
         if Instant::now() >= deadline {
+            if stop == Stop::Terminate {
+                terminate(child);
+            }
             kill(child);
             return Err(RunError::Timeout);
         }
@@ -196,16 +243,64 @@ fn wait(child: &mut Child, stdout: &Capture, deadline: Instant) -> Result<ExitSt
     }
 }
 
-fn kill(child: &mut Child) {
-    if let Ok(pid) = i32::try_from(child.id()) {
-        // SAFETY: `kill(2)` on the child's own process group, which
-        // `process_group(0)` made equal to its pid; no memory is involved.
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
+/// `SIGTERM` the group and give it [`TERM_GRACE`] to exit.
+fn terminate(child: &mut Child) {
+    signal_group(i32::try_from(child.id()).ok(), libc::SIGTERM);
+    let deadline = Instant::now() + TERM_GRACE;
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
         }
+        std::thread::sleep(POLL);
     }
+}
+
+fn kill(child: &mut Child) {
+    signal_group(i32::try_from(child.id()).ok(), libc::SIGKILL);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Signal the child's own process group, which `process_group(0)` made equal
+/// to its pid.
+fn signal_group(group: Option<i32>, signal: libc::c_int) {
+    if let Some(pid) = group.filter(|pid| *pid > 0) {
+        // SAFETY: `kill(2)` on a process group id; no memory is involved.
+        unsafe {
+            libc::kill(-pid, signal);
+        }
+    }
+}
+
+/// `program` as an absolute path: itself when it names one, else the first
+/// executable in an absolute `PATH` entry. A relative or empty entry (the
+/// current directory) is skipped, so a checkout cannot plant a `git`.
+fn resolve_program(program: &str) -> Result<PathBuf, RunError> {
+    let not_found = || {
+        RunError::Spawn(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{program} is not on PATH"),
+        ))
+    };
+    if program.contains('/') {
+        let path = PathBuf::from(program);
+        return if path.is_absolute() && is_executable(&path) {
+            Ok(path)
+        } else {
+            Err(not_found())
+        };
+    }
+    let path = std::env::var_os("PATH").ok_or_else(not_found)?;
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(OsStr::new(program)))
+        .find(|candidate| is_executable(candidate))
+        .ok_or_else(not_found)
+}
+
+fn is_executable(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]
@@ -221,6 +316,7 @@ mod tests {
             timeout,
             max_stdout,
             stdin: None,
+            stop: Stop::Kill,
         }
         .exec()
     }
@@ -261,6 +357,53 @@ mod tests {
     }
 
     #[test]
+    fn a_write_past_its_deadline_gets_sigterm_before_sigkill() {
+        let dir = std::env::temp_dir().join(format!("phux-bounded-term-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("cleaned");
+        let script = format!(
+            "trap 'touch {}; exit 1' TERM; sleep 30 & wait",
+            marker.display()
+        );
+        let started = Instant::now();
+        let out = Run {
+            program: "sh",
+            dir: &dir,
+            args: &["-c", &script],
+            env: &[],
+            timeout: Duration::from_millis(200),
+            max_stdout: 16,
+            stdin: None,
+            stop: Stop::Terminate,
+        }
+        .exec();
+        assert!(matches!(out, Err(RunError::Timeout)));
+        assert!(marker.exists(), "the TERM handler ran");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn inherited_git_variables_do_not_reach_the_child() {
+        // SAFETY: test-only; no other thread reads this variable.
+        unsafe { std::env::set_var("GIT_CONFIG_PARAMETERS", "'core.pager=evil'") };
+        let out = sh(
+            "printf %s \"${GIT_CONFIG_PARAMETERS-unset}\"",
+            Duration::from_secs(5),
+            64,
+        )
+        .unwrap();
+        assert_eq!(out.stdout, b"unset");
+    }
+
+    #[test]
+    fn programs_resolve_only_through_absolute_path_entries() {
+        assert!(resolve_program("sh").unwrap().is_absolute());
+        assert!(resolve_program("./sh").is_err());
+        assert!(resolve_program("phux-not-installed-anywhere").is_err());
+    }
+
+    #[test]
     fn a_hung_child_is_killed_at_the_deadline() {
         let started = Instant::now();
         let out = sh("sleep 30", Duration::from_millis(100), 16);
@@ -278,6 +421,7 @@ mod tests {
             timeout: Duration::from_secs(1),
             max_stdout: 1,
             stdin: None,
+            stop: Stop::Kill,
         }
         .exec();
         assert!(

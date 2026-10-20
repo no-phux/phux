@@ -33,8 +33,9 @@ use crate::state::SharedState;
 static CHECKOUT_WORKERS: Semaphore = Semaphore::const_new(8);
 /// How long the Terminal actor has to report its working directory.
 const CWD_DEADLINE: Duration = Duration::from_secs(2);
-/// An outer bound past the children's own deadlines (a stage runs two).
-const WORK_DEADLINE: Duration = Duration::from_secs(45);
+/// An outer bound past the children's own deadlines: a stage is one write
+/// (30 s plus its `SIGTERM` grace) and then a full status read.
+const WORK_DEADLINE: Duration = Duration::from_secs(90);
 
 /// Answer one checkout request for a local Terminal.
 pub(super) async fn handle(
@@ -63,7 +64,7 @@ pub(super) async fn handle(
         ),
         Some(cwd) => run_bounded(PathBuf::from(cwd), request).await,
     };
-    CommandResult::OkWith(CommandValue::Checkout(Box::new(fit(answer))))
+    CommandResult::OkWith(CommandValue::Checkout(Box::new(answer)))
 }
 
 async fn run_bounded(cwd: PathBuf, request: CheckoutRequest) -> CheckoutAnswer {
@@ -76,7 +77,9 @@ async fn run_bounded(cwd: PathBuf, request: CheckoutRequest) -> CheckoutAnswer {
     let work = tokio::task::spawn_blocking(move || {
         // Held until the blocking work returns, not until the wait ends.
         let _permit = permit;
-        answer(&cwd, request)
+        // Fitting serializes the answer, which can be megabytes: keep it on
+        // the blocking worker too.
+        fit(answer(&cwd, request))
     });
     match tokio::time::timeout(WORK_DEADLINE, work).await {
         Ok(Ok(answer)) => answer,
