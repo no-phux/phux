@@ -64,18 +64,33 @@ fn list_height(sections: &[Section], chrome: f32, max: f32) -> f32 {
     if rows == 0 { height + ROW } else { height }.min(max)
 }
 
-fn results(desk: &mut Desk, query: &str, cx: &Context<Desk>) -> (&'static str, Vec<Section>) {
+pub(super) fn results(
+    desk: &mut Desk,
+    query: &str,
+    cx: &Context<Desk>,
+) -> (&'static str, Vec<Section>) {
     match desk.modal {
         Modal::Goto => {
             prepare_goto(desk, query);
             let mut sections = desk.goto_search.cloned_sections();
             if !query.trim().is_empty() && desk.goto.filter == GotoFilter::All {
                 sections.extend(rank_sections(command_sections(desk, cx), query));
-                sections.extend(rank_sections(settings_sections(), query));
+                sections.extend(rank_sections(
+                    settings_sections(desk, &cx.weak_entity(), cx),
+                    query,
+                ));
                 sections.extend(rank_sections(
                     window_sections(desk, cx.entity_id(), cx),
                     query,
                 ));
+                let boosts = desk.goto_frecency.boosts(super::goto_frecency::now());
+                let boot = desk
+                    .link
+                    .as_ref()
+                    .and_then(|link| link.connection.server_id());
+                sections = super::goto_search::rank_sections_with_boost(sections, query, |row| {
+                    super::ranking::goto_boost(&boosts, boot.as_deref(), row)
+                });
             }
             ("Search work, actions and settings…", sections)
         }
@@ -83,13 +98,23 @@ fn results(desk: &mut Desk, query: &str, cx: &Context<Desk>) -> (&'static str, V
             "Find a window or tab…",
             rank_sections(window_sections(desk, cx.entity_id(), cx), query),
         ),
-        Modal::Settings => ("Find a setting…", rank_sections(settings_sections(), query)),
+        Modal::Settings => (
+            "Find a setting…",
+            rank_sections(settings_sections(desk, &cx.weak_entity(), cx), query),
+        ),
         Modal::WindowSession => (
             "Open session…",
             rank_sections(session_sections(desk), query),
         ),
         Modal::MoveResources => ("Move to…", rank_sections(move_sections(desk), query)),
-        _ => ("Search commands…", command_results(desk, cx, query)),
+        _ => {
+            let mut sections = command_results(desk, cx, query);
+            if !query.trim().is_empty() {
+                sections.extend(settings_sections(desk, &cx.weak_entity(), cx));
+                sections = rank_sections(sections, query);
+            }
+            ("Search commands…", sections)
+        }
     }
 }
 
@@ -109,6 +134,10 @@ pub(super) fn palette(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
+    if let Some(key) = desk.palette_view.edit.clone() {
+        return crate::app::settings_panel::editor(desk, &key, window, cx);
+    }
+    prepare_settings(desk, window, cx);
     let Some(state) = desk.palette_state.clone() else {
         return div().into_any_element();
     };
@@ -130,8 +159,7 @@ pub(super) fn palette(
     let details_open =
         desk.palette_view.details && (desk.modal == Modal::Goto || preview.is_some());
     let viewport = window.viewport_size();
-    let top = super::sheet_top(viewport);
-    let available = (viewport.height.as_f32() - top - super::SHEET_GUTTER).max(120.);
+    let available = (viewport.height.as_f32() - 2. * super::SHEET_GUTTER).max(0.);
     let detail_height = if details_open {
         (available * 0.4).min(160.)
     } else {
@@ -165,7 +193,7 @@ pub(super) fn palette(
     };
     let header_handle = cx.weak_entity();
     let header_colors = colors.clone();
-    let mut command = Command::new(&state)
+    let command = Command::new(&state)
         .filterable(false)
         .bordered(false)
         .rounded(corner(&look, 12.))
@@ -204,6 +232,40 @@ pub(super) fn palette(
         });
     let terms = query_terms(&query);
     let tokens: Vec<&str> = terms.iter().map(String::as_str).collect();
+    let command = result_groups(command, sections, &tokens, &colors, selected);
+    super::sheet(&look, width)
+        .id("palette-panel")
+        .debug_selector(|| "palette-panel".into())
+        .text_left()
+        .overflow_hidden()
+        .child(command)
+        .when(details_open, |sheet| {
+            sheet.child(facts_panel(preview, detail_height, &colors, look.border))
+        })
+        .into_any_element()
+}
+
+/// Only modes that search preferences need the shared slider and font state.
+fn prepare_settings(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
+    if !matches!(desk.modal, Modal::Settings | Modal::Commands | Modal::Goto) {
+        return;
+    }
+    let searching = desk
+        .palette_state
+        .as_ref()
+        .is_some_and(|state| !state.read(cx).query(cx).trim().is_empty());
+    if desk.modal == Modal::Settings || searching {
+        crate::app::settings_panel::prepare(desk, window, cx);
+    }
+}
+
+fn result_groups(
+    mut command: Command,
+    sections: Vec<Section>,
+    tokens: &[&str],
+    colors: &Rc<Palette>,
+    selected: Option<IndexPath>,
+) -> Command {
     for (section_index, section) in sections.into_iter().enumerate() {
         let mut group = CommandGroup::new();
         if let Some(label) = section.label {
@@ -215,20 +277,11 @@ pub(super) fn palette(
             |(row_index, row)| {
                 let active = selected == Some(IndexPath::new(row_index).section(section_index));
                 let nested = overview && matches!(row.target, Target::Window { tab: Some(_), .. });
-                item(row, &tokens, colors.clone(), active, nested)
+                item(row, tokens, colors.clone(), active, nested)
             },
         )));
     }
-    super::sheet(&look, width)
-        .id("palette-panel")
-        .debug_selector(|| "palette-panel".into())
-        .text_left()
-        .overflow_hidden()
-        .child(command)
-        .when(details_open, |sheet| {
-            sheet.child(facts_panel(preview, detail_height, &colors, look.border))
-        })
-        .into_any_element()
+    command
 }
 
 /// The details of the highlighted row, or a quiet note in the same space
@@ -303,6 +356,14 @@ fn item(
     let highlights = title_matches(&title, tokens);
     // A destination's context disambiguates it; command explanations remain searchable only.
     let detail = row.detail.filter(|_| row.command.is_none());
+    let selector = match &row.target {
+        Target::Preference(key, _) => key.selector(),
+        _ => format!("palette-result-{}", row.command.unwrap_or("destination")),
+    };
+    let setting = match row.target {
+        Target::Preference(_, item) => Some(item),
+        _ => None,
+    };
     let chord = row.chord;
     let mut item = CommandItem::new()
         .label(title.clone())
@@ -315,10 +376,9 @@ fn item(
         // the title's baseline.
         let line = px(ROW_LINE);
         let drop = baseline(cx, px(13.), line) - baseline(cx, px(11.), line);
+        let selector = selector.clone();
         div()
-            .debug_selector(move || {
-                format!("palette-result-{}", row.command.unwrap_or("destination"))
-            })
+            .debug_selector(move || selector)
             .id("palette-result-content")
             .role(gpui::Role::Label)
             .aria_label(title.clone())
@@ -350,6 +410,10 @@ fn item(
                 )),
             ))
             .children(detail.clone().map(|detail| {
+                let detail = match setting.as_ref().and_then(|item| item.value(cx)) {
+                    Some(value) => format!("{} · {detail} · ↵ Toggle", if value { "On" } else { "Off" }).into(),
+                    None => detail,
+                };
                 div()
                     .relative()
                     .top(drop)

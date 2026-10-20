@@ -1,11 +1,12 @@
 //! Theme and font selection, skins, and their live previews.
 
+use super::catalog::{Content as SettingPage, Group as SettingGroup, Item as SettingItem};
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Hsla, SharedString, WeakEntity, div, px, relative};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::select::Select;
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::setting::SettingField;
 use gpui_kit::component::{ActiveTheme, IconName, Sizable};
 
 use crate::settings::theme::{self, Palette};
@@ -162,7 +163,7 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
     SettingGroup::new()
         .title("Look")
         .item(
-            SettingItem::render(move |_, _, cx| skin_cards(&cards, cx))
+            SettingItem::render("Skin", move |_, _, cx| skin_cards(&cards, cx))
                 .keywords(["skin", "look", "glass", "terminal", "plain", "chrome"]),
         )
         .item(

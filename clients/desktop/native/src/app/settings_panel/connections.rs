@@ -1,9 +1,10 @@
 //! Saved machines, their available actions, and this window's connection.
 
+use super::catalog::{Content as SettingPage, Group as SettingGroup, Item as SettingItem};
 use gpui::prelude::*;
 use gpui::{Context, WeakEntity, Window, div, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::setting::SettingField;
 use gpui_kit::component::{IconName, Sizable};
 use phux_client_runtime::control::Status;
 
@@ -60,7 +61,7 @@ fn machine_item(
     // route only reconnects.
     let disconnect = !current && !matches!(reach, Reach::Unavailable(_));
     let handle = handle.clone();
-    SettingItem::new(
+    let item = SettingItem::new(
         host.map_or_else(
             || "This computer".to_owned(),
             super::super::machine_name::display,
@@ -107,7 +108,12 @@ fn machine_item(
                 })
         }),
     )
-    .description(detail)
+    .description(detail);
+    if action.is_none() && !disconnect && host.is_none() {
+        item.information()
+    } else {
+        item
+    }
 }
 
 fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {

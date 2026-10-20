@@ -9,7 +9,7 @@ use gpui_kit::component::{IconName, Sizable};
 
 use crate::app::color::from_hex;
 use crate::app::desk::Desk;
-use crate::app::overlays::{SHEET_GUTTER, corner, sheet, sheet_top};
+use crate::app::overlays::{SHEET_GUTTER, corner, sheet};
 use crate::app::skin::Look;
 
 // Ask the launch resolver about a destination even before the thought is
@@ -48,7 +48,7 @@ pub(in crate::app) fn panel(
     let muted = from_hex(&look.chrome.muted);
     let destination = destination(desk).unwrap_or_else(|error| error);
     let viewport = window.viewport_size();
-    let height = (viewport.height.as_f32() - sheet_top(viewport) - SHEET_GUTTER).max(0.);
+    let height = (viewport.height.as_f32() - 2. * SHEET_GUTTER).max(0.);
     let stay = if cfg!(target_os = "macos") {
         "⌘Enter"
     } else {

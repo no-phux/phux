@@ -34,6 +34,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         }
         Modal::Settings => {
             desk.settings_page = None;
+            desk.palette_view = PaletteView::default();
             let state = palette_state(desk, window, cx);
             state.update(cx, |state, cx| {
                 state.set_query("", window, cx);

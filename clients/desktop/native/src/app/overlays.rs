@@ -28,7 +28,7 @@ pub(crate) use goto_search::GotoSearch;
 pub(crate) use inputs::{find_input, prepare};
 pub(crate) use path_panel::{PathItem, path_items};
 pub use surface::layer;
-pub(crate) use surface::{SHEET_GUTTER, card, corner, line_height, sheet, sheet_top};
+pub(crate) use surface::{SHEET_GUTTER, card, corner, line_height, sheet};
 
 use picking::Target;
 use ranking::{filter_sections, goto_id, prepare_goto, query_terms, rank_sections, section_ids};
@@ -54,6 +54,8 @@ mod window_tests;
 pub(super) struct PaletteView {
     all_commands: bool,
     details: bool,
+    pub(crate) edit: Option<crate::app::settings_panel::catalog::Key>,
+    pub(crate) edit_focus: Option<gpui::FocusHandle>,
 }
 
 /// Text fields a modal or the find bar owns.

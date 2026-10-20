@@ -51,23 +51,58 @@ pub(super) fn simple_row(
     }
 }
 
-pub(super) fn settings_sections() -> Vec<Section> {
-    vec![Section {
-        label: Some("Settings"),
-        rows: crate::app::settings_panel::Page::ALL
-            .into_iter()
-            .map(|page| {
-                let mut row = simple_row(
-                    page.title(),
-                    page.description().to_owned(),
-                    "Settings",
-                    Target::Setting(page),
-                );
-                row.keywords = page.keywords().to_owned();
-                row
-            })
-            .collect(),
-    }]
+pub(super) fn settings_sections(
+    desk: &Desk,
+    handle: &gpui::WeakEntity<Desk>,
+    cx: &App,
+) -> Vec<Section> {
+    let controls = crate::app::settings_panel::entries(desk, handle, cx)
+        .into_iter()
+        .map(|(key, item)| {
+            let detail = match &key.group {
+                Some(group) => format!("{} · {group}", key.page.title()),
+                None => key.page.title().to_owned(),
+            };
+            let mut row = simple_row(
+                &item.title,
+                detail,
+                "Settings",
+                Target::Preference(key, item.clone()),
+            );
+            row.keywords = format!(
+                "{} {}",
+                item.description,
+                item.keywords
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<&str>>()
+                    .join(" ")
+            );
+            row
+        })
+        .collect();
+    vec![
+        Section {
+            label: Some("Settings"),
+            rows: controls,
+        },
+        Section {
+            label: Some("Settings pages"),
+            rows: crate::app::settings_panel::Page::ALL
+                .into_iter()
+                .map(|page| {
+                    let mut row = simple_row(
+                        page.title(),
+                        page.description().to_owned(),
+                        "Settings",
+                        Target::Setting(page),
+                    );
+                    row.keywords = page.keywords().to_owned();
+                    row
+                })
+                .collect(),
+        },
+    ]
 }
 
 /// Leads the detail of the Go To row this window shows, so the work, terminal
@@ -185,7 +220,6 @@ pub(super) fn command_sections(desk: &Desk, cx: &App) -> Vec<Section> {
 pub(super) fn command_results(desk: &Desk, cx: &App, query: &str) -> Vec<Section> {
     let mut sections = command_sections(desk, cx);
     if !query.trim().is_empty() {
-        sections.extend(settings_sections());
         return rank_sections(sections, query);
     }
     if !desk.palette_view.all_commands {
