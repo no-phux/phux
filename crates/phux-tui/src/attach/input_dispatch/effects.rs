@@ -290,6 +290,11 @@ pub(super) async fn broadcast_layout(
     ctx: &mut DispatchCtx<'_>,
 ) -> Result<(), AttachError> {
     if !ctx.layout_read_complete {
+        tracing::info!(
+            reason = "layout read fence",
+            groups = ctx.workspace.groups.len(),
+            "arrangement save skipped"
+        );
         return Ok(());
     }
     if let Some(owed) = ctx.arrangement_write_owed.as_deref_mut() {
@@ -297,8 +302,19 @@ pub(super) async fn broadcast_layout(
         return Ok(());
     }
     let Some(session) = ctx.peers.focused_session else {
+        tracing::info!(
+            reason = "no focused session",
+            groups = ctx.workspace.groups.len(),
+            "arrangement save skipped"
+        );
         return Ok(());
     };
+    tracing::debug!(
+        %session,
+        groups = ctx.workspace.groups.len(),
+        path = "metadata",
+        "arrangement save attempt"
+    );
     let Some(bytes) = encode_layout_or_log(ctx.workspace) else {
         return Ok(());
     };
@@ -751,7 +767,11 @@ pub(in crate::attach) fn encode_layout_or_log(workspace: &ArrangementDoc) -> Opt
     match workspace.encode_cbor() {
         Ok(bytes) => Some(bytes),
         Err(err) => {
-            tracing::warn!(error = %err, "layout CBOR encode failed; SET_METADATA skipped");
+            tracing::warn!(
+                error = %err,
+                reason = %err,
+                "arrangement save skipped"
+            );
             None
         }
     }

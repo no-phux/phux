@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::tabs::tab_height;
+use super::tabs::{RAIL_WIDTH, tab_height};
 use super::titlebar::controls_fit;
 use super::*;
 use crate::app::desk::Modal;

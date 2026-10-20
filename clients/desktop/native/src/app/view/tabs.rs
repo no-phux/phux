@@ -1,5 +1,6 @@
 //! One tab renderer and one set of tab actions: a compact strip in the
-//! titlebar or below the workspace, or rows in the navigator's fixed tab shelf. A tab whose agent needs a person wears that state itself: a
+//! titlebar or below the workspace, or rows in the navigator's fixed tab
+//! shelf (or, in the plain terminal, which has no sidebar, a rail of its own). A tab whose agent needs a person wears that state itself: a
 //! wash and a mark on its corner, not an entry in a separate list. A tab
 //! leads with its agent's harness mark, and one only agents drive sits back
 //! (shorter and fainter) until it is selected or hovered.
@@ -34,9 +35,13 @@ const TAB_MAX: f32 = 280.;
 /// Enough room for one readable horizontal tab and its actions while scrolling.
 pub(crate) const MIN_STRIP_WIDTH: f32 = 160.;
 
-/// Titlebar tab height for a bar `titlebar` points tall.
+/// The plain terminal's side tabs: a rail this wide beside the panes.
+pub(crate) const RAIL_WIDTH: f32 = 208.;
+
+/// Titlebar tab height for a bar `titlebar` points tall: five points clear
+/// of either edge, up to the desk's tab.
 pub(super) fn tab_height(titlebar: f32) -> f32 {
-    (titlebar - 14.).clamp(22., 30.)
+    (titlebar - 10.).clamp(22., 30.)
 }
 
 /// The cached bottom strip uses the same horizontal tabs as the titlebar.
@@ -58,6 +63,23 @@ pub(super) fn build_bottom(desk: &mut Desk, _: &mut Window, cx: &mut Context<Des
             super::chrome_spring(moves, lead),
             |bar, inset| bar.pl(px(inset)),
         )
+        .into_any_element()
+}
+
+/// The plain terminal's side tabs: the sidebar's tab list alone in a rail
+/// beside the panes, so tabs stay on the side the prefs put them.
+pub(super) fn build_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
+    let look = desk.look();
+    div()
+        .id("tab-rail")
+        .debug_selector(|| "tab-rail".into())
+        .size_full()
+        .flex()
+        .flex_col()
+        .pt(px(4.))
+        .border_r(px(look.skin.shape.divider.max(1.)))
+        .border_color(look.divider)
+        .child(super::navigator::tab_list(desk, &look, cx))
         .into_any_element()
 }
 

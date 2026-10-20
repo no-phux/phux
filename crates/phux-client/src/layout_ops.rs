@@ -22,6 +22,7 @@
 use phux_protocol::ids::{ArrangementKey, GroupId, ResourceId, Revision, SessionId};
 use phux_protocol::wire::frame::{Command, FrameKind, OrgFilter, Refusal, Scope};
 use thiserror::Error;
+use tracing::{debug, info};
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
@@ -340,13 +341,47 @@ impl<'a> LayoutOps<'a> {
             expected: read.revision,
             document: wire,
         };
+        debug!(
+            arrangement = %read.key,
+            expected = read.revision.get(),
+            groups = document.groups.len(),
+            path = "arrangement",
+            "arrangement save attempt"
+        );
         let request_id = self.allocate_request_id();
         match org::request(self.conn, request_id, command).await?.0 {
-            OrgOutcome::Committed(_) => Ok(Some(document.clone())),
-            OrgOutcome::Refused(Refusal::Conflict { .. }) => Ok(None),
-            OrgOutcome::Refused(refusal) => Err(LayoutOpsError::Refused(
-                crate::org::refusal_sentence(&refusal),
-            )),
+            OrgOutcome::Committed(_) => {
+                debug!(
+                    arrangement = %read.key,
+                    revision = read.revision.get().saturating_add(1),
+                    groups = document.groups.len(),
+                    path = "arrangement",
+                    "arrangement save committed"
+                );
+                Ok(Some(document.clone()))
+            }
+            OrgOutcome::Refused(Refusal::Conflict { current }) => {
+                debug!(
+                    arrangement = %read.key,
+                    expected = read.revision.get(),
+                    current = current.get(),
+                    "arrangement save conflict; retrying"
+                );
+                Ok(None)
+            }
+            OrgOutcome::Refused(refusal) => {
+                info!(
+                    arrangement = %read.key,
+                    expected = read.revision.get(),
+                    groups = document.groups.len(),
+                    reason = refusal.as_str(),
+                    path = "arrangement",
+                    "arrangement save refused"
+                );
+                Err(LayoutOpsError::Refused(crate::org::refusal_sentence(
+                    &refusal,
+                )))
+            }
             OrgOutcome::Error { message, .. } => Err(LayoutOpsError::Refused(message)),
             other => Err(LayoutOpsError::Refused(format!(
                 "unexpected reply: {other:?}"
@@ -368,6 +403,7 @@ impl<'a> LayoutOps<'a> {
                 return Ok(written);
             }
         }
+        log_conflict_exhausted();
         Err(LayoutOpsError::Conflict)
     }
 
@@ -389,6 +425,7 @@ impl<'a> LayoutOps<'a> {
                 return Ok(written);
             }
         }
+        log_conflict_exhausted();
         Err(LayoutOpsError::Conflict)
     }
 
@@ -499,6 +536,11 @@ impl<'a> LayoutOps<'a> {
                 })
                 .await;
         }
+        debug!(
+            groups = workspace.groups.len(),
+            path = "metadata",
+            "arrangement save attempt"
+        );
         let bytes = workspace.encode_cbor()?;
         let set_request_id = self.allocate_request_id();
         self.conn
@@ -514,8 +556,19 @@ impl<'a> LayoutOps<'a> {
         let value = self.get_value().await?;
         let read_back = value.ok_or(LayoutOpsError::MissingLayout)?;
         if read_back != bytes {
+            info!(
+                groups = workspace.groups.len(),
+                reason = "read-back mismatch",
+                path = "metadata",
+                "arrangement save refused"
+            );
             return Err(LayoutOpsError::NotConfirmed);
         }
+        debug!(
+            groups = workspace.groups.len(),
+            path = "metadata",
+            "arrangement save committed"
+        );
         ArrangementDoc::decode_cbor(&read_back).map_err(Into::into)
     }
 
@@ -543,6 +596,17 @@ pub async fn write_layout_on(
         .write_and_confirm(workspace)
         .await
         .map(|_workspace| ())
+}
+
+/// A compare-and-swap gave up. Retries that still have attempts left stay at
+/// debug; exhausting them is the refusal an operator can see at info.
+fn log_conflict_exhausted() {
+    info!(
+        attempts = org::MAX_CAS_ATTEMPTS,
+        reason = "conflict",
+        path = "arrangement",
+        "arrangement save refused"
+    );
 }
 
 /// Apply one mutation without doing I/O.
