@@ -1,4 +1,4 @@
-//! `phux usage`: the AI plan limits this host can see (Claude Code, Codex,
+//! `phux agent usage`: the AI plan limits this host can see (Claude Code, Codex,
 //! Grok Build), and with `--publish` the `phux.usage/v1` Global metadata key
 //! the usage plugin keeps current for every client. The collection lives in
 //! [`phux_usage`]; this verb only adds state, the refresh hint, and the
@@ -27,7 +27,7 @@ struct Published {
     current: Option<Snapshot>,
 }
 
-/// `phux usage [--json] [--publish] [--refresh]`.
+/// `phux agent usage [--json] [--publish] [--refresh]`.
 pub(crate) fn run_usage(
     json: bool,
     publish: bool,

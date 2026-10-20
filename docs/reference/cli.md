@@ -62,7 +62,6 @@ Agents:
   approvals     List actions held for approval
   approve       Approve a held action
   deny          Deny a held action
-  usage         Show the AI plan limits this host can see
 
 Machines:
   host          Add and manage the machines phux reaches [aliases: machine]
@@ -152,6 +151,7 @@ Commands:
   start             Start an agent INSIDE an existing shell pane, and return
                     when it is ready for input.
   uninstall-claude  Remove the claude-in-phux shim and shell activation.
+  usage             Show the AI plan limits this host can see.
   wait              Block until a pane's agent TRANSITIONS into a lifecycle
                     state.
   help              Print this message or the help of the given subcommand(s)
@@ -699,6 +699,38 @@ Remove the claude-in-phux shim and shell activation.
 Usage: phux agent uninstall-claude
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent usage`
+
+```text
+Show the AI plan limits this host can see.
+
+Reads each signed-in subscription's limit windows from the vendor's own
+credentials: Claude Code (its OAuth usage endpoint), Codex (the rate limits its
+session ledgers record, or the live chatgpt.com usage endpoint when they are
+old) and Grok Build (its credits allowance). Prints utilization and reset times
+per plan. Credentials are only read, never refreshed, and go only to the vendor
+that issued them; requests are spaced at least two minutes apart per vendor and
+back off on rate limits, with the last reading reused in between.
+
+`--publish` also writes the result to the server's `phux.usage/v1` Global
+metadata key, which every client can read and watch; the usage plugin runs this
+from its hooks. A client may set `phux.usage.refresh/v1` to ask the next publish
+to skip the two-minute spacing. Does not start a server.
+
+Usage: phux agent usage [FLAGS]
+
+Flags:
+      --json           Print the `phux.usage/v1` document instead of the human
+                       view.
+      --publish        Write the snapshot to the server's `phux.usage/v1` key.
+      --refresh        Ask every vendor now instead of reusing a reading under
+                       two minutes old (a rate-limit backoff still applies).
   -h, --help           Print help
 
 Global flags:
@@ -5123,39 +5155,6 @@ Flags:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
-```
-
-## `phux usage`
-
-```text
-Show the AI plan limits this host can see
-
-Reads each signed-in subscription's limit windows from the vendor's own
-credentials: Claude Code (its OAuth usage endpoint), Codex (the rate limits its
-session ledgers record, or the live chatgpt.com usage endpoint when they are
-old) and Grok Build (its credits allowance). Prints utilization and reset times
-per plan. Credentials are only read, never refreshed, and go only to the vendor
-that issued them; requests are spaced at least two minutes apart per vendor and
-back off on rate limits, with the last reading reused in between.
-
-`--publish` also writes the result to the server's `phux.usage/v1` Global
-metadata key, which every client can read and watch; the usage plugin runs this
-from its hooks. A client may set `phux.usage.refresh/v1` to ask the next publish
-to skip the two-minute spacing. Does not start a server.
-
-Usage: phux usage [FLAGS]
-
-Flags:
-      --json           Emit stable, versioned JSON on stdout instead of the
-                       human view. On failure, stdout stays empty and stderr
-                       carries one JSON error object.
-      --publish        Write the snapshot to the server's `phux.usage/v1` key.
-      --refresh        Ask every vendor now instead of reusing a reading under
-                       two minutes old (a rate-limit backoff still applies).
-  -h, --help           Print help
-
-Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux wait`

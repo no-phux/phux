@@ -121,7 +121,7 @@ runtime; do not duplicate its state machine in each integration.
 
 ## Plan usage
 
-`phux usage` prints the AI plan limits this host can see: Claude Code's
+`phux agent usage` prints the AI plan limits this host can see: Claude Code's
 5-hour and weekly windows, Codex's, and Grok Build's allowance, with
 utilization and reset times. It reads each vendor's own sign-in (Claude
 Code's Keychain item or `~/.claude/.credentials.json`, `~/.codex`,
@@ -132,9 +132,9 @@ and back off 3, 6, 12, then 15 minutes on rate limits; Codex usually needs
 no request, since its session ledgers record the limits.
 
 The [usage plugin](../examples/plugins/usage) (enabled by the starter
-distro) runs `phux usage --publish` when a client attaches or an agent
+distro) runs `phux agent usage --publish` when a client attaches or an agent
 changes state. That writes the `phux.usage/v1` Global metadata key, the
-same document as `phux usage --json`: per plan a `provider`, `plan`,
+same document as `phux agent usage --json`: per plan a `provider`, `plan`,
 `label`, an opaque 12-hex `account` fingerprint (never an email), `status`
 (`ok`, `stale`, `unavailable`, `error`), and `windows` of `{id, minutes,
 used_percent, resets_at_ms}`. Clients read and watch the key; readers ignore

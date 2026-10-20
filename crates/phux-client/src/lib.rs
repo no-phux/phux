@@ -40,7 +40,7 @@ pub mod delegation;
 pub mod detach;
 pub mod explain;
 pub mod glance;
-// `Global` L3 metadata reads and confirmed writes (`phux usage --publish`).
+// `Global` L3 metadata reads and confirmed writes (`phux agent usage --publish`).
 pub mod global_metadata;
 // `SHUTDOWN` / `KILL_RESOURCES` / `KILL_RESOURCE` (`phux kill`).
 pub mod kill;

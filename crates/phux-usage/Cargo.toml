@@ -1,6 +1,6 @@
 [package]
 name = "phux-usage"
-description = "Plan-usage collector behind `phux usage`: reads AI subscription limits and builds the phux.usage/v1 snapshot."
+description = "Plan-usage collector behind `phux agent usage`: reads AI subscription limits and builds the phux.usage/v1 snapshot."
 publish = false
 version.workspace = true
 edition.workspace = true

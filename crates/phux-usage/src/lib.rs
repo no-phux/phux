@@ -1,4 +1,4 @@
-//! Plan-usage collector behind `phux usage`.
+//! Plan-usage collector behind `phux agent usage`.
 //!
 //! Reads each AI subscription's limit windows from the vendor's own local
 //! credentials and builds one [`Snapshot`], the `phux.usage/v1` document a

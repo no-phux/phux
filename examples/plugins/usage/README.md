@@ -5,7 +5,7 @@ key, so every client (the phone, the desktop, a script) can show Claude Code,
 Codex, and Grok Build utilization and reset times without its own
 credentials.
 
-- `publish-on-attach` and `publish-on-agent-state` run `phux usage --publish`
+- `publish-on-attach` and `publish-on-agent-state` run `phux agent usage --publish`
   on the server's `client-attached` and `agent-state-changed` hooks. The verb
   spaces vendor requests two minutes apart, backs off on rate limits, and
   rewrites the key only when a plan changed or every five minutes.

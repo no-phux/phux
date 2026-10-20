@@ -1479,11 +1479,6 @@ fn dispatch(
         Some(Command::Approvals { json }) => commands::approvals::run_approvals(json.json, socket),
         Some(Command::Approve { id, yes }) => commands::approvals::run_approve(&id, yes, socket),
         Some(Command::Deny { id }) => commands::approvals::run_deny(&id, socket),
-        Some(Command::Usage {
-            json,
-            publish,
-            refresh,
-        }) => commands::plan_usage::run_usage(json.json, publish, refresh, socket),
         Some(Command::Update { opts }) => commands::update::run_update(&opts, socket),
         Some(Command::Channel { channel, json }) => {
             commands::channel::run(channel, json.json, socket)

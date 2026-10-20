@@ -1,4 +1,4 @@
-//! `phux usage --publish` against a real server: the snapshot lands as the
+//! `phux agent usage --publish` against a real server: the snapshot lands as the
 //! `phux.usage/v1` Global key and an unchanged run does not rewrite it.
 //!
 //! Hermetic: a private home with no vendor credentials, so the collector
@@ -86,7 +86,14 @@ fn publish_writes_the_usage_key_once_per_change() {
     let out = loop {
         let out = phux(
             dir.path(),
-            &["--socket", socket_arg, "usage", "--publish", "--json"],
+            &[
+                "--socket",
+                socket_arg,
+                "agent",
+                "usage",
+                "--publish",
+                "--json",
+            ],
         );
         if out.status.success() {
             break out;
@@ -114,7 +121,14 @@ fn publish_writes_the_usage_key_once_per_change() {
     // Nothing changed: the stored document keeps its observation time.
     let again = phux(
         dir.path(),
-        &["--socket", socket_arg, "usage", "--publish", "--json"],
+        &[
+            "--socket",
+            socket_arg,
+            "agent",
+            "usage",
+            "--publish",
+            "--json",
+        ],
     );
     assert!(again.status.success());
     let kept: serde_json::Value = serde_json::from_slice(&read_key(&socket).unwrap()).unwrap();
@@ -126,6 +140,7 @@ fn publish_writes_the_usage_key_once_per_change() {
         &[
             "--socket",
             socket_arg,
+            "agent",
             "usage",
             "--publish",
             "--refresh",
@@ -140,7 +155,13 @@ fn publish_writes_the_usage_key_once_per_change() {
     // Without a server, publishing fails and says so.
     let lonely = phux(
         dir.path(),
-        &["--socket", "/nonexistent/phux.sock", "usage", "--publish"],
+        &[
+            "--socket",
+            "/nonexistent/phux.sock",
+            "agent",
+            "usage",
+            "--publish",
+        ],
     );
     assert!(!lonely.status.success());
 }

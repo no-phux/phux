@@ -67,7 +67,7 @@ phux-config.workspace = true
 phux-mission.workspace = true
 phux-work.workspace = true
 phux-plugin.workspace = true
-# `phux usage`: the plan-usage collector. Its own crate so nothing in the
+# `phux agent usage`: the plan-usage collector. Its own crate so nothing in the
 # server or client links vendor parsing.
 phux-usage.workspace = true
 # `phux doctor` dials its own routable listener to prove packets actually
