@@ -67,6 +67,8 @@ const CATALOG: &str = "\
     group-projects | Group Sessions by Project | View |  | List sessions under their repository in the navigator. | view organize
     group-machines | Group Sessions by Machine | View |  | List sessions under the machine they run on in the navigator. | view hosts organize
     group-none | Ungroup Sessions | View |  | List every session in one navigator list without headings. | view flat
+    expand-sessions | Expand All Sessions | View |  | Show the terminals of every session in the navigator. | sidebar unfold open tree
+    collapse-sessions | Collapse All Sessions | View |  | Fold every session in the navigator down to its name. | sidebar fold close tree tidy
     main-menu | Show Main Menu | General |  | Open the session menu beside the window controls. | hub workspace switch machine
     font-up | Increase Font Size | View | cmd+= cmd+shift+= | Make terminal text larger. |
     font-down | Decrease Font Size | View | cmd+- | Make terminal text smaller. |

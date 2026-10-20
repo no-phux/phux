@@ -15,6 +15,8 @@ gpui_kit::assets::icon_assets!(
         FolderPlus,
         Layers,
         ListTree,
+        // Sidebar view: Collapse All Sessions (Expand uses Kit's ChevronsUpDown).
+        ChevronsDownUp,
         Pencil,
         Trash,
         GitBranch,
@@ -83,6 +85,8 @@ mod tests {
             IconName::FolderPlus,
             IconName::Layers,
             IconName::ListTree,
+            IconName::ChevronsDownUp,
+            IconName::ChevronsUpDown,
             IconName::Pencil,
             IconName::Trash,
             IconName::GitBranch,

@@ -185,11 +185,35 @@ impl Desk {
         self.after_command(window, cx);
     }
 
-    pub(crate) fn toggle_session_collapsed(&mut self, name: &str, cx: &mut Context<Self>) {
-        if !self.collapsed.remove(name) {
-            self.collapsed.insert(name.to_owned());
+    pub(crate) fn toggle_session_expanded(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.expanded.remove(key) {
+            self.expanded.insert(key.to_owned());
         }
-        self.disclose(session_disclosure(name), cx);
+        self.disclose(session_disclosure(key), cx);
+        cx.notify();
+    }
+
+    /// Open every session in `shown`, or fold every session, as
+    /// Option-clicking a caret does in a Finder outline. Folding also forgets
+    /// sessions not listed now (empty, or on a hidden machine), so none comes
+    /// back open later. Only the listed sessions that change animate.
+    pub(crate) fn set_sessions_expanded(
+        &mut self,
+        shown: Vec<String>,
+        open: bool,
+        cx: &mut Context<Self>,
+    ) {
+        for key in shown {
+            if self.expanded.contains(&key) != open {
+                self.disclose(session_disclosure(&key), cx);
+            }
+            if open {
+                self.expanded.insert(key);
+            }
+        }
+        if !open {
+            self.expanded.clear();
+        }
         cx.notify();
     }
 

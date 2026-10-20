@@ -53,6 +53,7 @@ use super::skin::Look;
 use super::ui::shadow;
 
 pub(super) use changes::width as changes_width;
+pub(super) use navigator::foldable_sessions;
 pub(super) use navigator::group as group_work;
 pub(super) use status::{notification_edge, notification_text};
 pub(super) use tabs::MIN_STRIP_WIDTH;

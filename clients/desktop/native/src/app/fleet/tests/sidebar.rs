@@ -49,7 +49,7 @@ fn the_host_filter_opens_at_its_trigger_and_filters_without_navigation(cx: &mut 
 }
 
 #[gpui::test]
-fn session_names_keep_their_column_when_counts_and_hosts_are_long(cx: &mut TestAppContext) {
+fn sessions_are_one_line_and_their_names_keep_the_row(cx: &mut TestAppContext) {
     use gpui::{VisualTestContext, px};
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = launch(cx);
@@ -93,14 +93,14 @@ fn session_names_keep_their_column_when_counts_and_hosts_are_long(cx: &mut TestA
             let actions = cx.debug_bounds(actions_selector).unwrap();
             assert!(
                 label.size.width >= px(80.),
-                "{row_selector}: metadata must not squeeze away the session name at {width}"
+                "{row_selector}: the count must not squeeze away the session name at {width}"
             );
-            assert_eq!(detail.size.width, label.size.width);
+            assert_eq!(row.size.height, px(crate::app::ui::list::ROW));
+            assert!(detail.left() >= label.right(), "the count trails the name");
             assert!(
-                detail.origin.y >= label.bottom(),
-                "counts have a separate stable line"
+                actions.left() >= label.right(),
+                "actions cover the count, not the name"
             );
-            assert_eq!(row.size.height, px(44.));
             assert!(actions.right() <= row.right() - px(crate::app::ui::list::ROW_INSET));
             assert!(row.right() <= px(width as f32));
         }
@@ -143,7 +143,7 @@ fn switching_hosts_retains_local_inventory_before_its_observer_is_ready(cx: &mut
     });
 }
 
-fn with_pane(mut connection: Connection) -> Connection {
+pub(super) fn with_pane(mut connection: Connection) -> Connection {
     let session = &connection.topology.as_ref().unwrap().sessions[0];
     let pane = phux_client_runtime::control::PaneDescriptor {
         terminal_id: ResourceId::local(1),
@@ -168,6 +168,8 @@ fn with_pane(mut connection: Connection) -> Connection {
 fn session_clicks_never_move_tree_rows_or_change_host_filters(cx: &mut TestAppContext) {
     use gpui::{Modifiers, VisualTestContext, px, size};
     let _dial = DeterministicDial::arm();
+    // Opened at once: with motion, the rows would still be springing open.
+    cx.update(|cx| cx.set_reduce_motion(true));
     let (handle, desk, _) = launch(cx);
     let cx = &mut VisualTestContext::from_window(*handle, cx);
     cx.simulate_resize(size(px(1000.), px(700.)));
@@ -208,7 +210,11 @@ fn session_clicks_never_move_tree_rows_or_change_host_filters(cx: &mut TestAppCo
         desk.update(cx, |desk, cx| {
             desk.update_prefs(|prefs| prefs.tab_position = position, cx);
         });
+        desk.update_in(cx, |desk, window, cx| {
+            desk.execute("expand-sessions", window, cx)
+        });
         draw(cx);
+        let expanded = desk.read_with(cx, |desk, _| desk.expanded.clone());
         let selectors = [
             "work-Local-7",
             "work-Local-9",
@@ -221,7 +227,7 @@ fn session_clicks_never_move_tree_rows_or_change_host_filters(cx: &mut TestAppCo
             .collect();
         assert!(
             cx.debug_bounds("catalog-pane-mini-@1").is_some(),
-            "unselected sessions disclose their panes ({position:?}): {:?}",
+            "unselected sessions open to show their panes ({position:?}): {:?}",
             desk.read_with(cx, |desk, _| (
                 desk.remote.clone(),
                 desk.session.clone(),
@@ -248,7 +254,7 @@ fn session_clicks_never_move_tree_rows_or_change_host_filters(cx: &mut TestAppCo
                 "{target} changes focus, not tree geometry ({position:?})"
             );
             desk.read_with(cx, |desk, _| {
-                assert!(desk.collapsed.is_empty());
+                assert_eq!(desk.expanded, expanded);
                 assert!(desk.prefs.sidebar_hidden_hosts.is_empty());
                 assert_eq!(desk.work_catalog().len(), 3);
             });
@@ -301,63 +307,6 @@ fn session_clicks_never_move_tree_rows_or_change_host_filters(cx: &mut TestAppCo
             );
         }
     }
-}
-
-#[gpui::test]
-fn only_the_caret_changes_disclosure_and_equal_names_on_other_hosts_stay_open(
-    cx: &mut TestAppContext,
-) {
-    let _dial = DeterministicDial::arm();
-    // Folding at once: with motion, the rows stay drawn while they spring shut.
-    cx.update(|cx| cx.set_reduce_motion(true));
-    let (handle, desk, _) = launch(cx);
-    let cx = &mut gpui::VisualTestContext::from_window(*handle, cx);
-    desk.update(cx, |desk, cx| {
-        install(desk, with_pane(connection(1, vec![session(7, "main")])));
-        observe(
-            &mut desk.fleet,
-            Some("mini"),
-            with_pane(connection(2, vec![session(8, "main")])),
-        );
-        desk.hosts.push(super::super::host::RemoteHost {
-            name: "mini".into(),
-            endpoint: "quic://fixture.invalid:1".into(),
-        });
-        cx.notify();
-    });
-    draw(cx);
-    let local = cx.debug_bounds("work-Local-7").unwrap();
-    let caret = cx.debug_bounds("disclose-work-mini-8").unwrap();
-    cx.simulate_click(caret.center(), gpui::Modifiers::none());
-    draw(cx);
-    assert!(cx.debug_bounds("catalog-pane-mini-@1").is_none());
-    assert!(
-        cx.debug_bounds("pane-@1").is_some(),
-        "same-named local session stays expanded"
-    );
-    assert_eq!(cx.debug_bounds("work-Local-7").unwrap(), local);
-    let collapsed = desk.read_with(cx, |desk, _| {
-        assert!(desk.remote.is_none());
-        desk.collapsed.clone()
-    });
-    let remote = cx.debug_bounds("work-mini-8").unwrap();
-    cx.simulate_click(remote.center(), gpui::Modifiers::none());
-    draw(cx);
-    desk.read_with(cx, |desk, _| {
-        assert_eq!(desk.remote.as_deref(), Some("mini"));
-        assert_eq!(desk.collapsed, collapsed);
-    });
-    let caret = cx.debug_bounds("disclose-work-mini-8").unwrap();
-    cx.simulate_click(caret.center(), gpui::Modifiers::none());
-    draw(cx);
-    assert!(
-        cx.debug_bounds("pane-@1").is_some(),
-        "the promoted host is already active"
-    );
-    assert!(
-        cx.debug_bounds("catalog-pane-Local-@1").is_some(),
-        "the other host remains expanded"
-    );
 }
 
 #[gpui::test]

@@ -118,7 +118,7 @@ impl Desk {
             native_launch: Default::default(),
             open_fresh: request.fresh,
             pending_project_terminal: None,
-            collapsed: Default::default(),
+            expanded: Default::default(),
             disclosures: HashMap::new(),
             hosts: Vec::new(),
             fleet: Default::default(),

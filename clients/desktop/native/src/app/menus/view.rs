@@ -49,6 +49,8 @@ pub(super) fn view_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
                 IconName::ListTree,
                 grouping == SidebarGrouping::None,
             ),
+            command(desk, handle, "expand-sessions", IconName::ChevronsUpDown).gap(),
+            command(desk, handle, "collapse-sessions", IconName::ChevronsDownUp),
             command(desk, handle, "sidebar", IconName::PanelLeft)
                 .checked(desk.prefs.sidebar_visible)
                 .gap(),
