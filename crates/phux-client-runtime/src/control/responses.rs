@@ -255,6 +255,7 @@ impl ControlPlane {
         // would steal the first metadata read their fixtures answer.
         if self.options.automatic_lifecycle {
             self.watch_session_project();
+            self.rewatch_global_metadata(true);
         }
         // A hub's satellites and anything the grant inventories but does not
         // observe are missing from this view, not gone: read them back.
@@ -359,6 +360,9 @@ impl ControlPlane {
         }
         if request_id.is_some_and(|id| self.project_tag_pending == Some(id)) {
             self.project_tag_pending = None;
+            return Ok(());
+        }
+        if self.resolve_global_metadata_error(request_id) {
             return Ok(());
         }
         let roster_read = request_id.and_then(|id| self.agent_metadata_error(id, code));

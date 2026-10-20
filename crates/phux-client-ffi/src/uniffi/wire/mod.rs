@@ -25,8 +25,10 @@ use crate::projection::{agent, event, grid, id, outcome, status, topology};
 use super::keymap::{self, KeyMods, KeyPress};
 
 mod client;
+mod global_metadata;
 mod graph;
 mod types;
 
+pub use global_metadata::WireGlobalMetadata;
 pub use graph::*;
 pub use types::*;

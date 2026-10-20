@@ -2,7 +2,8 @@
 
 use super::{Client, ResourceId};
 use crate::control::{
-    ControlPlane, DirectoryListing, FileUploadReceipt, PathAnswer, TranscribeReceipt,
+    ControlPlane, DirectoryListing, FileUploadReceipt, GlobalMetadata, PathAnswer,
+    TranscribeReceipt,
 };
 use phux_protocol::ids::SatelliteHost;
 
@@ -87,5 +88,19 @@ impl Client {
     #[must_use]
     pub fn take_path_answers(&self) -> Vec<PathAnswer> {
         self.inner.with(ControlPlane::take_path_answers)
+    }
+
+    /// Subscribe to and read one `Global` metadata key; see
+    /// [`ControlPlane::watch_global_metadata`]. Zero means nothing was sent.
+    #[must_use]
+    pub fn watch_global_metadata(&self, key: String) -> u32 {
+        self.inner
+            .with(|control| control.watch_global_metadata(key))
+    }
+
+    /// Drain watched `Global` metadata values, newest per key.
+    #[must_use]
+    pub fn take_global_metadata(&self) -> Vec<GlobalMetadata> {
+        self.inner.with(ControlPlane::take_global_metadata)
     }
 }

@@ -89,6 +89,7 @@ impl ControlPlane {
         }
         self.roster.resync = true;
         self.queue_refresh_topology();
+        self.rewatch_global_metadata(false);
     }
 
     /// The server ended this attachment, and with it every metadata
