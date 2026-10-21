@@ -20,14 +20,15 @@ use crate::wire::info::{decode_option_str, encode_option_str};
 
 use super::{
     ATTACH_TARGET_BY_ID, ATTACH_TARGET_BY_NAME, ATTACH_TARGET_CREATE_IF_MISSING,
-    ATTACH_TARGET_LAST, ActorRef, AttachTarget, MOVE_ERROR_TAG_MOVE_FAILED,
-    MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE, MOVE_RESULT_ERR, MOVE_RESULT_OK, MoveError,
-    MoveResult, SCOPE_TAG_GLOBAL, SCOPE_TAG_GROUP, SCOPE_TAG_RESOURCE,
-    SPAWN_ERROR_TAG_GROUP_NOT_FOUND, SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT,
-    SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH, SPAWN_ERROR_TAG_PARENT_NOT_FOUND,
-    SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE, SPAWN_ERROR_TAG_SPAWN_FAILED,
-    SPAWN_ERROR_TAG_UNSUPPORTED_KIND, SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE,
-    SPAWN_RESULT_ERR, SPAWN_RESULT_OK, Scope, SpawnError, SpawnResult, ViewportInfo,
+    ATTACH_TARGET_LAST, ActorRef, AttachTarget, SCOPE_TAG_GLOBAL, SCOPE_TAG_GROUP,
+    SCOPE_TAG_RESOURCE, Scope, ViewportInfo,
+};
+
+mod results;
+
+pub(in crate::wire) use results::{
+    decode_move_result, decode_server_instance, decode_spawn_result, encode_move_result,
+    encode_server_instance, encode_spawn_result,
 };
 
 pub(in crate::wire) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut Encoder<'_>) {
@@ -495,30 +496,6 @@ pub(in crate::wire) fn decode_metadata_scope_key(
     ))
 }
 
-// `SpawnResult` (SPEC §7.2 / §10.1): `Ok` + `ResourceId`, or `Err` + a
-// `SpawnError` tag, with a message for `SpawnFailed` / `SatelliteUnreachable`.
-
-pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encoder<'_>) {
-    match result {
-        // Bound and replayed results are `Ok` bytes; their extras ride
-        // `RESOURCE_SPAWNED` fields 3 and 4.
-        SpawnResult::Ok(terminal_id)
-        | SpawnResult::OkBound {
-            id: terminal_id, ..
-        }
-        | SpawnResult::Replayed {
-            id: terminal_id, ..
-        } => {
-            enc.write_u8(SPAWN_RESULT_OK);
-            encode_terminal_id(terminal_id, enc);
-        }
-        SpawnResult::Err(err) => {
-            enc.write_u8(SPAWN_RESULT_ERR);
-            encode_spawn_error(err, enc);
-        }
-    }
-}
-
 /// Write an [`ActorRef`] positionally: `client: u32 || credential_id:
 /// optional<str> || client_name: optional<str>` (ADR-0123), then, only when
 /// either is present, `principal: optional<bytes16> || on_behalf_of:
@@ -578,119 +555,4 @@ pub(in crate::wire) fn decode_idempotency_key(
         .try_into()
         .map_err(|_| DecodeError::InvalidIdempotencyKey)?;
     crate::ids::IdempotencyKey::new(bytes).ok_or(DecodeError::InvalidIdempotencyKey)
-}
-
-/// Write a [`ServerInstance`](crate::ids::ServerInstance) as its 16 raw bytes.
-pub(in crate::wire) fn encode_server_instance(
-    instance: &crate::ids::ServerInstance,
-    enc: &mut Encoder<'_>,
-) {
-    for byte in instance.as_bytes() {
-        enc.write_u8(*byte);
-    }
-}
-
-/// Read a [`ServerInstance`](crate::ids::ServerInstance) from 16 raw bytes.
-pub(in crate::wire) fn decode_server_instance(
-    dec: &mut Decoder<'_>,
-) -> Result<crate::ids::ServerInstance, DecodeError> {
-    let mut bytes = [0; 16];
-    for byte in &mut bytes {
-        *byte = dec.read_u8()?;
-    }
-    Ok(crate::ids::ServerInstance::new(bytes))
-}
-
-pub(in crate::wire) fn decode_spawn_result(
-    dec: &mut Decoder<'_>,
-) -> Result<SpawnResult, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        SPAWN_RESULT_OK => Ok(SpawnResult::Ok(decode_terminal_id(dec)?)),
-        SPAWN_RESULT_ERR => Ok(SpawnResult::Err(decode_spawn_error(dec)?)),
-        other => Err(DecodeError::unknown_enum("SpawnResult", other)),
-    }
-}
-
-fn encode_spawn_error(err: &SpawnError, enc: &mut Encoder<'_>) {
-    match err {
-        SpawnError::GroupNotFound => {
-            enc.write_u8(SPAWN_ERROR_TAG_GROUP_NOT_FOUND);
-        }
-        SpawnError::SpawnFailed(msg) => {
-            enc.write_u8(SPAWN_ERROR_TAG_SPAWN_FAILED);
-            enc.write_str(msg);
-        }
-        SpawnError::UnsupportedSatelliteRoute => {
-            enc.write_u8(SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE);
-        }
-        SpawnError::SatelliteUnreachable(msg) => {
-            enc.write_u8(SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE);
-            enc.write_str(msg);
-        }
-        SpawnError::UnsupportedKind => enc.write_u8(SPAWN_ERROR_TAG_UNSUPPORTED_KIND),
-        SpawnError::ParentNotFound => enc.write_u8(SPAWN_ERROR_TAG_PARENT_NOT_FOUND),
-        SpawnError::ParentKindMismatch => enc.write_u8(SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH),
-        SpawnError::IdempotencyConflict => enc.write_u8(SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT),
-    }
-}
-
-fn decode_spawn_error(dec: &mut Decoder<'_>) -> Result<SpawnError, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        SPAWN_ERROR_TAG_GROUP_NOT_FOUND => Ok(SpawnError::GroupNotFound),
-        SPAWN_ERROR_TAG_SPAWN_FAILED => Ok(SpawnError::SpawnFailed(dec.read_str()?.to_owned())),
-        SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE => Ok(SpawnError::UnsupportedSatelliteRoute),
-        SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE => {
-            Ok(SpawnError::SatelliteUnreachable(dec.read_str()?.to_owned()))
-        }
-        SPAWN_ERROR_TAG_UNSUPPORTED_KIND => Ok(SpawnError::UnsupportedKind),
-        SPAWN_ERROR_TAG_PARENT_NOT_FOUND => Ok(SpawnError::ParentNotFound),
-        SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH => Ok(SpawnError::ParentKindMismatch),
-        SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT => Ok(SpawnError::IdempotencyConflict),
-        other => Err(DecodeError::unknown_enum("SpawnError", other)),
-    }
-}
-
-pub(in crate::wire) fn encode_move_result(result: &MoveResult, enc: &mut Encoder<'_>) {
-    match result {
-        MoveResult::Ok(terminal_id) => {
-            enc.write_u8(MOVE_RESULT_OK);
-            encode_terminal_id(terminal_id, enc);
-        }
-        MoveResult::Err(err) => {
-            enc.write_u8(MOVE_RESULT_ERR);
-            match err {
-                MoveError::MoveFailed(msg) => {
-                    enc.write_u8(MOVE_ERROR_TAG_MOVE_FAILED);
-                    enc.write_str(msg);
-                }
-                MoveError::UnsupportedSatelliteRoute => {
-                    enc.write_u8(MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE);
-                }
-            }
-        }
-    }
-}
-
-pub(in crate::wire) fn decode_move_result(
-    dec: &mut Decoder<'_>,
-) -> Result<MoveResult, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        MOVE_RESULT_OK => Ok(MoveResult::Ok(decode_terminal_id(dec)?)),
-        MOVE_RESULT_ERR => {
-            let err_tag = dec.read_u8()?;
-            match err_tag {
-                MOVE_ERROR_TAG_MOVE_FAILED => Ok(MoveResult::Err(MoveError::MoveFailed(
-                    dec.read_str()?.to_owned(),
-                ))),
-                MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE => {
-                    Ok(MoveResult::Err(MoveError::UnsupportedSatelliteRoute))
-                }
-                other => Err(DecodeError::unknown_enum("MoveError", other)),
-            }
-        }
-        other => Err(DecodeError::unknown_enum("MoveResult", other)),
-    }
 }
