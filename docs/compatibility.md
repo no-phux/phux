@@ -68,8 +68,8 @@ and the runtime, the C ABI, and the web client all apply it:
   spawn, or an agent prompt answered this way (or with an error code or
   spawn error the client does not know) settles as outcome unknown, never
   as refused, so nothing is retyped or re-prompted;
-- an unreadable `ATTACHED` or `ATTACH_READY` fails the attach instead of
-  leaving it waiting;
+- an unreadable `ATTACHED` or `ATTACH_READY` ends the connection with a
+  protocol error instead of leaving the attach waiting;
 - any other frame with an unknown value is skipped with a warning;
 - unknown spawn and move errors and tombstone, history, and rejection
   reasons decode as an `Unknown` variant (a reason as wire value `255`,
@@ -91,11 +91,12 @@ type byte of one it cannot read; only bulk frames such as
 
 A hub's link to a satellite is a 1.x client of that satellite. A frame the
 hub cannot read for an unknown value is logged and skipped; when it
-answered a request the hub relayed, the request settles as
-`UNREADABLE_REPLY`, never `UNSUPPORTED`, since the satellite may have acted.
-A spawn or move result the hub cannot read is relayed with its raw bytes,
-so the client sees exactly what the satellite said. Malformed bytes still
-end the link. A hub relays a command to a satellite
+answered a request the hub relayed, the request settles as an unknown
+outcome (`UNREADABLE_REPLY`), never as refused or `UNSUPPORTED`, since the
+satellite may have acted. The hub never relays bytes it cannot read: a
+satellite's ids inside them would not be translated to the hub's. An
+uncorrelated `ERROR` from a satellite is logged and does not end the link.
+Malformed bytes still end the link. A hub relays a command to a satellite
 only when that satellite advertises the feature, and refuses
 `UNSUPPORTED_SATELLITE_ROUTE` otherwise.
 
@@ -118,13 +119,17 @@ only when that satellite advertises the feature, and refuses
   `255` is reserved in reason enums: it is how a client holds an unknown
   one. A fixed-size field such as `PATH_QUERY`'s grows through a new field
   id, not a longer value. The field `wire_type` byte is always `4`.
+- Syntax an older peer validates is part of 1.0 as well: a path in
+  `PATH_RESULTS` is an absolute POSIX path, and an arrangement names a
+  session or a workspace. Changing either needs a feature bit.
 - A count or size limit an older peer enforces (path results, directory
   entries, batch and arrangement caps, `APPLY_INPUT`) is part of 1.0.
   Raising one needs a feature bit; the newer peer sends more only when the
   other side advertises it.
-- JSON payloads keep `deny_unknown_fields` on requests, so an older server
-  refuses an unknown op or field as `UNSUPPORTED` rather than ignoring it;
-  answers skip unknown fields and fold unknown enum values to `unknown`.
+- JSON requests are decoded strictly by the server, so an older server
+  refuses an unknown op or field as `UNSUPPORTED` rather than ignoring it.
+  JSON a client reads (answers, agent stream updates, stored recipes) skips
+  unknown fields and folds unknown enum values to `unknown`.
 - Say in the PR what an older client sees, and what an older server does
   with the new request. The probes live in the [server's protocol
   tests](../crates/phux-server/tests/protocol) (`newer_client*.rs`) and the
