@@ -27,7 +27,15 @@ required_executables = ["opencode"]
 working_directory = "workspace"
 ```
 
-With that plugin enabled and provider ready, `phux launch opencode --acp
+OpenCode has a built-in native profile (`opencode acp`), so no phux plugin
+is required for ACP. An enabled configured OpenCode profile overrides it;
+an invalid or ambiguous explicit profile is refused rather than bypassed.
+The built-in profile searches PATH first, then the official installation at
+`~/.opencode/bin/opencode`, and uses the resolved absolute executable for both
+ACP and optional login. It never starts a login shell or changes PATH.
+Terminal integrations still require their configured plugins.
+
+With the provider ready, `phux launch opencode --acp
 --session work` launches into an existing owning session. The server must
 advertise `NATIVE_AGENT`; legacy peers refuse before transmitting the new
 command, not by key/paste fallback. Successful provider initialization is
@@ -117,3 +125,36 @@ readiness and stop reasons; the [native operation ledger](../crates/phux-server/
 and [command authority](../crates/phux-server/src/runtime/native_agent.rs)
 own identity, queue bounds, human role and first response. Generic lifecycle
 emit cannot forge these reserved native publications.
+
+## Desktop onboarding on the connected host
+
+Servers advertising `NATIVE_AGENT_LAUNCH` (`features_ext` bit `0x00000800`)
+accept `NATIVE_AGENT` requests `list_integrations` and `launch_integration`
+over the existing authenticated phux connection, including a remote host
+connection. Legacy servers without this bit must not receive either request.
+No separate HTTP API or client-resolved command line is involved.
+
+Inventory returns a JSON `NativeIntegrationCatalog`: integration ids,
+display names, prerequisite availability, factual failure details and optional
+`auth_command` login argv. Login is advertised only for an available direct
+OpenCode invocation `[executable, "acp"]`, using that same executable (including
+an absolute configured override). Wrappers and custom arguments imply no login
+command. Missing `auth_command` from an older catalog defaults to absent. It is
+bounded to 64 profiles and 16 KiB, and requires Inventory authority. This is
+not an authentication probe or a promise that a provider is ready.
+
+Launch takes an integration id, the exact stable organization `SessionKey`,
+and an absolute existing host directory. The executing server resolves its
+own plugin configuration and PATH off the event loop, then revalidates the
+session and human Create+Bind+Input authority before using the native guardian
+transaction. Missing/stale/foreign sessions are not created or adopted by
+name; viewer and native-host connections cannot launch. Successful launch
+returns the existing `SpawnedNativeAgent` guardian/AgentSession/activation
+identities, not provider readiness.
+
+Provider installation and authentication remain explicit human actions on
+that host. For OpenCode, an ordinary terminal running the advertised
+`auth_command` can be opened through the existing spawn path; clients must not
+substitute a different bare `opencode` for a configured executable. Neither
+inventory nor native launch starts an authentication flow or selects a provider
+for the human.

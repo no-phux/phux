@@ -2,6 +2,15 @@
 use super::*;
 
 impl Connection {
+    #[cfg(test)]
+    pub(crate) fn publish_test_conversation(
+        &mut self,
+        publication: &AgentPublication,
+        session: &AgentSessionInfo,
+    ) {
+        self.publish(publication, session, self.connection_epoch());
+    }
+
     /// Wait on this, then [`Self::drain`]. The channel is bounded and coalesced.
     #[must_use]
     pub fn activity(&self) -> async_channel::Receiver<()> {

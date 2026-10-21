@@ -71,9 +71,11 @@ not fresh process attestation: inspect `agent list` address refusals and use
 exact ids for unattended targeting. `agent wait` fires on a transition,
 so an agent that is already `blocked` when you start waiting times out.
 
-`phux launch` needs a plugin that defines launch commands. The ones in
+Terminal `phux launch` needs a plugin that defines launch commands. The ones in
 [`examples/plugins/agent-tools`](../examples/plugins/agent-tools) cover the
 agents above; `phux config init --distro starter` enables them.
+Native `phux launch opencode --acp` also has a built-in `opencode acp` profile;
+see [ACP-owned sessions](./acp.md).
 
 ## Connecting your agent host
 

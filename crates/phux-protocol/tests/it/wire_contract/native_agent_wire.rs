@@ -16,6 +16,12 @@ fn frame(request: NativeRequest) -> FrameKind {
     }
 }
 
+#[test]
+fn older_native_catalogs_do_not_imply_an_auth_command() {
+    let catalog: NativeIntegrationCatalog = serde_json::from_str(r#"{"integrations":[{"integration":"opencode","display_name":"OpenCode","native_available":true,"native_detail":null}]}"#).unwrap();
+    assert_eq!(catalog.integrations[0].auth_command, None);
+}
+
 // COMMAND envelope uses TLV field 1=request_id, field 2=command.
 fn raw_json(json: &[u8]) -> Vec<u8> {
     let mut command = vec![0x38];
@@ -38,6 +44,12 @@ fn all_native_request_roles_round_trip() {
         detail: Some("SDK submission".into()),
     };
     let requests = vec![
+        NativeRequest::ListIntegrations {},
+        NativeRequest::LaunchIntegration {
+            integration: "opencode".into(),
+            session: phux_protocol::ids::SessionKey::new([8; 16]).unwrap(),
+            cwd: "/workspace".into(),
+        },
         NativeRequest::Spawn {
             spec: SpawnNativeAgent {
                 session: "work".into(),

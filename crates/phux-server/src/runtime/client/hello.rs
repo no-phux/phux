@@ -1,0 +1,314 @@
+/// SPEC §5: a framing violation is answered with `FRAME_TOO_LARGE` before
+/// closing. `None` for every other read error: the transport died.
+fn framing_violation_close(err: &io::Error, client_id: ClientId) -> Option<ConnectionClose> {
+    let framing = framing_violation(err)?;
+    warn!(?client_id, error = %framing, "client framing violation; closing");
+    Some(ConnectionClose {
+        attached_reason: Some("framing violation"),
+        detach_reason: DetachReason::ProtocolError,
+        code: ErrorCode::FrameTooLarge,
+        message: framing.wire_message(),
+    })
+}
+
+/// Decode one framed message. Once HELLO has been negotiated the connection's
+/// selected limits apply, so an oversized borrowed payload is rejected before
+/// the decoder copies it into owned storage.
+fn decode_client_frame(
+    framed: &BytesMut,
+    negotiated: Option<&NegotiatedConnection>,
+) -> Result<FrameKind, ConnectionClose> {
+    // FRAME_COMPRESSED is server-to-client only (proto.md §6.4); refuse the
+    // envelope before decode. The type byte follows the u32 length header.
+    if framed.get(4) == Some(&phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED) {
+        warn!("client sent FRAME_COMPRESSED; closing");
+        return Err(ConnectionClose {
+            attached_reason: Some("client-sent FRAME_COMPRESSED"),
+            detach_reason: DetachReason::ProtocolError,
+            code: ErrorCode::MalformedMessage,
+            message: "FRAME_COMPRESSED is server-to-client only".to_owned(),
+        });
+    }
+    let decoded = negotiated.map_or_else(
+        || FrameKind::decode(framed),
+        |selection| FrameKind::decode_with_limits(framed, selection.limits),
+    );
+    match decoded {
+        Ok((frame, _rest)) => Ok(frame),
+        Err(err) => {
+            warn!(error = ?err, "client sent undecodable frame; closing");
+            Err(ConnectionClose {
+                attached_reason: Some("undecodable frame"),
+                detach_reason: DetachReason::ProtocolError,
+                code: ErrorCode::MalformedMessage,
+                message: format!("could not decode client frame: {err:?}"),
+            })
+        }
+    }
+}
+
+/// Nothing stateful may precede HELLO; PING is a stateless liveness probe.
+fn reject_frame_before_hello(
+    frame: &FrameKind,
+    negotiated: bool,
+    client_id: ClientId,
+) -> Option<ConnectionClose> {
+    if negotiated || matches!(frame, FrameKind::Hello { .. } | FrameKind::Ping { .. }) {
+        return None;
+    }
+    Some(before_hello_close(client_id))
+}
+
+/// Whether a framed message's type byte is one `PRE_HELLO` admits.
+fn is_pre_hello_type(framed: &[u8]) -> bool {
+    use phux_protocol::wire::frame::{TYPE_HELLO, TYPE_PING};
+    matches!(
+        framed.get(phux_protocol::wire::LENGTH_PREFIX_LEN),
+        Some(&(TYPE_HELLO | TYPE_PING))
+    )
+}
+
+fn before_hello_close(client_id: ClientId) -> ConnectionClose {
+    warn!(?client_id, "stateful frame before HELLO; closing");
+    ConnectionClose {
+        attached_reason: None,
+        detach_reason: DetachReason::ProtocolError,
+        code: ErrorCode::VersionIncompatible,
+        message: "HELLO required before any stateful frame".to_owned(),
+    }
+}
+
+/// The HELLO frame's payload.
+struct HelloRequest {
+    client_name: String,
+    protocol_major: u16,
+    protocol_minor: u16,
+    protocol_patch: u16,
+    client_caps: ClientCapabilities,
+}
+
+/// Negotiate the connection: version compatibility, the policy engine's
+/// verdict on the authenticated peer, and the bootstrap profile both sides can
+/// speak. All of it is cached in `negotiated` exactly once — before any
+/// stateful frame can be processed — and acknowledged with `HELLO_OK`.
+async fn negotiate_hello(
+    state: &SharedState,
+    client_id: ClientId,
+    out_tx: &mpsc::Sender<Outbound>,
+    hello: HelloRequest,
+    negotiated: &mut Option<NegotiatedConnection>,
+    transport: TransportType,
+    route_supports_quic_streams: bool,
+) -> Result<(), ConnectionClose> {
+    let HelloRequest {
+        client_name,
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        client_caps,
+    } = hello;
+    if negotiated.is_some() {
+        warn!(?client_id, "duplicate HELLO; closing");
+        return Err(ConnectionClose {
+            attached_reason: Some("duplicate HELLO"),
+            detach_reason: DetachReason::ProtocolError,
+            code: ErrorCode::InvalidCommand,
+            message: "HELLO already completed on this connection".to_owned(),
+        });
+    }
+    debug!(
+        ?client_id,
+        %client_name,
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        color_support = ?client_caps.color_support,
+        "HELLO",
+    );
+    if !protocol_is_compatible(protocol_major, protocol_minor) {
+        let message = incompatible_protocol_message(protocol_major, protocol_minor, protocol_patch);
+        warn!(?client_id, %message, "HELLO protocol mismatch");
+        return Err(ConnectionClose {
+            attached_reason: None,
+            detach_reason: DetachReason::ProtocolError,
+            code: ErrorCode::VersionIncompatible,
+            message,
+        });
+    }
+    authorize_hello(state, client_id).await?;
+    // After authorization, so the announcement cannot influence it.
+    state.with_mut(|s| super::whoami::admit_ssh_origin(s, client_id, client_caps.ssh_origin));
+    let (selected_profile, bootstrap_limits) = select_hello_profile(&client_caps, client_id)?;
+
+    let mut effective_client_caps = client_caps;
+    effective_client_caps.output_mode =
+        if matches!(selected_profile, BootstrapProfile::SynthesizedVtStateSync) {
+            phux_protocol::caps::OutputMode::StateSync
+        } else {
+            phux_protocol::caps::OutputMode::Raw
+        };
+    let mut server_features = runtime_server_features();
+    // ADR-0115: advertised only where streams exist to back it.
+    if matches!(transport, TransportType::Quic)
+        && route_supports_quic_streams
+        && client_caps.quic_streams
+    {
+        server_features = ServerFeatureSet::from_wire(server_features.as_wire() | QUIC_STREAMS);
+    }
+    // Never compress toward a consumer that did not offer to inflate.
+    let compression = client_caps.compression.select();
+
+    // Cached once, before any stateful frame; decoding uses these limits.
+    *negotiated = Some(NegotiatedConnection {
+        client_caps: effective_client_caps,
+        profile: selected_profile,
+        limits: bootstrap_limits,
+        server_features,
+        compression,
+    });
+    state.with_mut(|s| {
+        // SPEC §6.2: the L3 arms gate on the negotiated layer set.
+        s.set_client_layers(client_id, client_caps.layers);
+        // ADR-0123: an actor label, not an authenticated fact.
+        s.set_client_name(client_id, client_name);
+    });
+    let hello_ok = FrameKind::HelloOk {
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        server_caps: ServerCapabilities::new()
+            .with_layers(LayerSet::all())
+            .with_features(server_features)
+            .with_features_ext(ServerFeatureExtSet::with(&[
+                ServerFeatureExt::PathQuery,
+                ServerFeatureExt::ResizeCellPx,
+                ServerFeatureExt::CommittedTeardown,
+                ServerFeatureExt::AgentStreamResume,
+                // ADR-0161: every organization command commits and is enforced.
+                ServerFeatureExt::Organization,
+                ServerFeatureExt::SessionKill,
+                ServerFeatureExt::NativeAgent,
+                ServerFeatureExt::NativeAgentLaunch,
+                ServerFeatureExt::PerfControl,
+                ServerFeatureExt::SessionProject,
+                ServerFeatureExt::FileDownload,
+                ServerFeatureExt::Checkout,
+            ]))
+            .with_compression(compression),
+        server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
+        selected_profile,
+        bootstrap_limits,
+    };
+    if out_tx.send(Outbound::Frame(hello_ok)).await.is_err() {
+        trace!(?client_id, "HELLO_OK send dropped: writer gone");
+    }
+    Ok(())
+}
+
+/// Policy check: authorize HELLO only against the identity authenticated by
+/// the accepting transport. A missing registry entry is never equivalent to a
+/// local root peer. Every refusal here is HELLO's authentication outcome, so
+/// the peer gets `ERROR { PERMISSION_DENIED }` then `DETACHED {
+/// AUTHENTICATION_FAILED }` (workload-auth §7).
+async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(), ConnectionClose> {
+    let identity = state.with(|s| {
+        let peer = s.peer_identity(client_id).cloned()?;
+        Some((peer, s.authenticated_credential(client_id).cloned()))
+    });
+    let Some((peer, credential)) = identity else {
+        warn!(
+            ?client_id,
+            "HELLO denied: authenticated peer identity missing"
+        );
+        return Err(ConnectionClose {
+            attached_reason: None,
+            detach_reason: DetachReason::AuthenticationFailed,
+            code: ErrorCode::PermissionDenied,
+            message: "authenticated peer identity missing".to_owned(),
+        });
+    };
+    // A bearer revoked or expired since its upgrade mints nothing
+    // (workload-auth §7).
+    let bearer = state.with(|s| s.bearer_admission(client_id).cloned());
+    if bearer.is_some_and(|bearer| !matches!(bearer.standing(), Some(Standing::Active { .. }))) {
+        warn!(
+            ?client_id,
+            "HELLO denied: the admitting bearer no longer stands"
+        );
+        return Err(ConnectionClose {
+            attached_reason: None,
+            detach_reason: DetachReason::AuthenticationFailed,
+            code: ErrorCode::PermissionDenied,
+            message: "policy denied: unauthorized: not authorized".to_owned(),
+        });
+    }
+    // ADR-0163: a connection that arrived on a delegated credential's own
+    // socket acts as that credential, never as the owner the socket's uid
+    // would otherwise make it.
+    if let Some(id) = super::delegation::delegated_credential(&peer, credential.as_ref()) {
+        let grant = state.with(|s| s.delegated_grant(id, chrono::Utc::now()));
+        let Some(grant) = grant else {
+            warn!(
+                ?client_id,
+                "HELLO denied: the delegated credential is withdrawn or expired"
+            );
+            return Err(ConnectionClose {
+                attached_reason: None,
+                detach_reason: DetachReason::AuthenticationFailed,
+                code: ErrorCode::PermissionDenied,
+                message: "policy denied: unauthorized: not authorized".to_owned(),
+            });
+        };
+        state.with_mut(|s| s.set_connection_grant(client_id, grant));
+        return Ok(());
+    }
+    let engine = state.with(|s| s.policy_engine().clone());
+    // workload-auth §5: the grant comes from the verified identity alone.
+    match engine.authorize_hello(&peer, credential.as_ref()).await {
+        Ok(grant) => {
+            state.with_mut(|s| s.set_connection_grant(client_id, grant));
+            Ok(())
+        }
+        Err(err) => {
+            warn!(?client_id, error = %err, "HELLO denied by policy");
+            Err(ConnectionClose {
+                attached_reason: None,
+                detach_reason: DetachReason::AuthenticationFailed,
+                code: ErrorCode::PermissionDenied,
+                message: format!("policy denied: {err}"),
+            })
+        }
+    }
+}
+
+/// Select the protocol-0.7 bootstrap profile both peers can speak. `NativeState`
+/// requires an exact common codec and every required engine feature, so no
+/// common profile is a connection-ending `CodecUnavailable`.
+fn select_hello_profile(
+    client_caps: &ClientCapabilities,
+    client_id: ClientId,
+) -> Result<(BootstrapProfile, BootstrapLimits), ConnectionClose> {
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    let server_bootstrap = crate::native_state::native_bootstrap_capabilities();
+    #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+    let server_bootstrap = BootstrapCapabilities::new();
+    let Ok(selection) = select_bootstrap_profile(client_caps, &server_bootstrap) else {
+        let message = format!(
+            "no common protocol-0.7 bootstrap profile: client profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}; server profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}. NativeState requires an exact common codec and every required engine feature; advertise SynthesizedVtRaw/SynthesizedVtStateSync or update the incompatible peer",
+            client_caps.bootstrap.profiles.as_wire(),
+            client_caps.bootstrap.native_codecs.as_wire(),
+            client_caps.bootstrap.native_features.as_wire(),
+            server_bootstrap.profiles.as_wire(),
+            server_bootstrap.native_codecs.as_wire(),
+            server_bootstrap.native_features.as_wire(),
+        );
+        warn!(?client_id, %message, "HELLO codec unavailable");
+        return Err(ConnectionClose {
+            attached_reason: None,
+            detach_reason: DetachReason::ProtocolError,
+            code: ErrorCode::CodecUnavailable,
+            message,
+        });
+    };
+    Ok(selection)
+}

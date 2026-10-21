@@ -1,5 +1,47 @@
 use super::*;
 
+#[test]
+fn interactive_setup_spawn_is_not_replayed_even_when_server_supports_idempotency() {
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::ByName("main".to_owned())),
+        ..ControlOptions::default()
+    });
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane
+        .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
+        .unwrap();
+    let attach_id = outbound_attach_id(&mut plane);
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_outbound();
+    let _ = plane.take_events();
+    let id = plane.spawn_terminal_once(SpawnRequest {
+        command: Some(vec!["opencode".into(), "auth".into(), "login".into()]),
+        ..SpawnRequest::default()
+    });
+    let sent = plane.take_outbound();
+    assert!(matches!(
+        decode(&sent[0]),
+        FrameKind::SpawnResource { resource: None, .. }
+    ));
+    plane.connection_lost(Some("setup receipt lost".into()));
+    plane.connection_opened();
+    assert!(plane.take_events().iter().any(|event| matches!(event,
+        Event::TerminalSpawned { request_id, terminal_id: None, error: Some(_) } if *request_id == id
+    )));
+    let _ = plane.take_outbound();
+    plane
+        .feed(hello_ok_with(&[ServerFeature::SpawnIdempotency]))
+        .unwrap();
+    finish_reconnected_attach(&mut plane);
+    assert!(
+        plane
+            .take_outbound()
+            .iter()
+            .all(|bytes| !matches!(decode(bytes), FrameKind::SpawnResource { .. }))
+    );
+}
+
 fn inventory_read(plane: &mut ControlPlane) -> u32 {
     plane
         .take_outbound()

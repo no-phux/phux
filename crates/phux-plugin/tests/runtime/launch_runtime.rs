@@ -111,6 +111,8 @@ fn workspace(tmp: &TempDir) -> PathBuf {
     dir
 }
 
+include!("launch_runtime/opencode.rs");
+
 #[test]
 fn resolves_named_integration_expanding_plugin_root_and_appending_extra_args() {
     let tmp = TempDir::new().expect("tempdir");
