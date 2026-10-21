@@ -4,10 +4,10 @@ use std::collections::HashMap;
 
 use phux_client::conditional_kill::BoundResource;
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::ErrorCode;
+use phux_protocol::wire::frame::{ErrorCode, SpawnError, SpawnResult};
 
 use super::closed::resolve_resource_op;
-use super::spawned::{apply_split_spawned, window_holding_pane};
+use super::spawned::{apply_split_spawned, handle_terminal_spawned, window_holding_pane};
 use super::{FrameCtx, FrameOutcome};
 use crate::attach::actions;
 use crate::attach::actions::{Adopt, ParkedAdopt, PendingSplit, PendingWindow};
@@ -58,6 +58,13 @@ pub(super) fn error_frame_outcome<W: crate::attach::RenderSink>(
         return handle_adopt_reply(ctx, parked, Some(AdoptRefusal { code, message }))
             .map(|outcome| with_satellite_chrome(outcome, marked));
     }
+    // A spawn a newer server refused in place (`UNSUPPORTED`), or whose
+    // reply this build could not read, settles like a refused spawn.
+    if let Some(id) = request_id.filter(|id| is_pending_spawn(ctx, *id)) {
+        let refused = SpawnResult::Err(SpawnError::SpawnFailed(message));
+        return handle_terminal_spawned(ctx, id, refused)
+            .map(|outcome| with_satellite_chrome(outcome, marked));
+    }
     if let Some(id) = request_id {
         // A refusal naming a replaying pane puts its down flag back.
         marked |= remark_pending_satellite(ctx, id, Some(code));
@@ -69,6 +76,19 @@ pub(super) fn error_frame_outcome<W: crate::attach::RenderSink>(
         handle_error_frame(request_id, code, &message),
         marked,
     ))
+}
+
+/// Whether `request_id` is an outstanding split, window, or floating spawn.
+/// An attach-phase entry (adopting or opening an existing pane) is not one.
+fn is_pending_spawn<W: crate::attach::RenderSink>(ctx: &FrameCtx<'_, W>, request_id: u32) -> bool {
+    ctx.pending_splits
+        .get(&request_id)
+        .is_some_and(|split| split.adopt.is_none() && split.open_existing.is_none())
+        || ctx
+            .pending_windows
+            .get(&request_id)
+            .is_some_and(|window| window.adopt.is_none())
+        || ctx.pending_floating.contains_key(&request_id)
 }
 
 /// Grey every pane on the host a `SatelliteUnreachable` names. The layout

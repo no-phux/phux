@@ -108,3 +108,33 @@ async fn a_newer_servers_unknown_frames_and_values_do_not_end_the_attach() {
         .expect("a newer server's value is not a protocol fault");
     assert!(!matches!(step, FrameStep::Exit(_)));
 }
+
+/// A newer server refuses a spawn it cannot read with a correlated `ERROR
+/// UNSUPPORTED`: the parked spawn settles as refused and the attach stays.
+#[tokio::test(flavor = "current_thread")]
+async fn a_spawn_answered_unsupported_settles_and_keeps_the_attach() {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    let (mut state, mut client, _server, mut out) = Box::pin(newer_server_loop()).await;
+    state
+        .mirror
+        .pending_floating
+        .insert(9, "Agent Board".to_owned());
+    let step = state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::Error {
+                request_id: Some(9),
+                code: ErrorCode::Unsupported,
+                message: "unknown spawn kind".to_owned(),
+            },
+            false,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .expect("a correlated UNSUPPORTED is not a protocol fault");
+    assert!(!matches!(step, FrameStep::Exit(_)));
+    assert!(state.mirror.pending_floating.is_empty(), "the spawn settled");
+}
