@@ -114,21 +114,12 @@ pub(super) fn route_engine_frame(
     effects: &mut KernelEffectBuffer,
 ) -> KernelRoute {
     let terminals = frame_attach_participants(frame);
-    let input = match kernel_input_for(frame, &terminals) {
-        Ok(Some(input)) => input,
-        // A frame the kernel does not model, except a spawn announcement of
-        // a new `AgentSession` child, which it must learn about.
-        Ok(None) => {
-            let mut route = KernelRoute::default();
-            declare_spawned_agent_session(frame, kernel, effects, &mut route);
-            return route;
-        }
-        Err(failed) => {
-            return KernelRoute {
-                failed: Some(failed.to_owned()),
-                ..KernelRoute::default()
-            };
-        }
+    // A frame the kernel does not model, except a spawn announcement of a
+    // new `AgentSession` child, which it must learn about.
+    let Some(input) = kernel_input_for(frame, &terminals) else {
+        let mut route = KernelRoute::default();
+        declare_spawned_agent_session(frame, kernel, effects, &mut route);
+        return route;
     };
 
     effects.clear();

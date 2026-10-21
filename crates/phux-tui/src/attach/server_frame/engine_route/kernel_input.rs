@@ -7,19 +7,14 @@ use phux_client_core::session::{
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, HistoryRejectionReason, HistoryTombstoneReason};
 
-/// Translate a wire frame into its kernel input. `Ok(None)` ⇒ not modeled;
-/// `Err` ⇒ an unknown history reason, reported as a rejected route.
+/// Translate a wire frame into its kernel input; `None` when not modeled.
 pub(super) fn kernel_input_for<'a>(
     frame: &'a FrameKind,
     terminals: &'a [ResourceId],
-) -> Result<Option<KernelInput<'a>>, &'static str> {
-    if let Some(input) = attach_stream_input(frame, terminals) {
-        return Ok(Some(input));
-    }
-    if let Some(input) = content_stream_input(frame) {
-        return Ok(Some(input));
-    }
-    history_stream_input(frame)
+) -> Option<KernelInput<'a>> {
+    attach_stream_input(frame, terminals)
+        .or_else(|| content_stream_input(frame))
+        .or_else(|| history_stream_input(frame))
 }
 
 /// The attach barrier and bootstrap-transcript frames.
@@ -126,8 +121,9 @@ fn content_stream_input(frame: &FrameKind) -> Option<KernelInput<'_>> {
     }
 }
 
-/// The scrollback-page frames; an unrecognised reason is a rejected route.
-fn history_stream_input(frame: &FrameKind) -> Result<Option<KernelInput<'_>>, &'static str> {
+/// The scrollback-page frames. A reason a newer server added degrades
+/// rather than rejecting the route.
+fn history_stream_input(frame: &FrameKind) -> Option<KernelInput<'_>> {
     let input = match frame {
         FrameKind::HistoryPage {
             terminal_id,
@@ -159,8 +155,7 @@ fn history_stream_input(frame: &FrameKind) -> Result<Option<KernelInput<'_>>, &'
             stream_id: *stream_id,
             bootstrap_id: *bootstrap_id,
             cursor,
-            reason: history_unavailable_reason(*reason)
-                .ok_or("unsupported history tombstone reason")?,
+            reason: history_unavailable_reason(*reason),
         },
         FrameKind::HistoryRejected {
             terminal_id,
@@ -175,39 +170,74 @@ fn history_stream_input(frame: &FrameKind) -> Result<Option<KernelInput<'_>>, &'
             stream_id: *stream_id,
             bootstrap_id: *bootstrap_id,
             cursor,
-            reason: history_rejection_reason(*reason)
-                .ok_or("unsupported history rejection reason")?,
+            reason: history_rejection_reason(*reason),
             required_bytes: *required_bytes,
             required_rows: *required_rows,
         },
-        _ => return Ok(None),
+        _ => return None,
     };
-    Ok(Some(input))
+    Some(input)
 }
 
+/// The kernel's reason for a history tombstone. A reason this build does
+/// not know (a newer server's) retires the cursor as `Released`: the server
+/// let go of it, and the kernel tombstones history the same way.
 pub(super) const fn history_unavailable_reason(
     reason: HistoryTombstoneReason,
-) -> Option<HistoryUnavailableReason> {
-    Some(match reason {
+) -> HistoryUnavailableReason {
+    match reason {
         HistoryTombstoneReason::Stale => HistoryUnavailableReason::Stale,
         HistoryTombstoneReason::Pruned => HistoryUnavailableReason::Pruned,
         HistoryTombstoneReason::Reset => HistoryUnavailableReason::Reset,
         HistoryTombstoneReason::Resize => HistoryUnavailableReason::Resize,
         HistoryTombstoneReason::Expired => HistoryUnavailableReason::Expired,
-        HistoryTombstoneReason::Released => HistoryUnavailableReason::Released,
         HistoryTombstoneReason::Limit => HistoryUnavailableReason::Limit,
         HistoryTombstoneReason::CodecFailure => HistoryUnavailableReason::CodecFailure,
-        _ => return None,
-    })
+        // `Released`, and any reason a newer server added.
+        _ => HistoryUnavailableReason::Released,
+    }
 }
 
+/// The kernel's reason for a history rejection. A reason this build does not
+/// know (a newer server's) reads as `ZeroLimit`: the fetch is cancelled
+/// without a retry or a tombstone, so a later scroll may ask again.
 pub(super) const fn history_rejection_reason(
     reason: HistoryRejectionReason,
-) -> Option<KernelHistoryRejectionReason> {
-    Some(match reason {
-        HistoryRejectionReason::ZeroLimit => KernelHistoryRejectionReason::ZeroLimit,
+) -> KernelHistoryRejectionReason {
+    match reason {
         HistoryRejectionReason::TooSmall => KernelHistoryRejectionReason::TooSmall,
         HistoryRejectionReason::Busy => KernelHistoryRejectionReason::Busy,
-        _ => return None,
-    })
+        // `ZeroLimit`, and any reason a newer server added.
+        _ => KernelHistoryRejectionReason::ZeroLimit,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        HistoryRejectionReason, HistoryTombstoneReason, HistoryUnavailableReason,
+        KernelHistoryRejectionReason, history_rejection_reason, history_unavailable_reason,
+    };
+
+    /// A newer server's history reason degrades instead of rejecting the
+    /// route, which would end the attach.
+    #[test]
+    fn unknown_history_reasons_degrade_instead_of_failing() {
+        assert_eq!(
+            history_unavailable_reason(HistoryTombstoneReason::Unknown),
+            HistoryUnavailableReason::Released
+        );
+        assert_eq!(
+            history_unavailable_reason(HistoryTombstoneReason::Stale),
+            HistoryUnavailableReason::Stale
+        );
+        assert_eq!(
+            history_rejection_reason(HistoryRejectionReason::Unknown),
+            KernelHistoryRejectionReason::ZeroLimit
+        );
+        assert_eq!(
+            history_rejection_reason(HistoryRejectionReason::TooSmall),
+            KernelHistoryRejectionReason::TooSmall
+        );
+    }
 }
