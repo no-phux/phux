@@ -61,6 +61,7 @@ mod frames;
 mod geometry;
 mod global_metadata;
 mod input;
+mod input_delivery;
 mod kernel;
 pub mod keys;
 mod lifecycle;
