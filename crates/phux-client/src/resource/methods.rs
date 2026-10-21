@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use phux_protocol::caps::ServerFeatureSet;
+use phux_protocol::caps::{ServerFeatureExtSet, ServerFeatureSet};
 use phux_protocol::ids::{ResourceId, ResourceKind};
 use phux_protocol::kinds::{
     FeatureGate, KINDS, KindSpec, MethodSpec, SUBSTRATE_METHODS, Verb, Verbs,
@@ -96,6 +96,9 @@ fn verb_label(verbs: Verbs) -> String {
 pub struct Negotiated {
     /// The features the server advertised.
     pub features: ServerFeatureSet,
+    /// The extended features from the trailing `features_ext` word (empty
+    /// from a server too old to send it).
+    pub features_ext: ServerFeatureExtSet,
     /// Whether the connection is the owner Unix socket.
     pub owner_uds: bool,
 }
@@ -143,7 +146,7 @@ fn judge(
         .gate
         .into_iter()
         .chain(facet.and_then(|spec| spec.gate))
-        .any(|gate| !advertised(negotiated.features, gate));
+        .any(|gate| !advertised(negotiated, gate));
     if unadvertised {
         return Some(Unavailable::FeatureUnadvertised);
     }
@@ -153,13 +156,15 @@ fn judge(
     None
 }
 
-/// Whether the server advertised `gate`. This client negotiates no
-/// `features_ext` word yet, so a gate there reads as unadvertised: the method
-/// is not safe to send until the word is read from `HELLO_OK`.
-const fn advertised(features: ServerFeatureSet, gate: FeatureGate) -> bool {
+/// Whether the server advertised `gate`, in whichever `HELLO_OK` word it
+/// lives. A `features_ext` bit this build does not know reads as
+/// unadvertised, so the method is never judged safe on a guess.
+const fn advertised(negotiated: Negotiated, gate: FeatureGate) -> bool {
     match gate {
-        FeatureGate::Features(feature) => features.contains(feature),
-        FeatureGate::FeaturesExt { .. } => false,
+        FeatureGate::Features(feature) => negotiated.features.contains(feature),
+        FeatureGate::FeaturesExt { mask, .. } => {
+            mask != 0 && negotiated.features_ext.as_wire() & mask == mask
+        }
     }
 }
 
@@ -201,14 +206,14 @@ impl ResourceMethods {
 pub async fn methods(socket: &Path, resource: &ResourceId) -> Result<ResourceMethods, LookupError> {
     let mut conn = Connection::connect(socket).await?;
     let (info, _snapshot, _unreachable) = super::lookup_on(&mut conn, resource).await?;
-    let features = conn
-        .negotiated_bootstrap()
-        .map_or_else(ServerFeatureSet::new, |negotiated| {
-            negotiated.server_features
-        });
+    let (features, features_ext) = conn.negotiated_bootstrap().map_or_else(
+        || (ServerFeatureSet::new(), ServerFeatureExtSet::new()),
+        |negotiated| (negotiated.server_features, negotiated.server_features_ext),
+    );
     drop(conn);
     let negotiated = Negotiated {
         features,
+        features_ext,
         owner_uds: true,
     };
     Ok(ResourceMethods {
@@ -221,7 +226,7 @@ pub async fn methods(socket: &Path, resource: &ResourceId) -> Result<ResourceMet
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use phux_protocol::caps::ServerFeature;
+    use phux_protocol::caps::{ServerFeature, ServerFeatureExt};
     use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::kinds::{Carrier, SERVER_METHODS};
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
@@ -286,9 +291,9 @@ mod tests {
     }
 
     /// A `features_ext` gate is never read as advertised from the `features`
-    /// word, even when every word-0 bit is set.
+    /// word, even when every word-0 bit is set; it is read from its own word.
     #[test]
-    fn an_extended_feature_gate_is_unadvertised_without_its_word() {
+    fn an_extended_feature_gate_is_read_from_its_own_word() {
         let template = SERVER_METHODS
             .iter()
             .find(|method| method.name == "LIST_DIRECTORY")
@@ -297,13 +302,14 @@ mod tests {
             name: "SYNTHETIC_EXT",
             carrier: Carrier::Frame(0xfe),
             gate: Some(FeatureGate::FeaturesExt {
-                mask: 0x1,
+                mask: ServerFeatureExt::PathQuery.mask(),
                 wire_name: "SYNTHETIC_EXT",
             }),
             ..*template
         };
         let everything = Negotiated {
             features: ServerFeatureSet::with(ServerFeature::ALL),
+            features_ext: ServerFeatureExtSet::new(),
             owner_uds: true,
         };
         assert_eq!(
@@ -314,12 +320,21 @@ mod tests {
             judge(&extended, None, ResourceKind::Terminal, everything),
             Some(Unavailable::FeatureUnadvertised)
         );
+        let with_ext = Negotiated {
+            features_ext: ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]),
+            ..everything
+        };
+        assert_eq!(
+            judge(&extended, None, ResourceKind::Terminal, with_ext),
+            None
+        );
     }
 
     #[test]
     fn the_owner_socket_predicate_is_a_transport_reason() {
         let remote = Negotiated {
             features: ServerFeatureSet::new(),
+            features_ext: ServerFeatureExtSet::new(),
             owner_uds: false,
         };
         // No substrate or facet method is owner-UDS-only today; the rule

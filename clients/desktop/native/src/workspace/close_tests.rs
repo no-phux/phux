@@ -134,3 +134,60 @@ fn shell_exit_removes_the_pane_without_sending_a_kill() {
     assert!(workspace.tabs.is_empty());
     assert!(kills(&connection).is_empty());
 }
+
+#[test]
+fn closing_a_fresh_split_kills_it_before_a_topology_read_lists_it() {
+    let _dial = DeterministicDial::arm();
+    let mut connection = view_tests::attached();
+    let mut workspace = view_tests::opened(&mut connection);
+    workspace.split(&connection, Axis::Row, false);
+    let request_id = connection
+        .client
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match FrameKind::decode(bytes).unwrap().0 {
+            FrameKind::SpawnResource { request_id, .. } => Some(request_id),
+            _ => None,
+        })
+        .expect("split spawns");
+    let split = ResourceId::local(8);
+    connection
+        .client
+        .feed(FrameKind::ResourceSpawned {
+            request_id,
+            result: phux_protocol::wire::frame::SpawnResult::Ok(split.clone()),
+        })
+        .unwrap();
+    let stream = phux_protocol::ids::StreamId::new(2).unwrap();
+    let bootstrap = phux_protocol::ids::BootstrapId::new(2).unwrap();
+    for frame in [
+        FrameKind::BootstrapBegin {
+            terminal_id: split.clone(),
+            stream_id: stream,
+            bootstrap_id: bootstrap,
+            profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 20,
+            rows: 4,
+            base_seq: 0,
+        },
+        FrameKind::BootstrapReady {
+            terminal_id: split.clone(),
+            stream_id: stream,
+            bootstrap_id: bootstrap,
+            history_cursor: None,
+        },
+    ] {
+        connection.client.feed(frame).unwrap();
+    }
+    let events = connection.drain();
+    workspace.handle(&events, &connection);
+    workspace.settle(&connection);
+    let placement = workspace.focused().unwrap().clone();
+    assert_eq!(placement.terminal_id.as_ref(), Some(&split));
+    let _ = connection.client.take_outbound();
+
+    workspace.terminate_pane(&connection, &placement.id);
+
+    assert!(workspace.take_notices().is_empty());
+    assert_eq!(kills(&connection), vec![split]);
+}

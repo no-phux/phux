@@ -1,19 +1,17 @@
 //! One process-wide updater; window subscriptions repaint on its activity.
+
+mod status;
+#[cfg(test)]
+mod tests;
+mod view;
+
+pub(crate) use view::page;
+
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::time::Duration;
 
-use gpui::prelude::*;
-use gpui::{AnyElement, Context, Entity, SharedString, Subscription, Task, div, px};
-use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
-use gpui_kit::component::{Disableable, Sizable};
-
-use super::color::from_hex;
-use super::overlays::corner;
-use super::skin::Look;
-use super::ui::muted;
 use crate::updates::{self, Preferences, Release, RuntimeRelease};
+use gpui::{Context, Subscription, Task};
 
 pub(crate) struct Updater {
     pub prefs: Preferences,
@@ -34,6 +32,10 @@ pub(crate) struct Updater {
     relaunch: bool,
     /// The post-exit helper was already handed the staged bundle.
     handed_off: bool,
+    /// The running update goes on to phux and the restart once the desktop is staged.
+    chained: bool,
+    /// What `busy` is doing.
+    pub work: Work,
     _automatic: Option<Task<()>>,
     _quit: Option<Subscription>,
 }
@@ -45,22 +47,42 @@ pub(crate) struct Staged {
     pub release: Release,
 }
 
-/// The Desktop row's primary action.
+/// The step a busy updater is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DesktopAction {
-    Download,
-    Restart,
-    /// The update changes the wire protocol: update phux first, then restart.
-    RuntimeThenRestart,
+pub(crate) enum Work {
+    Checking,
+    /// The desktop bundle downloads and verifies.
+    Downloading,
+    /// phux installs and hands its server off.
+    Installing,
 }
 
-impl DesktopAction {
+/// The one update button, in the titlebar and on the Updates page. A click
+/// carries every pending product: the desktop downloads and verifies, phux
+/// updates and hands the server off, then the desktop restarts into its update.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UpdateAction {
+    /// Only the desktop moves: download if needed, then restart.
+    Desktop { staged: bool },
+    /// Only phux moves; the desktop is current, so nothing restarts.
+    Phux { retry: bool },
+    /// Both move together: desktop staged, phux handed off, then restart.
+    Both,
+}
+
+impl UpdateAction {
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::Download => "Download update",
-            Self::Restart => "Restart to update",
-            Self::RuntimeThenRestart => "Update phux & restart",
+            Self::Desktop { staged: false } => "Update Desktop",
+            Self::Desktop { staged: true } => "Restart to update",
+            Self::Phux { retry: false } => "Update phux",
+            Self::Phux { retry: true } => "Retry server handoff",
+            Self::Both => "Update phux & Desktop",
         }
+    }
+
+    const fn desktop(self) -> bool {
+        !matches!(self, Self::Phux { .. })
     }
 }
 
@@ -73,129 +95,19 @@ enum Tone {
     Bad,
 }
 
-/// A header button; primary actions are filled, the rest ghost.
-#[derive(Clone, Copy)]
-struct Action {
-    id: &'static str,
-    label: &'static str,
-    primary: bool,
-    disabled: bool,
-    run: fn(&mut Updater, &mut Context<Updater>),
-}
+/// Prefixes a phux update that installed but could not hand the server off.
+const HANDOFF_NOTE: &str = "Handoff:";
 
-/// A product's headline: name, the installed build in mono, a status pill, and
-/// its actions on the right. A failure or detail sits under it as one callout,
-/// bordered in danger only for a failure; a muted note may follow.
-struct Header {
-    title: &'static str,
-    build: String,
-    status: (String, Tone),
-    detail: Option<(String, bool)>,
-    note: Option<String>,
-    actions: Vec<Action>,
-}
-
-impl Header {
-    fn item(self, entity: &Entity<Updater>, look: &Rc<Look>, mono: &SharedString) -> SettingItem {
-        let (entity, look, mono) = (entity.clone(), look.clone(), mono.clone());
-        SettingItem::render(move |_, _, _| self.render(&entity, &look, &mono))
+/// Whether two `major.minor` wire protocols interoperate: the major is the
+/// compatibility line, so any minor on it speaks to any other. Text without
+/// a `.` is compared whole, so an unknown shape is treated as a change.
+fn same_protocol_line(a: &str, b: &str) -> bool {
+    fn major(protocol: &str) -> &str {
+        protocol
+            .split_once('.')
+            .map_or(protocol, |(major, _)| major)
     }
-
-    fn render(&self, entity: &Entity<Updater>, look: &Look, mono: &SharedString) -> AnyElement {
-        let colors = &look.chrome;
-        let (status, tone) = self.status.clone();
-        let (fg, bg) = match tone {
-            Tone::Quiet => (&colors.muted, &colors.hover),
-            Tone::Good => (&colors.theme.success, &colors.hover),
-            Tone::Ready => (&colors.accent_text, &colors.theme.accent),
-            Tone::Bad => (&colors.theme.danger, &colors.hover),
-        };
-        let pill = div()
-            .flex_shrink_0()
-            .px(px(8.))
-            .py(px(2.))
-            .rounded(corner(look, 10.))
-            .bg(from_hex(bg))
-            .text_xs()
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(from_hex(fg))
-            .child(status);
-        let actions = self.actions.iter().map(|action| {
-            let (entity, run) = (entity.clone(), action.run);
-            Button::new(action.id)
-                .label(action.label)
-                .small()
-                .disabled(action.disabled)
-                .map(|button| {
-                    if action.primary {
-                        button.primary()
-                    } else {
-                        button.ghost()
-                    }
-                })
-                .on_click(move |_, _, cx| entity.update(cx, run))
-        });
-        let header = div()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .child(
-                                        div()
-                                            .text_base()
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .text_color(look.ink)
-                                            .child(self.title),
-                                    )
-                                    .child(pill),
-                            )
-                            .child(muted(look, self.build.clone()).font_family(mono.clone())),
-                    )
-                    .child(div().flex().items_center().gap(px(6.)).children(actions)),
-            )
-            .when_some(self.detail.clone(), |header, (detail, failed)| {
-                let edge = if failed {
-                    from_hex(&colors.theme.danger)
-                } else {
-                    look.border
-                };
-                header.child(
-                    div()
-                        .px(px(10.))
-                        .py(px(8.))
-                        .rounded(corner(look, 6.))
-                        .border_1()
-                        .border_color(edge)
-                        .bg(look.hover)
-                        .text_xs()
-                        .text_color(from_hex(&colors.subtext))
-                        .child(detail),
-                )
-            });
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .child(header)
-            .children(self.note.clone().map(|note| muted(look, note)))
-            .into_any_element()
-    }
+    major(a) == major(b)
 }
 
 /// The failure line a check left for `prefix`, without its prefix.
@@ -204,204 +116,6 @@ fn failure(message: &str, prefix: &str) -> Option<String> {
         .lines()
         .find_map(|line| line.strip_prefix(prefix))
         .map(|line| line.trim().to_owned())
-}
-
-/// One updater preference as a switch.
-fn switch_item(
-    entity: &Entity<Updater>,
-    title: &'static str,
-    pref: fn(&mut Preferences) -> &mut bool,
-    description: &'static str,
-) -> SettingItem {
-    let (reader, writer) = (entity.clone(), entity.clone());
-    let field = SettingField::switch(
-        move |cx| *pref(&mut reader.read(cx).prefs.clone()),
-        move |value, cx| {
-            writer.update(cx, |updater, cx| {
-                updater.preferences(|prefs| *pref(prefs) = value, cx)
-            });
-        },
-    );
-    SettingItem::new(title, field).description(description)
-}
-
-/// The Updates page in a skin, with build strings in the terminal `font`.
-pub(crate) fn page(
-    entity: &Entity<Updater>,
-    look: &Rc<Look>,
-    font: &str,
-    cx: &gpui::App,
-) -> SettingPage {
-    let updater = entity.read(cx);
-    let busy = updater.busy;
-    let mono = SharedString::from(font.to_owned());
-    let check = Action {
-        id: "updates-check",
-        label: "Check now",
-        primary: false,
-        disabled: busy,
-        run: Updater::check,
-    };
-    let install = updater
-        .desktop_action()
-        .filter(|_| !cfg!(target_os = "linux"))
-        .map(|action| Action {
-            id: "updates-install",
-            label: action.label(),
-            primary: true,
-            disabled: false,
-            run: Updater::desktop_act,
-        });
-    let runtime_enabled = !busy
-        && !updater.development
-        && updater.prefs.manage_runtime
-        && updater.runtime_available();
-    let runtime_install = runtime_enabled.then_some(Action {
-        id: "runtime-update",
-        label: if updater.pending_handoff {
-            "Retry handoff"
-        } else {
-            "Update & hand off"
-        },
-        primary: true,
-        disabled: false,
-        run: Updater::install_runtime,
-    });
-    let desktop = Header {
-        title: "Phux Desktop",
-        build: updater
-            .current
-            .as_ref()
-            .map_or("development build".into(), |release| {
-                format!(
-                    "{} · {} · {}",
-                    release.version,
-                    release.channel.as_str(),
-                    release.revision.chars().take(8).collect::<String>()
-                )
-            }),
-        status: updater.desktop_status(),
-        detail: updater.desktop_detail(),
-        note: cfg!(target_os = "linux").then(|| {
-            updates::linux_install_remedy(updater.prefs.desktop, updater.bundle.as_deref())
-        }),
-        actions: std::iter::once(check).chain(install).collect(),
-    };
-    let runtime = Header {
-        title: "phux CLI & server",
-        build: updater.runtime.as_ref().map_or_else(
-            || "managed by the phux CLI".to_owned(),
-            |runtime| format!("{} → {}", runtime.current, runtime.target),
-        ),
-        status: updater.runtime_status(),
-        detail: failure(&updater.message, "phux:").map(|failure| (failure, true)),
-        note: updater
-            .runtime
-            .as_ref()
-            .and_then(|runtime| runtime.native_command.clone()),
-        actions: runtime_install.into_iter().collect(),
-    };
-    SettingPage::new("Updates")
-        .group(
-            SettingGroup::new()
-                .title("Desktop")
-                .item(desktop.item(entity, look, &mono))
-                .item(switch_item(
-                    entity,
-                    "Automatic checks",
-                    |prefs| &mut prefs.automatic,
-                    "At launch and every six hours. Nothing downloads or restarts until you click.",
-                ))
-                .item(channel_item(entity, false, busy, updater.prefs.desktop, look)),
-        )
-        .group(
-            SettingGroup::new()
-                .title("phux on this computer")
-                .item(runtime.item(entity, look, &mono))
-                .item(switch_item(
-                    entity,
-                    "Manage phux updates",
-                    |prefs| &mut prefs.manage_runtime,
-                    "Let this app run phux’s own updater for this computer and hand the live server off. Never touches remote hosts. Off leaves the install and sessions alone.",
-                ))
-                .item(channel_item(entity, true, busy, updater.prefs.runtime, look)),
-        )
-}
-
-/// Stable and Next as one segmented control, beside its title like every other row.
-fn channel_item(
-    entity: &Entity<Updater>,
-    runtime: bool,
-    busy: bool,
-    selected: updates::Channel,
-    look: &Rc<Look>,
-) -> SettingItem {
-    let (entity, look) = (entity.clone(), look.clone());
-    let pref: fn(&mut Preferences) -> &mut updates::Channel = if runtime {
-        |prefs| &mut prefs.runtime
-    } else {
-        |prefs| &mut prefs.desktop
-    };
-    SettingItem::new(
-        "Channel",
-        SettingField::render(move |_, _, _| {
-            div()
-                .flex()
-                .p(px(2.))
-                .gap(px(2.))
-                .rounded(corner(&look, 7.))
-                .bg(look.hover)
-                .children(
-                    [updates::Channel::Stable, updates::Channel::Next]
-                        .into_iter()
-                        .map(|channel| {
-                            let entity = entity.clone();
-                            let on = channel == selected;
-                            let id = format!(
-                                "{}-{}",
-                                if runtime { "runtime" } else { "desktop" },
-                                channel.as_str()
-                            );
-                            div()
-                                .id(SharedString::from(id))
-                                .px(px(12.))
-                                .py(px(3.))
-                                .rounded(corner(&look, 5.))
-                                .text_sm()
-                                .when(on, |segment| {
-                                    segment
-                                        .bg(from_hex(&look.chrome.raised))
-                                        .when(!look.popover_shadow.is_empty(), |segment| {
-                                            segment.shadow_sm()
-                                        })
-                                        .text_color(look.ink)
-                                })
-                                .when(!on, |segment| {
-                                    segment.text_color(from_hex(&look.chrome.muted))
-                                })
-                                .when(!busy && !on, |segment| {
-                                    segment
-                                        .cursor_pointer()
-                                        .hover(|style| style.text_color(look.ink))
-                                        .on_click(move |_, _, cx| {
-                                            entity.update(cx, |updater, cx| {
-                                                updater
-                                                    .preferences(|prefs| *pref(prefs) = channel, cx)
-                                            })
-                                        })
-                                })
-                                .child(if channel == updates::Channel::Stable {
-                                    "Stable"
-                                } else {
-                                    "Next"
-                                })
-                        }),
-                )
-        }),
-    )
-    .description(
-        "Stable is the latest release. Next follows verified main builds; switch back any time.",
-    )
 }
 
 impl Updater {
@@ -432,6 +146,8 @@ impl Updater {
             staged: None,
             relaunch: false,
             handed_off: false,
+            chained: false,
+            work: Work::Checking,
             _automatic: None,
             _quit: None,
         }
@@ -528,6 +244,7 @@ impl Updater {
             return;
         }
         self.busy = true;
+        self.work = Work::Checking;
         self.message = "Checking releases…".into();
         let prefs = self.prefs.clone();
         let phux = self.phux.clone();
@@ -591,33 +308,63 @@ impl Updater {
             .is_some_and(|(current, target)| updates::available(current, target))
     }
 
-    /// The Desktop row's primary action, if any.
-    pub fn desktop_action(&self) -> Option<DesktopAction> {
+    /// Whether a click should move phux: managed here and an update is waiting.
+    pub fn phux_due(&self) -> bool {
+        self.prefs.manage_runtime && self.runtime_available()
+    }
+
+    /// Whether the desktop has an update this click can carry.
+    fn desktop_due(&self) -> bool {
+        self.staged.is_some() || self.desktop_available()
+    }
+
+    /// The update button's action, if any product has one.
+    pub fn action(&self) -> Option<UpdateAction> {
         if self.busy || self.development {
             return None;
         }
-        if self.staged.is_some() {
-            return Some(if self.couples_runtime() {
-                DesktopAction::RuntimeThenRestart
-            } else {
-                DesktopAction::Restart
-            });
+        // Linux reruns the installer for the desktop, so phux moves alone
+        // there and the page names the installer command.
+        let desktop = self.desktop_due() && !cfg!(target_os = "linux");
+        match (desktop, self.phux_due()) {
+            (true, true) => Some(UpdateAction::Both),
+            (true, false) => Some(UpdateAction::Desktop {
+                staged: self.staged.is_some(),
+            }),
+            (false, true) => Some(UpdateAction::Phux {
+                retry: self.pending_handoff,
+            }),
+            (false, false) if self.desktop_due() => Some(UpdateAction::Desktop { staged: false }),
+            (false, false) => None,
         }
-        self.desktop_available().then_some(DesktopAction::Download)
     }
 
-    pub fn desktop_act(&mut self, cx: &mut Context<Self>) {
-        if cfg!(target_os = "linux") {
+    pub fn act(&mut self, cx: &mut Context<Self>) {
+        let Some(action) = self.action() else {
+            return;
+        };
+        if action.desktop() && cfg!(target_os = "linux") {
             self.message =
                 updates::linux_install_remedy(self.prefs.desktop, self.bundle.as_deref());
             cx.notify();
             return;
         }
-        match self.desktop_action() {
-            Some(DesktopAction::Download) => self.download_desktop(cx),
-            Some(DesktopAction::Restart) => self.restart_to_update(cx),
-            Some(DesktopAction::RuntimeThenRestart) => self.run_runtime(cx, true),
-            None => {}
+        if action.desktop() && self.staged.is_none() {
+            self.chained = true;
+            self.download_desktop(cx);
+            return;
+        }
+        self.finish_update(cx);
+    }
+
+    /// Everything after the desktop is staged: phux first, so the new desktop
+    /// restarts onto the server it speaks to, then the restart itself.
+    fn finish_update(&mut self, cx: &mut Context<Self>) {
+        self.chained = false;
+        if self.phux_due() {
+            self.run_runtime(cx, true);
+        } else {
+            self.restart_to_update(cx);
         }
     }
 
@@ -629,9 +376,10 @@ impl Updater {
             .or(self.target.as_ref().filter(|_| self.desktop_available()))
     }
 
-    /// `(speaking now, incoming)` when the incoming desktop speaks another wire
-    /// protocol than the local server. Without a runtime check, the server is
-    /// assumed to speak what this desktop links.
+    /// `(speaking now, incoming)` when the incoming desktop is on another wire
+    /// protocol major than the local server. A minor difference on the same
+    /// major interoperates and is not a change. Without a runtime check, the
+    /// server is assumed to speak what this desktop links.
     pub fn protocol_change(&self) -> Option<(String, String)> {
         let incoming = self.incoming()?;
         let now = self
@@ -639,91 +387,7 @@ impl Updater {
             .as_ref()
             .and_then(|runtime| runtime.protocol_current.clone())
             .unwrap_or_else(updates::own_protocol);
-        (incoming.protocol != now).then(|| (now, incoming.protocol.clone()))
-    }
-
-    /// Restart must first move phux: the protocol changes and phux is managed here.
-    fn couples_runtime(&self) -> bool {
-        let Some((_, incoming)) = self.protocol_change() else {
-            return false;
-        };
-        // Updating phux helps only when it lands on the incoming protocol.
-        let lands = self.runtime.as_ref().is_some_and(|runtime| {
-            runtime
-                .protocol_target
-                .as_deref()
-                .is_none_or(|target| target == incoming)
-        });
-        lands && self.prefs.manage_runtime && self.runtime_available()
-    }
-
-    fn desktop_status(&self) -> (String, Tone) {
-        if self.busy {
-            return ("Working…".to_owned(), Tone::Quiet);
-        }
-        if self.development {
-            return ("Development".to_owned(), Tone::Quiet);
-        }
-        if failure(&self.message, "Desktop:").is_some() {
-            return ("Check failed".to_owned(), Tone::Bad);
-        }
-        if let Some(staged) = &self.staged {
-            return (
-                format!("{} ready to install", staged.release.version),
-                Tone::Ready,
-            );
-        }
-        match &self.target {
-            Some(target) if self.desktop_available() => {
-                (format!("{} available", target.version), Tone::Ready)
-            }
-            Some(_) => ("Up to date".to_owned(), Tone::Good),
-            None => ("Not checked".to_owned(), Tone::Quiet),
-        }
-    }
-
-    fn runtime_status(&self) -> (String, Tone) {
-        let (status, tone) = if !self.prefs.manage_runtime {
-            ("Not managed", Tone::Quiet)
-        } else if failure(&self.message, "phux:").is_some() {
-            ("Check failed", Tone::Bad)
-        } else if self.runtime_available() {
-            ("Update available", Tone::Ready)
-        } else if self.runtime.is_some() {
-            ("Up to date", Tone::Good)
-        } else {
-            ("Not checked", Tone::Quiet)
-        };
-        (status.to_owned(), tone)
-    }
-
-    fn desktop_detail(&self) -> Option<(String, bool)> {
-        if let Some(failure) = failure(&self.message, "Desktop:") {
-            return Some((failure, true));
-        }
-        if self.development {
-            return Some((
-                "Launched from a checkout or an explicit target, so installing is off.".to_owned(),
-                false,
-            ));
-        }
-        let protocol = self.protocol_change().map(|(now, next)| {
-            format!(
-                "This update changes the wire protocol from {now} to {next}; phux on this computer must be updated too."
-            )
-        });
-        let staged = self.staged.as_ref().map(|staged| {
-            format!(
-                "Downloaded and verified {}. Restart to update, or it installs when you quit.",
-                staged.release.version
-            )
-        });
-        let text = [staged, protocol]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ");
-        (!text.is_empty()).then_some((text, false))
+        (!same_protocol_line(&incoming.protocol, &now)).then(|| (now, incoming.protocol.clone()))
     }
 
     fn download_desktop(&mut self, cx: &mut Context<Self>) {
@@ -731,6 +395,7 @@ impl Updater {
             return;
         };
         self.busy = true;
+        self.work = Work::Downloading;
         self.message = "Downloading and verifying desktop update…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -750,21 +415,29 @@ impl Updater {
             })
             .await;
             let _ = this.update(cx, |updater, cx| {
-                updater.record_stage(result);
+                if updater.record_stage(result) {
+                    updater.finish_update(cx);
+                }
                 cx.notify();
             });
         })
         .detach();
     }
 
-    fn record_stage(&mut self, result: anyhow::Result<Staged>) {
+    /// Record a finished download; true when the click goes on to phux and the restart.
+    fn record_stage(&mut self, result: anyhow::Result<Staged>) -> bool {
         self.busy = false;
+        let chained = std::mem::take(&mut self.chained);
         match result {
             Ok(staged) => {
                 self.message = format!("Desktop {} is ready to install", staged.release.version);
                 self.staged = Some(staged);
+                chained
             }
-            Err(error) => self.message = format!("Desktop: Update failed: {error:#}"),
+            Err(error) => {
+                self.message = format!("Desktop: Update failed: {error:#}");
+                false
+            }
         }
     }
 
@@ -776,15 +449,8 @@ impl Updater {
         cx.quit();
     }
 
-    pub fn install_runtime(&mut self, cx: &mut Context<Self>) {
-        self.run_runtime(cx, false);
-    }
-
     fn run_runtime(&mut self, cx: &mut Context<Self>, then_restart: bool) {
-        if self.busy || self.development || !self.prefs.manage_runtime {
-            return;
-        }
-        if !self.runtime_available() {
+        if self.busy || self.development || !self.phux_due() {
             return;
         }
         let phux = self.phux.clone();
@@ -793,7 +459,8 @@ impl Updater {
         let retry = self.pending_handoff;
         let restart = then_restart && self.staged.is_some();
         self.busy = true;
-        self.message = "Updating phux and handing off the live server…".into();
+        self.work = Work::Installing;
+        self.message = "Updating phux and handing the live server off…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = smol::unblock(move || {
@@ -805,27 +472,42 @@ impl Updater {
             })
             .await;
             let _ = this.update(cx, |updater, cx| {
-                updater.busy = false;
-                updater.message = match result {
-                    Ok(result) => {
-                        updater.runtime = None;
-                        updater.pending_handoff = result.retry_handoff;
-                        if result.reconnect {
-                            updater.runtime_generation += 1;
-                        }
-                        // The staged desktop needs the server it just handed off to.
-                        if restart && result.reconnect {
-                            updater.relaunch = true;
-                            cx.quit();
-                        }
-                        result.message
-                    }
-                    Err(error) => format!("phux update failed: {error:#}"),
-                };
+                // The staged desktop needs the server phux just handed off to.
+                if updater.record_runtime(result) && restart {
+                    updater.relaunch = true;
+                    cx.quit();
+                }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Record a finished phux update; true once the live server was handed off.
+    fn record_runtime(&mut self, result: anyhow::Result<updates::RuntimeInstalled>) -> bool {
+        self.busy = false;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.message = format!("phux: Update failed: {error:#}");
+                return false;
+            }
+        };
+        self.pending_handoff = result.retry_handoff;
+        // What was the target is installed now, unless only the handoff ran.
+        self.runtime = self.runtime.take().map(|runtime| RuntimeRelease {
+            current: runtime.target.clone(),
+            available: false,
+            protocol_current: runtime.protocol_target.clone().or(runtime.protocol_current),
+            ..runtime
+        });
+        if result.reconnect {
+            self.runtime_generation += 1;
+            self.message = "phux is updated and the server was handed off".into();
+        } else {
+            self.message = format!("{HANDOFF_NOTE} {}", result.message);
+        }
+        result.reconnect
     }
 
     pub fn runtime_available(&self) -> bool {
@@ -852,206 +534,4 @@ fn needs_recheck(before: &Preferences, after: &Preferences) -> bool {
     let runtime_enabled = after.manage_runtime && !before.manage_runtime;
     let automatic_enabled = after.automatic && !before.automatic;
     channel_changed || runtime_enabled || automatic_enabled
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn release(version: &str, protocol: &str) -> Release {
-        Release {
-            version: version.into(),
-            protocol: protocol.into(),
-            ..Release::default()
-        }
-    }
-
-    fn installed(version: &str) -> Updater {
-        let mut updater = Updater::new();
-        updater.current = Some(release(version, &updates::own_protocol()));
-        updater.development = false;
-        updater
-    }
-
-    fn runtime(protocol_current: Option<&str>) -> RuntimeRelease {
-        RuntimeRelease {
-            current: "1.0.0".into(),
-            target: "2.0.0".into(),
-            available: true,
-            mutable: true,
-            native_command: None,
-            protocol_current: protocol_current.map(str::to_owned),
-            protocol_target: None,
-        }
-    }
-
-    #[test]
-    fn a_failed_check_clears_stale_targets_but_preserves_independent_success() {
-        let mut updater = installed("0.2.0");
-        updater.busy = true;
-        updater.record_check(
-            Ok(release("0.3.0", "0.9")),
-            Some(Err(anyhow::anyhow!("offline"))),
-        );
-        assert!(!updater.busy);
-        assert!(updater.desktop_available());
-        assert!(updater.message.contains("phux: offline"));
-        updater.record_check(Err(anyhow::anyhow!("rate limited")), None);
-        assert!(updater.target.is_none());
-        assert!(updater.runtime.is_none());
-        assert!(!updater.desktop_available());
-    }
-
-    #[test]
-    fn an_available_update_downloads_then_offers_restart() {
-        let mut updater = installed("0.2.0");
-        let protocol = updates::own_protocol();
-        updater.record_check(Ok(release("0.3.0", &protocol)), None);
-        assert_eq!(updater.desktop_action(), Some(DesktopAction::Download));
-        updater.busy = true;
-        assert_eq!(updater.desktop_action(), None);
-        updater.record_stage(Ok(Staged {
-            app: "/Applications/.phux-desktop-update/Phux.app".into(),
-            release: release("0.3.0", &protocol),
-        }));
-        assert!(!updater.busy);
-        assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
-        assert_eq!(DesktopAction::Restart.label(), "Restart to update");
-        let (detail, failed) = updater.desktop_detail().unwrap();
-        assert!(!failed);
-        assert!(detail.contains("installs when you quit"), "{detail}");
-        // A check after staging keeps the staged bundle.
-        updater.record_check(Ok(release("0.3.0", &protocol)), None);
-        assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
-    }
-
-    #[test]
-    fn a_failed_stage_is_shown_as_a_desktop_failure() {
-        let mut updater = installed("0.2.0");
-        updater.record_check(Ok(release("0.3.0", "0.9")), None);
-        updater.record_stage(Err(anyhow::anyhow!("checksum mismatch")));
-        assert!(updater.staged.is_none());
-        let (detail, failed) = updater.desktop_detail().unwrap();
-        assert!(failed);
-        assert_eq!(detail, "Update failed: checksum mismatch");
-    }
-
-    #[test]
-    fn switching_the_desktop_channel_drops_a_staged_update() {
-        let mut updater = installed("0.2.0");
-        updater.staged = Some(Staged {
-            app: PathBuf::from("/x/Phux.app"),
-            release: release("0.3.0", "0.9"),
-        });
-        // The loaded preferences come from the user's config; switch away
-        // from whichever channel they hold.
-        let mut prefs = updater.prefs.clone();
-        prefs.desktop = if prefs.desktop == updates::Channel::Next {
-            updates::Channel::Stable
-        } else {
-            updates::Channel::Next
-        };
-        updater.adopt_preferences(prefs);
-        assert!(updater.staged.is_none());
-    }
-
-    #[test]
-    fn a_protocol_change_is_named_and_couples_a_managed_runtime() {
-        let mut updater = installed("0.2.0");
-        updater.record_check(Ok(release("0.3.0", "99.0")), None);
-        let (now, next) = updater.protocol_change().unwrap();
-        assert_eq!(
-            (now.as_str(), next.as_str()),
-            (updates::own_protocol().as_str(), "99.0")
-        );
-        let (detail, _) = updater.desktop_detail().unwrap();
-        assert!(detail.contains("must be updated too"), "{detail}");
-        updater.staged = Some(Staged {
-            app: PathBuf::from("/x/Phux.app"),
-            release: release("0.3.0", "99.0"),
-        });
-        assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
-        updater.prefs.manage_runtime = true;
-        updater.runtime = Some(runtime(None));
-        assert_eq!(
-            updater.desktop_action(),
-            Some(DesktopAction::RuntimeThenRestart)
-        );
-        // A runtime update that lands elsewhere cannot fix the mismatch.
-        let mut elsewhere = runtime(None);
-        elsewhere.protocol_target = Some("98.0".into());
-        updater.runtime = Some(elsewhere);
-        assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
-        // A server already on the incoming protocol needs no coupling.
-        updater.runtime = Some(runtime(Some("99.0")));
-        assert_eq!(updater.protocol_change(), None);
-        assert_eq!(updater.desktop_action(), Some(DesktopAction::Restart));
-    }
-
-    #[test]
-    fn opting_out_does_not_start_another_check() {
-        let mut before = Preferences::default();
-        let mut after = before.clone();
-        after.automatic = false;
-        assert!(!needs_recheck(&before, &after));
-        before.manage_runtime = true;
-        after = before.clone();
-        after.manage_runtime = false;
-        assert!(!needs_recheck(&before, &after));
-        after.desktop = updates::Channel::Next;
-        assert!(needs_recheck(&before, &after));
-    }
-
-    #[gpui::test]
-    fn development_and_unmanaged_runtime_cannot_install(cx: &mut gpui::TestAppContext) {
-        use gpui::AppContext;
-        let updater = cx.new(|_| Updater::new());
-        updater.update(cx, |updater, cx| {
-            updater.prefs.manage_runtime = true;
-            updater.runtime = Some(runtime(None));
-            updater.install_runtime(cx);
-            assert!(!updater.busy);
-            updater.development = false;
-            updater.prefs.manage_runtime = false;
-            updater.install_runtime(cx);
-            assert!(!updater.busy);
-            updater.desktop_act(cx);
-            assert!(!updater.busy);
-        });
-    }
-
-    #[gpui::test]
-    fn development_builds_never_stage_or_swap(cx: &mut gpui::TestAppContext) {
-        use gpui::AppContext;
-        let updater = cx.new(|_| Updater::new());
-        updater.update(cx, |updater, cx| {
-            updater.current = Some(release("0.2.0", "0.9"));
-            updater.target = Some(release("0.3.0", "0.9"));
-            assert!(updater.development);
-            assert_eq!(updater.desktop_action(), None);
-            updater.desktop_act(cx);
-            assert!(!updater.busy);
-            updater.staged = Some(Staged {
-                app: PathBuf::from("/x/Phux.app"),
-                release: release("0.3.0", "0.9"),
-            });
-            updater.apply_staged();
-            assert!(!updater.handed_off);
-        });
-    }
-
-    #[cfg(target_os = "linux")]
-    #[gpui::test]
-    fn linux_install_action_is_manual_and_never_stages(cx: &mut gpui::TestAppContext) {
-        use gpui::AppContext;
-        let updater = cx.new(|_| installed("0.2.0"));
-        updater.update(cx, |updater, cx| {
-            updater.target = Some(release("0.3.0", &updates::own_protocol()));
-            updater.desktop_act(cx);
-            assert!(!updater.busy);
-            assert!(updater.staged.is_none());
-            assert!(!updater.handed_off);
-            assert!(updater.message.contains("PHUX_REQUIRE_SIGNATURE=1"));
-        });
-    }
 }

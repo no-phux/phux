@@ -10,7 +10,7 @@ use gpui_kit::assets::IconName;
 use super::{Agent, Reach};
 use crate::app::color::from_hex;
 use crate::app::desk::Desk;
-use crate::app::overlays::{SHEET_GUTTER, corner, sheet, sheet_top};
+use crate::app::overlays::{SHEET_GUTTER, corner, sheet};
 use crate::app::skin::Look;
 use crate::app::ui::{agent_swatch, dot, icon_button, muted};
 use crate::connection::AgentState;
@@ -123,9 +123,7 @@ pub(crate) fn panel(
     let inner = (width - 40.).max(0.);
     let cols = columns(inner);
     let tile_width = ((inner - GAP * (cols - 1) as f32) / cols as f32).max(0.);
-    let height =
-        (window.viewport_size().height.as_f32() - sheet_top(window.viewport_size()) - SHEET_GUTTER)
-            .max(0.);
+    let height = (window.viewport_size().height.as_f32() - 2. * SHEET_GUTTER).max(0.);
     let rows = agents
         .chunks(cols)
         .enumerate()

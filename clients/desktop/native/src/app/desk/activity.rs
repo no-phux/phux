@@ -77,9 +77,11 @@ impl Desk {
             link.workspace.settle(&link.connection);
         }
         self.capture_receipts(events, cx);
+        self.native_launch_receipts(events, cx);
         self.settle_project_terminal();
         self.settle_fleet_terminal();
         self.reveal_pending_native(cx);
+        self.settle_pending_native(cx);
         self.take_notices();
         self.note_agents();
         self.note_approvals(cx);

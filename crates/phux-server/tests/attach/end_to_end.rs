@@ -23,11 +23,16 @@ use phux_server_testkit::{
 };
 
 fn hello_with(minor: u16, client_caps: ClientCapabilities) -> FrameKind {
+    hello_at(PROTOCOL_VERSION.major, minor, 0, client_caps)
+}
+
+/// A HELLO offering exactly `major.minor.patch`.
+fn hello_at(major: u16, minor: u16, patch: u16, client_caps: ClientCapabilities) -> FrameKind {
     FrameKind::Hello {
         client_name: "phux-end-to-end-test".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
+        protocol_major: major,
         protocol_minor: minor,
-        protocol_patch: 0,
+        protocol_patch: patch,
         client_caps,
     }
 }
@@ -148,6 +153,70 @@ fn hello_ok_advertises_the_reference_server_and_one_incarnation() {
         attach_default(&mut stream).await;
         drop((stream, second, synth));
         join_after_shutdown(shutdown, server).await;
+    });
+}
+
+/// The major is the compatibility line: a client on a newer minor or patch
+/// of the server's major is admitted at the server's own version, and the
+/// connection works.
+#[test]
+fn a_newer_minor_or_patch_of_the_same_major_is_admitted() {
+    run_local(async {
+        let (_tmp, socket, (shutdown, server)) = server();
+        let major = PROTOCOL_VERSION.major;
+        for (minor, patch) in [
+            (PROTOCOL_VERSION.minor + 1, 0),
+            (PROTOCOL_VERSION.minor + 40, 7),
+            (PROTOCOL_VERSION.minor, PROTOCOL_VERSION.patch + 3),
+        ] {
+            let mut stream = raw(&socket).await;
+            send_frame(
+                &mut stream,
+                &hello_at(major, minor, patch, ClientCapabilities::new()),
+            )
+            .await;
+            let FrameKind::HelloOk {
+                protocol_major,
+                protocol_minor,
+                protocol_patch,
+                ..
+            } = recv_typed(&mut stream).await.1
+            else {
+                panic!("{major}.{minor}.{patch} must be admitted");
+            };
+            assert_eq!(
+                (protocol_major, protocol_minor, protocol_patch),
+                (
+                    PROTOCOL_VERSION.major,
+                    PROTOCOL_VERSION.minor,
+                    PROTOCOL_VERSION.patch
+                ),
+                "HELLO_OK states the server's own version"
+            );
+            send_frame(
+                &mut stream,
+                &FrameKind::Command {
+                    request_id: 5,
+                    command: Command::GetState {
+                        scope: StateScope::Server,
+                    },
+                },
+            )
+            .await;
+            let result = recv_until(&mut stream, |_, frame| match frame {
+                FrameKind::CommandResult {
+                    request_id: 5,
+                    result,
+                } => Some(result),
+                _ => None,
+            })
+            .await;
+            assert!(
+                matches!(result, CommandResult::OkWith(CommandValue::State(_))),
+                "{result:?}"
+            );
+        }
+        join_after_shutdown(shutdown, server).await;
         assert!(!socket.exists(), "socket unlinked after shutdown");
     });
 }
@@ -191,32 +260,31 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
             scrollback_limit_lines: 0,
             role_policy: None,
         };
-        let newer = format!(
-            "client offered {}.{}.0",
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor + 1
-        );
-        let older = format!(
-            "client offered {}.{}.0",
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor - 1
-        );
+        // Only a different major is refused; the remediation names the
+        // stale side.
+        let newer = format!("client offered {}.0.0", PROTOCOL_VERSION.major + 1);
+        let older = format!("client offered {}.9.0", PROTOCOL_VERSION.major - 1);
+        let requires = format!("server requires {}.x", PROTOCOL_VERSION.major);
         let cases: Vec<(Vec<FrameKind>, ErrorCode, Vec<&str>)> = vec![
             (
-                vec![hello_with(
-                    PROTOCOL_VERSION.minor + 1,
+                vec![hello_at(
+                    PROTOCOL_VERSION.major + 1,
+                    0,
+                    0,
                     ClientCapabilities::new(),
                 )],
                 ErrorCode::VersionIncompatible,
-                vec![&newer, "update the phux server"],
+                vec![&newer, &requires, "update the phux server"],
             ),
             (
-                vec![hello_with(
-                    PROTOCOL_VERSION.minor - 1,
+                vec![hello_at(
+                    PROTOCOL_VERSION.major - 1,
+                    9,
+                    0,
                     ClientCapabilities::new(),
                 )],
                 ErrorCode::VersionIncompatible,
-                vec![&older, "update the phux app/client"],
+                vec![&older, &requires, "update the phux app/client"],
             ),
             (
                 vec![hello_with(PROTOCOL_VERSION.minor, native_only)],
@@ -225,7 +293,7 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
             ),
             (
                 vec![attach_by_name("default")],
-                ErrorCode::VersionIncompatible,
+                ErrorCode::MalformedMessage,
                 vec![],
             ),
             (
@@ -289,7 +357,7 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
         assert!(matches!(
             recv_typed(&mut stream).await.1,
             FrameKind::Error {
-                code: ErrorCode::VersionIncompatible,
+                code: ErrorCode::MalformedMessage,
                 ..
             }
         ));

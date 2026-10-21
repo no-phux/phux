@@ -47,6 +47,7 @@ pub mod input_replay;
 pub mod keys;
 pub mod layout;
 pub mod multi_pane;
+pub mod newer_server;
 pub mod org_ops;
 pub mod organization;
 pub mod organize;

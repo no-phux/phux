@@ -150,30 +150,30 @@ async fn start() -> (Server, UnixStream, ResourceId, UnixStream) {
 
 #[test]
 fn attach_without_role_policy_is_byte_identical_and_behaves_as_before() {
-    // No role writes nothing: ATTACH_RESOURCE and DETACH_RESOURCE differ
-    // only in the command tag.
+    // No role and no cursor are two absent presence bytes: ATTACH_RESOURCE
+    // is DETACH_RESOURCE with its own tag and `0, 0` appended.
     let pane = ResourceId::local(7);
-    let encode = |command| {
-        encode_frame_vec(&FrameKind::Command {
+    let body = |command| {
+        let framed = encode_frame_vec(&FrameKind::Command {
             request_id: 1,
             command,
-        })
+        });
+        let mut dec = phux_protocol::wire::decode::Decoder::new(&framed[5..]);
+        while let Some((id, value)) = dec.read_field().unwrap() {
+            if id == 2 {
+                return value.to_vec();
+            }
+        }
+        panic!("COMMAND without a command field");
     };
-    let attach_bytes = encode(attach_resource(&pane, None));
-    let detach_bytes = encode(Command::DetachResource { terminal_id: pane });
+    let attach_body = body(attach_resource(&pane, None));
+    let detach_body = body(Command::DetachResource { terminal_id: pane });
     assert_eq!(
-        attach_bytes.len(),
-        detach_bytes.len(),
-        "no trailing role byte"
+        (attach_body[0], detach_body[0]),
+        (0x01, 0x02),
+        "the command tags"
     );
-    let differing: Vec<usize> = (0..attach_bytes.len())
-        .filter(|&i| attach_bytes[i] != detach_bytes[i])
-        .collect();
-    assert_eq!(differing.len(), 1);
-    assert_eq!(
-        (attach_bytes[differing[0]], detach_bytes[differing[0]]),
-        (0x01, 0x02)
-    );
+    assert_eq!(attach_body[1..], [&detach_body[1..], &[0, 0]].concat());
 
     phux_server_testkit::run_local(async {
         let server = Server::start(Some(SESSION), |_| {});

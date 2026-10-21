@@ -1,15 +1,45 @@
 //! Inbound frame decoding and dispatch.
 
 use bytes::Bytes;
+use phux_client_core::newer_server::read_undecodable_frame;
+use phux_protocol::wire::DecodeError;
 
-use super::{
-    AgentEvent, ControlError, ControlPlane, EngineEvent, Event, FrameKind, HistoryRejectionReason,
-    HistoryUnavailableReason, WireRejection, WireTombstone,
-};
+use super::{AgentEvent, ControlError, ControlPlane, EngineEvent, Event, FrameKind};
 
-enum ClassifiedFrame {
-    Engine(EngineEvent),
-    Other(FrameKind),
+mod classify;
+
+use classify::{ClassifiedFrame, classify_engine_frame};
+
+/// A decoded frame. For one that did not decode, what a newer 1.x server's
+/// value reads as ([`read_undecodable_frame`]): a correlated reply becomes an
+/// `ERROR` settling its request, anything else is logged and skipped
+/// (`None`); malformed bytes are a protocol error.
+fn decoded_or_fallback<T>(
+    bytes: &[u8],
+    decoded: Result<(FrameKind, T), DecodeError>,
+) -> Result<Option<(FrameKind, Option<T>)>, ControlError> {
+    let error = match decoded {
+        Ok((frame, tail)) => return Ok(Some((frame, Some(tail)))),
+        Err(error) => error,
+    };
+    match read_undecodable_frame(bytes, error) {
+        Ok(Some(settled)) => {
+            tracing::warn!("settling a server reply this build cannot read");
+            Ok(Some((settled, None)))
+        }
+        Ok(None) => {
+            tracing::warn!("skipping a server frame this build cannot read");
+            Ok(None)
+        }
+        Err(error) => Err(ControlError::Protocol(format!(
+            "invalid protocol frame: {error}"
+        ))),
+    }
+}
+
+/// Whether a decode left bytes after its frame.
+fn has_trailing_bytes(tail: Option<&[u8]>) -> bool {
+    tail.is_some_and(|tail| !tail.is_empty())
 }
 
 const fn allowed_before_handshake(frame: &FrameKind) -> bool {
@@ -75,10 +105,12 @@ impl ControlPlane {
     // ----- frames in ------------------------------------------------
 
     /// Decode exactly one SPEC section 5 frame under the negotiated limits
-    /// and feed it.
+    /// and feed it. A well-framed frame carrying a value this build does not
+    /// define (a newer 1.x server's frame type or enum value) is logged and
+    /// skipped; malformed bytes are a protocol error.
     pub fn feed_bytes(&mut self, bytes: &[u8]) -> Result<(), ControlError> {
-        let frame = self.decode_frame(bytes)?;
-        self.feed(frame)
+        self.decode_frame(bytes)?
+            .map_or(Ok(()), |frame| self.feed(frame))
     }
 
     /// Decode a transport read's complete frames in order, applying each
@@ -88,7 +120,8 @@ impl ControlPlane {
         let mut deferred_error = None;
         for bytes in frames {
             let frame = match self.decode_frame(bytes.as_ref()) {
-                Ok(frame) => frame,
+                Ok(Some(frame)) => frame,
+                Ok(None) => continue,
                 Err(error) => {
                     return self.error_after_engine_batch(
                         &mut engine_events,
@@ -131,32 +164,35 @@ impl ControlPlane {
         deferred_error.map_or(Ok(()), Err)
     }
 
-    fn decode_frame(&self, bytes: &[u8]) -> Result<FrameKind, ControlError> {
+    fn decode_frame(&self, bytes: &[u8]) -> Result<Option<FrameKind>, ControlError> {
         let decoded = self.decode_limits().map_or_else(
             || FrameKind::decode(bytes),
             |limits| FrameKind::decode_with_limits(bytes, limits),
         );
-        let (frame, tail) = decoded
-            .map_err(|error| ControlError::Protocol(format!("invalid protocol frame: {error}")))?;
-        if !tail.is_empty() {
+        let Some((frame, tail)) = decoded_or_fallback(bytes, decoded)? else {
+            return Ok(None);
+        };
+        if has_trailing_bytes(tail) {
             return Err(ControlError::Protocol(
                 "protocol message contained trailing bytes".to_owned(),
             ));
         }
-        Ok(frame)
+        Ok(Some(frame))
     }
 
     /// Decode a frame that is already a view of the socket buffer. Payload
     /// bytes alias that buffer instead of being copied.
-    fn decode_shared_frame(&self, bytes: &Bytes) -> Result<FrameKind, ControlError> {
-        let (frame, tail) = FrameKind::decode_shared(bytes, self.decode_limits())
-            .map_err(|error| ControlError::Protocol(format!("invalid protocol frame: {error}")))?;
-        if !tail.is_empty() {
+    fn decode_shared_frame(&self, bytes: &Bytes) -> Result<Option<FrameKind>, ControlError> {
+        let decoded = FrameKind::decode_shared(bytes, self.decode_limits());
+        let Some((frame, tail)) = decoded_or_fallback(bytes, decoded)? else {
+            return Ok(None);
+        };
+        if has_trailing_bytes(tail.as_deref()) {
             return Err(ControlError::Protocol(
                 "protocol message contained trailing bytes".to_owned(),
             ));
         }
-        Ok(frame)
+        Ok(Some(frame))
     }
 
     /// [`Self::feed_bytes_batch`] for frames that are frozen socket views.
@@ -165,7 +201,8 @@ impl ControlPlane {
         let mut deferred_error = None;
         for bytes in frames {
             let frame = match self.decode_shared_frame(bytes) {
-                Ok(frame) => frame,
+                Ok(Some(frame)) => frame,
+                Ok(None) => continue,
                 Err(error) => {
                     return self.error_after_engine_batch(
                         &mut engine_events,
@@ -189,13 +226,7 @@ impl ControlPlane {
             let error = ControlError::Protocol("server frame arrived before HELLO_OK".to_owned());
             return self.error_after_engine_batch(engine_events, deferred_error, error);
         }
-        let classified = match classify_engine_frame(frame) {
-            Ok(classified) => classified,
-            Err(error) => {
-                return self.error_after_engine_batch(engine_events, deferred_error, error);
-            }
-        };
-        match classified {
+        match classify_engine_frame(frame) {
             ClassifiedFrame::Engine(event) => {
                 engine_events.push(event);
                 Ok(())
@@ -390,7 +421,10 @@ impl ControlPlane {
         let Some(frame) = self.take_project_tag_frame(frame) else {
             return Ok(());
         };
-        match classify_engine_frame(frame)? {
+        let Some(frame) = self.take_global_metadata_frame(frame) else {
+            return Ok(());
+        };
+        match classify_engine_frame(frame) {
             ClassifiedFrame::Engine(event) => self.apply_engine(event),
             ClassifiedFrame::Other(frame) => {
                 self.push_event(Event::Frame(Box::new(frame)));
@@ -454,224 +488,5 @@ impl ControlPlane {
                 _ => (String::new(), None),
             };
         self.push_event(Event::SessionProject { name, project });
-    }
-}
-
-fn classify_engine_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlError> {
-    let event = match frame {
-        FrameKind::BootstrapBegin {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            profile,
-            cols,
-            rows,
-            base_seq,
-        } => EngineEvent::BootstrapBegin {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            profile,
-            cols,
-            rows,
-            base_seq,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            chunk_seq,
-            payload,
-        } => EngineEvent::BootstrapChunk {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            chunk_seq,
-            payload,
-        },
-        FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor,
-        } => EngineEvent::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor: history_cursor.map(|cursor| cursor.to_vec()),
-        },
-        FrameKind::BootstrapTombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            reason,
-            last_valid_seq,
-        } => EngineEvent::Tombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            reason,
-            last_valid_seq,
-        },
-        FrameKind::ResourceOutput {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq,
-            bytes,
-        } => EngineEvent::Output {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq,
-            bytes,
-        },
-        other => return classify_history_frame(other),
-    };
-    Ok(ClassifiedFrame::Engine(event))
-}
-
-fn classify_history_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlError> {
-    let event = match frame {
-        FrameKind::HistoryPage {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            page_seq,
-            cursor,
-            next_cursor,
-            payload,
-            rows,
-        } => EngineEvent::HistoryPage {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            page_seq,
-            rows,
-            cursor: cursor.to_vec(),
-            next_cursor: next_cursor.map(|cursor| cursor.to_vec()),
-            payload,
-        },
-        FrameKind::HistoryTombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
-            reason,
-        } => EngineEvent::HistoryTombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor: cursor.to_vec(),
-            reason: history_unavailable_reason(reason)?,
-        },
-        FrameKind::HistoryRejected {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
-            reason,
-            required_bytes,
-            required_rows,
-        } => EngineEvent::HistoryRejected {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor: cursor.to_vec(),
-            reason: history_rejection_reason(reason)?,
-            required_bytes,
-            required_rows,
-        },
-        other => return Ok(ClassifiedFrame::Other(other)),
-    };
-    Ok(ClassifiedFrame::Engine(event))
-}
-
-fn history_unavailable_reason(
-    reason: WireTombstone,
-) -> Result<HistoryUnavailableReason, ControlError> {
-    Ok(match reason {
-        WireTombstone::Stale => HistoryUnavailableReason::Stale,
-        WireTombstone::Pruned => HistoryUnavailableReason::Pruned,
-        WireTombstone::Reset => HistoryUnavailableReason::Reset,
-        WireTombstone::Resize => HistoryUnavailableReason::Resize,
-        WireTombstone::Expired => HistoryUnavailableReason::Expired,
-        WireTombstone::Released => HistoryUnavailableReason::Released,
-        WireTombstone::Limit => HistoryUnavailableReason::Limit,
-        WireTombstone::CodecFailure => HistoryUnavailableReason::CodecFailure,
-        _ => {
-            return Err(ControlError::Protocol(
-                "unsupported history tombstone reason".to_owned(),
-            ));
-        }
-    })
-}
-
-fn history_rejection_reason(reason: WireRejection) -> Result<HistoryRejectionReason, ControlError> {
-    Ok(match reason {
-        WireRejection::ZeroLimit => HistoryRejectionReason::ZeroLimit,
-        WireRejection::TooSmall => HistoryRejectionReason::TooSmall,
-        WireRejection::Busy => HistoryRejectionReason::Busy,
-        _ => {
-            return Err(ControlError::Protocol(
-                "unsupported history rejection reason".to_owned(),
-            ));
-        }
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ClassifiedFrame, EngineEvent, FrameKind, classify_engine_frame};
-    use phux_protocol::ResourceId;
-    use phux_protocol::ids::{BootstrapId, StreamId};
-
-    /// The decoded payload moves into the engine event: an output flood, a
-    /// bootstrap, or a history page is not copied a second time on its way
-    /// to the replica.
-    #[test]
-    fn engine_payloads_share_the_decoded_buffer() {
-        let payload = bytes::Bytes::from(vec![b'x'; 4096]);
-        let terminal_id = ResourceId::Local { id: 7 };
-        let stream_id = StreamId::new(1).expect("stream");
-        let bootstrap_id = BootstrapId::new(1).expect("generation");
-        let frames = [
-            FrameKind::ResourceOutput {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                seq: 1,
-                bytes: payload.clone(),
-            },
-            FrameKind::BootstrapChunk {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: payload.clone(),
-            },
-            FrameKind::HistoryPage {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                page_seq: 1,
-                cursor: bytes::Bytes::from_static(b"c"),
-                next_cursor: None,
-                payload: payload.clone(),
-                rows: 1,
-            },
-        ];
-        for frame in frames {
-            let Ok(ClassifiedFrame::Engine(event)) = classify_engine_frame(frame) else {
-                panic!("a stream frame classifies as an engine event");
-            };
-            let shared = match &event {
-                EngineEvent::Output { bytes, .. } => bytes,
-                EngineEvent::BootstrapChunk { payload, .. }
-                | EngineEvent::HistoryPage { payload, .. } => payload,
-                other => panic!("unexpected event {other:?}"),
-            };
-            assert_eq!(shared.as_ptr(), payload.as_ptr(), "{event:?} copied");
-        }
     }
 }

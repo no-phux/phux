@@ -64,7 +64,9 @@ dials out to the hub instead. **Joining trusts the hub with full satellite
 owner authority**, not an ordinary scoped observer grant: each reverse
 stream is spliced into the satellite owner socket. The hub must be paired;
 the satellite may remain in local mode. Join only a hub you trust to run
-commands as the satellite's serving user.
+commands as the satellite's serving user. The
+[substrate decision](./substrate.md) keeps that join between one person's
+own machines.
 
 ```sh
 phux host ticket sandbox     # on the hub: a code good for ten minutes
@@ -124,6 +126,11 @@ phux workload list           # client certificates
 phux workload revoke sha256:...
 phux host renew mini         # replace this machine's certificate before it expires
 ```
+
+A CI runner or another person who should list sessions and not type into
+them gets a separate certificate from `phux workload add-key`, not from
+`phux host add` (that ceiling includes input). The steps, the expiry, and
+how to rotate or revoke are in [Host-scoped read keys](./runbooks/host-observe-keys.md).
 
 Certificates minted by `host add` last 90 days. Attaching warns, and
 `phux doctor` reports, when one is within two weeks of expiry.

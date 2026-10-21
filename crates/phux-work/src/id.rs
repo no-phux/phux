@@ -44,6 +44,13 @@ impl OpaqueId {
         encode_hex(&self.0)
     }
 
+    /// A stable id from `material`. The same bytes always yield the same id.
+    /// The all-zero digest, which cannot be stored, becomes a one in the last byte.
+    #[must_use]
+    pub fn derive_bytes(material: &[u8]) -> Self {
+        Self(mix_bytes(material))
+    }
+
     pub(crate) const fn as_slice(&self) -> &[u8] {
         &self.0
     }
@@ -105,6 +112,14 @@ impl OperationId {
         &self.0
     }
 
+    /// A stable id from `material`. The same bytes always yield the same id.
+    /// The all-zero digest, which [`Self::parse`] refuses, becomes a one in
+    /// the last byte.
+    #[must_use]
+    pub fn derive_bytes(material: &[u8]) -> Self {
+        Self(mix_bytes(material))
+    }
+
     /// A child id for a follow-up write of the same operation.
     ///
     /// `tag` is mixed into the first byte. The all-zero result, which
@@ -142,7 +157,16 @@ impl<'de> Deserialize<'de> for OperationId {
 /// Objective lifecycle stored on the row.
 ///
 /// `NeedsYou` is the needs-you state. An unresolved [`SignalKind::CredentialLost`]
-/// projects every objective that carries it into this state.
+/// projects every objective that carries it into this state. `Done` is reserved
+/// for merge cleanup and is not written from agent state. The spellings add
+/// no tables. A store that uses them is stamped `user_version` 2.
+///
+/// # Downgrade
+///
+/// `done_unchecked`, `done`, and `failed` have no serde fallback. The store
+/// is stamped `user_version` 2 so a binary that only accepts version 1
+/// refuses the file at open with [`crate::Error::UnsupportedSchema`] instead
+/// of reading one of those rows as corrupt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectiveState {
@@ -154,6 +178,12 @@ pub enum ObjectiveState {
     Queued,
     /// A person has to look. Stored as `needs_you`.
     NeedsYou,
+    /// The agent reported done. Stored as `done_unchecked`.
+    DoneUnchecked,
+    /// Reserved for merge cleanup. Stored as `done`.
+    Done,
+    /// The attempt failed. Stored as `failed`.
+    Failed,
 }
 
 impl ObjectiveState {
@@ -165,6 +195,9 @@ impl ObjectiveState {
             Self::Working => "working",
             Self::Queued => "queued",
             Self::NeedsYou => "needs_you",
+            Self::DoneUnchecked => "done_unchecked",
+            Self::Done => "done",
+            Self::Failed => "failed",
         }
     }
 
@@ -176,7 +209,16 @@ impl ObjectiveState {
             Self::Working => "working",
             Self::Queued => "queued",
             Self::NeedsYou => "needs you",
+            Self::DoneUnchecked => "done unchecked",
+            Self::Done => "done",
+            Self::Failed => "failed",
         }
+    }
+
+    /// Whether this state frees an agent slot.
+    #[must_use]
+    pub const fn frees_slot(self) -> bool {
+        matches!(self, Self::DoneUnchecked | Self::Done | Self::Failed)
     }
 
     pub(crate) fn parse(text: &str) -> Result<Self, Error> {
@@ -185,6 +227,9 @@ impl ObjectiveState {
             "working" => Ok(Self::Working),
             "queued" => Ok(Self::Queued),
             "needs_you" => Ok(Self::NeedsYou),
+            "done_unchecked" => Ok(Self::DoneUnchecked),
+            "done" => Ok(Self::Done),
+            "failed" => Ok(Self::Failed),
             _ => Err(Error::Corrupt(format!("unknown objective state {text}"))),
         }
     }
@@ -355,6 +400,24 @@ fn parse_number(text: &str) -> Result<u64, Error> {
     Ok(number)
 }
 
+fn mix_bytes(material: &[u8]) -> [u8; 16] {
+    let hi = fnv64(0xcbf2_9ce4_8422_2325, material);
+    let lo = fnv64(0x8422_2325_cbf2_9ce4, material);
+    let mut bytes = [0_u8; 16];
+    bytes[..8].copy_from_slice(&hi.to_le_bytes());
+    bytes[8..].copy_from_slice(&lo.to_le_bytes());
+    if bytes == [0; 16] {
+        bytes[15] = 1;
+    }
+    bytes
+}
+
+fn fnv64(seed: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(seed, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 fn mint() -> Result<[u8; 16], Error> {
     let mut bytes = [0_u8; 16];
     loop {
@@ -425,6 +488,18 @@ mod tests {
         assert_eq!(ObjectiveState::NeedsYou.as_str(), "needs_you");
         assert_eq!(ObjectiveState::Todo.as_words(), "todo");
         assert_eq!(ObjectiveState::Working.as_words(), "working");
+        assert_eq!(ObjectiveState::DoneUnchecked.as_str(), "done_unchecked");
+        assert_eq!(ObjectiveState::DoneUnchecked.as_words(), "done unchecked");
+        assert_eq!(ObjectiveState::Done.as_str(), "done");
+        assert_eq!(ObjectiveState::Failed.as_str(), "failed");
+    }
+
+    #[test]
+    fn derive_bytes_is_stable_and_not_zero() {
+        let id = OperationId::derive_bytes(b"objective:run:working");
+        assert_eq!(id, OperationId::derive_bytes(b"objective:run:working"));
+        assert_ne!(id, OperationId::derive_bytes(b"objective:run:blocked"));
+        assert_ne!(id.to_hex(), "0".repeat(32));
     }
 
     #[test]

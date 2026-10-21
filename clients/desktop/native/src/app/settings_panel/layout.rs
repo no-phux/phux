@@ -1,9 +1,10 @@
 //! Window layout, notifications, terminal spacing, and pane dimming.
 
+use super::catalog::{Content as SettingPage, Group as SettingGroup, Item as SettingItem};
 use gpui::WeakEntity;
 use gpui_kit::assets::IconName as Icons;
 use gpui_kit::component::IconName;
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::setting::SettingField;
 
 use crate::settings;
 
@@ -51,18 +52,14 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
             &look_of(&tabs, cx),
             position,
             [
-                (settings::TabPosition::Top, "Top", Icons::LayoutDashboard),
-                (
-                    settings::TabPosition::Bottom,
-                    "Bottom",
-                    Icons::LayoutDashboard,
-                ),
+                (settings::TabPosition::Top, "Top", Icons::PanelTop),
+                (settings::TabPosition::Bottom, "Bottom", Icons::PanelBottom),
                 (settings::TabPosition::Side, "Sidebar", Icons::PanelLeft),
             ]
             .map(|(value, label, icon)| Segment {
                 value,
                 label,
-                icon,
+                icon: Some(icon),
                 selector: format!("tab-position-{}", value.as_str()),
             }),
             |value| click_sets(&tabs, move |prefs| prefs.tab_position = value),
@@ -82,7 +79,7 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
             .map(|(value, label, icon)| Segment {
                 value,
                 label,
-                icon,
+                icon: Some(icon),
                 selector: format!("sidebar-grouping-{}", value.as_str()),
             }),
             |value| click_sets(&groups, move |prefs| prefs.sidebar_grouping = value),
@@ -103,7 +100,7 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
                         "Tab placement",
                         resets(tab_position, handle, |prefs| &mut prefs.tab_position),
                     )
-                    .description("Keep tabs above or below your work, or in the sidebar’s fixed tab area."),
+                    .description("Keep tabs above or below your work, or at the side: the sidebar’s tab area, or a rail in plain terminal mode."),
                 )
                 .item(
                     SettingItem::new(
@@ -121,34 +118,26 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
                     sidebar_chord,
                 ))
                 .item(
-                    SettingItem::new(
+                    SettingItem::switch(
                         "Blur behind window",
-                        SettingField::switch(
                             move |cx| prefs_of(&blur_reader, cx).window_background == blur,
                             move |value, cx| {
                                 set_prefs(&blur_writer, cx, |prefs| {
                                     prefs.window_background = if value { blur } else { solid };
                                 })
                             },
-                        )
-                        .default_value(settings::default_display().window_background == blur),
+                        Some(settings::default_display().window_background == blur),
                     )
                     .description(
                         "Off paints an opaque window, which costs the compositor less on every frame.",
                     ),
                 )
-                .items(
-                    (desk.prefs.window_background == blur)
-                        .then(|| {
-                            slider_item(
-                                desk,
-                                handle,
-                                Knob::GLASS,
-                                "Terminal background over the blurred desktop.",
-                            )
-                        })
-                        .flatten(),
-                ),
+                .items(slider_item(
+                    desk,
+                    handle,
+                    Knob::GLASS,
+                    "Terminal background opacity. Applies when Blur behind window is on.",
+                )),
         )
         .group(sidebar_hosts(desk, handle))
         .group(SettingGroup::new().title("Experimental").item(toggle(
@@ -177,17 +166,15 @@ fn sidebar_hosts(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
             let label = super::super::machine_name::label(host.as_deref());
             let (reader, writer) = (handle.clone(), handle.clone());
             let read_host = host.clone();
-            SettingItem::new(
+            SettingItem::switch(
                 label,
-                SettingField::switch(
-                    move |cx| prefs_of(&reader, cx).sidebar_shows_host(read_host.as_deref()),
-                    move |visible, cx| {
-                        set_prefs(&writer, cx, |prefs| {
-                            prefs.set_sidebar_host_visible(host.clone(), visible)
-                        })
-                    },
-                )
-                .default_value(true),
+                move |cx| prefs_of(&reader, cx).sidebar_shows_host(read_host.as_deref()),
+                move |visible, cx| {
+                    set_prefs(&writer, cx, |prefs| {
+                        prefs.set_sidebar_host_visible(host.clone(), visible)
+                    })
+                },
+                Some(true),
             )
             .description(
                 "Show this machine in the sidebar. Selecting a session never changes this filter.",
@@ -197,7 +184,7 @@ fn sidebar_hosts(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
 
 pub(super) fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let spacing = SettingGroup::new()
-        .title("Terminal spacing")
+        .title("Cells & padding")
         .items(slider_item(
             desk,
             handle,

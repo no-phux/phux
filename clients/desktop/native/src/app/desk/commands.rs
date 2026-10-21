@@ -108,6 +108,12 @@ impl Desk {
             "group-projects" => self.group_sidebar(SidebarGrouping::Project, cx),
             "group-machines" => self.group_sidebar(SidebarGrouping::Machine, cx),
             "group-none" => self.group_sidebar(SidebarGrouping::None, cx),
+            "expand-sessions" => {
+                self.set_sessions_expanded(super::super::view::foldable_sessions(self), true, cx)
+            }
+            "collapse-sessions" => {
+                self.set_sessions_expanded(super::super::view::foldable_sessions(self), false, cx)
+            }
             "main-menu" => self.open_main_menu(window, cx),
             "font-up" => self.update_prefs(|prefs| prefs.font_size += 1.0, cx),
             "font-down" => self.update_prefs(|prefs| prefs.font_size -= 1.0, cx),

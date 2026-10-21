@@ -92,6 +92,7 @@ More:
   runtime-info  Inspect this binary's protocol and capabilities
   archive       Export sessions to an archive file, or import one
   worktree      Manage git worktrees and their bound sessions
+  idea          Capture an idea
   mcp           Run the bundled MCP stdio adapter
   skill         Print the agent skill this binary ships with
   completion    Print a shell completion script
@@ -151,6 +152,7 @@ Commands:
   start             Start an agent INSIDE an existing shell pane, and return
                     when it is ready for input.
   uninstall-claude  Remove the claude-in-phux shim and shell activation.
+  usage             Show the AI plan limits this host can see.
   wait              Block until a pane's agent TRANSITIONS into a lifecycle
                     state.
   help              Print this message or the help of the given subcommand(s)
@@ -698,6 +700,40 @@ Remove the claude-in-phux shim and shell activation.
 Usage: phux agent uninstall-claude
 
 Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent usage`
+
+```text
+Show the AI plan limits this host can see.
+
+Reads each signed-in subscription's limit windows from the vendor's own
+credentials: Claude Code (its OAuth usage endpoint), Codex (the rate limits its
+session ledgers record, or the live chatgpt.com usage endpoint when they are
+old) and Grok Build (its credits allowance). Prints utilization and reset times
+per plan. Credentials are only read, never refreshed, and go only to the vendor
+that issued them; requests are spaced at least two minutes apart per vendor and
+back off on rate limits, with the last reading reused in between.
+
+`--publish` also writes the result to the server's `phux.usage/v1` Global
+metadata key, which every client allowed `observe@global` can read and watch;
+the usage plugin runs this from its hooks. A publish does nothing when another
+is running or the last ran under ten seconds ago (unless `--refresh`), so bursts
+of hooks stay cheap. A client may set `phux.usage.refresh/v1`; the next
+hook-driven publish then skips the two-minute spacing. Does not start a server.
+
+Usage: phux agent usage [FLAGS]
+
+Flags:
+      --json           Print the `phux.usage/v1` document instead of the human
+                       view.
+      --publish        Write the snapshot to the server's `phux.usage/v1` key.
+      --refresh        Ask every vendor now instead of reusing a reading under
+                       two minutes old (a rate-limit backoff still applies).
   -h, --help           Print help
 
 Global flags:
@@ -1972,6 +2008,44 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux idea`
+
+```text
+Capture an idea
+
+TEXT is written to the local ideas spool first, then signed and posted to
+`https://ingest.phux.sh/ideas/capture`. Success prints the capture id. A network
+failure leaves the idea queued; the next `phux idea` sends it with the same
+idempotency key and a fresh signature. `--flush` sends queued ideas and does not
+capture a new one.
+
+`--private` ensures the body contains the `#private` tag.
+
+`PHUX_IDEAS_KEY_ID` and `PHUX_IDEAS_KEY` are read from
+`$XDG_CONFIG_HOME/phux/ops.env` (`~/.config/phux/ops.env` when `XDG_CONFIG_HOME`
+is unset). `PHUX_IDEAS_KEY_ID` is the key id, for example `cli-mbp`.
+`PHUX_IDEAS_KEY` is 64 hex characters: the 32-byte HMAC secret. The secret is
+never printed.
+
+Examples:
+phux idea "ship the spool before the post"
+phux idea --private "keep this off the triage model"
+phux idea --flush
+
+Usage: phux idea [--private] [--flush] [TEXT]
+
+Arguments:
+  [TEXT]  Idea text. Required unless `--flush`.
+
+Flags:
+      --private        Ensure the body contains the `#private` tag.
+      --flush          Send queued ideas and do not capture a new one.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux insert-pane`
 
 ```text
@@ -2335,9 +2409,10 @@ Global flags:
 Track tasks in the local work store
 
 `list`, `show`, `edit`, `archive`, `restore`, and `keeper` call the work store's
-keeper, which `phux mission` starts on demand, and do not contact a phux server.
-`start` and `add --start` also dial the phux server to create the worktree
-session and launch the agent. With no subcommand, prints this help.
+keeper, which `phux mission` starts on demand. The keeper watches the phux
+server and projects each bound agent's state into the task. `start` and `add
+--start` dial the phux server to create the worktree session and launch the
+agent. With no subcommand, prints this help.
 
 `--json` prints a document whose `schema` is `phux.mission/v1`. Exit status: 0
 success; 1 the task is missing, the revision is stale, the operation id was
@@ -2360,6 +2435,9 @@ Commands:
 
 Flags:
   -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission add`
@@ -2388,6 +2466,10 @@ Flags:
                                   empty and stderr carries one JSON error
                                   object.
   -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux mission archive`
@@ -2409,6 +2491,9 @@ Flags:
                                the human view. On failure, stdout stays empty
                                and stderr carries one JSON error object.
   -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission edit`
@@ -2433,6 +2518,10 @@ Flags:
                                   empty and stderr carries one JSON error
                                   object.
   -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux mission keeper`
@@ -2441,14 +2530,22 @@ Flags:
 Run the keeper that writes the work store
 
 The one process that opens this state directory's work store. The other verbs
-start it on demand, so it rarely needs running by hand. It exits after
-`--idle-exit` seconds without a request.
+start it on demand, so it rarely needs running by hand. While a task is working
+or queued, the keeper stays up and projects that task's agent into its state. It
+exits after `--idle-exit` seconds without a request only when nothing is working
+or queued.
 
-Usage: phux mission keeper [--idle-exit <SECS>]
+Usage: phux mission keeper [--idle-exit <SECS>] [--server-socket <PATH>]
 
 Flags:
-      --idle-exit <SECS>  Seconds without a request before exiting. Default 600.
-  -h, --help              Print help
+      --idle-exit <SECS>      Seconds without a request before exiting, when no
+                              task is working or queued. Default 600.
+      --server-socket <PATH>  phux server socket to project from. Defaults to
+                              `PHUX_SOCKET`, then this profile's socket.
+  -h, --help                  Print help
+
+Global flags:
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission list`
@@ -2465,6 +2562,9 @@ Flags:
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
   -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission restore`
@@ -2486,6 +2586,9 @@ Flags:
                                the human view. On failure, stdout stays empty
                                and stderr carries one JSON error object.
   -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission show`
@@ -2503,6 +2606,9 @@ Flags:
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
   -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission start`
@@ -2526,6 +2632,9 @@ Flags:
                                the human view. On failure, stdout stays empty
                                and stderr carries one JSON error object.
   -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mv`

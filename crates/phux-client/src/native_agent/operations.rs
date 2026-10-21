@@ -191,11 +191,16 @@ fn command_receipt(reply: CommandResult, operation_id: u64) -> NativeCommandResu
         }
         CommandResult::Error { code, message } => NativeCommandResult {
             operation_id,
+            // `UNSUPPORTED` promises nothing ran, so it is refused like any
+            // other definite refusal. A code this build does not know, the
+            // client's own `UNREADABLE_REPLY` included, may mean the prompt was
+            // delivered: unknown, so the caller does not re-prompt.
             disposition: if matches!(
                 code,
                 ErrorCode::InputDeliveryUnknown
                     | ErrorCode::IncarnationChanged
                     | ErrorCode::InternalError
+                    | ErrorCode::Unknown(_)
             ) {
                 NativeDisposition::Unknown
             } else {

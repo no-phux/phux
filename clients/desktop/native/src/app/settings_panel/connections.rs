@@ -1,16 +1,21 @@
 //! Saved machines, their available actions, and this window's connection.
 
+use super::catalog::{Content as SettingPage, Group as SettingGroup, Item as SettingItem};
 use gpui::prelude::*;
 use gpui::{Context, WeakEntity, Window, div, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::setting::SettingField;
 use gpui_kit::component::{IconName, Sizable};
 use phux_client_runtime::control::Status;
 
 use super::super::desk::{Desk, Modal};
 use super::super::fleet::Reach;
-use super::super::ui::ghost_button;
 use super::{click_runs, fact};
+
+/// A row's secondary action, filled like every other settings button.
+fn action_button(id: impl Into<gpui::ElementId>, label: &'static str) -> Button {
+    Button::new(id).label(label).small()
+}
 
 /// A machine row's button, findable by its element id.
 fn machine_button(
@@ -22,7 +27,7 @@ fn machine_button(
     let selector = id.clone();
     div()
         .debug_selector(move || selector.clone())
-        .child(ghost_button(id, label).on_click(click_runs(handle, run)))
+        .child(action_button(id, label).on_click(click_runs(handle, run)))
 }
 
 /// The one action a machine's state allows: this window's own route
@@ -60,7 +65,7 @@ fn machine_item(
     // route only reconnects.
     let disconnect = !current && !matches!(reach, Reach::Unavailable(_));
     let handle = handle.clone();
-    SettingItem::new(
+    let item = SettingItem::new(
         host.map_or_else(
             || "This computer".to_owned(),
             super::super::machine_name::display,
@@ -107,7 +112,12 @@ fn machine_item(
                 })
         }),
     )
-    .description(detail)
+    .description(detail);
+    if action.is_none() && !disconnect && host.is_none() {
+        item.information()
+    } else {
+        item
+    }
 }
 
 fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
@@ -119,13 +129,13 @@ fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
                 .flex()
                 .gap(px(8.))
                 .child(
-                    ghost_button("settings-add-host", "Add machine…")
+                    action_button("settings-add-host", "Add machine…")
                         .on_click(click_runs(&buttons, |desk, window, cx| {
                             desk.open_modal(Modal::AddHost, window, cx)
                         })),
                 )
                 .child(
-                    ghost_button("settings-refresh-hosts", "Refresh all")
+                    action_button("settings-refresh-hosts", "Refresh all")
                         .on_click(click_runs(&buttons, |desk, _, cx| desk.retry_fleet(cx))),
                 )
         }),
@@ -137,10 +147,9 @@ fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
         .iter()
         .map(|host| machine_item(desk, handle, Some(&host.name), &host.endpoint));
     let empty = desk.hosts.is_empty().then(|| {
-        fact(
-            "Remote machines",
-            "None added yet. Add machine… enrolls one over ssh.".into(),
-        )
+        SettingItem::new("Remote machines", SettingField::render(|_, _, _| div()))
+            .information()
+            .description("None added yet. Add machine… enrolls one over ssh.")
     });
     SettingGroup::new()
         .title("Hosts")
@@ -173,6 +182,7 @@ pub(super) fn connection_page(desk: &Desk, handle: &WeakEntity<Desk>) -> Setting
         .group(hosts_group(desk, handle))
         .group(
             SettingGroup::new()
+                .title("This window")
                 .item(fact("Status", status))
                 .item(action),
         )

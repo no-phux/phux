@@ -88,7 +88,8 @@ scrollback do not. A surviving process whose engine was lost is marked
 Lost, not safely adopted or relaunched. Normal process exit uses Remove or
 Retain policy; not every exited pane stays. See
 [organization and execution](./organization.md) for the ownership and
-reconciliation contract.
+reconciliation contract, and [phux vs tmux, Herdr, and cmux](./compare.md#what-survives-what)
+for how this compares.
 
 ```sh
 phux restore           # explicitly relaunch eligible ended records; Lost refuses

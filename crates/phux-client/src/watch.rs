@@ -231,6 +231,7 @@ pub struct FleetSubscription {
     pub(crate) conn: Connection,
     pub(crate) terminals: HashSet<ResourceId>,
     pending: VecDeque<FrameKind>,
+    last_seen: HashMap<ResourceId, AgentRecord>,
 }
 
 impl FleetSubscription {
@@ -256,6 +257,68 @@ impl FleetSubscription {
 
     pub(crate) fn take_pending(&mut self) -> VecDeque<FrameKind> {
         std::mem::take(&mut self.pending)
+    }
+
+    /// The next watch item, or `None` when the server closes the stream.
+    ///
+    /// # Errors
+    ///
+    /// [`AttachError`] on a transport or protocol failure.
+    pub async fn recv_item(&mut self) -> Result<Option<WatchItem>, AttachError> {
+        loop {
+            let frame = match self.pending.pop_front() {
+                Some(frame) => Ok(frame),
+                None => self.conn.recv().await,
+            };
+            match frame {
+                Ok(FrameKind::Event {
+                    terminal,
+                    event,
+                    stamp,
+                }) => {
+                    if let Some((id, spawned)) = event_lifecycle(&event, terminal.as_ref()) {
+                        let id = id.clone();
+                        if spawned {
+                            self.subscribe_terminal(id).await?;
+                        } else {
+                            self.remove_terminal(&id);
+                            self.last_seen.remove(&id);
+                        }
+                    }
+                    return Ok(Some(WatchItem::Event(WatchEvent::from_frame(
+                        terminal, event, stamp,
+                    ))));
+                }
+                Ok(FrameKind::MetadataChanged {
+                    scope, key, value, ..
+                }) => {
+                    let tracked = |id: &ResourceId| self.terminals.contains(id);
+                    if let Some(update) =
+                        agent_update(&mut self.last_seen, &scope, &key, value.as_deref(), tracked)
+                    {
+                        return Ok(Some(WatchItem::AgentState(update)));
+                    }
+                }
+                Ok(_) => {}
+                Err(AttachError::Disconnected) => return Ok(None),
+                Err(err) => return Err(err),
+            }
+        }
+    }
+}
+
+fn event_lifecycle<'a>(
+    event: &'a AgentEvent,
+    terminal: Option<&'a ResourceId>,
+) -> Option<(&'a ResourceId, bool)> {
+    let terminal = terminal?;
+    match event {
+        AgentEvent::ResourceSpawned {
+            kind: ResourceKind::Terminal,
+            ..
+        } => Some((terminal, true)),
+        AgentEvent::ResourceClosed { .. } => Some((terminal, false)),
+        _ => None,
     }
 }
 
@@ -286,10 +349,25 @@ const fn lifecycle_change(frame: &FrameKind) -> Option<(&ResourceId, bool)> {
 ///
 /// Returns [`AttachError`] on connect, enumeration, or subscription failure.
 pub async fn subscribe_fleet(socket: &Path) -> Result<FleetSubscription, AttachError> {
+    subscribe_fleet_after(socket, None).await
+}
+
+/// [`subscribe_fleet`] starting at journal sequence `after_seq`.
+///
+/// `None` follows live events. A cursor the server has already evicted is
+/// answered with `journal_gap` before anything else.
+///
+/// # Errors
+///
+/// Returns [`AttachError`] on connect, enumeration, or subscription failure.
+pub async fn subscribe_fleet_after(
+    socket: &Path,
+    after_seq: Option<u64>,
+) -> Result<FleetSubscription, AttachError> {
     let mut conn = Connection::connect(socket).await?;
     conn.send(&FrameKind::SubscribeEvents {
         terminal: None,
-        after_seq: None,
+        after_seq,
     })
     .await?;
     let (view, interleaved) = get_state_on_with_interleaved(&mut conn).await?;
@@ -322,6 +400,7 @@ pub async fn subscribe_fleet(socket: &Path) -> Result<FleetSubscription, AttachE
         conn,
         terminals,
         pending: interleaved.into(),
+        last_seen: HashMap::new(),
     })
 }
 
@@ -334,52 +413,14 @@ async fn stream_fleet_items<F>(
 where
     F: FnMut(WatchItem) -> bool,
 {
-    let mut last_seen: HashMap<ResourceId, AgentRecord> = HashMap::new();
-    let mut pending = subscription.take_pending();
     loop {
-        let frame = match pending.pop_front() {
-            Some(frame) => Ok(frame),
-            None => subscription.conn.recv().await,
-        };
-        match frame {
-            Ok(frame @ FrameKind::Event { .. }) => {
-                if let Some((terminal, spawned)) = lifecycle_change(&frame) {
-                    let terminal = terminal.clone();
-                    if spawned {
-                        subscription.subscribe_terminal(terminal).await?;
-                    } else {
-                        subscription.remove_terminal(&terminal);
-                        last_seen.remove(&terminal);
-                    }
-                }
-                let FrameKind::Event {
-                    terminal,
-                    event,
-                    stamp,
-                } = frame
-                else {
-                    unreachable!();
-                };
-                if !sink(WatchItem::Event(WatchEvent::from_frame(
-                    terminal, event, stamp,
-                ))) {
+        match subscription.recv_item().await? {
+            Some(item) => {
+                if !sink(item) {
                     return Ok(());
                 }
             }
-            Ok(FrameKind::MetadataChanged {
-                scope, key, value, ..
-            }) => {
-                let tracked = |id: &ResourceId| subscription.terminals.contains(id);
-                if let Some(update) =
-                    agent_update(&mut last_seen, &scope, &key, value.as_deref(), tracked)
-                    && !sink(WatchItem::AgentState(update))
-                {
-                    return Ok(());
-                }
-            }
-            Ok(_) => {}
-            Err(AttachError::Disconnected) => return Ok(()),
-            Err(err) => return Err(err),
+            None => return Ok(()),
         }
     }
 }

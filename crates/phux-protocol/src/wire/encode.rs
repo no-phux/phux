@@ -109,6 +109,23 @@ impl<'a> Encoder<'a> {
         self.buf.extend_from_slice(value);
     }
 
+    /// Write a tail-extensible positional record: `u32` big-endian body
+    /// length, then the body `build` writes. A newer peer appends fields at
+    /// the end of the body; an older [`Decoder::read_record`] reads its known
+    /// prefix and skips the rest, so a record that is not the last element
+    /// of its field can still grow.
+    ///
+    /// [`Decoder::read_record`]: crate::wire::decode::Decoder::read_record
+    pub(crate) fn write_record(&mut self, build: impl FnOnce(&mut Self)) {
+        let start = self.buf.len();
+        self.write_u32_be(0);
+        build(self);
+        let body_len = self.buf.len() - start - 4;
+        debug_assert!(u32::try_from(body_len).is_ok(), "record body exceeds u32");
+        let len = u32::try_from(body_len).unwrap_or(u32::MAX);
+        self.buf[start..start + 4].copy_from_slice(&len.to_be_bytes());
+    }
+
     /// Write an unsigned LEB128 varint.
     pub fn write_varint(&mut self, mut value: u64) {
         loop {

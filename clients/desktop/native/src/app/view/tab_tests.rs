@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::tabs::tab_height;
+use super::tabs::{RAIL_WIDTH, tab_height};
 use super::titlebar::controls_fit;
 use super::*;
 use crate::app::desk::Modal;
@@ -189,5 +189,6 @@ fn selectable_work(desk: &mut Desk, cx: &mut gpui::Context<Desk>) {
 mod chrome;
 mod closing;
 mod geometry;
+mod panes;
 mod placement;
 mod selection;

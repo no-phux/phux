@@ -70,7 +70,10 @@ A bearer alone does not make either transport authorized.
 iOS and Android apps are in progress in a separate repository, built on the
 [`phux-client-ffi`](../crates/phux-client-ffi) bindings. They are not
 available yet. `phux pair --qr` already prints the pairing code they will
-scan.
+scan. A binding watches any Global metadata key with
+`RemoteClient::watch_global_metadata` and drains values with
+`take_global_metadata`; the phone reads [plan usage](./agents.md#plan-usage)
+this way.
 
 ## Your own
 

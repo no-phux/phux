@@ -1,6 +1,6 @@
 {
   "name": "@phux/omp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Native Oh My Pi extension for CLI-backed persistent terminal control",
   "type": "module",
   "license": "Apache-2.0",

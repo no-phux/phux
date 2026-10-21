@@ -1,5 +1,6 @@
 //! One tab renderer and one set of tab actions: a compact strip in the
-//! titlebar or below the workspace, or rows in the navigator's fixed tab shelf. A tab whose agent needs a person wears that state itself: a
+//! titlebar or below the workspace, or rows in the navigator's fixed tab
+//! shelf (or, in the plain terminal, which has no sidebar, a rail of its own). A tab whose agent needs a person wears that state itself: a
 //! wash and a mark on its corner, not an entry in a separate list. A tab
 //! leads with its agent's harness mark, and one only agents drive sits back
 //! (shorter and fainter) until it is selected or hovered.
@@ -15,16 +16,17 @@ use phux_protocol::ids::ResourceKey;
 
 use crate::connection::AgentState;
 use crate::settings::TabPosition;
-use crate::workspace::layout::{self, DeskTab};
+use crate::workspace::layout::{self, DeskTab, Placement};
 
 use super::super::color::from_hex;
 use super::super::desk::{self, Desk, Modal};
 use super::super::pane_identity::Harness;
 use super::super::skin::{Look, Surface, Surfaced};
+use super::super::ui::layout_map::layout_map;
 use super::super::ui::list::{CHILD_INSET, ROW, ROW_GAP, ROW_INSET, row_icon, row_radius};
 use super::super::ui::menu::Anchor;
 use super::super::ui::status::{attention_wash, harness_mark, state_dot, strongest};
-use super::super::ui::{attention_mark, ghost_icon};
+use super::super::ui::{agent_swatch, attention_mark, ghost_icon};
 use super::tab_glow;
 
 /// Both selected and inactive tabs reserve the surface's one-point rim.
@@ -34,9 +36,13 @@ const TAB_MAX: f32 = 280.;
 /// Enough room for one readable horizontal tab and its actions while scrolling.
 pub(crate) const MIN_STRIP_WIDTH: f32 = 160.;
 
-/// Titlebar tab height for a bar `titlebar` points tall.
+/// The plain terminal's side tabs: a rail this wide beside the panes.
+pub(crate) const RAIL_WIDTH: f32 = 208.;
+
+/// Titlebar tab height for a bar `titlebar` points tall: five points clear
+/// of either edge, up to the desk's tab.
 pub(super) fn tab_height(titlebar: f32) -> f32 {
-    (titlebar - 14.).clamp(22., 30.)
+    (titlebar - 10.).clamp(22., 30.)
 }
 
 /// The cached bottom strip uses the same horizontal tabs as the titlebar.
@@ -58,6 +64,23 @@ pub(super) fn build_bottom(desk: &mut Desk, _: &mut Window, cx: &mut Context<Des
             super::chrome_spring(moves, lead),
             |bar, inset| bar.pl(px(inset)),
         )
+        .into_any_element()
+}
+
+/// The plain terminal's side tabs: the sidebar's tab list alone in a rail
+/// beside the panes, so tabs stay on the side the prefs put them.
+pub(super) fn build_rail(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
+    let look = desk.look();
+    div()
+        .id("tab-rail")
+        .debug_selector(|| "tab-rail".into())
+        .size_full()
+        .flex()
+        .flex_col()
+        .pt(px(4.))
+        .border_r(px(look.skin.shape.divider.max(1.)))
+        .border_color(look.divider)
+        .child(super::navigator::tab_list(desk, &look, cx))
         .into_any_element()
 }
 
@@ -282,13 +305,54 @@ fn tab_resource_key(desk: &Desk, tab: &DeskTab) -> Option<ResourceKey> {
     link.connection.pane(terminal)?.key
 }
 
-fn tab_detail(tab: &DeskTab, side: bool) -> Option<String> {
-    match (tab.zoomed_id.is_some(), layout::placements(&tab.root).len()) {
-        (true, _) => Some("⤢".to_owned()),
-        (false, 0 | 1) => None,
-        (false, count) if side => Some(count.to_string()),
-        _ => None,
+/// How a pane's cell in its tab's map is painted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CellTone {
+    /// The pane in front: focused, or the zoomed one.
+    Front,
+    /// Visible beside the front pane.
+    Beside,
+    /// Hidden behind a zoomed pane.
+    Hidden,
+}
+
+fn cell_tone(tab: &DeskTab, placement: &Placement) -> CellTone {
+    match tab.zoomed_id.as_deref() {
+        Some(zoomed) if zoomed == placement.id => CellTone::Front,
+        Some(_) => CellTone::Hidden,
+        None if tab.focused_id == placement.id => CellTone::Front,
+        None => CellTone::Beside,
     }
+}
+
+/// A split tab's map: each pane a cell in its own proportions, the front one
+/// lit (in the accent on the selected tab), an agent's cell in its state's
+/// colour, and the panes a zoom hides faded. None for a single pane.
+fn tab_map(desk: &Desk, tab: &DeskTab, selected: bool, look: &Look) -> Option<gpui::Div> {
+    if layout::placements(&tab.root).len() < 2 {
+        return None;
+    }
+    let accent = from_hex(&look.chrome.theme.accent);
+    let ink = look.ink;
+    let paint = |placement: &Placement| {
+        let agent = placement
+            .terminal_id
+            .as_ref()
+            .and_then(|id| desk.agent(id))
+            .map(|info| info.state)
+            .filter(|state| *state != AgentState::Unknown)
+            .map(|state| from_hex(agent_swatch(state)));
+        match (cell_tone(tab, placement), agent) {
+            (CellTone::Hidden, _) => ink.opacity(0.16),
+            (CellTone::Front, Some(swatch)) => swatch,
+            (CellTone::Front, None) if selected => accent,
+            (CellTone::Front, None) => ink.opacity(0.6),
+            (CellTone::Beside, Some(swatch)) => swatch.opacity(0.45),
+            (CellTone::Beside, None) => ink.opacity(if selected { 0.24 } else { 0.18 }),
+        }
+    };
+    let id = tab.id.clone();
+    Some(layout_map(&tab.root, 20., 14., &paint).debug_selector(move || format!("tab-map-{id}")))
 }
 
 /// Rename follows an ordinary double click, not an organization selection
@@ -338,7 +402,7 @@ fn tab_button(
         tab.id.clone(),
     );
     let side = position == TabPosition::Side;
-    let detail = tab_detail(tab, side);
+    let map = tab_map(desk, tab, selected, look);
     div()
         .id(tab_selector.clone())
         .debug_selector(move || tab_selector.to_string())
@@ -421,13 +485,7 @@ fn tab_button(
                 })
                 .child(desk::tab_title(desk, tab)),
         )
-        .children(detail.map(|detail| {
-            div()
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(from_hex(&look.chrome.muted))
-                .child(detail)
-        }))
+        .children(map)
         .child(if side {
             tab_more(desk, &tab.id, selected, cx).into_any_element()
         } else {

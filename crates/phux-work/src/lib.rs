@@ -2,7 +2,7 @@
 //! ADR-0092 coordinator.
 //!
 //! One SQLite file per phux state directory, `work/work-v1.sqlite`, mode
-//! `0600`, `PRAGMA user_version = 1`. An unknown `user_version` is refused.
+//! `0600`, `PRAGMA user_version = 2`. A newer `user_version` is refused.
 //! Rows use the coordinator nouns Objective, Run, binding, Signal, and
 //! event, so the coordinator can replay them. Primary keys are opaque
 //! 16-byte ids. A short alias such as `phux/3` is a display name stored
@@ -20,6 +20,11 @@
 //!
 //! An unresolved `credential_lost` signal projects the objective to
 //! `needs_you`. The store will not leave that objective `working`.
+//! Agent projection adds `done_unchecked`, `done`, and `failed`. That stamps
+//! the store at `user_version` 2 and adds no tables. An older binary refuses
+//! the file at open with [`Error::UnsupportedSchema`] instead of failing
+//! later on a row it cannot parse. The keeper stays up while any objective
+//! is `working` or `queued`.
 //!
 //! The same keeper holds agent coordination: mail between agents and claims
 //! on paths (ADR-0187). Those tables are additive and do not change
@@ -49,8 +54,8 @@ pub use coord::{
 };
 pub use error::Error;
 pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, SignalKind};
-pub use service::{Endpoint, KeeperExit, run_keeper};
-pub use start::{StartApplied, StartBinding, StartPlan, StartRequest};
+pub use service::{Endpoint, KeeperExit, run_keeper, run_keeper_with};
+pub use start::{LaunchQueued, OpenRun, StartApplied, StartBinding, StartPlan, StartRequest};
 pub use store::{
     AddObjective, Applied, DB_FILE, EditObjective, ListFilter, Objective, RaiseSignal,
     RevisionEdit, Signal, StateEdit, Store, store_path,

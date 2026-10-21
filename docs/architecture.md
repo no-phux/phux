@@ -4,7 +4,8 @@ For people changing phux. [Concepts](./concepts.md) is the user-level model;
 [protocol](./protocol.md) is the wire. [Organization](./organization.md) owns
 durable records, activations and restore; [remote authority](./remote.md#connection-authority)
 owns grants and revocation; [embedding](./embedding.md#runtime-consumer-contract)
-owns the runtime consumer boundary.
+owns the runtime consumer boundary. [Substrate](./substrate.md) is the org's
+principals, home keeper, and adapters.
 
 ## One server, many clients
 
@@ -60,6 +61,7 @@ Cargo manifests define the actual edges.
 | `phux-core`           | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O                                                 |
 | `phux-config-core`    | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths                                                        |
 | `phux-perf`           | lock-free histograms and counters behind `GET_PERF` and `phux perf`                                                                                   |
+| `phux-git`            | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging; shared by the desktop Changes panel and `CHECKOUT` |
 | `phux-agent-rules`    | agent detection manifests: regions, rules, `phux agent explain`                                                                                       |
 | `phux-crash`          | fatal-signal handler that restores the terminal before re-raising                                                                                     |
 | `portable-pty-adopt`  | rebuild portable-pty handles from inherited fds after `execve`                                                                                        |
@@ -71,6 +73,7 @@ Cargo manifests define the actual edges.
 | `phux-record`         | asciicast codec, VT replay, GIF/APNG export                                                                                                           |
 | `phux-mission`        | mission documents over the work store                                                                                                                 |
 | `phux-plugin`         | plugin action runtime contracts                                                                                                                       |
+| `phux-usage`          | plan-usage collector behind `phux agent usage`: vendor limit sources and the `phux.usage/v1` document; no wire                                        |
 | `phux-relay`          | quictun bound to phux's ALPNs and state directory                                                                                                     |
 | `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication                      |
 | `phux-client`         | headless client: the connection facade and the verbs behind the CLI and MCP                                                                           |
@@ -170,7 +173,8 @@ revocation and reverse-hub trust. [Agents](./agents.md#safety) owns input
 leases and held approvals; humans retain input priority.
 
 [Work and missions](./organization.md#work-and-missions) use a separate
-per-host keeper/store, not the organization database. A multi-host
+keeper/store, distinct from the organization database. The org's home
+keeper is the [substrate decision](./substrate.md). A multi-host
 coordinator and autonomous Lead are not shipping contracts.
 
 ## Where to look
@@ -181,7 +185,7 @@ coordinator and autonomous Lead are not shipping contracts.
 | organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
 | input handling  | `phux-server/src/runtime/input_lane/`                                                                                                                                                                        |
 | TUI rendering   | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay`                                                                                                                        |
-| the wire        | `phux-protocol/src/wire/frame/mod.rs` (types and tags), `wire/field.rs` (field ids), `caps.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
+| the wire        | `phux-protocol/src/wire/frame/mod.rs` (types and tags), `wire/field.rs` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
 | a CLI verb      | `crates/phux/src/commands/mod.rs` (`enum Command`), `src/lib.rs` (dispatch), `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen`                                           |
 | config          | `phux-config/src/schema.rs`, `default.toml`; then `just docs-gen`                                                                                                                                            |
 | agent detection | `phux-agent-rules/rules/*.toml`, `phux-server/src/agent_detect/`                                                                                                                                             |
@@ -190,83 +194,8 @@ coordinator and autonomous Lead are not shipping contracts.
 
 ## Decisions
 
-These are current constraints, not a claim that every existing implementation
-is correct. A change that conflicts with one needs an explicit decision and
-updated tests and guidance—not a quiet rewrite that blesses a bug. A lasting
-trade-off belongs here with its reason and the PR that made it. Older numbered
-records explain history; [look them up deliberately](#historical-decisions).
-
-**Process and runtime**
-
-- One server per user per profile; one current-thread runtime; a pane is a
-  `LocalSet` task that owns its `!Send` libghostty terminal.
-- Hot upgrades re-exec and re-adopt live PTYs; cold restarts, crashes and
-  reboots do not preserve PTYs. Records are not process recovery.
-- Exit is a facet, close is a purge. Remove policy removes on exit; Retain
-  keeps an inspectable result until purge/expiry. [Organization](./organization.md)
-  owns commit and reconciliation rules.
-- Events are journaled and resumable; a reconnecting watcher gets what it
-  missed or a gap marker, never silence.
-
-**Wire**
-
-- Server to client is VT bytes; client to server is structured input. Both
-  sides run libghostty.
-- Clients must match the server's protocol `major.minor`. New behavior ships
-  as a feature bit or a skippable field; a version bump is for what no
-  additive shape can express.
-- The kind catalog in `phux-protocol::kinds` is the one table for discovery
-  and authorization; anything it does not name is denied.
-- `wire-schema.json` is generated from the codec and test-pinned; the code is
-  the specification.
-- `phux-core` and `phux-protocol` stay independent; the server bridges them.
-- File transfer rides the command envelope, never PTY input or a second
-  transport, and addresses a machine by host name, not a pane. `PUT_FILE`
-  writes only into a server-chosen sandbox because a client-named write is
-  an execution surface; `GET_FILE` reads any file the serving user can read
-  because an `INPUT` holder on that server can already `cat` it, so the read
-  is classified `INPUT` on the server rather than fenced by a path allow-list
-  ([protocol](./protocol.md#file-transfer),
-  [#1657](https://github.com/no-phux/phux/pull/1657)).
-
-**Clients**
-
-- `phux-client-core` is sans-IO and dependency-light so it compiles to wasm.
-  `phux-client-runtime` is the one place client orchestration lives.
-  `phux-client-ffi` is the one binding crate.
-- Pane interiors are libghostty's; chrome is the client's. The two never
-  paint the same cell.
-
-**Agents and authority**
-
-- The server derives agent state. A host's lifecycle stream outranks the
-  detector; an occupant-bounded declaration outranks both.
-- The ordinary owner socket has full same-UID authority; delegated sockets
-  only narrow it. Remote consumer ingress requires scoped mTLS plus bearer
-  admission; reverse federation grants the trusted hub satellite-owner
-  authority. Bearer-only and anonymous remote ingress are gone.
-- Clients pin the server's certificate authority at pairing and never learn
-  one from a connection. Devices and satellites enroll with single-use
-  tickets.
-- Humans outrank agents on input leases. Scoped grants can be held for
-  approval; the owner never is.
-
-**Not doing**
-
-- No embedded scripting language: commands are typed messages; logic lives
-  in scripts that call `phux`.
-- No in-process plugin host: plugins are external processes declared in
-  config.
-- No homegrown selection or search engine beyond find-in-scrollback:
-  selection and extraction belong to libghostty.
-- No homegrown crypto: TLS, SSH, and Unix permissions.
-- No tmux behavior "for compatibility" where phux has a reason to differ.
-
-**Release**
-
-- Release Please versions from conventional commits. Checksums are minisign
-  signed and the installer verifies them. One manifest per channel.
-- Generated reference pages are byte-pinned by a test; hand edits fail CI.
+The current architectural constraints, with their reasons, are in
+[decisions](./decisions.md).
 
 ## Historical decisions
 
@@ -296,4 +225,7 @@ Do not revive historical constraints merely because a search found them. Check
 supersession, proposals, current code/tests, and the live contract. Conversely,
 if a still-operative constraint exists only in history, promote it to its live
 home with evidence. New decisions extend the current architecture and link
-their PR rather than creating a second competing source of authority.
+their PR rather than creating a second competing source of authority. The
+[substrate](./substrate.md) decision is that extension: principals, one home
+keeper, and one-way adapters, linked from [Decisions](#decisions) and
+[#1689](https://github.com/no-phux/phux/pull/1689).

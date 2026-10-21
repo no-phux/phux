@@ -10,6 +10,7 @@
 
 mod json;
 mod start;
+mod state;
 
 pub use json::{
     BindingDocument, ListDocument, MutationDocument, RunDocument, SCHEMA, SCHEMA_VERSION,
@@ -19,4 +20,8 @@ pub use start::{
     DEFAULT_MAX_AGENTS, DEFAULT_RULES, START_LINE, TaskPaths, branch_name, brief_argv,
     brief_markdown, build_env, default_target_dir, integration_ids, parse_agent, slug, tab_title,
     task_paths,
+};
+pub use state::{
+    AgentReport, Projection, ProjectionInput, RunPhase, TerminalFact, observation_operation,
+    project,
 };

@@ -3,8 +3,9 @@
 //! -> typed error, the `send_keys.rs` shape), not in `crates/phux/src/commands/`.
 //!
 //! Every `.rs` file under `src/commands/` fails if a raw-wire marker appears
-//! in its production code (comments, string literals, and `mod tests` bodies
-//! excluded) beyond its per-file [`ALLOWLIST`] cap.
+//! in its production code (comments, string literals, and `mod tests` bodies,
+//! inline or in a `tests.rs` file, excluded) beyond its per-file
+//! [`ALLOWLIST`] cap.
 #![allow(
     clippy::panic,
     clippy::expect_used,
@@ -24,8 +25,8 @@ use std::path::{Path, PathBuf};
 const ALLOWLIST: &[(&str, usize, &str)] = &[
     (
         "mod.rs",
-        35,
-        "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum (`phux archive`'s socketless-verb arm is the 31st; `Command::Upload` in verb_remote is the 32nd; the `mail`/`claim` socketless-verb arms are the 33rd; `Command::Project` (link/unlink) in verb_remote is the 34th; `Command::Download` in verb_remote is the 35th; none is a wire command)",
+        36,
+        "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum (`phux archive`'s socketless-verb arm is the 31st; `Command::Upload` in verb_remote is the 32nd; the `mail`/`claim` socketless-verb arms are the 33rd; `Command::Project` (link/unlink) in verb_remote is the 34th; `Command::Download` in verb_remote is the 35th; `Command::Idea` in the socketless-verb arm is the 36th; none is a wire command)",
     ),
     (
         "server_target.rs",
@@ -154,12 +155,18 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
+            } else if path.extension().is_some_and(|ext| ext == "rs") && !is_test_module(&path) {
                 out.push(path);
             }
         }
     }
     out
+}
+
+/// A `mod tests` body split into its own `tests.rs` file: excluded like an
+/// inline `mod tests` block.
+fn is_test_module(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == "tests.rs")
 }
 
 /// Blank out comments and string-literal contents character-for-character,

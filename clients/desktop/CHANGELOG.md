@@ -33,6 +33,53 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.43.0](https://github.com/no-phux/phux/compare/desktop-v0.42.0...desktop-v0.43.0) (2026-10-20)
+
+
+### Features
+
+* **desktop:** keep side tabs and the desk's tab shape in plain terminal mode ([#1692](https://github.com/no-phux/phux/issues/1692)) ([85f39b4](https://github.com/no-phux/phux/commit/85f39b47f341125a242448abf18a346c79d397da))
+
+## [0.42.0](https://github.com/no-phux/phux/compare/desktop-v0.41.0...desktop-v0.42.0) (2026-10-20)
+
+
+### Features
+
+* **desktop:** make the sidebar manageable with many sessions ([#1680](https://github.com/no-phux/phux/issues/1680)) ([8e0abb7](https://github.com/no-phux/phux/commit/8e0abb7e9dd62918ee74c6faf9111c00ce06ccf1))
+* **git:** extract the desktop Git module into a shared phux-git crate ([2fff84e](https://github.com/no-phux/phux/commit/2fff84e2444dcd8b91a47e7e0450d40635086644))
+
+## [0.41.0](https://github.com/no-phux/phux/compare/desktop-v0.40.0...desktop-v0.41.0) (2026-10-20)
+
+
+### Features
+
+* **desktop:** add live memory diagnostics and retention fixes ([#1671](https://github.com/no-phux/phux/issues/1671)) ([c21bbb9](https://github.com/no-phux/phux/commit/c21bbb95fd8805d19c5c1d4d7a7681b98e93fd8c))
+* **desktop:** add opt-in live agent fleet dashboard ([#1665](https://github.com/no-phux/phux/issues/1665)) ([e3a3329](https://github.com/no-phux/phux/commit/e3a332960126d68c89e691406ab4113f89ae964d))
+* **desktop:** chrome that slides, a cohesive toast, and no empty strips ([#1676](https://github.com/no-phux/phux/issues/1676)) ([975bb2f](https://github.com/no-phux/phux/commit/975bb2fadea183de420e94e63a59c6709896d98b))
+* **desktop:** edit settings directly from a centered palette ([#1677](https://github.com/no-phux/phux/issues/1677)) ([93cd70f](https://github.com/no-phux/phux/commit/93cd70fda688a2d6c3909aa6bdd66f1ceca2c11e))
+* **desktop:** polish native conversations and agent face toggles ([#1660](https://github.com/no-phux/phux/issues/1660)) ([4ad554d](https://github.com/no-phux/phux/commit/4ad554d9d95227f9f261e207b9241d0cd1cbec31))
+* **desktop:** refine tab placement and sidebar geometry ([#1653](https://github.com/no-phux/phux/issues/1653)) ([3b92321](https://github.com/no-phux/phux/commit/3b923210a3b619278efe14e65f240014bb8d073a))
+* **desktop:** ship reviewed changes panel ([#1659](https://github.com/no-phux/phux/issues/1659)) ([1131da5](https://github.com/no-phux/phux/commit/1131da52aa69e356f715deadc13b19f8c4b9f624))
+* dev-mode perf telemetry for desktop and server, for agents and humans ([#1661](https://github.com/no-phux/phux/issues/1661)) ([57b1650](https://github.com/no-phux/phux/commit/57b165060b09cef0c1aad72f08b984bb5c675bbb))
+* one session in the desktop titlebar, and projects linked across machines ([#1675](https://github.com/no-phux/phux/issues/1675)) ([8791f73](https://github.com/no-phux/phux/commit/8791f73a772869c1ee35f748bcfa0c77b548f915))
+* **perf:** integrate reviewed development telemetry ([#1663](https://github.com/no-phux/phux/issues/1663)) ([1ef543f](https://github.com/no-phux/phux/commit/1ef543f0e27c2a31183e1302d51cc59c62269cdf))
+
+
+### Bug Fixes
+
+* **desktop:** align chrome geometry to the pixel ([#1672](https://github.com/no-phux/phux/issues/1672)) ([e20307e](https://github.com/no-phux/phux/commit/e20307ec816376c5a6ea8109dc44cc299af50408))
+* **desktop:** auto-hide macOS menu bar in fullscreen ([#1667](https://github.com/no-phux/phux/issues/1667)) ([a03572e](https://github.com/no-phux/phux/commit/a03572ec06b6f8708e5809c9a2144e89eed3d1c0))
+* **desktop:** drop the window shadow behind rounded glass menus ([#1668](https://github.com/no-phux/phux/issues/1668)) ([955b739](https://github.com/no-phux/phux/commit/955b739c6df32f6271fea9ee53a592accaaeed84))
+* **desktop:** keep host connections warm across navigation ([#1673](https://github.com/no-phux/phux/issues/1673)) ([8271c38](https://github.com/no-phux/phux/commit/8271c384d459ecea6ee656ce921a14cc94f8cc1d))
+* **desktop:** keep sidebar stable across session switches ([#1664](https://github.com/no-phux/phux/issues/1664)) ([5076429](https://github.com/no-phux/phux/commit/5076429fdb8b7600fab3f0160817d0691cae09c1))
+* **desktop:** make select, copy and paste smooth and reliable ([#1670](https://github.com/no-phux/phux/issues/1670)) ([7ecca3c](https://github.com/no-phux/phux/commit/7ecca3cc680d169066979f123cffba38e1e6403b))
+* **desktop:** terminate processes when closing panes and tabs ([#1669](https://github.com/no-phux/phux/issues/1669)) ([7302a94](https://github.com/no-phux/phux/commit/7302a94f165f357b565c5a40696d1b6054e96a7b))
+
+
+### Documentation
+
+* conserve live contracts and make historical decisions searchable ([#1643](https://github.com/no-phux/phux/issues/1643)) ([bb4e5da](https://github.com/no-phux/phux/commit/bb4e5daf69896fded96136a954377513b387e5da))
+
 ## [0.40.0](https://github.com/no-phux/phux/compare/desktop-v0.39.1...desktop-v0.40.0) (2026-10-18)
 
 

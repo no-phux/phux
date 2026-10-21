@@ -53,6 +53,7 @@ use super::skin::Look;
 use super::ui::shadow;
 
 pub(super) use changes::width as changes_width;
+pub(super) use navigator::foldable_sessions;
 pub(super) use navigator::group as group_work;
 pub(super) use status::{notification_edge, notification_text};
 pub(super) use tabs::MIN_STRIP_WIDTH;
@@ -144,6 +145,7 @@ fn drag_label(keys: &[ResourceKey], name: &str) -> String {
 pub(super) struct ChromeCache {
     titlebar: Option<Entity<CachedChrome>>,
     bottom_tabs: Option<Entity<CachedChrome>>,
+    tab_rail: Option<Entity<CachedChrome>>,
     sidebar: Option<Entity<CachedChrome>>,
     changes: Option<Entity<CachedChrome>>,
     overlays: Option<Entity<CachedChrome>>,
@@ -236,6 +238,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         sidebar_width,
         desk.disclosing(desk::SIDEBAR_DISCLOSURE).then_some(wanted),
     );
+    let rail = desk.tab_rail() && tabs_at(desk, &skin, TabPosition::Side);
     let changes_open = desk.changes.open && !quick(desk);
     let changes = changes_open || (!quick(desk) && desk.disclosing(desk::CHANGES_DISCLOSURE));
     let sheen_height = skin.material.sheen_height;
@@ -300,6 +303,14 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
                     // Held by its trailing edge, it slides out to the left.
                     let slot = chrome_slot(&mut desk.chrome.sidebar, navigator::build, style, cx);
                     row.child(sidebar_reveal(div().justify_end().child(slot)))
+                })
+                .when(rail, |row| {
+                    row.child(chrome_slot(
+                        &mut desk.chrome.tab_rail,
+                        tabs::build_rail,
+                        StyleRefinement::default().w(px(tabs::RAIL_WIDTH)).h_full(),
+                        cx,
+                    ))
                 })
                 .child(panes::main_column(desk, &look, window, cx))
                 .when(changes, |row| {

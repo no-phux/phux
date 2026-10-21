@@ -21,6 +21,9 @@ For every pane, phux keeps an agent record: the agent's `kind` (`claude`,
 | `done`    | finished and said so                                 |
 | `unknown` | no agent found, or the agent left                    |
 
+`phux mission` projects `working`, `blocked`, and `done` into the task.
+See [Work and missions](./organization.md#work-and-missions).
+
 The state comes from the strongest source available:
 
 1. a declaration (`phux agent set --state ...`), for the occupant it describes
@@ -40,7 +43,8 @@ own this provenance rule.
 
 Rules ship for Claude Code, Codex, OpenCode, pi, OMP, Grok, Amp, Cursor,
 Gemini CLI, Goose, and Aider. No match means `idle`, never `blocked`. Add or
-override rules in `~/.config/phux/agent-rules/`.
+override rules in `~/.config/phux/agent-rules/`. How this differs from Herdr and cmux
+is in [phux vs tmux, Herdr, and cmux](./compare.md#compared-with-herdr).
 
 ```sh
 phux agent list                 # every pane's agent and state
@@ -70,9 +74,11 @@ not fresh process attestation: inspect `agent list` address refusals and use
 exact ids for unattended targeting. `agent wait` fires on a transition,
 so an agent that is already `blocked` when you start waiting times out.
 
-`phux launch` needs a plugin that defines launch commands. The ones in
+Terminal `phux launch` needs a plugin that defines launch commands. The ones in
 [`examples/plugins/agent-tools`](../examples/plugins/agent-tools) cover the
 agents above; `phux config init --distro starter` enables them.
+Native `phux launch opencode --acp` also has a built-in `opencode acp` profile;
+see [ACP-owned sessions](./acp.md).
 
 ## Connecting your agent host
 
@@ -117,6 +123,48 @@ adapter. [Awareness code](../integrations/runtime/src/awareness.ts) and
 [tests](../integrations/runtime/test/awareness.test.ts) own timeout, byte,
 pane and checkpoint bounds. Host adapters remain siblings over this neutral
 runtime; do not duplicate its state machine in each integration.
+
+## Plan usage
+
+`phux agent usage` prints the AI plan limits this host can see: Claude Code's
+5-hour and weekly windows, Codex's, and Grok Build's allowance, with
+utilization and reset times.
+
+What it reads, and where anything goes:
+
+| Vendor | Read on this host | Sent, and only to |
+| --- | --- | --- |
+| Claude Code | Keychain item `Claude Code-credentials` (via `/usr/bin/security`), else `~/.claude/.credentials.json`; account id from `~/.claude.json` | the access token, to `api.anthropic.com/api/oauth/usage` |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl` (the newest tails) and `~/.codex/auth.json` | when the ledgers are over 10 minutes old: the access token and account id, to `chatgpt.com/backend-api/wham/usage` |
+| Grok Build | `~/.grok/auth.json` | the session token and user id, to `cli-chat-proxy.grok.com` (an override must be `https://`) |
+
+Tokens are never refreshed, written, logged, or published, and travel only
+over HTTPS (`curl` reads them from stdin, not its command line). An expired
+sign-in shows as `unavailable` until that agent runs again. Requests to one
+vendor are at least two minutes apart and back off 3, 6, 12, then 15 minutes
+on rate limits; a missing Keychain item is not looked for again for 15
+minutes.
+
+The [usage plugin](../examples/plugins/usage) (enabled by the starter
+distro) runs `phux agent usage --publish` when a client attaches or an agent
+changes state. A publish that finds another one running, or that comes
+within ten seconds of the last, exits at once without touching the server
+or any credential. It writes the `phux.usage/v1` Global metadata key, the
+same document as `phux agent usage --json`: per plan a `provider`, `plan`,
+`label`, an opaque 12-hex `account` fingerprint (never an email), `status`
+(`ok`, `stale`, `unavailable`, `error`), and `windows` of `{id, minutes,
+used_percent, resets_at_ms}`. The key is rewritten only when a number or
+status changes, or every five minutes. Any client whose grant includes
+`observe@global` can read it: the owner socket, and every paired device.
+Readers ignore unknown fields.
+
+Setting `phux.usage.refresh/v1` to a new value is only a hint: nothing
+watches it, so it is noticed by the next publish a hook triggers, which then
+skips the two-minute spacing (never a backoff). The plugin's `refresh`
+action publishes at once. To stop publishing, see the
+[plugin's README](../examples/plugins/usage/README.md#turning-it-off).
+[Collector](../crates/phux-usage) and [verb](../crates/phux/src/commands/plan_usage.rs)
+own the sources and the publish rule.
 
 ## ACP-owned sessions
 
@@ -178,7 +226,7 @@ producer ingress and BIND+INPUT through the parent; they are not exclusive
 to the connection that opened the stream. Same-owner socket clients share
 that trust boundary. SDK-owned streams instead require their reserved
 native controller; generic emit cannot impersonate one. See the
-[append guard](../crates/phux-server/src/runtime/resource_commands.rs) and
+[append guard](../crates/phux-server/src/runtime/resource_commands/mod.rs) and
 [parent authorization](../crates/phux-server/src/policy/enforce.rs).
 Native ACP questions use the separate human-only broker described above.
 

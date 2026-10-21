@@ -89,12 +89,6 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
 /// The gap between a transient surface and the window's edges.
 pub(crate) const SHEET_GUTTER: f32 = 16.;
 
-/// How far below the window top every palette, panel and dialog sits. One
-/// placement for every transient surface, scaled to the window height.
-pub(crate) fn sheet_top(viewport: gpui::Size<gpui::Pixels>) -> f32 {
-    (viewport.height.as_f32() * 0.13).clamp(SHEET_GUTTER, 84.)
-}
-
 /// A modal's card: at most `width` wide, never wider than the window's
 /// gutters allow, and a click inside it never reaches the backdrop.
 pub(crate) fn sheet(look: &Look, width: f32) -> gpui::Div {
@@ -105,10 +99,10 @@ pub(crate) fn sheet(look: &Look, width: f32) -> gpui::Div {
 }
 
 /// A dimmed layer over the window that blocks the terminal, places the modal
-/// at [`sheet_top`], and closes it on a click outside the card.
+/// at the window's center, and closes it on a click outside the card.
 pub(super) fn backdrop(
     colors: &Palette,
-    window: &Window,
+    _window: &Window,
     cx: &mut Context<Desk>,
     card: impl IntoElement,
 ) -> AnyElement {
@@ -120,9 +114,8 @@ pub(super) fn backdrop(
         .flex()
         .flex_col()
         .items_center()
-        .pt(px(sheet_top(window.viewport_size())))
-        .px(px(SHEET_GUTTER))
-        .pb(px(SHEET_GUTTER))
+        .justify_center()
+        .p(px(SHEET_GUTTER))
         .bg(from_hex(&colors.backdrop))
         .occlude()
         .on_mouse_down(

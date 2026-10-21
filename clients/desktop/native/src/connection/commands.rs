@@ -64,7 +64,14 @@ impl Connection {
     /// Queue a spawn. The session must already be in the topology; there is no fallback.
     pub fn spawn(&self, request: SpawnRequest) -> Result<u32, CommandError> {
         self.client
-            .with_control(|control| queue_spawn(control, request))
+            .with_control(|control| queue_spawn(control, request, ControlPlane::spawn_terminal))
+    }
+
+    /// Submit interactive setup once; never replay it after a lost connection.
+    pub(crate) fn spawn_once(&self, request: SpawnRequest) -> Result<u32, CommandError> {
+        self.client.with_control(|control| {
+            queue_spawn(control, request, ControlPlane::spawn_terminal_once)
+        })
     }
 
     /// Explicitly terminate a local terminal. Satellite ids are refused, not retried.
@@ -73,8 +80,9 @@ impl Connection {
         identity: &ConnectionIdentity,
         terminal: &ResourceId,
     ) -> Result<u32, CommandError> {
+        let admitted = self.admitted.contains(terminal);
         self.client
-            .with_control(|control| queue_termination(control, identity, terminal))
+            .with_control(|control| queue_termination(control, identity, terminal, admitted))
     }
 
     /// Current mutation identity, after the handshake.
@@ -150,7 +158,11 @@ pub(crate) fn session_create(name: &str, cwd: Option<String>) -> Command {
     }
 }
 
-fn queue_spawn(control: &mut ControlPlane, mut request: SpawnRequest) -> Result<u32, CommandError> {
+fn queue_spawn(
+    control: &mut ControlPlane,
+    mut request: SpawnRequest,
+    spawn: fn(&mut ControlPlane, SpawnRequest) -> u32,
+) -> Result<u32, CommandError> {
     let not_connected = |reason| {
         command(
             reason,
@@ -201,13 +213,16 @@ fn queue_spawn(control: &mut ControlPlane, mut request: SpawnRequest) -> Result<
         ));
     }
     request.session_id = Some(target);
-    Ok(control.spawn_terminal(request))
+    Ok(spawn(control, request))
 }
 
+/// `admitted`: this connection's spawn/attach named the terminal, so it is
+/// live even before a topology read lists it.
 fn queue_termination(
     control: &mut ControlPlane,
     identity: &ConnectionIdentity,
     id: &ResourceId,
+    admitted: bool,
 ) -> Result<u32, CommandError> {
     let refused = |reason, body| command(reason, "Terminate refused", body);
     let server_id = control
@@ -232,10 +247,11 @@ fn queue_termination(
             "Satellite terminals cannot be terminated from this window.",
         ));
     }
-    if control
-        .topology()
-        .and_then(|topology| topology.pane(id))
-        .is_none()
+    if !admitted
+        && control
+            .topology()
+            .and_then(|topology| topology.pane(id))
+            .is_none()
     {
         return Err(refused("TerminalNotFound", "That terminal is gone."));
     }

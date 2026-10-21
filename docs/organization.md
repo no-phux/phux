@@ -71,8 +71,9 @@ and [core refusal rules](../crates/phux-core/src/apply.rs) own these decisions.
 ## Work and missions
 
 Organization records own execution, not task scheduling. The separate
-[work store](../crates/phux-work/src/lib.rs) has one keeper writer per host;
-mission documents compose over its client and never open SQLite directly.
+[work store](../crates/phux-work/src/lib.rs) has one keeper writer per store,
+on the host that runs it. Mission documents compose over its client and
+never open SQLite directly.
 Operation ids deduplicate work/mail mutations and expected revisions refuse
 stale edits. Mail/path claims are advisory host-local coordination, not
 filesystem enforcement or an authenticated execution identity; see
@@ -84,8 +85,58 @@ agent cap and a revision-checked keeper commit. Queued is not launched. Its
 [CLI implementation](../crates/phux/src/commands/mission_start.rs),
 [pure launch planning](../crates/phux-mission/src/start.rs) and
 [keeper start transaction](../crates/phux-work/src/start.rs) own the sequence.
-This is not the proposed cross-host coordinator, autonomous Lead, or durable
-Capture dispatch service; do not infer those from historical design names.
+
+The keeper projects each bound agent's state into the task. The binding's
+terminal id is the source of truth. On start, and after `journal_gap` or
+`source_gap`, the keeper re-reads level state and appends one event. The
+journal is a wake-up, not the task's history. Replaying the same derived
+operation id writes nothing.
+
+| Observed fact | Task state |
+| --- | --- |
+| the keeper launches a queued task | `working` |
+| agent `working` | `working` |
+| agent `blocked` | `needs_you` |
+| agent `done` | `done_unchecked` |
+| process exit 0 after `done` | `done_unchecked` |
+| process exit non-zero, or exit with no `done` | `failed` |
+| bound terminal missing from a complete level read | `failed` (`terminal_lost`) |
+| unresolved `credential_lost` | `needs_you` |
+
+`done` is reserved for merge cleanup and is not written from agent state.
+`needs_you` keeps the agent slot. `done_unchecked` and `failed` free it, and
+the keeper then starts the oldest queued task through the same worktree and
+brief path as `mission start`. The keeper stays up while any task is
+`working` or `queued`. On exit it waits a short bounded grace and re-reads
+that terminal's agent record before recording `failed`, so a `done` that
+lands in the same moment becomes `done_unchecked`.
+
+`done_unchecked`, `done`, and `failed` stamp the work store at
+`user_version` 2 and add no tables. An older binary refuses the file at
+open with an unsupported-schema error instead of failing on a task row
+in one of those states.
+
+The transition is pure in
+[state.rs](../crates/phux-mission/src/state.rs) and applied by
+[the keeper projector](../crates/phux/src/commands/mission_project.rs).
+Journal wake-ups follow
+[ADR-0123](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0123-events-are-journaled.md)
+and
+[ADR-0130](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0130-on-disk-pty-journal-is-not-built.md).
+The single keeper writer is
+[ADR-0092](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0092-durable-work-coordinator-authority.md).
+Agent records are
+[ADR-0040](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0040-agent-identity-metadata.md)
+and
+[ADR-0046](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0046-server-side-agent-state-detection.md).
+Delegated grants are
+[ADR-0163](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0163-actors-and-delegated-agent-grants.md).
+Agents coordinate through phux per
+[ADR-0187](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0187-agents-coordinate-through-phux.md).
+The org's one home keeper, and the cross-host work that waits until after
+launch, is the [substrate decision](./substrate.md). A multi-host
+coordinator, an autonomous Lead, and a durable grant ledger are not
+shipping contracts. Do not infer them from historical design names.
 
 ## Restore and executable authority
 

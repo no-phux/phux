@@ -13,9 +13,12 @@ use super::error::DecodeError;
 use super::frame::{decode_terminal_id, encode_terminal_id};
 use crate::ids::{ResourceId, StreamId};
 
-/// Upper bound on a `STREAM_BIND` body (a 255-byte host plus fixed fields);
-/// anything larger is refused before allocation.
-pub const MAX_STREAM_BIND_BYTES: usize = 512;
+/// Upper bound on a `STREAM_BIND` body, refused before allocation.
+///
+/// Today's body is at most a 255-byte host plus fixed fields;
+/// the rest is room for the record tail a newer 1.x client may append,
+/// which this build skips.
+pub const MAX_STREAM_BIND_BYTES: usize = 4 * 1024;
 
 /// A decoded `STREAM_BIND` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,8 +46,8 @@ pub fn encode(bind: &StreamBind, buf: &mut BytesMut) {
 }
 
 /// Decode one `STREAM_BIND` header from the front of `input`, returning it
-/// and the bytes consumed. The shape is fixed, so trailing body bytes are
-/// corruption.
+/// and the bytes consumed. The body is a record: bytes a newer client
+/// appended after the stream id are skipped.
 pub fn decode(input: &[u8]) -> Result<(StreamBind, usize), DecodeError> {
     let mut dec = Decoder::new(input);
     let len = dec.read_u32_be()? as usize;
@@ -58,9 +61,6 @@ pub fn decode(input: &[u8]) -> Result<(StreamBind, usize), DecodeError> {
     let mut body_dec = Decoder::new(&body[..len]);
     let terminal_id = decode_terminal_id(&mut body_dec)?;
     let stream_id = StreamId::new(body_dec.read_u64_be()?).ok_or(DecodeError::InvalidStreamId)?;
-    if !body_dec.at_body_end() {
-        return Err(DecodeError::LengthOverflow);
-    }
     Ok((
         StreamBind {
             terminal_id,
@@ -119,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_bytes_are_corruption() {
+    fn trailing_body_bytes_are_skipped() {
         let mut buf = BytesMut::new();
         encode(
             &StreamBind {
@@ -128,12 +128,14 @@ mod tests {
             },
             &mut buf,
         );
-        // Grow the declared length by one and append one trailing byte: the
-        // body no longer ends exactly at the stream id.
+        // Grow the declared length by one and append one trailing byte, as a
+        // newer client extending the header would.
         let len = u32::from_be_bytes(buf[..4].try_into().expect("len")) + 1;
         buf[..4].copy_from_slice(&len.to_be_bytes());
         buf.extend_from_slice(&[0]);
-        assert!(matches!(decode(&buf), Err(DecodeError::LengthOverflow)));
+        let (bind, used) = decode(&buf).expect("extended bind decodes");
+        assert_eq!(bind.terminal_id, ResourceId::local(3));
+        assert_eq!(used, buf.len());
     }
 
     #[test]

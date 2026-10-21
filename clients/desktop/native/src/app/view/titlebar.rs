@@ -32,7 +32,7 @@ pub(super) const TRAFFIC_LIGHTS: f32 = 78.;
 pub(super) const MENU_RAIL: f32 = 256.;
 /// Titlebar heights between which its controls fade in: a slim drag strip
 /// holds only the traffic lights and a title.
-const SLIM_BAR: f32 = 30.;
+const SLIM_BAR: f32 = 38.;
 const FULL_BAR: f32 = 42.;
 
 /// How much of the full titlebar's controls fit a bar `titlebar` points
@@ -352,12 +352,12 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
 
 fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> Option<AnyElement> {
     let entity = desk.updates.clone();
-    let action = entity.read(cx).desktop_action()?;
+    let action = entity.read(cx).action()?;
     Some(
         Button::new("desktop-update-ready")
             .label(action.label())
             .small()
-            .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.desktop_act(cx)))
+            .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.act(cx)))
             .into_any_element(),
     )
 }

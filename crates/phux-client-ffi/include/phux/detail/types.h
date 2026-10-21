@@ -237,8 +237,10 @@ typedef enum PhuxOperationErrorDomain {
  * id == 0 means absent; attach/detach results retain their requested ID even on failure.
  * Host/message spans are borrowed until the next mutable client call. Messages
  * are truncated at a UTF-8 boundary to MAX_OPERATION_MESSAGE_BYTES.
- * UNKNOWN_OUTCOME means transport ended before a reply; reconcile against server
- * inventory/identity, never automatically retry creation.
+ * UNKNOWN_OUTCOME means transport ended before a reply, or the reply did not
+ * say (a newer server's unknown spawn refusal, or an unreadable reply);
+ * reconcile against server inventory/identity, never automatically retry
+ * creation.
  */
 typedef struct PhuxOperationResult {
     size_t size;

@@ -31,9 +31,13 @@ See the [public embedding guide](../../../docs/embedding.md).
 
 ## ACP and attached conversations
 
-**New ACP Agent** lists configured ACP profiles and executing-host prerequisites.
-Explicit launch delegates to `phux launch --acp INTEGRATION --json --session SESSION`;
-the GUI never owns a provider worker. That server-owned ACP session is also the
+**New Agent…** discovers ACP profiles and prerequisites on the connected phux
+server, locally or remotely. It includes OpenCode without requiring an agent-tools
+plugin. Launch submits the integration id, persistent session key and focused
+folder over that same connection; the server resolves the executable and creates
+the guardian. The GUI never owns a provider worker or starts a local CLI as a
+remote proxy. OpenCode sign-in is an explicit `opencode auth login` terminal on
+the executing host. That server-owned ACP session is also the
 session mobile controls. Prompt/interrupt/answer use the shared typed control
 broker and dedicated operation receipts, never terminal keys. ACP permissions and
 supported provider extension questions use Kit controls with exact callback
@@ -148,3 +152,15 @@ scene/layout captures, not compositor-presentation evidence; capture buffers
 themselves affect memory, so use the separate ignored memory observations for
 allocator measurements. On macOS it also saves `memory-before-capture.txt`, a
 `vmmap -summary` snapshot of only its own process before allocating PNG buffers.
+
+Capture every Settings page, and the Updates page in each of its states, from
+a real window with disposable state and no server:
+
+```sh
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/settings.XXXXXX")
+HOME=$tmp XDG_CONFIG_HOME=$tmp/config XDG_STATE_HOME=$tmp/state \
+  cargo run --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --features ui-fixtures --example settings_preview -- clients/desktop/.cache/settings-preview
+```
+
+It refuses a `HOME` outside the temporary directory and any named server.

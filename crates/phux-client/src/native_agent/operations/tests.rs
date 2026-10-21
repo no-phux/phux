@@ -75,7 +75,11 @@ fn events_require_both_agent_and_full_width_operation_identity() {
 #[test]
 fn explicit_refusal_is_not_uncertain_delivery() {
     let id = command().operation_id;
-    for code in [ErrorCode::PermissionDenied, ErrorCode::PreconditionFailed] {
+    for code in [
+        ErrorCode::PermissionDenied,
+        ErrorCode::PreconditionFailed,
+        ErrorCode::Unsupported,
+    ] {
         let result = command_receipt(
             CommandResult::Error {
                 code,
@@ -90,6 +94,8 @@ fn explicit_refusal_is_not_uncertain_delivery() {
         ErrorCode::InputDeliveryUnknown,
         ErrorCode::IncarnationChanged,
         ErrorCode::InternalError,
+        ErrorCode::UNREADABLE_REPLY,
+        ErrorCode::Unknown(299),
     ] {
         let result = command_receipt(
             CommandResult::Error {

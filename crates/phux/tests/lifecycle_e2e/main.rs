@@ -21,5 +21,6 @@ mod retain_on_exit_e2e;
 mod reverse_enrollment_e2e;
 mod ssh_bootstrap_e2e;
 mod upgrade_e2e;
+mod usage_e2e;
 mod whoami_e2e;
 mod workload_e2e;

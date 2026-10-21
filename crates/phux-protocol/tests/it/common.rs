@@ -23,6 +23,13 @@ pub fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     }
 }
 
+/// A positional record: `u32` big-endian length, then `body`.
+pub fn record(body: &[u8]) -> Vec<u8> {
+    let mut out = u32::try_from(body.len()).unwrap().to_be_bytes().to_vec();
+    out.extend_from_slice(body);
+    out
+}
+
 /// Append one TLV field: `field_id || wire_type(4 = BYTES) || len || value`.
 pub fn tlv_field(out: &mut Vec<u8>, field_id: u32, value: &[u8]) {
     put_varint(out, u64::from(field_id));
@@ -107,7 +114,7 @@ pub fn attached_with_layout(layout: &[u8]) -> Vec<u8> {
     let mut snap = Vec::new();
     snap.extend_from_slice(&0u32.to_be_bytes()); // sessions 0
     snap.extend_from_slice(&1u32.to_be_bytes()); // windows 1
-    snap.extend_from_slice(&win);
+    snap.extend_from_slice(&record(&win));
     snap.extend_from_slice(&0u32.to_be_bytes()); // panes 0
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_session
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_window

@@ -271,6 +271,7 @@ pub(crate) mod enroll;
 pub(crate) mod gen_reference_docs;
 pub(crate) mod git;
 pub(crate) mod host;
+pub(crate) mod idea;
 pub(crate) mod json_err;
 pub(crate) mod kill;
 pub(crate) mod launch;
@@ -278,6 +279,7 @@ pub(crate) mod logs;
 pub(crate) mod ls;
 pub(crate) mod mcp;
 pub(crate) mod mission;
+pub(crate) mod mission_project;
 pub(crate) mod mission_start;
 pub(crate) mod new;
 pub(crate) mod org;
@@ -287,6 +289,7 @@ pub(crate) mod partial;
 pub(crate) mod paste;
 pub(crate) mod perf;
 pub(crate) mod perf_desktop;
+pub(crate) mod plan_usage;
 pub(crate) mod play;
 pub(crate) mod plugin;
 pub(crate) mod project;
@@ -430,11 +433,11 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             coord::MailAction::Read { .. } => Some("mail read"),
             coord::MailAction::Ack { .. } => Some("mail ack"),
         },
-        Command::Mission { action } => match action {
-            Some(MissionAction::Keeper { .. }) => Some("mission keeper"),
-            Some(MissionAction::Start { .. } | MissionAction::Add { start: true, .. }) => None,
-            _ => Some("mission"),
-        },
+        // Every verb starts the keeper, which watches this server, and
+        // `start` / `add --start` dial it. `--socket` names that server.
+        Command::Mission { .. } => None,
+        // Capture talks to the ideas endpoint, never the phux server socket.
+        Command::Idea { .. } => Some("idea"),
         _ => None,
     }
 }
@@ -1390,10 +1393,11 @@ pub(crate) enum Command {
     /// Track tasks in the local work store
     ///
     /// `list`, `show`, `edit`, `archive`, `restore`, and `keeper` call the
-    /// work store's keeper, which `phux mission` starts on demand, and do
-    /// not contact a phux server. `start` and `add --start` also dial the
-    /// phux server to create the worktree session and launch the agent.
-    /// With no subcommand, prints this help.
+    /// work store's keeper, which `phux mission` starts on demand. The keeper
+    /// watches the phux server and projects each bound agent's state into
+    /// the task. `start` and `add --start` dial the phux server to create
+    /// the worktree session and launch the agent. With no subcommand, prints
+    /// this help.
     ///
     /// `--json` prints a document whose `schema` is `phux.mission/v1`.
     /// Exit status: 0 success; 1 the task is missing, the revision is stale,
@@ -2720,6 +2724,41 @@ Download dials configured remote transports headlessly; it never pairs over SSH.
         /// Amount and subject of guidance to print.
         #[usage(value_enum, default = "full", value_name = "SCOPE")]
         scope: crate::skill::SkillScope,
+    },
+
+    /// Capture an idea
+    ///
+    /// TEXT is written to the local ideas spool first, then signed and posted
+    /// to `https://ingest.phux.sh/ideas/capture`. Success prints the capture
+    /// id. A network failure leaves the idea queued; the next `phux idea`
+    /// sends it with the same idempotency key and a fresh signature.
+    /// `--flush` sends queued ideas and does not capture a new one.
+    ///
+    /// `--private` ensures the body contains the `#private` tag.
+    ///
+    /// `PHUX_IDEAS_KEY_ID` and `PHUX_IDEAS_KEY` are read from
+    /// `$XDG_CONFIG_HOME/phux/ops.env` (`~/.config/phux/ops.env` when
+    /// `XDG_CONFIG_HOME` is unset). `PHUX_IDEAS_KEY_ID` is the key id, for
+    /// example `cli-mbp`. `PHUX_IDEAS_KEY` is 64 hex characters: the 32-byte
+    /// HMAC secret. The secret is never printed.
+    ///
+    /// Examples:
+    ///   phux idea "ship the spool before the post"
+    ///   phux idea --private "keep this off the triage model"
+    ///   phux idea --flush
+    #[usage(help_heading = "More", display_order = 67)]
+    Idea {
+        /// Ensure the body contains the `#private` tag.
+        #[usage(long)]
+        private: bool,
+
+        /// Send queued ideas and do not capture a new one.
+        #[usage(long)]
+        flush: bool,
+
+        /// Idea text. Required unless `--flush`.
+        #[usage(value_name = "TEXT")]
+        text: Option<String>,
     },
 
     /// Diagnose the install: config, socket, server

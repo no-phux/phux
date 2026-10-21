@@ -265,3 +265,36 @@ fn broker_refusal_is_not_fabricated_as_delivery() {
     }] if detail.as_deref() == Some("question already answered"))
     );
 }
+
+/// `UNSUPPORTED` promises nothing ran, so it is refused; an unreadable reply
+/// or a newer server's code may mean the prompt landed, so it is unknown
+/// and the caller does not re-prompt.
+#[test]
+fn unsupported_is_refused_and_unreadable_or_newer_codes_are_unknown() {
+    for (code, expected) in [
+        (ErrorCode::Unsupported, NativeDisposition::Refused),
+        (ErrorCode::UNREADABLE_REPLY, NativeDisposition::Unknown),
+        (ErrorCode::Unknown(299), NativeDisposition::Unknown),
+    ] {
+        let mut plane = connected();
+        plane
+            .native_agent_command(&ResourceId::local(22), "activation-A", prompt())
+            .unwrap();
+        let (request_id, _) = sent(&mut plane);
+        plane
+            .feed(FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::Error {
+                    code,
+                    message: "newer server".into(),
+                },
+            })
+            .unwrap();
+        assert!(
+            matches!(plane.take_events().as_slice(), [Event::NativeAgentResult {
+                disposition, ..
+            }] if *disposition == expected),
+            "{code:?}"
+        );
+    }
+}

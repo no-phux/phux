@@ -303,8 +303,9 @@ pub enum Scope {
     Global,
 }
 
-/// Why a spawn was refused (SPEC §7.2 / §10.1). Unknown tags decode as
-/// [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue).
+/// Why a spawn was refused (SPEC §7.2 / §10.1). An error tag a newer server
+/// allocated, or a result tag this build does not know, decodes as
+/// [`Self::Unknown`] so the spawn still settles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SpawnError {
@@ -326,6 +327,10 @@ pub enum SpawnError {
     /// The `idempotency_key` is bound to a different payload (ADR-0126);
     /// nothing was created.
     IdempotencyConflict,
+    /// A result this build cannot read, kept verbatim: a newer server's
+    /// error tag, a `SpawnResult` tag no 1.0 build defines, or a payload this
+    /// build cannot decode. Whether anything was created is not stated.
+    Unknown(crate::wire::UnreadableResult),
 }
 
 /// The `RESOURCE_SPAWNED` result (SPEC §7.2 / §10.1).
@@ -391,6 +396,10 @@ pub enum MoveError {
     MoveFailed(String),
     /// A satellite-tagged Terminal was named; moves are local-only.
     UnsupportedSatelliteRoute,
+    /// A result this build cannot read, kept verbatim: a newer server's
+    /// error tag, a `MoveResult` tag no 1.0 build defines, or a payload this
+    /// build cannot decode. Whether the move happened is not stated.
+    Unknown(crate::wire::UnreadableResult),
 }
 
 /// The `RESOURCE_MOVED` result (ADR-0056); the id is stable across a move.

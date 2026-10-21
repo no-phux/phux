@@ -807,77 +807,7 @@ pub(crate) fn render_help_page(
             page.push_str(rest);
         }
     }
-    if mission_help_page(&page) {
-        page = hide_inherited_socket(&page);
-    }
     Some(page)
-}
-
-/// `phux mission` never dials, so its help does not offer `--socket`.
-fn mission_help_page(page: &str) -> bool {
-    strip_ansi(page).contains("Usage: phux mission")
-}
-
-/// Drop a Global flags section that only documents `--socket`.
-fn hide_inherited_socket(page: &str) -> String {
-    let lines: Vec<&str> = page.lines().collect();
-    let mut out = String::new();
-    let mut index = 0;
-    while index < lines.len() {
-        if strip_ansi(lines[index]) == "Global flags:" && socket_only_section(&lines[index + 1..]) {
-            while out.ends_with("\n\n") {
-                out.pop();
-            }
-            index += 1;
-            while index < lines.len() && !strip_ansi(lines[index]).is_empty() {
-                index += 1;
-            }
-            if index < lines.len() && strip_ansi(lines[index]).is_empty() {
-                index += 1;
-            }
-            continue;
-        }
-        out.push_str(lines[index]);
-        out.push('\n');
-        index += 1;
-    }
-    out
-}
-
-fn socket_only_section(lines: &[&str]) -> bool {
-    let mut saw_socket = false;
-    for line in lines {
-        let visible = strip_ansi(line);
-        if visible.is_empty() {
-            break;
-        }
-        let trimmed = visible.trim();
-        if trimmed.starts_with("--socket") {
-            saw_socket = true;
-        } else if trimmed.starts_with('-') {
-            return false;
-        }
-    }
-    saw_socket
-}
-
-fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            if chars.next() == Some('[') {
-                for next in chars.by_ref() {
-                    if next == 'm' {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(ch);
-    }
-    out
 }
 
 /// The usage refusals the grammar cannot express, checked after parsing and
@@ -1764,6 +1694,11 @@ fn dispatch(
         Some(Command::Claim { action }) => commands::coord::run_claim(&action),
         Some(Command::Worktree { action }) => commands::worktree::run_worktree(&action, socket),
         Some(Command::Project { action }) => commands::project::run_project(&action, socket),
+        Some(Command::Idea {
+            private,
+            flush,
+            text,
+        }) => commands::idea::run(private, flush, text.as_deref()),
         Some(Command::Doctor { json }) => commands::doctor::run_doctor(json, socket),
         Some(Command::Logs {
             server,
@@ -2023,7 +1958,7 @@ mod tests {
     }
 
     #[test]
-    fn mission_help_hides_the_socket_flag() {
+    fn mission_help_offers_the_socket_the_keeper_watches() {
         let spec = Cli::spec();
         let mission = spec
             .root
@@ -2033,8 +1968,10 @@ mod tests {
             .expect("mission");
         let page =
             super::render_help_page(mission.cmd, true, usage::help::Style::PLAIN).expect("page");
-        assert!(!page.contains("--socket"), "{page}");
-        assert!(!page.contains("Global flags"), "{page}");
+        assert!(
+            page.contains("--socket"),
+            "the keeper watches this server; {page}"
+        );
         let add = mission
             .subcommands
             .iter()
@@ -2042,16 +1979,7 @@ mod tests {
             .expect("add");
         let add_page =
             super::render_help_page(add.cmd, true, usage::help::Style::PLAIN).expect("add page");
-        assert!(!add_page.contains("--socket"), "{add_page}");
-        let attach = spec
-            .root
-            .subcommands
-            .iter()
-            .find(|sub| sub.cmd.name == "attach")
-            .expect("attach");
-        let attach_page = super::render_help_page(attach.cmd, true, usage::help::Style::PLAIN)
-            .expect("attach page");
-        assert!(attach_page.contains("--socket"), "{attach_page}");
+        assert!(add_page.contains("--socket"), "{add_page}");
     }
 
     /// The coloured page and the plain page carry the same text, and the

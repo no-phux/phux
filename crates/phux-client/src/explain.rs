@@ -17,6 +17,17 @@ pub fn explain_unexpected(verb: &str, result: &CommandResult) -> String {
     }
 }
 
+/// Explain a request withheld because the server does not advertise the
+/// `feature` bit it needs: the server is older than this client, so the
+/// remedy is `phux upgrade`, which hands it this phux in place.
+#[must_use]
+pub fn server_too_old(what: &str, feature: &str) -> String {
+    format!(
+        "the server is too old for {what} (it does not advertise {feature}), so nothing was \
+         sent; run `phux upgrade` to hand it this phux, then retry"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use phux_protocol::PROTOCOL_VERSION;
@@ -34,6 +45,14 @@ mod tests {
             explain_unexpected("kill", &result),
             "kill failed: pane @9 does not exist",
         );
+    }
+
+    #[test]
+    fn server_too_old_names_the_feature_and_the_upgrade() {
+        let sentence = server_too_old("kill --server", "SHUTDOWN");
+        assert!(sentence.contains("too old for kill --server"), "{sentence}");
+        assert!(sentence.contains("SHUTDOWN"), "{sentence}");
+        assert!(sentence.contains("`phux upgrade`"), "{sentence}");
     }
 
     /// An unknown reply kind names `phux doctor` and the protocol triple,

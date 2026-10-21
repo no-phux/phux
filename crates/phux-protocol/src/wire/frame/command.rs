@@ -379,6 +379,15 @@ pub enum Command {
         /// [`MAX_FILE_UPLOAD_CHUNK`](super::MAX_FILE_UPLOAD_CHUNK).
         max_bytes: u32,
     },
+    /// One typed Git operation on the checkout `terminal_id` is in, resolved
+    /// from the Terminal's live working directory by the server that owns
+    /// it. The reply is [`CommandValue::Checkout`].
+    Checkout {
+        /// The Terminal whose working directory selects the checkout.
+        terminal_id: ResourceId,
+        /// The operation.
+        request: crate::checkout::CheckoutRequest,
+    },
     /// Report that an agent in `terminal_id` is blocked on a question
     /// (ADR-0036); the server emits [`AgentEvent::Asked`].
     ReportAsked {
@@ -1011,6 +1020,8 @@ pub enum CommandValue {
     FileUpload(FileUploadAck),
     /// One chunk of a host file (reply to `GET_FILE`).
     FileChunk(FileChunk),
+    /// A checkout answer (reply to `CHECKOUT`).
+    Checkout(Box<crate::checkout::CheckoutAnswer>),
     /// One page of the organization (reply to `GET_ORGANIZATION`).
     OrganizationPage(Box<OrganizationPage>),
     /// An arrangement and its revision (reply to `ARRANGEMENT_GET`).

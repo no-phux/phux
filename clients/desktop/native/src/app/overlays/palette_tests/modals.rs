@@ -81,7 +81,7 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
             Some(crate::app::settings_panel::Page::Appearance),
         ),
     ]);
-    let top = cx.update(|window, _| super::super::sheet_top(window.viewport_size()));
+    let viewport = cx.update(|window, _| window.viewport_size());
     for (modal, page) in modals {
         let modal = &modal;
         let selector = if page.is_some() {
@@ -101,7 +101,7 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
                 render(cx);
             }
         };
-        // Placement: every card starts at the same offset under the titlebar.
+        // Every dimmed modal is centered in both axes; the inbox is anchored.
         open(cx);
         let card = cx
             .debug_bounds(selector)
@@ -112,10 +112,11 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
             assert_eq!(card.top(), bell.bottom() + gpui::px(6.));
             assert_eq!(card.right(), bell.right());
         } else {
-            assert_eq!(
-                card.top(),
-                gpui::px(top),
-                "{modal:?} sits at the shared top"
+            let center = card.center();
+            assert!(
+                (center.x - viewport.width / 2.).abs() <= gpui::px(0.5)
+                    && (center.y - viewport.height / 2.).abs() <= gpui::px(0.5),
+                "{modal:?} is centered (within pixel rounding): {center:?}"
             );
         }
         // A click inside the card never dismisses it.

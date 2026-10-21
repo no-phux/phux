@@ -67,6 +67,9 @@ phux-config.workspace = true
 phux-mission.workspace = true
 phux-work.workspace = true
 phux-plugin.workspace = true
+# `phux agent usage`: the plan-usage collector. Its own crate so nothing in the
+# server or client links vendor parsing.
+phux-usage.workspace = true
 # `phux doctor` dials its own routable listener to prove packets actually
 # reach the server, rather than only that a socket is bound. Reusing the
 # dial stack a real client uses is the whole point: a bespoke probe could
@@ -114,8 +117,10 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 # Generate provider-native session ids before spawning integrations whose
-# documented CLI accepts a caller-supplied fresh UUID.
-uuid.workspace = true
+# documented CLI accepts a caller-supplied fresh UUID. `v7` is for
+# `phux idea`: one time-ordered idempotency key per capture. The feature
+# adds no package; `getrandom` is already a uuid dependency.
+uuid = { workspace = true, features = ["v7"] }
 # `process`: `setsid(2)` to detach an auto-spawned server from the launching
 # client's controlling terminal so it survives the terminal closing.
 # `termios`: `phux play`'s in-pane writer clears OPOST and ECHO on its own
@@ -169,6 +174,8 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # JSON Schema validator. Default features pull an HTTP resolver this
 # schema does not use.
 jsonschema = { version = "0.33", default-features = false }
+# Read-only inspection of the work store while the keeper holds its lock.
+rusqlite.workspace = true
 # The update tests sign fake releases the way the minisign CLI does (Ed25519
 # over a BLAKE2b-512 prehash), so the real verifier runs on every update path.
 # `ring` is already locked (rustls, quinn, rcgen); `blake2` is one dev-only

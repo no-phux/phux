@@ -1,11 +1,12 @@
 //! Theme and font selection, skins, and their live previews.
 
+use super::catalog::{Content as SettingPage, Group as SettingGroup, Item as SettingItem};
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Hsla, SharedString, WeakEntity, div, px, relative};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::select::Select;
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::setting::SettingField;
 use gpui_kit::component::{ActiveTheme, IconName, Sizable};
 
 use crate::settings::theme::{self, Palette};
@@ -76,7 +77,6 @@ pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) 
                 Button::new("settings-theme")
                     .label(label)
                     .outline()
-                    .small()
                     .w(px(260.))
                     .dropdown_caret(true)
                     .dropdown_menu(move |menu, _, _| {
@@ -96,7 +96,7 @@ pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) 
     )
     .description(theme_source(desk))
     .keywords(["theme", "colors", "dark", "light"]);
-    let mut font_group = SettingGroup::new();
+    let mut font_group = SettingGroup::new().title("Font & theme");
     if let Some(controls) = desk.settings_controls.as_ref() {
         let font = controls.font.clone();
         let picker = SettingField::render(move |_, _, _| {
@@ -162,7 +162,7 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
     SettingGroup::new()
         .title("Look")
         .item(
-            SettingItem::render(move |_, _, cx| skin_cards(&cards, cx))
+            SettingItem::render("Skin", move |_, _, cx| skin_cards(&cards, cx))
                 .keywords(["skin", "look", "glass", "terminal", "plain", "chrome"]),
         )
         .item(

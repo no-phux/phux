@@ -12,7 +12,7 @@ const CATALOG: &str = "\
     goto | Go To… | General | cmd+p | Find and focus a terminal, agent or tab. | switch navigate
     settings | Settings… | General | cmd+, | Adjust appearance, key bindings and desktop preferences. | preferences theme
     new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
-    native-agent | New Agent… | Terminal |  | Launch a host-owned ACP agent. | agent acp
+    native-agent | New Agent… | Terminal |  | Start a native agent in the focused folder, on this host. | agent acp opencode remote headless login
     new-session | New Session… | Terminal | cmd+shift+n | Create a named session. |
     rename-session | Rename Session… | Terminal |  | Change the current session's name. |
     select-session-work | Select All in Session | Organization |  | Select the current session's work for organization. |
@@ -63,10 +63,12 @@ const CATALOG: &str = "\
     plain-terminal | Toggle Plain Terminal | View | cmd+ctrl+t | Switch between the glass desk and a plain terminal window. | skin minimal ghostty chrome glass
     tabs-top | Tabs on Top | View |  | Place workspace tabs in the titlebar. | layout horizontal placement
     tabs-bottom | Tabs on Bottom | View |  | Place workspace tabs below your work, including in plain terminal mode. | layout horizontal placement
-    tabs-side | Tabs in Sidebar | View |  | List workspace tabs in the sidebar’s fixed tab area. | layout vertical placement side rail
+    tabs-side | Tabs in Sidebar | View |  | List workspace tabs in the sidebar’s fixed tab area, or a rail of their own in plain terminal mode. | layout vertical placement side rail
     group-projects | Group Sessions by Project | View |  | List sessions under their repository in the navigator. | view organize
     group-machines | Group Sessions by Machine | View |  | List sessions under the machine they run on in the navigator. | view hosts organize
     group-none | Ungroup Sessions | View |  | List every session in one navigator list without headings. | view flat
+    expand-sessions | Expand All Sessions | View |  | Show the terminals of every session in the navigator. | sidebar unfold open tree
+    collapse-sessions | Collapse All Sessions | View |  | Fold every session in the navigator down to its name. | sidebar fold close tree tidy
     main-menu | Show Main Menu | General |  | Open the session menu beside the window controls. | hub workspace switch machine
     font-up | Increase Font Size | View | cmd+= cmd+shift+= | Make terminal text larger. |
     font-down | Decrease Font Size | View | cmd+- | Make terminal text smaller. |

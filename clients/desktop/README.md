@@ -74,12 +74,11 @@ Dropping a file onto a pane pastes its shell-quoted path; pasting a
 clipboard image saves it to a temporary file and pastes that path, which
 agents read as an attachment.
 
-**Settings > Updates** checks the channel manifest at launch and every few
-hours, downloads and verifies an update in the background, and swaps it in
-on restart. When an update changes the wire protocol it says so, because
-the CLI and server must move too; with **Manage phux updates** on, the app
-updates the CLI and hands the server off first. Linux updates rerun the
-installer.
+**Settings > Updates** checks the desktop and phux releases at launch and
+every few hours. One **Update phux & Desktop** click downloads and verifies the
+desktop, updates the CLI and hands the live server off, then restarts into the
+new desktop; sessions keep running. **Update phux with Desktop** (on by
+default) turns the phux half off. Linux desktop updates rerun the installer.
 
 Logs: `~/Library/Logs/phux-desktop.log` on macOS,
 `$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, redacted and rotated.

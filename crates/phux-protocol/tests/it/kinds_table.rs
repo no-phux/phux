@@ -101,7 +101,7 @@ fn command_frame_with_tag(tag: u8) -> Vec<u8> {
 fn decoder_allocates_command_tag(tag: u8) -> bool {
     !matches!(
         FrameKind::decode(&command_frame_with_tag(tag)),
-        Err(DecodeError::UnknownEnumValue {
+        Err(DecodeError::UnsupportedCommand {
             field: "Command",
             ..
         })

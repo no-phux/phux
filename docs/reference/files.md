@@ -33,6 +33,8 @@ A socket file whose server has died is *stale*, not a server: liveness is establ
 
 `$XDG_CONFIG_HOME/phux/config.toml`, falling back to `~/.config/phux/config.toml` when `XDG_CONFIG_HOME` is unset. A missing config file is not an error (the embedded defaults apply); there is no global config-path flag — set `XDG_CONFIG_HOME` to isolate configuration for a test or an alternate environment. `phux config path` prints the resolved path.
 
+Beside `config.toml`, `ops.env` holds the ideas-capture credentials `phux idea` reads: `PHUX_IDEAS_KEY_ID` (the key id) and `PHUX_IDEAS_KEY` (64 hex characters, the 32-byte HMAC secret). The secret is never printed. The file is not `config.toml` and is never committed.
+
 Beside it, `known-authorities` holds the certificate authority each paired server's leaf was issued by, one line per server keyed by the `[[remote]]` entry's `cert-fingerprint`. Pairing writes it (`phux host add`, `--code`); a connection never does. A server presenting another CA is refused. Delete a line to forget a pin.
 
 ## State
@@ -53,6 +55,7 @@ $XDG_STATE_HOME/<profile-dir>/
 ├── remote-tokens       # structured credential store (owner-only, 0600)
 ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)
 ├── reports/            # local bug-report bundles (TUI C-a B, phux report)
+├── ideas/              # phux idea spool, one file per unsent capture
 ├── service-wrapper.sh  # `phux service install --restore` wrapper
 └── workspace.json      # `--restore` archive, kept current by `--autosave`
 ```
@@ -65,6 +68,7 @@ $XDG_STATE_HOME/<profile-dir>/
 - `remote-cert.pem` / `remote-key.pem` are the TLS pair auto-provisioned for remote consumers: issued by the workload CA (`workload-ca.pem`), the certificate file holding the leaf then the CA, or self-signed when provisioned before that. `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an operator-supplied pair. A complete pair is never regenerated (`phux workload authority --rotate` replaces it on purpose), so the pinned fingerprint stays stable -- which also means its subjectAltName set is fixed at generation; `phux doctor` reports whether it names the address phux advertises.
 - `remote-tokens` is the versioned verifier-only credential store the server reads and `phux pair`, `phux pair rotate`, and `phux pair revoke` update under the sibling `.remote-tokens.lock`. Writers first lock the owner-controlled, non-group/world-writable parent directory, then no-follow open and validate the owner-only regular lock file, preventing lock-path replacement from splitting concurrent writers. Store commits use a synced temporary file and atomic rename. The store must be a regular, non-symlink file owned by the effective user with no group/world permissions; an integrity failure denies authentication. `PHUX_WS_TOKENS` moves it without weakening those checks. A store of legacy anonymous token lines is refused: remove it and pair again.
 - `enrollment-tickets` holds the SHA-256 of each single-use ticket `phux pair --enroll` minted (never the ticket), with the scope and lifetime the credential it enrolls gets; the first redemption consumes it. It sits beside the workload registry and moves with `PHUX_WORKLOAD_KEYS`.
+- `ideas/` is the `phux idea` spool (`ideas/spool/`, one file per idea that does not yet have a 2xx). The file keeps the idempotency key. A network failure leaves it; the next `phux idea` sends those same bytes. A 2xx removes it.
 - `reports/` holds local bug-report bundles written by the TUI `report-bug` action (`C-a B`) and by `phux report new`. Each subdirectory is one report (session, pane, version, log tails, optional screen dump, and a `report.md` an agent can open). `latest` points at the newest; `phux report` lists them and `phux report show` prints one.
 - `service-wrapper.sh` and `workspace.json` exist only under `phux service install --restore`. The wrapper starts `phux server --autosave workspace.json` and saves once more on stop. The server restores the archive on a fresh start and rewrites it (owner-only, `0600`) through a synced `workspace.json.autosave.tmp` and an atomic rename a few seconds after the workspace changes, so a crash or power loss leaves the latest layout. An archive that fails to restore is copied to `workspace.json.unrestored` first.
 

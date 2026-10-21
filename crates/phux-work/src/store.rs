@@ -120,7 +120,8 @@ pub struct RevisionEdit {
 }
 
 /// Direct state write. An unresolved `credential_lost` signal overrides
-/// any requested state with `needs_you`.
+/// any requested state with `needs_you`. A write that does not change the
+/// stored state appends nothing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateEdit {
     /// Task to edit.
@@ -133,6 +134,9 @@ pub struct StateEdit {
     pub operation_id: OperationId,
     /// Recorded on the event row.
     pub actor: String,
+    /// Event kind. Absent stores `objective_state`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_kind: Option<String>,
 }
 
 /// Record a signal. `credential_lost` projects the objective to `needs_you`.
@@ -179,8 +183,8 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::UnsupportedSchema`] when `user_version` is not 0 or 1,
-    /// and [`Error::Io`] or [`Error::Sqlite`] when the file cannot be opened.
+    /// [`Error::UnsupportedSchema`] when `user_version` is newer than this
+    /// binary, and [`Error::Io`] or [`Error::Sqlite`] when the file cannot be opened.
     pub fn open(path: &Path) -> Result<Self, Error> {
         Self::open_locking(path, true)
     }
@@ -340,10 +344,12 @@ impl Store {
     /// [`Error::NotFound`], [`Error::RevisionConflict`], and operation conflicts.
     pub fn record_state(&mut self, request: StateEdit) -> Result<Applied, Error> {
         let actor = parse_actor(&request.actor)?;
+        let event_kind = canonical_event_kind(request.event_kind.as_deref())?;
         let digest = digest(
             "state",
             &serde_json::json!({
                 "alias": request.alias.display(),
+                "event_kind": event_kind,
                 "expected_revision": request.expected_revision,
                 "state": request.state.as_str(),
             }),
@@ -351,24 +357,65 @@ impl Store {
         let alias = request.alias;
         let expected = request.expected_revision;
         let requested = request.state;
-        self.mutate("state", &digest, request.operation_id, &actor, |tx, now| {
-            let current = load_checked(tx, &alias, expected)?;
-            let projected = project_state(tx, current.id, requested)?;
-            let objective = if projected == current.state {
-                current
-            } else {
-                let previous = current.revision;
-                let mut updated = current;
-                updated.state = projected;
-                updated.revision = bump(previous)?;
-                now.clone_into(&mut updated.updated_at);
-                write_objective(tx, &updated, previous)?;
-                updated
-            };
-            Ok(MutationBody {
+        let operation_id = request.operation_id;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(objective) = replay(&tx, &operation_id, &digest)? {
+            return Ok(Applied {
                 objective,
-                event_kind: "objective_state",
-            })
+                operation_id,
+                idempotent_replay: true,
+            });
+        }
+        let now = timestamp();
+        let current = load_checked(&tx, &alias, expected)?;
+        let projected = project_state(&tx, current.id, requested)?;
+        if projected == current.state {
+            return Ok(Applied {
+                objective: current,
+                operation_id,
+                idempotent_replay: false,
+            });
+        }
+        let previous = current.revision;
+        let mut updated = current;
+        updated.state = projected;
+        updated.revision = bump(previous)?;
+        now.clone_into(&mut updated.updated_at);
+        write_objective(&tx, &updated, previous)?;
+        if projected.frees_slot() {
+            end_running(&tx, updated.id, &now)?;
+        }
+        let result_json = serde_json::to_string(&updated)?;
+        tx.execute(
+            "INSERT INTO operation (id, kind, digest, objective_id, result_json, created_at)
+             VALUES (?1, 'state', ?2, ?3, ?4, ?5)",
+            params![
+                operation_id.as_slice(),
+                digest,
+                updated.id.as_slice(),
+                &result_json,
+                now,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO event (ts, actor, objective_id, operation_id, kind, json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                now,
+                actor,
+                updated.id.as_slice(),
+                operation_id.as_slice(),
+                event_kind,
+                &result_json,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(Applied {
+            objective: updated,
+            operation_id,
+            idempotent_replay: false,
         })
     }
 
@@ -431,6 +478,23 @@ impl Store {
         )?;
         let rows = statement.query_map(params![objective.id.as_slice()], map_signal)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
+    }
+
+    /// Whether any active objective is `working` or `queued`.
+    ///
+    /// The keeper stays up while this is true.
+    pub(crate) fn has_open_work(&self) -> Result<bool, Error> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM objective
+                 WHERE archived = 0 AND state IN ('working', 'queued')
+                 LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
     }
 
     #[cfg(test)]
@@ -503,6 +567,10 @@ impl Store {
     }
 
     fn open_locking(path: &Path, block: bool) -> Result<Self, Error> {
+        Self::open_locking_version(path, block, schema::USER_VERSION)
+    }
+
+    fn open_locking_version(path: &Path, block: bool, supported: i64) -> Result<Self, Error> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -511,15 +579,25 @@ impl Store {
             lock::set_private_dir(parent)?;
         }
         let lock = lock::acquire(&lock_path(path), block)?;
-        let Self { conn, .. } = Self::open_held(path)?;
+        let Self { conn, .. } = Self::open_held_version(path, supported)?;
         Ok(Self {
             conn,
             _lock: Some(lock),
         })
     }
 
+    /// Open `path` as a binary whose newest readable version is `supported`.
+    #[cfg(test)]
+    fn open_as(path: &Path, supported: i64) -> Result<Self, Error> {
+        Self::open_locking_version(path, true, supported)
+    }
+
     /// Open `path` while the caller holds the lock at [`lock_path`].
     pub(crate) fn open_held(path: &Path) -> Result<Self, Error> {
+        Self::open_held_version(path, schema::USER_VERSION)
+    }
+
+    fn open_held_version(path: &Path, supported: i64) -> Result<Self, Error> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -530,7 +608,7 @@ impl Store {
         let _file = lock::create_private(path)?;
         let conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_secs(5))?;
-        schema::prepare(&conn)?;
+        schema::prepare_supported(&conn, supported)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -720,6 +798,35 @@ pub(crate) fn project_state(
     }
 }
 
+pub(crate) fn canonical_event_kind(kind: Option<&str>) -> Result<&'static str, Error> {
+    match kind {
+        None | Some("objective_state") => Ok("objective_state"),
+        Some("launched") => Ok("launched"),
+        Some("agent_working") => Ok("agent_working"),
+        Some("needs_you") => Ok("needs_you"),
+        Some("done_unchecked") => Ok("done_unchecked"),
+        Some("failed") => Ok("failed"),
+        Some("terminal_lost") => Ok("terminal_lost"),
+        Some(other) => Err(Error::invalid_text(
+            "event",
+            &format!("unknown event kind {other}"),
+        )),
+    }
+}
+
+pub(crate) fn end_running(
+    tx: &Transaction<'_>,
+    objective_id: OpaqueId,
+    now: &str,
+) -> Result<(), Error> {
+    tx.execute(
+        "UPDATE run SET state = 'ended', ended_at = ?2
+         WHERE objective_id = ?1 AND ended_at IS NULL AND state = 'running'",
+        params![objective_id.as_slice(), now],
+    )?;
+    Ok(())
+}
+
 fn unresolved_credential_lost(tx: &Transaction<'_>, objective_id: OpaqueId) -> Result<bool, Error> {
     let found: Option<i64> = tx
         .query_row(
@@ -882,10 +989,14 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
+    use rusqlite::params;
+
     use super::{
         AddObjective, EditObjective, ListFilter, RaiseSignal, RevisionEdit, StateEdit, Store,
     };
     use crate::error::Error;
+    use crate::id::{Alias, OpaqueId};
+    use crate::schema;
     use crate::{ObjectiveState, OperationId, SignalKind};
 
     fn open() -> (tempfile::TempDir, Store) {
@@ -908,12 +1019,28 @@ mod tests {
         add_op(repo, title, OperationId::generate().expect("id"))
     }
 
+    fn catalog(conn: &rusqlite::Connection) -> Vec<String> {
+        let mut statement = conn
+            .prepare(
+                "SELECT name || ' ' || COALESCE(sql, '')
+                 FROM sqlite_master
+                 WHERE name NOT LIKE 'sqlite_%'
+                 ORDER BY 1",
+            )
+            .expect("catalog");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows")
+    }
+
     #[test]
-    fn schema_is_created_at_user_version_one_and_mode_0600() {
+    fn schema_is_created_at_user_version_two_and_mode_0600() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("work-v1.sqlite");
         let store = Store::open(&path).expect("open");
-        assert_eq!(store.user_version().expect("version"), 1);
+        assert_eq!(store.user_version().expect("version"), 2);
         let (journal, synchronous) = store.durability().expect("pragmas");
         assert_eq!(journal.to_ascii_lowercase(), "wal");
         assert_eq!(synchronous, 2);
@@ -926,6 +1053,7 @@ mod tests {
             "operation",
             "run",
             "signal",
+            "launch_intent",
         ] {
             assert!(
                 tables.iter().any(|table| table == name),
@@ -942,7 +1070,7 @@ mod tests {
         assert_eq!(mode(&lock), 0o600);
         drop(store);
         let again = Store::open(&path).expect("reopen");
-        assert_eq!(again.user_version().expect("version"), 1);
+        assert_eq!(again.user_version().expect("version"), 2);
     }
 
     #[test]
@@ -951,17 +1079,85 @@ mod tests {
         let path = dir.path().join("work-v1.sqlite");
         {
             let conn = rusqlite::Connection::open(&path).expect("sqlite");
-            conn.pragma_update(None, "user_version", 2_i64)
+            conn.pragma_update(None, "user_version", 3_i64)
                 .expect("version");
         }
         match Store::open(&path) {
             Err(Error::UnsupportedSchema {
-                found: 2,
-                supported: 1,
+                found: 3,
+                supported: 2,
             }) => {}
             other => panic!("expected unsupported schema, got {other:?}"),
         }
         let conn = rusqlite::Connection::open(&path).expect("sqlite");
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, 3);
+    }
+
+    #[test]
+    fn a_version_1_reader_refuses_a_version_2_store_at_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("work-v1.sqlite");
+        {
+            let mut store = Store::open(&path).expect("open");
+            let added = store.add(add("phux", "one")).expect("add");
+            store
+                .record_state(StateEdit {
+                    alias: added.objective.alias,
+                    state: ObjectiveState::Failed,
+                    expected_revision: added.objective.revision,
+                    operation_id: OperationId::generate().expect("id"),
+                    actor: "tester".to_owned(),
+                    event_kind: Some("failed".to_owned()),
+                })
+                .expect("state");
+        }
+        // The previous binary's open match accepts only version 1. A `failed`
+        // row would be `Corrupt` if that open got as far as reading it.
+        match Store::open_as(&path, 1) {
+            Err(Error::UnsupportedSchema {
+                found: 2,
+                supported: 1,
+            }) => {}
+            other => panic!("a version-1 reader should refuse at open, got {other:?}"),
+        }
+        let again = Store::open(&path).expect("current binary still opens");
+        assert_eq!(again.user_version().expect("version"), 2);
+        let shown = again
+            .show(&Alias::parse("phux/1").expect("alias"))
+            .expect("show");
+        assert_eq!(shown.state, ObjectiveState::Failed);
+    }
+
+    #[test]
+    fn a_version_1_store_migrates_to_2_without_ddl() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("work-v1.sqlite");
+        let before = {
+            let conn = rusqlite::Connection::open(&path).expect("sqlite");
+            schema::install_version_one(&conn).expect("v1");
+            let id = OpaqueId::generate().expect("id");
+            conn.execute(
+                "INSERT INTO objective (
+                    id, repo, alias_number, display_alias, title, description,
+                    state, revision, created_at, updated_at, archived
+                 ) VALUES (?1, 'phux', 1, 'phux/1', 'Billing', '', 'failed', 1, ?2, ?2, 0)",
+                params![id.as_slice(), "2020-01-01T00:00:00Z"],
+            )
+            .expect("row");
+            catalog(&conn)
+        };
+        let store = Store::open(&path).expect("migrate");
+        assert_eq!(store.user_version().expect("version"), 2);
+        let shown = store
+            .show(&Alias::parse("phux/1").expect("alias"))
+            .expect("show");
+        assert_eq!(shown.state, ObjectiveState::Failed);
+        drop(store);
+        let conn = rusqlite::Connection::open(&path).expect("sqlite");
+        assert_eq!(catalog(&conn), before);
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("version");
@@ -1065,6 +1261,7 @@ mod tests {
                 expected_revision: 1,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
+                event_kind: None,
             })
             .expect("state");
         assert_eq!(working.objective.state, ObjectiveState::Working);
@@ -1091,6 +1288,7 @@ mod tests {
                 expected_revision: raised.objective.revision,
                 operation_id: OperationId::generate().expect("id"),
                 actor: "tester".to_owned(),
+                event_kind: None,
             })
             .expect("state again");
         assert_eq!(again.objective.state, ObjectiveState::NeedsYou);
@@ -1227,6 +1425,109 @@ mod tests {
             .expect("list");
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "kept");
+    }
+
+    #[test]
+    fn new_states_round_trip_and_an_unknown_state_is_corrupt() {
+        let (_dir, mut store) = open();
+        let added = store.add(add("phux", "one")).expect("add");
+        let alias = added.objective.alias;
+        let mut revision = added.objective.revision;
+        for state in [
+            ObjectiveState::DoneUnchecked,
+            ObjectiveState::Done,
+            ObjectiveState::Failed,
+        ] {
+            let applied = store
+                .record_state(StateEdit {
+                    alias: alias.clone(),
+                    state,
+                    expected_revision: revision,
+                    operation_id: OperationId::generate().expect("id"),
+                    actor: "keeper".to_owned(),
+                    event_kind: None,
+                })
+                .expect("state");
+            assert_eq!(applied.objective.state, state);
+            assert_eq!(store.show(&alias).expect("show").state, state);
+            revision = applied.objective.revision;
+        }
+        store
+            .conn
+            .execute(
+                "UPDATE objective SET state = 'nope' WHERE display_alias = ?1",
+                rusqlite::params![alias.display()],
+            )
+            .expect("corrupt");
+        let err = store.show(&alias).expect_err("unknown state");
+        assert!(
+            err.to_string().contains("nope") || format!("{err:?}").contains("nope"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn one_transition_records_the_actor_and_a_replay_or_no_op_writes_nothing() {
+        let (_dir, mut store) = open();
+        let added = store.add(add("phux", "one")).expect("add");
+        let alias = added.objective.alias;
+        let operation_id = OperationId::derive_bytes(b"working-observation");
+        let applied = store
+            .record_state(StateEdit {
+                alias: alias.clone(),
+                state: ObjectiveState::Working,
+                expected_revision: 1,
+                operation_id,
+                actor: "keeper".to_owned(),
+                event_kind: Some("agent_working".to_owned()),
+            })
+            .expect("state");
+        assert!(!applied.idempotent_replay);
+        assert_eq!(applied.objective.state, ObjectiveState::Working);
+        let events = event_rows(&store);
+        assert_eq!(
+            events,
+            vec![
+                ("tester".to_owned(), "objective_created".to_owned()),
+                ("keeper".to_owned(), "agent_working".to_owned()),
+            ]
+        );
+        let replay = store
+            .record_state(StateEdit {
+                alias: alias.clone(),
+                state: ObjectiveState::Working,
+                expected_revision: 1,
+                operation_id,
+                actor: "keeper".to_owned(),
+                event_kind: Some("agent_working".to_owned()),
+            })
+            .expect("replay");
+        assert!(replay.idempotent_replay);
+        assert_eq!(event_rows(&store), events);
+        let noop = store
+            .record_state(StateEdit {
+                alias,
+                state: ObjectiveState::Working,
+                expected_revision: applied.objective.revision,
+                operation_id: OperationId::derive_bytes(b"same-state"),
+                actor: "keeper".to_owned(),
+                event_kind: Some("agent_working".to_owned()),
+            })
+            .expect("noop");
+        assert!(!noop.idempotent_replay);
+        assert_eq!(noop.objective.revision, applied.objective.revision);
+        assert_eq!(event_rows(&store), events);
+    }
+
+    fn event_rows(store: &Store) -> Vec<(String, String)> {
+        let mut statement = store
+            .conn
+            .prepare("SELECT actor, kind FROM event ORDER BY seq")
+            .expect("prepare");
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query");
+        rows.collect::<Result<Vec<_>, _>>().expect("rows")
     }
 
     fn spawn_self(env: &[(&str, &str)], path: &Path) -> std::process::Child {

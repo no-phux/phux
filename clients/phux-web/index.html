@@ -30,6 +30,11 @@
       #phux-term[data-phux-connection="disconnected"] {
         opacity: 0.45;
       }
+      /* A server on another protocol major: the client stopped redialing. */
+      #phux-term[data-phux-connection="incompatible"] {
+        opacity: 0.25;
+        outline-color: #e06c75;
+      }
       .hint {
         color: #6a6a73;
       }

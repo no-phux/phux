@@ -93,7 +93,8 @@ differences worth knowing:
 | `tmux kill-server`             | `phux kill --server`                                |
 
 To keep `Ctrl-B`, set `prefix = "C-b"` under `[keybindings]` in your
-[config](./config.md).
+[config](./config.md). For when tmux is still the better fit, see
+[phux vs tmux, Herdr, and cmux](./compare.md).
 
 ## Next
 

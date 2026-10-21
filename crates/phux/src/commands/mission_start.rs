@@ -14,7 +14,8 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::OrgFilter;
 use phux_server::runtime::default_socket_path;
 use phux_work::{
-    Alias, Client, Objective, OperationId, StartApplied, StartBinding, StartPlan, StartRequest,
+    Alias, Client, LaunchQueued, Objective, OpenRun, OperationId, StartApplied, StartBinding,
+    StartPlan, StartRequest,
 };
 
 use super::json_err::codes;
@@ -120,6 +121,7 @@ fn start_task(
         actor: mission::actor(),
         worktree_path: paths.worktree.display().to_string(),
         branch: paths.branch.clone(),
+        repo_root: root.display().to_string(),
         launch: None,
     };
     match store.replay_start(&request) {
@@ -178,60 +180,19 @@ fn place_agent(store: &Client, mut request: StartRequest, place: Place<'_>) -> E
         model,
         socket,
     } = place;
-    let from = match origin_head(root) {
-        Ok(from) => from,
-        Err(err) => return failed(json, added, &objective.alias, &err),
-    };
-    if let Err(err) = std::fs::create_dir_all(&settings.target_dir) {
-        return failed(
-            json,
-            added,
-            &objective.alias,
-            &format!("could not create {}: {err}", settings.target_dir.display()),
-        );
-    }
-    let brief = phux_mission::brief_markdown(
-        objective.alias.number,
-        &objective.alias.display(),
-        &objective.repo,
-        &objective.title,
-        &objective.description,
-        &settings.rules,
-    );
-    if let Err(err) = write_brief(&paths.brief, &brief) {
-        return failed(json, added, &objective.alias, &err);
-    }
     let socket = socket.unwrap_or_else(default_socket_path);
-    let Ok(created) = super::worktree::create_task_worktree(
+    let binding = match prepare_worker(&Prepared {
         root,
-        &paths.branch,
-        &paths.worktree,
-        &from,
-        &socket,
-        &objective.id.to_hex(),
-    ) else {
-        return cleanup(
-            json,
-            added,
-            &objective.alias,
-            root,
-            &paths.worktree,
-            &paths.branch,
-            "could not create the worktree session",
-        );
-    };
-    let binding = match worker_binding(
-        &socket,
-        &created.session,
-        &kind,
-        &paths,
-        model.as_deref(),
-        &settings.target_dir,
-        settings.sccache.as_deref(),
         objective,
-    ) {
+        settings,
+        paths: &paths,
+        kind: &kind,
+        model: model.as_deref(),
+        socket: &socket,
+    }) {
         Ok(binding) => binding,
-        Err(err) => {
+        Err(PrepareError::Early(err)) => return failed(json, added, &objective.alias, &err),
+        Err(PrepareError::Launched(err)) => {
             return cleanup(
                 json,
                 added,
@@ -256,6 +217,155 @@ fn place_agent(store: &Client, mut request: StartRequest, place: Place<'_>) -> E
             &err.to_string(),
         ),
     }
+}
+
+struct Prepared<'a> {
+    root: &'a Path,
+    objective: &'a Objective,
+    settings: &'a Settings,
+    paths: &'a phux_mission::TaskPaths,
+    kind: &'a str,
+    model: Option<&'a str>,
+    socket: &'a Path,
+}
+
+enum PrepareError {
+    Early(String),
+    Launched(String),
+}
+
+fn prepare_worker(place: &Prepared<'_>) -> Result<StartBinding, PrepareError> {
+    let from = origin_head(place.root).map_err(PrepareError::Early)?;
+    std::fs::create_dir_all(&place.settings.target_dir).map_err(|err| {
+        PrepareError::Early(format!(
+            "could not create {}: {err}",
+            place.settings.target_dir.display()
+        ))
+    })?;
+    let brief = phux_mission::brief_markdown(
+        place.objective.alias.number,
+        &place.objective.alias.display(),
+        &place.objective.repo,
+        &place.objective.title,
+        &place.objective.description,
+        &place.settings.rules,
+    );
+    write_brief(&place.paths.brief, &brief).map_err(PrepareError::Early)?;
+    let created = super::worktree::create_task_worktree(
+        place.root,
+        &place.paths.branch,
+        &place.paths.worktree,
+        &from,
+        place.socket,
+        &place.objective.id.to_hex(),
+    )
+    .map_err(|_| PrepareError::Launched("could not create the worktree session".to_owned()))?;
+    worker_binding(
+        place.socket,
+        &created.session,
+        place.kind,
+        place.paths,
+        place.model,
+        &place.settings.target_dir,
+        place.settings.sccache.as_deref(),
+        place.objective,
+    )
+    .map_err(PrepareError::Launched)
+}
+
+/// The cap recorded in `.phux/mission.toml`, when that file names one.
+pub(crate) fn configured_max_agents(repo_root: &Path) -> Option<u32> {
+    if repo_root.as_os_str().is_empty() {
+        return None;
+    }
+    let state_dir = phux_config::instance::state_dir();
+    load_settings(repo_root, &state_dir)
+        .ok()
+        .map(|settings| settings.max_agents)
+}
+
+/// Launch the oldest queued run through the same worktree and brief path as
+/// `mission start`, then admit it. A repeated `operation_id` does not spawn.
+pub(crate) fn promote_queued(
+    store: &Client,
+    run: &OpenRun,
+    max_agents: u32,
+    operation_id: OperationId,
+    socket: &Path,
+) -> Result<(), String> {
+    if store
+        .replay_launch(operation_id)
+        .map_err(|err| err.to_string())?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let objective = store
+        .show(run.alias.clone())
+        .map_err(|err| err.to_string())?;
+    let root = PathBuf::from(&run.repo_root);
+    if root.as_os_str().is_empty() {
+        return Err(format!(
+            "{} has no recorded repository root",
+            run.alias.display()
+        ));
+    }
+    let state_dir = phux_config::instance::state_dir();
+    let settings = load_settings(&root, &state_dir)?;
+    let mut paths = phux_mission::task_paths(
+        &state_dir,
+        &objective.repo,
+        objective.alias.number,
+        &objective.title,
+    );
+    if !run.worktree_path.is_empty() {
+        paths.worktree = PathBuf::from(&run.worktree_path);
+    }
+    if !run.branch.is_empty() {
+        paths.branch.clone_from(&run.branch);
+    }
+    let model = if run.model.is_empty() {
+        None
+    } else {
+        Some(run.model.as_str())
+    };
+    let binding = match prepare_worker(&Prepared {
+        root: &root,
+        objective: &objective,
+        settings: &settings,
+        paths: &paths,
+        kind: &run.agent_kind,
+        model,
+        socket,
+    }) {
+        Ok(binding) => binding,
+        Err(PrepareError::Early(err)) => return Err(err),
+        Err(PrepareError::Launched(err)) => {
+            force_remove(&root, &paths.worktree, &paths.branch);
+            return Err(err);
+        }
+    };
+    let admitted = store.launch_queued(LaunchQueued {
+        alias: run.alias.clone(),
+        expected_revision: objective.revision,
+        operation_id,
+        actor: ACTOR_KEEPER.to_owned(),
+        max_agents,
+        launch: binding,
+    });
+    if let Err(err) = admitted {
+        force_remove(&root, &paths.worktree, &paths.branch);
+        return Err(err.to_string());
+    }
+    Ok(())
+}
+
+const ACTOR_KEEPER: &str = "keeper";
+
+fn force_remove(repo: &Path, worktree: &Path, branch: &str) {
+    let dest = worktree.to_string_lossy().into_owned();
+    let _ = super::git::git_bytes(repo, &["worktree", "remove", "--force", &dest]);
+    let _ = super::git::git_bytes(repo, &["branch", "-D", branch]);
 }
 
 #[allow(

@@ -13,31 +13,9 @@ For installation and development, see the [desktop README](README.md).
 
 ### Command palette
 
-The main menu beside the window controls drops a glass menu: new terminal,
-agent, session, folder or window, **Open Recent**, Go To and the palette,
-**View** (tab placement and sidebar grouping), pane splits, Settings and
-Reconnect. The trigger names the window's session behind a small mark for
-its machine (a laptop for this Mac, a server for another), and the menu's
-header leads to **Switch Session**: every session on every machine, project by
-project, each marked with its machine, then **Machines…** and **Add
-Machine…**. A machine saved by address shows the name the system resolver
-gives it, so a tailnet IP reads as its MagicDNS name. Session, tab and pane
-actions (the **…** on a row, or a right-click) use the same glass menu.
-**⌘P**, **⇧⌘P**, and **⌘,** open the same searchable panel: **Work**, **Actions**, and **Settings**. Work lists sessions
-across hosts plus the active session's terminals and tabs; a typed search also
-finds actions and settings. The work, terminal and tab this window shows
-read **Current**, so the one in use stays distinguishable from similar names
-on other hosts or tabs. Settings search opens a focused page of live controls,
-with **All settings** to go back instead of a second sidebar. Actions start with five everyday commands; **All commands** expands the list.
-Rows show the name and the selected command's shortcut. Typing searches the
-complete catalog, including descriptions and settings. **Filter** narrows Work
-by agent state; **Details** reveals the selected destination's metadata on demand. A leading `>` in
-Work switches to Actions and keeps the rest of your search. Terminals and tabs you open often and recently rise among the
-matches for a typed query; an empty query keeps the list in its sections.
-
-Use **↑/↓** to choose and **Return** to run. **Escape** clears a nonempty
-search, then closes the panel; clicking outside also closes it. Commands that
-open a dialog move the keyboard into that dialog.
+Use **⌘P** for work, **⇧⌘P** for actions, and **⌘,** for settings in one
+centered panel. Search, toggle switches, and edit values directly;
+[the command palette guide](PALETTE.md) covers controls and navigation.
 
 ### Fullscreen
 
@@ -84,34 +62,35 @@ starts the server passes its environment on.
 ### Updates
 
 **Settings > Updates** checks the channel's release manifest
-([release contract](../../docs/releasing.md)) at launch
-and every six hours without blocking terminal input. Turn automatic checks off
-or use **Check now** at any time. **Download update** downloads the bundle,
-verifies its checksum and signature, and stages it beside `Phux.app` while you
-keep working. **Restart to update** then quits, swaps the staged bundle in
-after the app has exited, and reopens it. If the swap fails, the previous app
-is moved back. Quitting normally also installs a staged update. The helper logs
-to `~/Library/Logs/Phux/update.log`. The titlebar shows the same button.
-Quitting the desktop detaches; it does not stop your server-owned terminals.
+([release contract](../../docs/releasing.md)) and the phux CLI's own release
+at launch and every six hours without blocking terminal input. Turn
+**Check automatically** off or use **Check now** at any time. The page shows
+both products, installed and incoming versions side by side, and one button
+that moves whatever is due. The titlebar shows the same button.
 
-When an update changes the wire protocol, the Updates page says so, because
-the phux CLI and server must move too. With **Manage phux updates** on, the
-button becomes **Update phux & restart**. It updates and hands off the server
-first, then restarts into the new desktop.
+**Update phux & Desktop** does it in one click: it downloads the desktop
+bundle and verifies its checksum and signature beside `Phux.app`, updates phux
+with the installed CLI's checksum-verified updater and hands the live server
+off, then quits, swaps the staged bundle in after the app has exited, and
+reopens it on the server it was built for. Sessions keep running throughout.
+When only one product is due the button reads **Update Desktop** or
+**Update phux**; an update phux alone needs no restart. If the swap fails, the
+previous app is moved back. A downloaded bundle that has not been swapped in
+yet offers **Restart to update**, and quitting normally also installs it. The
+helper logs to `~/Library/Logs/Phux/update.log`. Quitting the desktop detaches;
+it does not stop your server-owned terminals.
 
-Choose **Stable** (the latest published desktop release) or **Next** (verified
-main builds). You can switch back to Stable even from a newer Next build.
-Desktop and runtime channels are independent.
+**Update phux with Desktop** is on by default. The handoff never silently
+closes agent sessions; a refused handoff keeps the downloaded desktop, says
+why, and offers **Retry server handoff** without downloading phux again.
+Homebrew, Cargo and Nix installations show their native update command instead
+of replacing package-managed files. Turning it off leaves the CLI and running
+server untouched, and the page warns when a desktop update changes the wire
+protocol phux speaks. Only this Mac's phux is updated, not remote hosts.
 
-**Manage phux updates** is off by default. When enabled, **Update phux & hand
-off server** uses the installed CLI's checksum-verified updater and graceful
-handoff, then reconnects the windows. It never silently closes agent sessions
-to force a handoff. Homebrew, Cargo and Nix installations show their native
-update command instead of replacing package-managed files. A refused handoff
-offers **Retry server handoff** without downloading the runtime again.
-Turning management
-off leaves the CLI and running server untouched; you regain control of updates.
-Only this Mac's runtime is managed, not remote hosts.
+Choose **Stable** (the latest published release) or **Next** (verified main
+builds) for each product under **Release channels**. You can switch back to
+Stable even from a newer Next build.
 
 Update preferences live in `$XDG_CONFIG_HOME/phux-desktop/updates.json` (default
 `~/.config/phux-desktop/updates.json`). Bare development executables and launches
@@ -131,7 +110,9 @@ preferences. Side tabs live in a fixed-height, separately scrollable area at the
 foot of the sidebar. Switching sessions never inserts tabs into the session tree;
 hiding the sidebar returns them to the titlebar,
 and Quick Terminal keeps compact titlebar tabs. Bottom tabs sit below your work,
-including in Plain Terminal mode; a plain terminal still hides a lone tab.
+including in Plain Terminal mode. Plain Terminal has no sidebar, so side tabs
+stand in a rail of their own beside your work; a plain terminal still hides a
+lone tab, and its tabs keep the desk's shape.
 If side panels leave too little room for usable bottom tabs, they temporarily
 return to the titlebar; widening the window restores your Bottom preference.
 Selecting, closing,
@@ -146,8 +127,14 @@ each face in the searchable dropdown, with bundled fonts pinned first.
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
 Click a session's name to select it; only its caret expands or collapses its
-contents. Switching restores tabs and splits, not the destination's old window
-display settings: the current filter, grouping, sidebar width and tab placement stay put. Selection never folds other sessions or changes the host filter.
+contents. Sessions start folded to one line each: name, terminal count, and a
+dot while something in it needs you. Option-click a caret to open or fold
+every session, or use **Expand All Sessions** and **Collapse All Sessions** in
+**Sidebar view** or the palette. Empty sessions sink below the ones holding
+work. A machine's name appears on a session only when the same session name
+runs on another machine, and terminals sharing a label show their id (`@3`). Switching restores tabs and splits, not the destination's old window
+display settings: the current filter, grouping, sidebar width and tab placement
+stay put. Selection never opens or folds a session or changes the host filter.
 **Settings > Layout & notifications > Sidebar machines**, or **Sidebar view >
 Visible machines**, controls which machines appear. All are shown by default;
 exclusions are saved, do not disconnect hosts, and do not limit Work search.
@@ -233,7 +220,12 @@ another.
 
 The window is one sheet of glass over the desktop blur; panes float on it as
 cards with no header. Move the pointer to a pane's top edge for its controls
-(split, zoom, close; double-click the capsule to zoom). Drag the gap between
+capsule: who runs there, the terminal/conversation switch (or, for an agent
+without one yet, **Set up conversation**), then split, zoom and the pane's
+menu (double-click the capsule to zoom). A zoomed pane shows the panes it
+hides as card edges stacked behind its top; click them to restore the split.
+A split tab carries a small map of its panes: the focused one lit, an agent's
+in its state's colour, and the ones a zoom hides faded. Drag the gap between
 panes, the sidebar edge, or tabs to rearrange; double-click a tab to rename it.
 Splits grow in and closed panes fold away; the PTY is resized once, when the
 motion settles. Cycling panes, directional navigation, and revealing a

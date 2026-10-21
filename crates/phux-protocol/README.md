@@ -30,8 +30,9 @@ The default build is pure Rust and compiles to wasm: the `wire` codec, the
 
 ## Status
 
-`0.x`. Clients and servers must agree on the protocol's `major.minor`;
-new behavior arrives as feature bits and optional fields. Pin exactly and
-read the changelog before upgrading.
+The wire protocol is `1.0`: any 1.x client works with any 1.x server, and
+new behavior arrives as feature bits, optional fields, and record tails
+([compatibility](../../docs/compatibility.md)). The Rust API is
+still `0.x`; pin the crate exactly and read the changelog before upgrading.
 
 Apache-2.0.

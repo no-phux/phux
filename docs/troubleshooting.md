@@ -39,10 +39,12 @@ starts a fresh server. `phux kill --server` reports "reaped a stale
 socket" in that case.
 
 **"incompatible protocol: client offered X, server requires Y".** The
-binary and the running server speak different protocol versions, usually
-because you updated and the old server is still running. `phux` upgrades
-the server automatically on attach; from a script, `phux upgrade` restarts
-the server onto the installed binary with its panes intact.
+binary and the running server are on different protocol majors, usually
+because you updated and the old server is still running. Any minor or
+patch on the same major interoperates, in either direction. `phux` upgrades
+an older server automatically on attach (a newer one is left running);
+from a script, `phux upgrade` restarts the server onto the installed binary
+with its panes intact.
 
 **"interactive use requires both stdin and stdout to be terminals".** You
 ran `phux` or `phux attach` from something that is not a terminal. Use the
@@ -145,6 +147,10 @@ a backup before changing an existing schema. Never rename away the store
 and start empty as a silent fallback: that loses execution ownership and
 receipts. See [store behavior](../crates/phux-server/src/org_store.rs) and
 [restore options](./reference/cli.md#phux-restore).
+The work store (`work/work-v1.sqlite`) moves to `user_version` 2 when a
+binary that knows `done_unchecked`, `done`, or `failed` opens it. The
+migration adds no tables. An older binary refuses that file at open
+(`UnsupportedSchema`) instead of failing later on a row it cannot parse.
 A stored receipt for an operation an older server does not know, such as
 `session_set_project` (`phux project link`) or `session_kill`, stops that
 server from loading the store until the receipt ages out: a newer server

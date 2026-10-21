@@ -11,7 +11,7 @@ use crate::coord::{
 };
 use crate::error::Error;
 use crate::id::Alias;
-use crate::start::{StartApplied, StartPlan, StartRequest};
+use crate::start::{LaunchQueued, OpenRun, StartApplied, StartPlan, StartRequest};
 use crate::store::{
     AddObjective, Applied, EditObjective, ListFilter, Objective, RaiseSignal, RevisionEdit, Signal,
     StateEdit,
@@ -20,7 +20,7 @@ use crate::store::{
 /// Keeper compatibility includes a semantic epoch, even during development
 /// within one package version. Bump the epoch for incompatible request or
 /// mutation semantics; otherwise an already-running keeper could retain them.
-pub(crate) const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "/keeper-2");
+pub(crate) const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "/keeper-3");
 
 /// Longest request or response line, in bytes.
 pub(crate) const MAX_LINE: u64 = 1 << 20;
@@ -36,16 +36,25 @@ pub(crate) struct Envelope {
 pub(crate) enum Request {
     Add(AddObjective),
     List(ListFilter),
-    Show { alias: Alias },
+    Show {
+        alias: Alias,
+    },
     Edit(EditObjective),
     Archive(RevisionEdit),
     Restore(RevisionEdit),
     RecordState(StateEdit),
     RaiseSignal(RaiseSignal),
-    Signals { alias: Alias },
+    Signals {
+        alias: Alias,
+    },
     PlanStart(StartRequest),
     ReplayStart(StartRequest),
     CommitStart(StartRequest),
+    OpenRuns,
+    LaunchQueued(LaunchQueued),
+    ReplayLaunch {
+        operation_id: crate::id::OperationId,
+    },
     SendMail(SendMail),
     ReadMail(ReadMail),
     AckMail(AckMail),
@@ -65,6 +74,7 @@ pub(crate) enum Response {
     StartPlan(StartPlan),
     StartReplay(Option<StartApplied>),
     StartApplied(StartApplied),
+    OpenRuns(Vec<OpenRun>),
     Sent(Sent),
     Mail(Vec<Mail>),
     Acked(Mail),

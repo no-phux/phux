@@ -3,9 +3,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
+use gpui::px;
 use gpui::{
     AnyElement, AnyView, App, ClickEvent, Context, IntoElement, SharedString, WeakEntity, Window,
 };
+use gpui_kit::assets::IconName;
+use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use phux_client_runtime::control::PaneDescriptor;
 use phux_protocol::ResourceId;
@@ -73,13 +76,14 @@ pub(super) fn record_row(
 pub(super) fn pane_row(
     desk: &Desk,
     pane: &PaneDescriptor,
+    title: String,
+    suffix: Option<String>,
     look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let terminal = pane.terminal_id.clone();
     let key = pane.key;
     let selected = key.is_some_and(|key| desk.organization.selected.contains(&key));
-    let title = desk.pane_title(Some(&pane.terminal_id));
     let drag = key.map(|key| {
         let keys = desk.organization.drag_keys(key);
         let label = drag_label(&keys, &title);
@@ -89,9 +93,9 @@ pub(super) fn pane_row(
     let attention = agent.filter(|info| info.needs_you()).map(|info| info.state);
     let state = agent.map(|info| info.state);
     let glyph = match (attention, desk.terminal_origin(&terminal).harness()) {
-        (None, Some(harness)) => harness_mark(harness, state, 12., look),
-        _ if agent.is_some() => state_dot(attention, state),
-        _ => dot(5., from_hex(&look.chrome.faint)),
+        (None, Some(harness)) => harness_mark(harness, state, 12., look).into_any_element(),
+        _ if agent.is_some() => state_dot(attention, state).into_any_element(),
+        _ => terminal_glyph(look).into_any_element(),
     };
     let tooltip_terminal = terminal.clone();
     let handle = cx.weak_entity();
@@ -115,6 +119,10 @@ pub(super) fn pane_row(
                 move || format!("pane-label-{terminal}")
             }),
         )
+        .children(suffix.map(|suffix| {
+            let terminal = pane.terminal_id.clone();
+            row_detail(suffix, look).debug_selector(move || format!("pane-suffix-{terminal}"))
+        }))
         .when_some(drag, |row, drag| {
             row.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
         })
@@ -134,9 +142,9 @@ pub(super) fn pane_row(
 /// Inventory rows are visible before a session is selected. Opening one
 /// navigates first and defers the reveal until that authority is attached.
 pub(super) fn catalog_pane_row(
-    _: &Desk,
     work: &crate::app::fleet::Work,
     pane: &crate::app::fleet::WorkPane,
+    suffix: Option<String>,
     look: &Look,
     cx: &mut Context<Desk>,
 ) -> AnyElement {
@@ -146,8 +154,15 @@ pub(super) fn catalog_pane_row(
     let selector = format!("catalog-pane-{}-{terminal}", destination.host_label());
     child_row(SharedString::from(format!("pane-{terminal}")), look)
         .debug_selector(move || selector.clone())
-        .child(row_icon(dot(5., from_hex(&look.chrome.faint))))
+        .child(row_icon(terminal_glyph(look)))
         .child(row_label(title, Emphasis::Quiet, look))
+        .children(suffix.map(|suffix| {
+            let selector = format!(
+                "catalog-pane-suffix-{}-{terminal}",
+                destination.host_label()
+            );
+            row_detail(suffix, look).debug_selector(move || selector)
+        }))
         .on_click(cx.listener(move |desk, _, _, cx| {
             desk.open_work_terminal(destination.clone(), terminal.clone(), cx);
         }))
@@ -169,6 +184,13 @@ pub(super) fn catalog_record_row(
     .child(row_label(record_label(resource), Emphasis::Quiet, look))
     .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(destination.clone(), cx)))
     .into_any_element()
+}
+
+/// A terminal nobody's agent drives: a terminal, not a bullet.
+fn terminal_glyph(look: &Look) -> Icon {
+    Icon::new(IconName::SquareTerminal)
+        .size(px(12.))
+        .text_color(from_hex(&look.chrome.faint))
 }
 
 fn record_label(resource: &ResourceRecord) -> String {

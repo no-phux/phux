@@ -3,4 +3,5 @@
 
 mod agent_prompt_wire;
 mod quic_dial;
+mod server_protocol;
 mod ws_dial;

@@ -135,6 +135,7 @@ The kind's facet.
 | `APPLY_INPUT` | command `0x14` | INPUT | yes | `acknowledged_input` | shipped |
 | `PUT_FILE` | command `0x15` | INPUT | yes | `file_upload` | shipped |
 | `GET_FILE` | command `0x3b` | INPUT | yes | `file_download` (features_ext) | shipped |
+| `CHECKOUT` | command `0x3c` | INPUT | yes | `checkout` (features_ext) | shipped |
 | `TRANSCRIBE` | command `0x19` | INPUT | yes | `transcribe` | shipped |
 | `GET_TERMINAL_STATE` | command `0x0c` | INVENTORY | no | none | shipped |
 | `ACQUIRE_INPUT` | command `0x0f` | BIND | yes | none | shipped |
@@ -177,7 +178,7 @@ The kind's facet.
 | Method | Carrier | Requires | Mutating | Gate | Status |
 |---|---|---|---|---|---|
 | `APPEND_RESOURCE_OUTPUT` | command `0x1a` | BIND, INPUT | yes | `resource_kinds` | shipped |
-| `NATIVE_AGENT` | command `0x38` | CREATE, BIND, INPUT | yes | none | shipped |
+| `NATIVE_AGENT` | command `0x38` | INVENTORY, CREATE, BIND, INPUT | yes | none | shipped |
 
 ### Events
 
@@ -262,6 +263,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `REPORT_ASKED`, `REPORT_AGENT_STATE` | BIND | `NamedTerminal` |
 | `PUT_FILE` | INPUT | `NamedTerminal` |
 | `GET_FILE` | INPUT | `Global { owner_uds_only: false }` |
+| `CHECKOUT` | INPUT | `NamedTerminal` |
 | `TRANSCRIBE` | INPUT | `NamedTerminal` |
 | `DETACH_CLIENTS { session: Some }` | SIGNAL | `ResolvedGroup` |
 | `DETACH_CLIENTS { session: None }` | SIGNAL | `Global { owner_uds_only: false }` |
@@ -272,6 +274,8 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `PERF_CONTROL` | OBSERVE+BIND + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
+| `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |
+| `NATIVE_AGENT { type: launch_integration }` | CREATE+BIND+INPUT | `KeyedSession` |
 | `NATIVE_AGENT { type: command }` | INPUT | `NamedTerminal` |
 | `NATIVE_AGENT { type: register/receive/complete/publish/close }` | BIND | `ParentOfNamed` |
 | `GET_ORGANIZATION` | INVENTORY | `OrganizationView` |

@@ -8,12 +8,12 @@ fn allocation_settings_are_discoverable_without_a_development_launch(cx: &mut Te
     let cx = &mut VisualTestContext::from_window(handle, cx);
     keys(cx, "cmd-p");
     type_text(cx, "allocation");
-    keys(cx, "enter");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
-        Some(crate::app::settings_panel::Page::Performance)
+    assert!(
+        cx.debug_bounds("palette-setting:Performance:Desktop profiling:Count Rust allocations")
+            .is_some()
     );
-    assert!(cx.debug_bounds("settings-panel").is_some());
+    assert_eq!(desk.read_with(cx, |desk, _| desk.settings_page), None);
+    assert_eq!(modal(&desk, cx), Modal::Goto);
 }
 
 #[gpui::test]
@@ -41,17 +41,22 @@ fn work_search_discovers_a_preference_and_settings_keep_one_native_hub(cx: &mut 
     keys(cx, "cmd-p");
     type_text(cx, "line height");
     keys(cx, "enter");
+    assert_eq!(desk.read_with(cx, |desk, _| desk.settings_page), None);
+    assert!(cx.debug_bounds("palette-setting-editor").is_some());
     assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
-        Some(crate::app::settings_panel::Page::Spacing)
+        desk.read_with(cx, |desk, _| desk
+            .palette_view
+            .edit
+            .as_ref()
+            .map(|key| key.title.to_string())),
+        Some("Line height".into())
     );
-    assert!(cx.debug_bounds("settings-panel").is_some());
     click(cx, "palette-mode-commands");
     assert_eq!(modal(&desk, cx), Modal::Commands);
     keys(cx, "escape");
     assert_desk_focus(&desk, cx);
     keys(cx, "cmd-,");
-    type_text(cx, "remote");
+    type_text(cx, "Hosts & connections");
     keys(cx, "enter");
     assert_eq!(
         desk.read_with(cx, |desk, _| desk.settings_page),
@@ -106,7 +111,7 @@ fn typing_and_confirming_before_the_next_frame_uses_the_current_query(cx: &mut T
     let cx = &mut VisualTestContext::from_window(handle, cx);
     let before = sidebar(&desk, cx);
     keys(cx, "cmd-shift-p");
-    for character in "sidebar".chars() {
+    for character in "toggle sidebar".chars() {
         press(cx, character);
     }
     cx.update(|window, cx| {
@@ -186,7 +191,7 @@ fn palette_escape_clears_query_before_dismissing_and_can_reopen_cleanly(cx: &mut
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
     keys(cx, "cmd-shift-p");
-    type_text(cx, "sidebar");
+    type_text(cx, "toggle sidebar");
     let before = sidebar(&desk, cx);
     keys(cx, "escape");
     assert_eq!(query(&desk, cx), "");
@@ -202,7 +207,7 @@ fn palette_escape_clears_query_before_dismissing_and_can_reopen_cleanly(cx: &mut
     assert_desk_focus(&desk, cx);
     keys(cx, "cmd-shift-p");
     assert_eq!(query(&desk, cx), "");
-    type_text(cx, "sidebar");
+    type_text(cx, "toggle sidebar");
     keys(cx, "enter");
     assert_eq!(sidebar(&desk, cx), !before);
     assert_desk_focus(&desk, cx);
@@ -218,7 +223,7 @@ fn goto_leading_marker_hands_the_remaining_query_and_focus_to_commands(cx: &mut 
     // Pasting delivers the marker and remainder in one real Input edit; typing
     // a bare `>` followed by characters would not prove query preservation.
     cx.update(|_, cx| {
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string("> sidebar".into()));
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("> toggle sidebar".into()));
     });
     keys(
         cx,
@@ -229,7 +234,7 @@ fn goto_leading_marker_hands_the_remaining_query_and_focus_to_commands(cx: &mut 
         },
     );
     assert_eq!(modal(&desk, cx), Modal::Commands);
-    assert_eq!(query(&desk, cx), "sidebar");
+    assert_eq!(query(&desk, cx), "toggle sidebar");
     assert_eq!(selected_command(&desk, cx), Some("sidebar"));
     keys(cx, "enter");
     assert_eq!(sidebar(&desk, cx), !before);
@@ -242,7 +247,7 @@ fn empty_palette_results_never_dispatch_the_previous_selection(cx: &mut TestAppC
     let cx = &mut VisualTestContext::from_window(handle, cx);
     let before = sidebar(&desk, cx);
     keys(cx, "cmd-shift-p");
-    type_text(cx, "sidebar");
+    type_text(cx, "toggle sidebar");
     assert_eq!(selected_command(&desk, cx), Some("sidebar"));
     type_text(cx, " zqxjv-no-command-987654321");
     assert_eq!(
@@ -263,7 +268,7 @@ fn empty_palette_results_never_dispatch_the_previous_selection(cx: &mut TestAppC
     });
     // The same control recovers once there are results again.
     keys(cx, "escape");
-    type_text(cx, "sidebar");
+    type_text(cx, "toggle sidebar");
     keys(cx, "enter");
     assert_eq!(sidebar(&desk, cx), !before);
     assert_desk_focus(&desk, cx);

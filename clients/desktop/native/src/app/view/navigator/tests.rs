@@ -125,3 +125,54 @@ fn a_linked_project_meets_the_repository_of_its_name_across_machines() {
         ]
     );
 }
+
+#[test]
+fn empty_sessions_sink_below_work_within_their_group() {
+    let empty = |name: &str, host: Option<&str>, project: Option<&str>| {
+        let mut work = work(name, host, project);
+        work.terminals = 0;
+        work
+    };
+    let catalog = vec![
+        empty("alpha", None, Some("phux")),
+        work("zeta", None, Some("phux")),
+        empty("beta", None, None),
+        work("omega", None, None),
+        empty("gamma", Some("mini"), None),
+        work("delta", Some("mini"), None),
+    ];
+    assert_eq!(
+        labels(&group(catalog.clone(), SidebarGrouping::Project)),
+        [
+            (Some("phux"), vec!["zeta", "alpha"]),
+            (Some("Other"), vec!["delta", "omega", "beta", "gamma"]),
+        ]
+    );
+    assert_eq!(
+        labels(&group(catalog.clone(), SidebarGrouping::Machine)),
+        [
+            (Some("This Mac"), vec!["omega", "zeta", "alpha", "beta"]),
+            (Some("mini"), vec!["delta", "gamma"]),
+        ]
+    );
+    assert_eq!(
+        labels(&group(catalog, SidebarGrouping::None)),
+        [(
+            None,
+            vec!["delta", "omega", "zeta", "alpha", "beta", "gamma"]
+        )]
+    );
+}
+
+#[test]
+fn only_names_on_more_than_one_machine_are_repeated() {
+    let catalog = vec![
+        work("argo", None, None),
+        work("argo", Some("mac"), None),
+        work("phux", None, None),
+    ];
+    assert_eq!(
+        repeated_names(&catalog).into_iter().collect::<Vec<_>>(),
+        ["argo"]
+    );
+}

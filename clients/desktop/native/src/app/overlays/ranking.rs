@@ -25,6 +25,7 @@ pub(super) fn goto_id(row: &Row) -> Option<goto_filter::GotoId> {
         Target::Work(destination) => Some(goto_filter::GotoId::Work(destination.clone())),
         Target::Command => row.command.map(goto_filter::GotoId::Command),
         Target::Setting(page) => Some(goto_filter::GotoId::Setting(*page)),
+        Target::Preference(key, _) => Some(goto_filter::GotoId::Preference(key.clone())),
         Target::Pane(id) => Some(goto_filter::GotoId::Pane(id.clone())),
         Target::Tab(id) => Some(goto_filter::GotoId::Tab(id.clone())),
         _ => None,

@@ -34,8 +34,8 @@ pub(super) use crate::attach::actions::{ParkedAdopt, PendingSplit, PendingWindow
 pub(super) use crate::attach::connection::{Connection, NegotiatedBootstrap};
 pub(super) use crate::attach::input::StdinParser;
 pub(super) use crate::attach::input_dispatch::{
-    DispatchCtx, DragGrab, PendingSessionRename, ReattachTarget, dispatch_input_events,
-    encode_layout_or_log, sync_overlays_to_focused_pane,
+    DeferredArrangementEdit, DispatchCtx, DragGrab, PendingSessionRename, ReattachTarget,
+    dispatch_input_events, encode_layout_or_log, sync_overlays_to_focused_pane,
 };
 
 /// The QUIC connection keeps one of its 128 bidi streams for control.
@@ -413,6 +413,9 @@ pub(super) struct SessionLoop {
     layout_get_request_id: Option<u32>,
     /// Shared writes remain fenced until the initial correlated GET succeeds.
     layout_read_complete: bool,
+    /// `close-view` / `reopen-views` pressed while that fence is down.
+    /// Flushed onto the adopted workspace when the read completes (#1475).
+    deferred_arrangement_edits: Vec<DeferredArrangementEdit>,
     /// `Some(subscribe_layout)` until the first recv-arm drain. Bootstrap
     /// outbound traffic waits so a last-pane `RESOURCE_CLOSED` already
     /// buffered is applied first (writing earlier raced it into `BrokenPipe`).
@@ -609,9 +612,14 @@ impl SessionLoop {
         initial_pick: EntryPick,
         carried_sidebar: Option<CarriedSidebar>,
     ) -> Result<Self, AttachError> {
+        // The TUI scrolls its local replica and never pages lazily, so pull
+        // the whole bounded history now: a cursor parked at the default
+        // 128-row window just expires server-side after 30 s.
+        let defaults = HistoryCacheConfig::default();
         let history_config = HistoryCacheConfig {
             request_max_bytes: negotiated.limits.max_history_page_bytes(),
-            ..HistoryCacheConfig::default()
+            prefetch_rows: defaults.max_materialized_rows,
+            ..defaults
         };
         let mut settings = TuiSettings::load_tolerant();
         let configured_sidebar_width = settings.sidebar.width;
@@ -678,6 +686,7 @@ impl SessionLoop {
             own_client_id: None,
             layout_get_request_id: None,
             layout_read_complete: false,
+            deferred_arrangement_edits: Vec::new(),
             bootstrap_outbound: None,
             next_request_id: 1,
             orphan_kills,

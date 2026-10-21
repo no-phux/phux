@@ -10,187 +10,27 @@ use std::time::Instant;
 use phux_client_core::input_replay::INPUT_RETRY_HORIZON;
 use phux_protocol::ids::{FileUploadId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, DirectoryEntry, DirectoryErrorCode,
-    DirectoryListingError, DirectoryListingResult, ErrorCode, FrameKind, MAX_FILE_UPLOAD_CHUNK,
-    MAX_FILE_UPLOAD_SIZE, PathErrorCode, PathKind, PathQueryResult, PathStatus,
+    Command, CommandResult, DirectoryEntry, DirectoryErrorCode, DirectoryListingError,
+    DirectoryListingResult, ErrorCode, FrameKind, MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE,
+    PathErrorCode, PathKind, PathQueryResult, PathStatus,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{ControlPlane, Pending, ServerFeature, ServerFeatureExt};
 
-/// Maximum outstanding plus undrained path answers on one client. Drain answers
-/// before issuing more searches; zero from `path_query` means no frame was sent.
-pub const MAX_PATH_ANSWERS: usize = 128;
-
-/// A matched absolute host path. Never insert without target-shell escaping.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathMatch {
-    /// Absolute UTF-8 path on the queried host.
-    pub path: String,
-    /// Filesystem kind, independent of the basename.
-    pub kind: PathMatchKind,
-}
-
-/// Filesystem kind for a matched path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathMatchKind {
-    /// Regular file.
-    File,
-    /// Directory.
-    Directory,
-    /// Symbolic link, regardless of its target.
-    Symlink,
-}
-
-/// Completeness of a successful query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathSearchStatus {
-    /// Exhaustive result.
-    Complete,
-    /// Host discovery is still warming; retry may yield more.
-    Warming,
-    /// Search was capped; result is not exhaustive.
-    Truncated,
-}
-
-/// Reason the query was refused or cancelled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathFailure {
-    /// Root does not exist.
-    NotFound,
-    /// The host denied access.
-    PermissionDenied,
-    /// Root is not a directory.
-    NotADirectory,
-    /// Another server-side or correlated protocol error.
-    Other,
-    /// Carrying connection ended before a reply.
-    Unanswered,
-}
-
-/// Correlated host browse/search result. `failure` is absent on success.
-/// `Warming` and `Truncated` are terminal answers to this request, not streams.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathAnswer {
-    /// Wire correlation returned by `path_query`.
-    pub request_id: u32,
-    /// Resolved or attempted root.
-    pub root: String,
-    /// Lexical parent on success, absent at filesystem root.
-    pub parent: Option<String>,
-    /// Matched absolute paths, at most the protocol's result cap.
-    pub rows: Vec<PathMatch>,
-    /// Completeness on success.
-    pub status: Option<PathSearchStatus>,
-    /// Refusal or local connection cancellation.
-    pub failure: Option<PathFailure>,
-    /// Display-only diagnostic; never parse it.
-    pub message: String,
-}
+mod types;
+mod uploads;
 
 const UPLOAD_CHUNK_BYTES: usize = 1024 * 1024;
 const COMPLETED_UPLOADS_KEPT: usize = 32;
 const _: () = assert!(UPLOAD_CHUNK_BYTES <= MAX_FILE_UPLOAD_CHUNK);
 
-/// How a file upload ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileUploadOutcome {
-    /// The server retained the complete file.
-    Completed,
-    /// No bytes landed.
-    Refused,
-    /// Some, all, or none of the bytes may have landed.
-    Unknown,
-}
-
-/// Terminal result for one runtime-managed file upload.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileUploadReceipt {
-    /// Runtime-local correlation returned by `put_file`.
-    pub transfer_id: u64,
-    /// The terminal outcome.
-    pub outcome: FileUploadOutcome,
-    /// Server path on success.
-    pub path: Option<String>,
-    /// Wire refusal code, when present.
-    pub code: Option<u16>,
-    /// Diagnostic detail.
-    pub message: String,
-}
-
-/// How a transcription request ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TranscribeOutcome {
-    /// The server answered.
-    Completed,
-    /// The server or runtime refused the request.
-    Refused,
-    /// The carrying connection ended before the answer.
-    Unknown,
-}
-
-/// Terminal result for one transcription request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TranscribeReceipt {
-    /// Wire request correlation, or zero for a local refusal.
-    pub request_id: u32,
-    /// The completed upload this request names.
-    pub transfer_id: u64,
-    /// The terminal outcome.
-    pub outcome: TranscribeOutcome,
-    /// Recognized text on success.
-    pub text: Option<String>,
-    /// Whether the server pasted the text into the terminal.
-    pub pasted: bool,
-    /// Wire refusal code, when present.
-    pub code: Option<u16>,
-    /// Diagnostic detail.
-    pub message: String,
-}
-
-/// Why a directory listing produced no listing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DirectoryFailure {
-    /// The path does not exist.
-    NotFound,
-    /// The server denied access.
-    PermissionDenied,
-    /// The path is not a directory.
-    NotADirectory,
-    /// Another server-side failure.
-    Other,
-    /// The connection ended before the answer.
-    Unanswered,
-}
-
-/// One child directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirectoryChild {
-    /// Basename relative to the listed path.
-    pub name: String,
-    /// Whether the entry is a symlink resolving to a directory.
-    pub is_symlink: bool,
-}
-
-/// One correlated directory-listing answer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirectoryListing {
-    /// Request correlation returned by `list_directory`.
-    pub request_id: u32,
-    /// Resolved or attempted path.
-    pub path: String,
-    /// Lexical parent on success.
-    pub parent: Option<String>,
-    /// Sorted child directories.
-    pub entries: Vec<DirectoryChild>,
-    /// Whether the server capped the result.
-    pub truncated: bool,
-    /// Failure, absent on success.
-    pub error: Option<DirectoryFailure>,
-    /// Diagnostic detail.
-    pub message: String,
-}
+pub use types::{
+    DirectoryChild, DirectoryFailure, DirectoryListing, FileUploadOutcome, FileUploadReceipt,
+    MAX_PATH_ANSWERS, PathAnswer, PathFailure, PathMatch, PathMatchKind, PathSearchStatus,
+    TranscribeOutcome, TranscribeReceipt,
+};
 
 #[derive(Debug)]
 struct PendingUpload {
@@ -217,6 +57,7 @@ pub(super) struct Extensions {
     directory_listings: Vec<DirectoryListing>,
     pending_paths: HashMap<u32, String>,
     path_answers: Vec<PathAnswer>,
+    pub(super) checkout_answers: Vec<super::CheckoutResponse>,
 }
 
 impl ControlPlane {
@@ -498,6 +339,33 @@ impl ControlPlane {
         true
     }
 
+    /// Settle a pending `LIST_DIRECTORY` answered with a correlated `ERROR`
+    /// (a newer server's `UNSUPPORTED`, or a reply this build cannot read)
+    /// as a failed listing; `false` when `request_id` is not one.
+    pub(super) fn resolve_directory_error(
+        &mut self,
+        request_id: Option<u32>,
+        message: &str,
+    ) -> bool {
+        let Some((request_id, path)) = request_id.and_then(|id| {
+            self.extensions
+                .pending_listings
+                .remove(&id)
+                .map(|path| (id, path))
+        }) else {
+            return false;
+        };
+        let error = DirectoryListingError {
+            path,
+            code: DirectoryErrorCode::Other,
+            message: message.to_owned(),
+        };
+        self.extensions
+            .directory_listings
+            .push(project_listing_error(request_id, error));
+        true
+    }
+
     pub(super) fn resolve_extension_result(
         &mut self,
         pending: &Pending,
@@ -534,6 +402,7 @@ impl ControlPlane {
     }
 
     pub(super) fn reset_extension_correlations(&mut self, message: &str) {
+        self.reset_checkouts(message);
         for (request_id, root) in self.extensions.pending_paths.drain() {
             self.extensions.path_answers.push(PathAnswer {
                 request_id,
@@ -597,265 +466,6 @@ impl ControlPlane {
                 message,
             );
         }
-    }
-
-    fn upload_failure_outcome(&self, transfer_id: u64) -> FileUploadOutcome {
-        if self
-            .extensions
-            .uploads
-            .get(&transfer_id)
-            .is_some_and(|upload| upload.attempted)
-        {
-            FileUploadOutcome::Unknown
-        } else {
-            FileUploadOutcome::Refused
-        }
-    }
-
-    pub(super) fn queue_next_upload(&mut self) {
-        if !self.handshake_ready
-            || self
-                .extensions
-                .uploads
-                .values()
-                .any(|upload| upload.in_flight.is_some())
-        {
-            return;
-        }
-        loop {
-            let Some(transfer_id) = self.extensions.upload_order.front().copied() else {
-                return;
-            };
-            if !self.server_has(ServerFeature::FileUpload) {
-                self.finish_upload(
-                    transfer_id,
-                    FileUploadOutcome::Refused,
-                    None,
-                    None,
-                    "the server does not support file upload",
-                );
-                continue;
-            }
-            let Some(upload) = self.extensions.uploads.get(&transfer_id) else {
-                self.extensions.upload_order.pop_front();
-                continue;
-            };
-            if upload.created_at.elapsed() >= INPUT_RETRY_HORIZON {
-                self.finish_upload(
-                    transfer_id,
-                    self.upload_failure_outcome(transfer_id),
-                    None,
-                    None,
-                    "the file-upload retry horizon expired",
-                );
-                continue;
-            }
-            let start = usize::try_from(upload.next_offset).unwrap_or(usize::MAX);
-            if start > upload.data.len() {
-                self.finish_upload(
-                    transfer_id,
-                    FileUploadOutcome::Unknown,
-                    None,
-                    None,
-                    "the server acknowledged an invalid file offset",
-                );
-                continue;
-            }
-            let end = start
-                .saturating_add(UPLOAD_CHUNK_BYTES)
-                .min(upload.data.len());
-            let final_chunk = end == upload.data.len();
-            let command = Command::PutFile {
-                upload_id: upload.upload_id,
-                terminal_id: upload.terminal_id.clone(),
-                extension: upload.extension.clone(),
-                offset: upload.next_offset,
-                data: upload.data[start..end].to_vec(),
-                final_chunk,
-                sha256: final_chunk.then_some(upload.sha256),
-            };
-            let request_id = self.next_request_id();
-            let Some(upload) = self.extensions.uploads.get_mut(&transfer_id) else {
-                continue;
-            };
-            upload.attempted = true;
-            upload.in_flight = Some(request_id);
-            self.pending
-                .insert(request_id, Pending::PutFile(transfer_id));
-            self.queue_frame(&FrameKind::Command {
-                request_id,
-                command,
-            });
-            return;
-        }
-    }
-
-    fn next_upload_id(&mut self) -> u64 {
-        let id = self.extensions.upload_seq.max(1);
-        self.extensions.upload_seq = id.wrapping_add(1).max(1);
-        id
-    }
-
-    fn push_transcribe_refusal(&mut self, transfer_id: u64, message: &str) {
-        self.extensions.transcribe_receipts.push(TranscribeReceipt {
-            request_id: 0,
-            transfer_id,
-            outcome: TranscribeOutcome::Refused,
-            text: None,
-            pasted: false,
-            code: Some(ErrorCode::InvalidCommand.as_wire()),
-            message: message.to_owned(),
-        });
-    }
-
-    fn resolve_upload(&mut self, transfer_id: u64, result: CommandResult) {
-        match result {
-            CommandResult::OkWith(CommandValue::FileUpload(ack)) => {
-                let Some(upload) = self.extensions.uploads.get(&transfer_id) else {
-                    return;
-                };
-                let current = upload.next_offset;
-                let total = u64::try_from(upload.data.len()).unwrap_or(u64::MAX);
-                if ack.next_offset < current || ack.next_offset > total {
-                    self.finish_upload(
-                        transfer_id,
-                        FileUploadOutcome::Unknown,
-                        None,
-                        None,
-                        "the server acknowledged an invalid file offset",
-                    );
-                } else if let Some(path) = ack.path {
-                    if ack.next_offset == total {
-                        self.finish_upload(
-                            transfer_id,
-                            FileUploadOutcome::Completed,
-                            Some(path),
-                            None,
-                            "",
-                        );
-                    } else {
-                        self.finish_upload(
-                            transfer_id,
-                            FileUploadOutcome::Unknown,
-                            None,
-                            None,
-                            "the server exposed a path before retaining the complete file",
-                        );
-                    }
-                } else if ack.next_offset <= current || ack.next_offset == total {
-                    self.finish_upload(
-                        transfer_id,
-                        FileUploadOutcome::Unknown,
-                        None,
-                        None,
-                        "the server did not make valid file-upload progress",
-                    );
-                } else if let Some(upload) = self.extensions.uploads.get_mut(&transfer_id) {
-                    upload.next_offset = ack.next_offset;
-                    upload.in_flight = None;
-                }
-            }
-            CommandResult::Error { code, message } => self.finish_upload(
-                transfer_id,
-                FileUploadOutcome::Refused,
-                None,
-                Some(code.as_wire()),
-                &message,
-            ),
-            _ => self.finish_upload(
-                transfer_id,
-                FileUploadOutcome::Unknown,
-                None,
-                None,
-                "PUT_FILE returned an unexpected value",
-            ),
-        }
-    }
-
-    fn finish_upload(
-        &mut self,
-        transfer_id: u64,
-        outcome: FileUploadOutcome,
-        path: Option<String>,
-        code: Option<u16>,
-        message: &str,
-    ) {
-        if outcome == FileUploadOutcome::Completed {
-            if let Some(upload) = self.extensions.uploads.get(&transfer_id) {
-                self.extensions.completed_uploads.push_back((
-                    transfer_id,
-                    upload.upload_id,
-                    upload.terminal_id.clone(),
-                ));
-            }
-            while self.extensions.completed_uploads.len() > COMPLETED_UPLOADS_KEPT {
-                self.extensions.completed_uploads.pop_front();
-            }
-        }
-        self.extensions.uploads.remove(&transfer_id);
-        self.extensions.upload_order.retain(|id| *id != transfer_id);
-        self.extensions.upload_receipts.push(FileUploadReceipt {
-            transfer_id,
-            outcome,
-            path,
-            code,
-            message: message.to_owned(),
-        });
-    }
-
-    fn resolve_transcribe(&mut self, request_id: u32, transfer_id: u64, result: CommandResult) {
-        let receipt = match result {
-            CommandResult::OkWith(CommandValue::Json(json)) => {
-                let value: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
-                let text = value
-                    .get("text")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned);
-                let pasted = value
-                    .get("pasted")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                text.map_or_else(
-                    || TranscribeReceipt {
-                        request_id,
-                        transfer_id,
-                        outcome: TranscribeOutcome::Unknown,
-                        text: None,
-                        pasted: false,
-                        code: None,
-                        message: "the server's reply carried no transcript field".to_owned(),
-                    },
-                    |text| TranscribeReceipt {
-                        request_id,
-                        transfer_id,
-                        outcome: TranscribeOutcome::Completed,
-                        text: Some(text),
-                        pasted,
-                        code: None,
-                        message: String::new(),
-                    },
-                )
-            }
-            CommandResult::Error { code, message } => TranscribeReceipt {
-                request_id,
-                transfer_id,
-                outcome: TranscribeOutcome::Refused,
-                text: None,
-                pasted: false,
-                code: Some(code.as_wire()),
-                message,
-            },
-            _ => TranscribeReceipt {
-                request_id,
-                transfer_id,
-                outcome: TranscribeOutcome::Unknown,
-                text: None,
-                pasted: false,
-                code: None,
-                message: "TRANSCRIBE returned an unexpected value".to_owned(),
-            },
-        };
-        self.extensions.transcribe_receipts.push(receipt);
     }
 }
 
@@ -942,37 +552,4 @@ fn project_listing_error(request_id: u32, error: DirectoryListingError) -> Direc
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::control::ControlOptions;
-
-    #[test]
-    fn an_offline_upload_expires_with_a_lossless_receipt() {
-        let mut control = ControlPlane::new(ControlOptions::default());
-        let transfer_id = control.put_file(ResourceId::local(7), "png".to_owned(), vec![1, 2]);
-        let updated = Instant::now()
-            .checked_sub(INPUT_RETRY_HORIZON)
-            .and_then(|created_at| {
-                control
-                    .extensions
-                    .uploads
-                    .get_mut(&transfer_id)
-                    .map(|upload| {
-                        upload.created_at = created_at;
-                    })
-            });
-        assert_eq!(updated, Some(()));
-
-        assert!(control.expire_uploads());
-        assert_eq!(
-            control.take_file_upload_receipts(),
-            vec![FileUploadReceipt {
-                transfer_id,
-                outcome: FileUploadOutcome::Refused,
-                path: None,
-                code: None,
-                message: "the file-upload retry horizon expired".to_owned(),
-            }]
-        );
-    }
-}
+mod tests;
