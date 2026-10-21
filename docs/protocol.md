@@ -354,8 +354,8 @@ details.
 - Allocate a new type byte or sub-tag in `wire/frame/mod.rs`; duplicates
   fail to compile.
 - Add field ids in `wire/field.rs`, append-only.
-- Gate new behavior on a feature bit in `caps.rs`. Do not bump the
-  protocol version for an additive change. A shipped capability bit is
+- Gate new behavior on a feature bit in `caps/features.rs`. Do not
+  bump the protocol version for an additive change. A shipped capability bit is
   never withdrawn or repointed.
 - Grow a positional record only at its tail; never reorder, retype, or
   remove a field. A non-final composite record needs a length prefix.
