@@ -71,7 +71,7 @@ fn unknown_frame_kinds_and_enum_values_are_skipped() {
 }
 
 #[test]
-fn a_spawn_refused_with_an_unknown_tag_or_unsupported_settles() {
+fn a_spawn_answered_with_an_unknown_tag_unsupported_or_unreadably_settles() {
     let client = attached_client(&[]);
     queue_spawn(client, 10);
     assert_eq!(
@@ -84,7 +84,8 @@ fn a_spawn_refused_with_an_unknown_tag_or_unsupported_settles() {
         ),
         PhuxClientResult::Ok
     );
-    assert_eq!(operation_status(client, 0), 2, "a refused spawn");
+    // A newer server's refusal does not say whether a pane exists.
+    assert_eq!(operation_status(client, 0), 3, "an unknown outcome");
 
     // A newer server that does not understand the spawn answers a
     // correlated ERROR UNSUPPORTED; the spawn settles, the session stays.
@@ -101,6 +102,21 @@ fn a_spawn_refused_with_an_unknown_tag_or_unsupported_settles() {
         PhuxClientResult::Ok
     );
     assert_eq!(operation_status(client, 1), 2, "an unsupported spawn");
+
+    // An unreadable reply answered, but the outcome is not stated.
+    queue_spawn(client, 12);
+    assert_eq!(
+        feed(
+            client,
+            &FrameKind::Error {
+                request_id: Some(12),
+                code: ErrorCode::UNREADABLE_REPLY,
+                message: "unreadable".into(),
+            }
+        ),
+        PhuxClientResult::Ok
+    );
+    assert_eq!(operation_status(client, 2), 3, "an unreadable spawn reply");
     // SAFETY: the fixture handed over ownership.
     unsafe { phux_client_free(client) };
 }

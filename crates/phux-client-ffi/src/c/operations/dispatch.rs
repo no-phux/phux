@@ -5,6 +5,11 @@ use super::{
     InputEligibility, KernelSend, Pending, ResourceId, SatelliteHost, ServerInstance, SpawnError,
     SpawnResult, valid_terminal,
 };
+use phux_protocol::wire::frame::ErrorCode;
+
+/// `PHUX_OPERATION_UNKNOWN_OUTCOME`: the server answered without saying
+/// whether the operation took effect; reconcile, never retry creation.
+const UNKNOWN_OUTCOME: u32 = 3;
 
 /// Answers to the bridge-internal parts of a close terminated one terminal
 /// at a time, re-addressed to the host request they belong to. Runs ahead
@@ -68,8 +73,21 @@ pub(crate) fn dispatch(
             code,
             message,
         } => {
-            client.operations.pending(request_id)?;
-            refuse_operation(client, request_id, 2, u32::from(code.as_wire()), &message)?;
+            let pending = client.operations.pending(request_id)?;
+            // A spawn answered with a code this build does not know
+            // (`UNREADABLE_REPLY` included) may have created its pane.
+            if matches!(pending, Pending::Spawn { .. }) && matches!(code, ErrorCode::Unknown(_)) {
+                client.operations.complete(
+                    request_id,
+                    UNKNOWN_OUTCOME,
+                    None,
+                    2,
+                    u32::from(code.as_wire()),
+                    &message,
+                );
+            } else {
+                refuse_operation(client, request_id, 2, u32::from(code.as_wire()), &message)?;
+            }
         }
         other => return Ok(Some(other)),
     }
@@ -111,6 +129,15 @@ pub(super) fn complete_spawn(
                 .complete(request_id, 1, Some(id), 0, 0, "");
             client.operations.bind_last(instance);
         }
+        // A newer server's refusal does not say whether a pane exists.
+        SpawnResult::Err(SpawnError::Unknown(tag)) => client.operations.complete(
+            request_id,
+            UNKNOWN_OUTCOME,
+            None,
+            1,
+            u32::from(tag),
+            "the spawn's outcome is unknown: a newer server's answer",
+        ),
         SpawnResult::Err(error) => {
             let (code, message) = spawn_error(error);
             client
