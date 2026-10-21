@@ -336,3 +336,33 @@ fn an_unreadable_spawn_answer_is_an_unknown_outcome_not_a_refusal() {
         assert_eq!(reads_topology(&mut plane), uncertain, "{error}");
     }
 }
+
+/// An `ATTACHED` this build cannot read (here a focused resource of an
+/// unknown id shape) ends the connection visibly: skipping it would leave
+/// the attach waiting forever.
+#[test]
+fn an_unreadable_attached_fails_the_attach_instead_of_hanging() {
+    let (mut plane, attach_id) = negotiated();
+    let marker = 0x0BAD_F00D_u32;
+    let snapshot = SessionSnapshot::new(
+        SessionId::new(1),
+        WindowId::new(1),
+        ResourceId::local(marker),
+    );
+    let mut bytes = wire(&FrameKind::Attached {
+        attach_id,
+        snapshot,
+        initial_client_id: ClientId::new(2),
+    });
+    let id = marker.to_be_bytes();
+    let at = bytes
+        .windows(id.len())
+        .position(|window| window == id)
+        .expect("the focused resource id");
+    assert_eq!(bytes[at - 1], 0x00, "local id tag");
+    bytes[at - 1] = 0xEE;
+    assert!(matches!(
+        plane.feed_bytes(&bytes),
+        Err(ControlError::Protocol(_))
+    ));
+}

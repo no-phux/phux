@@ -71,7 +71,7 @@ fn decode_inbound_frame_with_limits(
         // A correlated reply settles its request as an `ERROR`; any other
         // newer-server frame is skipped.
         Err(error) => {
-            let fallback = phux_protocol::wire::decode::newer_server_fallback(data, error)
+            let fallback = phux_client_core::newer_server::read_undecodable_frame(data, error)
                 .map_err(|error| BridgeError::protocol(error.to_string()))?;
             if fallback.is_none() {
                 tracing::warn!("skipping a server frame this build cannot read");

@@ -310,7 +310,7 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
 }
 
 /// Decode one server frame. A frame carrying a value this build does not
-/// define (a newer 1.x server's) reads as `newer_server_fallback` says: a
+/// define (a newer 1.x server's) reads as `read_undecodable_frame` says: a
 /// correlated reply becomes an `ERROR` settling its request, and anything
 /// else is skipped (`Ok(None)`) with a console warning. Malformed bytes are
 /// a protocol error.
@@ -329,7 +329,7 @@ pub(super) fn decode_server_frame(
     let decoded = match decoded {
         Ok(decoded) => decoded,
         Err(error) => {
-            let fallback = phux_protocol::wire::decode::newer_server_fallback(framed, error)
+            let fallback = phux_client_core::newer_server::read_undecodable_frame(framed, error)
                 .map_err(|error| format!("server sent undecodable frame: {error:?}"))?;
             if fallback.is_none() {
                 web_sys::console::warn_1(&JsValue::from_str(

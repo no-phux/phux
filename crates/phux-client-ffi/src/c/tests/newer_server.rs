@@ -120,3 +120,25 @@ fn a_spawn_answered_with_an_unknown_tag_unsupported_or_unreadably_settles() {
     // SAFETY: the fixture handed over ownership.
     unsafe { phux_client_free(client) };
 }
+
+/// An `ATTACHED` this build cannot read fails the feed instead of being
+/// skipped, which would leave the attach pending forever.
+#[test]
+fn an_unreadable_attached_fails_instead_of_hanging() {
+    let client = attaching(&[], 1);
+    let marker = 0x0BAD_F00D_u32;
+    let snapshot = single_terminal_snapshot(phux_protocol::ResourceId::local(marker), 80, 24);
+    let mut bytes = bytes::BytesMut::new();
+    attached_frame(1, snapshot).encode(&mut bytes);
+    let mut bytes = bytes.to_vec();
+    let id = marker.to_be_bytes();
+    let at = bytes
+        .windows(id.len())
+        .position(|window| window == id)
+        .expect("the resource id");
+    assert_eq!(bytes[at - 1], 0x00, "local id tag");
+    bytes[at - 1] = 0xEE;
+    assert_eq!(feed_raw(client, &bytes), PhuxClientResult::ProtocolError);
+    // SAFETY: the fixture handed over ownership.
+    unsafe { phux_client_free(client) };
+}

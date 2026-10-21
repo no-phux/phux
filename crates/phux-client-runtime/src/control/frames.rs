@@ -1,8 +1,8 @@
 //! Inbound frame decoding and dispatch.
 
 use bytes::Bytes;
+use phux_client_core::newer_server::read_undecodable_frame;
 use phux_protocol::wire::DecodeError;
-use phux_protocol::wire::decode::newer_server_fallback;
 
 use super::{AgentEvent, ControlError, ControlPlane, EngineEvent, Event, FrameKind};
 
@@ -11,7 +11,7 @@ mod classify;
 use classify::{ClassifiedFrame, classify_engine_frame};
 
 /// A decoded frame. For one that did not decode, what a newer 1.x server's
-/// value reads as ([`newer_server_fallback`]): a correlated reply becomes an
+/// value reads as ([`read_undecodable_frame`]): a correlated reply becomes an
 /// `ERROR` settling its request, anything else is logged and skipped
 /// (`None`); malformed bytes are a protocol error.
 fn decoded_or_fallback<T>(
@@ -22,7 +22,7 @@ fn decoded_or_fallback<T>(
         Ok((frame, tail)) => return Ok(Some((frame, Some(tail)))),
         Err(error) => error,
     };
-    match newer_server_fallback(bytes, error) {
+    match read_undecodable_frame(bytes, error) {
         Ok(Some(settled)) => {
             tracing::warn!("settling a server reply this build cannot read");
             Ok(Some((settled, None)))

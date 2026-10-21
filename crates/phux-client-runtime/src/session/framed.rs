@@ -3,8 +3,8 @@
 
 use bytes::Bytes;
 use futures_util::FutureExt;
+use phux_client_core::newer_server::read_undecodable_frame;
 use phux_protocol::caps::BootstrapLimits;
-use phux_protocol::wire::decode::newer_server_fallback;
 use phux_protocol::wire::frame::{FrameKind, TYPE_PONG};
 use phux_protocol::wire::framing::{self, FramingError, LENGTH_PREFIX_LEN};
 
@@ -219,7 +219,7 @@ impl Session {
 /// Decode one complete, length-checked frame under `limits`.
 ///
 /// A frame carrying a value this build does not define (a newer 1.x
-/// server's) reads as [`newer_server_fallback`] says: a correlated reply
+/// server's) reads as [`read_undecodable_frame`] says: a correlated reply
 /// becomes an `ERROR` that settles its request, and anything else is logged
 /// and skipped (`Ok(None)`). Malformed bytes are a protocol error.
 pub(super) fn decode_frame(
@@ -230,7 +230,7 @@ pub(super) fn decode_frame(
         Ok((decoded, _rest)) => return Ok(Some(decoded)),
         Err(error) => error,
     };
-    let fallback = newer_server_fallback(frame, error).map_err(|error| {
+    let fallback = read_undecodable_frame(frame, error).map_err(|error| {
         SessionError::Protocol(format!("server sent undecodable frame: {error:?}"))
     })?;
     if fallback.is_none() {
