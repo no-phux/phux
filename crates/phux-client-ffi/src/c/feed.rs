@@ -27,8 +27,9 @@ pub unsafe extern "C" fn phux_client_feed_frame(
             ));
         }
         let data = unsafe { bytes_in(data, len) }?;
-        let frame = decode_server_frame(client, data)?;
-        notify_attached = apply_server_frame(client, frame, None)?;
+        if let Some(frame) = decode_inbound_frame(client, data)? {
+            notify_attached = apply_server_frame(client, frame, None)?;
+        }
         Ok(())
     });
     if result == PhuxClientResult::Ok && notify_attached {
@@ -38,26 +39,46 @@ pub unsafe extern "C" fn phux_client_feed_frame(
     }
 }
 
-pub(super) fn decode_server_frame(client: &Client, data: &[u8]) -> Result<FrameKind, BridgeError> {
+/// Decode one complete server frame. `Ok(None)` for a well-framed frame
+/// carrying a value this build does not define (a newer 1.x server's frame
+/// type or enum value): it is logged and skipped, and the session stays up.
+/// Malformed bytes are a protocol error.
+pub(super) fn decode_inbound_frame(
+    client: &Client,
+    data: &[u8],
+) -> Result<Option<FrameKind>, BridgeError> {
     let limits = client.control().decode_limits().unwrap_or_else(|| {
         BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
             .unwrap_or_default()
     });
-    decode_server_frame_with_limits(data, limits)
+    decode_inbound_frame_with_limits(data, limits)
 }
 
-fn decode_server_frame_with_limits(
+/// [`decode_inbound_frame`] for a frame a test expects this build to read.
+#[cfg(test)]
+pub(super) fn decode_server_frame(client: &Client, data: &[u8]) -> Result<FrameKind, BridgeError> {
+    decode_inbound_frame(client, data)?
+        .ok_or_else(|| BridgeError::protocol("a frame this build cannot read"))
+}
+
+fn decode_inbound_frame_with_limits(
     data: &[u8],
     limits: BootstrapLimits,
-) -> Result<FrameKind, BridgeError> {
-    let (frame, tail) = FrameKind::decode_with_limits(data, limits)
-        .map_err(|error| BridgeError::protocol(error.to_string()))?;
+) -> Result<Option<FrameKind>, BridgeError> {
+    let (frame, tail) = match FrameKind::decode_with_limits(data, limits) {
+        Ok(decoded) => decoded,
+        Err(error) if error.is_unknown_value() => {
+            tracing::warn!(%error, "skipping a server frame this build cannot read");
+            return Ok(None);
+        }
+        Err(error) => return Err(BridgeError::protocol(error.to_string())),
+    };
     if !tail.is_empty() {
         return Err(BridgeError::protocol(
             "feed_frame accepts exactly one complete frame",
         ));
     }
-    Ok(frame)
+    Ok(Some(frame))
 }
 
 pub(super) fn apply_server_frame(

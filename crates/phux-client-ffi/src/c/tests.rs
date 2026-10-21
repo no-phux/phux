@@ -4,6 +4,7 @@ mod callbacks;
 mod clear_presentation;
 mod grid;
 mod handshake;
+mod newer_server;
 mod resource_discovery;
 mod status_effects;
 mod terminal_modes;
