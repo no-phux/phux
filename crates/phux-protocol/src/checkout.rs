@@ -533,7 +533,15 @@ pub(crate) fn decode_answer(bytes: &[u8]) -> Result<CheckoutAnswer, CheckoutDeco
     if bytes.len() > MAX_CHECKOUT_ANSWER_BYTES {
         return Err(CheckoutDecodeError::TooLarge);
     }
-    serde_json::from_slice(bytes).map_err(|_| CheckoutDecodeError::Invalid)
+    // A newer server's answer kind is `Unsupported` (the reply settles as
+    // unreadable), not malformed; unknown fields are already skipped.
+    serde_json::from_slice(bytes).map_err(|error| {
+        if crate::wire::error::names_unknown_json(&error.to_string()) {
+            CheckoutDecodeError::Unsupported
+        } else {
+            CheckoutDecodeError::Invalid
+        }
+    })
 }
 
 #[derive(Debug, Clone, Copy)]

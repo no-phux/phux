@@ -258,3 +258,52 @@ fn a_newer_servers_tail_after_an_actor_or_a_snapshot_is_skipped() {
     let grown = grow_field(&encode(&attached), field::attached::SNAPSHOT, &[0xEE; 6]);
     assert_eq!(decode(&grown).unwrap(), attached);
 }
+
+/// A `CHECKOUT` answer body: `OK_WITH`, the checkout value tag, then the
+/// length-prefixed JSON.
+fn checkout_reply(json: &[u8]) -> Vec<u8> {
+    let mut result = vec![0x01, 0x0b];
+    result.extend_from_slice(&u32::try_from(json.len()).unwrap().to_be_bytes());
+    result.extend_from_slice(json);
+    reply(phux_protocol::wire::frame::TYPE_COMMAND_RESULT, &result)
+}
+
+/// A newer server's checkout answer kind settles the request as unreadable
+/// instead of closing the connection as malformed; a newer field in a known
+/// answer is skipped.
+#[test]
+fn a_newer_checkout_answer_settles_and_new_fields_are_skipped() {
+    use phux_protocol::checkout::{CheckoutAnswer, CheckoutStatus};
+    use phux_protocol::wire::decode::newer_server_fallback;
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+
+    let future = checkout_reply(br#"{"kind":"worktrees","items":[]}"#);
+    let error = FrameKind::decode(&future).unwrap_err();
+    assert!(error.is_unsupported(), "{error:?}");
+    let Ok(Some(FrameKind::Error {
+        request_id: Some(7),
+        code,
+        ..
+    })) = newer_server_fallback(&future, error)
+    else {
+        panic!("the checkout request settles");
+    };
+    assert_eq!(code, ErrorCode::UNREADABLE_REPLY);
+
+    let mut status =
+        serde_json::to_value(CheckoutAnswer::Status(CheckoutStatus::default())).unwrap();
+    status["stash_count"] = serde_json::json!(3);
+    let grown = checkout_reply(&serde_json::to_vec(&status).unwrap());
+    let FrameKind::CommandResult {
+        result: CommandResult::OkWith(CommandValue::Checkout(answer)),
+        ..
+    } = decode(&grown).unwrap()
+    else {
+        panic!("a known answer with a newer field decodes");
+    };
+    assert_eq!(*answer, CheckoutAnswer::Status(CheckoutStatus::default()));
+
+    let malformed = checkout_reply(br#"{"kind":"status","branch":7}"#);
+    let error = FrameKind::decode(&malformed).unwrap_err();
+    assert!(!error.is_unsupported(), "{error:?}");
+}
