@@ -32,6 +32,15 @@ impl Connection {
             self.accept_path_results(request_id, result);
             return Outcome::default();
         }
+        if let FrameKind::Error {
+            request_id: Some(request_id),
+            message,
+            ..
+        } = &frame
+            && self.accept_path_error(*request_id, message)
+        {
+            return Outcome::default();
+        }
         let agent_frame = frame_resource_id(&frame).is_some_and(|id| self.is_agent_session(id));
         let split_frame = frame_resource_id(&frame).is_some_and(|id| {
             self.pending_split
@@ -216,9 +225,7 @@ impl Connection {
                 cursor,
                 reason,
             } => {
-                let Some(reason) = history_unavailable_reason(reason) else {
-                    return self.protocol_failure("unsupported history tombstone reason");
-                };
+                let reason = history_unavailable_reason(reason);
                 self.apply_kernel(KernelInput::HistoryTombstone {
                     terminal_id: &terminal_id,
                     stream_id,
@@ -237,9 +244,7 @@ impl Connection {
                 required_bytes,
                 required_rows,
             } => {
-                let Some(reason) = history_rejection_reason(reason) else {
-                    return self.protocol_failure("unsupported history rejection reason");
-                };
+                let reason = history_rejection_reason(reason);
                 self.apply_kernel(KernelInput::HistoryRejected {
                     terminal_id: &terminal_id,
                     stream_id,

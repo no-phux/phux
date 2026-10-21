@@ -58,29 +58,32 @@ const HISTORY_LINES: u32 = 5_000;
 /// Staged READY prefix and parser-continuation bound, as native clients use.
 const NATIVE_DECODER_LIMIT: usize = 64 * 1024 * 1024;
 
-fn history_unavailable_reason(reason: HistoryTombstoneReason) -> Option<HistoryUnavailableReason> {
-    Some(match reason {
+/// The kernel's reason for a history tombstone. A reason this build does
+/// not know (a newer server's) retires the cursor as `Released`.
+const fn history_unavailable_reason(reason: HistoryTombstoneReason) -> HistoryUnavailableReason {
+    match reason {
         HistoryTombstoneReason::Stale => HistoryUnavailableReason::Stale,
         HistoryTombstoneReason::Pruned => HistoryUnavailableReason::Pruned,
         HistoryTombstoneReason::Reset => HistoryUnavailableReason::Reset,
         HistoryTombstoneReason::Resize => HistoryUnavailableReason::Resize,
         HistoryTombstoneReason::Expired => HistoryUnavailableReason::Expired,
-        HistoryTombstoneReason::Released => HistoryUnavailableReason::Released,
         HistoryTombstoneReason::Limit => HistoryUnavailableReason::Limit,
         HistoryTombstoneReason::CodecFailure => HistoryUnavailableReason::CodecFailure,
-        _ => return None,
-    })
+        // `Released`, and any reason a newer server added.
+        _ => HistoryUnavailableReason::Released,
+    }
 }
 
-fn history_rejection_reason(
-    reason: HistoryRejectionReason,
-) -> Option<KernelHistoryRejectionReason> {
-    Some(match reason {
-        HistoryRejectionReason::ZeroLimit => KernelHistoryRejectionReason::ZeroLimit,
+/// The kernel's reason for a history rejection. A reason this build does not
+/// know (a newer server's) reads as `ZeroLimit`: the fetch is cancelled
+/// without a retry or a tombstone.
+const fn history_rejection_reason(reason: HistoryRejectionReason) -> KernelHistoryRejectionReason {
+    match reason {
         HistoryRejectionReason::TooSmall => KernelHistoryRejectionReason::TooSmall,
         HistoryRejectionReason::Busy => KernelHistoryRejectionReason::Busy,
-        _ => return None,
-    })
+        // `ZeroLimit`, and any reason a newer server added.
+        _ => KernelHistoryRejectionReason::ZeroLimit,
+    }
 }
 /// The capability set phux-web advertises in `HELLO`.
 ///

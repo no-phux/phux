@@ -121,7 +121,8 @@ pub(super) fn process_webtransport_chunk(
     let mut batch = BatchEffects::default();
     while let Some(framed) = frames.next_frame() {
         let frame = match decode_server_frame(app, &framed) {
-            Ok(frame) => frame,
+            Ok(Some(frame)) => frame,
+            Ok(None) => continue,
             Err(message) => {
                 close_with_protocol_error(app, &message);
                 return ReceiveFlow::Stop;
@@ -308,10 +309,15 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
     }
 }
 
+/// Decode one server frame. A frame carrying a value this build does not
+/// define (a newer 1.x server's) reads as `newer_server_fallback` says: a
+/// correlated reply becomes an `ERROR` settling its request, and anything
+/// else is skipped (`Ok(None)`) with a console warning. Malformed bytes are
+/// a protocol error.
 pub(super) fn decode_server_frame(
     app: &Rc<RefCell<App>>,
     framed: &[u8],
-) -> Result<FrameKind, String> {
+) -> Result<Option<FrameKind>, String> {
     if app.borrow().session.is_failed() {
         return Err("web session already failed".to_owned());
     }
@@ -319,12 +325,24 @@ pub(super) fn decode_server_frame(
     let decoded = match limits {
         Some(limits) => FrameKind::decode_with_limits(framed, limits),
         None => FrameKind::decode(framed),
-    }
-    .map_err(|error| format!("server sent undecodable frame: {error:?}"))?;
+    };
+    let decoded = match decoded {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            let fallback = phux_protocol::wire::decode::newer_server_fallback(framed, error)
+                .map_err(|error| format!("server sent undecodable frame: {error:?}"))?;
+            if fallback.is_none() {
+                web_sys::console::warn_1(&JsValue::from_str(
+                    "phux-web: skipping a server frame this build cannot read",
+                ));
+            }
+            return Ok(fallback);
+        }
+    };
     if !decoded.1.is_empty() {
         return Err("server frame contained trailing bytes".to_owned());
     }
-    Ok(decoded.0)
+    Ok(Some(decoded.0))
 }
 
 pub(super) fn close_with_protocol_error(app: &Rc<RefCell<App>>, message: &str) {

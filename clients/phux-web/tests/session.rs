@@ -30,6 +30,8 @@ mod bootstrap;
 mod handshake;
 #[path = "session/native.rs"]
 mod native;
+#[path = "session/newer_server.rs"]
+mod newer_server;
 #[path = "session/organization.rs"]
 mod organization;
 #[path = "session/path_query.rs"]

@@ -113,4 +113,16 @@ impl Connection {
             Err(error) => self.path_error = Some(error.message),
         }
     }
+
+    /// Settle the outstanding query a correlated `ERROR` answered (a newer
+    /// server's `UNSUPPORTED`, or a reply this build cannot read); `false`
+    /// when `request_id` is not the outstanding query.
+    pub(super) fn accept_path_error(&mut self, request_id: u32, message: &str) -> bool {
+        if self.path_pending != Some(request_id) {
+            return false;
+        }
+        self.path_pending = None;
+        self.path_error = Some(message.to_owned());
+        true
+    }
 }

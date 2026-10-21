@@ -110,9 +110,10 @@ fn websocket_message_callback(app: &Rc<RefCell<App>>) -> Closure<dyn FnMut(Messa
         }
         let framed = js_sys::Uint8Array::new(&event.data()).to_vec();
         match decode_server_frame(&app, &framed) {
-            Ok(frame) => {
+            Ok(Some(frame)) => {
                 let _ = handle_frame(&app, frame);
             }
+            Ok(None) => {}
             Err(message) => close_with_protocol_error(&app, &message),
         }
     })
@@ -160,9 +161,10 @@ fn hosted_message_callback(
         }
         let framed = js_sys::Uint8Array::new(&event.data()).to_vec();
         match decode_server_frame(&app, &framed) {
-            Ok(frame) => {
+            Ok(Some(frame)) => {
                 let _ = handle_frame(&app, frame);
             }
+            Ok(None) => {}
             Err(message) => {
                 emit_hosted_error(&callback, "protocol");
                 close_with_protocol_error(&app, &message);
