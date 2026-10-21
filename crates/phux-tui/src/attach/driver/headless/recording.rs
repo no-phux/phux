@@ -27,7 +27,7 @@ pub struct CompositedCapture<'a> {
 /// Headless composited capture (`phux rec --composited`).
 ///
 /// Attaches with a zero viewport, the same non-voting attach as
-/// [`run_headless_rendered`], and composites into `capture.cast_path` at
+/// [`crate::attach::run_headless_rendered`], and composites into `capture.cast_path` at
 /// the caller's cell grid. The grid is a virtual viewport owned by
 /// [`crate::attach::record::SessionRecorder::create_virtual`]: the size
 /// probe never reads the host terminal, and this function never sends
