@@ -447,3 +447,6 @@ fn dial_timed_out() -> SessionError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod newer_server_tests;

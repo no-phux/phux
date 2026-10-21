@@ -139,7 +139,10 @@ impl Session {
         let limits = self.limits();
         loop {
             if let Some(frame) = self.inbound.pop_front() {
-                return decode_frame(&frame, limits);
+                match decode_frame(&frame, limits)? {
+                    Some(frame) => return Ok(frame),
+                    None => continue,
+                }
             }
             let batch = match self.multistream.as_mut() {
                 None => self.link.read_frames().await,
@@ -182,10 +185,12 @@ impl Session {
             self.inbound
                 .extend(frames.into_iter().filter(|frame| !frame.is_empty()));
         }
-        self.inbound
-            .pop_front()
-            .map(|frame| decode_frame(&frame, limits))
-            .transpose()
+        while let Some(frame) = self.inbound.pop_front() {
+            if let Some(frame) = decode_frame(&frame, limits)? {
+                return Ok(Some(frame));
+            }
+        }
+        Ok(None)
     }
 
     /// Queue a read batch's frames; a clean close is a disconnect. Empty
@@ -211,15 +216,25 @@ impl Session {
 }
 
 /// Decode one complete, length-checked frame under `limits`.
+///
+/// `Ok(None)` for a well-framed frame carrying a value this build does not
+/// define (an unknown frame type or enum value from a newer 1.x server): it
+/// is logged and skipped, and the connection stays up. Malformed bytes are a
+/// protocol error.
 pub(super) fn decode_frame(
     frame: &[u8],
     limits: BootstrapLimits,
-) -> Result<FrameKind, SessionError> {
-    FrameKind::decode_with_limits(frame, limits)
-        .map(|(decoded, _rest)| decoded)
-        .map_err(|error| {
-            SessionError::Protocol(format!("server sent undecodable frame: {error:?}"))
-        })
+) -> Result<Option<FrameKind>, SessionError> {
+    match FrameKind::decode_with_limits(frame, limits) {
+        Ok((decoded, _rest)) => Ok(Some(decoded)),
+        Err(error) if error.is_unknown_value() => {
+            tracing::warn!(%error, "skipping a server frame this build cannot read");
+            Ok(None)
+        }
+        Err(error) => Err(SessionError::Protocol(format!(
+            "server sent undecodable frame: {error:?}"
+        ))),
+    }
 }
 
 /// Whether `frame` is the `PONG` answering `nonce`; only a `PONG`-typed

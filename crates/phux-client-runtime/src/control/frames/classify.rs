@@ -2,8 +2,8 @@
 //! reasons they carry.
 
 use super::super::{
-    ControlError, EngineEvent, FrameKind, HistoryRejectionReason, HistoryUnavailableReason,
-    WireRejection, WireTombstone,
+    EngineEvent, FrameKind, HistoryRejectionReason, HistoryUnavailableReason, WireRejection,
+    WireTombstone,
 };
 
 pub(super) enum ClassifiedFrame {
@@ -11,7 +11,7 @@ pub(super) enum ClassifiedFrame {
     Other(FrameKind),
 }
 
-pub(super) fn classify_engine_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlError> {
+pub(super) fn classify_engine_frame(frame: FrameKind) -> ClassifiedFrame {
     let event = match frame {
         FrameKind::BootstrapBegin {
             terminal_id,
@@ -82,10 +82,10 @@ pub(super) fn classify_engine_frame(frame: FrameKind) -> Result<ClassifiedFrame,
         },
         other => return classify_history_frame(other),
     };
-    Ok(ClassifiedFrame::Engine(event))
+    ClassifiedFrame::Engine(event)
 }
 
-fn classify_history_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlError> {
+fn classify_history_frame(frame: FrameKind) -> ClassifiedFrame {
     let event = match frame {
         FrameKind::HistoryPage {
             terminal_id,
@@ -117,7 +117,7 @@ fn classify_history_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlEr
             stream_id,
             bootstrap_id,
             cursor: cursor.to_vec(),
-            reason: history_unavailable_reason(reason)?,
+            reason: history_unavailable_reason(reason),
         },
         FrameKind::HistoryRejected {
             terminal_id,
@@ -132,51 +132,51 @@ fn classify_history_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlEr
             stream_id,
             bootstrap_id,
             cursor: cursor.to_vec(),
-            reason: history_rejection_reason(reason)?,
+            reason: history_rejection_reason(reason),
             required_bytes,
             required_rows,
         },
-        other => return Ok(ClassifiedFrame::Other(other)),
+        other => return ClassifiedFrame::Other(other),
     };
-    Ok(ClassifiedFrame::Engine(event))
+    ClassifiedFrame::Engine(event)
 }
 
-fn history_unavailable_reason(
-    reason: WireTombstone,
-) -> Result<HistoryUnavailableReason, ControlError> {
-    Ok(match reason {
+/// The replica's reason for a history tombstone. A reason this build does not
+/// know (a newer server's) retires the cursor as `Released`: the server let
+/// go of it, and the replica tombstones history the same way.
+const fn history_unavailable_reason(reason: WireTombstone) -> HistoryUnavailableReason {
+    match reason {
         WireTombstone::Stale => HistoryUnavailableReason::Stale,
         WireTombstone::Pruned => HistoryUnavailableReason::Pruned,
         WireTombstone::Reset => HistoryUnavailableReason::Reset,
         WireTombstone::Resize => HistoryUnavailableReason::Resize,
         WireTombstone::Expired => HistoryUnavailableReason::Expired,
-        WireTombstone::Released => HistoryUnavailableReason::Released,
         WireTombstone::Limit => HistoryUnavailableReason::Limit,
         WireTombstone::CodecFailure => HistoryUnavailableReason::CodecFailure,
-        _ => {
-            return Err(ControlError::Protocol(
-                "unsupported history tombstone reason".to_owned(),
-            ));
-        }
-    })
+        // `Released`, and any reason a newer server added.
+        _ => HistoryUnavailableReason::Released,
+    }
 }
 
-fn history_rejection_reason(reason: WireRejection) -> Result<HistoryRejectionReason, ControlError> {
-    Ok(match reason {
-        WireRejection::ZeroLimit => HistoryRejectionReason::ZeroLimit,
+/// The replica's reason for a history rejection. A reason this build does
+/// not know (a newer server's) reads as `ZeroLimit`: the fetch is cancelled
+/// without a retry or a tombstone, so a later scroll may ask again.
+const fn history_rejection_reason(reason: WireRejection) -> HistoryRejectionReason {
+    match reason {
         WireRejection::TooSmall => HistoryRejectionReason::TooSmall,
         WireRejection::Busy => HistoryRejectionReason::Busy,
-        _ => {
-            return Err(ControlError::Protocol(
-                "unsupported history rejection reason".to_owned(),
-            ));
-        }
-    })
+        // `ZeroLimit`, and any reason a newer server added.
+        _ => HistoryRejectionReason::ZeroLimit,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ClassifiedFrame, EngineEvent, FrameKind, classify_engine_frame};
+    use super::{
+        ClassifiedFrame, EngineEvent, FrameKind, HistoryRejectionReason, HistoryUnavailableReason,
+        WireRejection, WireTombstone, classify_engine_frame, history_rejection_reason,
+        history_unavailable_reason,
+    };
     use phux_protocol::ResourceId;
     use phux_protocol::ids::{BootstrapId, StreamId};
 
@@ -216,7 +216,7 @@ mod tests {
             },
         ];
         for frame in frames {
-            let Ok(ClassifiedFrame::Engine(event)) = classify_engine_frame(frame) else {
+            let ClassifiedFrame::Engine(event) = classify_engine_frame(frame) else {
                 panic!("a stream frame classifies as an engine event");
             };
             let shared = match &event {
@@ -227,5 +227,28 @@ mod tests {
             };
             assert_eq!(shared.as_ptr(), payload.as_ptr(), "{event:?} copied");
         }
+    }
+
+    /// A newer server's history reason degrades instead of failing the
+    /// connection: an unknown tombstone retires the cursor, and an unknown
+    /// rejection cancels the fetch without a retry.
+    #[test]
+    fn unknown_history_reasons_degrade_instead_of_failing() {
+        assert_eq!(
+            history_unavailable_reason(WireTombstone::Unknown),
+            HistoryUnavailableReason::Released
+        );
+        assert_eq!(
+            history_unavailable_reason(WireTombstone::Pruned),
+            HistoryUnavailableReason::Pruned
+        );
+        assert_eq!(
+            history_rejection_reason(WireRejection::Unknown),
+            HistoryRejectionReason::ZeroLimit
+        );
+        assert_eq!(
+            history_rejection_reason(WireRejection::Busy),
+            HistoryRejectionReason::Busy
+        );
     }
 }

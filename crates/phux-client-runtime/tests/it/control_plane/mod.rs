@@ -41,6 +41,7 @@ mod geometry;
 mod global_metadata;
 mod lifecycle;
 mod native_agent;
+mod newer_server;
 mod observation;
 mod paste;
 mod path_query;

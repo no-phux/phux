@@ -1,12 +1,29 @@
 //! Inbound frame decoding and dispatch.
 
 use bytes::Bytes;
+use phux_protocol::wire::DecodeError;
 
 use super::{AgentEvent, ControlError, ControlPlane, EngineEvent, Event, FrameKind};
 
 mod classify;
 
 use classify::{ClassifiedFrame, classify_engine_frame};
+
+/// A decoded frame, `None` for a well-framed one carrying a value this build
+/// does not define (logged and skipped: a newer 1.x server may send it), or
+/// the protocol error malformed bytes are.
+fn skip_unknown_value<T>(decoded: Result<T, DecodeError>) -> Result<Option<T>, ControlError> {
+    match decoded {
+        Ok(decoded) => Ok(Some(decoded)),
+        Err(error) if error.is_unknown_value() => {
+            tracing::warn!(%error, "skipping a server frame this build cannot read");
+            Ok(None)
+        }
+        Err(error) => Err(ControlError::Protocol(format!(
+            "invalid protocol frame: {error}"
+        ))),
+    }
+}
 
 const fn allowed_before_handshake(frame: &FrameKind) -> bool {
     matches!(
@@ -71,10 +88,12 @@ impl ControlPlane {
     // ----- frames in ------------------------------------------------
 
     /// Decode exactly one SPEC section 5 frame under the negotiated limits
-    /// and feed it.
+    /// and feed it. A well-framed frame carrying a value this build does not
+    /// define (a newer 1.x server's frame type or enum value) is logged and
+    /// skipped; malformed bytes are a protocol error.
     pub fn feed_bytes(&mut self, bytes: &[u8]) -> Result<(), ControlError> {
-        let frame = self.decode_frame(bytes)?;
-        self.feed(frame)
+        self.decode_frame(bytes)?
+            .map_or(Ok(()), |frame| self.feed(frame))
     }
 
     /// Decode a transport read's complete frames in order, applying each
@@ -84,7 +103,8 @@ impl ControlPlane {
         let mut deferred_error = None;
         for bytes in frames {
             let frame = match self.decode_frame(bytes.as_ref()) {
-                Ok(frame) => frame,
+                Ok(Some(frame)) => frame,
+                Ok(None) => continue,
                 Err(error) => {
                     return self.error_after_engine_batch(
                         &mut engine_events,
@@ -127,32 +147,35 @@ impl ControlPlane {
         deferred_error.map_or(Ok(()), Err)
     }
 
-    fn decode_frame(&self, bytes: &[u8]) -> Result<FrameKind, ControlError> {
+    fn decode_frame(&self, bytes: &[u8]) -> Result<Option<FrameKind>, ControlError> {
         let decoded = self.decode_limits().map_or_else(
             || FrameKind::decode(bytes),
             |limits| FrameKind::decode_with_limits(bytes, limits),
         );
-        let (frame, tail) = decoded
-            .map_err(|error| ControlError::Protocol(format!("invalid protocol frame: {error}")))?;
+        let Some((frame, tail)) = skip_unknown_value(decoded)? else {
+            return Ok(None);
+        };
         if !tail.is_empty() {
             return Err(ControlError::Protocol(
                 "protocol message contained trailing bytes".to_owned(),
             ));
         }
-        Ok(frame)
+        Ok(Some(frame))
     }
 
     /// Decode a frame that is already a view of the socket buffer. Payload
     /// bytes alias that buffer instead of being copied.
-    fn decode_shared_frame(&self, bytes: &Bytes) -> Result<FrameKind, ControlError> {
-        let (frame, tail) = FrameKind::decode_shared(bytes, self.decode_limits())
-            .map_err(|error| ControlError::Protocol(format!("invalid protocol frame: {error}")))?;
+    fn decode_shared_frame(&self, bytes: &Bytes) -> Result<Option<FrameKind>, ControlError> {
+        let decoded = FrameKind::decode_shared(bytes, self.decode_limits());
+        let Some((frame, tail)) = skip_unknown_value(decoded)? else {
+            return Ok(None);
+        };
         if !tail.is_empty() {
             return Err(ControlError::Protocol(
                 "protocol message contained trailing bytes".to_owned(),
             ));
         }
-        Ok(frame)
+        Ok(Some(frame))
     }
 
     /// [`Self::feed_bytes_batch`] for frames that are frozen socket views.
@@ -161,7 +184,8 @@ impl ControlPlane {
         let mut deferred_error = None;
         for bytes in frames {
             let frame = match self.decode_shared_frame(bytes) {
-                Ok(frame) => frame,
+                Ok(Some(frame)) => frame,
+                Ok(None) => continue,
                 Err(error) => {
                     return self.error_after_engine_batch(
                         &mut engine_events,
@@ -185,13 +209,7 @@ impl ControlPlane {
             let error = ControlError::Protocol("server frame arrived before HELLO_OK".to_owned());
             return self.error_after_engine_batch(engine_events, deferred_error, error);
         }
-        let classified = match classify_engine_frame(frame) {
-            Ok(classified) => classified,
-            Err(error) => {
-                return self.error_after_engine_batch(engine_events, deferred_error, error);
-            }
-        };
-        match classified {
+        match classify_engine_frame(frame) {
             ClassifiedFrame::Engine(event) => {
                 engine_events.push(event);
                 Ok(())
@@ -389,7 +407,7 @@ impl ControlPlane {
         let Some(frame) = self.take_global_metadata_frame(frame) else {
             return Ok(());
         };
-        match classify_engine_frame(frame)? {
+        match classify_engine_frame(frame) {
             ClassifiedFrame::Engine(event) => self.apply_engine(event),
             ClassifiedFrame::Other(frame) => {
                 self.push_event(Event::Frame(Box::new(frame)));
