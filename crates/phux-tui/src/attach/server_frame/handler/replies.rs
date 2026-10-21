@@ -7,6 +7,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{ErrorCode, SpawnError, SpawnResult};
 
 use super::closed::resolve_resource_op;
+use super::metadata::metadata_error_outcome;
 use super::spawned::{apply_split_spawned, handle_terminal_spawned, window_holding_pane};
 use super::{FrameCtx, FrameOutcome};
 use crate::attach::actions;
@@ -99,6 +100,9 @@ pub(super) fn error_frame_outcome<W: crate::attach::RenderSink>(
         };
         return handle_terminal_spawned(ctx, id, settled)
             .map(|outcome| with_satellite_chrome(outcome, marked));
+    }
+    if let Some(outcome) = request_id.and_then(|id| metadata_error_outcome(ctx, id)) {
+        return Ok(with_satellite_chrome(outcome, marked));
     }
     if let Some(id) = request_id {
         // A refusal naming a replaying pane puts its down flag back.

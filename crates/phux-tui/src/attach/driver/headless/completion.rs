@@ -54,9 +54,13 @@ impl HeadlessCompletion {
                 self.pending_history
                     .remove(&(terminal_id.clone(), *stream_id, *bootstrap_id));
             }
+            // A correlated `ERROR` settles the layout read too (a newer
+            // server's `UNSUPPORTED`, or a reply this build cannot read).
             FrameKind::MetadataValue { request_id, .. }
-                if self.pending_layout == Some(*request_id) =>
-            {
+            | FrameKind::Error {
+                request_id: Some(request_id),
+                ..
+            } if self.pending_layout == Some(*request_id) => {
                 self.pending_layout = None;
             }
             _ => {}
@@ -82,5 +86,39 @@ impl HeadlessCompletion {
             && self.pending_history.is_empty()
             && self.pending_layout.is_none()
             && agent_metadata_complete
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    use super::{FrameKind, HeadlessCompletion};
+
+    /// A correlated `ERROR` settles the layout read, so the capture does not
+    /// wait out the attach deadline for a reply that never comes.
+    #[test]
+    fn a_correlated_error_settles_the_layout_read() {
+        let mut completion = HeadlessCompletion::new(Some(1));
+        completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
+        assert!(!completion.is_complete(true), "the layout read is pending");
+        completion.observe_frame(
+            &FrameKind::Error {
+                request_id: Some(2),
+                code: ErrorCode::Unsupported,
+                message: "another request".to_owned(),
+            },
+            7,
+        );
+        assert!(!completion.is_complete(true), "only its own id settles it");
+        completion.observe_frame(
+            &FrameKind::Error {
+                request_id: Some(1),
+                code: ErrorCode::Unsupported,
+                message: "a newer server".to_owned(),
+            },
+            7,
+        );
+        assert!(completion.is_complete(true));
     }
 }

@@ -85,6 +85,9 @@ pub(in crate::attach) struct FrameOutcome {
     /// stored); releases the write fence. Kept apart from `layout_replaced`,
     /// which READY damage also raises: sharing it once dropped the real reply.
     pub(in crate::attach) layout_get_answered: bool,
+    /// The pending layout GET was answered with a correlated `ERROR`: the
+    /// request settles, but nothing was read, so the write fence stays.
+    pub(in crate::attach) layout_get_refused: bool,
     /// Layout leaves discovered from peer metadata, for the driver to attach.
     pub(in crate::attach) attach_panes: Vec<ResourceId>,
     /// Windows/splits for satellite panes just spawned through the hub; each

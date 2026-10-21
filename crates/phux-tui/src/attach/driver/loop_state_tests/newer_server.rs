@@ -177,3 +177,34 @@ async fn an_unreadable_spawn_answer_settles_as_unknown_and_keeps_the_attach() {
         assert!(state.mirror.pending_floating.is_empty(), "the spawn settled");
     }
 }
+
+/// A layout GET a newer server answers with a correlated `ERROR` settles: the
+/// request clears, nothing was read, and the layout write fence stays up.
+#[tokio::test(flavor = "current_thread")]
+async fn a_layout_read_answered_with_an_error_settles_and_keeps_the_fence() {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    let (mut state, mut client, _server, mut out) =
+        Box::pin(bootstrapped_loop_with(ServerFeatureSet::new())).await;
+    let request_id = state.layout_get_request_id.expect("a pending layout read");
+    let before = state.mirror.workspace.clone();
+    let step = state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::Unsupported,
+                message: "a newer server".to_owned(),
+            },
+            false,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .expect("a correlated error is not a protocol fault");
+    assert!(!matches!(step, FrameStep::Exit(_)));
+    assert!(state.layout_get_request_id.is_none(), "the read settled");
+    assert!(!state.layout_read_complete, "nothing was read");
+    assert_eq!(state.mirror.workspace, before);
+}

@@ -16,6 +16,7 @@ use super::windows::{
 use super::{FrameCtx, FrameOutcome, note_agent_change};
 use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::layout::ArrangementDoc;
+use crate::render::chrome::status_bar::Notice;
 
 /// `DETACHED` is the one ending a consumer acts on; carry its reason. The
 /// message is diagnostic only.
@@ -99,6 +100,28 @@ pub(super) fn handle_metadata_value<W: crate::attach::RenderSink>(
         }
         Err(err) => Err(layout_decode_refusal(&err)),
     }
+}
+
+/// A pending metadata GET answered with a correlated `ERROR` (a newer
+/// server's `UNSUPPORTED`, or a reply this build cannot read). The request
+/// settles; nothing was read, so no stored record or layout is replaced and
+/// the layout write fence stays up. `None` when no GET waits on the id.
+pub(super) fn metadata_error_outcome<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    request_id: u32,
+) -> Option<FrameOutcome> {
+    if ctx.agent_meta.asked_pending.remove(&request_id).is_some()
+        || ctx.agent_meta.pending.remove(&request_id).is_some()
+    {
+        return Some(FrameOutcome::default());
+    }
+    (Some(request_id) == ctx.pending_layout_request).then(|| FrameOutcome {
+        layout_get_refused: true,
+        notices: vec![Notice::warn(
+            "the shared layout could not be read; layout edits stay off".to_owned(),
+        )],
+        ..FrameOutcome::default()
+    })
 }
 
 /// A sibling's layout broadcast: adopt topology (ADR-0049: never its
