@@ -155,7 +155,7 @@ async fn an_unreadable_spawn_answer_settles_as_unknown_and_keeps_the_attach() {
         },
         FrameKind::ResourceSpawned {
             request_id: 9,
-            result: SpawnResult::Err(SpawnError::Unknown(0xFE)),
+            result: SpawnResult::Err(SpawnError::Unknown(phux_protocol::wire::UnreadableResult::from_wire([0x01, 0xFE]))),
         },
     ] {
         let (mut state, mut client, _server, mut out) = Box::pin(newer_server_loop()).await;

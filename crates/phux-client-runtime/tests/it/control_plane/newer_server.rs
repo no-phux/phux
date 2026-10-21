@@ -297,7 +297,9 @@ fn an_unreadable_spawn_answer_is_an_unknown_outcome_not_a_refusal() {
         (
             FrameKind::ResourceSpawned {
                 request_id: 0,
-                result: SpawnResult::Err(phux_protocol::wire::frame::SpawnError::Unknown(0xFE)),
+                result: SpawnResult::Err(phux_protocol::wire::frame::SpawnError::Unknown(
+                    phux_protocol::wire::UnreadableResult::from_wire([0x01, 0xFE]),
+                )),
             },
             true,
         ),

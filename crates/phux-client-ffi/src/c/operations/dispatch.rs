@@ -135,7 +135,7 @@ pub(super) fn complete_spawn(
             UNKNOWN_OUTCOME,
             None,
             1,
-            u32::from(tag),
+            u32::from(tag.tag()),
             "the spawn's outcome is unknown: a newer server's answer",
         ),
         SpawnResult::Err(error) => {
