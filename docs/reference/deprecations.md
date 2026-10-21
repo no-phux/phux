@@ -1,4 +1,4 @@
-# phux deprecations reference
+# Deprecations
 
 Old spellings the binary still accepts, what replaces them, and when they go away.
 

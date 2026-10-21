@@ -54,7 +54,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "cli.md",
-        title: "phux CLI reference",
+        title: "Command line",
         summary: "Every non-hidden `phux` invocation path with its flags, \
                   defaults, and help text.",
         lede: "The `--help` text of every `phux` command.",

@@ -185,7 +185,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "files.md",
-        title: "phux file locations reference",
+        title: "File locations",
         summary: "The symbolic path rule for every file phux reads or \
                   writes: socket, config, logs, TLS material, tokens, \
                   bug reports, and the ideas spool.",

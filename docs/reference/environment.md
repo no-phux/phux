@@ -1,4 +1,4 @@
-# phux environment variables reference
+# Environment variables
 
 Environment variables phux reads. `phux help environment` prints the same table.
 

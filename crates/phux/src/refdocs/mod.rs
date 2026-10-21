@@ -100,7 +100,7 @@ fn index_page(content: &[Page]) -> Page {
     }
     Page {
         file: "README.md",
-        title: "phux reference",
+        title: "Reference",
         summary: "Index of the generated reference pages.",
         lede: "Every page in this directory is generated from the `phux` binary.",
         body,

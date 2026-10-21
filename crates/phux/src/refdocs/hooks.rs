@@ -87,7 +87,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "hooks.md",
-        title: "phux hooks reference",
+        title: "Hook events",
         summary: "Every hook event the server fires, with its context \
                   keys, environment projection, and matching rules.",
         lede: "Hook events the server fires, the context a `when` clause can match, and the environment a hook process gets.",

@@ -31,7 +31,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "environment.md",
-        title: "phux environment variables reference",
+        title: "Environment variables",
         summary: "Every environment variable the binary reads and what each one does.",
         lede: "Environment variables phux reads. `phux help environment` prints the same table.",
         body,

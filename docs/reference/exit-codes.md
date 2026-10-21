@@ -1,4 +1,4 @@
-# phux exit codes reference
+# Exit codes
 
 Exit statuses, for scripts. `phux help exit-codes` prints the same table.
 

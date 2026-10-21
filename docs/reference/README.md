@@ -1,4 +1,4 @@
-# phux reference
+# Reference
 
 Every page in this directory is generated from the `phux` binary.
 

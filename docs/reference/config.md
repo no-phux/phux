@@ -1,4 +1,4 @@
-# phux config reference
+# Config settings
 
 Every `config.toml` section and setting, with the shipped defaults.
 

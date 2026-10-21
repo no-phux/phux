@@ -1,4 +1,4 @@
-# phux status-bar widgets reference
+# Status bar widgets
 
 Status-bar widget kinds, their options and defaults, and the shared `style` and visibility settings.
 

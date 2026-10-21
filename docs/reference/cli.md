@@ -1,4 +1,4 @@
-# phux CLI reference
+# Command line
 
 The `--help` text of every `phux` command.
 

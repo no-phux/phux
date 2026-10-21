@@ -69,7 +69,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "kinds.md",
-        title: "phux kind catalog reference",
+        title: "Resource kinds",
         summary: "Every resource kind, its methods and events, and the verb each frame and command needs.",
         lede: "Resource kinds, their methods and events, and the authorization verb each wire method needs.",
         body,

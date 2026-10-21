@@ -52,7 +52,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "deprecations.md",
-        title: "phux deprecations reference",
+        title: "Deprecations",
         summary: "Every deprecated spelling, its replacement, and its \
                   removal release.",
         lede: "Old spellings the binary still accepts, what replaces them, and when they go away.",

@@ -1,4 +1,4 @@
-# phux file locations reference
+# File locations
 
 Where phux keeps its socket, config, state, logs, and credentials.
 
