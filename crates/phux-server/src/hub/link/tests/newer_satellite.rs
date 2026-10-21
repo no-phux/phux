@@ -1,4 +1,4 @@
-//! A newer 1.x satellite's unknown-value frame is skipped, not fatal: the link survives, and a request it answered settles `Unsupported`.
+//! A newer 1.x satellite's unknown-value frame is skipped, not fatal: the link survives, and a request it answered settles `UNREADABLE_REPLY`.
 
 use bytes::BytesMut;
 use phux_protocol::caps::BootstrapLimits;
@@ -6,7 +6,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::encode::Encoder;
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, StateScope, TYPE_COMMAND_RESULT,
-    TYPE_RESOURCE_CLOSED,
+    TYPE_DIRECTORY_LISTING, TYPE_RESOURCE_CLOSED,
 };
 
 use crate::hub::link::session::handle_satellite_frame;
@@ -27,25 +27,37 @@ fn framed(type_byte: u8, fields: &[(u32, &[u8])]) -> Vec<u8> {
     out
 }
 
+/// Relay `request` and return the request id the link frame carries.
+fn relayed_request_id(session: &mut RelaySession, request: RelayRequest) -> u32 {
+    let wire = session
+        .handle_request_checked(request)
+        .expect("the request reaches the link");
+    match FrameKind::decode(&wire).unwrap().0 {
+        FrameKind::Command { request_id, .. } | FrameKind::ListDirectory { request_id, .. } => {
+            request_id
+        }
+        other => panic!("relayed {other:?}"),
+    }
+}
+
 #[test]
-fn an_unknown_value_in_a_reply_settles_its_request_unsupported_and_keeps_the_link() {
+fn an_unknown_value_inside_a_result_settles_it_unreadable() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
     let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
-    let wire = session
-        .handle_request_checked(RelayRequest::Command {
+    let request_id = relayed_request_id(
+        &mut session,
+        RelayRequest::Command {
             command: Command::GetState {
                 scope: StateScope::Server,
             },
             reply,
             subscribe: None,
-        })
-        .expect("GET_STATE reaches the link");
-    let FrameKind::Command { request_id, .. } = FrameKind::decode(&wire).unwrap().0 else {
-        panic!("relayed a non-COMMAND");
-    };
+        },
+    );
 
     // A COMMAND_RESULT carrying a resource id whose tag no build of this
-    // line defines yet: this build's encoding, the id's tag patched.
+    // line defines yet: this build's encoding, the id's tag patched. The
+    // result decodes as an unreadable reply on its own.
     let mut result = Vec::new();
     let encoded = FrameKind::CommandResult {
         request_id,
@@ -65,21 +77,47 @@ fn an_unknown_value_in_a_reply_settles_its_request_unsupported_and_keeps_the_lin
         TYPE_COMMAND_RESULT,
         &[(1, &request_id.to_be_bytes()), (2, &result)],
     );
+    handle_satellite_frame(&mut session, &reply_frame).expect("the link survives");
+    assert!(matches!(
+        reply_rx.try_recv(),
+        Ok(CommandResult::Error { code, .. }) if code == ErrorCode::UNREADABLE_REPLY
+    ));
+}
+
+#[test]
+fn an_undecodable_reply_settles_its_request_unreadable_and_keeps_the_link() {
+    let mut session = RelaySession::new(host(), BootstrapLimits::default());
+    let (reply, mut reply_rx) = tokio::sync::oneshot::channel();
+    let request_id = relayed_request_id(
+        &mut session,
+        RelayRequest::ListDirectory {
+            path: "/srv".to_owned(),
+            reply,
+        },
+    );
+    // A DIRECTORY_LISTING whose `truncated` flag carries a value no build
+    // of this line defines: the whole frame fails to decode.
+    let reply_frame = framed(
+        TYPE_DIRECTORY_LISTING,
+        &[
+            (1, &request_id.to_be_bytes()),
+            (2, b"/srv"),
+            (4, &0u32.to_be_bytes()),
+            (5, &[2]),
+        ],
+    );
     assert!(
         FrameKind::decode(&reply_frame)
             .unwrap_err()
             .is_unsupported()
     );
     handle_satellite_frame(&mut session, &reply_frame).expect("the link survives");
-    assert!(matches!(
-        reply_rx.try_recv(),
-        Ok(CommandResult::Error {
-            code: ErrorCode::Unsupported,
-            ..
-        })
-    ));
+    let refusal = reply_rx
+        .try_recv()
+        .expect("settled")
+        .expect_err("not stated");
+    assert!(refusal.message.contains("cannot read"), "{refusal:?}");
 }
-
 #[test]
 fn an_uncorrelated_unknown_value_frame_is_skipped_and_malformed_bytes_still_end_the_link() {
     let mut session = RelaySession::new(host(), BootstrapLimits::default());

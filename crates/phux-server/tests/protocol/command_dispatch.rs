@@ -184,11 +184,11 @@ fn read_verbs_answer_over_the_wire() {
             matches!(
                 unknown_format,
                 CommandResult::Error {
-                    code: ErrorCode::InvalidCommand,
+                    code: ErrorCode::Unsupported,
                     ..
                 }
             ),
-            "an undefined format is refused, never guessed: {unknown_format:?}"
+            "an undefined format is refused as unsupported, never guessed: {unknown_format:?}"
         );
 
         let state = Command::GetTerminalState {

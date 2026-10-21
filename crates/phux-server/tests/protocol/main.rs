@@ -15,6 +15,7 @@ mod frame_too_large;
 mod newer_client;
 mod newer_client_commands;
 mod newer_client_hello;
+mod newer_client_strict;
 mod newer_client_values;
 mod open_listener;
 mod policy_deny;

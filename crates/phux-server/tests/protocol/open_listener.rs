@@ -334,8 +334,19 @@ fn open_listener_is_refused_over_quic() {
 #[test]
 fn malformed_requests_are_refused_with_invalid_command() {
     with_server(|mut uds| async move {
+        // A transport a newer client defines is unsupported, not invalid.
+        let unknown = open(&mut uds, 1, ListenerTransport::Unknown(7), None, 0).await;
+        assert!(
+            matches!(
+                unknown,
+                CommandResult::Error {
+                    code: ErrorCode::Unsupported,
+                    ..
+                }
+            ),
+            "{unknown:?}"
+        );
         for (request_id, transport, range) in [
-            (1, ListenerTransport::Unknown(7), None),
             (2, ListenerTransport::Quic, Some((9, 3))),
             (3, ListenerTransport::Quic, Some((0, 5))),
         ] {

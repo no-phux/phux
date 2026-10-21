@@ -21,8 +21,10 @@ pub(super) async fn handle(op: PerfOp) -> CommandResult {
         PerfOp::TraceStop => trace_stop().await,
         PerfOp::AllocOn => alloc_switch(true),
         PerfOp::AllocOff => alloc_switch(false),
+        // The decoder refuses an undefined op first; one built in process
+        // gets the same answer.
         PerfOp::Unknown(value) => refuse(
-            ErrorCode::InvalidCommand,
+            ErrorCode::Unsupported,
             format!("PERF_CONTROL: unknown op {value:#04x}"),
         ),
     }
