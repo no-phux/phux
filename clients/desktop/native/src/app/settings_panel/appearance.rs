@@ -77,7 +77,6 @@ pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) 
                 Button::new("settings-theme")
                     .label(label)
                     .outline()
-                    .small()
                     .w(px(260.))
                     .dropdown_caret(true)
                     .dropdown_menu(move |menu, _, _| {
@@ -97,7 +96,7 @@ pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) 
     )
     .description(theme_source(desk))
     .keywords(["theme", "colors", "dark", "light"]);
-    let mut font_group = SettingGroup::new();
+    let mut font_group = SettingGroup::new().title("Font & theme");
     if let Some(controls) = desk.settings_controls.as_ref() {
         let font = controls.font.clone();
         let picker = SettingField::render(move |_, _, _| {
