@@ -1694,6 +1694,11 @@ fn dispatch(
         Some(Command::Claim { action }) => commands::coord::run_claim(&action),
         Some(Command::Worktree { action }) => commands::worktree::run_worktree(&action, socket),
         Some(Command::Project { action }) => commands::project::run_project(&action, socket),
+        Some(Command::Idea {
+            private,
+            flush,
+            text,
+        }) => commands::idea::run(private, flush, text.as_deref()),
         Some(Command::Doctor { json }) => commands::doctor::run_doctor(json, socket),
         Some(Command::Logs {
             server,

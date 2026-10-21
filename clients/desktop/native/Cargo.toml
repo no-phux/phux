@@ -36,6 +36,10 @@ required-features = ["ui-fixtures"]
 name = "performance_monitor"
 required-features = ["ui-fixtures"]
 
+[[example]]
+name = "settings_preview"
+required-features = ["ui-fixtures"]
+
 [dependencies]
 phux-client-core = { path = "../../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../../crates/phux-client-runtime" }

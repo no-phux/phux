@@ -70,7 +70,7 @@ pub(super) fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPa
                 settings::ChordSource::Ghostty(_) => settings::Applies::OnReload,
                 settings::ChordSource::BuiltIn => settings::Applies::Live,
             };
-            SettingItem::new(
+            let item = SettingItem::new(
                 title,
                 SettingField::render(move |_, _, cx| match keystroke.clone() {
                     Some(keystroke) => Kbd::new(keystroke).into_any_element(),
@@ -82,8 +82,14 @@ pub(super) fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPa
                 }),
             )
             .information()
-            .description(notes([source.label().as_str(), applies.label()]))
-            .keywords([group, settings::display_chord(&chord)])
+            .keywords([group, settings::display_chord(&chord)]);
+            // Built-in is every row's default; only a chord from elsewhere says so.
+            match source {
+                settings::ChordSource::BuiltIn => item,
+                settings::ChordSource::Ghostty(_) => {
+                    item.description(notes([source.label().as_str(), applies.label()]))
+                }
+            }
         }));
     let page = SettingPage::new("Keyboard")
         .icon(IconName::ALargeSmall)
@@ -150,63 +156,62 @@ fn conflicts_group(desk: &Desk) -> Option<SettingGroup> {
 
 pub(super) fn ghostty_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let found = desk.ghostty_found;
-    let font = desk.ghostty().font_family.clone();
     let ignored = desk.ghostty().unmapped.len();
-    let status = SettingItem::render("Ghostty config status", move |_, _, cx| {
-        let muted = cx.theme().muted_foreground;
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.))
-            .text_sm()
-            .child(if found {
-                "Ghostty config found."
-            } else {
-                "No Ghostty config found."
-            })
-            .children(font.clone().map(|font| {
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(format!("Font: {font}"))
-            }))
-            .when(ignored > 0, |status| {
-                let (lines, are) = if ignored == 1 {
-                    ("line has", "is")
-                } else {
-                    ("lines have", "are")
-                };
-                status.child(div().text_xs().text_color(muted).child(format!(
-                    "{ignored} {lines} no phux equivalent and {are} ignored."
-                )))
-            })
+    let status = if found {
+        "Found."
+    } else {
+        "No Ghostty config found."
+    };
+    let font = desk
+        .ghostty()
+        .font_family
+        .as_ref()
+        .map(|font| format!("Font {font}."));
+    let ignored = (ignored > 0).then(|| {
+        let (lines, are) = if ignored == 1 {
+            ("line has", "is")
+        } else {
+            ("lines have", "are")
+        };
+        format!("{ignored} {lines} no phux equivalent and {are} ignored.")
     });
-    let buttons = handle.clone();
-    let actions = SettingItem::render("Use Ghostty look or reload config", move |_, _, _| {
-        div()
-            .flex()
-            .gap(px(8.))
-            .child(
+    let status = SettingItem::new("Ghostty config", SettingField::render(|_, _, _| div()))
+        .description(
+            [Some(status.to_owned()), font, ignored]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    let (apply, reload) = (handle.clone(), handle.clone());
+    let actions = [
+        SettingItem::new(
+            "Use Ghostty look",
+            SettingField::render(move |_, _, _| {
                 Button::new("ghostty-apply")
-                    .label("Use Ghostty look")
+                    .label("Apply")
                     .primary()
                     .small()
                     .disabled(!found)
-                    .on_click(click_runs(&buttons, |desk, _, cx| desk.import_ghostty(cx))),
-            )
-            .child(
+                    .on_click(click_runs(&apply, |desk, _, cx| desk.import_ghostty(cx)))
+            }),
+        )
+        .description("Copies its theme, font, size, cell size and padding into these settings."),
+        SettingItem::new(
+            "Reload config",
+            SettingField::render(move |_, _, _| {
                 Button::new("ghostty-reload")
-                    .label("Reload config")
+                    .label("Reload")
                     .small()
-                    .on_click(click_runs(&buttons, |desk, _, cx| desk.reload_ghostty(cx))),
-            )
-    });
+                    .on_click(click_runs(&reload, |desk, _, cx| desk.reload_ghostty(cx)))
+            }),
+        )
+        .description("Reads the files again for keybinds and the Ghostty theme."),
+    ];
     let page = SettingPage::new("Ghostty").icon(IconName::Frame).group(
         SettingGroup::new()
-            .title("Config")
-            .description("Use Ghostty look copies its theme, font, size, cell size and padding into these settings. Reload config reads the files again for keybinds and the Ghostty theme.")
             .item(status.information())
-            .item(actions),
+            .items(actions),
     );
     let config = desk.ghostty();
     let page = match diagnostic_group(

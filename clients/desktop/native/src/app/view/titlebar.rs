@@ -352,12 +352,12 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
 
 fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> Option<AnyElement> {
     let entity = desk.updates.clone();
-    let action = entity.read(cx).desktop_action()?;
+    let action = entity.read(cx).action()?;
     Some(
         Button::new("desktop-update-ready")
             .label(action.label())
             .small()
-            .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.desktop_act(cx)))
+            .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.act(cx)))
             .into_any_element(),
     )
 }

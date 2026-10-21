@@ -3,7 +3,8 @@
 
 use super::catalog::{Content as SettingPage, Group as SettingGroup, Item as SettingItem};
 use gpui::WeakEntity;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::setting::SettingField;
 use gpui_kit::component::{IconName, Sizable};
 
 use super::super::desk::Desk;
@@ -27,9 +28,10 @@ pub(super) fn page(handle: &WeakEntity<Desk>) -> SettingPage {
                 None,
             )
                 .description("Live frame, CPU and memory readings over your terminal."))
-            .item(SettingItem::render("Open Performance Monitor", move |_, _, _| {
-                Button::new("settings-performance-monitor").small().primary()
-                    .label("Open Performance Monitor")
+            .item(SettingItem::new("Performance Monitor", SettingField::render(move |_, _, _| {
+                Button::new("settings-performance-monitor").small()
+                    .label("Open")
                     .on_click(click_runs(&monitor, |desk, window, cx| desk.execute("performance-monitor", window, cx)))
-            })))
+            }))
+                .description("Frame times, memory and server spans in their own window.")))
 }

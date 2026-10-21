@@ -64,7 +64,14 @@ impl Connection {
     /// Queue a spawn. The session must already be in the topology; there is no fallback.
     pub fn spawn(&self, request: SpawnRequest) -> Result<u32, CommandError> {
         self.client
-            .with_control(|control| queue_spawn(control, request))
+            .with_control(|control| queue_spawn(control, request, ControlPlane::spawn_terminal))
+    }
+
+    /// Submit interactive setup once; never replay it after a lost connection.
+    pub(crate) fn spawn_once(&self, request: SpawnRequest) -> Result<u32, CommandError> {
+        self.client.with_control(|control| {
+            queue_spawn(control, request, ControlPlane::spawn_terminal_once)
+        })
     }
 
     /// Explicitly terminate a local terminal. Satellite ids are refused, not retried.
@@ -150,7 +157,11 @@ pub(crate) fn session_create(name: &str, cwd: Option<String>) -> Command {
     }
 }
 
-fn queue_spawn(control: &mut ControlPlane, mut request: SpawnRequest) -> Result<u32, CommandError> {
+fn queue_spawn(
+    control: &mut ControlPlane,
+    mut request: SpawnRequest,
+    spawn: fn(&mut ControlPlane, SpawnRequest) -> u32,
+) -> Result<u32, CommandError> {
     let not_connected = |reason| {
         command(
             reason,
@@ -201,7 +212,7 @@ fn queue_spawn(control: &mut ControlPlane, mut request: SpawnRequest) -> Result<
         ));
     }
     request.session_id = Some(target);
-    Ok(control.spawn_terminal(request))
+    Ok(spawn(control, request))
 }
 
 fn queue_termination(

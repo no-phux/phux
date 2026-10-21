@@ -271,6 +271,7 @@ pub(crate) mod enroll;
 pub(crate) mod gen_reference_docs;
 pub(crate) mod git;
 pub(crate) mod host;
+pub(crate) mod idea;
 pub(crate) mod json_err;
 pub(crate) mod kill;
 pub(crate) mod launch;
@@ -435,6 +436,8 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         // Every verb starts the keeper, which watches this server, and
         // `start` / `add --start` dial it. `--socket` names that server.
         Command::Mission { .. } => None,
+        // Capture talks to the ideas endpoint, never the phux server socket.
+        Command::Idea { .. } => Some("idea"),
         _ => None,
     }
 }
@@ -2721,6 +2724,41 @@ Download dials configured remote transports headlessly; it never pairs over SSH.
         /// Amount and subject of guidance to print.
         #[usage(value_enum, default = "full", value_name = "SCOPE")]
         scope: crate::skill::SkillScope,
+    },
+
+    /// Capture an idea
+    ///
+    /// TEXT is written to the local ideas spool first, then signed and posted
+    /// to `https://ingest.phux.sh/ideas/capture`. Success prints the capture
+    /// id. A network failure leaves the idea queued; the next `phux idea`
+    /// sends it with the same idempotency key and a fresh signature.
+    /// `--flush` sends queued ideas and does not capture a new one.
+    ///
+    /// `--private` ensures the body contains the `#private` tag.
+    ///
+    /// `PHUX_IDEAS_KEY_ID` and `PHUX_IDEAS_KEY` are read from
+    /// `$XDG_CONFIG_HOME/phux/ops.env` (`~/.config/phux/ops.env` when
+    /// `XDG_CONFIG_HOME` is unset). `PHUX_IDEAS_KEY_ID` is the key id, for
+    /// example `cli-mbp`. `PHUX_IDEAS_KEY` is 64 hex characters: the 32-byte
+    /// HMAC secret. The secret is never printed.
+    ///
+    /// Examples:
+    ///   phux idea "ship the spool before the post"
+    ///   phux idea --private "keep this off the triage model"
+    ///   phux idea --flush
+    #[usage(help_heading = "More", display_order = 67)]
+    Idea {
+        /// Ensure the body contains the `#private` tag.
+        #[usage(long)]
+        private: bool,
+
+        /// Send queued ideas and do not capture a new one.
+        #[usage(long)]
+        flush: bool,
+
+        /// Idea text. Required unless `--flush`.
+        #[usage(value_name = "TEXT")]
+        text: Option<String>,
     },
 
     /// Diagnose the install: config, socket, server
