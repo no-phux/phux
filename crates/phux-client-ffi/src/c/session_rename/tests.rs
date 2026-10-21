@@ -389,3 +389,21 @@ fn a_new_name_is_judged_by_cores_session_name_rule() {
     assert_eq!(info(client).1, STATUS_PENDING);
     unsafe { crate::c::phux_client_free(client) };
 }
+
+/// A rename answered with an unreadable reply, or a newer server's error
+/// code, does not say whether the session was renamed: unknown outcome,
+/// never refused.
+#[test]
+fn an_unreadable_rename_answer_is_an_unknown_outcome() {
+    let client = negotiated(&["build", "deploy"]);
+    assert_eq!(rename(client, 1, "build", "ship"), PhuxClientResult::Ok);
+    let _ = sent(client);
+    let unreadable = FrameKind::Error {
+        request_id: Some(1),
+        code: ErrorCode::UNREADABLE_REPLY,
+        message: "unreadable".to_owned(),
+    };
+    assert_eq!(feed(client, &unreadable), PhuxClientResult::Ok);
+    assert_eq!(info(client).1, STATUS_UNKNOWN_OUTCOME);
+    unsafe { crate::c::phux_client_free(client) };
+}

@@ -291,4 +291,16 @@ mod tests {
         assert_eq!(read.refusal_word, "conflict");
         assert_eq!(read.conflict_revision, Some(9));
     }
+
+    /// An organization command answered with an unreadable reply reads as
+    /// an unknown outcome through the C ABI, never as an error.
+    #[test]
+    fn an_unreadable_reply_is_an_unknown_outcome() {
+        use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+        let outcome = OrgOutcome::from_result(&CommandResult::Error {
+            code: ErrorCode::UNREADABLE_REPLY,
+            message: "unreadable".to_owned(),
+        });
+        assert_eq!(resolution(&outcome).status, Status::Unknown);
+    }
 }

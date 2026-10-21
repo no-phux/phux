@@ -30,7 +30,9 @@ use phux_client_core::rename::{
     plan_rename, rename_frames,
 };
 use phux_protocol::ids::{OperationId, SessionId};
-use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind, SESSION_NAME_KEY, Scope};
+use phux_protocol::wire::frame::{
+    CommandResult, CommandValue, ErrorCode, FrameKind, SESSION_NAME_KEY, Scope,
+};
 
 /// No rename has been asked on this client.
 const STATUS_NONE: u32 = 0;
@@ -133,14 +135,14 @@ pub(crate) fn dispatch(
         }
         FrameKind::Error {
             request_id: Some(request_id),
+            code,
             message,
-            ..
         } if awaits(client, request_id) => {
             if client.session_rename.barrier == Some(request_id) {
                 client.session_rename.barrier = None;
             }
             if client.session_rename.pending() {
-                client.session_rename.settle(STATUS_REFUSED, &message);
+                client.session_rename.settle(error_status(code), &message);
             }
             Ok(None)
         }
@@ -152,6 +154,17 @@ pub(crate) fn dispatch(
             Ok(None)
         }
         other => Ok(Some(other)),
+    }
+}
+
+/// How an error answer settles a rename: refused, except a code this build
+/// does not know (`UNREADABLE_REPLY` included), which does not say whether
+/// the rename happened.
+const fn error_status(code: ErrorCode) -> u32 {
+    if matches!(code, ErrorCode::Unknown(_)) {
+        STATUS_UNKNOWN_OUTCOME
+    } else {
+        STATUS_REFUSED
     }
 }
 
@@ -184,9 +197,9 @@ fn applied(client: &mut Client, value: &[u8]) {
 fn confirmed(client: &mut Client, result: CommandResult) -> Result<(), BridgeError> {
     let snapshot = match result {
         CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
-        CommandResult::Error { message, .. } => {
+        CommandResult::Error { code, message } => {
             if client.session_rename.pending() {
-                client.session_rename.settle(STATUS_REFUSED, &message);
+                client.session_rename.settle(error_status(code), &message);
             }
             return Ok(());
         }

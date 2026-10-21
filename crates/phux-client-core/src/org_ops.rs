@@ -84,6 +84,14 @@ impl OrgOutcome {
             CommandResult::OkWith(value) => Self::Value(Box::new(value.clone())),
             CommandResult::Accepted { .. } | CommandResult::Ok => Self::Accepted,
             CommandResult::Refused(refusal) => Self::Refused(refusal.clone()),
+            // A code this build does not know (`UNREADABLE_REPLY` included)
+            // does not say whether the command committed.
+            CommandResult::Error {
+                code: ErrorCode::Unknown(_),
+                message,
+            } => Self::Unknown {
+                reason: message.clone(),
+            },
             CommandResult::Error { code, message } => Self::Error {
                 code: *code,
                 message: message.clone(),

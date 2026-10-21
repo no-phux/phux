@@ -123,3 +123,21 @@ fn another_authority_strands_attempted_operations() {
     assert_eq!(reports.len(), 1);
     assert!(matches!(reports[0].outcome, OrgOutcome::Unknown { .. }));
 }
+
+/// An unreadable reply, or a newer server's error code, does not say whether
+/// the command committed: unknown, never an error the caller may retry past.
+#[test]
+fn an_unreadable_or_newer_error_is_an_unknown_outcome() {
+    for code in [ErrorCode::UNREADABLE_REPLY, ErrorCode::Unknown(299)] {
+        let outcome = OrgOutcome::from_result(&CommandResult::Error {
+            code,
+            message: "unreadable".to_owned(),
+        });
+        assert!(matches!(outcome, OrgOutcome::Unknown { .. }), "{code:?}");
+    }
+    let refused = OrgOutcome::from_result(&CommandResult::Error {
+        code: ErrorCode::Unsupported,
+        message: "unsupported".to_owned(),
+    });
+    assert!(matches!(refused, OrgOutcome::Error { .. }));
+}
