@@ -280,3 +280,74 @@ pub(super) fn drain_ready_into_batch(
     }
     None
 }
+
+#[cfg(test)]
+mod compress_policy_tests {
+    use phux_protocol::caps::Compression;
+    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+    use phux_protocol::wire::frame::{
+        CommandResult, ErrorCode, FrameKind, MoveError, MoveResult, SpawnError, SpawnResult,
+    };
+
+    use super::compress_policy;
+
+    /// A frame that settles a request is never compressed, whatever the
+    /// connection negotiated: a client that cannot inflate it (or fails to)
+    /// would otherwise leave the request waiting. Only bootstrap and history
+    /// payloads are.
+    #[test]
+    fn frames_that_settle_a_request_are_never_compressed() {
+        let settling = [
+            FrameKind::CommandResult {
+                request_id: 1,
+                result: CommandResult::Ok,
+            },
+            FrameKind::ResourceSpawned {
+                request_id: 1,
+                result: SpawnResult::Err(SpawnError::GroupNotFound),
+            },
+            FrameKind::ResourceMoved {
+                request_id: 1,
+                result: MoveResult::Err(MoveError::UnsupportedSatelliteRoute),
+            },
+            FrameKind::MetadataValue {
+                request_id: 1,
+                value: Some(vec![0; 64]),
+            },
+            FrameKind::MetadataKeys {
+                request_id: 1,
+                keys: vec!["k".to_owned()],
+            },
+            FrameKind::DirectoryListing {
+                request_id: 1,
+                result: Err(crate::hub::relay::listing_refusal("/", "x")),
+            },
+            FrameKind::PathResults {
+                request_id: 1,
+                result: Err(crate::hub::relay::path_refusal("/", "x")),
+            },
+            FrameKind::Error {
+                request_id: Some(1),
+                code: ErrorCode::Unsupported,
+                message: "x".to_owned(),
+            },
+            FrameKind::Attached {
+                attach_id: 1,
+                snapshot: phux_protocol::wire::info::SessionSnapshot::new(
+                    SessionId::new(1),
+                    WindowId::new(1),
+                    ResourceId::local(1),
+                ),
+                initial_client_id: phux_protocol::ids::ClientId::new(1),
+            },
+            FrameKind::AttachReady { attach_id: 1 },
+        ];
+        for frame in &settling {
+            assert_eq!(
+                compress_policy(frame, Compression::Deflate),
+                Compression::None,
+                "{frame:?}"
+            );
+        }
+    }
+}
