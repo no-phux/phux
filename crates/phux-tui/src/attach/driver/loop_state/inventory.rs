@@ -453,19 +453,24 @@ impl super::SessionLoop {
         frame: FrameKind,
         repaint: &mut RepaintAccumulator,
     ) -> Result<Option<FrameKind>, AttachError> {
-        match frame {
-            FrameKind::CommandResult { request_id, result }
-                if self
-                    .input_replay
-                    .as_ref()
-                    .is_some_and(|journal| journal.borrow().owns(request_id)) =>
-            {
-                self.resolve_input_replay(conn, request_id, &result, repaint)
-                    .await?;
-                Ok(None)
+        // A correlated ERROR settles it too: the journal reads UNSUPPORTED as
+        // refused and UNREADABLE_REPLY or a newer code as unknown.
+        let owned =
+            |id: u32| (self.input_replay.as_ref()).is_some_and(|journal| journal.borrow().owns(id));
+        let (request_id, result) = match frame {
+            FrameKind::CommandResult { request_id, result } if owned(request_id) => {
+                (request_id, result)
             }
-            other => Ok(Some(other)),
-        }
+            FrameKind::Error {
+                request_id: Some(request_id),
+                code,
+                message,
+            } if owned(request_id) => (request_id, CommandResult::Error { code, message }),
+            other => return Ok(Some(other)),
+        };
+        self.resolve_input_replay(conn, request_id, &result, repaint)
+            .await?;
+        Ok(None)
     }
 
     pub(super) async fn retry_after_inventory(

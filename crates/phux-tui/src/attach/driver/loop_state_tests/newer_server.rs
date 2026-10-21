@@ -209,3 +209,53 @@ async fn a_layout_read_answered_with_an_error_settles_and_keeps_the_fence() {
     assert!(!state.layout_read_complete, "nothing was read");
     assert_eq!(state.mirror.workspace, before);
 }
+
+/// A correlated `ERROR` for an acknowledged input (a server's, or this
+/// client's own fallback for an unreadable reply) settles the journal, so
+/// input to that pane does not stall.
+#[tokio::test(flavor = "current_thread")]
+async fn a_correlated_error_settles_the_acknowledged_input_journal() {
+    use crate::attach::input_replay::InputReplayJournal;
+    use phux_protocol::ids::InputOperationId;
+    use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+    use phux_protocol::wire::frame::ErrorCode;
+
+    for code in [ErrorCode::Unsupported, ErrorCode::UNREADABLE_REPLY] {
+        let (mut state, mut client, _server, _out) = Box::pin(newer_server_loop()).await;
+        let mut journal = InputReplayJournal::new();
+        let _ = journal.begin_connection_at(Some(&[0xAA; 16]), true, 0);
+        journal
+            .submit_at(
+                InputOperationId::new([7; 16]).expect("non-zero id"),
+                ResourceId::local(1),
+                vec![InputEvent::Paste(PasteEvent {
+                    data: b"x".to_vec(),
+                    trust: PasteTrust::Trusted,
+                })],
+                0,
+            )
+            .expect("queued");
+        let mut next = 40;
+        let (_, frames) = journal.next_frames_at(&mut next, 0);
+        let Some(FrameKind::Command { request_id, .. }) = frames.first() else {
+            panic!("an APPLY_INPUT attempt");
+        };
+        let request_id = *request_id;
+        let journal = std::rc::Rc::new(std::cell::RefCell::new(journal));
+        state.input_replay = Some(journal.clone());
+        let left = state
+            .intercept_inventory_reply(
+                &mut client,
+                FrameKind::Error {
+                    request_id: Some(request_id),
+                    code,
+                    message: "a newer server".to_owned(),
+                },
+                &mut RepaintAccumulator::default(),
+            )
+            .await
+            .expect("a correlated error is not a protocol fault");
+        assert!(left.is_none(), "the journal consumed it ({code:?})");
+        assert!(!journal.borrow().owns(request_id), "settled ({code:?})");
+    }
+}
