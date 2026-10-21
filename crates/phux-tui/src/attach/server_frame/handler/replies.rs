@@ -94,6 +94,7 @@ pub(super) fn error_frame_outcome<W: crate::attach::RenderSink>(
     // included, does not say whether a pane was created: unknown outcome.
     if let Some(id) = request_id.filter(|id| is_pending_spawn(ctx, *id)) {
         let settled = if matches!(code, ErrorCode::Unknown(_)) {
+            // Empty placeholder: only matched on locally, never encoded.
             SpawnResult::Err(SpawnError::Unknown(
                 phux_protocol::wire::UnreadableResult::from_wire(Vec::new()),
             ))
