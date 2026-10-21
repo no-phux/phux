@@ -107,21 +107,6 @@ pub struct StreamAsk {
     pub suggestions: Vec<String>,
 }
 
-/// A finished turn's reply its producer asked to have pushed.
-///
-/// A `stop` record carrying a non-empty `data.reply`. The producer opts in
-/// per record, so an emitter that never writes `reply` never puts content in
-/// a push.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct StreamReply {
-    /// Producer-chosen turn id (`data.turn_id`); empty when it named none.
-    pub turn_id: String,
-    /// The reply text, unbounded here; the push bounds what leaves the host.
-    pub text: String,
-    /// Optional alert title (`data.reply_title`), such as `Chief`.
-    pub title: Option<String>,
-}
-
 /// One validated record, ready for the server to stamp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidRecord {
@@ -187,27 +172,6 @@ impl ValidRecord {
                         .collect()
                 })
                 .unwrap_or_default(),
-        })
-    }
-
-    /// The reply a `stop` record asks to push, if any. A blank `reply` is
-    /// an ordinary stop.
-    #[must_use]
-    pub fn reply(&self) -> Option<StreamReply> {
-        if self.record_type != "stop" {
-            return None;
-        }
-        let text = self.data.get("reply").and_then(Value::as_str)?;
-        if text.trim().is_empty() {
-            return None;
-        }
-        let string = |key: &str| self.data.get(key).and_then(Value::as_str);
-        Some(StreamReply {
-            turn_id: string("turn_id").unwrap_or_default().to_owned(),
-            text: text.to_owned(),
-            title: string("reply_title")
-                .filter(|title| !title.trim().is_empty())
-                .map(str::to_owned),
         })
     }
 

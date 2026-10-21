@@ -9,12 +9,6 @@
 //! to APNs. The server never holds APNs credentials; the gateway never sees
 //! terminal bytes; a phone that is still connected gets nothing here, because
 //! it already projects the ask itself.
-//!
-//! The one content-bearing exception is an opted-in reply: an agent whose
-//! `stop` record carries `data.reply` (the chief of staff, `docs/chief.md`)
-//! asks for its finished turn to be pushed with that text, bounded to
-//! [`MAX_REPLY_TEXT_BYTES`]. Emitters that never write `reply` keep every
-//! notice content-free.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -42,9 +36,6 @@ const MIN_GRANT_BYTES: usize = 16;
 const MAX_GRANT_BYTES: usize = 256;
 const MAX_HOST_BYTES: usize = 128;
 const MAX_GATEWAY_BYTES: usize = 512;
-/// Most reply text one push carries; APNs caps a whole payload at 4 KiB.
-pub(crate) const MAX_REPLY_TEXT_BYTES: usize = 1024;
-const MAX_REPLY_TITLE_BYTES: usize = 64;
 
 /// The value a device writes under its grant key.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -224,117 +215,23 @@ pub(crate) fn targets(s: &mut ServerState, ask_id: &str) -> Vec<GrantValue> {
 /// send is its own task on the server's `LocalSet`; nothing here waits.
 pub(crate) fn on_asked(state: &SharedState, pane: &WireResourceId, ask_id: &str) {
     let targets = state.with_mut(|s| targets(s, ask_id));
-    dispatch(targets, &Notice::ask(encode_pane(pane), ask_id));
-}
-
-/// An agent finished a turn and asked for its reply to be pushed (a `stop`
-/// record with `data.reply`). `seq` is the stop record's stream sequence, so
-/// a turn without its own id still pushes once.
-pub(crate) fn on_replied(
-    state: &SharedState,
-    pane: &WireResourceId,
-    seq: u64,
-    reply: &crate::resource::agent_session::StreamReply,
-) {
+    if targets.is_empty() {
+        return;
+    }
     let pane = encode_pane(pane);
-    let turn = if reply.turn_id.is_empty() {
-        format!("seq-{seq}")
-    } else {
-        reply.turn_id.clone()
-    };
-    let claim = format!("reply:{pane}:{turn}");
-    let targets = state.with_mut(|s| targets(s, &claim));
-    dispatch(targets, &Notice::reply(pane, turn, reply));
-}
-
-fn dispatch(targets: Vec<GrantValue>, notice: &Notice) {
     for target in targets {
-        let notice = notice.clone();
+        let pane = pane.clone();
+        let ask_id = ask_id.to_owned();
         tokio::task::spawn_local(async move {
-            match send(&target, &notice).await {
+            match send(&target, &pane, &ask_id).await {
                 Ok(status) if (200..300).contains(&status) => {
-                    debug!(host = %target.host, pane = %notice.pane, "push: delivered to gateway");
+                    debug!(host = %target.host, %pane, "push: delivered to gateway");
                 }
                 Ok(status) => warn!(host = %target.host, status, "push: gateway refused"),
                 Err(err) => warn!(host = %target.host, %err, "push: send failed"),
             }
         });
     }
-}
-
-/// One notice as the gateway receives it (L3 §3.11). An ask names its
-/// question id; a reply names its turn and carries the bounded text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Notice {
-    pane: String,
-    question: String,
-    reply: Option<ReplyContent>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReplyContent {
-    text: String,
-    title: Option<String>,
-}
-
-impl Notice {
-    fn ask(pane: String, ask_id: &str) -> Self {
-        Self {
-            pane,
-            question: ask_id.to_owned(),
-            reply: None,
-        }
-    }
-
-    fn reply(
-        pane: String,
-        turn: String,
-        reply: &crate::resource::agent_session::StreamReply,
-    ) -> Self {
-        Self {
-            pane,
-            question: turn,
-            reply: Some(ReplyContent {
-                text: bounded(&reply.text, MAX_REPLY_TEXT_BYTES),
-                title: reply
-                    .title
-                    .as_deref()
-                    .map(|title| bounded(title, MAX_REPLY_TITLE_BYTES)),
-            }),
-        }
-    }
-
-    fn body(&self, host: &str) -> serde_json::Value {
-        let mut body = serde_json::json!({
-            "schema_version": 1,
-            "host": host,
-            "pane": self.pane,
-            "question": self.question,
-            "action": "reply",
-        });
-        if let Some(reply) = &self.reply {
-            body["kind"] = "reply".into();
-            body["text"] = reply.text.clone().into();
-            if let Some(title) = &reply.title {
-                body["title"] = title.clone().into();
-            }
-        }
-        body
-    }
-}
-
-/// `text` cut to at most `max` bytes on a character boundary, with an
-/// ellipsis when anything was dropped.
-fn bounded(text: &str, max: usize) -> String {
-    let text = text.trim();
-    if text.len() <= max {
-        return text.to_owned();
-    }
-    let mut end = max.saturating_sub('…'.len_utf8());
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", text[..end].trim_end())
 }
 
 /// The spelling the `UniFFI` binding hands a phone for a terminal
@@ -347,16 +244,23 @@ fn encode_pane(id: &WireResourceId) -> String {
     }
 }
 
-/// One `POST` of a notice; the HTTP status on success.
+/// One `POST` of the content-free notice; the HTTP status on success.
 ///
 /// A hand-rolled HTTP/1.1 exchange over `tokio-rustls`: one request, one
 /// status line, `Connection: close`. The server has no other HTTP client
 /// and this is the only call.
 /// ponytail: no redirects, no keep-alive, no body parse; switch to a real
 /// client if the gateway contract grows past one POST.
-pub(crate) async fn send(target: &GrantValue, notice: &Notice) -> Result<u16, String> {
+pub(crate) async fn send(target: &GrantValue, pane: &str, question: &str) -> Result<u16, String> {
     let gateway = Gateway::parse(&target.gateway)?;
-    let body = notice.body(&target.host).to_string();
+    let body = serde_json::json!({
+        "schema_version": 1,
+        "host": target.host,
+        "pane": pane,
+        "question": question,
+        "action": "reply",
+    })
+    .to_string();
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {grant}\r\n\
          Content-Type: application/json\r\nContent-Length: {len}\r\n\

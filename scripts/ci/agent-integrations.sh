@@ -34,7 +34,7 @@ git diff --exit-code -- integrations/opencode-v2
     bun run gates
 )
 
-for package in pi claude chief; do
+for package in pi claude; do
     npm --prefix "integrations/$package" ci
     npm --prefix "integrations/$package" run gates
 done
