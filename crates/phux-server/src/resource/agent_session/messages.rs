@@ -4,7 +4,7 @@
 use bytes::Bytes;
 use tokio::sync::oneshot;
 
-use super::record::{RecordError, StreamAsk, StreamEvidence, StreamReply};
+use super::record::{RecordError, StreamAsk, StreamEvidence};
 
 /// Publication identity verified by the dedicated native broker.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -51,8 +51,6 @@ pub struct AppendAccepted {
     /// The last question-bearing record's question, for the ask ladder
     /// (ADR-0036).
     pub ask: Option<StreamAsk>,
-    /// The last reply a `stop` record asked to push, for absent devices.
-    pub reply: Option<StreamReply>,
 }
 
 /// Why an append was refused.

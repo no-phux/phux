@@ -155,10 +155,6 @@ async fn append_output(
             accepted.evidence,
             false,
         );
-        if let (Some(reply), Some(parent)) = (accepted.reply.as_ref(), handle.parent) {
-            let pane = state.with_mut(|s| s.intern_terminal_wire(parent));
-            crate::push::on_replied(state, &pane, accepted.last_seq, reply);
-        }
     }
     Ok(accepted)
 }

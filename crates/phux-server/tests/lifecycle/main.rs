@@ -8,7 +8,6 @@
 )]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
-mod agent_reply_push;
 mod agent_session;
 mod attach_roles;
 mod common;

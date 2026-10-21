@@ -21,7 +21,7 @@ use super::{
 pub mod record;
 pub mod ring;
 
-pub use record::{RecordError, StreamAsk, StreamEvidence, StreamReply, ValidRecord};
+pub use record::{RecordError, StreamAsk, StreamEvidence, ValidRecord};
 pub use ring::RecordRing;
 
 /// Depth of the append and bootstrap mailboxes; a full one refuses appends
@@ -338,7 +338,6 @@ impl AgentSessionActor {
             };
         let mut evidence = None;
         let mut ask = None;
-        let mut stop_reply = None;
         for (entry, range) in records.iter().zip(ranges) {
             // The entire range was checked above, before any mutation.
             let _ = self.core.next_seq();
@@ -348,9 +347,6 @@ impl AgentSessionActor {
             }
             if let Some(question) = entry.ask() {
                 ask = Some(question);
-            }
-            if let Some(found) = entry.reply() {
-                stop_reply = Some(found);
             }
             if entry.ends_session() {
                 self.ended.store(true, Ordering::Relaxed);
@@ -367,7 +363,6 @@ impl AgentSessionActor {
             ts_ms,
             evidence,
             ask,
-            reply: stop_reply,
         };
         if let Some(identity) = publication {
             self.native_publication_high_water = identity.id;
