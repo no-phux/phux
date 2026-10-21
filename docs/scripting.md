@@ -1,89 +1,239 @@
-# Driving terminals from scripts
+# Shell scripting
 
-Every `phux` command other than `phux` and `phux attach` runs without a UI.
-A script, a cron job, or a coding agent can create panes, read their
-screens, type into them, and wait for things to happen, while a person
-watches the same panes in the TUI or not at all.
-
-This page covers the commands and the conventions. [Agents](./agents.md)
-covers the parts specific to coding agents.
-
-## Create
+Every `phux` command except `phux` and `phux attach` runs without a UI, so a
+shell script, a cron job, or a coding agent can create panes, type into them,
+read their screens, and wait for output. A person can watch the same panes in
+the TUI while the script runs, or nobody can.
 
 ```sh
-phux spawn --json -- bash                 # a pane in the current session; prints its id
-phux spawn --json -c ~/src/app -- bash    # with a working directory
-phux new --json -s build -c ~/src/app     # a new session, without attaching
+#!/bin/sh
+phux new --json -s build -c ~/src/app >/dev/null
+phux run build 'cargo build' && echo "build passed"
+phux snapshot build
 ```
 
-The id (`@7`) is what every other command takes. Inside the pane,
-`$PHUX_TERMINAL_ID` holds it and `$PHUX_SOCKET` names the server.
+[Agents](./agents.md) covers what is specific to coding agents.
 
-Panes normally vanish when their process exits. `phux spawn --retain=600`
-keeps the exit status and last screen readable for ten minutes.
+## Targets
 
-## Read
+A target names what a command acts on. Every command that takes one reads
+the same grammar:
+
+| Target | Means | Example |
+| --- | --- | --- |
+| `name` | A session | `phux snapshot work` |
+| `name:G` | Tab G of a session | `phux kill work:1` |
+| `name:G.P` | Pane P of tab G | `phux send-keys work:1.0 C-c` |
+| `@N` | A pane by id | `phux run @7 'cargo test'` |
+| `host/@N` | A pane on a linked machine | `phux snapshot edge/@7` |
+| `#tag` | Every pane with that tag | `phux kill '#build'` |
+| `%name` | The pane an agent of that name runs in | `phux wait %reviewer` |
+| `^key` | A session or pane by its key | `phux kill ^3f9a2c` |
+| `.` | The focused pane | `phux signal . kill` |
+
+Tab and pane numbers count from zero. `phux help targets` prints this table.
+
+**Use `@N` in scripts.** Names and tags are for people and can change under
+you. `.` is whatever a person is looking at right now, so use it only when
+that is what you mean.
+
+## Keeping track of ids
+
+Commands that create a pane print its id. With `--json` they print a
+document you can read with [`jq`](https://jqlang.org):
+
+```text
+$ phux spawn --json -- bash
+{"schema_version":1,"terminal_id":7,"satellite":null,"replayed":false}
+```
+
+```sh
+pane="@$(phux spawn --json -- bash | jq -r .terminal_id)"
+phux send-keys "$pane" 'make test' Enter
+```
+
+| Command | Creates | Id is at |
+| --- | --- | --- |
+| `phux spawn --json` | A pane in the most recently active session | `.terminal_id` |
+| `phux new --json -s NAME` | A session with one pane, without attaching | `.terminal_id` |
+
+Inside a pane, `$PHUX_TERMINAL_ID` holds that pane's number (`7` for `@7`)
+and `$PHUX_SOCKET` names its server.
+
+## Creating panes and sessions
+
+`phux new --json -s NAME` creates a session without attaching to it.
+`phux spawn` adds a pane:
+
+```sh
+phux new --json -s api -c ~/src/api -- nvim
+phux spawn --target @7 --split horizontal --ratio 0.6 -c ~/src/api -- htop
+phux spawn --retain=600 -- make test
+```
+
+| Option | Does |
+| --- | --- |
+| `-- COMMAND` | Runs a command instead of your shell. |
+| `-c DIR` | Sets the working directory. |
+| `--target PANE` | Places the new pane beside an existing one. |
+| `--split horizontal` / `vertical` | Beside the target (the default), or below it. Needs `--target`. |
+| `--ratio F` | The fraction of the split the target keeps. Needs `--target`. |
+| `--retain=SECS` | Keeps the exit status and last screen readable after the process exits. |
+| `--idempotency-key HEX32` | Makes a retry return the first pane instead of spawning another. |
+
+A pane normally disappears when its process exits. `--retain` keeps it
+around for `phux resource show` and `phux resource wait` until the time runs
+out or you `phux kill` it. Write `--retain=SECS` when a command follows, so
+the number is not read as the command.
+
+`phux spawn` and `phux new --json` never start a server. `phux new` without
+`--json` does, and attaches.
+
+## Typing into a pane
+
+`phux send-keys` presses keys, tmux style. Each argument is a named key
+(`Enter`, `Tab`, `Escape`, `Up`, `C-c`, `M-x`) or literal text:
+
+```sh
+phux send-keys @7 'make test' Enter
+phux send-keys @7 C-c
+```
+
+`phux paste` delivers text as one paste, so multi-line text arrives intact
+and editors don't auto-indent it. It reads stdin when you leave out the text.
+A paste inserts and does not submit, so follow it with `Enter`:
+
+```sh
+git diff | phux paste @7
+phux send-keys @7 Enter
+```
+
+Flags go before the target. Everything after the target is a key to send.
+
+## Running a command
+
+`phux run` types a command into a pane's shell, waits for it to finish, and
+prints its output. It exits with the command's own status:
+
+```text
+$ phux run @7 'git status --short'
+ M src/main.rs
+exit=0 (412ms)
+```
+
+```sh
+if phux run --timeout 300 @7 'cargo test'; then
+  echo "tests passed"
+fi
+```
+
+**`run` only types into a shell.** When something else is in the foreground,
+such as `vim` or `less`, it refuses with exit 2, because there the same bytes
+would be keystrokes. `--force` skips that check. It assumes a POSIX shell
+(sh, bash, zsh).
+
+`--timeout` covers the whole run, connecting included, and defaults to 600
+seconds. A run that times out exits 125. Giving up does not stop the command
+or take back what was typed. Flags must come before the target.
+
+## Reading a screen
+
+`phux snapshot` prints what is on a pane's screen. It does not attach,
+resize, or disturb the pane, so it is safe to poll a pane someone is using.
 
 ```sh
 phux snapshot @7                 # the screen as text
-phux snapshot --json @7          # with cursor, size, and wrap information
-phux snapshot --tail 200 @7      # the last 200 rows including history
-phux snapshot --format html @7   # rendered with colors
+phux snapshot --json @7          # lines, cursor, size, and title
+phux snapshot --tail 200 @7      # the last 200 rows, history included
+phux snapshot --format html @7   # with colors, as HTML
 ```
 
-A snapshot does not attach, resize, or otherwise disturb the pane.
+| Option | Does |
+| --- | --- |
+| `--tail N` | Returns the last N rows, history then screen. |
+| `--scrollback N` | Adds N rows of history above the screen. |
+| `--unwrap` | Joins lines the terminal wrapped. |
+| `--format html` / `vt` | Keeps colors and styling, as HTML or terminal escape sequences. |
+| `--json` | Prints a document instead of text. |
 
-## Type
+## Waiting for output
+
+`phux wait` polls a pane's screen until a line matches. It exits 0 on a
+match and 124 when `--timeout` runs out:
 
 ```sh
-phux send-keys @7 'make test' Enter       # keys, tmux style; `C-c` works too
-phux paste @7 < patch.diff                # paste text; does not press Enter
-phux run @7 'git status'                  # run a command, get its output and exit code
+phux wait --until 'Finished' --timeout 300 @7
+phux wait --regex 'test result: (ok|FAILED)' --output-only --timeout 300 @7
+phux wait --idle 750 @7
 ```
 
-`run` needs a shell to be reading the pane. It refuses when something else
-is in the foreground, so it does not type a command into a running editor.
-It returns the command's own exit code, or 125 if it timed out.
+`--until` matches any line, including the command you just typed. Match text
+that appears only in output, or pass `--output-only`, which ignores lines the
+shell marked as your input. That needs a shell with OSC 133 integration;
+without it, `wait` matches every line and says so on stderr.
 
-## Wait
+`--idle MS` waits until the screen holds still. It is the default when you
+give no pattern.
 
-```sh
-phux wait --until 'Finished' --timeout 300 @7          # a line contains the text
-phux wait --regex 'Finished|error\[' --timeout 300 @7   # or matches the pattern
-phux watch --json @7                                   # stream events as they happen
-phux watch --until command_finished --timeout 600 @7   # the shell reported a command ended
-phux watch --until asked --timeout 600 @7              # the pane's agent asked for input
-phux resource wait --timeout 60 @7                     # the pane's process exited
+## Watching events
+
+`phux watch` prints a pane's events as they happen, one per line, or one JSON
+object per line with `--json`:
+
+```text
+$ phux watch @7
+@7	command_started
+@7	command_finished exit=0
 ```
 
-`wait` and `watch` exit 0 when the condition is met and 124 on timeout, so a
-shell `||` reads naturally. `wait` polls the screen; `watch` subscribes to
-the event stream and prints each event as a line (one JSON object per line
-with `--json`). The event names are listed under `--until` in
-[`phux watch --help`](./reference/cli.md#phux-watch).
-
-Where the shell has OSC 133 integration, `command_started` and
-`command_finished` events, and `wait --output-only`, tell command output
-from the typed command. Without it, `wait` matches every line and says so.
-
-## Organize
+With `--until EVENT`, it exits 0 at the first matching event:
 
 ```sh
-phux tag add @7 build          # then: phux snapshot '#build', phux kill '#build'
+phux watch --until command_finished --timeout 600 @7
+phux watch --until asked --timeout 600 @7        # the pane's agent asked a question
+```
+
+The events are `agent_state`, `asked`, `bell`, `command_finished`,
+`command_started`, `cwd_changed`, `dirty`, `idle`, `journal_gap`,
+`pane_closed`, `pane_spawned`, `source_gap`, `terminal_control`,
+`title_changed`, and `unknown`. `command_started` and `command_finished`
+need a shell with OSC 133 integration. A timeout exits 124. If the server
+closes the stream before the event arrives, `watch` exits 1.
+
+To resume after a disconnect, pass the cursor `watch` printed last on stderr
+to `--after`.
+
+`phux resource wait` waits for a pane's process to exit:
+
+```sh
+phux resource wait --timeout 60 @7
+```
+
+It exits 0 when the process exited, 1 when the pane is gone, and 124 on
+timeout.
+
+## Organizing panes
+
+```sh
+phux tag add @7 build          # then target it as '#build'
 phux ls --json                 # every session and pane
-phux kill @7 --yes             # --yes because kill asks on a terminal
-phux rm @7                     # forget an ended pane
+phux kill --yes @7             # end a pane
+phux rm --yes @7               # forget a pane whose process ended
 ```
 
-## Conventions
+**`kill` and `rm` ask first.** On a terminal they ask for confirmation. With
+no terminal they refuse with exit 2 and send nothing, so a script passes
+`--yes` to say what it means. Quote `#tag` targets, because `#` starts a
+comment in the shell.
 
-**`--json` output is versioned.** Each document carries a `schema_version`
-that moves only when a key is removed, renamed, or retyped. Keys are added
-without a bump, so ignore keys you don't know. The shapes come from the
-binary, so check `phux <command> --help`, or run the command, rather than
-expecting a schema here.
+## JSON output and errors
 
-**Failures are one JSON line on stderr**, with stdout empty:
+`--json` output is versioned. Each document has a `schema_version` that
+changes only when a key is removed, renamed, or retyped. New keys appear
+without a bump, so ignore keys you don't know. Run the command, or read its
+`--help`, to see the shape.
+
+On failure, stdout is empty and stderr carries one JSON object:
 
 ```json
 {
@@ -94,24 +244,61 @@ expecting a schema here.
 }
 ```
 
-`error.code` is a fixed vocabulary; branch on it, not on `message`.
+Branch on `error.code`, which comes from a fixed list, not on `message`.
 
-**Exit codes** are the same everywhere: 0 ok, 1 failure, 2 usage error or
-refused by the server, 3 partial fleet view (a linked host did not answer),
-124 timeout, 125 `run` timeout. [Exit codes](./reference/exit-codes.md) is
-the full table.
+## Exit codes
 
-**Targets** are the grammar in [concepts](./concepts.md#targets). Prefer
-`@N` ids in scripts; names and tags are for people and can change under
-you. `.` means the focused pane, which is whatever a human is looking at,
-so avoid it unless that is what you mean.
+Every command uses the same codes:
 
-**Nothing here touches the human's view.** Reading, typing, and waiting
-never attach, resize, or steal focus. Typing into a pane a person is using
-is allowed, though; see [agents](./agents.md#safety) for the rules that keep
-agents out of each other's and your panes.
+| Code | Means |
+| --- | --- |
+| `0` | Success. |
+| `1` | Failure: no server, no such target, or the command failed. |
+| `2` | Usage error, or the server refused the request. |
+| `3` | A linked machine didn't answer, so the target couldn't be resolved. Retry later. |
+| `124` | `wait`, `watch`, or `resource wait` timed out. |
+| `125` | `run` timed out. Otherwise `run` exits with the command's own status. |
+
+[Exit codes](./reference/exit-codes.md) has the full reference.
+
+## Not touching the person's view
+
+Reading, typing, and waiting never attach, resize, or move focus. Typing
+into a pane someone is using is still allowed, so a script can collide with
+a person. `phux take` gives you exclusive input to a pane, and
+[agent safety](./agents.md#safety) covers the rest.
+
+## Example: run tests beside a pane
+
+This script runs a command in a new pane beside the current one and prints
+the output if it fails:
+
+```sh
+#!/bin/sh
+# tests.sh
+cmd="${1:-make test}"
+
+pane="@$(phux spawn --json --target "@$PHUX_TERMINAL_ID" -- sh | jq -r .terminal_id)"
+
+if ! phux run --timeout 600 "$pane" "$cmd"; then
+  phux snapshot --tail 50 "$pane"
+  exit 1
+fi
+phux kill --yes "$pane"
+```
+
+```sh
+./tests.sh 'cargo test'
+```
 
 ## MCP
 
-`phux mcp` runs the same surface as an MCP server over stdio, for hosts that
-speak MCP rather than shelling out. See [agents](./agents.md#mcp).
+`phux mcp` serves the same commands as MCP tools over stdio, for programs
+that speak MCP instead of running commands. See [MCP](./agents.md#mcp).
+
+## Debugging
+
+- `phux ls` and `phux ls -l` show what the server holds.
+- `phux snapshot --json @N` shows exactly what a `wait` would match.
+- `phux status` shows whether a server is running and which socket it uses.
+- [Troubleshooting](./troubleshooting.md) covers failures that aren't yours.

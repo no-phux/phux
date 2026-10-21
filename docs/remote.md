@@ -1,193 +1,241 @@
 # Remote machines
 
 phux has no accounts and no hosted service. Each machine runs its own
-server; you tell one machine how to reach another, once, over the SSH
-access you already have.
+server, and you tell one machine how to reach another once, over the SSH
+access you already have. After that, you attach to the other machine's
+sessions directly, from the terminal or the desktop app.
 
-## Set up a host
+```sh
+phux host add me@mini
+phux attach mini
+```
 
-Install phux on the remote machine, then from your machine:
+**Access to a phux server is access to everything it can do**, including
+starting programs as the user it runs as. A server listens only on a local
+socket until you set it up for remote use, and every remote connection must
+present credentials from pairing.
+
+## Adding a machine
+
+Install phux on the remote machine, then run this on your own:
 
 ```sh
 phux host add me@mini
 ```
 
-Over `ssh me@mini` this checks that `phux` is on the remote `PATH`,
-installs a `phux service` there so the server survives logouts and
-reboots, switches it to `[policy] mode = "paired"`, opens a QUIC listener on
-UDP port 8788, mints a credential for this machine, and records the whole
-thing under the name `mini` in your config. Nothing to copy by hand.
+Over `ssh me@mini`, this:
 
-From then on:
+1. Checks that `phux` is on the remote `PATH`.
+2. Installs a service there, so the server survives logouts and reboots.
+3. Sets the remote server's `[policy] mode` to `"paired"` and opens a QUIC
+   listener on UDP port 8788.
+4. Issues a certificate and token for this machine.
+5. Saves the whole thing under the name `mini` in your config.
 
-```sh
-phux attach mini          # QUIC straight to the server; ssh is out of the path
-phux ls --all             # sessions here and on every registered host
-phux new --remote mini scratch
-phux host ls
-```
+There is nothing to copy by hand. Run `phux host add me@mini` again whenever
+the host stops answering: it checks the setup and repairs what broke.
 
-If `phux` on the remote is somewhere SSH's non-interactive shell does not
-see, say where:
+If a non-interactive SSH shell doesn't find `phux` on the remote machine, as
+with some Homebrew or Nix installs, say where it is:
 
 ```sh
 phux host add me@mini --remote-phux /opt/homebrew/bin/phux
 ```
 
-Run `phux host add me@mini` again whenever the host stops answering; it
-repairs whatever broke.
+| Option | Does |
+| --- | --- |
+| `--name NAME` | Saves the machine under another name. |
+| `--quic-port PORT` | Uses another UDP port than 8788. |
+| `--endpoint HOST:PORT` | Registers this address instead of the ones found on the host. |
+| `--no-service` | Starts the server without a service, so it won't come back after a reboot. |
+| `--ssh-only` | Registers an `ssh://` entry without contacting the host. |
+| `--session NAME` | Attaches to this session on arrival. |
 
-## What is reachable
+## Using a machine
 
-Session-level commands take `--remote NAME`: `ls`, `new`, `kill`, `rename`,
-`detach`, `upload`, `download`, `whoami`. Pane-level commands (`snapshot`, `send-keys`,
-`run`, `wait`) act on the server they connect to. To script panes on
-another machine, run `phux` there over SSH, or link the machines (below) so
-its panes appear here as `mini/@7`.
+```sh
+phux attach mini                 # QUIC straight to the server; SSH is out of the path
+phux ls --all                    # sessions here and on every registered machine
+phux new --remote mini scratch   # create a session there
+phux host ls                     # registered machines
+```
 
-Several terminals and the desktop app can attach to the same remote
-session at once.
+`ls`, `new`, `kill`, `rename`, `detach`, `upload`, `download`, and `whoami`
+take `--remote NAME`. Pane commands such as `snapshot`, `send-keys`, `run`,
+and `wait` act on the server they connect to. To script panes on another
+machine, run `phux` there over SSH, or [link the machines](#linking-machines)
+so its panes show up here as `mini/@7`.
+
+Several terminals and the desktop app can attach to the same remote session
+at once.
+
+## Who can connect
+
+A server's `[policy] mode` decides who can connect:
+
+| Mode | Lets in |
+| --- | --- |
+| unset or `local` | Only programs on this machine, through the local socket. Configuring any network listener or relay makes the server refuse to start. |
+| `paired` | The local socket, plus network connections that present an enrolled client certificate and a token. |
+
+`phux host add` sets `paired` for you.
+
+A remote connection needs two things from pairing: a client certificate
+issued by the server's own certificate authority, and a token. The client
+pins that certificate authority when it pairs and refuses to connect if it
+changes. A token alone never gets anyone in.
+
+Certificates from `phux host add` last 90 days. Attaching warns, and
+`phux doctor` reports, when one is within two weeks of expiring.
+`phux host renew mini` replaces it.
+
+## Who can do what
+
+**A machine you add with `phux host add` can do everything you can do on the
+remote server**, including typing into panes. Only add machines you control.
+
+A CI runner, or a person who should list sessions but not type, gets a
+separate certificate with a narrower scope from `phux workload add-key`. The
+steps, expiry, rotation, and revocation are in
+[Host-scoped read keys](./runbooks/host-observe-keys.md).
+
+Programs on the server's own machine are different. **The local socket gives
+full access to any program running as the same user.** phux can't tell those
+programs apart.
+
+## Attaching over SSH
+
+`phux attach --ssh` needs no pairing and no service:
+
+```sh
+phux attach --ssh me@box
+```
+
+SSH logs you in (password and 2FA prompts work), starts the server on the
+remote machine if needed, and opens a QUIC listener for this attach alone.
+Then SSH exits and the session runs directly over QUIC, so it survives
+network changes and draws locally. The listener and its token live only in
+memory and go away shortly after you detach.
+
+The remote server's policy must allow the listener, and UDP must reach it.
+If it can't, phux says why and falls back to `ssh -t box phux attach`: a
+remote TUI carried over SSH. An SSH login failure, or a remote machine
+without phux, is an error, not a fallback.
+
+`--udp-ports 60000-61000` keeps the listener in a range one firewall rule
+can cover.
+
+## Pairing with a link
+
+When you can't SSH to the server, pair with a link instead. On the server
+machine:
+
+```sh
+phux pair
+```
+
+This prints a pairing link and a QR code. On the client:
+
+```sh
+phux attach --remote mini --code 'https://phux.sh/connect?...'
+```
+
+**The link is a secret.** Anyone who has it can connect. The token in it
+works until you revoke it, or until `--expires` if you set one. The
+enrollment ticket that comes with a QR code works once and expires after ten
+minutes. A printed or piped link needs `--enroll` to include one.
+
+`phux pair --qr` shows only the QR code, for pairing a phone without showing
+the token on screen. `phux pair --secret-file PATH` writes the link to a
+private file instead of printing it.
+
+## Relays
+
+When neither machine can reach the other directly, run a relay somewhere both
+can reach:
+
+```sh
+phux relay pair --route home     # on the relay machine: prints a token and a fingerprint
+phux relay run --listen 0.0.0.0:4433
+```
+
+Give the server a `[[connector]]` entry with the relay's address, the token
+file, and the relay's fingerprint, then mint the client's link on the server:
+
+```sh
+phux pair --relay-route home
+```
+
+The server dials out to the relay, so it needs no open port. **The relay sees
+only ciphertext.** Every connection runs TLS end to end with the server,
+inside the relayed stream. `--max-conns` caps how many connections a relay
+accepts (64 by default).
 
 ## Linking machines
 
 A **hub** is a server that also lists and routes to other servers, its
-**satellites**. Panes on a satellite show up in `phux ls --all` and take
-targets like `edge/@7`.
+**satellites**. A satellite's panes show up on the hub with targets like
+`edge/@7`.
 
 ```sh
 phux host add me@edge --role satellite    # on the hub machine
-phux service install --hub                # make this server a hub
+phux service install --hub                # run this machine's server as a hub
 ```
 
-For a satellite that cannot accept connections (a sandbox behind NAT), it
-dials out to the hub instead. **Joining trusts the hub with full satellite
-owner authority**, not an ordinary scoped observer grant: each reverse
-stream is spliced into the satellite owner socket. The hub must be paired;
-the satellite may remain in local mode. Join only a hub you trust to run
-commands as the satellite's serving user. The
-[substrate decision](./substrate.md) keeps that join between one person's
-own machines.
+A satellite that can't accept connections, such as a sandbox behind NAT,
+dials out to the hub instead:
 
 ```sh
-phux host ticket sandbox     # on the hub: a code good for ten minutes
+phux host ticket sandbox     # on the hub: prints a code good for ten minutes
 phux host join -             # on the sandbox: paste the code
 ```
 
-## Other ways in
+**Joining a hub gives the hub full control of the satellite.** The hub can do
+anything on the satellite that you can, as the user the satellite's server
+runs as. Join only a hub you own and trust. The hub must run in `paired` mode;
+the satellite can stay `local`.
 
-**SSH bootstrap and fallback.** `phux attach --ssh me@box` uses SSH to
-start/bootstrap the remote server and request a per-attach listener, token
-and certificate pin. After a short QUIC probe, the session normally runs
-directly over pinned QUIC; SSH has exited and is not its lifetime data
-channel. The transient listener/token live in memory, linger briefly for
-reconnect, and are not preserved through upgrade. Policy must permit the
-listener and UDP must be reachable. If bootstrap or QUIC is unavailable,
-the CLI says why and falls back to `ssh -t HOST phux attach`: a remote TUI
-with SSH-carried updates, not local rendering or roaming. SSH authentication
-failure or missing remote phux is an error, not a useful fallback.
-Saved `ssh://` routes can attempt the same bootstrap; they do not promise
-SSH-carried data. See the [bootstrap implementation](../crates/phux/src/commands/ssh_bootstrap.rs).
-Manual `phux stdio-bridge` is a separate framed transport, not this fallback.
+An expired code stops new joins but doesn't undo one. To cut off a joined
+satellite, revoke its credential on the hub with `phux workload revoke`, and
+remove it with `phux host rm sandbox`.
 
-**A link instead of SSH access.** On the server machine, `phux pair` prints
-a secret pairing link and QR code. The bearer is displayed once but remains
-reusable until revoked/expired; the enrollment ticket is single-use and
-expires after ten minutes. A displayed QR includes enrollment; scripted or
-piped pairing must request `--enroll` when needed. On a client,
-`phux attach --remote mini --code 'https://phux.sh/connect?...'` registers
-the host from it. This is how the mobile apps will pair.
-
-**A relay.** When neither side can reach the other directly, run
-`phux relay run` somewhere both can reach, give the server a `[[connector]]`
-entry for it, and mint the client's link with `phux pair --relay-route
-NAME`. The relay forwards ciphertext; every connection is TLS end to end
-with the server, inside the relayed stream.
-
-## What is exposed, and to whom
-
-Until you set `[policy] mode = "paired"`, a server accepts connections only
-over its Unix socket; configuring any listener makes it refuse to start.
-`phux host add` sets the mode and binds the QUIC listener for you.
-
-A remote connection must present two things: a client certificate issued by
-the server's own certificate authority, and a bearer token. Both come from
-pairing. The server pins nothing it learns from a connection; the client
-pins the server's authority at pairing time and refuses to connect if it
-changes. Normal remote consumer ingress gets a scoped credential, not
-the owner's authority. Reverse hub links have the stronger trust described
-above. A bearer token admits a connection; it never substitutes for mTLS
-scope.
+## Managing credentials
 
 ```sh
-phux pair ls                 # tokens the server has issued
+phux pair ls                     # tokens this server has issued
 phux pair revoke ID
 phux pair prune --unused-for 30d
-phux workload list           # client certificates
+phux workload list               # enrolled client certificates
 phux workload revoke sha256:...
-phux host renew mini         # replace this machine's certificate before it expires
+phux host renew mini             # replace this machine's certificate
 ```
 
-A CI runner or another person who should list sessions and not type into
-them gets a separate certificate from `phux workload add-key`, not from
-`phux host add` (that ceiling includes input). The steps, the expiry, and
-how to rotate or revoke are in [Host-scoped read keys](./runbooks/host-observe-keys.md).
+Revoking a credential refuses new connections and closes the live ones it
+let in, without a restart. It doesn't stop any program running in a pane.
+Revoke a credential with these commands, not by editing files.
 
-Certificates minted by `host add` last 90 days. Attaching warns, and
-`phux doctor` reports, when one is within two weeks of expiry.
+Removing a machine from your list (`phux host rm`) only forgets it here. It
+doesn't revoke anything on the server.
 
-Files on both sides are listed in [files](./reference/files.md). On the
-client they are the `[[remote]]` entries in `config.toml`, a token file and
-a certificate per host, and `known-authorities` next to the config.
+[File locations](./reference/files.md) lists every credential file on both
+sides.
 
-## Connection authority
-
-The ordinary owner Unix socket is full same-UID authority, not a process
-sandbox. Delegated agent sockets are different: they stamp a narrowed
-principal/session grant even though they are local. Any process of that UID
-can still reach the owner socket; delegation is attribution/least privilege,
-not containment. See [delegated execution](./agents.md#delegated-execution-identity).
-A reverse satellite link deliberately gives its trusted hub owner authority
-on that satellite ([uplink seam](../crates/phux-server/src/uplink.rs)).
-
-For scoped dispatch, preserve requested selectors and credential ceiling
-provenance. Their conjunction is evaluated against the authoritative
-routing topology, not flattened into an admission-time pane list. A group
-move can remove authority immediately and a later move back can restore
-scope matching. Check before existence-disclosing lookup, forwarding,
-mutation or queue insertion; the kind catalog's discovery is not a grant.
-[Policy enforcement](../crates/phux-server/src/policy/enforce.rs) and the
-[group-move tests](../crates/phux-server/src/policy/tests.rs) own this boundary.
-
-Revocation/expiry, removal of the credential, or a ceiling that no longer
-contains its live grant withdraws **existing** connection authority as well
-as future admission. Fence dispatch first, release leases/subscriptions and
-relay state, cancel queued input, then close. This does not kill workloads.
-The [revocation watcher](../crates/phux-server/src/runtime/revocation.rs)
-distinguishes confirmed registry/token verdicts from transient read failures
-and gives broken registry replacement a grace interval; do not replace that
-with stale-good admission or a blanket all-errors-revoke rule. New remote
-admission still uses strict [workload material validation](../crates/phux-server/src/runtime/workload_auth.rs).
-
-Ticket expiry prevents a new join; it does not retract an issued identity.
-Revoke the satellite workload credential on the hub to end its authenticated
-uplink; removing the registered host controls federation membership/routing.
-These are distinct from revoking a consumer pairing bearer or deleting a
-client-side remote entry. Use the relevant generated
-[host](./reference/cli.md#phux-host) and [workload](./reference/cli.md#phux-workload)
-commands, not credential-file edits as an improvised revocation procedure.
-
-## When it does not connect
+## Troubleshooting
 
 `phux doctor` on the server machine checks the listener, the certificate,
-and whether the advertised address is reachable. Common causes:
+and whether the advertised address is reachable.
 
-- **UDP 8788 is filtered.** `host add` reports "is UDP filtered?" and
-  registers an `ssh://` route instead. It can bootstrap direct QUIC or
-  fall back to a remote TUI over SSH as described above. Open the port,
-  or use a relay.
-- **The token was revoked or the authority rotated.** The error names the
-  host and says to run `phux host add NAME` again.
-- **Protocol mismatch.** The error prints the versions both sides speak;
-  update one of them. `ssh HOST phux update` updates the remote binary, and
-  `ssh HOST phux upgrade` restarts a server that is older than the binary
-  already installed there.
+**`no answer within 5s; is UDP filtered?`** `phux host add` couldn't reach
+UDP 8788, so it registered an `ssh://` route instead. Attaching over it
+tries direct QUIC and falls back to a remote TUI over SSH. Open the port, or
+use a relay.
+
+**The token was revoked or the server's certificate authority changed.** The error names
+the machine and says to run `phux host add NAME` again.
+
+**`incompatible protocol`.** The two machines run releases too far apart. The
+error names both versions. `ssh HOST phux update` updates the remote binary,
+and `ssh HOST phux upgrade` moves its running server onto the binary already
+installed there.
+
+More in [Troubleshooting](./troubleshooting.md).

@@ -16,7 +16,7 @@ A Unix socket for local clients. QUIC (one bidirectional stream per
 connection, more with `QUIC_STREAMS`), WebSocket (one binary message per
 frame), or WebTransport for remote ones, all under TLS. Manual
 `phux stdio-bridge` carries frames over SSH stdio; this is not the normal
-[`attach --ssh` bootstrap path](./remote.md#other-ways-in). The frame format
+[`attach --ssh` bootstrap path](./remote.md#attaching-over-ssh). The frame format
 is the same on every transport.
 
 ## Framing
@@ -62,7 +62,7 @@ more, and never for a frame that settles a request.
    patch is admitted; another major gets `ERROR` with
    `VERSION_INCOMPATIBLE` and a close.
 3. The server authorizes the connection ([owner, delegated, or scoped
-   remote authority](./remote.md#connection-authority)) and picks a bootstrap
+   remote authority](./remote.md#who-can-do-what)) and picks a bootstrap
    profile the client offered.
 4. The server replies `HELLO_OK` (`0x80`): its version, `ServerCapabilities`
    (two words of feature bits, `features` and `features_ext`), a server
@@ -345,7 +345,7 @@ details.
 
 Native onboarding is additive inside `NATIVE_AGENT`, gated by its own
 `NATIVE_AGENT_LAUNCH` bit; see
-[ACP onboarding](./acp.md#desktop-onboarding-on-the-connected-host).
+[ACP onboarding](./acp.md#from-the-desktop-app).
 
 - Allocate a new type byte or sub-tag in `wire/frame/mod.rs`; duplicates
   fail to compile.

@@ -98,7 +98,7 @@ agent's own session, 12 hours by default and 24 at most, held in memory
 ([ADR-0163][adr-0163-delegate] §5,
 [ledger](../crates/phux-server/src/delegation.rs),
 [verbs and lifetime][code-delegation]). The live rules are
-[delegated execution](./agents.md#delegated-execution-identity).
+[delegated execution](./agents.md#safety).
 
 Minting or withdrawing that credential requires Terminate on the owner
 socket ([kind rule][code-mint]). A scoped grant never mints
@@ -117,7 +117,7 @@ a local socket. At launch they stay clients (S-D8).
 ### Origin checks
 
 Each server checks scope on its own dispatch
-([connection authority](./remote.md#connection-authority)). A hub's
+([connection authority](./remote.md#who-can-do-what)). A hub's
 admission is not authority on another server. The exception is a reverse
 join: each hub stream is spliced to the satellite's owner socket, so the
 hub holds that server's owner authority

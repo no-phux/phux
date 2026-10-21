@@ -2,7 +2,7 @@
 
 For people changing phux. [Concepts](./concepts.md) is the user-level model;
 [protocol](./protocol.md) is the wire. [Organization](./organization.md) owns
-durable records, activations and restore; [remote authority](./remote.md#connection-authority)
+durable records, activations and restore; [remote authority](./remote.md#who-can-do-what)
 owns grants and revocation; [embedding](./embedding.md#runtime-consumer-contract)
 owns the runtime consumer boundary. [Substrate](./substrate.md) is the org's
 principals, home keeper, and adapters.
@@ -117,9 +117,9 @@ toolkits paint that same list. See [embedding](./embedding.md). `phux-client-ffi
 vocabulary and encodes it twice: `extern "C"` for native embedders, UniFFI
 for Swift and Kotlin.
 
-The [pane identity seam](./desktop-panes.md#classification-and-extension)
+The [pane identity seam](./desktop-panes.md)
 keeps the same classification across cards, tabs, and navigator rows. The
-[Changes panel seam](./desktop-changes.md#implementation-guarantees) keeps
+[Changes panel seam](./desktop-changes.md) keeps
 local Git work off the UI thread and rejects results for a stale folder.
 
 ## Layout stability
@@ -167,7 +167,7 @@ client.
 
 Connection authority is checked on every dispatch, not just at admission.
 The kind catalog classifies each frame; the grant must cover its verbs and
-authoritative subject. [Connection authority](./remote.md#connection-authority)
+authoritative subject. [Connection authority](./remote.md#who-can-do-what)
 distinguishes ordinary owner sockets, delegated sockets, scoped mTLS, live
 revocation and reverse-hub trust. [Agents](./agents.md#safety) owns input
 leases and held approvals; humans retain input priority.
