@@ -4,6 +4,7 @@
 use bytes::Bytes;
 use futures_util::FutureExt;
 use phux_protocol::caps::BootstrapLimits;
+use phux_protocol::wire::decode::newer_server_fallback;
 use phux_protocol::wire::frame::{FrameKind, TYPE_PONG};
 use phux_protocol::wire::framing::{self, FramingError, LENGTH_PREFIX_LEN};
 
@@ -217,24 +218,25 @@ impl Session {
 
 /// Decode one complete, length-checked frame under `limits`.
 ///
-/// `Ok(None)` for a well-framed frame carrying a value this build does not
-/// define (an unknown frame type or enum value from a newer 1.x server): it
-/// is logged and skipped, and the connection stays up. Malformed bytes are a
-/// protocol error.
+/// A frame carrying a value this build does not define (a newer 1.x
+/// server's) reads as [`newer_server_fallback`] says: a correlated reply
+/// becomes an `ERROR` that settles its request, and anything else is logged
+/// and skipped (`Ok(None)`). Malformed bytes are a protocol error.
 pub(super) fn decode_frame(
     frame: &[u8],
     limits: BootstrapLimits,
 ) -> Result<Option<FrameKind>, SessionError> {
-    match FrameKind::decode_with_limits(frame, limits) {
-        Ok((decoded, _rest)) => Ok(Some(decoded)),
-        Err(error) if error.is_unknown_value() => {
-            tracing::warn!(%error, "skipping a server frame this build cannot read");
-            Ok(None)
-        }
-        Err(error) => Err(SessionError::Protocol(format!(
-            "server sent undecodable frame: {error:?}"
-        ))),
+    let error = match FrameKind::decode_with_limits(frame, limits) {
+        Ok((decoded, _rest)) => return Ok(Some(decoded)),
+        Err(error) => error,
+    };
+    let fallback = newer_server_fallback(frame, error).map_err(|error| {
+        SessionError::Protocol(format!("server sent undecodable frame: {error:?}"))
+    })?;
+    if fallback.is_none() {
+        tracing::warn!("skipping a server frame this build cannot read");
     }
+    Ok(fallback)
 }
 
 /// Whether `frame` is the `PONG` answering `nonce`; only a `PONG`-typed

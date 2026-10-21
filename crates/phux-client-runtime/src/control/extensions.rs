@@ -339,6 +339,33 @@ impl ControlPlane {
         true
     }
 
+    /// Settle a pending `LIST_DIRECTORY` answered with a correlated `ERROR`
+    /// (a newer server's `UNSUPPORTED`, or a reply this build cannot read)
+    /// as a failed listing; `false` when `request_id` is not one.
+    pub(super) fn resolve_directory_error(
+        &mut self,
+        request_id: Option<u32>,
+        message: &str,
+    ) -> bool {
+        let Some((request_id, path)) = request_id.and_then(|id| {
+            self.extensions
+                .pending_listings
+                .remove(&id)
+                .map(|path| (id, path))
+        }) else {
+            return false;
+        };
+        let error = DirectoryListingError {
+            path,
+            code: DirectoryErrorCode::Other,
+            message: message.to_owned(),
+        };
+        self.extensions
+            .directory_listings
+            .push(project_listing_error(request_id, error));
+        true
+    }
+
     pub(super) fn resolve_extension_result(
         &mut self,
         pending: &Pending,

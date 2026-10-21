@@ -84,6 +84,17 @@ impl ControlPlane {
             return Ok(());
         }
         match pending {
+            // A correlated `ERROR` (a newer server's `UNSUPPORTED`, or a
+            // reply this build cannot read) refuses the spawn; nothing was
+            // admitted, so it settles like a refused `RESOURCE_SPAWNED`.
+            Pending::Spawn { .. } if error.is_some() => {
+                self.push_event(Event::TerminalSpawned {
+                    request_id,
+                    terminal_id: None,
+                    error,
+                });
+                self.retire_unadmitted_agent_subscriptions();
+            }
             Pending::Spawn { .. } => {
                 return Err(ControlError::Protocol(
                     "spawn request received COMMAND_RESULT instead of RESOURCE_SPAWNED".to_owned(),

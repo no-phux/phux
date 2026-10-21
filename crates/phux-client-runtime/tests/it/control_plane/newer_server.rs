@@ -166,3 +166,77 @@ fn an_unsupported_input_reply_refuses_the_delivery() {
     assert_eq!(outcome(&mut plane, delivery), DeliveryOutcome::Refused);
     assert!(!plane.delivery_fenced(&terminal()));
 }
+
+/// A spawn reply whose id has a shape this build does not know settles the
+/// spawn as failed instead of leaving it pending.
+#[test]
+fn an_unreadable_spawn_reply_settles_the_spawn() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_outbound();
+    let _ = plane.take_events();
+    let request_id = plane.spawn_terminal(SpawnRequest::default());
+    let _ = plane.take_outbound();
+    plane
+        .feed_bytes(&raw(
+            TYPE_RESOURCE_SPAWNED,
+            &[(1, &request_id.to_be_bytes()), (2, &[0x00, 0xFF, 1])],
+        ))
+        .expect("an unreadable reply settles, not fails");
+    assert!(plane.take_events().iter().any(|event| matches!(
+        event,
+        Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
+            if *id == request_id
+    )));
+    assert_eq!(plane.status(), Status::Attached);
+}
+
+fn unsupported(request_id: u32) -> FrameKind {
+    FrameKind::Error {
+        request_id: Some(request_id),
+        code: ErrorCode::Unsupported,
+        message: "a newer server does not know this".into(),
+    }
+}
+
+/// A newer server refuses a request frame it cannot read with a correlated
+/// `ERROR UNSUPPORTED`: the spawn settles as refused, the session stays.
+#[test]
+fn a_spawn_answered_unsupported_settles_as_refused() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_outbound();
+    let _ = plane.take_events();
+    let request_id = plane.spawn_terminal(SpawnRequest::default());
+    let _ = plane.take_outbound();
+    plane
+        .feed(unsupported(request_id))
+        .expect("a correlated UNSUPPORTED is not fatal");
+    assert!(plane.take_events().iter().any(|event| matches!(
+        event,
+        Event::TerminalSpawned { request_id: id, terminal_id: None, error: Some(_) }
+            if *id == request_id
+    )));
+    assert_eq!(plane.status(), Status::Attached);
+}
+
+#[test]
+fn a_directory_listing_answered_unsupported_settles_as_failed() {
+    let mut plane = ControlPlane::new(ControlOptions::default());
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane
+        .feed(hello_ok_with(&[ServerFeature::ListDirectory]))
+        .unwrap();
+    let _ = plane.take_outbound();
+    let request_id = plane.list_directory("/home".into());
+    assert_ne!(request_id, 0);
+    plane
+        .feed(unsupported(request_id))
+        .expect("a correlated UNSUPPORTED is not fatal");
+    let listings = plane.take_directory_listings();
+    assert_eq!(listings.len(), 1);
+    assert_eq!(listings[0].request_id, request_id);
+    assert_eq!(listings[0].path, "/home");
+    assert!(listings[0].error.is_some());
+}

@@ -338,7 +338,10 @@ impl ControlPlane {
         code: ErrorCode,
         message: String,
     ) -> Result<(), ControlError> {
-        if code != ErrorCode::VersionIncompatible && self.resolve_path_error(request_id, &message) {
+        if code != ErrorCode::VersionIncompatible
+            && (self.resolve_path_error(request_id, &message)
+                || self.resolve_directory_error(request_id, &message))
+        {
             return Ok(());
         }
         if let Some(id) = request_id

@@ -2,6 +2,7 @@
 
 use bytes::Bytes;
 use phux_protocol::wire::DecodeError;
+use phux_protocol::wire::decode::newer_server_fallback;
 
 use super::{AgentEvent, ControlError, ControlPlane, EngineEvent, Event, FrameKind};
 
@@ -9,20 +10,36 @@ mod classify;
 
 use classify::{ClassifiedFrame, classify_engine_frame};
 
-/// A decoded frame, `None` for a well-framed one carrying a value this build
-/// does not define (logged and skipped: a newer 1.x server may send it), or
-/// the protocol error malformed bytes are.
-fn skip_unknown_value<T>(decoded: Result<T, DecodeError>) -> Result<Option<T>, ControlError> {
-    match decoded {
-        Ok(decoded) => Ok(Some(decoded)),
-        Err(error) if error.is_unknown_value() => {
-            tracing::warn!(%error, "skipping a server frame this build cannot read");
+/// A decoded frame. For one that did not decode, what a newer 1.x server's
+/// value reads as ([`newer_server_fallback`]): a correlated reply becomes an
+/// `ERROR` settling its request, anything else is logged and skipped
+/// (`None`); malformed bytes are a protocol error.
+fn decoded_or_fallback<T>(
+    bytes: &[u8],
+    decoded: Result<(FrameKind, T), DecodeError>,
+) -> Result<Option<(FrameKind, Option<T>)>, ControlError> {
+    let error = match decoded {
+        Ok((frame, tail)) => return Ok(Some((frame, Some(tail)))),
+        Err(error) => error,
+    };
+    match newer_server_fallback(bytes, error) {
+        Ok(Some(settled)) => {
+            tracing::warn!("settling a server reply this build cannot read");
+            Ok(Some((settled, None)))
+        }
+        Ok(None) => {
+            tracing::warn!("skipping a server frame this build cannot read");
             Ok(None)
         }
         Err(error) => Err(ControlError::Protocol(format!(
             "invalid protocol frame: {error}"
         ))),
     }
+}
+
+/// Whether a decode left bytes after its frame.
+fn has_trailing_bytes(tail: Option<&[u8]>) -> bool {
+    tail.is_some_and(|tail| !tail.is_empty())
 }
 
 const fn allowed_before_handshake(frame: &FrameKind) -> bool {
@@ -152,10 +169,10 @@ impl ControlPlane {
             || FrameKind::decode(bytes),
             |limits| FrameKind::decode_with_limits(bytes, limits),
         );
-        let Some((frame, tail)) = skip_unknown_value(decoded)? else {
+        let Some((frame, tail)) = decoded_or_fallback(bytes, decoded)? else {
             return Ok(None);
         };
-        if !tail.is_empty() {
+        if has_trailing_bytes(tail) {
             return Err(ControlError::Protocol(
                 "protocol message contained trailing bytes".to_owned(),
             ));
@@ -167,10 +184,10 @@ impl ControlPlane {
     /// bytes alias that buffer instead of being copied.
     fn decode_shared_frame(&self, bytes: &Bytes) -> Result<Option<FrameKind>, ControlError> {
         let decoded = FrameKind::decode_shared(bytes, self.decode_limits());
-        let Some((frame, tail)) = skip_unknown_value(decoded)? else {
+        let Some((frame, tail)) = decoded_or_fallback(bytes, decoded)? else {
             return Ok(None);
         };
-        if !tail.is_empty() {
+        if has_trailing_bytes(tail.as_deref()) {
             return Err(ControlError::Protocol(
                 "protocol message contained trailing bytes".to_owned(),
             ));

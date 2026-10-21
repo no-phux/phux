@@ -39,10 +39,11 @@ pub unsafe extern "C" fn phux_client_feed_frame(
     }
 }
 
-/// Decode one complete server frame. `Ok(None)` for a well-framed frame
-/// carrying a value this build does not define (a newer 1.x server's frame
-/// type or enum value): it is logged and skipped, and the session stays up.
-/// Malformed bytes are a protocol error.
+/// Decode one complete server frame. A frame carrying a value this build does
+/// not define (a newer 1.x server's frame type or enum value) is a correlated
+/// `ERROR` settling its request when it is a reply, else `Ok(None)`: logged
+/// and skipped, and the session stays up. Malformed bytes are a protocol
+/// error.
 pub(super) fn decode_inbound_frame(
     client: &Client,
     data: &[u8],
@@ -67,11 +68,16 @@ fn decode_inbound_frame_with_limits(
 ) -> Result<Option<FrameKind>, BridgeError> {
     let (frame, tail) = match FrameKind::decode_with_limits(data, limits) {
         Ok(decoded) => decoded,
-        Err(error) if error.is_unknown_value() => {
-            tracing::warn!(%error, "skipping a server frame this build cannot read");
-            return Ok(None);
+        // A correlated reply settles its request as an `ERROR`; any other
+        // newer-server frame is skipped.
+        Err(error) => {
+            let fallback = phux_protocol::wire::decode::newer_server_fallback(data, error)
+                .map_err(|error| BridgeError::protocol(error.to_string()))?;
+            if fallback.is_none() {
+                tracing::warn!("skipping a server frame this build cannot read");
+            }
+            return Ok(fallback);
         }
-        Err(error) => return Err(BridgeError::protocol(error.to_string())),
     };
     if !tail.is_empty() {
         return Err(BridgeError::protocol(
