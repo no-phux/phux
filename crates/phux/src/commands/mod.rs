@@ -279,6 +279,7 @@ pub(crate) mod logs;
 pub(crate) mod ls;
 pub(crate) mod mcp;
 pub(crate) mod mission;
+pub(crate) mod mission_project;
 pub(crate) mod mission_start;
 pub(crate) mod new;
 pub(crate) mod org;
@@ -432,11 +433,9 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             coord::MailAction::Read { .. } => Some("mail read"),
             coord::MailAction::Ack { .. } => Some("mail ack"),
         },
-        Command::Mission { action } => match action {
-            Some(MissionAction::Keeper { .. }) => Some("mission keeper"),
-            Some(MissionAction::Start { .. } | MissionAction::Add { start: true, .. }) => None,
-            _ => Some("mission"),
-        },
+        // Every verb starts the keeper, which watches this server, and
+        // `start` / `add --start` dial it. `--socket` names that server.
+        Command::Mission { .. } => None,
         // Capture talks to the ideas endpoint, never the phux server socket.
         Command::Idea { .. } => Some("idea"),
         _ => None,
@@ -1394,10 +1393,11 @@ pub(crate) enum Command {
     /// Track tasks in the local work store
     ///
     /// `list`, `show`, `edit`, `archive`, `restore`, and `keeper` call the
-    /// work store's keeper, which `phux mission` starts on demand, and do
-    /// not contact a phux server. `start` and `add --start` also dial the
-    /// phux server to create the worktree session and launch the agent.
-    /// With no subcommand, prints this help.
+    /// work store's keeper, which `phux mission` starts on demand. The keeper
+    /// watches the phux server and projects each bound agent's state into
+    /// the task. `start` and `add --start` dial the phux server to create
+    /// the worktree session and launch the agent. With no subcommand, prints
+    /// this help.
     ///
     /// `--json` prints a document whose `schema` is `phux.mission/v1`.
     /// Exit status: 0 success; 1 the task is missing, the revision is stale,

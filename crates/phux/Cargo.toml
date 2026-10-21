@@ -174,6 +174,8 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # JSON Schema validator. Default features pull an HTTP resolver this
 # schema does not use.
 jsonschema = { version = "0.33", default-features = false }
+# Read-only inspection of the work store while the keeper holds its lock.
+rusqlite.workspace = true
 # The update tests sign fake releases the way the minisign CLI does (Ed25519
 # over a BLAKE2b-512 prehash), so the real verifier runs on every update path.
 # `ring` is already locked (rustls, quinn, rcgen); `blake2` is one dev-only

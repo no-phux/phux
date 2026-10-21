@@ -15,7 +15,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use phux_work::{
-    AddObjective, Client, Endpoint, Error, KeeperExit, ListFilter, OperationId, run_keeper,
+    AddObjective, Client, Endpoint, Error, KeeperExit, ListFilter, ObjectiveState, OperationId,
+    StateEdit, run_keeper,
 };
 
 fn endpoint(root: &Path) -> Endpoint {
@@ -203,6 +204,57 @@ fn fenced_leases_cross_the_keeper_without_losing_mutation_preconditions() {
     assert_eq!(client.release_claim(cleanup).expect("stale cleanup"), 0);
     assert_eq!(client.claims(ClaimFilter::default()).expect("live"), next);
     keeper.join().expect("join").expect("keeper");
+}
+
+#[test]
+fn the_keeper_stays_up_while_work_is_open_and_exits_once_it_is_not() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let endpoint = endpoint(root.path());
+    let idle = Duration::from_millis(300);
+    let keeper = {
+        let endpoint = endpoint.clone();
+        thread::spawn(move || run_keeper(&endpoint, idle))
+    };
+    wait_for_socket(&endpoint);
+    let client = Client::new(endpoint.clone(), None);
+    let added = client.add(add("phux", "open")).expect("add");
+    client
+        .record_state(StateEdit {
+            alias: added.objective.alias.clone(),
+            state: ObjectiveState::Working,
+            expected_revision: added.objective.revision,
+            operation_id: OperationId::generate().expect("id"),
+            actor: "tester".to_owned(),
+            event_kind: None,
+        })
+        .expect("working");
+    thread::sleep(idle + Duration::from_millis(200));
+    assert!(
+        endpoint.socket.exists(),
+        "a working task keeps the keeper up"
+    );
+    assert_eq!(
+        client
+            .show(added.objective.alias.clone())
+            .expect("show")
+            .state,
+        ObjectiveState::Working
+    );
+    let shown = client.show(added.objective.alias).expect("show");
+    client
+        .record_state(StateEdit {
+            alias: shown.alias,
+            state: ObjectiveState::DoneUnchecked,
+            expected_revision: shown.revision,
+            operation_id: OperationId::generate().expect("id"),
+            actor: "tester".to_owned(),
+            event_kind: Some("done_unchecked".to_owned()),
+        })
+        .expect("done");
+    assert_eq!(
+        keeper.join().expect("join").expect("keeper"),
+        KeeperExit::Idle
+    );
 }
 
 #[test]

@@ -17,7 +17,7 @@ use crate::coord::{
 use crate::error::Error;
 use crate::id::Alias;
 use crate::service::Endpoint;
-use crate::start::{StartApplied, StartPlan, StartRequest};
+use crate::start::{LaunchQueued, OpenRun, StartApplied, StartPlan, StartRequest};
 use crate::store::{
     AddObjective, Applied, EditObjective, ListFilter, Objective, RaiseSignal, RevisionEdit, Signal,
     StateEdit,
@@ -217,6 +217,45 @@ impl Client {
     pub fn commit_start(&self, request: StartRequest) -> Result<StartApplied, Error> {
         match self.call(Request::CommitStart(request))? {
             Response::StartApplied(applied) => Ok(applied),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Live runs, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn open_runs(&self) -> Result<Vec<OpenRun>, Error> {
+        match self.call(Request::OpenRuns)? {
+            Response::OpenRuns(runs) => Ok(runs),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Admit a queued run. See [`crate::Store::launch_queued`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`], plus [`Error::AtCapacity`].
+    pub fn launch_queued(&self, request: LaunchQueued) -> Result<StartApplied, Error> {
+        match self.call(Request::LaunchQueued(request))? {
+            Response::StartApplied(applied) => Ok(applied),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// The stored promotion when `operation_id` was already admitted.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn replay_launch(
+        &self,
+        operation_id: crate::id::OperationId,
+    ) -> Result<Option<StartApplied>, Error> {
+        match self.call(Request::ReplayLaunch { operation_id })? {
+            Response::StartReplay(applied) => Ok(applied),
             other => Err(unexpected(&other)),
         }
     }

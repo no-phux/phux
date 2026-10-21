@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://phux.dev/schema/phux.mission.v1.schema.json",
   "title": "phux.mission/v1",
-  "description": "JSON documents printed by `phux mission --json`. Every document carries schema phux.mission/v1. A task alias is the full repo/n form, such as phux/3. State needs_you is the needs-you state.",
+  "description": "JSON documents printed by `phux mission --json`. Every document carries schema phux.mission/v1. A task alias is the full repo/n form, such as phux/3. State needs_you is the needs-you state. done_unchecked, done, and failed are additive task states; done is reserved for merge cleanup.",
   "oneOf": [
     { "$ref": "#/definitions/list" },
     { "$ref": "#/definitions/show" },
@@ -50,7 +50,7 @@
           "type": "string"
         },
         "state": {
-          "enum": ["todo", "working", "queued", "needs_you"]
+          "enum": ["todo", "working", "queued", "needs_you", "done_unchecked", "done", "failed"]
         },
         "revision": {
           "type": "integer",

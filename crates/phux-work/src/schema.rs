@@ -1,11 +1,17 @@
-//! Schema v1. `PRAGMA user_version` is 1 after a successful open.
+//! Schema v2. `PRAGMA user_version` is 2 after a successful open.
+//!
+//! Version 2 is a marker for the objective states `done_unchecked`, `done`,
+//! and `failed`. It adds no tables. A binary that only knows version 1
+//! refuses the file at open with [`Error::UnsupportedSchema`] instead of
+//! reading one of those rows as corrupt. Additive tables (mail, claims,
+//! launch intent) still do not bump `user_version`.
 
 use rusqlite::{Connection, Transaction};
 
 use crate::error::Error;
 
-/// The only `user_version` this binary reads or writes.
-pub(crate) const USER_VERSION: i64 = 1;
+/// The newest `user_version` this binary reads or writes.
+pub(crate) const USER_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS objective (
@@ -73,7 +79,11 @@ CREATE TABLE IF NOT EXISTS event (
 );
 ";
 
-pub(crate) fn prepare(conn: &Connection) -> Result<(), Error> {
+/// Open `conn` for a binary whose newest readable version is `supported`.
+///
+/// Production passes [`USER_VERSION`]. A test passes `1` to simulate the
+/// previous binary, which refuses a version-2 file at open.
+pub(crate) fn prepare_supported(conn: &Connection, supported: i64) -> Result<(), Error> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     // WAL so a reader does not block the writer. FULL makes the commit
@@ -89,22 +99,53 @@ pub(crate) fn prepare(conn: &Connection) -> Result<(), Error> {
         0 => {
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(SCHEMA)?;
+            set_user_version(&tx, supported)?;
+            tx.commit()?;
+        }
+        // Marker only: the new objective states add no tables. The stamp
+        // makes a version-1 binary refuse the file at open.
+        1 if supported >= USER_VERSION => {
+            let tx = conn.unchecked_transaction()?;
             set_user_version(&tx, USER_VERSION)?;
             tx.commit()?;
         }
-        USER_VERSION => {}
+        found if found == supported => {}
         found => {
-            return Err(Error::UnsupportedSchema {
-                found,
-                supported: USER_VERSION,
-            });
+            return Err(Error::UnsupportedSchema { found, supported });
         }
     }
-    // Additive tables leave `user_version` alone, so an older binary still
-    // opens the store and ignores them.
+    // Additive tables leave `user_version` alone, so a binary that predates
+    // them still opens the store and ignores them.
     conn.execute_batch(crate::coord::SCHEMA)?;
+    conn.execute_batch(LAUNCH_INTENT)?;
     Ok(())
 }
+
+/// Install the pre-marker schema and stamp `user_version` 1.
+///
+/// # Errors
+///
+/// [`Error::Sqlite`] when the statements cannot be applied.
+#[cfg(test)]
+pub(crate) fn install_version_one(conn: &Connection) -> Result<(), Error> {
+    conn.execute_batch(SCHEMA)?;
+    conn.execute_batch(crate::coord::SCHEMA)?;
+    conn.execute_batch(LAUNCH_INTENT)?;
+    conn.pragma_update(None, "user_version", 1)?;
+    Ok(())
+}
+
+/// Facts a queued run needs when a slot frees. Additive: no `user_version` bump.
+const LAUNCH_INTENT: &str = "
+CREATE TABLE IF NOT EXISTS launch_intent (
+    run_id BLOB NOT NULL PRIMARY KEY REFERENCES run(id),
+    model TEXT NOT NULL,
+    max_agents INTEGER NOT NULL CHECK (max_agents >= 1),
+    worktree_path TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    repo_root TEXT NOT NULL
+);
+";
 
 pub(crate) fn user_version(conn: &Connection) -> Result<i64, Error> {
     conn.pragma_query_value(None, "user_version", |row| row.get(0))

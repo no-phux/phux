@@ -2409,9 +2409,10 @@ Global flags:
 Track tasks in the local work store
 
 `list`, `show`, `edit`, `archive`, `restore`, and `keeper` call the work store's
-keeper, which `phux mission` starts on demand, and do not contact a phux server.
-`start` and `add --start` also dial the phux server to create the worktree
-session and launch the agent. With no subcommand, prints this help.
+keeper, which `phux mission` starts on demand. The keeper watches the phux
+server and projects each bound agent's state into the task. `start` and `add
+--start` dial the phux server to create the worktree session and launch the
+agent. With no subcommand, prints this help.
 
 `--json` prints a document whose `schema` is `phux.mission/v1`. Exit status: 0
 success; 1 the task is missing, the revision is stale, the operation id was
@@ -2434,6 +2435,9 @@ Commands:
 
 Flags:
   -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission add`
@@ -2462,6 +2466,10 @@ Flags:
                                   empty and stderr carries one JSON error
                                   object.
   -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux mission archive`
@@ -2483,6 +2491,9 @@ Flags:
                                the human view. On failure, stdout stays empty
                                and stderr carries one JSON error object.
   -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission edit`
@@ -2507,6 +2518,10 @@ Flags:
                                   empty and stderr carries one JSON error
                                   object.
   -h, --help                      Print help
+
+Global flags:
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux mission keeper`
@@ -2515,14 +2530,22 @@ Flags:
 Run the keeper that writes the work store
 
 The one process that opens this state directory's work store. The other verbs
-start it on demand, so it rarely needs running by hand. It exits after
-`--idle-exit` seconds without a request.
+start it on demand, so it rarely needs running by hand. While a task is working
+or queued, the keeper stays up and projects that task's agent into its state. It
+exits after `--idle-exit` seconds without a request only when nothing is working
+or queued.
 
-Usage: phux mission keeper [--idle-exit <SECS>]
+Usage: phux mission keeper [--idle-exit <SECS>] [--server-socket <PATH>]
 
 Flags:
-      --idle-exit <SECS>  Seconds without a request before exiting. Default 600.
-  -h, --help              Print help
+      --idle-exit <SECS>      Seconds without a request before exiting, when no
+                              task is working or queued. Default 600.
+      --server-socket <PATH>  phux server socket to project from. Defaults to
+                              `PHUX_SOCKET`, then this profile's socket.
+  -h, --help                  Print help
+
+Global flags:
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission list`
@@ -2539,6 +2562,9 @@ Flags:
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
   -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission restore`
@@ -2560,6 +2586,9 @@ Flags:
                                the human view. On failure, stdout stays empty
                                and stderr carries one JSON error object.
   -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission show`
@@ -2577,6 +2606,9 @@ Flags:
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
   -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mission start`
@@ -2600,6 +2632,9 @@ Flags:
                                the human view. On failure, stdout stays empty
                                and stderr carries one JSON error object.
   -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mv`

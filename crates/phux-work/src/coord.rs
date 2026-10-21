@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn an_older_binary_still_opens_a_store_with_coordination_tables() {
         let (dir, store) = store();
-        assert_eq!(store.user_version().unwrap(), 1);
+        assert_eq!(store.user_version().unwrap(), 2);
         drop(store);
         let conn =
             rusqlite::Connection::open(dir.path().join("work").join("work-v1.sqlite")).unwrap();
