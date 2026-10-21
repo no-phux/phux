@@ -35,8 +35,8 @@ planned in-place handoff, not a cold stop/start; confirm the new settings
 and [remote authority](./remote.md#connection-authority) afterwards.
 The [TUI settings/tests](../crates/phux-tui/src/settings.rs),
 [reload adoption](../crates/phux-tui/src/attach/driver/config_ui.rs),
-[server startup](../crates/phux-server/src/runtime/mod.rs) and
-[link doorbell](../crates/phux-server/src/runtime/client.rs) define the boundaries.
+[server startup](../crates/phux-server/src/runtime/server/serve.rs) and
+[link doorbell](../crates/phux-server/src/runtime/connections/metadata_mutation.rs) define the boundaries.
 
 ## Keys
 

@@ -94,9 +94,7 @@ async fn a_send_posts_the_content_free_notice_with_the_grant_as_bearer() {
         grant: "0123456789abcdef".to_owned(),
         host: "mini".to_owned(),
     };
-    let status = send(&target, &Notice::ask("local:7".to_owned(), "q1"))
-        .await
-        .expect("sent");
+    let status = send(&target, "local:7", "q1").await.expect("sent");
     assert_eq!(status, 202);
     let request = captured.join().expect("gateway thread");
     assert!(
@@ -114,30 +112,6 @@ async fn a_send_posts_the_content_free_notice_with_the_grant_as_bearer() {
         json.get("text").is_none(),
         "no question text leaves the host"
     );
-}
-
-/// An opted-in reply carries its bounded text and title and says it is a
-/// reply; an ask's body stays content-free.
-#[test]
-fn a_reply_notice_carries_bounded_text_and_an_ask_carries_none() {
-    let long = "é".repeat(MAX_REPLY_TEXT_BYTES);
-    let reply = crate::resource::agent_session::StreamReply {
-        turn_id: "t9".to_owned(),
-        text: format!("  {long}  "),
-        title: Some("Chief".to_owned()),
-    };
-    let body = Notice::reply("local:3".to_owned(), "t9".to_owned(), &reply).body("mini");
-    assert_eq!(body["kind"], "reply");
-    assert_eq!(body["question"], "t9");
-    assert_eq!(body["pane"], "local:3");
-    assert_eq!(body["title"], "Chief");
-    let text = body["text"].as_str().expect("text");
-    assert!(text.len() <= MAX_REPLY_TEXT_BYTES, "{}", text.len());
-    assert!(text.ends_with('…') && text.starts_with('é'));
-
-    let ask = Notice::ask("local:3".to_owned(), "q1").body("mini");
-    assert!(ask.get("text").is_none() && ask.get("kind").is_none());
-    assert_eq!(bounded(" short ", 16), "short");
 }
 
 #[test]

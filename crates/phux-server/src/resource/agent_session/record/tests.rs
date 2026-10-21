@@ -112,37 +112,6 @@ fn state_derivation_follows_adr_0103() {
     }
 }
 
-/// Only a `stop` that names a non-blank reply asks for a reply push.
-#[test]
-fn a_reply_is_an_opt_in_on_stop_only() {
-    let reply = |line: &str| one(line).expect("valid").reply();
-    assert_eq!(
-        reply(
-            r#"{"type":"stop","data":{"reply":"done: 3 PRs","turn_id":"t1","reply_title":"Chief"}}"#
-        ),
-        Some(StreamReply {
-            turn_id: "t1".to_owned(),
-            text: "done: 3 PRs".to_owned(),
-            title: Some("Chief".to_owned()),
-        })
-    );
-    assert_eq!(
-        reply(r#"{"type":"stop","data":{"reply":"ok","reply_title":" "}}"#),
-        Some(StreamReply {
-            turn_id: String::new(),
-            text: "ok".to_owned(),
-            title: None,
-        })
-    );
-    assert_eq!(reply(r#"{"type":"stop","data":{}}"#), None);
-    assert_eq!(reply(r#"{"type":"stop","data":{"reply":"  "}}"#), None);
-    assert_eq!(reply(r#"{"type":"stop","data":{"reply":7}}"#), None);
-    assert_eq!(
-        reply(r#"{"type":"provider_raw","data":{"reply":"not a stop"}}"#),
-        None
-    );
-}
-
 #[test]
 fn stamping_is_canonical_and_ignores_producer_seq_and_time() {
     let record =
