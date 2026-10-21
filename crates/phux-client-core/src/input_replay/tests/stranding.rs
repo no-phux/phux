@@ -209,6 +209,30 @@ fn verdicts_mirror_the_reference_classification() {
             },
             ReplayDisposition::Unknown,
         ),
+        // The server did not understand the command: nothing happened.
+        (
+            CommandResult::Error {
+                code: ErrorCode::Unsupported,
+                message: "unknown enum value".to_owned(),
+            },
+            ReplayDisposition::Refused,
+        ),
+        // A newer server's code may mean the write landed.
+        (
+            CommandResult::Error {
+                code: ErrorCode::Unknown(299),
+                message: "a code from a newer server".to_owned(),
+            },
+            ReplayDisposition::Unknown,
+        ),
+        // The server answered with a value this build cannot read.
+        (
+            CommandResult::Error {
+                code: ErrorCode::UNREADABLE_REPLY,
+                message: "reply carried an unknown CommandValue tag 0xee".to_owned(),
+            },
+            ReplayDisposition::Unknown,
+        ),
     ] {
         let mut journal = armed_journal();
         submit(&mut journal, tid(1), paste("x")).expect("queue");
@@ -221,7 +245,11 @@ fn verdicts_mirror_the_reference_classification() {
 
 #[test]
 fn ordinary_error_on_a_retry_never_claims_safe_to_retype() {
-    for code in [ErrorCode::ResourceExhausted, ErrorCode::InputNotWritten] {
+    for code in [
+        ErrorCode::ResourceExhausted,
+        ErrorCode::InputNotWritten,
+        ErrorCode::Unsupported,
+    ] {
         let mut journal = armed_journal();
         submit(&mut journal, tid(1), paste("x")).expect("queue");
         let mut next = 1;

@@ -221,6 +221,11 @@ pub(super) fn strand_report(op: &PendingOp, message: &str) -> ReplayReport {
     }
 }
 
+/// A first attempt's error verdict. `UNSUPPORTED` is a refusal: the server
+/// did not understand the command, so nothing happened. A code this build
+/// does not know (`Unknown`, including the client's own
+/// [`ErrorCode::UNREADABLE_REPLY`]) stays unknown: a newer server's code may
+/// mean the write landed, and an unreadable answer is still an answer.
 pub(super) const fn error_disposition(code: ErrorCode, attempts: u32) -> ReplayDisposition {
     if attempts > 1 {
         return ReplayDisposition::Unknown;
@@ -236,7 +241,8 @@ pub(super) const fn error_disposition(code: ErrorCode, attempts: u32) -> ReplayD
         | ErrorCode::InputLeaseHeld
         | ErrorCode::CanonicalLimitExceeded
         | ErrorCode::InputNotWritten
-        | ErrorCode::WrongResourceKind => ReplayDisposition::Refused,
+        | ErrorCode::WrongResourceKind
+        | ErrorCode::Unsupported => ReplayDisposition::Refused,
         _ => ReplayDisposition::Unknown,
     }
 }
