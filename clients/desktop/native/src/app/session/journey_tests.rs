@@ -5,6 +5,7 @@ mod agent_stream;
 mod capture;
 mod federation;
 mod identity;
+mod killing;
 mod layouts;
 mod window_transfer;
 
