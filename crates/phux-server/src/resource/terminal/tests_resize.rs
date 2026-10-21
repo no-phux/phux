@@ -527,6 +527,105 @@ fn drain_resync_dims(out: &mut tokio::sync::broadcast::Receiver<PaneOutput>) -> 
     dims
 }
 
+/// A cell-pixel change at the settled grid updates winsize and the input
+/// encoder, and publishes no resync. Text did not reflow; a snapshot would
+/// replace a scrolled client with the live screen and retire history cursors.
+#[tokio::test(flavor = "current_thread")]
+async fn pixel_only_resize_updates_winsize_without_resync() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let bundle = TerminalActor::new_with_command(CommandBuilder::new("/bin/cat"), 80, 24)
+                .expect("spawn");
+            let master = std::sync::Arc::clone(&bundle.actor.pty.as_ref().expect("pty").master);
+            let handle = bundle.handle.clone();
+            let mut out = handle.output.subscribe();
+            let token = bundle.token;
+            let join = tokio::task::spawn_local(bundle.actor.run());
+
+            handle
+                .terminal()
+                .expect("terminal facet")
+                .resize
+                .send(ResizeRequest {
+                    cols: 80,
+                    rows: 24,
+                    cell_px: Some((9, 18)),
+                    resync_clients: true,
+                    resync_only: false,
+                    resync_for: None,
+                })
+                .await
+                .expect("send pixel-only resize");
+
+            let want = (80, 24, 720, 432);
+            let read = || {
+                let got = master
+                    .lock()
+                    .expect("master lock")
+                    .get_size()
+                    .expect("size");
+                (got.cols, got.rows, got.pixel_width, got.pixel_height)
+            };
+            for _ in 0..200 {
+                if read() == want {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                read(),
+                want,
+                "pixel-only resize must reach the kernel winsize"
+            );
+            assert_eq!(
+                handle
+                    .terminal()
+                    .expect("terminal facet")
+                    .input_snapshot
+                    .borrow()
+                    .cell_px,
+                (9, 18),
+                "mouse encoding must see the new cell size",
+            );
+            tokio::task::yield_now().await;
+            tokio::time::sleep(RESIZE_RESYNC_DEBOUNCE * 4).await;
+            assert_eq!(
+                drain_resync_dims(&mut out),
+                Vec::new(),
+                "a cell-size change at the same grid must not resync clients",
+            );
+
+            handle
+                .terminal()
+                .expect("terminal facet")
+                .resize
+                .send(ResizeRequest {
+                    cols: 40,
+                    rows: 10,
+                    cell_px: None,
+                    resync_clients: true,
+                    resync_only: false,
+                    resync_for: None,
+                })
+                .await
+                .expect("send real resize");
+            tokio::time::sleep(RESIZE_RESYNC_DEBOUNCE * 4).await;
+            assert_eq!(
+                drain_resync_dims(&mut out),
+                vec![(40, 10)],
+                "a resize that changes the grid must still resync",
+            );
+
+            token.cancel();
+            tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
+                .await
+                .expect("actor did not exit after cancel")
+                .expect("actor task panicked");
+        })
+        .await;
+}
+
 /// A resize repeating the settled geometry publishes no resync (it would
 /// rotate the bootstrap generation for nothing); a real one still does.
 #[tokio::test(flavor = "current_thread", start_paused = true)]

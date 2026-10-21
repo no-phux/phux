@@ -279,7 +279,12 @@ async fn sigwinch_reasserts_pane_targets_when_host_cells_are_unchanged() {
     let _ = frames_sent(&mut client, &mut server).await;
     let host = current_viewport_or_default();
     state.viewport_dims = (host.cols.max(1), host.rows.max(1));
+    out.clear();
     state.on_resize(&mut client, &mut out, None).await.unwrap();
+    assert!(
+        !out.windows(4).any(|seq| seq == b"\x1b[2J"),
+        "a same-grid resize must keep the screen; the server sends no resync to refill it: {out:?}"
+    );
     let content = state.content(None);
     let sent = frames_sent(&mut client, &mut server).await;
     assert!(
