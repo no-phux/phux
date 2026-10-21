@@ -51,7 +51,7 @@ fn pre_hello_frames_are_refused_before_body_decode() {
         Err(Undispatched::Close(close)) => Some(close.code),
         Err(Undispatched::Refuse(refusal)) => panic!("refused, not closed: {refusal:?}"),
     };
-    assert_eq!(code(&attached), Some(ErrorCode::VersionIncompatible));
+    assert_eq!(code(&attached), Some(ErrorCode::MalformedMessage));
 
     let mut ping = BytesMut::new();
     FrameKind::Ping { nonce: 1 }.encode(&mut ping);

@@ -7,6 +7,12 @@
 //! `UNSUPPORTED` correlated by its `request_id`. Bytes appended to a field
 //! value and unknown field ids are skipped. Each case then proves the
 //! connection still works. Only truly malformed bytes still close it.
+//! The sibling `newer_client_*` suites reuse this file's frame helpers.
+
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "`unreachable_pub` demands pub(crate) in a test-binary module"
+)]
 
 use std::time::Duration;
 
@@ -26,7 +32,7 @@ use phux_server_testkit::{
 };
 
 /// A framed message of `type_byte` with these TLV fields, in order.
-fn raw_frame(type_byte: u8, fields: &[(u32, &[u8])]) -> Vec<u8> {
+pub(crate) fn raw_frame(type_byte: u8, fields: &[(u32, &[u8])]) -> Vec<u8> {
     let mut body = BytesMut::new();
     let mut enc = Encoder::new(&mut body);
     enc.write_u8(type_byte);
@@ -39,7 +45,7 @@ fn raw_frame(type_byte: u8, fields: &[(u32, &[u8])]) -> Vec<u8> {
 }
 
 /// The `COMMAND` field (id 2) this build writes for `command`.
-fn command_body(command: Command) -> Vec<u8> {
+pub(crate) fn command_body(command: Command) -> Vec<u8> {
     let bytes = encode_frame(&FrameKind::Command {
         request_id: 0,
         command,
@@ -54,17 +60,17 @@ fn command_body(command: Command) -> Vec<u8> {
 }
 
 /// A `COMMAND` with `request_id` and this raw command body.
-fn raw_command(request_id: u32, body: &[u8]) -> Vec<u8> {
+pub(crate) fn raw_command(request_id: u32, body: &[u8]) -> Vec<u8> {
     raw_frame(TYPE_COMMAND, &[(1, &request_id.to_be_bytes()), (2, body)])
 }
 
-async fn send_raw(stream: &mut UnixStream, bytes: &[u8]) {
+pub(crate) async fn send_raw(stream: &mut UnixStream, bytes: &[u8]) {
     stream.write_all(bytes).await.unwrap();
     stream.flush().await.unwrap();
 }
 
 /// The connection is still open and dispatching: a `PING` gets its `PONG`.
-async fn assert_usable(stream: &mut UnixStream, nonce: u64) {
+pub(crate) async fn assert_usable(stream: &mut UnixStream, nonce: u64) {
     let ping = raw_frame(TYPE_PING, &[(1, &nonce.to_be_bytes())]);
     send_raw(stream, &ping).await;
     recv_until(stream, |_, frame| match frame {
@@ -76,7 +82,7 @@ async fn assert_usable(stream: &mut UnixStream, nonce: u64) {
 }
 
 /// The next uncorrelated `ERROR`.
-async fn next_error(stream: &mut UnixStream) -> (ErrorCode, String) {
+pub(crate) async fn next_error(stream: &mut UnixStream) -> (ErrorCode, String) {
     recv_until(stream, |_, frame| match frame {
         FrameKind::Error {
             request_id: None,
@@ -88,7 +94,7 @@ async fn next_error(stream: &mut UnixStream) -> (ErrorCode, String) {
     .await
 }
 
-fn assert_unsupported(result: &CommandResult) {
+pub(crate) fn assert_unsupported(result: &CommandResult) {
     assert!(
         matches!(
             result,

@@ -293,7 +293,7 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
             ),
             (
                 vec![attach_by_name("default")],
-                ErrorCode::VersionIncompatible,
+                ErrorCode::MalformedMessage,
                 vec![],
             ),
             (
@@ -357,7 +357,7 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
         assert!(matches!(
             recv_typed(&mut stream).await.1,
             FrameKind::Error {
-                code: ErrorCode::VersionIncompatible,
+                code: ErrorCode::MalformedMessage,
                 ..
             }
         ));

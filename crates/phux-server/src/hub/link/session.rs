@@ -334,7 +334,7 @@ pub(super) async fn handle_relay_inbound<R: LinkReader>(
 ) -> Result<(), String> {
     match inbound {
         Ok(Some(frame)) => {
-            session.handle_inbound(&frame)?;
+            handle_satellite_frame(session, &frame)?;
             queue_link_write(
                 write_tx,
                 queued_write_bytes,
@@ -349,6 +349,41 @@ pub(super) async fn handle_relay_inbound<R: LinkReader>(
             Err(error)
         }
     }
+}
+
+/// Dispatch one satellite frame. A newer 1.x satellite may send a value
+/// this build does not know (an unknown frame type, tag, or enum value);
+/// that frame is skipped, not fatal, and a request it answered is settled
+/// `Unsupported` so its waiter does not hang. Malformed bytes and every
+/// other relay failure still end the link.
+///
+/// The frame is re-decoded only after the relay refused it, so the hot
+/// path decodes once.
+pub(super) fn handle_satellite_frame(
+    session: &mut crate::hub::relay::RelaySession,
+    framed: &[u8],
+) -> Result<(), String> {
+    let Err(error) = session.handle_inbound(framed) else {
+        return Ok(());
+    };
+    let Err(decode) = phux_protocol::wire::frame::FrameKind::decode(framed) else {
+        return Err(error);
+    };
+    if !decode.is_unsupported() {
+        return Err(error);
+    }
+    warn!(%decode, "satellite sent a frame this hub does not support; skipping it");
+    let Some(request_id) = phux_protocol::wire::decode::frame_request_id(framed) else {
+        return Ok(());
+    };
+    let settle = phux_protocol::wire::frame::FrameKind::Error {
+        request_id: Some(request_id),
+        code: phux_protocol::wire::frame::ErrorCode::Unsupported,
+        message: format!("satellite reply this hub does not support: {decode}"),
+    };
+    let mut encoded = bytes::BytesMut::new();
+    settle.encode(&mut encoded);
+    session.handle_inbound(&encoded)
 }
 
 #[allow(

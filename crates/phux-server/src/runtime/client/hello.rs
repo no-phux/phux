@@ -1,12 +1,11 @@
 //! Decoding client frames, the pre-HELLO gate, and negotiating HELLO: version, authority, and bootstrap profile.
 
 use super::{
-    BootstrapLimits, BootstrapProfile, BytesMut, ClientCapabilities, ClientId, CommandResult,
-    ConnectionClose, DecodeError, DetachReason, ErrorCode, FrameKind, LayerSet,
-    NegotiatedConnection, Outbound, PROTOCOL_VERSION, QUIC_STREAMS, ServerCapabilities,
-    ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet, SharedState, Standing, TransportType,
-    Undispatched, debug, framing_violation, io, mpsc, runtime_server_features,
-    select_bootstrap_profile, trace, warn,
+    BootstrapLimits, BootstrapProfile, BytesMut, ClientCapabilities, ClientId, ConnectionClose,
+    DetachReason, ErrorCode, FrameKind, LayerSet, NegotiatedConnection, Outbound, PROTOCOL_VERSION,
+    QUIC_STREAMS, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
+    SharedState, Standing, TransportType, Undispatched, debug, framing_violation, io, mpsc,
+    runtime_server_features, select_bootstrap_profile, trace, warn,
 };
 
 /// The major is the compatibility line (protocol 1.0 on): any client of the
@@ -80,50 +79,7 @@ pub(super) fn decode_client_frame(
     );
     decoded
         .map(|(frame, _rest)| frame)
-        .map_err(|err| undecodable(&err, negotiated.is_some()))
-}
-
-/// A frame that did not decode. After HELLO, one a newer 1.x client may
-/// send (an unknown type byte, command tag, or command enum value) is
-/// refused in place; anything else is malformed and closes the connection.
-pub(super) fn undecodable(err: &DecodeError, negotiated: bool) -> Undispatched {
-    if let Some(refusal) = negotiated.then(|| unsupported_refusal(err)).flatten() {
-        debug!(error = %err, "client sent a frame this server does not support");
-        return Undispatched::Refuse(Box::new(refusal));
-    }
-    warn!(error = ?err, "client sent undecodable frame; closing");
-    Undispatched::Close(ConnectionClose {
-        attached_reason: Some("undecodable frame"),
-        detach_reason: DetachReason::ProtocolError,
-        code: ErrorCode::MalformedMessage,
-        message: format!("could not decode client frame: {err:?}"),
-    })
-}
-
-/// The `Unsupported` answer to a well-framed message newer than this build:
-/// an uncorrelated `ERROR` naming an unknown frame type, or a correlated
-/// `COMMAND_RESULT` for a command it cannot decode. `None` for any other
-/// decode failure.
-pub(super) fn unsupported_refusal(err: &DecodeError) -> Option<FrameKind> {
-    match *err {
-        DecodeError::UnknownFrameKind { tag } => Some(FrameKind::Error {
-            request_id: None,
-            code: ErrorCode::Unsupported,
-            message: format!("unsupported frame type 0x{tag:02x}"),
-        }),
-        DecodeError::UnsupportedCommand {
-            request_id,
-            field,
-            value,
-        } => Some(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Error {
-                code: ErrorCode::Unsupported,
-                message: format!("unsupported command: unknown {field} value {value}"),
-            },
-        }),
-        _ => None,
-    }
+        .map_err(|err| super::unsupported::undecodable(&err, framed, negotiated.is_some()))
 }
 
 /// Nothing stateful may precede HELLO; PING is a stateless liveness probe.
@@ -147,12 +103,14 @@ pub(super) fn is_pre_hello_type(framed: &[u8]) -> bool {
     )
 }
 
+/// A protocol violation, not a version verdict: clients treat
+/// `VERSION_INCOMPATIBLE` as a permanent refusal and stop redialing.
 pub(super) fn before_hello_close(client_id: ClientId) -> ConnectionClose {
     warn!(?client_id, "stateful frame before HELLO; closing");
     ConnectionClose {
         attached_reason: None,
         detach_reason: DetachReason::ProtocolError,
-        code: ErrorCode::VersionIncompatible,
+        code: ErrorCode::MalformedMessage,
         message: "HELLO required before any stateful frame".to_owned(),
     }
 }

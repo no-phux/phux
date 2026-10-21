@@ -77,6 +77,7 @@ mod plumbing;
 mod session_create;
 mod session_frames;
 pub mod streams;
+mod unsupported;
 pub mod writer;
 
 pub(crate) use accept::accept_loop;
@@ -303,10 +304,12 @@ fn hello_deadline_elapsed(client_id: ClientId) -> ConnectionEnding {
         ?client_id,
         "client did not complete HELLO before deadline; closing"
     );
+    // Not `VERSION_INCOMPATIBLE`: a slow link is no version verdict, and
+    // clients stop redialing on that code.
     ConnectionEnding::Violation(ConnectionClose {
         attached_reason: None,
         detach_reason: DetachReason::ProtocolError,
-        code: ErrorCode::VersionIncompatible,
+        code: ErrorCode::MalformedMessage,
         message: "HELLO deadline elapsed".to_owned(),
     })
 }

@@ -5,6 +5,7 @@ use std::rc::Rc;
 use super::*;
 use phux_protocol::Version;
 
+mod newer_satellite;
 mod planning;
 mod supervisor;
 mod transports;
