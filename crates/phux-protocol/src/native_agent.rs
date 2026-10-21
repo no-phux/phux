@@ -21,6 +21,8 @@ pub const MAX_NATIVE_QUESTIONS: usize = 32;
 
 include!("native_agent/contracts.rs");
 
+mod strict;
+
 /// An immutable native request and its admitted canonical wire bytes.
 ///
 /// Fallible serialization and the size limit are resolved before a request can
@@ -71,9 +73,18 @@ impl NativeRequestPayload {
         if encoded.len() > MAX_NATIVE_PAYLOAD_BYTES {
             return Err("native payload exceeds 16 KiB".into());
         }
-        let request = serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
-        // Canonicalize the parsed DTO: ignored future fields cannot survive as
-        // wire data that differs from the request inspected by policy.
+        let request: NativeRequest =
+            serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
+        // The request side is strict: a field or value the tolerant DTOs
+        // dropped or folded is refused, never run without it.
+        let original: serde_json::Value =
+            serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
+        let canonical = serde_json::to_value(&request).map_err(|error| error.to_string())?;
+        if !strict::survives_round_trip(&original, &canonical) {
+            return Err(strict::UNKNOWN_FIELD_OR_VALUE.to_owned());
+        }
+        // Canonicalize the parsed DTO: the wire data is exactly the request
+        // inspected by policy.
         Self::new(request)
     }
 }

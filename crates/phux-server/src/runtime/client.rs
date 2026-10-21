@@ -20,6 +20,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
 use phux_protocol::policy::TransportType;
+use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::Scope;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, DetachReason, ErrorCode, FrameKind, RESOURCE_AGENT_KEY,
@@ -69,6 +70,7 @@ include!("client/connection_negotiation.rs");
 include!("client/connection_lifecycle.rs");
 include!("client/connection_plumbing.rs");
 include!("client/hello.rs");
+include!("client/unsupported.rs");
 include!("client/history.rs");
 include!("client/connection_dispatch.rs");
 include!("client/frame_dispatch.rs");

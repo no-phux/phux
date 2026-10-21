@@ -77,6 +77,9 @@ impl super::super::SessionLoop {
             self.layout_read_complete = true;
             self.layout_get_request_id = None;
             self.heal_initial_layout(outcome);
+        } else if outcome.layout_get_refused {
+            // Settled, but unread: the fence stays and nothing is healed.
+            self.layout_get_request_id = None;
         }
         if (outcome.layout_get_answered || outcome.layout_replaced)
             && self.flush_deferred_arrangement_edits()

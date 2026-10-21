@@ -3,23 +3,23 @@
 
 use std::collections::{HashMap, HashSet};
 
-use phux_client_core::engine::CanonicalGeometry;
 use phux_client_core::history::HistoryLoadState;
 use phux_client_core::session::{
-    AgentSessionDeclaration, EffectBuffer as KernelEffectBuffer,
-    HistoryRejectionReason as KernelHistoryRejectionReason, HistoryUnavailableReason, KernelEffect,
-    KernelInput, KernelSend,
+    AgentSessionDeclaration, EffectBuffer as KernelEffectBuffer, KernelEffect, KernelInput,
+    KernelSend,
 };
 use phux_protocol::ids::{ResourceId, SessionId};
-use phux_protocol::wire::frame::{
-    AgentEvent, FrameKind, HistoryRejectionReason, HistoryTombstoneReason,
-};
+use phux_protocol::wire::frame::{AgentEvent, FrameKind};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot, WindowInfo};
 use phux_protocol::{BootstrapId, ResourceKind, StreamId};
 
 use crate::render::chrome::status_bar::Notice;
 
 use super::outcome::pane_label;
+
+mod kernel_input;
+
+use kernel_input::kernel_input_for;
 
 #[derive(Default)]
 pub(super) struct KernelRoute {
@@ -49,33 +49,6 @@ impl KernelRoute {
     pub(super) fn damaged(&self, terminal_id: &ResourceId) -> bool {
         self.damaged.contains(terminal_id)
     }
-}
-
-pub(super) const fn history_unavailable_reason(
-    reason: HistoryTombstoneReason,
-) -> Option<HistoryUnavailableReason> {
-    Some(match reason {
-        HistoryTombstoneReason::Stale => HistoryUnavailableReason::Stale,
-        HistoryTombstoneReason::Pruned => HistoryUnavailableReason::Pruned,
-        HistoryTombstoneReason::Reset => HistoryUnavailableReason::Reset,
-        HistoryTombstoneReason::Resize => HistoryUnavailableReason::Resize,
-        HistoryTombstoneReason::Expired => HistoryUnavailableReason::Expired,
-        HistoryTombstoneReason::Released => HistoryUnavailableReason::Released,
-        HistoryTombstoneReason::Limit => HistoryUnavailableReason::Limit,
-        HistoryTombstoneReason::CodecFailure => HistoryUnavailableReason::CodecFailure,
-        _ => return None,
-    })
-}
-
-pub(super) const fn history_rejection_reason(
-    reason: HistoryRejectionReason,
-) -> Option<KernelHistoryRejectionReason> {
-    Some(match reason {
-        HistoryRejectionReason::ZeroLimit => KernelHistoryRejectionReason::ZeroLimit,
-        HistoryRejectionReason::TooSmall => KernelHistoryRejectionReason::TooSmall,
-        HistoryRejectionReason::Busy => KernelHistoryRejectionReason::Busy,
-        _ => return None,
-    })
 }
 
 /// Whether a snapshot entry is a Terminal-kind resource: the only kind that
@@ -141,21 +114,12 @@ pub(super) fn route_engine_frame(
     effects: &mut KernelEffectBuffer,
 ) -> KernelRoute {
     let terminals = frame_attach_participants(frame);
-    let input = match kernel_input_for(frame, &terminals) {
-        Ok(Some(input)) => input,
-        // A frame the kernel does not model, except a spawn announcement of
-        // a new `AgentSession` child, which it must learn about.
-        Ok(None) => {
-            let mut route = KernelRoute::default();
-            declare_spawned_agent_session(frame, kernel, effects, &mut route);
-            return route;
-        }
-        Err(failed) => {
-            return KernelRoute {
-                failed: Some(failed.to_owned()),
-                ..KernelRoute::default()
-            };
-        }
+    // A frame the kernel does not model, except a spawn announcement of a
+    // new `AgentSession` child, which it must learn about.
+    let Some(input) = kernel_input_for(frame, &terminals) else {
+        let mut route = KernelRoute::default();
+        declare_spawned_agent_session(frame, kernel, effects, &mut route);
+        return route;
     };
 
     effects.clear();
@@ -273,184 +237,6 @@ fn frame_attach_participants(frame: &FrameKind) -> Vec<ResourceId> {
         return Vec::new();
     };
     attach_participants(snapshot)
-}
-
-/// Translate a wire frame into its kernel input. `Ok(None)` ⇒ not modeled;
-/// `Err` ⇒ an unknown history reason, reported as a rejected route.
-fn kernel_input_for<'a>(
-    frame: &'a FrameKind,
-    terminals: &'a [ResourceId],
-) -> Result<Option<KernelInput<'a>>, &'static str> {
-    if let Some(input) = attach_stream_input(frame, terminals) {
-        return Ok(Some(input));
-    }
-    if let Some(input) = content_stream_input(frame) {
-        return Ok(Some(input));
-    }
-    history_stream_input(frame)
-}
-
-/// The attach barrier and bootstrap-transcript frames.
-fn attach_stream_input<'a>(
-    frame: &'a FrameKind,
-    terminals: &'a [ResourceId],
-) -> Option<KernelInput<'a>> {
-    match frame {
-        FrameKind::Attached { attach_id, .. } => Some(KernelInput::AttachStarted {
-            attach_id: *attach_id,
-            terminals,
-        }),
-        FrameKind::AttachReady { attach_id } => Some(KernelInput::AttachReady {
-            attach_id: *attach_id,
-        }),
-        FrameKind::BootstrapBegin {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            profile,
-            cols,
-            rows,
-            base_seq,
-        } => Some(KernelInput::BootstrapBegin {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            profile: *profile,
-            geometry: CanonicalGeometry {
-                cols: *cols,
-                rows: *rows,
-            },
-            base_seq: *base_seq,
-        }),
-        FrameKind::BootstrapChunk {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            chunk_seq,
-            payload,
-        } => Some(KernelInput::BootstrapChunk {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            chunk_seq: *chunk_seq,
-            payload,
-        }),
-        FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor,
-        } => Some(KernelInput::BootstrapReady {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            history_cursor: history_cursor.as_deref(),
-        }),
-        FrameKind::BootstrapTombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            reason,
-            last_valid_seq,
-        } => Some(KernelInput::Tombstone {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            reason: *reason,
-            last_valid_seq: *last_valid_seq,
-        }),
-        _ => None,
-    }
-}
-
-/// The live-content frames: applied VT bytes and the pane's permanent close.
-fn content_stream_input(frame: &FrameKind) -> Option<KernelInput<'_>> {
-    match frame {
-        FrameKind::ResourceOutput {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq,
-            bytes,
-        } => Some(KernelInput::ResourceOutput {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            seq: *seq,
-            payload: bytes,
-        }),
-        FrameKind::ResourceClosed {
-            terminal_id,
-            exit_status,
-            reason,
-            signal,
-        } => Some(KernelInput::ResourceClosed {
-            terminal_id,
-            exit_status: *exit_status,
-            signal: *signal,
-            reason: *reason,
-        }),
-        _ => None,
-    }
-}
-
-/// The scrollback-page frames; an unrecognised reason is a rejected route.
-fn history_stream_input(frame: &FrameKind) -> Result<Option<KernelInput<'_>>, &'static str> {
-    let input = match frame {
-        FrameKind::HistoryPage {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            rows,
-            page_seq,
-            cursor,
-            next_cursor,
-            payload,
-        } => KernelInput::HistoryPage {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            rows: *rows,
-            page_seq: *page_seq,
-            payload,
-            cursor,
-            next_cursor: next_cursor.as_deref(),
-        },
-        FrameKind::HistoryTombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
-            reason,
-        } => KernelInput::HistoryTombstone {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            cursor,
-            reason: history_unavailable_reason(*reason)
-                .ok_or("unsupported history tombstone reason")?,
-        },
-        FrameKind::HistoryRejected {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
-            reason,
-            required_bytes,
-            required_rows,
-        } => KernelInput::HistoryRejected {
-            terminal_id,
-            stream_id: *stream_id,
-            bootstrap_id: *bootstrap_id,
-            cursor,
-            reason: history_rejection_reason(*reason)
-                .ok_or("unsupported history rejection reason")?,
-            required_bytes: *required_bytes,
-            required_rows: *required_rows,
-        },
-        _ => return Ok(None),
-    };
-    Ok(Some(input))
 }
 
 /// Did the kernel emit a typed resync-required status alongside its error?

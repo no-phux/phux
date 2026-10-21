@@ -518,20 +518,38 @@ pub(crate) fn decode_request(bytes: &[u8]) -> Result<CheckoutRequest, CheckoutDe
     if bytes.len() > MAX_CHECKOUT_REQUEST_BYTES {
         return Err(CheckoutDecodeError::TooLarge);
     }
-    serde_json::from_slice(bytes).map_err(|_| CheckoutDecodeError::Invalid)
+    // `deny_unknown_fields` still refuses a newer op or field, but as
+    // `Unsupported`: a newer client is not a malformed one.
+    serde_json::from_slice(bytes).map_err(|error| {
+        if crate::wire::error::names_unknown_json(&error.to_string()) {
+            CheckoutDecodeError::Unsupported
+        } else {
+            CheckoutDecodeError::Invalid
+        }
+    })
 }
 
 pub(crate) fn decode_answer(bytes: &[u8]) -> Result<CheckoutAnswer, CheckoutDecodeError> {
     if bytes.len() > MAX_CHECKOUT_ANSWER_BYTES {
         return Err(CheckoutDecodeError::TooLarge);
     }
-    serde_json::from_slice(bytes).map_err(|_| CheckoutDecodeError::Invalid)
+    // A newer server's answer kind is `Unsupported` (the reply settles as
+    // unreadable), not malformed; unknown fields are already skipped.
+    serde_json::from_slice(bytes).map_err(|error| {
+        if crate::wire::error::names_unknown_json(&error.to_string()) {
+            CheckoutDecodeError::Unsupported
+        } else {
+            CheckoutDecodeError::Invalid
+        }
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum CheckoutDecodeError {
     TooLarge,
     Invalid,
+    /// Well-formed JSON naming an op or field this build does not know.
+    Unsupported,
 }
 
 #[cfg(test)]
@@ -550,14 +568,25 @@ mod tests {
             r#"{"op":"diff","path":"src/main.rs","area":"staged"}"#
         );
         assert!(matches!(decode_request(&bytes), Ok(decoded) if decoded == request));
+        // A newer op or field is refused, but as unsupported, not malformed.
         assert!(matches!(
             decode_request(br#"{"op":"exec","argv":["rm"]}"#),
-            Err(CheckoutDecodeError::Invalid)
+            Err(CheckoutDecodeError::Unsupported)
         ));
         assert!(matches!(
             decode_request(br#"{"op":"read","path":"a","max_bytes":1,"extra":1}"#),
-            Err(CheckoutDecodeError::Invalid)
+            Err(CheckoutDecodeError::Unsupported)
         ));
+        for malformed in [
+            br#"{"op":"read""#.as_slice(),
+            br#"{"op":"read"}"#,
+            br#"{"op":"read","path":1,"max_bytes":1}"#,
+        ] {
+            assert!(matches!(
+                decode_request(malformed),
+                Err(CheckoutDecodeError::Invalid)
+            ));
+        }
     }
 
     #[test]

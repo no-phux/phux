@@ -82,24 +82,22 @@ where
             }
         };
 
-        let frame =
-            match validate_dispatch_frame(&framed, negotiated.as_ref(), frame_origin, client_id) {
-                Ok(frame) => frame,
-                Err(close) => break 'conn ConnectionEnding::Violation(close),
-            };
-
-        // workload-auth §6: the frame guard, before any routing or handler.
-        if super::dispatch_guard::refuse_frame(
+        // A frame newer than this build is answered `Unsupported` and the
+        // frame guard (workload-auth §6) runs before any routing or handler.
+        let admitted = admit_frame(
             &state,
+            &framed,
+            negotiated.as_ref(),
+            frame_origin,
             client_id,
-            &frame,
-            negotiated.is_some(),
             &plumbing.out_tx,
         )
-        .await
-        {
-            continue;
-        }
+        .await;
+        let frame = match admitted {
+            Ok(Some(frame)) => frame,
+            Ok(None) => continue,
+            Err(close) => break 'conn ConnectionEnding::Violation(close),
+        };
 
         let dispatch = FrameDispatch {
             reader: &mut reader,
@@ -173,10 +171,12 @@ fn hello_deadline_elapsed(client_id: ClientId) -> ConnectionEnding {
         ?client_id,
         "client did not complete HELLO before deadline; closing"
     );
+    // Not `VERSION_INCOMPATIBLE`: a slow link is no version verdict, and
+    // clients stop redialing on that code.
     ConnectionEnding::Violation(ConnectionClose {
         attached_reason: None,
         detach_reason: DetachReason::ProtocolError,
-        code: ErrorCode::VersionIncompatible,
+        code: ErrorCode::MalformedMessage,
         message: "HELLO deadline elapsed".to_owned(),
     })
 }

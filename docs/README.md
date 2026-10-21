@@ -13,7 +13,7 @@ which may include behavior not yet released. The same Cargo version string
 does not prove that an installed binary contains a command from this tree.
 Use the installed command's `--help` and skill output (`phux skill`, or
 `--skill` where supported), and check the running server's
-[feature availability](./protocol.md#capabilities-not-versions). Compare
+[feature availability](./protocol.md#compatibility). Compare
 source commit SHA/build provenance, not SemVer alone, when reporting a
 mismatch. A missing command is not a reason to point a checkout build at
 production state or install an unreleased build.
@@ -48,9 +48,11 @@ production state or install an unreleased build.
 ## Work on phux
 
 - [Architecture](./architecture.md): process model, crates, clients, the decisions behind them.
+- [Decisions](./decisions.md): the current architectural constraints and their reasons.
 - [Organization](./organization.md): durable records, transaction ordering, execution and restore authority.
 - [Substrate](./substrate.md): principals, the org's home keeper, and one-way adapters.
 - [Protocol](./protocol.md): framing, handshake, capabilities, replica recovery and bounded retries.
+- [Compatibility](./compatibility.md): what an older or newer 1.x peer sees, and how to keep a change compatible.
 - [Development](./development.md): environments, build cache, per-area setup, gates, CI.
 - [Releasing](./releasing.md): what ships, how, and the manual controls.
 - [Contributing](../CONTRIBUTING.md) and [agent instructions](../AGENTS.md).

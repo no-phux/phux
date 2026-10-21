@@ -13,7 +13,7 @@ impl Updater {
                 runtime
                     .protocol_target
                     .as_deref()
-                    .is_none_or(|target| target == incoming)
+                    .is_none_or(|target| same_protocol_line(target, &incoming))
             });
         (!(lands && self.phux_due())).then_some((now, incoming))
     }

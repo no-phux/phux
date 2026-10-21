@@ -16,7 +16,7 @@ use phux_protocol::wire::frame::FrameKind;
 use super::client::Client;
 use super::error::BridgeError;
 use super::{
-    apply_server_frame, control_error, decode_server_frame, follow_negotiated_session,
+    apply_server_frame, control_error, decode_inbound_frame, follow_negotiated_session,
     validate_runtime_frame,
 };
 
@@ -61,8 +61,14 @@ fn feed_snapshot(
     attached: &mut bool,
 ) -> Result<(), BridgeError> {
     for bytes in frames {
-        let Some(frame) = decode_queued(client, epoch, &bytes)? else {
+        // Stop once this snapshot's connection has ended; the epoch is
+        // checked again under the guard that applies the frame.
+        if !client.control().accepts_inbound(epoch) {
             break;
+        }
+        // A newer server's frame this build cannot read is skipped.
+        let Some(frame) = decode_inbound_frame(client, &bytes)? else {
+            continue;
         };
         if joins_output_run(client, &frame) {
             validate_runtime_frame(client, &frame)?;
@@ -75,19 +81,6 @@ fn feed_snapshot(
         *attached |= apply_server_frame(client, frame, Some(epoch))?;
     }
     Ok(())
-}
-
-/// Decode one queued frame, or `None` once its connection has ended. The
-/// epoch is checked again under the guard that applies the frame.
-fn decode_queued(
-    client: &Client,
-    epoch: u64,
-    bytes: &[u8],
-) -> Result<Option<FrameKind>, BridgeError> {
-    if !client.control().accepts_inbound(epoch) {
-        return Ok(None);
-    }
-    decode_server_frame(client, bytes).map(Some)
 }
 
 /// Terminal output whose only per-frame hook is participant validation.

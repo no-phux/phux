@@ -98,12 +98,17 @@ mod negotiated_feature_tests {
         attached.extend_from_slice(&6_u32.to_be_bytes());
         attached.extend_from_slice(&[phux_protocol::wire::frame::TYPE_ATTACHED, 1, 4, 4]);
         attached.extend_from_slice(&[0xFF, 0xFF]);
-        let code = |bytes: &BytesMut| {
-            validate_dispatch_frame(bytes, None, FrameOrigin::Control, client_id)
-                .err()
-                .map(|close| close.code)
+        let code = |bytes: &BytesMut| match validate_dispatch_frame(
+            bytes,
+            None,
+            FrameOrigin::Control,
+            client_id,
+        ) {
+            Ok(_) => None,
+            Err(Undispatched::Close(close)) => Some(close.code),
+            Err(Undispatched::Refuse(refusal)) => panic!("refused, not closed: {refusal:?}"),
         };
-        assert_eq!(code(&attached), Some(ErrorCode::VersionIncompatible));
+        assert_eq!(code(&attached), Some(ErrorCode::MalformedMessage));
 
         let mut ping = BytesMut::new();
         FrameKind::Ping { nonce: 1 }.encode(&mut ping);

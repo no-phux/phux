@@ -99,10 +99,14 @@ fn perf_control_writes_a_trace_and_switches_heap_accounting() {
         assert!(on["installed"].is_boolean(), "{on}");
         let off = json(perf_control(&mut stream, 7, PerfOp::AllocOff).await);
         assert_eq!(off["alloc"], false);
-        refused(
-            &perf_control(&mut stream, 8, PerfOp::Unknown(0xEE)).await,
-            "unknown op",
-        );
+        // An op a newer client defines is unsupported, not malformed.
+        assert!(matches!(
+            perf_control(&mut stream, 8, PerfOp::Unknown(0xEE)).await,
+            CommandResult::Error {
+                code: ErrorCode::Unsupported,
+                ref message,
+            } if message.contains("PerfOp")
+        ));
 
         drop(stream);
         join_after_shutdown(shutdown_tx, server_handle).await;

@@ -281,7 +281,7 @@ impl Multistream {
                     return Ok(None);
                 }
                 let (bytes, _budget) = frame.map_err(SessionError::Protocol)?;
-                decode_frame(&bytes, limits).map(Some)
+                decode_frame(&bytes, limits)
             }
             MuxItem::End(origin) => {
                 self.end_stream(&origin);

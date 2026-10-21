@@ -44,7 +44,9 @@ pub enum NativeDisposition {
     Completed = 0x02,
     /// This operation was refused.
     Refused = 0x03,
-    /// The outcome is ambiguous and must not trigger automatic resend.
+    /// The outcome is ambiguous and must not trigger automatic resend. A
+    /// disposition this build does not know also reads as this.
+    #[serde(other)]
     Unknown = 0x04,
 }
 
@@ -193,8 +195,15 @@ pub enum NativeState {
     Blocked,
     /// The turn ended; its session may remain available.
     Done,
+    /// A state this build does not know (a newer peer's value).
+    #[serde(other)]
+    Unknown,
 }
 /// A bounded, structured publication from the exclusive SDK controller.
+///
+/// Tolerant: the server relays it to every client inside the agent stream.
+/// A request carrying one is held to this build's fields by the server's
+/// strict request decode instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NativeUpdate {
@@ -248,6 +257,10 @@ pub struct NativePublicationReceipt {
 }
 /// Explicit native launch. `command` is the real provider executable/argv,
 /// never the guardian executable or a shell expression.
+///
+/// Tolerant: the server stores it as the launch recipe a client reads back.
+/// A spawn request is held to this build's fields by the server's strict
+/// request decode instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnNativeAgent {
     /// Exact organization session name.
@@ -309,8 +322,14 @@ pub struct NativeIntegrationCatalog {
     pub integrations: Vec<NativeIntegration>,
 }
 /// Separate host operations retain their own connection role and generation.
+///
+/// The server refuses a request naming a field, type, or value this build
+/// does not know as `Unsupported` rather than silently ignoring it: its
+/// decode is strict, while the nested types that also travel server to
+/// client ([`SpawnNativeAgent`], [`NativeUpdate`], [`NativeCommandResult`],
+/// [`NativeView`], [`NativeQuestion`]) stay tolerant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeRequest {
     /// Inventory native profiles on this authenticated connection's host.
     ListIntegrations {},

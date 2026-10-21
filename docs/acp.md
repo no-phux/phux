@@ -139,7 +139,9 @@ display names, prerequisite availability, factual failure details and optional
 `auth_command` login argv. Login is advertised only for an available direct
 OpenCode invocation `[executable, "acp"]`, using that same executable (including
 an absolute configured override). Wrappers and custom arguments imply no login
-command. Missing `auth_command` from an older catalog defaults to absent. It is
+command. The built-in profile resolves PATH before the official per-user
+installation at `~/.opencode/bin/opencode`; configured profiles never use that
+fallback. Missing `auth_command` from an older catalog defaults to absent. It is
 bounded to 64 profiles and 16 KiB, and requires Inventory authority. This is
 not an authentication probe or a promise that a provider is ready.
 

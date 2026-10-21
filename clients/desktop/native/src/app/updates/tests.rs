@@ -258,6 +258,27 @@ fn progress_names_each_products_step() {
 }
 
 #[test]
+fn a_minor_protocol_difference_on_the_same_major_is_not_a_change() {
+    let version = phux_protocol::PROTOCOL_VERSION;
+    let newer_minor = format!("{}.{}", version.major, version.minor + 1);
+    let mut updater = installed("0.2.0");
+    updater.record_check(Ok(release("0.3.0", &newer_minor)), None);
+    assert_eq!(updater.protocol_change(), None);
+    updater.prefs.manage_runtime = true;
+    let older_minor = format!("{}.{}", version.major, version.minor.wrapping_sub(1));
+    updater.runtime = Some(runtime(Some(&older_minor)));
+    assert_eq!(updater.protocol_change(), None);
+    assert_eq!(updater.unresolved_protocol(), None, "nothing to warn about");
+}
+
+#[test]
+fn same_protocol_line_compares_majors() {
+    assert!(same_protocol_line("1.0", "1.7"));
+    assert!(!same_protocol_line("0.9", "1.0"));
+    assert!(!same_protocol_line("", "1.0"), "unknown shape is a change");
+}
+
+#[test]
 fn opting_out_does_not_start_another_check() {
     let mut before = Preferences::default();
     let mut after = before.clone();

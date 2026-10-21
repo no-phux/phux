@@ -205,6 +205,35 @@ impl BootstrapLimits {
         })
     }
 
+    /// A peer's advertisement made valid: a value above the hard cap is the
+    /// cap, and `0` (no usable bound) is the default. `HELLO` decodes the
+    /// client's limits this way, so a newer client with larger buffers is
+    /// clamped, never refused.
+    #[must_use]
+    pub const fn clamped(max_chunk_bytes: u32, max_history_page_bytes: u32) -> Self {
+        const fn clamp(value: u32, cap: u32, default: u32) -> u32 {
+            if value == 0 {
+                default
+            } else if value > cap {
+                cap
+            } else {
+                value
+            }
+        }
+        Self {
+            max_chunk_bytes: clamp(
+                max_chunk_bytes,
+                MAX_BOOTSTRAP_CHUNK_BYTES,
+                DEFAULT_BOOTSTRAP_CHUNK_BYTES,
+            ),
+            max_history_page_bytes: clamp(
+                max_history_page_bytes,
+                MAX_HISTORY_PAGE_BYTES,
+                DEFAULT_HISTORY_PAGE_BYTES,
+            ),
+        }
+    }
+
     /// Maximum bytes permitted in one `BOOTSTRAP_CHUNK.payload`.
     #[must_use]
     pub const fn max_chunk_bytes(self) -> u32 {

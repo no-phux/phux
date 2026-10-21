@@ -17,34 +17,25 @@ fn framing_violation_close(err: &io::Error, client_id: ClientId) -> Option<Conne
 fn decode_client_frame(
     framed: &BytesMut,
     negotiated: Option<&NegotiatedConnection>,
-) -> Result<FrameKind, ConnectionClose> {
+) -> Result<FrameKind, Undispatched> {
     // FRAME_COMPRESSED is server-to-client only (proto.md §6.4); refuse the
     // envelope before decode. The type byte follows the u32 length header.
     if framed.get(4) == Some(&phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED) {
         warn!("client sent FRAME_COMPRESSED; closing");
-        return Err(ConnectionClose {
+        return Err(Undispatched::Close(ConnectionClose {
             attached_reason: Some("client-sent FRAME_COMPRESSED"),
             detach_reason: DetachReason::ProtocolError,
             code: ErrorCode::MalformedMessage,
             message: "FRAME_COMPRESSED is server-to-client only".to_owned(),
-        });
+        }));
     }
     let decoded = negotiated.map_or_else(
         || FrameKind::decode(framed),
         |selection| FrameKind::decode_with_limits(framed, selection.limits),
     );
-    match decoded {
-        Ok((frame, _rest)) => Ok(frame),
-        Err(err) => {
-            warn!(error = ?err, "client sent undecodable frame; closing");
-            Err(ConnectionClose {
-                attached_reason: Some("undecodable frame"),
-                detach_reason: DetachReason::ProtocolError,
-                code: ErrorCode::MalformedMessage,
-                message: format!("could not decode client frame: {err:?}"),
-            })
-        }
-    }
+    decoded
+        .map(|(frame, _rest)| frame)
+        .map_err(|err| undecodable(&err, framed, negotiated.is_some()))
 }
 
 /// Nothing stateful may precede HELLO; PING is a stateless liveness probe.
@@ -68,12 +59,14 @@ fn is_pre_hello_type(framed: &[u8]) -> bool {
     )
 }
 
+/// A protocol violation, not a version verdict: clients treat
+/// `VERSION_INCOMPATIBLE` as a permanent refusal and stop redialing.
 fn before_hello_close(client_id: ClientId) -> ConnectionClose {
     warn!(?client_id, "stateful frame before HELLO; closing");
     ConnectionClose {
         attached_reason: None,
         detach_reason: DetachReason::ProtocolError,
-        code: ErrorCode::VersionIncompatible,
+        code: ErrorCode::MalformedMessage,
         message: "HELLO required before any stateful frame".to_owned(),
     }
 }
@@ -125,7 +118,7 @@ async fn negotiate_hello(
         color_support = ?client_caps.color_support,
         "HELLO",
     );
-    if !protocol_is_compatible(protocol_major, protocol_minor) {
+    if !protocol_is_compatible(protocol_major) {
         let message = incompatible_protocol_message(protocol_major, protocol_minor, protocol_patch);
         warn!(?client_id, %message, "HELLO protocol mismatch");
         return Err(ConnectionClose {

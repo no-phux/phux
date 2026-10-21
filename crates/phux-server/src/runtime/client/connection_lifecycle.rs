@@ -310,11 +310,12 @@ pub(crate) async fn accept_loop<L: Incoming>(
     }
 }
 
-/// The wire carries one concrete version rather than a range. A patch release
-/// is editorial/behavior-preserving, while a major or minor change may alter
-/// the wire contract; therefore only `major.minor` must match.
-const fn protocol_is_compatible(client_major: u16, client_minor: u16) -> bool {
-    client_major == PROTOCOL_VERSION.major && client_minor == PROTOCOL_VERSION.minor
+/// The major is the compatibility line (protocol 1.0 on): any client of the
+/// server's major interoperates, whatever its minor and patch, because
+/// everything a minor adds is negotiated or ignorable. Only a major
+/// mismatch is refused.
+const fn protocol_is_compatible(client_major: u16) -> bool {
+    client_major == PROTOCOL_VERSION.major
 }
 
 fn incompatible_protocol_message(
@@ -335,8 +336,8 @@ fn incompatible_protocol_message(
     };
     format!(
         "incompatible protocol: client offered {client_major}.{client_minor}.{client_patch}, \
-         server requires {}.{}.x; {remediation} so protocol major.minor match",
-        PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor,
+         server requires {}.x; {remediation} so the protocol majors match",
+        PROTOCOL_VERSION.major,
     )
 }
 

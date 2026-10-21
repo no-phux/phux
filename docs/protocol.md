@@ -39,23 +39,28 @@ value:     bytes
 Decoders match fields by id in any order and skip ids they do not know, so
 additive optional fields can be skipped by an older peer. Most nested
 records are positional and big-endian, with string leaves encoded as
-`u32 length || bytes`; top-level UTF-8 field values are raw bytes.
+`u32 length || bytes`; top-level UTF-8 field values are raw bytes. A
+record that is not last in its field (list rows, input events,
+arrangement nodes) carries a `u32` length; readers skip bytes past the
+fields they know, so any record can grow at its tail. Ids and other
+leaves are frozen; a new shape is a new tag.
 Organization bodies/records and selected extensible event bodies instead
 use nested tagged fields: see the [organization codec](../crates/phux-protocol/src/wire/frame/org.rs).
 Do not infer a nested grammar from a type name in the schema. Field ids
 are append-only; a retired id is never reused, and the schema lists them.
 
 `FRAME_COMPRESSED` (`0x9A`) wraps one deflated frame. A server uses it only
-if the client's `HELLO` offered compression, and only for bodies of 4 KiB
-or more.
+if the client's `HELLO` offered compression, only for bodies of 4 KiB or
+more, and never for a frame that settles a request.
 
 ## Handshake
 
 1. The client sends `HELLO` (`0x01`): its name, protocol
    `major.minor.patch`, and `ClientCapabilities` (color support, image and
    keyboard protocols, which bootstrap profiles it can consume, compression).
-2. The server checks `major.minor` against its own. On a mismatch it sends
-   `ERROR` with `VERSION_INCOMPATIBLE` and closes.
+2. The server checks the client's major against its own. Any minor or
+   patch is admitted; another major gets `ERROR` with
+   `VERSION_INCOMPATIBLE` and a close.
 3. The server authorizes the connection ([owner, delegated, or scoped
    remote authority](./remote.md#connection-authority)) and picks a bootstrap
    profile the client offered.
@@ -63,22 +68,24 @@ or more.
    (two words of feature bits, `features` and `features_ext`), a server
    instance id, the selected profile, and size limits.
 
-Before `HELLO_OK`, only `HELLO` and `PING` are accepted. The Rust clients
-also refuse a `patch` mismatch; the server does not.
+Before `HELLO_OK`, only `HELLO` and `PING` are accepted. Clients accept a
+`HELLO_OK` on their own major with any minor or patch, older or newer, and
+keep the server's version beside its feature bits; only another major is
+refused.
 
 A client sends `PING` (`0x7F`); the server replies with `PONG` (`0xFF`)
 carrying the same nonce. `PONG` is server-to-client only; the classifier
 denies a client-originated `PONG`.
 
-## Capabilities, not versions
+## Compatibility
 
-The protocol version is `0.9` and has been for a long run of wire changes.
-Clients and servers must agree on `major.minor`; everything added since is
-either a feature bit the server advertises in `HELLO_OK` (`RESOURCE_KINDS`,
-`ACKNOWLEDGED_INPUT`, `APPROVALS`, ...) or an optional field an old peer
-skips. A client checks the bit before relying on the behavior. A version
-bump is reserved for a change no additive shape can express, and it breaks
-every deployment at once, so it is rare on purpose.
+The protocol is `1.0`. Any 1.x client works with any 1.x server, older or
+newer, and servers may be far older than clients. Minor and patch are
+informational. New behavior is a feature bit in `HELLO_OK` or a field or
+record tail an old peer skips; a client checks the bit and degrades that
+one feature. A peer answers a value it does not know with `UNSUPPORTED` and
+stays connected; only unreadable bytes close. A new major is a deliberate,
+announced break. [Compatibility](./compatibility.md) has the full rules.
 
 The feature names, their bits, and which commands each gates are in the
 generated [kinds reference](./reference/kinds.md). `phux status --json`
@@ -336,25 +343,24 @@ details.
 
 ## Changing the wire
 
-Native onboarding is additive within the existing `NATIVE_AGENT` JSON
-carrier. `features_ext.NATIVE_AGENT_LAUNCH` (`0x00000800`) gates
-`list_integrations` and `launch_integration`; the older `NATIVE_AGENT` bit
-alone does not imply either. [ACP onboarding](./acp.md#desktop-onboarding-on-the-connected-host)
-defines the host-local catalog, stable-session launch, bounds and authority.
-The additive catalog `auth_command` defaults to absent for older payloads and
-uses the same available direct OpenCode executable for explicit human login.
-The built-in profile resolves PATH before the official per-user installation
-at `~/.opencode/bin/opencode`; configured profiles never use that fallback.
+Native onboarding is additive inside `NATIVE_AGENT`, gated by its own
+`NATIVE_AGENT_LAUNCH` bit; see
+[ACP onboarding](./acp.md#desktop-onboarding-on-the-connected-host).
 
 - Allocate a new type byte or sub-tag in `wire/frame/mod.rs`; duplicates
   fail to compile.
 - Add field ids in `wire/field.rs`, append-only.
-- Gate new behavior on a feature bit in `caps.rs`. Do not bump the minor.
-  A shipped capability bit is never withdrawn or repointed.
+- Gate new behavior on a feature bit in `caps/server_features.rs`. Do not
+  bump the protocol version for an additive change. A shipped capability bit is
+  never withdrawn or repointed.
+- Grow a positional record only at its tail; never reorder, retype, or
+  remove a field. A non-final composite record needs a length prefix and a
+  mid-record optional a presence byte ([compatibility](./compatibility.md#making-a-change-compatible)).
 - Classify any new command in `kinds.rs`, or dispatch denies it.
 - Regenerate the schema (`PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p
   phux-protocol wire_schema_matches`), fill in any `?` types, and
   `just docs-gen` for the kinds page.
 - Add roundtrip and snapshot tests next to the existing ones in
   `crates/phux-protocol/tests/it/`.
-- Say in the PR what an older client sees.
+- Say in the PR what an older client sees, and what an older server does
+  with the new request.

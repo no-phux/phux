@@ -30,7 +30,9 @@ pub enum TakeoverPolicy {
 /// The declared intent of one attach: a role and a takeover policy.
 ///
 /// The wire form is one byte: bit 0 is the role, bit 1 the takeover; bits
-/// 2-7 are reserved, sent as zero and ignored on receipt.
+/// 2-7 are reserved and sent as zero. A received byte with a reserved bit
+/// set is a newer intent, refused as unsupported rather than ignored, so an
+/// attach never fails open into a role it did not ask for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct RolePolicy {
     /// The requested role.
@@ -75,7 +77,22 @@ impl RolePolicy {
         role | takeover
     }
 
-    /// Read the wire byte. Reserved bits are ignored, so every byte decodes.
+    /// Bits 2-7: reserved.
+    pub const RESERVED_BITS: u8 = !(Self::VIEWER_BIT | Self::DELIBERATE_BIT);
+
+    /// Decode the wire byte; one with a reserved bit set is an unknown value.
+    pub(crate) fn from_wire(byte: u8) -> Result<Self, crate::wire::error::DecodeError> {
+        if byte & Self::RESERVED_BITS != 0 {
+            return Err(crate::wire::error::DecodeError::unknown_enum(
+                "RolePolicy",
+                byte,
+            ));
+        }
+        Ok(Self::from_u8(byte))
+    }
+
+    /// Read the two defined bits of a byte, ignoring the reserved ones. A
+    /// local conversion; the wire decoder refuses reserved bits instead.
     #[must_use]
     pub const fn from_u8(byte: u8) -> Self {
         Self {
@@ -131,6 +148,16 @@ mod tests {
         assert_eq!(RolePolicy::VIEWER.to_u8(), 1);
         assert_eq!(RolePolicy::TAKEOVER.to_u8(), 2);
         assert_eq!(RolePolicy::default(), RolePolicy::PRIMARY);
+    }
+
+    #[test]
+    fn the_wire_refuses_reserved_bits() {
+        for byte in [0x04, 0x80, 0xfc, 0xfd] {
+            assert!(RolePolicy::from_wire(byte).unwrap_err().is_unsupported());
+        }
+        for byte in 0..=3 {
+            assert_eq!(RolePolicy::from_wire(byte), Ok(RolePolicy::from_u8(byte)));
+        }
     }
 
     #[test]

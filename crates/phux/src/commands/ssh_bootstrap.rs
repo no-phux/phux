@@ -15,7 +15,8 @@
 
 use std::process::{Command, ExitCode, Stdio};
 
-use phux_protocol::PROTOCOL_VERSION;
+use phux_client_core::handshake::protocol_compatible;
+use phux_protocol::{PROTOCOL_VERSION, Version};
 
 use super::attach;
 use super::enroll::{authority, ssh_hostname, ssh_program};
@@ -255,8 +256,9 @@ fn parse_report(stdout: &str) -> Result<Report, String> {
     })
 }
 
-/// Refuse a host whose protocol `major.minor` differs from ours. HELLO
-/// would refuse it too, but only after the dial, and with less to go on.
+/// Refuse a host on another protocol major. Any minor or patch on our
+/// major interoperates, older or newer. HELLO would refuse a foreign major
+/// too, but only after the dial, and with less to go on.
 fn check_protocol(theirs: Option<&str>, destination: &str) -> Result<(), String> {
     let Some(theirs) = theirs else {
         return Ok(());
@@ -267,13 +269,19 @@ fn check_protocol(theirs: Option<&str>, destination: &str) -> Result<(), String>
             "{destination} reported an unreadable protocol version {theirs:?}"
         ));
     };
-    if (major, minor) == (PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor) {
+    let patch = parts.next().and_then(Result::ok).unwrap_or(0);
+    if protocol_compatible(Version {
+        major,
+        minor,
+        patch,
+    }) {
         return Ok(());
     }
     Err(format!(
         "{destination} speaks phux protocol {theirs}, this phux speaks {}; \
-         update one side so both match",
-        super::bootstrap::protocol_version()
+         protocol {major}.x and {}.x do not interoperate, so update one side",
+        super::bootstrap::protocol_version(),
+        PROTOCOL_VERSION.major
     ))
 }
 
@@ -304,15 +312,21 @@ mod tests {
     }
 
     #[test]
-    fn protocol_major_minor_must_match() {
+    fn protocol_major_must_match_and_minor_patch_may_differ() {
+        use phux_protocol::PROTOCOL_VERSION as V;
         let ours = super::super::bootstrap::protocol_version();
         assert!(check_protocol(Some(&ours), "box").is_ok());
         assert!(
             check_protocol(None, "box").is_ok(),
             "an older document says nothing"
         );
-        let err = check_protocol(Some("0.1.0"), "box").unwrap_err();
-        assert!(err.contains("0.1.0") && err.contains(&ours), "{err}");
+        let older = format!("{}.{}.0", V.major, V.minor.wrapping_sub(1));
+        let newer = format!("{}.{}.4", V.major, V.minor + 1);
+        assert!(check_protocol(Some(&older), "box").is_ok(), "older minor");
+        assert!(check_protocol(Some(&newer), "box").is_ok(), "newer minor");
+        let foreign = format!("{}.0.0", V.major + 1);
+        let err = check_protocol(Some(&foreign), "box").unwrap_err();
+        assert!(err.contains(&foreign) && err.contains(&ours), "{err}");
         assert!(check_protocol(Some("garbage"), "box").is_err());
     }
 

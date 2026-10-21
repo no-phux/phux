@@ -149,16 +149,92 @@ fn native_json_rejects_oversize_before_deserialization() {
 
 #[test]
 fn native_json_rejects_malformed_and_wrong_dto() {
-    for json in [
-        b"{".as_slice(),
-        b"{}",
-        b"{\"type\":\"not_a_request\"}",
-        b"{\"type\":\"register\"}",
-    ] {
+    for json in [b"{".as_slice(), b"{}", b"{\"type\":\"register\"}"] {
         assert!(matches!(
             common::decode(&raw_json(json)),
             Err(DecodeError::InvalidNativeAgentPayload)
         ));
+    }
+}
+
+/// A request type or field this build does not know is newer, not
+/// malformed: still refused, but as unsupported, so a server keeps the
+/// connection.
+/// Native requests a newer client extended: a field on the spawn spec, on
+/// the request itself, and on a publication's update.
+fn native_requests_with_a_newer_field() -> Vec<Vec<u8>> {
+    let spawn = NativeRequest::Spawn {
+        spec: SpawnNativeAgent {
+            session: "s".into(),
+            backend: "b".into(),
+            provider: "p".into(),
+            command: vec!["agent".into()],
+            cwd: None,
+            env: std::collections::BTreeMap::new(),
+            native_id: None,
+            guardian: None,
+            guardian_key: None,
+            guardian_expected: None,
+        },
+    };
+    let close = NativeRequest::Close {
+        agent_session_id: ResourceId::local(1),
+        activation: "a".into(),
+        binding_proof: "p".into(),
+        generation: 1,
+    };
+    let publish = NativeRequest::Publish {
+        agent_session_id: ResourceId::local(1),
+        activation: "a".into(),
+        binding_proof: "p".into(),
+        generation: 1,
+        publication_id: 1,
+        update: NativeUpdate::Notice {
+            level: "info".into(),
+            text: "t".into(),
+        },
+    };
+    let mut cases = Vec::new();
+    for (request, path) in [(spawn, "spec"), (close, ""), (publish, "update")] {
+        let mut json = serde_json::to_value(request).unwrap();
+        let target = if path.is_empty() {
+            &mut json
+        } else {
+            &mut json[path]
+        };
+        target["new_opt"] = serde_json::Value::Bool(true);
+        cases.push(serde_json::to_vec(&json).unwrap());
+    }
+    cases
+}
+
+#[test]
+fn native_json_refuses_an_unknown_type_or_field_as_unsupported() {
+    // `NativeCommand` denies unknown fields; add one to a real command.
+    let mut command = serde_json::to_value(NativeRequest::Command {
+        agent_session_id: ResourceId::local(9),
+        command: NativeCommand {
+            operation_id: 1,
+            activation: "activation".into(),
+            intent: NativeIntent::Prompt { text: "hi".into() },
+        },
+    })
+    .unwrap();
+    command["command"]["later"] = serde_json::Value::Bool(true);
+    let unknown_field = serde_json::to_vec(&command).unwrap();
+    let mut cases = vec![br#"{"type":"not_a_request"}"#.to_vec(), unknown_field];
+    cases.extend(native_requests_with_a_newer_field());
+    for json in &cases {
+        let err = common::decode(&raw_json(json)).unwrap_err();
+        assert_eq!(
+            err,
+            DecodeError::UnsupportedPayload {
+                payload: "NativeRequest"
+            },
+            "{}",
+            String::from_utf8_lossy(json)
+        );
+        assert!(err.is_unsupported());
     }
 }
 
@@ -174,15 +250,20 @@ fn native_outcomes_match_the_typed_wire_contract() {
         let mut body = vec![0, 0, 0, 0, 9]; // local ResourceId @9
         body.extend_from_slice(&u64::MAX.to_be_bytes());
         body.push(tag);
+        // `detail` sits behind a presence byte, never inferred from length.
+        body.push(u8::from(detail.is_some()));
         if let Some(detail) = detail {
             body.extend_from_slice(&u32::try_from(detail.len()).unwrap().to_be_bytes());
             body.extend_from_slice(detail.as_bytes());
         }
-        let wire = FrameKind::Event {
+        let raw = |body: Vec<u8>| FrameKind::Event {
             terminal: Some(ResourceId::local(8)),
             event: AgentEvent::Unknown { tag: 0x1c, body },
             stamp: None,
         };
+        let mut grown = body.clone();
+        grown.extend_from_slice(&[0xEE, 0xEE]);
+        let wire = raw(body);
         let expected = FrameKind::Event {
             terminal: Some(ResourceId::local(8)),
             event: AgentEvent::NativeAgentResult {
@@ -196,6 +277,11 @@ fn native_outcomes_match_the_typed_wire_contract() {
         let encoded = common::encode(&wire);
         assert_eq!(common::encode(&expected), encoded);
         assert_eq!(common::decode(&encoded).unwrap(), expected);
+        // A newer peer's bytes after `detail` are skipped.
+        assert_eq!(
+            common::decode(&common::encode(&raw(grown))).unwrap(),
+            expected
+        );
     }
 }
 
@@ -224,4 +310,55 @@ fn future_native_outcome_is_opaque_but_oversized_body_is_refused() {
         common::decode(&common::encode(&oversized)),
         Err(DecodeError::NativeAgentLimitExceeded)
     ));
+}
+
+/// The types that also travel server to client stay tolerant: a stored
+/// launch recipe and a relayed publication from a newer server still read,
+/// and a newer state or disposition folds to `Unknown`.
+#[test]
+fn shared_native_types_tolerate_a_newer_peer() {
+    let spec: SpawnNativeAgent = serde_json::from_str(
+        r#"{"session":"s","backend":"b","provider":"p","command":["a"],"cwd":null,"env":{},"later":1}"#,
+    )
+    .unwrap();
+    assert_eq!(spec.provider, "p");
+    let update: NativeUpdate =
+        serde_json::from_str(r#"{"type":"state","state":"thinking","turn_id":null,"later":1}"#)
+            .unwrap();
+    assert!(matches!(
+        update,
+        NativeUpdate::State {
+            state: NativeState::Unknown,
+            ..
+        }
+    ));
+    let result: NativeCommandResult =
+        serde_json::from_str(r#"{"operation_id":1,"disposition":"deferred","detail":null}"#)
+            .unwrap();
+    assert_eq!(result.disposition, NativeDisposition::Unknown);
+}
+
+/// The server's request decode is the strict side: a value a tolerant type
+/// folded to `Unknown` is refused, not run as `Unknown`.
+#[test]
+fn a_request_carrying_a_newer_value_is_refused_as_unsupported() {
+    let mut publish = serde_json::to_value(NativeRequest::Publish {
+        agent_session_id: ResourceId::local(1),
+        activation: "a".into(),
+        binding_proof: "p".into(),
+        generation: 1,
+        publication_id: 1,
+        update: NativeUpdate::State {
+            state: NativeState::Working,
+            turn_id: None,
+        },
+    })
+    .unwrap();
+    publish["update"]["state"] = serde_json::Value::String("thinking".into());
+    assert_eq!(
+        common::decode(&raw_json(&serde_json::to_vec(&publish).unwrap())).unwrap_err(),
+        DecodeError::UnsupportedPayload {
+            payload: "NativeRequest"
+        }
+    );
 }

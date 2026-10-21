@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e40e8bb0532559f0bada91fe615ac1e31e1c4cc6bcef04b207b4f257d705a48a # shrinks to request_id = 0, scope = Terminal(Local { id: 0 }), key = ""
+cc 4b8d60d352a980d28afaefc66a80e191197f251f024b39e27b31bf05edfaa844 # shrinks to frame = Hello { client_name: "", protocol_major: 0, protocol_minor: 0, protocol_patch: 0, client_caps: ClientCapabilities { color_support: TrueColor, layers: LayerSet(1), image_protocols: ImageProtocolSet(7), kbd_protocols: KeyboardProtocolSet(3), hyperlinks: true, output_mode: Raw } }

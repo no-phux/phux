@@ -3,8 +3,9 @@
 //! -> typed error, the `send_keys.rs` shape), not in `crates/phux/src/commands/`.
 //!
 //! Every `.rs` file under `src/commands/` fails if a raw-wire marker appears
-//! in its production code (comments, string literals, and `mod tests` bodies
-//! excluded) beyond its per-file [`ALLOWLIST`] cap.
+//! in its production code (comments, string literals, and `mod tests` bodies,
+//! inline or in a `tests.rs` file, excluded) beyond its per-file
+//! [`ALLOWLIST`] cap.
 #![allow(
     clippy::panic,
     clippy::expect_used,
@@ -154,12 +155,18 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
+            } else if path.extension().is_some_and(|ext| ext == "rs") && !is_test_module(&path) {
                 out.push(path);
             }
         }
     }
     out
+}
+
+/// A `mod tests` body split into its own `tests.rs` file: excluded like an
+/// inline `mod tests` block.
+fn is_test_module(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == "tests.rs")
 }
 
 /// Blank out comments and string-literal contents character-for-character,

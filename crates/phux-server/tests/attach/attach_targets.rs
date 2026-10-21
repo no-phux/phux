@@ -55,7 +55,7 @@ fn failed_attach_is_recoverable_and_create_if_missing_creates() {
         send_frame(&mut stream, &attach_by_name("does-not-exist")).await;
         let (code, message) = attach_error(&mut stream).await;
         assert_eq!(code, ErrorCode::SessionNotFound);
-        assert_eq!(code as u16, 102, "SPEC §14 code");
+        assert_eq!(code.as_wire(), 102, "SPEC §14 code");
         assert!(message.contains("does-not-exist"), "{message}");
         // Atomic failure: nothing else is queued behind the ERROR.
         let mut sink = [0u8; 16];

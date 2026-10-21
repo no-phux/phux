@@ -191,6 +191,17 @@ impl Connection {
         self.session.negotiated_bootstrap()
     }
 
+    /// The protocol triple the server answered `HELLO_OK` with; `None` only
+    /// on the `from_stream` test seam.
+    ///
+    /// On the same major it may be older or newer than this build's
+    /// [`phux_protocol::PROTOCOL_VERSION`], so a caller can degrade by
+    /// version where no feature bit names the behavior.
+    #[must_use]
+    pub fn server_protocol(&self) -> Option<(u16, u16, u16)> {
+        self.session.server().map(|server| server.protocol)
+    }
+
     /// The role an observer attaches with (ADR-0127): `VIEWER` when the server
     /// advertises `ATTACH_ROLES`, so it can never type into what it watches.
     #[must_use]

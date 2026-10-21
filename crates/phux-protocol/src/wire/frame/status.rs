@@ -3,86 +3,95 @@
 /// Structured error code carried by [`FrameKind::Error`](super::FrameKind::Error)
 /// (SPEC §14), a big-endian `u16`.
 ///
-/// Unknown values decode as
-/// [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue),
-/// never a placeholder. Ranges: handshake `1..=9`, attach `100..=199`,
-/// command `200..=299`, internal `u16::MAX`.
+/// Append-only: a newer peer may send a code this build does not know, so
+/// an unallocated value decodes as [`Self::Unknown`] carrying the raw
+/// value, never a frame error. Ranges: handshake `1..=9`, attach
+/// `100..=199`, command `200..=299`, internal `u16::MAX`; each code's value
+/// is in [`Self::as_wire`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-#[repr(u16)]
 pub enum ErrorCode {
     /// SPEC §6.1: HELLO version negotiation found no compatible version.
-    VersionIncompatible = 1,
+    VersionIncompatible,
     /// SPEC §6: the peer sent a type byte the receiver does not recognise.
-    UnknownMessageType = 2,
+    UnknownMessageType,
     /// SPEC §5 / Appendix A: a message could not be decoded.
-    MalformedMessage = 3,
+    MalformedMessage,
     /// SPEC §5: a frame's declared length exceeded the protocol cap.
-    FrameTooLarge = 4,
+    FrameTooLarge,
     // Value 5 is permanently reserved for the withdrawn OUT_OF_TIER error.
     /// SPEC §6.1: peers share no usable explicit bootstrap profile/codec/features.
-    CodecUnavailable = 6,
+    CodecUnavailable,
+    /// The receiver understood the frame's framing but not its content: a
+    /// frame type, command tag, or enum value newer than its protocol 1.x
+    /// build. Nothing happened and the connection stays open; the sender may
+    /// fall back to an older shape.
+    Unsupported,
 
     /// SPEC §13: the client issued an operation that requires an attach
     /// while not attached.
-    NotAttached = 100,
+    NotAttached,
     /// SPEC §13: the client requested attach while already attached.
-    AlreadyAttached = 101,
+    AlreadyAttached,
     /// SPEC §13: the requested session does not exist.
-    SessionNotFound = 102,
+    SessionNotFound,
     /// The requested window does not exist.
-    WindowNotFound = 103,
+    WindowNotFound,
     /// The requested terminal does not exist.
-    TerminalNotFound = 104,
+    TerminalNotFound,
     /// The requested client id does not exist.
-    ClientNotFound = 105,
+    ClientNotFound,
     /// A `Satellite` id reached a non-hub server, or a hub that does not
     /// know the host (ADR-0016).
-    UnsupportedSatelliteRoute = 106,
+    UnsupportedSatelliteRoute,
     /// The hub knows the satellite but its link is down; retryable
     /// (ADR-0007).
-    SatelliteUnreachable = 107,
+    SatelliteUnreachable,
 
     /// SPEC §11: the requested COMMAND payload was structurally invalid.
-    InvalidCommand = 200,
+    InvalidCommand,
     /// SPEC §15: the requested operation is forbidden for this peer.
-    PermissionDenied = 201,
+    PermissionDenied,
     /// The server has run out of a resource needed to satisfy the request
     /// (file descriptors, memory, PTYs, ...).
-    ResourceExhausted = 202,
+    ResourceExhausted,
     /// An untrusted paste in an atomic input batch failed the safety policy.
-    UnsafePaste = 203,
+    UnsafePaste,
     /// A cooperative `ACQUIRE_INPUT` lost to the current lease holder
     /// (ADR-0033).
-    InputLeaseHeld = 204,
+    InputLeaseHeld,
     /// Input reached the pane write path, but final PTY delivery is unknown.
-    InputDeliveryUnknown = 205,
+    InputDeliveryUnknown,
     /// A canonical-mode (`ICANON`) line would exceed the kernel's limit and
     /// be truncated; nothing was written.
-    CanonicalLimitExceeded = 206,
+    CanonicalLimitExceeded,
     /// `APPLY_INPUT` provably never reached a live PTY writer, so a resubmit
     /// cannot type it twice.
-    InputNotWritten = 207,
+    InputNotWritten,
     /// The verb does not apply to the subject's resource kind (a Terminal
     /// verb on an `AgentSession`, or an append to a Terminal).
-    WrongResourceKind = 208,
+    WrongResourceKind,
     /// `APPEND_RESOURCE_OUTPUT` from a client that is not the producer.
-    NotProducer = 209,
+    NotProducer,
     /// `APPEND_RESOURCE_OUTPUT` bytes are not complete, valid codec records;
     /// nothing was appended.
-    RecordInvalid = 210,
+    RecordInvalid,
     /// The append's retained ring or rate budget is exhausted; retry after
     /// backoff.
-    Overflow = 211,
+    Overflow,
     /// A `KILL_RESOURCE_IF` precondition did not hold (ADR-0109); nothing
     /// was killed.
-    PreconditionFailed = 212,
+    PreconditionFailed,
     /// A hub refused a keyed retry because the owning satellite restarted,
     /// so a replay could run twice (`docs/spec/L1.md` §9.1).
-    IncarnationChanged = 213,
+    IncarnationChanged,
 
     /// Catch-all for unexpected server-side failures.
-    InternalError = 65535,
+    InternalError,
+
+    /// A code this build does not know, with its raw wire value. Produced
+    /// only by the decoder.
+    Unknown(u16),
 }
 
 /// How far a consumer should degrade on an [`ErrorCode`]. Not a wire field,
@@ -102,10 +111,41 @@ pub enum ErrorScope {
 }
 
 impl ErrorCode {
-    /// Wire encoding of this code: the `#[repr(u16)]` discriminant.
+    /// Wire encoding of this code; [`Self::Unknown`] writes back its raw value.
     #[must_use]
     pub const fn as_wire(self) -> u16 {
-        self as u16
+        match self {
+            Self::VersionIncompatible => 1,
+            Self::UnknownMessageType => 2,
+            Self::MalformedMessage => 3,
+            Self::FrameTooLarge => 4,
+            Self::CodecUnavailable => 6,
+            Self::Unsupported => 7,
+            Self::NotAttached => 100,
+            Self::AlreadyAttached => 101,
+            Self::SessionNotFound => 102,
+            Self::WindowNotFound => 103,
+            Self::TerminalNotFound => 104,
+            Self::ClientNotFound => 105,
+            Self::UnsupportedSatelliteRoute => 106,
+            Self::SatelliteUnreachable => 107,
+            Self::InvalidCommand => 200,
+            Self::PermissionDenied => 201,
+            Self::ResourceExhausted => 202,
+            Self::UnsafePaste => 203,
+            Self::InputLeaseHeld => 204,
+            Self::InputDeliveryUnknown => 205,
+            Self::CanonicalLimitExceeded => 206,
+            Self::InputNotWritten => 207,
+            Self::WrongResourceKind => 208,
+            Self::NotProducer => 209,
+            Self::RecordInvalid => 210,
+            Self::Overflow => 211,
+            Self::PreconditionFailed => 212,
+            Self::IncarnationChanged => 213,
+            Self::InternalError => 65535,
+            Self::Unknown(value) => value,
+        }
     }
 
     /// How far a consumer should degrade on this code. Exhaustive, so a new
@@ -131,7 +171,9 @@ impl ErrorCode {
             | Self::RecordInvalid
             | Self::Overflow
             | Self::PreconditionFailed
-            | Self::IncarnationChanged => ErrorScope::Request,
+            | Self::IncarnationChanged
+            | Self::Unsupported
+            | Self::Unknown(_) => ErrorScope::Request,
             Self::TerminalNotFound
             | Self::WrongResourceKind
             | Self::UnsupportedSatelliteRoute
@@ -144,8 +186,8 @@ impl ErrorCode {
         }
     }
 
-    /// Inverse of [`Self::as_wire`]; returns `None` for values that do not
-    /// correspond to any code in this protocol version.
+    /// Inverse of [`Self::as_wire`] for the codes this build defines;
+    /// `None` for any other value (never [`Self::Unknown`]).
     #[must_use]
     pub const fn from_wire(value: u16) -> Option<Self> {
         Some(match value {
@@ -154,6 +196,7 @@ impl ErrorCode {
             3 => Self::MalformedMessage,
             4 => Self::FrameTooLarge,
             6 => Self::CodecUnavailable,
+            7 => Self::Unsupported,
             100 => Self::NotAttached,
             101 => Self::AlreadyAttached,
             102 => Self::SessionNotFound,
@@ -180,9 +223,32 @@ impl ErrorCode {
             _ => return None,
         })
     }
+
+    /// What a client settles a request with when the server's reply decoded
+    /// as a well-framed `COMMAND_RESULT` but carried a result tag, value tag,
+    /// or enum value this build does not know. The server answered, so the
+    /// request may have taken effect; only the answer is unreadable. Unlike
+    /// [`Self::Unsupported`], which promises nothing happened, it is an
+    /// [`Self::Unknown`] code: outcome not stated. Wire value `0` is never
+    /// allocated to a defined code, but it does travel: a hub that cannot
+    /// read a satellite's reply settles the relayed request with it.
+    pub const UNREADABLE_REPLY: Self = Self::Unknown(0);
+
+    /// Decode a wire value totally: a defined code, or [`Self::Unknown`]
+    /// carrying the raw value. What every decoder uses.
+    #[must_use]
+    pub const fn from_wire_or_unknown(value: u16) -> Self {
+        match Self::from_wire(value) {
+            Some(code) => code,
+            None => Self::Unknown(value),
+        }
+    }
 }
 wire_enum! { as_wire / from_wire;
 /// Why a bootstrap generation can no longer preserve stream continuity.
+///
+/// A value this build does not define decodes as [`Self::Unknown`], never a
+/// frame error: the generation is retired either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TombstoneReason {
@@ -200,6 +266,10 @@ pub enum TombstoneReason {
     CodecFailure = 5,
     /// A bounded, explicit reason not represented by an earlier tag.
     Other = 6,
+    /// A reason this build does not know. Produced only by the decoder.
+    /// `255` is reserved for it: no reason is ever allocated that byte, so
+    /// relaying an unknown reason as `255` can never claim a real one.
+    Unknown = 255,
 }
 }
 
@@ -275,6 +345,7 @@ pub enum CloseReason {
     /// The server is stopping.
     ServerShutdown = 3,
     /// No reason, or one this build does not know. Encoded as an absent field.
+    /// `255` is reserved for it and never allocated to a reason.
     #[default]
     Unknown = 255,
 }
@@ -319,6 +390,9 @@ impl CloseReason {
 
 wire_enum! { as_wire / from_wire;
 /// Why one progressive history cursor can no longer be consumed.
+///
+/// A value this build does not define decodes as [`Self::Unknown`], never a
+/// frame error: the cursor is gone either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum HistoryTombstoneReason {
@@ -338,11 +412,18 @@ pub enum HistoryTombstoneReason {
     Limit = 6,
     /// The selected native codec rejected history capture or import.
     CodecFailure = 7,
+    /// A reason this build does not know. Produced only by the decoder.
+    /// `255` is reserved for it: no reason is ever allocated that byte, so
+    /// relaying an unknown reason as `255` can never claim a real one.
+    Unknown = 255,
 }
 }
 
 wire_enum! { as_wire / from_wire;
 /// Why one history request was rejected without advancing its cursor.
+///
+/// A value this build does not define decodes as [`Self::Unknown`], never a
+/// frame error; the cursor is still not advanced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum HistoryRejectionReason {
@@ -352,101 +433,12 @@ pub enum HistoryRejectionReason {
     TooSmall = 1,
     /// Capture is temporarily busy; retrying the same cursor is permitted.
     Busy = 2,
+    /// A reason this build does not know. Produced only by the decoder.
+    /// `255` is reserved for it: no reason is ever allocated that byte, so
+    /// relaying an unknown reason as `255` can never claim a real one.
+    Unknown = 255,
 }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{CloseReason, ErrorCode, ErrorScope};
-
-    #[test]
-    fn close_reason_tags_are_stable_and_unknown_is_forgiving() {
-        for (reason, tag) in [
-            (CloseReason::Exited, 0),
-            (CloseReason::Killed, 1),
-            (CloseReason::ParentClosed, 2),
-            (CloseReason::ServerShutdown, 3),
-        ] {
-            assert_eq!(reason.as_wire(), tag);
-            assert_eq!(CloseReason::from_wire(tag), reason);
-            assert!(!reason.is_unknown());
-        }
-        assert_eq!(CloseReason::from_wire(4), CloseReason::Unknown);
-        assert_eq!(CloseReason::from_wire(255), CloseReason::Unknown);
-        assert!(CloseReason::default().is_unknown());
-    }
-
-    /// Every code this protocol version defines, in wire order.
-    ///
-    /// Hand-maintained on purpose. [`ErrorCode::scope`] already fails to
-    /// compile when a variant is added; this list makes the same omission
-    /// fail for [`ErrorCode::from_wire`], whose table is equally
-    /// hand-written and has no compiler check of its own.
-    const ALL_CODES: &[ErrorCode] = &[
-        ErrorCode::VersionIncompatible,
-        ErrorCode::UnknownMessageType,
-        ErrorCode::MalformedMessage,
-        ErrorCode::FrameTooLarge,
-        ErrorCode::CodecUnavailable,
-        ErrorCode::NotAttached,
-        ErrorCode::AlreadyAttached,
-        ErrorCode::SessionNotFound,
-        ErrorCode::WindowNotFound,
-        ErrorCode::TerminalNotFound,
-        ErrorCode::ClientNotFound,
-        ErrorCode::UnsupportedSatelliteRoute,
-        ErrorCode::SatelliteUnreachable,
-        ErrorCode::InvalidCommand,
-        ErrorCode::PermissionDenied,
-        ErrorCode::ResourceExhausted,
-        ErrorCode::UnsafePaste,
-        ErrorCode::InputLeaseHeld,
-        ErrorCode::InputDeliveryUnknown,
-        ErrorCode::CanonicalLimitExceeded,
-        ErrorCode::InputNotWritten,
-        ErrorCode::WrongResourceKind,
-        ErrorCode::NotProducer,
-        ErrorCode::RecordInvalid,
-        ErrorCode::Overflow,
-        ErrorCode::PreconditionFailed,
-        ErrorCode::IncarnationChanged,
-        ErrorCode::InternalError,
-    ];
-
-    #[test]
-    fn the_decodable_wire_space_is_exactly_the_known_codes() {
-        for &code in ALL_CODES {
-            assert_eq!(ErrorCode::from_wire(code.as_wire()), Some(code), "{code:?}");
-        }
-        let decoded: Vec<ErrorCode> = (0..=u16::MAX).filter_map(ErrorCode::from_wire).collect();
-        assert_eq!(
-            decoded, ALL_CODES,
-            "a code was added to the enum without a `from_wire` row (or vice versa)"
-        );
-    }
-
-    #[test]
-    fn scopes_partition_the_codes_as_documented() {
-        assert_eq!(
-            ErrorCode::VersionIncompatible.scope(),
-            ErrorScope::Connection
-        );
-        assert_eq!(ErrorCode::PermissionDenied.scope(), ErrorScope::Connection);
-        assert_eq!(ErrorCode::NotAttached.scope(), ErrorScope::Request);
-        assert_eq!(
-            ErrorCode::CanonicalLimitExceeded.scope(),
-            ErrorScope::Request
-        );
-        assert_eq!(
-            ErrorCode::SatelliteUnreachable.scope(),
-            ErrorScope::Terminal
-        );
-        assert_eq!(ErrorCode::InternalError.scope(), ErrorScope::Terminal);
-        assert_eq!(ErrorCode::WrongResourceKind.scope(), ErrorScope::Terminal);
-        assert_eq!(ErrorCode::NotProducer.scope(), ErrorScope::Request);
-        assert_eq!(ErrorCode::RecordInvalid.scope(), ErrorScope::Request);
-        assert_eq!(ErrorCode::Overflow.scope(), ErrorScope::Request);
-        assert_eq!(ErrorCode::PreconditionFailed.scope(), ErrorScope::Request);
-        assert_eq!(ErrorCode::IncarnationChanged.scope(), ErrorScope::Request);
-    }
-}
+mod tests;
