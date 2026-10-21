@@ -171,6 +171,17 @@ impl Workspace {
         Ok(id)
     }
 
+    /// Open an explicit interactive setup terminal without reconnect replay.
+    pub(crate) fn launch_setup(
+        &mut self,
+        connection: &Connection,
+        request: SpawnRequest,
+    ) -> Result<u32, crate::connection::CommandError> {
+        let id = connection.spawn_once(request)?;
+        self.spawns.insert(id, Destination::Tab);
+        Ok(id)
+    }
+
     /// The active tab id and its focused placement.
     pub(super) fn active_focus(&self) -> Option<(String, Placement)> {
         Some((self.active_tab()?.id.clone(), self.focused()?.clone()))

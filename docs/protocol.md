@@ -336,6 +336,16 @@ details.
 
 ## Changing the wire
 
+Native onboarding is additive within the existing `NATIVE_AGENT` JSON
+carrier. `features_ext.NATIVE_AGENT_LAUNCH` (`0x00000800`) gates
+`list_integrations` and `launch_integration`; the older `NATIVE_AGENT` bit
+alone does not imply either. [ACP onboarding](./acp.md#desktop-onboarding-on-the-connected-host)
+defines the host-local catalog, stable-session launch, bounds and authority.
+The additive catalog `auth_command` defaults to absent for older payloads and
+uses the same available direct OpenCode executable for explicit human login.
+The built-in profile resolves PATH before the official per-user installation
+at `~/.opencode/bin/opencode`; configured profiles never use that fallback.
+
 - Allocate a new type byte or sub-tag in `wire/frame/mod.rs`; duplicates
   fail to compile.
 - Add field ids in `wire/field.rs`, append-only.

@@ -178,7 +178,7 @@ The kind's facet.
 | Method | Carrier | Requires | Mutating | Gate | Status |
 |---|---|---|---|---|---|
 | `APPEND_RESOURCE_OUTPUT` | command `0x1a` | BIND, INPUT | yes | `resource_kinds` | shipped |
-| `NATIVE_AGENT` | command `0x38` | CREATE, BIND, INPUT | yes | none | shipped |
+| `NATIVE_AGENT` | command `0x38` | INVENTORY, CREATE, BIND, INPUT | yes | none | shipped |
 
 ### Events
 
@@ -274,6 +274,8 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `PERF_CONTROL` | OBSERVE+BIND + owner-UDS transport | `Global { owner_uds_only: true }` |
 | `APPEND_RESOURCE_OUTPUT` | BIND+INPUT | `ParentOfNamed` |
 | `NATIVE_AGENT { type: spawn }` | CREATE+BIND | `KeyedSession` |
+| `NATIVE_AGENT { type: list_integrations }` | INVENTORY | `OrganizationView` |
+| `NATIVE_AGENT { type: launch_integration }` | CREATE+BIND+INPUT | `KeyedSession` |
 | `NATIVE_AGENT { type: command }` | INPUT | `NamedTerminal` |
 | `NATIVE_AGENT { type: register/receive/complete/publish/close }` | BIND | `ParentOfNamed` |
 | `GET_ORGANIZATION` | INVENTORY | `OrganizationView` |

@@ -1,52 +1,92 @@
-//! Explicit ACP launch UI. Only the CLI starts a durable server-owned host.
-use gpui::prelude::*;
-use gpui::{AnyElement, Context, SharedString, Window, div, px};
-use gpui_kit::base::Disableable;
-use gpui_kit::component::Sizable;
-use gpui_kit::component::button::{Button, ButtonVariants};
+//! Native discovery and launch on the connected authority, never a local CLI proxy.
+use gpui::{Context, Window};
+use phux_client_runtime::control::{Event, PaneDescriptor, SpawnRequest, Status, Topology};
 use phux_protocol::ResourceId;
+use phux_protocol::caps::ServerFeatureExt;
+use phux_protocol::ids::SessionKey;
+use phux_protocol::native_agent::{
+    NativeIntegration, NativeIntegrationCatalog, NativeRequest, NativeRequestPayload,
+    SpawnedNativeAgent,
+};
+use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
+use std::sync::{Arc, Weak};
 
-use super::color::from_hex;
 use super::desk::{Desk, Modal};
-use super::host::{self, NativeIntegration};
 use super::notifications::Kind;
-use super::overlays::{card, corner};
-use super::skin::Look;
-use super::ui::{ghost_button, muted};
 use crate::connection::Connection;
+
+mod onboarding;
+mod view;
+pub(crate) use view::panel;
+#[cfg(test)]
+mod tests;
 
 #[derive(Default)]
 pub(crate) struct State {
     integrations: Vec<NativeIntegration>,
-    loading: bool,
-    launching: Option<String>,
+    discovery: Option<Flight>,
+    launch: Option<Launch>,
+    login: Option<Flight>,
+    destination: Option<Destination>,
     error: Option<String>,
     pending: Option<Pending>,
+    _deadline: Option<gpui::Task<()>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Destination {
+    session: SessionKey,
+    session_id: u32,
+    name: String,
+    cwd: String,
+}
+
+#[derive(Debug)]
+struct Flight {
+    id: u32,
+    owner: Weak<phux_client_runtime::Client>,
+    epoch: u64,
+}
+
+#[derive(Debug)]
+struct Launch {
+    flight: Flight,
+    integration: String,
+    destination: Destination,
 }
 
 struct Pending {
-    owner: std::sync::Weak<phux_client_runtime::Client>,
+    owner: Weak<phux_client_runtime::Client>,
+    epoch: u64,
     session: String,
+    session_key: Option<SessionKey>,
     terminal: ResourceId,
     agent: ResourceId,
     activation: String,
     revealed: bool,
 }
 
-/// Whether `owner` still names `client`.
 fn owned_by(
-    owner: &std::sync::Weak<phux_client_runtime::Client>,
-    client: &std::sync::Arc<phux_client_runtime::Client>,
+    owner: &Weak<phux_client_runtime::Client>,
+    client: &Arc<phux_client_runtime::Client>,
 ) -> bool {
-    std::ptr::eq(owner.as_ptr(), std::sync::Arc::as_ptr(client))
+    std::ptr::eq(owner.as_ptr(), Arc::as_ptr(client))
 }
 
-const LAUNCHED: &str = "The server-owned ACP session continues when this window closes. Waiting for its exact structured conversation.";
+const LAUNCHED: &str = "The headless agent runs on the selected host and continues when the window closes. Opening its native conversation; creation does not confirm provider readiness or sign-in.";
+const UNKNOWN: &str = "The connection changed before the launch receipt. The agent may already exist. Check the original host's panes before starting another; nothing is retried automatically.";
 
 impl State {
+    fn busy(&self) -> bool {
+        self.discovery.is_some()
+            || self.launch.is_some()
+            || self.login.is_some()
+            || self.pending.is_some()
+    }
+
     pub(super) fn owns_terminal(
         &self,
-        client: &std::sync::Arc<phux_client_runtime::Client>,
+        client: &Arc<phux_client_runtime::Client>,
         terminal: &ResourceId,
     ) -> bool {
         self.pending.as_ref().is_some_and(|pending| {
@@ -56,21 +96,34 @@ impl State {
 }
 
 impl Desk {
+    pub(crate) fn reset_native_launch(&mut self) {
+        if self.native_launch.launch.is_some() || self.native_launch.login.is_some() {
+            self.post(
+                Kind::Error,
+                "Previous host's agent setup is unconfirmed",
+                Some(UNKNOWN.into()),
+            );
+        }
+        self.native_launch = State::default();
+    }
+
     pub(crate) fn resume_native_conversation(
         &mut self,
         terminal: ResourceId,
         agent: ResourceId,
         activation: String,
     ) {
-        if self.native_launch.pending.is_some() || self.native_launch.launching.is_some() {
+        if self.native_launch.pending.is_some() || self.native_launch.launch.is_some() {
             return;
         }
         let Some(link) = self.link.as_ref() else {
             return;
         };
         self.native_launch.pending = Some(Pending {
-            owner: std::sync::Arc::downgrade(&link.connection.client),
+            owner: Arc::downgrade(&link.connection.client),
+            epoch: link.connection.connection_epoch(),
             session: self.session.clone(),
+            session_key: link.connection.home_key(),
             terminal,
             agent,
             activation,
@@ -78,41 +131,26 @@ impl Desk {
         });
     }
 
-    pub(crate) fn open_native_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_native_launch(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.modal = Modal::NativeLaunch;
-        if let Some(remote) = self.remote.as_deref() {
-            self.native_launch.error = Some(format!(
-                "This window is on {remote}. Native launch must run on that executing host: phux launch --acp INTEGRATION --json --session {}. The desktop never starts an agent locally for a remote session.",
-                self.session
-            ));
-        } else {
-            self.refresh_native_integrations(window, cx);
-        }
+        self.refresh_native_integrations(cx);
     }
 
-    fn refresh_native_integrations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.native_launch.loading || self.native_launch.launching.is_some() {
+    fn refresh_native_integrations(&mut self, cx: &mut Context<Self>) {
+        if self.native_launch.busy() {
             return;
         }
-        self.native_launch.loading = true;
-        self.native_launch.error = None;
-        let phux = self.phux.clone();
-        let socket = self.socket.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = smol::unblock(move || host::native_integrations(&phux, &socket)).await;
-            let _ = this.update(cx, |desk, cx| {
-                if desk.remote.is_some() {
-                    return;
-                }
-                desk.native_launch.loading = false;
-                match result {
-                    Ok(items) => desk.native_launch.integrations = items,
-                    Err(error) => desk.native_launch.error = Some(error),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        self.native_launch.destination = self.native_destination().ok();
+        self.native_launch.integrations.clear();
+        match self.queue_native_request(NativeRequest::ListIntegrations {}) {
+            Ok(flight) => {
+                self.native_launch.error = None;
+                self.native_launch.discovery = Some(flight);
+                self.arm_native_deadline(cx);
+            }
+            Err(error) => self.native_launch.error = Some(error),
+        }
+        cx.notify();
     }
 
     fn launch_native_integration(
@@ -121,7 +159,7 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.native_launch.launching.is_some() || self.remote.is_some() {
+        if self.native_launch.busy() {
             return;
         }
         if !self
@@ -132,66 +170,15 @@ impl Desk {
         {
             return;
         }
-        let Some(owner) = self
-            .link
-            .as_ref()
-            .filter(|link| link.connection.status == phux_client_runtime::control::Status::Attached)
-            .map(|link| std::sync::Arc::downgrade(&link.connection.client))
-        else {
-            self.native_launch.error =
-                Some("Reconnect to this session before launching a native agent.".into());
-            cx.notify();
-            return;
-        };
-        let session = self.session.clone();
-        let phux = self.phux.clone();
-        let socket = self.socket.clone();
-        let integration = integration.to_owned();
-        self.native_launch.launching = Some(integration.clone());
-        self.native_launch.error = None;
-        cx.spawn_in(window, async move |this, cx| {
-            let destination = session.clone();
-            let result = smol::unblock(move || {
-                host::launch_native(&phux, &socket, &integration, &destination)
-            })
-            .await;
-            let _ = this.update_in(cx, |desk, window, cx| {
-                if !desk
-                    .link
-                    .as_ref()
-                    .is_some_and(|link| owned_by(&owner, &link.connection.client))
-                {
-                    return;
-                }
-                desk.native_launch.launching = None;
-                match result {
-                    Ok(launched) => {
-                        desk.native_launch.pending = Some(Pending {
-                            owner,
-                            session,
-                            terminal: ResourceId::local(launched.terminal_id),
-                            agent: launched.agent_session_id,
-                            activation: launched.activation,
-                            revealed: false,
-                        });
-                        desk.close_modal(window, cx);
-                        desk.reveal_pending_native(cx);
-                        if let Some(link) = desk.link.as_ref() {
-                            let _ = link.connection.refresh_topology();
-                        }
-                        desk.post(Kind::Info, "Native agent launched", Some(LAUNCHED.into()));
-                    }
-                    Err(error) => {
-                        desk.native_launch.error = Some(error.clone());
-                        if desk.modal != Modal::NativeLaunch {
-                            desk.post(Kind::Error, "Native launch failed", Some(error));
-                        }
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        match self.queue_native_launch(integration) {
+            Ok(launch) => {
+                self.native_launch.launch = Some(launch);
+                self.native_launch.error = None;
+                self.close_modal(window, cx);
+                self.arm_native_deadline(cx);
+            }
+            Err(error) => self.native_launch.error = Some(error),
+        }
         cx.notify();
     }
 
@@ -223,7 +210,6 @@ impl Desk {
         };
         if !pending.revealed
             || !pending_matches(self, pending)
-            || self.focused_placement().map(|item| item.id.as_str()) != Some(placement)
             || self
                 .placement(placement)
                 .and_then(|item| item.terminal_id.as_ref())
@@ -235,22 +221,61 @@ impl Desk {
         if let Some(face) = self.conversation_faces.get_mut(placement) {
             face.visible = true;
             self.native_launch.pending = None;
+            self.native_launch.error = None;
         }
-        self.focus_conversation(placement, window, cx);
+        if self.focused_placement().map(|item| item.id.as_str()) == Some(placement) {
+            self.focus_conversation(placement, window, cx);
+        }
+    }
+
+    /// Provider setup can finish after the reader has switched tabs. Prepare
+    /// that exact conversation without taking focus or holding the launch lock.
+    pub(crate) fn settle_pending_native(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self
+            .native_launch
+            .pending
+            .as_ref()
+            .filter(|pending| pending.revealed && pending_matches(self, pending))
+        else {
+            return;
+        };
+        let placement = self
+            .link
+            .iter()
+            .flat_map(|link| &link.workspace.tabs)
+            .flat_map(|tab| crate::workspace::layout::placements(&tab.root))
+            .find(|placement| placement.terminal_id.as_ref() == Some(&pending.terminal))
+            .map(|placement| placement.id.clone());
+        let Some(placement) = placement else {
+            return;
+        };
+        let desk = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = desk.update_in(cx, |desk, window, cx| {
+                desk.prepare_pending_native(&placement, window, cx)
+            });
+        });
     }
 }
 
 fn pending_connection<'a>(desk: &'a Desk, pending: &Pending) -> Option<&'a Connection> {
     let connection = &desk.link.as_ref()?.connection;
-    (desk.session == pending.session && owned_by(&pending.owner, &connection.client))
-        .then_some(connection)
+    let session_exists =
+        connection
+            .topology
+            .as_ref()
+            .is_some_and(|topology| match pending.session_key {
+                Some(key) => topology.session_keyed(&key).is_some(),
+                None => topology.session_named(&pending.session).is_some(),
+            });
+    (session_exists && owned_by(&pending.owner, &connection.client)).then_some(connection)
 }
 
 fn pending_guardian_ready(desk: &Desk, pending: &Pending) -> bool {
     pending_connection(desk, pending).is_some_and(|connection| {
-        // Opening the exact catalogued guardian establishes the agent subscription.
-        // Requiring its not-yet-subscribed conversation here deadlocks new launches.
-        connection.status == phux_client_runtime::control::Status::Attached
+        // Revealing the catalogued guardian establishes its agent subscription.
+        // Waiting for the unsubscribed conversation first deadlocks new launches.
+        connection.status == Status::Attached
             && connection.pane(&pending.terminal).is_some()
             && connection.topology.as_ref().is_some_and(|topology| {
                 topology.agent_sessions.iter().any(|session| {
@@ -271,104 +296,4 @@ fn pending_matches(desk: &Desk, pending: &Pending) -> bool {
                     .as_ref()
                     .is_some_and(|view| view.activation == pending.activation)
         })
-}
-
-pub(crate) fn panel(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
-    let colors = &look.chrome;
-    let state = &desk.native_launch;
-    let busy = state.loading || state.launching.is_some();
-    let rows = state.integrations.iter().map(|item| {
-        let integration = item.integration.clone();
-        let title = item
-            .display_name
-            .as_deref()
-            .unwrap_or(&item.integration)
-            .to_owned();
-        let launching = state.launching.as_deref() == Some(item.integration.as_str());
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.))
-            .p(px(10.))
-            .rounded(corner(look, 8.))
-            .bg(from_hex(&colors.theme.background))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.))
-                    .child(div().text_sm().child(title))
-                    .child(
-                        Button::new(SharedString::from(format!(
-                            "launch-native-{}",
-                            item.integration
-                        )))
-                        .label(if launching { "Launching…" } else { "Launch" })
-                        .small()
-                        .ghost()
-                        .disabled(busy || !item.native_available || desk.remote.is_some())
-                        .on_click(cx.listener(
-                            move |desk, _, window, cx| {
-                                desk.launch_native_integration(&integration, window, cx)
-                            },
-                        )),
-                    ),
-            )
-            .children(
-                item.native_detail
-                    .as_ref()
-                    .filter(|_| !item.native_available)
-                    .map(|detail| muted(look, detail.clone())),
-            )
-    });
-    card(look, 560.)
-        .debug_selector(|| "native-launch-panel".into())
-        .max_w_full()
-        .max_h(px(620.))
-        .p(px(18.))
-        .rounded(corner(look, 12.))
-        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .flex()
-        .flex_col()
-        .gap(px(12.))
-        .child(div().text_lg().child("New Agent"))
-        .child(
-            div()
-                .id("native-launch-list")
-                .min_h_0()
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .children(rows),
-        )
-        .when(state.loading, |panel| panel.child("Loading agents…"))
-        .when(!state.loading && state.integrations.is_empty(), |panel| {
-            panel.child("No agents configured. Add an integration with phux, then refresh.")
-        })
-        .children(state.error.as_ref().map(|error| {
-            div()
-                .text_sm()
-                .text_color(from_hex(&colors.theme.warning))
-                .child(error.clone())
-        }))
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(px(8.))
-                .child(
-                    ghost_button("native-launch-refresh", "Refresh")
-                        .disabled(busy || desk.remote.is_some())
-                        .on_click(cx.listener(|desk, _, window, cx| {
-                            desk.refresh_native_integrations(window, cx)
-                        })),
-                )
-                .child(
-                    ghost_button("native-launch-close", "Close")
-                        .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx))),
-                ),
-        )
-        .into_any_element()
 }

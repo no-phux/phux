@@ -6,6 +6,7 @@ mod capture;
 mod federation;
 mod identity;
 mod layouts;
+mod native_launch;
 mod window_transfer;
 
 use std::path::PathBuf;
@@ -194,6 +195,8 @@ impl Server {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         self.run(&["workload", "authority", "--init"]);
+        // This fixture is a person's Desktop, not an automation credential;
+        // its broad test ceiling alone must not decide that principal kind.
         self.output(
             &[
                 "workload",
@@ -202,6 +205,8 @@ impl Server {
                 cert.to_str().unwrap(),
                 "--scope",
                 "*@global",
+                "--principal",
+                "human",
             ],
             &std::fs::read(&csr).unwrap(),
         );

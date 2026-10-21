@@ -12,7 +12,7 @@ const CATALOG: &str = "\
     goto | Go To… | General | cmd+p | Find and focus a terminal, agent or tab. | switch navigate
     settings | Settings… | General | cmd+, | Adjust appearance, key bindings and desktop preferences. | preferences theme
     new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
-    native-agent | New Agent… | Terminal |  | Launch a host-owned ACP agent. | agent acp
+    native-agent | New Agent… | Terminal |  | Start a native agent in the focused folder, on this host. | agent acp opencode remote headless login
     new-session | New Session… | Terminal | cmd+shift+n | Create a named session. |
     rename-session | Rename Session… | Terminal |  | Change the current session's name. |
     select-session-work | Select All in Session | Organization |  | Select the current session's work for organization. |

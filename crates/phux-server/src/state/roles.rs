@@ -32,6 +32,14 @@ impl RoleEffects {
 }
 
 impl ServerState {
+    /// Whether the connection attached its session as observe-only.
+    #[must_use]
+    pub fn is_attached_viewer(&self, client: ClientId) -> bool {
+        self.clients
+            .attached
+            .get(&client)
+            .is_some_and(|attached| attached.viewer)
+    }
     /// Whether `client` subscribed `terminal` as a `VIEWER`.
     #[must_use]
     pub fn is_viewer(&self, client: ClientId, terminal: &WireResourceId) -> bool {
