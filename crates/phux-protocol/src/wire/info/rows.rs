@@ -33,6 +33,10 @@ pub(super) fn skip_layout_tree(dec: &mut Decoder<'_>, depth: usize) -> Result<()
 }
 
 pub(in crate::wire) fn encode_session_info(info: &SessionInfo, enc: &mut Encoder<'_>) {
+    enc.write_record(|enc| encode_session_info_body(info, enc));
+}
+
+pub(super) fn encode_session_info_body(info: &SessionInfo, enc: &mut Encoder<'_>) {
     enc.write_u32_be(info.id.get());
     enc.write_str(&info.name);
     encode_option_window_id(info.active_window, enc);
@@ -44,6 +48,10 @@ pub(in crate::wire) fn encode_session_info(info: &SessionInfo, enc: &mut Encoder
 pub(in crate::wire) fn decode_session_info(
     dec: &mut Decoder<'_>,
 ) -> Result<SessionInfo, DecodeError> {
+    dec.read_record(decode_session_info_body)
+}
+
+pub(super) fn decode_session_info_body(dec: &mut Decoder<'_>) -> Result<SessionInfo, DecodeError> {
     let id = SessionId::new(dec.read_u32_be()?);
     let name = dec.read_str()?.to_owned();
     let active_window = decode_option_window_id(dec)?;
@@ -68,6 +76,10 @@ pub(in crate::wire) fn decode_session_info(
 }
 
 pub(in crate::wire) fn encode_window_info(info: &WindowInfo, enc: &mut Encoder<'_>) {
+    enc.write_record(|enc| encode_window_info_body(info, enc));
+}
+
+pub(super) fn encode_window_info_body(info: &WindowInfo, enc: &mut Encoder<'_>) {
     enc.write_u32_be(info.id.get());
     enc.write_u32_be(info.session_id.get());
     enc.write_u16_be(info.index);
@@ -80,6 +92,10 @@ pub(in crate::wire) fn encode_window_info(info: &WindowInfo, enc: &mut Encoder<'
 pub(in crate::wire) fn decode_window_info(
     dec: &mut Decoder<'_>,
 ) -> Result<WindowInfo, DecodeError> {
+    dec.read_record(decode_window_info_body)
+}
+
+pub(super) fn decode_window_info_body(dec: &mut Decoder<'_>) -> Result<WindowInfo, DecodeError> {
     let id = WindowId::new(dec.read_u32_be()?);
     let session_id = SessionId::new(dec.read_u32_be()?);
     let index = dec.read_u16_be()?;
@@ -96,6 +112,10 @@ pub(in crate::wire) fn decode_window_info(
 }
 
 pub(in crate::wire) fn encode_terminal_info(info: &ResourceInfo, enc: &mut Encoder<'_>) {
+    enc.write_record(|enc| encode_terminal_info_body(info, enc));
+}
+
+pub(super) fn encode_terminal_info_body(info: &ResourceInfo, enc: &mut Encoder<'_>) {
     encode_terminal_id(&info.id, enc);
     enc.write_u32_be(info.window_id.get());
     enc.write_u16_be(info.cols);
@@ -105,6 +125,12 @@ pub(in crate::wire) fn encode_terminal_info(info: &ResourceInfo, enc: &mut Encod
 }
 
 pub(in crate::wire) fn decode_terminal_info(
+    dec: &mut Decoder<'_>,
+) -> Result<ResourceInfo, DecodeError> {
+    dec.read_record(decode_terminal_info_body)
+}
+
+pub(super) fn decode_terminal_info_body(
     dec: &mut Decoder<'_>,
 ) -> Result<ResourceInfo, DecodeError> {
     let id = decode_terminal_id(dec)?;
@@ -148,13 +174,15 @@ pub(super) fn encode_resource_facets(
     }
     encode_list_len(rows, enc);
     for pane in resources.iter().filter(|p| p.has_resource_facets()) {
-        encode_terminal_id(&pane.id, enc);
-        enc.write_u8(pane.kind.as_wire());
-        encode_option_terminal_id(pane.parent.as_ref(), enc);
-        enc.write_option(pane.agent.as_ref(), |e, agent| {
-            e.write_str(&agent.provider);
-            encode_option_str(agent.native_id.as_deref(), e);
-            e.write_str(&agent.state);
+        enc.write_record(|enc| {
+            encode_terminal_id(&pane.id, enc);
+            enc.write_u8(pane.kind.as_wire());
+            encode_option_terminal_id(pane.parent.as_ref(), enc);
+            enc.write_option(pane.agent.as_ref(), |e, agent| {
+                e.write_str(&agent.provider);
+                encode_option_str(agent.native_id.as_deref(), e);
+                e.write_str(&agent.state);
+            });
         });
     }
 }
@@ -170,21 +198,31 @@ pub(super) fn decode_resource_facets(
     }
     let rows = decode_list_len(dec)?;
     for _ in 0..rows {
-        let id = decode_terminal_id(dec)?;
-        let kind = ResourceKind::from_wire(dec.read_u8()?);
-        let parent = decode_option_terminal_id(dec)?;
-        let agent = dec.read_option("Option<AgentFacet> tag", |d| {
-            Ok(AgentFacet {
-                provider: d.read_str()?.to_owned(),
-                native_id: decode_option_str(d)?.map(str::to_owned),
-                state: d.read_str()?.to_owned(),
-            })
-        })?;
-        if let Some(pane) = resources.iter_mut().find(|p| p.id == id) {
-            pane.kind = kind;
-            pane.parent = parent;
-            pane.agent = agent;
-        }
+        dec.read_record(|dec| apply_resource_facet(dec, resources))?;
+    }
+    Ok(())
+}
+
+/// Join one resource-facet row onto its `resources` entry (ignored when
+/// none).
+pub(super) fn apply_resource_facet(
+    dec: &mut Decoder<'_>,
+    resources: &mut [ResourceInfo],
+) -> Result<(), DecodeError> {
+    let id = decode_terminal_id(dec)?;
+    let kind = ResourceKind::from_wire(dec.read_u8()?);
+    let parent = decode_option_terminal_id(dec)?;
+    let agent = dec.read_option("Option<AgentFacet> tag", |d| {
+        Ok(AgentFacet {
+            provider: d.read_str()?.to_owned(),
+            native_id: decode_option_str(d)?.map(str::to_owned),
+            state: d.read_str()?.to_owned(),
+        })
+    })?;
+    if let Some(pane) = resources.iter_mut().find(|p| p.id == id) {
+        pane.kind = kind;
+        pane.parent = parent;
+        pane.agent = agent;
     }
     Ok(())
 }

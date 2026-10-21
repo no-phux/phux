@@ -283,7 +283,13 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
     }
 }
 
+/// Write an [`InputEvent`] as a record (`u32` length, then tag and body), so
+/// an event can grow and a list of them stays walkable.
 pub(super) fn encode_input_event(event: &InputEvent, enc: &mut Encoder<'_>) {
+    enc.write_record(|enc| encode_input_event_body(event, enc));
+}
+
+pub(super) fn encode_input_event_body(event: &InputEvent, enc: &mut Encoder<'_>) {
     match event {
         InputEvent::Key(event) => {
             enc.write_u8(INPUT_EVENT_TAG_KEY);
@@ -314,12 +320,15 @@ pub(super) fn encode_trailing_key(key: Option<&IdempotencyKey>, enc: &mut Encode
     }
 }
 
-/// Write a `KILL_RESOURCE_IF` precondition: optional instance, then bits.
+/// Write a `KILL_RESOURCE_IF` precondition as a record (the trailing key
+/// follows it): optional instance, then bits.
 pub(super) fn encode_kill_precondition(precondition: &KillPrecondition, enc: &mut Encoder<'_>) {
-    enc.write_option(precondition.instance.as_ref(), |e, instance| {
-        crate::wire::frame::codec::encode_server_instance(instance, e);
+    enc.write_record(|enc| {
+        enc.write_option(precondition.instance.as_ref(), |e, instance| {
+            crate::wire::frame::codec::encode_server_instance(instance, e);
+        });
+        enc.write_u8(precondition.conditions.bits());
     });
-    enc.write_u8(precondition.conditions.bits());
 }
 
 /// A `u16`-counted list of tagged `ResourceId`s.

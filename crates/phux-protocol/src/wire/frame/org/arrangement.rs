@@ -12,22 +12,29 @@ pub(super) const NODE_LEAF: u8 = 0;
 pub(super) const NODE_SPLIT: u8 = 1;
 
 /// Write an arrangement document positionally: `u16 group_count`, then per
-/// group `id: bytes16 || name: optional<str> || node`; a node is `0x00 ||
-/// entry: bytes16 || target` or `0x01 || dir: u8 || ratio: f32 ||
-/// node || node`; a target is `0x00 || resource: bytes16` (a member) or `0x01 ||
-/// host: str || id: u32` (a satellite resource).
+/// group a record `id: bytes16 || name: optional<str> || node`; a node is a
+/// record `0x00 || entry: bytes16 || target` or `0x01 || dir: u8 || ratio:
+/// f32 || node || node`; a target is `0x00 || resource: bytes16` (a member)
+/// or `0x01 || host: str || id: u32` (a satellite resource). A record is
+/// `u32` length then body, so groups and nodes can grow at their ends.
 pub(in crate::wire) fn encode_arrangement_doc(doc: &ArrangementDoc, enc: &mut Encoder<'_>) {
     enc.write_u16_be(u16::try_from(doc.groups.len()).unwrap_or(u16::MAX));
     for group in &doc.groups {
-        for byte in &group.id {
-            enc.write_u8(*byte);
-        }
-        enc.write_option(group.name.as_deref(), Encoder::write_str);
-        encode_node(&group.tree, enc);
+        enc.write_record(|enc| {
+            for byte in &group.id {
+                enc.write_u8(*byte);
+            }
+            enc.write_option(group.name.as_deref(), Encoder::write_str);
+            encode_node(&group.tree, enc);
+        });
     }
 }
 
 pub(super) fn encode_node(node: &ArrangementNode, enc: &mut Encoder<'_>) {
+    enc.write_record(|enc| encode_node_body(node, enc));
+}
+
+pub(super) fn encode_node_body(node: &ArrangementNode, enc: &mut Encoder<'_>) {
     match node {
         ArrangementNode::Leaf(entry) => {
             enc.write_u8(NODE_LEAF);
@@ -65,7 +72,8 @@ pub(super) fn encode_node(node: &ArrangementNode, enc: &mut Encoder<'_>) {
 
 /// Read an arrangement document, refusing one over
 /// [`MAX_ARRANGEMENT_BYTES`], nested deeper than [`MAX_ARRANGEMENT_DEPTH`],
-/// with a ratio outside `(0, 1)`, or with trailing bytes.
+/// or with a ratio outside `(0, 1)`. Bytes a newer peer appended after the
+/// last group, or at the end of a group or node record, are skipped.
 pub(in crate::wire) fn decode_arrangement_doc(value: &[u8]) -> Result<ArrangementDoc, DecodeError> {
     if value.len() > MAX_ARRANGEMENT_BYTES {
         return Err(DecodeError::OrganizationLimitExceeded);
@@ -74,20 +82,21 @@ pub(in crate::wire) fn decode_arrangement_doc(value: &[u8]) -> Result<Arrangemen
     let count = usize::from(dec.read_u16_be()?);
     let mut groups = dec.bounded_capacity(count);
     for _ in 0..count {
-        let mut id = [0; 16];
-        for byte in &mut id {
-            *byte = dec.read_u8()?;
-        }
-        let name = dec.read_option("Option<str> tag", |d| {
-            bounded_dec_str(d, MAX_ORG_NAME_BYTES)
-        })?;
-        let tree = decode_node(&mut dec, 0)?;
-        groups.push(ArrangementGroup { id, name, tree });
-    }
-    if !dec.at_body_end() {
-        return Err(DecodeError::InvalidArrangement);
+        groups.push(dec.read_record(decode_group)?);
     }
     Ok(ArrangementDoc { groups })
+}
+
+pub(super) fn decode_group(dec: &mut Decoder<'_>) -> Result<ArrangementGroup, DecodeError> {
+    let mut id = [0; 16];
+    for byte in &mut id {
+        *byte = dec.read_u8()?;
+    }
+    let name = dec.read_option("Option<str> tag", |d| {
+        bounded_dec_str(d, MAX_ORG_NAME_BYTES)
+    })?;
+    let tree = decode_node(dec, 0)?;
+    Ok(ArrangementGroup { id, name, tree })
 }
 
 pub(super) fn decode_node(
@@ -97,6 +106,13 @@ pub(super) fn decode_node(
     if depth >= MAX_ARRANGEMENT_DEPTH {
         return Err(DecodeError::LayoutTooDeep);
     }
+    dec.read_record(|dec| decode_node_body(dec, depth))
+}
+
+pub(super) fn decode_node_body(
+    dec: &mut Decoder<'_>,
+    depth: usize,
+) -> Result<ArrangementNode, DecodeError> {
     match dec.read_u8()? {
         NODE_LEAF => {
             let mut entry = [0; 16];

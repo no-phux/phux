@@ -58,8 +58,9 @@ fn unkeyed_goldens() -> Vec<(Command, Vec<u8>)> {
                 precondition: KillPrecondition::default(),
                 operation_id: None,
             },
-            // tag, id, `instance: None`, `conditions: 0`
-            vec![0x1b, 0x00, 0, 0, 0, 7, 0x00, 0x00],
+            // tag, id, then the precondition record: `u32` length 2,
+            // `instance: None`, `conditions: 0`
+            vec![0x1b, 0x00, 0, 0, 0, 7, 0, 0, 0, 2, 0x00, 0x00],
         ),
         (
             Command::KillResources {

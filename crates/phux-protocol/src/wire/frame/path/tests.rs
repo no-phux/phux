@@ -149,8 +149,10 @@ fn row_count_bound_and_malformed_row_data() {
     let at_bound = body(|e| {
         e.write_u32_be(u32::try_from(MAX_PATH_RESULTS).expect("bounded"));
         for _ in 0..MAX_PATH_RESULTS {
-            e.write_str("/a");
-            e.write_u8(0);
+            e.write_record(|e| {
+                e.write_str("/a");
+                e.write_u8(0);
+            });
         }
     });
     assert_eq!(decode_rows(&at_bound).unwrap().len(), MAX_PATH_RESULTS);
@@ -158,19 +160,32 @@ fn row_count_bound_and_malformed_row_data() {
         decode_rows(&(u32::try_from(MAX_PATH_RESULTS).expect("bounded") + 1).to_be_bytes()),
         Err(DecodeError::PathResultLimitExceeded)
     );
-    let mut trailing = body(|e| e.write_u32_be(0));
+    // Bytes after the list, or at the end of a row record, are a newer
+    // peer's additions and are skipped.
+    let mut trailing = body(|e| {
+        e.write_u32_be(1);
+        e.write_record(|e| {
+            e.write_str("/a");
+            e.write_u8(0);
+            e.write_u8(0xEE);
+        });
+    });
     trailing.push(1);
-    assert!(decode_rows(&trailing).is_err());
+    assert_eq!(decode_rows(&trailing).unwrap()[0].path, "/a");
     let unknown_kind = body(|e| {
         e.write_u32_be(1);
-        e.write_str("/a");
-        e.write_u8(9);
+        e.write_record(|e| {
+            e.write_str("/a");
+            e.write_u8(9);
+        });
     });
     assert!(decode_rows(&unknown_kind).is_err());
     let relative = body(|e| {
         e.write_u32_be(1);
-        e.write_str("relative");
-        e.write_u8(0);
+        e.write_record(|e| {
+            e.write_str("relative");
+            e.write_u8(0);
+        });
     });
     assert!(decode_rows(&relative).is_err());
 }

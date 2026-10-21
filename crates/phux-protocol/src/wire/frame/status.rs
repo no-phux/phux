@@ -3,86 +3,95 @@
 /// Structured error code carried by [`FrameKind::Error`](super::FrameKind::Error)
 /// (SPEC §14), a big-endian `u16`.
 ///
-/// Unknown values decode as
-/// [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue),
-/// never a placeholder. Ranges: handshake `1..=9`, attach `100..=199`,
-/// command `200..=299`, internal `u16::MAX`.
+/// Append-only: a newer peer may send a code this build does not know, so
+/// an unallocated value decodes as [`Self::Unknown`] carrying the raw
+/// value, never a frame error. Ranges: handshake `1..=9`, attach
+/// `100..=199`, command `200..=299`, internal `u16::MAX`; each code's value
+/// is in [`Self::as_wire`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-#[repr(u16)]
 pub enum ErrorCode {
     /// SPEC §6.1: HELLO version negotiation found no compatible version.
-    VersionIncompatible = 1,
+    VersionIncompatible,
     /// SPEC §6: the peer sent a type byte the receiver does not recognise.
-    UnknownMessageType = 2,
+    UnknownMessageType,
     /// SPEC §5 / Appendix A: a message could not be decoded.
-    MalformedMessage = 3,
+    MalformedMessage,
     /// SPEC §5: a frame's declared length exceeded the protocol cap.
-    FrameTooLarge = 4,
+    FrameTooLarge,
     // Value 5 is permanently reserved for the withdrawn OUT_OF_TIER error.
     /// SPEC §6.1: peers share no usable explicit bootstrap profile/codec/features.
-    CodecUnavailable = 6,
+    CodecUnavailable,
+    /// The receiver understood the frame's framing but not its content: a
+    /// frame type, command tag, or enum value newer than its protocol 1.x
+    /// build. Nothing happened and the connection stays open; the sender may
+    /// fall back to an older shape.
+    Unsupported,
 
     /// SPEC §13: the client issued an operation that requires an attach
     /// while not attached.
-    NotAttached = 100,
+    NotAttached,
     /// SPEC §13: the client requested attach while already attached.
-    AlreadyAttached = 101,
+    AlreadyAttached,
     /// SPEC §13: the requested session does not exist.
-    SessionNotFound = 102,
+    SessionNotFound,
     /// The requested window does not exist.
-    WindowNotFound = 103,
+    WindowNotFound,
     /// The requested terminal does not exist.
-    TerminalNotFound = 104,
+    TerminalNotFound,
     /// The requested client id does not exist.
-    ClientNotFound = 105,
+    ClientNotFound,
     /// A `Satellite` id reached a non-hub server, or a hub that does not
     /// know the host (ADR-0016).
-    UnsupportedSatelliteRoute = 106,
+    UnsupportedSatelliteRoute,
     /// The hub knows the satellite but its link is down; retryable
     /// (ADR-0007).
-    SatelliteUnreachable = 107,
+    SatelliteUnreachable,
 
     /// SPEC §11: the requested COMMAND payload was structurally invalid.
-    InvalidCommand = 200,
+    InvalidCommand,
     /// SPEC §15: the requested operation is forbidden for this peer.
-    PermissionDenied = 201,
+    PermissionDenied,
     /// The server has run out of a resource needed to satisfy the request
     /// (file descriptors, memory, PTYs, ...).
-    ResourceExhausted = 202,
+    ResourceExhausted,
     /// An untrusted paste in an atomic input batch failed the safety policy.
-    UnsafePaste = 203,
+    UnsafePaste,
     /// A cooperative `ACQUIRE_INPUT` lost to the current lease holder
     /// (ADR-0033).
-    InputLeaseHeld = 204,
+    InputLeaseHeld,
     /// Input reached the pane write path, but final PTY delivery is unknown.
-    InputDeliveryUnknown = 205,
+    InputDeliveryUnknown,
     /// A canonical-mode (`ICANON`) line would exceed the kernel's limit and
     /// be truncated; nothing was written.
-    CanonicalLimitExceeded = 206,
+    CanonicalLimitExceeded,
     /// `APPLY_INPUT` provably never reached a live PTY writer, so a resubmit
     /// cannot type it twice.
-    InputNotWritten = 207,
+    InputNotWritten,
     /// The verb does not apply to the subject's resource kind (a Terminal
     /// verb on an `AgentSession`, or an append to a Terminal).
-    WrongResourceKind = 208,
+    WrongResourceKind,
     /// `APPEND_RESOURCE_OUTPUT` from a client that is not the producer.
-    NotProducer = 209,
+    NotProducer,
     /// `APPEND_RESOURCE_OUTPUT` bytes are not complete, valid codec records;
     /// nothing was appended.
-    RecordInvalid = 210,
+    RecordInvalid,
     /// The append's retained ring or rate budget is exhausted; retry after
     /// backoff.
-    Overflow = 211,
+    Overflow,
     /// A `KILL_RESOURCE_IF` precondition did not hold (ADR-0109); nothing
     /// was killed.
-    PreconditionFailed = 212,
+    PreconditionFailed,
     /// A hub refused a keyed retry because the owning satellite restarted,
     /// so a replay could run twice (`docs/spec/L1.md` §9.1).
-    IncarnationChanged = 213,
+    IncarnationChanged,
 
     /// Catch-all for unexpected server-side failures.
-    InternalError = 65535,
+    InternalError,
+
+    /// A code this build does not know, with its raw wire value. Produced
+    /// only by the decoder.
+    Unknown(u16),
 }
 
 /// How far a consumer should degrade on an [`ErrorCode`]. Not a wire field,
@@ -102,10 +111,41 @@ pub enum ErrorScope {
 }
 
 impl ErrorCode {
-    /// Wire encoding of this code: the `#[repr(u16)]` discriminant.
+    /// Wire encoding of this code; [`Self::Unknown`] writes back its raw value.
     #[must_use]
     pub const fn as_wire(self) -> u16 {
-        self as u16
+        match self {
+            Self::VersionIncompatible => 1,
+            Self::UnknownMessageType => 2,
+            Self::MalformedMessage => 3,
+            Self::FrameTooLarge => 4,
+            Self::CodecUnavailable => 6,
+            Self::Unsupported => 7,
+            Self::NotAttached => 100,
+            Self::AlreadyAttached => 101,
+            Self::SessionNotFound => 102,
+            Self::WindowNotFound => 103,
+            Self::TerminalNotFound => 104,
+            Self::ClientNotFound => 105,
+            Self::UnsupportedSatelliteRoute => 106,
+            Self::SatelliteUnreachable => 107,
+            Self::InvalidCommand => 200,
+            Self::PermissionDenied => 201,
+            Self::ResourceExhausted => 202,
+            Self::UnsafePaste => 203,
+            Self::InputLeaseHeld => 204,
+            Self::InputDeliveryUnknown => 205,
+            Self::CanonicalLimitExceeded => 206,
+            Self::InputNotWritten => 207,
+            Self::WrongResourceKind => 208,
+            Self::NotProducer => 209,
+            Self::RecordInvalid => 210,
+            Self::Overflow => 211,
+            Self::PreconditionFailed => 212,
+            Self::IncarnationChanged => 213,
+            Self::InternalError => 65535,
+            Self::Unknown(value) => value,
+        }
     }
 
     /// How far a consumer should degrade on this code. Exhaustive, so a new
@@ -131,7 +171,9 @@ impl ErrorCode {
             | Self::RecordInvalid
             | Self::Overflow
             | Self::PreconditionFailed
-            | Self::IncarnationChanged => ErrorScope::Request,
+            | Self::IncarnationChanged
+            | Self::Unsupported
+            | Self::Unknown(_) => ErrorScope::Request,
             Self::TerminalNotFound
             | Self::WrongResourceKind
             | Self::UnsupportedSatelliteRoute
@@ -144,8 +186,8 @@ impl ErrorCode {
         }
     }
 
-    /// Inverse of [`Self::as_wire`]; returns `None` for values that do not
-    /// correspond to any code in this protocol version.
+    /// Inverse of [`Self::as_wire`] for the codes this build defines;
+    /// `None` for any other value (never [`Self::Unknown`]).
     #[must_use]
     pub const fn from_wire(value: u16) -> Option<Self> {
         Some(match value {
@@ -154,6 +196,7 @@ impl ErrorCode {
             3 => Self::MalformedMessage,
             4 => Self::FrameTooLarge,
             6 => Self::CodecUnavailable,
+            7 => Self::Unsupported,
             100 => Self::NotAttached,
             101 => Self::AlreadyAttached,
             102 => Self::SessionNotFound,
@@ -179,6 +222,16 @@ impl ErrorCode {
             65535 => Self::InternalError,
             _ => return None,
         })
+    }
+
+    /// Decode a wire value totally: a defined code, or [`Self::Unknown`]
+    /// carrying the raw value. What every decoder uses.
+    #[must_use]
+    pub const fn from_wire_or_unknown(value: u16) -> Self {
+        match Self::from_wire(value) {
+            Some(code) => code,
+            None => Self::Unknown(value),
+        }
     }
 }
 wire_enum! { as_wire / from_wire;

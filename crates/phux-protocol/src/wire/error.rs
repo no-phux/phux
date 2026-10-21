@@ -40,6 +40,20 @@ pub enum DecodeError {
         value: u32,
     },
 
+    /// A well-framed `COMMAND` whose body this build does not understand:
+    /// an unknown command tag, or an unknown enum value inside a known
+    /// command. Carries the frame's `request_id`, so a receiver answers with
+    /// a correlated `Unsupported` error and keeps the connection.
+    #[error("unsupported command (request {request_id}): unknown '{field}' value {value}")]
+    UnsupportedCommand {
+        /// The `COMMAND` frame's request id.
+        request_id: u32,
+        /// Logical name of the unrecognised field (`Command` for the tag).
+        field: &'static str,
+        /// The unrecognised discriminant, widened to `u32`.
+        value: u32,
+    },
+
     /// An acknowledged-input operation id used the reserved all-zero value.
     #[error("input operation id must not be zero")]
     InvalidInputOperationId,
@@ -147,8 +161,8 @@ pub enum DecodeError {
     #[error("organization key must be 16 non-zero bytes")]
     InvalidOrganizationKey,
 
-    /// An arrangement document had a split ratio outside `(0, 1)` or bytes
-    /// after its last group.
+    /// An arrangement document had a split ratio outside `(0, 1)`, a bad
+    /// satellite host, or two owners.
     #[error("arrangement document is malformed")]
     InvalidArrangement,
 }
@@ -159,6 +173,20 @@ impl DecodeError {
         Self::UnknownEnumValue {
             field,
             value: value.into(),
+        }
+    }
+
+    /// Promote an unknown enum value inside a `COMMAND` body to
+    /// [`Self::UnsupportedCommand`] for `request_id`; every other error is
+    /// malformed input and stays as it is.
+    pub(crate) const fn into_unsupported_command(self, request_id: u32) -> Self {
+        match self {
+            Self::UnknownEnumValue { field, value } => Self::UnsupportedCommand {
+                request_id,
+                field,
+                value,
+            },
+            other => other,
         }
     }
 }

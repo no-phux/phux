@@ -46,6 +46,8 @@ use accumulator::{
     Fields, write_actor, write_name, write_operation, write_project, write_resource, write_session,
 };
 pub(in crate::wire) use arrangement::decode_arrangement_doc;
+#[cfg(test)]
+pub(in crate::wire) use arrangement::encode_arrangement_doc;
 use arrangement::write_document;
 pub(in crate::wire) use command_decode::decode_org_command;
 pub(in crate::wire) use command_encode::encode_org_command;
@@ -200,3 +202,6 @@ pub enum SplitDirection {
 // ---------------------------------------------------------------------------
 // Events.
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests;

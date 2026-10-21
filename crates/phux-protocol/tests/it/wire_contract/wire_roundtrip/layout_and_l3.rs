@@ -7,7 +7,7 @@ use super::{
     DirectoryListingError, DirectoryListingResult, FrameKind, GroupId, Layer, LayerSet,
     MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, MoveError, MoveResult, ResourceId,
     ResourceKind, Scope, SpawnError, SpawnResource, SpawnResult, arb_terminal_id,
-    assert_round_trip, framed_tlv, tlv_field,
+    assert_round_trip, framed_tlv, record, tlv_field,
 };
 
 pub(super) fn encode_split_with_ratio(ratio: f32) -> Vec<u8> {
@@ -22,25 +22,27 @@ pub(super) fn encode_split_with_ratio(ratio: f32) -> Vec<u8> {
     snap.extend_from_slice(&0u32.to_be_bytes());
     // windows: one item
     snap.extend_from_slice(&1u32.to_be_bytes());
-    // WindowInfo
-    snap.extend_from_slice(&1u32.to_be_bytes()); // id
-    snap.extend_from_slice(&1u32.to_be_bytes()); // session_id
-    snap.extend_from_slice(&0u16.to_be_bytes()); // index
-    snap.extend_from_slice(&1u32.to_be_bytes()); // name length
-    snap.push(b'w'); // name bytes
-    snap.push(0); // active_resource: None
-    snap.push(1); // layout: Some
-    snap.push(1); // LayoutNode::Split
-    snap.push(0); // SplitDir::Horizontal
-    snap.extend_from_slice(&ratio.to_be_bytes());
+    // WindowInfo, a row record
+    let mut win = Vec::new();
+    win.extend_from_slice(&1u32.to_be_bytes()); // id
+    win.extend_from_slice(&1u32.to_be_bytes()); // session_id
+    win.extend_from_slice(&0u16.to_be_bytes()); // index
+    win.extend_from_slice(&1u32.to_be_bytes()); // name length
+    win.push(b'w'); // name bytes
+    win.push(0); // active_resource: None
+    win.push(1); // layout: Some
+    win.push(1); // LayoutNode::Split
+    win.push(0); // SplitDir::Horizontal
+    win.extend_from_slice(&ratio.to_be_bytes());
     // Left leaf: LAYOUT_TAG_LEAF=0, then ResourceId::Local { id: 1 }
-    snap.push(0);
-    snap.push(0); // RESOURCE_ID_TAG_LOCAL
-    snap.extend_from_slice(&1u32.to_be_bytes());
+    win.push(0);
+    win.push(0); // RESOURCE_ID_TAG_LOCAL
+    win.extend_from_slice(&1u32.to_be_bytes());
     // Right leaf: LAYOUT_TAG_LEAF=0, then ResourceId::Local { id: 2 }
-    snap.push(0);
-    snap.push(0); // RESOURCE_ID_TAG_LOCAL
-    snap.extend_from_slice(&2u32.to_be_bytes());
+    win.push(0);
+    win.push(0); // RESOURCE_ID_TAG_LOCAL
+    win.extend_from_slice(&2u32.to_be_bytes());
+    snap.extend_from_slice(&record(&win));
     // panes: empty list
     snap.extend_from_slice(&0u32.to_be_bytes());
     // focused_session, focused_window, focused_resource (tagged ResourceId)

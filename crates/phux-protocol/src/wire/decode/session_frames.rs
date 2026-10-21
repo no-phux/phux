@@ -201,11 +201,10 @@ impl Decoder<'_> {
             match id {
                 field::error::REQUEST_ID => request_id = Some(sub!(value, Decoder::read_u32_be)),
                 field::error::CODE => {
-                    let raw = sub!(value, Decoder::read_u16_be);
-                    code = Some(
-                        ErrorCode::from_wire(raw)
-                            .ok_or_else(|| DecodeError::unknown_enum("ErrorCode", raw))?,
-                    );
+                    code = Some(ErrorCode::from_wire_or_unknown(sub!(
+                        value,
+                        Decoder::read_u16_be
+                    )));
                 }
                 field::error::MESSAGE => message = Some(utf8_value(value)?),
                 _ => {}

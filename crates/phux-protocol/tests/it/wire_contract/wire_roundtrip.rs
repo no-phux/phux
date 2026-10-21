@@ -45,7 +45,7 @@ use phux_protocol::wire::info::{
 use phux_protocol::wire::{DecodeError, decode::Decoder, frame::FrameKind};
 
 use crate::common;
-use common::{assert_round_trip, framed_tlv, local_id_bytes, tlv_field};
+use common::{assert_round_trip, framed_tlv, local_id_bytes, record, tlv_field};
 
 mod attach_and_checkout;
 mod codec_props;

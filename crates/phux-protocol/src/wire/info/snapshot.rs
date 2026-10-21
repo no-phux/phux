@@ -137,6 +137,12 @@ impl HostInventory {
 /// zero count), and read only while bytes remain, so older peers stay
 /// byte-compatible. Rows naming no entry and unknown flag bits are ignored.
 ///
+/// Every list row (a [`SessionInfo`], [`WindowInfo`], [`ResourceInfo`],
+/// facet row, [`HostInventory`], or [`HostSessionInfo`]) is a record:
+/// `u32` big-endian length, then the row. A newer peer appends fields at a
+/// row's end and an older decoder skips them, so rows grow without a
+/// version bump. Ids inside a row are frozen leaves.
+///
 /// # Example
 ///
 /// ```

@@ -70,21 +70,39 @@ pub use wire::frame::{
 pub use wire::info::AgentFacet;
 pub use wire::info::{HostInventory, HostSessionInfo};
 
-/// Protocol version this crate implements. Clients and servers must agree on
-/// `major.minor`; additive changes ship as feature bits, not bumps.
+/// Protocol version this crate implements.
+///
+/// The major is the compatibility line: any client and server with the same
+/// major interoperate, whatever their minor and patch. Additive changes ship
+/// as feature bits, new frame types or tags, new TLV fields, or fields
+/// appended to a record's end, and a peer that does not know one ignores or
+/// refuses it with `ERROR`/`Unsupported` without closing. Minor and patch
+/// are informational; only a change no additive shape can express bumps
+/// the major.
 pub const PROTOCOL_VERSION: Version = Version {
-    major: 0,
-    minor: 9,
+    major: 1,
+    minor: 0,
     patch: 0,
 };
 
 /// A semantic protocol version: `major.minor.patch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Version {
-    /// Wire-breaking changes bump this.
+    /// The compatibility line: peers interoperate iff this matches; only a
+    /// wire-breaking change bumps it.
     pub major: u16,
-    /// Additive changes bump this.
+    /// Informational: additive changes may bump it, and peers never refuse
+    /// each other over it.
     pub minor: u16,
-    /// Editorial; behavior unchanged.
+    /// Informational: editorial or behavior-preserving changes.
     pub patch: u16,
+}
+
+impl Version {
+    /// Whether a peer at `self` interoperates with one at `other`: the same
+    /// major. Minor and patch never refuse a connection.
+    #[must_use]
+    pub const fn is_compatible_with(self, other: Self) -> bool {
+        self.major == other.major
+    }
 }

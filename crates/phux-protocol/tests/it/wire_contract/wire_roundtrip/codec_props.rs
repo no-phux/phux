@@ -279,18 +279,12 @@ fn hello_rejects_legacy_and_truncated_capabilities() {
 fn unknown_nested_enum_tags_are_rejected() {
     type Case<'a> = (u8, &'a [(u32, &'a [u8])], &'static str, u32);
     let local0 = [0x00u8, 0, 0, 0, 0];
-    let cases: [Case<'_>; 7] = [
+    let cases: [Case<'_>; 5] = [
         (
             0xA2,
             &[(1, &7u32.to_be_bytes()), (2, &[0x01, 0xFE])],
             "SpawnError",
             0xFE,
-        ),
-        (
-            0x31,
-            &[(1, &1u32.to_be_bytes()), (2, &[0x7F])],
-            "Command",
-            0x7F,
         ),
         (
             0xA2,
@@ -300,12 +294,6 @@ fn unknown_nested_enum_tags_are_rejected() {
         ),
         (0x02, &[(1, &[0xFF])], "AttachTarget", 0xFF),
         (0x14, &[(1, &local0), (2, &[0xAB])], "FocusEvent", 0xAB),
-        (
-            0xC1,
-            &[(2, &0x9999u16.to_be_bytes()), (3, b"")],
-            "ErrorCode",
-            0x9999,
-        ),
         (
             phux_protocol::wire::frame::TYPE_SET_METADATA,
             &[(1, &0u32.to_be_bytes()), (2, &[0xFE])],
@@ -323,6 +311,38 @@ fn unknown_nested_enum_tags_are_rejected() {
             DecodeError::UnknownEnumValue { field, value },
         );
     }
+}
+
+/// What a newer peer may send decodes or names its request: an unknown
+/// command tag surfaces the `request_id` (whatever the field order), and an
+/// unknown `ErrorCode` decodes as `Unknown` carrying its raw value.
+#[test]
+fn newer_peer_values_are_correlated_or_tolerated() {
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 2, &[0x7F]);
+    tlv_field(&mut fields, 1, &41u32.to_be_bytes());
+    assert_eq!(
+        FrameKind::decode(&framed_tlv(0x31, &fields)).unwrap_err(),
+        DecodeError::UnsupportedCommand {
+            request_id: 41,
+            field: "Command",
+            value: 0x7F,
+        },
+    );
+
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 2, &0x9999u16.to_be_bytes());
+    tlv_field(&mut fields, 3, b"from the future");
+    let (frame, _) = FrameKind::decode(&framed_tlv(0xC1, &fields)).unwrap();
+    assert_eq!(
+        frame,
+        FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::Unknown(0x9999),
+            message: "from the future".to_owned(),
+        }
+    );
+    assert_round_trip(&frame);
 }
 
 #[test]

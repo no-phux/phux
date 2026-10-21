@@ -49,20 +49,24 @@ pub(super) fn encode_host_inventory(
         return;
     }
     encode_list(hosts, enc, |row, enc| {
-        enc.write_str(row.host.as_str());
-        encode_option_str(row.unreachable.as_deref(), enc);
-        encode_list(&row.sessions, enc, encode_host_session);
+        enc.write_record(|enc| {
+            enc.write_str(row.host.as_str());
+            encode_option_str(row.unreachable.as_deref(), enc);
+            encode_list(&row.sessions, enc, encode_host_session);
+        });
     });
 }
 
 pub(super) fn encode_host_session(session: &HostSessionInfo, enc: &mut Encoder<'_>) {
-    enc.write_u32_be(session.id.get());
-    enc.write_str(&session.name);
-    enc.write_i64_be(session.created_at_unix_secs);
-    enc.write_u16_be(session.window_count);
-    enc.write_u16_be(session.pane_count);
-    enc.write_u16_be(session.attached_client_count);
-    encode_option_terminal_id(session.active_resource.as_ref(), enc);
+    enc.write_record(|enc| {
+        enc.write_u32_be(session.id.get());
+        enc.write_str(&session.name);
+        enc.write_i64_be(session.created_at_unix_secs);
+        enc.write_u16_be(session.window_count);
+        enc.write_u16_be(session.pane_count);
+        enc.write_u16_be(session.attached_client_count);
+        encode_option_terminal_id(session.active_resource.as_ref(), enc);
+    });
 }
 
 /// Read the trailing host-session inventory if the enclosing field has bytes
@@ -74,15 +78,23 @@ pub(super) fn decode_host_inventory(
         return Ok(Vec::new());
     }
     decode_list(dec, |dec| {
-        Ok(HostInventory {
-            host: SatelliteHost::new(dec.read_str()?),
-            unreachable: decode_option_str(dec)?.map(str::to_owned),
-            sessions: decode_list(dec, decode_host_session)?,
+        dec.read_record(|dec| {
+            Ok(HostInventory {
+                host: SatelliteHost::new(dec.read_str()?),
+                unreachable: decode_option_str(dec)?.map(str::to_owned),
+                sessions: decode_list(dec, decode_host_session)?,
+            })
         })
     })
 }
 
 pub(super) fn decode_host_session(dec: &mut Decoder<'_>) -> Result<HostSessionInfo, DecodeError> {
+    dec.read_record(decode_host_session_body)
+}
+
+pub(super) fn decode_host_session_body(
+    dec: &mut Decoder<'_>,
+) -> Result<HostSessionInfo, DecodeError> {
     let id = SessionId::new(dec.read_u32_be()?);
     let name = dec.read_str()?.to_owned();
     let created_at_unix_secs = dec.read_i64_be()?;
@@ -114,8 +126,10 @@ pub(super) fn encode_session_facets(
     }
     encode_list_len(rows, enc);
     for session in sessions.iter().filter(|s| s.keep_empty) {
-        enc.write_u32_be(session.id.get());
-        enc.write_u8(SESSION_FACET_KEEP_EMPTY);
+        enc.write_record(|enc| {
+            enc.write_u32_be(session.id.get());
+            enc.write_u8(SESSION_FACET_KEEP_EMPTY);
+        });
     }
 }
 
@@ -157,8 +171,8 @@ pub(super) fn decode_session_facets(
     }
     let rows = decode_list_len(dec)?;
     for _ in 0..rows {
-        let id = SessionId::new(dec.read_u32_be()?);
-        let flags = dec.read_u8()?;
+        let (id, flags) =
+            dec.read_record(|dec| Ok((SessionId::new(dec.read_u32_be()?), dec.read_u8()?)))?;
         if let Some(session) = sessions.iter_mut().find(|s| s.id == id) {
             session.keep_empty = flags & SESSION_FACET_KEEP_EMPTY != 0;
         }

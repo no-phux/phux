@@ -182,19 +182,25 @@ impl Decoder<'_> {
         })
     }
 
+    /// Decode a `COMMAND`. The command field is decoded once every field is
+    /// read, so a body this build cannot understand (an unknown command tag
+    /// or enum value) surfaces as [`DecodeError::UnsupportedCommand`] with
+    /// the `request_id` a correlated refusal needs, whatever the field order.
     pub(super) fn decode_command(&mut self) -> Result<FrameKind, DecodeError> {
         let mut request_id = 0u32;
-        let mut command: Option<crate::wire::frame::Command> = None;
+        let mut command: Option<&[u8]> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::command::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::command::COMMAND => command = Some(sub!(value, decode_command)),
+                field::command::COMMAND => command = Some(value),
                 _ => {}
             }
         }
+        let command = decode_command(&mut self.child(req(command)?))
+            .map_err(|err| err.into_unsupported_command(request_id))?;
         Ok(FrameKind::Command {
             request_id,
-            command: req(command)?,
+            command,
         })
     }
 

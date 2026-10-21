@@ -3,7 +3,8 @@
 use super::{
     AgentFacet, BootstrapId, BootstrapStreamProfile, BytesMut, ClientId, CommandResult,
     CommandValue, DecodeError, FrameKind, ResourceId, ResourceInfo, ResourceKind, SessionId,
-    SessionSnapshot, StreamId, WindowId, assert_round_trip, framed_tlv, local_id_bytes, tlv_field,
+    SessionSnapshot, StreamId, WindowId, assert_round_trip, framed_tlv, local_id_bytes, record,
+    tlv_field,
 };
 
 #[test]
@@ -118,28 +119,31 @@ fn snapshot_resource_facets_join_by_id_and_ignore_unknown_rows() {
     snap.extend_from_slice(&0u32.to_be_bytes()); // sessions
     snap.extend_from_slice(&0u32.to_be_bytes()); // windows
     snap.extend_from_slice(&1u32.to_be_bytes()); // panes
-    snap.extend_from_slice(&pane);
+    snap.extend_from_slice(&record(&pane));
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_session
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_window
     snap.extend_from_slice(&local_id_bytes(7)); // focused_resource
-    // Trailing facets: two rows.
+    // Trailing facets: two row records.
     snap.extend_from_slice(&2u32.to_be_bytes());
     // Row for an id with no pane entry: ignored.
-    snap.extend_from_slice(&local_id_bytes(99));
-    snap.push(1); // AgentSession
-    snap.push(0); // parent None
-    snap.push(0); // agent None
-    // Row for pane 7.
-    snap.extend_from_slice(&local_id_bytes(7));
-    snap.push(1); // AgentSession
-    snap.push(1); // parent Some
-    snap.extend_from_slice(&local_id_bytes(3));
-    snap.push(1); // agent Some
-    snap.extend_from_slice(&6u32.to_be_bytes());
-    snap.extend_from_slice(b"claude");
-    snap.push(0); // native_id None
-    snap.extend_from_slice(&7u32.to_be_bytes());
-    snap.extend_from_slice(b"blocked");
+    let mut orphan = local_id_bytes(99);
+    orphan.push(1); // AgentSession
+    orphan.push(0); // parent None
+    orphan.push(0); // agent None
+    snap.extend_from_slice(&record(&orphan));
+    // Row for pane 7, with bytes a newer server appended: skipped.
+    let mut row = local_id_bytes(7);
+    row.push(1); // AgentSession
+    row.push(1); // parent Some
+    row.extend_from_slice(&local_id_bytes(3));
+    row.push(1); // agent Some
+    row.extend_from_slice(&6u32.to_be_bytes());
+    row.extend_from_slice(b"claude");
+    row.push(0); // native_id None
+    row.extend_from_slice(&7u32.to_be_bytes());
+    row.extend_from_slice(b"blocked");
+    row.extend_from_slice(&[0xEE; 3]);
+    snap.extend_from_slice(&record(&row));
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &snap);
     tlv_field(&mut fields, 2, &1u32.to_be_bytes());
@@ -211,8 +215,8 @@ fn snapshot_without_keep_empty_sessions_has_no_session_facets() {
     let plain_len = encode(plain).len();
     // A marked snapshot adds a zero-count resource-facet list (4 bytes), a
     // zero-count hosts list (4 bytes), a one-row session-facet count
-    // (4 bytes) and the row itself (5 bytes).
-    assert_eq!(encode(marked).len(), plain_len + 4 + 4 + 4 + 5);
+    // (4 bytes) and the row record itself (4 + 5 bytes).
+    assert_eq!(encode(marked).len(), plain_len + 4 + 4 + 4 + 4 + 5);
 }
 
 /// All three trailing lists at once (L1.md §9.1 order: facets, hosts,
@@ -273,27 +277,30 @@ fn keep_empty_without_hosts_writes_zero_count_anchors() {
 
     let mut buf = BytesMut::new();
     reply.encode(&mut buf);
-    // The field ends: facets count 0, hosts count 0, rows 1, id 2, flags 1.
+    // The field ends: facets count 0, hosts count 0, rows 1, then the row
+    // record (length 5, id 2, flags 1).
+    let session_row = record(&[0, 0, 0, 2, 1]);
     let mut tail = Vec::new();
     tail.extend_from_slice(&0u32.to_be_bytes());
     tail.extend_from_slice(&0u32.to_be_bytes());
     tail.extend_from_slice(&1u32.to_be_bytes());
-    tail.extend_from_slice(&2u32.to_be_bytes());
-    tail.push(1);
+    tail.extend_from_slice(&session_row);
     assert!(buf.ends_with(&tail), "zero-count facet and host anchors");
 
     // What an older decoder reads: the same snapshot field cut off after the
     // facets, and after the hosts. Hand-rolled like the host-inventory test:
     // one session, "parked" (id 2), then the trailing lists.
+    let mut parked = Vec::new();
+    parked.extend_from_slice(&2u32.to_be_bytes()); // id
+    parked.extend_from_slice(&6u32.to_be_bytes());
+    parked.extend_from_slice(b"parked");
+    parked.push(0); // no active window
+    parked.extend_from_slice(&0i64.to_be_bytes()); // created_at
+    parked.extend_from_slice(&0u16.to_be_bytes()); // window_count
+    parked.extend_from_slice(&0u16.to_be_bytes()); // attached clients
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&1u32.to_be_bytes()); // sessions: one
-    prefix.extend_from_slice(&2u32.to_be_bytes()); // id
-    prefix.extend_from_slice(&6u32.to_be_bytes());
-    prefix.extend_from_slice(b"parked");
-    prefix.push(0); // no active window
-    prefix.extend_from_slice(&0i64.to_be_bytes()); // created_at
-    prefix.extend_from_slice(&0u16.to_be_bytes()); // window_count
-    prefix.extend_from_slice(&0u16.to_be_bytes()); // attached clients
+    prefix.extend_from_slice(&record(&parked));
     prefix.extend_from_slice(&0u32.to_be_bytes()); // windows
     prefix.extend_from_slice(&0u32.to_be_bytes()); // resources
     prefix.extend_from_slice(&2u32.to_be_bytes()); // focused_session
@@ -301,13 +308,7 @@ fn keep_empty_without_hosts_writes_zero_count_anchors() {
     prefix.extend_from_slice(&local_id_bytes(0)); // focused_resource
     let after_facets = [prefix.as_slice(), &0u32.to_be_bytes()].concat();
     let after_hosts = [after_facets.as_slice(), &0u32.to_be_bytes()].concat();
-    let full = [
-        after_hosts.as_slice(),
-        &1u32.to_be_bytes(),
-        &2u32.to_be_bytes(),
-        &[1],
-    ]
-    .concat();
+    let full = [after_hosts.as_slice(), &1u32.to_be_bytes(), &session_row].concat();
 
     let decode = |snap: &[u8]| {
         let mut fields = Vec::new();

@@ -477,17 +477,18 @@ fn resource_info_facet_row_carries_lifecycle_exit_and_input_holder_additively() 
         plain(1).with_exit(Some(ExitFacet::new(1, 2).with_exit_status(Some(0)))),
     ]));
 
-    // A plain entry adds only its positional prefix (id 5 + window 4 +
-    // cols 2 + rows 2 + title 1 + cwd 1 bytes): no state entry is written.
+    // A plain entry adds only its positional record (length 4, then id 5 +
+    // window 4 + cols 2 + rows 2 + title 1 + cwd 1 bytes): no state entry is
+    // written.
     let one = state(vec![exited.clone(), held.clone()]);
     let two = state(vec![exited, held, plain(7)]);
-    assert_eq!(result_len(&two) - result_len(&one), 15);
+    assert_eq!(result_len(&two) - result_len(&one), 19);
 
     // A snapshot of plain entries carries no trailing field at all.
     let bare = state(vec![plain(1), plain(2)]);
-    assert_eq!(result_len(&bare) - result_len(&state(vec![plain(1)])), 15);
+    assert_eq!(result_len(&bare) - result_len(&state(vec![plain(1)])), 19);
     let empty = state(Vec::new());
-    assert_eq!(result_len(&state(vec![plain(1)])) - result_len(&empty), 15);
+    assert_eq!(result_len(&state(vec![plain(1)])) - result_len(&empty), 19);
 }
 
 #[test]

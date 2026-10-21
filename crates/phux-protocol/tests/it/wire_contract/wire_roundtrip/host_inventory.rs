@@ -2,7 +2,7 @@
 
 use super::{
     CommandResult, CommandValue, FrameKind, ResourceId, ResourceInfo, ResourceKind, SessionId,
-    SessionSnapshot, WindowId, assert_round_trip, framed_tlv, local_id_bytes, tlv_field,
+    SessionSnapshot, WindowId, assert_round_trip, framed_tlv, local_id_bytes, record, tlv_field,
 };
 
 /// The shared body of every round-trip test in this file: encoding then
@@ -71,20 +71,34 @@ fn host_inventory_trails_the_facet_list_and_is_optional() {
     prefix.extend_from_slice(&1u32.to_be_bytes()); // focused_window
     prefix.extend_from_slice(&local_id_bytes(1)); // focused_resource
     prefix.extend_from_slice(&0u32.to_be_bytes()); // facets: zero rows
+    let host_rows = |extra: &[u8]| {
+        let mut session = Vec::new();
+        session.extend_from_slice(&3u32.to_be_bytes()); // satellite-local id
+        session.extend_from_slice(&5u32.to_be_bytes());
+        session.extend_from_slice(b"build");
+        session.extend_from_slice(&0i64.to_be_bytes()); // created_at
+        session.extend_from_slice(&2u16.to_be_bytes()); // windows
+        session.extend_from_slice(&3u16.to_be_bytes()); // panes
+        session.extend_from_slice(&0u16.to_be_bytes()); // attached
+        session.push(0); // no active resource
+        session.extend_from_slice(extra); // a newer server's additions
+        let mut host = Vec::new();
+        host.extend_from_slice(&4u32.to_be_bytes());
+        host.extend_from_slice(b"edge");
+        host.push(0); // reachable
+        host.extend_from_slice(&1u32.to_be_bytes()); // one session
+        host.extend_from_slice(&record(&session));
+        host.extend_from_slice(extra);
+        let mut rows = 1u32.to_be_bytes().to_vec(); // hosts: one row
+        rows.extend_from_slice(&record(&host));
+        rows
+    };
     let mut full = prefix.clone();
-    full.extend_from_slice(&1u32.to_be_bytes()); // hosts: one row
-    full.extend_from_slice(&4u32.to_be_bytes());
-    full.extend_from_slice(b"edge");
-    full.push(0); // reachable
-    full.extend_from_slice(&1u32.to_be_bytes()); // one session
-    full.extend_from_slice(&3u32.to_be_bytes()); // satellite-local id
-    full.extend_from_slice(&5u32.to_be_bytes());
-    full.extend_from_slice(b"build");
-    full.extend_from_slice(&0i64.to_be_bytes()); // created_at
-    full.extend_from_slice(&2u16.to_be_bytes()); // windows
-    full.extend_from_slice(&3u16.to_be_bytes()); // panes
-    full.extend_from_slice(&0u16.to_be_bytes()); // attached
-    full.push(0); // no active resource
+    full.extend_from_slice(&host_rows(&[]));
+    // The same rows with bytes appended inside each record, as a newer
+    // server extending them would write.
+    let mut extended = prefix.clone();
+    extended.extend_from_slice(&host_rows(&[0xEE, 0xFF, 0x01]));
 
     let decode = |snap: &[u8]| {
         let mut fields = Vec::new();
@@ -110,6 +124,7 @@ fn host_inventory_trails_the_facet_list_and_is_optional() {
         (2, 3)
     );
     assert!(decode(&prefix).hosts().is_empty());
+    assert_eq!(decode(&extended), with_hosts, "record tails are skipped");
 }
 
 /// A host list that declares more rows than the field holds errors instead

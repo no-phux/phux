@@ -136,11 +136,13 @@ fn encode_listing_ok(enc: &mut Encoder<'_>, listing: &DirectoryListing) {
         let len = u32::try_from(listing.entries.len()).unwrap_or(u32::MAX);
         e.write_u32_be(len);
         for entry in &listing.entries {
-            e.write_str(&entry.name);
-            e.write_u8(if entry.is_symlink {
-                ENTRY_FLAG_SYMLINK
-            } else {
-                0
+            e.write_record(|e| {
+                e.write_str(&entry.name);
+                e.write_u8(if entry.is_symlink {
+                    ENTRY_FLAG_SYMLINK
+                } else {
+                    0
+                });
             });
         }
     });
@@ -187,7 +189,8 @@ pub(in crate::wire) fn decode_list_directory(
 }
 
 /// Decode the positional `entries` list: a `u32` count, then per entry a
-/// length-prefixed name and a flags byte.
+/// record (`u32` length, then a length-prefixed name and a flags byte; bytes
+/// a newer peer appends to a row are skipped).
 fn decode_entries(value: &[u8]) -> Result<Vec<DirectoryEntry>, DecodeError> {
     let mut d = Decoder::new(value);
     let count = usize::try_from(d.read_u32_be()?).map_err(|_| DecodeError::LengthOverflow)?;
@@ -196,12 +199,14 @@ fn decode_entries(value: &[u8]) -> Result<Vec<DirectoryEntry>, DecodeError> {
     }
     let mut entries = d.bounded_capacity(count);
     for _ in 0..count {
-        let name = d.read_str()?.to_owned();
-        let flags = d.read_u8()?;
-        entries.push(DirectoryEntry {
-            name,
-            is_symlink: flags & ENTRY_FLAG_SYMLINK != 0,
-        });
+        entries.push(d.read_record(|d| {
+            let name = d.read_str()?.to_owned();
+            let flags = d.read_u8()?;
+            Ok(DirectoryEntry {
+                name,
+                is_symlink: flags & ENTRY_FLAG_SYMLINK != 0,
+            })
+        })?);
     }
     Ok(entries)
 }
@@ -337,15 +342,33 @@ mod tests {
         );
     }
 
-    /// An entry list encoding `count` entries named `d`, each unflagged.
+    /// An entry list encoding `count` entries named `d`, each unflagged: a
+    /// 6-byte row record (`str "d"`, flags) apiece.
     fn entries_bytes(count: u32) -> Vec<u8> {
         let mut bytes = count.to_be_bytes().to_vec();
         for _ in 0..count {
+            bytes.extend_from_slice(&6u32.to_be_bytes());
             bytes.extend_from_slice(&1u32.to_be_bytes());
             bytes.extend_from_slice(b"d");
             bytes.push(0);
         }
         bytes
+    }
+
+    #[test]
+    fn bytes_a_newer_server_appends_to_an_entry_are_skipped() {
+        let mut bytes = 2u32.to_be_bytes().to_vec();
+        for name in [b"a", b"b"] {
+            bytes.extend_from_slice(&8u32.to_be_bytes());
+            bytes.extend_from_slice(&1u32.to_be_bytes());
+            bytes.extend_from_slice(name);
+            bytes.push(ENTRY_FLAG_SYMLINK);
+            bytes.extend_from_slice(&[0xAB, 0xCD]);
+        }
+        let entries = decode_entries(&bytes).expect("extended rows decode");
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+        assert!(entries.iter().all(|e| e.is_symlink));
     }
 
     #[test]

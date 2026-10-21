@@ -99,12 +99,17 @@ pub(super) fn whole<T>(
     decode(&mut dec).is_ok() && dec.remaining().is_empty()
 }
 
-/// `u32` count, then that many `(str, u8)` rows: directory entries and path
-/// rows share this shape.
+/// `u32` count, then that many `(str, u8)` row records: directory entries
+/// and path rows share this shape.
 pub(super) fn str_u8_list(dec: &mut Decoder<'_>) -> Result<(), crate::wire::DecodeError> {
     for _ in 0..dec.read_u32_be()? {
-        dec.read_str()?;
-        dec.read_u8()?;
+        dec.read_record(|row| {
+            row.read_str()?;
+            row.read_u8()?;
+            Ok(row.remaining().is_empty())
+        })?
+        .then_some(())
+        .ok_or(crate::wire::DecodeError::LengthOverflow)?;
     }
     Ok(())
 }

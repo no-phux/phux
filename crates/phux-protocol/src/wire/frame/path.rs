@@ -175,8 +175,10 @@ pub(super) fn encode_results(enc: &mut Encoder<'_>, request_id: u32, result: &Pa
             enc.write_field_with(field::path_results::ROWS, |e| {
                 e.write_u32_be(u32::try_from(reply.rows.len()).unwrap_or(u32::MAX));
                 for row in &reply.rows {
-                    e.write_str(&row.path);
-                    e.write_u8(row.kind.as_wire());
+                    e.write_record(|e| {
+                        e.write_str(&row.path);
+                        e.write_u8(row.kind.as_wire());
+                    });
                 }
             });
             enc.write_field_with(field::path_results::STATUS, |e| {
@@ -278,19 +280,22 @@ fn decode_rows(value: &[u8]) -> Result<Vec<PathRow>, DecodeError> {
     }
     let mut rows = d.bounded_capacity(count);
     for _ in 0..count {
-        let path = d.read_str()?.to_owned();
-        if !absolute_path(&path) {
-            return Err(DecodeError::LengthOverflow);
-        }
-        rows.push(PathRow {
-            path,
-            kind: PathKind::from_wire(d.read_u8()?)?,
-        });
-    }
-    if !d.at_body_end() {
-        return Err(DecodeError::LengthOverflow);
+        rows.push(d.read_record(decode_row)?);
     }
     Ok(rows)
+}
+
+/// One row record: `path: str || kind: u8`; bytes a newer peer appended to
+/// the row are skipped.
+fn decode_row(d: &mut Decoder<'_>) -> Result<PathRow, DecodeError> {
+    let path = d.read_str()?.to_owned();
+    if !absolute_path(&path) {
+        return Err(DecodeError::LengthOverflow);
+    }
+    Ok(PathRow {
+        path,
+        kind: PathKind::from_wire(d.read_u8()?)?,
+    })
 }
 
 #[derive(Default)]

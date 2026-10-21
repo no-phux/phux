@@ -84,8 +84,9 @@ fn names_and_attribute_lists_are_bounded() {
 
 #[test]
 fn arrangement_documents_are_bounded_at_64_kib() {
-    // One leaf group is 16 + 1 + 1 + 16 + 1 + 16 = 51 bytes.
-    let fits = u32::try_from((MAX_ARRANGEMENT_BYTES - 2) / 51).unwrap();
+    // One leaf group is a record: 4 + 16 + 1, then a leaf node record
+    // 4 + 1 + 16 + 1 + 16, for 59 bytes.
+    let fits = u32::try_from((MAX_ARRANGEMENT_BYTES - 2) / 59).unwrap();
     assert_eq!(decodes(replace(fits)), Ok(()));
     assert_eq!(
         decodes(replace(fits + 1)),

@@ -41,11 +41,15 @@ pub(in crate::wire) fn decode_command_result(
     let tag = dec.read_u8()?;
     match tag {
         COMMAND_RESULT_TAG_OK => Ok(CommandResult::Ok),
-        COMMAND_RESULT_TAG_OK_WITH => Ok(CommandResult::OkWith(decode_command_value(dec)?)),
+        COMMAND_RESULT_TAG_OK_WITH => match decode_command_value(dec) {
+            Err(DecodeError::UnknownEnumValue {
+                field: "CommandValue",
+                value,
+            }) => Ok(unknown_result("CommandValue", value)),
+            value => value.map(CommandResult::OkWith),
+        },
         COMMAND_RESULT_TAG_ERROR => {
-            let code_raw = dec.read_u16_be()?;
-            let code = ErrorCode::from_wire(code_raw)
-                .ok_or_else(|| DecodeError::unknown_enum("ErrorCode", code_raw))?;
+            let code = ErrorCode::from_wire_or_unknown(dec.read_u16_be()?);
             let message = dec.read_str()?.to_owned();
             Ok(CommandResult::Error { code, message })
         }
@@ -60,7 +64,18 @@ pub(in crate::wire) fn decode_command_result(
             let operation = IdempotencyKey::new(bytes).ok_or(DecodeError::InvalidIdempotencyKey)?;
             Ok(CommandResult::Accepted { operation })
         }
-        other => Err(DecodeError::unknown_enum("CommandResult", other)),
+        other => Ok(unknown_result("CommandResult", u32::from(other))),
+    }
+}
+
+/// The result of a reply whose result or value tag this build does not know:
+/// a newer peer's shape. The tag ends its field, so the rest is skipped and
+/// the request settles as an `Unsupported` error naming the tag instead of
+/// failing the frame.
+pub(super) fn unknown_result(what: &str, tag: u32) -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::Unsupported,
+        message: format!("reply carried an unknown {what} tag {tag:#04x}"),
     }
 }
 

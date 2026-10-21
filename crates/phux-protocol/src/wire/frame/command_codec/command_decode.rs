@@ -23,6 +23,10 @@ use super::{
 };
 
 pub(super) fn decode_input_event(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> {
+    dec.read_record(decode_input_event_body)
+}
+
+pub(super) fn decode_input_event_body(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> {
     let tag = dec.read_u8()?;
     match tag {
         INPUT_EVENT_TAG_KEY => Ok(InputEvent::Key(decode_key_event(dec)?)),
@@ -158,14 +162,16 @@ pub(super) fn decode_trailing_key(
 pub(super) fn decode_kill_precondition(
     dec: &mut Decoder<'_>,
 ) -> Result<KillPrecondition, DecodeError> {
-    let instance = dec.read_option(
-        "Option<ServerInstance> tag",
-        crate::wire::frame::codec::decode_server_instance,
-    )?;
-    let conditions = KillConditions::from_bits(dec.read_u8()?);
-    Ok(KillPrecondition {
-        instance,
-        conditions,
+    dec.read_record(|dec| {
+        let instance = dec.read_option(
+            "Option<ServerInstance> tag",
+            crate::wire::frame::codec::decode_server_instance,
+        )?;
+        let conditions = KillConditions::from_bits(dec.read_u8()?);
+        Ok(KillPrecondition {
+            instance,
+            conditions,
+        })
     })
 }
 

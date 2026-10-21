@@ -268,6 +268,31 @@ impl<'a> Decoder<'a> {
         self.take(len_usize)
     }
 
+    /// Read a tail-extensible record written by
+    /// [`Encoder::write_record`](crate::wire::encode::Encoder::write_record):
+    /// `body` decodes the known prefix from a decoder bounded by the
+    /// record's length, and any bytes a newer peer appended are skipped.
+    pub(crate) fn read_record<T>(
+        &mut self,
+        body: impl FnOnce(&mut Self) -> Result<T, DecodeError>,
+    ) -> Result<T, DecodeError> {
+        let record = self.read_bytes()?;
+        body(&mut self.child(record))
+    }
+
+    /// A decoder over `input`, a slice of this one's input, keeping its
+    /// negotiated limits and shared buffer.
+    fn child(&self, input: &'a [u8]) -> Self {
+        Self {
+            input,
+            pos: 0,
+            body_end: None,
+            max_bootstrap_chunk_bytes: self.max_bootstrap_chunk_bytes,
+            max_history_page_bytes: self.max_history_page_bytes,
+            shared: self.shared.clone(),
+        }
+    }
+
     /// Read a length-prefixed UTF-8 string.
     pub fn read_str(&mut self) -> Result<&'a str, DecodeError> {
         let bytes = self.read_bytes()?;

@@ -29,6 +29,7 @@ const ALL_CODES: &[ErrorCode] = &[
     ErrorCode::MalformedMessage,
     ErrorCode::FrameTooLarge,
     ErrorCode::CodecUnavailable,
+    ErrorCode::Unsupported,
     ErrorCode::NotAttached,
     ErrorCode::AlreadyAttached,
     ErrorCode::SessionNotFound,
@@ -64,6 +65,19 @@ fn the_decodable_wire_space_is_exactly_the_known_codes() {
         decoded, ALL_CODES,
         "a code was added to the enum without a `from_wire` row (or vice versa)"
     );
+}
+
+#[test]
+fn unallocated_codes_decode_as_unknown_and_round_trip() {
+    for value in [0, 5, 8, 99, 214, 300, 65534] {
+        let code = ErrorCode::from_wire_or_unknown(value);
+        assert_eq!(code, ErrorCode::Unknown(value));
+        assert_eq!(code.as_wire(), value);
+        assert_eq!(code.scope(), ErrorScope::Request);
+    }
+    assert_eq!(ErrorCode::from_wire_or_unknown(7), ErrorCode::Unsupported);
+    assert_eq!(ErrorCode::Unsupported.as_wire(), 7);
+    assert_eq!(ErrorCode::Unsupported.scope(), ErrorScope::Request);
 }
 
 #[test]
