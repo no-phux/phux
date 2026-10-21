@@ -39,7 +39,11 @@ value:     bytes
 Decoders match fields by id in any order and skip ids they do not know, so
 additive optional fields can be skipped by an older peer. Most nested
 records are positional and big-endian, with string leaves encoded as
-`u32 length || bytes`; top-level UTF-8 field values are raw bytes.
+`u32 length || bytes`; top-level UTF-8 field values are raw bytes. A
+record that is not last in its field (list rows, input events,
+arrangement nodes) carries a `u32` length; readers skip bytes past the
+fields they know, so any record can grow at its tail. Ids and other
+leaves are frozen; a new shape is a new tag.
 Organization bodies/records and selected extensible event bodies instead
 use nested tagged fields: see the [organization codec](../crates/phux-protocol/src/wire/frame/org.rs).
 Do not infer a nested grammar from a type name in the schema. Field ids
@@ -54,8 +58,9 @@ or more.
 1. The client sends `HELLO` (`0x01`): its name, protocol
    `major.minor.patch`, and `ClientCapabilities` (color support, image and
    keyboard protocols, which bootstrap profiles it can consume, compression).
-2. The server checks `major.minor` against its own. On a mismatch it sends
-   `ERROR` with `VERSION_INCOMPATIBLE` and closes.
+2. The server checks the client's major against its own. Any minor or
+   patch is admitted; another major gets `ERROR` with
+   `VERSION_INCOMPATIBLE` and a close.
 3. The server authorizes the connection ([owner, delegated, or scoped
    remote authority](./remote.md#connection-authority)) and picks a bootstrap
    profile the client offered.
@@ -72,15 +77,23 @@ A client sends `PING` (`0x7F`); the server replies with `PONG` (`0xFF`)
 carrying the same nonce. `PONG` is server-to-client only; the classifier
 denies a client-originated `PONG`.
 
-## Capabilities, not versions
+## Compatibility
 
-The protocol version is `0.9` and has been for a long run of wire changes.
-Clients and servers must agree on `major.minor`; everything added since is
-either a feature bit the server advertises in `HELLO_OK` (`RESOURCE_KINDS`,
-`ACKNOWLEDGED_INPUT`, `APPROVALS`, ...) or an optional field an old peer
-skips. A client checks the bit before relying on the behavior. A version
-bump is reserved for a change no additive shape can express, and it breaks
-every deployment at once, so it is rare on purpose.
+The protocol is `1.0`. Any 1.x client works with any 1.x server, older or
+newer, and servers may be far older than clients. Minor and patch are
+informational; no peer gates on them.
+
+- New behavior is a feature bit in `HELLO_OK` (`APPROVALS`,
+  ...) or a field or record tail an old peer skips, never a
+  changed shape.
+- A client checks the bit first and degrades that one feature when it is
+  missing; it does not refuse the connection.
+- A server answers what it does not know and stays connected: an unknown
+  frame type gets `ERROR` `UNSUPPORTED`; an unknown command tag or enum
+  value gets a `COMMAND_RESULT` error `UNSUPPORTED` with the request id.
+- Clients tolerate unknown fields, record tails, events, kinds, close
+  reasons, error codes, and result tags.
+- A new major is a deliberate, announced break; 0.x cannot talk to 1.x.
 
 The feature names, their bits, and which commands each gates are in the
 generated [kinds reference](./reference/kinds.md). `phux status --json`
@@ -341,12 +354,16 @@ details.
 - Allocate a new type byte or sub-tag in `wire/frame/mod.rs`; duplicates
   fail to compile.
 - Add field ids in `wire/field.rs`, append-only.
-- Gate new behavior on a feature bit in `caps.rs`. Do not bump the minor.
-  A shipped capability bit is never withdrawn or repointed.
+- Gate new behavior on a feature bit in `caps.rs`. Do not bump the
+  protocol version for an additive change. A shipped capability bit is
+  never withdrawn or repointed.
+- Grow a positional record only at its tail; never reorder, retype, or
+  remove a field. A non-final composite record needs a length prefix.
 - Classify any new command in `kinds.rs`, or dispatch denies it.
 - Regenerate the schema (`PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p
   phux-protocol wire_schema_matches`), fill in any `?` types, and
   `just docs-gen` for the kinds page.
 - Add roundtrip and snapshot tests next to the existing ones in
   `crates/phux-protocol/tests/it/`.
-- Say in the PR what an older client sees.
+- Say in the PR what an older client sees, and what an older server does
+  with the new request.
