@@ -2,7 +2,7 @@
 
 use super::{
     CommandResult, DirectoryListingResult, ErrorCode, FrameKind, PathQueryResult, RelaySession,
-    SpawnError, SpawnResult, debug, listing_refusal, path_refusal,
+    SpawnError, SpawnResult, debug, listing_refusal, path_refusal, warn,
 };
 
 impl RelaySession {
@@ -33,6 +33,19 @@ impl RelaySession {
                 code,
                 message,
             } => self.resolve_correlated_error(request_id, code, message),
+            // An uncorrelated ERROR (an input the satellite could not write,
+            // a frame it does not support) names no relayed request and no
+            // consumer, so it is logged and the link stays up.
+            FrameKind::Error {
+                request_id: None,
+                code,
+                message,
+            } => warn!(
+                satellite = %self.host,
+                ?code,
+                %message,
+                "satellite sent an uncorrelated error; keeping the link"
+            ),
             FrameKind::Event { .. }
             | FrameKind::ResourceOutput { .. }
             | FrameKind::BootstrapBegin { .. }
@@ -117,20 +130,30 @@ impl RelaySession {
             );
             return;
         }
+        // A code this build does not know (`UNREADABLE_REPLY` included)
+        // says the satellite answered without saying what happened: the
+        // request settles as an unknown outcome, never as a refusal a retry
+        // could repeat.
+        let unknown_outcome = matches!(code, ErrorCode::Unknown(_));
+        let verdict = if unknown_outcome {
+            "could not read the satellite's answer to"
+        } else {
+            "the satellite refused"
+        };
         if self.pending_spawns.contains_key(&request_id) {
-            self.resolve_pending_spawn(
-                request_id,
-                SpawnResult::Err(SpawnError::SpawnFailed(format!(
-                    "satellite refused the spawn: {code:?}: {message}"
-                ))),
-            );
+            let error = if unknown_outcome {
+                SpawnError::Unknown(phux_protocol::wire::UnreadableResult::from_wire(Vec::new()))
+            } else {
+                SpawnError::SpawnFailed(format!("satellite refused the spawn: {code:?}: {message}"))
+            };
+            self.resolve_pending_spawn(request_id, SpawnResult::Err(error));
             return;
         }
         if let Some(pending) = self.pending_listings.remove(&request_id) {
             let refusal = listing_refusal(
                 &pending.path,
                 format!(
-                    "satellite {} refused the listing: {code:?}: {message}",
+                    "{verdict} the listing on {}: {code:?}: {message}",
                     self.host
                 ),
             );
@@ -141,7 +164,7 @@ impl RelaySession {
             let _ = pending.reply.send(Err(path_refusal(
                 &pending.root,
                 format!(
-                    "satellite {} refused the path query: {code:?}: {message}",
+                    "{verdict} the path query on {}: {code:?}: {message}",
                     self.host
                 ),
             )));

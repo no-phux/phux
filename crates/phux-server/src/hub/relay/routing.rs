@@ -9,6 +9,13 @@ use super::{
 /// `Satellite { host, id }`, the instance token passes through (ADR-0109),
 /// and a `Satellite`-tagged id becomes `SpawnFailed`.
 pub(super) fn retag_spawn_result(host: &SatelliteHost, result: SpawnResult) -> SpawnResult {
+    // An unreadable result settles as an unknown outcome; its bytes may name
+    // satellite-local ids, so none of them travel on.
+    if let SpawnResult::Err(SpawnError::Unknown(_)) = result {
+        return SpawnResult::Err(SpawnError::Unknown(
+            phux_protocol::wire::UnreadableResult::from_wire(Vec::new()),
+        ));
+    }
     let Some(spawned) = result.spawned_id() else {
         return result;
     };
