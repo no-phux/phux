@@ -1,6 +1,12 @@
 //! Pane replies: spawned splits, kill answers, refusals, and the resized layout.
 
 use super::*;
+use phux_protocol::wire::frame::SpawnError;
+
+/// A split whose spawn the server answered without saying whether it made a
+/// pane: not "nothing was created".
+const UNCERTAIN_SPLIT: &str = "The new pane's outcome is unknown: this page could not read the \
+     server's answer, so a pane may exist. Reload to see it.";
 
 impl Connection {
     pub(super) fn restore_layout(&mut self) {
@@ -106,9 +112,19 @@ impl Connection {
             }
             FrameKind::Error {
                 request_id,
+                code,
                 message,
-                ..
             } => {
+                // A spawn answered with a code this build does not know
+                // (`UNREADABLE_REPLY` included) may have created its pane.
+                let spawning = request_id.is_some_and(|id| {
+                    self.pending_split
+                        .as_ref()
+                        .is_some_and(|p| p.request_id == id && p.resource.is_none())
+                });
+                if spawning && matches!(code, ErrorCode::Unknown(_)) {
+                    return Some(self.pane_refusal(UNCERTAIN_SPLIT.to_owned()));
+                }
                 let correlated = request_id.is_some_and(|id| {
                     self.pending_split
                         .as_ref()
@@ -133,6 +149,9 @@ impl Connection {
     }
 
     fn accept_spawn(&mut self, result: &SpawnResult) -> Outcome {
+        if matches!(result, SpawnResult::Err(SpawnError::Unknown(_))) {
+            return self.pane_refusal(UNCERTAIN_SPLIT.to_owned());
+        }
         let Some(terminal_id) = result.spawned_id().cloned() else {
             return self.pane_refusal(format!(
                 "Could not split this pane: {result:?}. Try again or close another pane."

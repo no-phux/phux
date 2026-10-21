@@ -36,10 +36,20 @@ async fn a_split_refused_with_an_unknown_tag_or_unsupported_leaves_the_session()
         result: SpawnResult::Err(SpawnError::Unknown(0xFE)),
     });
     assert!(!session.pane_pending());
-    assert!(session.pane_error().is_some());
+    // A newer server's refusal does not say whether a pane exists.
+    assert!(session.pane_error().unwrap().contains("outcome is unknown"));
     let request_id = requested_spawn(&mut session, "vertical");
     session.on_frame(unsupported(request_id));
     assert!(!session.pane_pending());
+    assert!(!session.pane_error().unwrap().contains("outcome is unknown"));
+    let request_id = requested_spawn(&mut session, "vertical");
+    session.on_frame(FrameKind::Error {
+        request_id: Some(request_id),
+        code: ErrorCode::UNREADABLE_REPLY,
+        message: "unreadable".to_owned(),
+    });
+    assert!(!session.pane_pending());
+    assert!(session.pane_error().unwrap().contains("outcome is unknown"));
     assert!(!session.is_failed());
 }
 
