@@ -47,8 +47,8 @@ pub struct ControlOptions {
     /// Stream every `AgentSession` resource (ADR-0103) whose parent Terminal
     /// this connection streams: subscribe it with a per-resource attach,
     /// re-read the topology when one is announced, and surface its commits
-    /// as [`Event::AgentPublication`] and its end as
-    /// [`Event::AgentSessionClosed`]. Needs `automatic_lifecycle`, which
+    /// as [`super::Event::AgentPublication`] and its end as
+    /// [`super::Event::AgentSessionClosed`]. Needs `automatic_lifecycle`, which
     /// owns the request ids those attaches use.
     pub subscribe_agent_sessions: bool,
     /// The bootstrap payload limits offered in `HELLO`.
