@@ -13,9 +13,12 @@ use super::error::DecodeError;
 use super::frame::{decode_terminal_id, encode_terminal_id};
 use crate::ids::{ResourceId, StreamId};
 
-/// Upper bound on a `STREAM_BIND` body (a 255-byte host plus fixed fields);
-/// anything larger is refused before allocation.
-pub const MAX_STREAM_BIND_BYTES: usize = 512;
+/// Upper bound on a `STREAM_BIND` body, refused before allocation.
+///
+/// Today's body is at most a 255-byte host plus fixed fields;
+/// the rest is room for the record tail a newer 1.x client may append,
+/// which this build skips.
+pub const MAX_STREAM_BIND_BYTES: usize = 4 * 1024;
 
 /// A decoded `STREAM_BIND` header.
 #[derive(Debug, Clone, PartialEq, Eq)]

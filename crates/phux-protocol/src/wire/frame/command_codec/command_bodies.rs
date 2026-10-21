@@ -4,7 +4,7 @@ use super::{
     AgentEvent, ClientId, Command, DecodeError, Decoder, FileUploadId, InputMode,
     MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType,
     STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_asked_event, decode_client_id,
-    decode_terminal_id, decode_trailing_key,
+    decode_optional_key, decode_terminal_id,
 };
 
 pub(super) fn decode_resource_ids(
@@ -59,10 +59,9 @@ pub(super) fn decode_subscribe_terminal_events_command(
 
 pub(super) fn decode_acquire_input_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let terminal_id = decode_terminal_id(dec)?;
-    let mode = InputMode::from_u8(dec.read_u8()?).ok_or(DecodeError::UnknownEnumValue {
-        field: "InputMode",
-        value: 0,
-    })?;
+    let raw = dec.read_u8()?;
+    let mode =
+        InputMode::from_u8(raw).ok_or_else(|| DecodeError::unknown_enum("InputMode", raw))?;
     let ttl_ms = dec.read_u32_be()?;
     Ok(Command::AcquireInput {
         terminal_id,
@@ -75,14 +74,13 @@ pub(super) fn decode_signal_terminal_command(
     dec: &mut Decoder<'_>,
 ) -> Result<Command, DecodeError> {
     let terminal_id = decode_terminal_id(dec)?;
-    let signal = TerminalSignal::from_u8(dec.read_u8()?).ok_or(DecodeError::UnknownEnumValue {
-        field: "TerminalSignal",
-        value: 0,
-    })?;
+    let raw = dec.read_u8()?;
+    let signal = TerminalSignal::from_u8(raw)
+        .ok_or_else(|| DecodeError::unknown_enum("TerminalSignal", raw))?;
     Ok(Command::SignalTerminal {
         terminal_id,
         signal,
-        operation_id: decode_trailing_key(dec)?,
+        operation_id: decode_optional_key(dec)?,
     })
 }
 
@@ -151,6 +149,9 @@ pub(super) const fn checkout_decode_error(
     match error {
         crate::checkout::CheckoutDecodeError::TooLarge => DecodeError::CheckoutLimitExceeded,
         crate::checkout::CheckoutDecodeError::Invalid => DecodeError::InvalidCheckoutPayload,
+        crate::checkout::CheckoutDecodeError::Unsupported => DecodeError::UnsupportedPayload {
+            payload: "CheckoutRequest",
+        },
     }
 }
 

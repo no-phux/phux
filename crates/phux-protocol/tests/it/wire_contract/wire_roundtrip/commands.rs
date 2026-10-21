@@ -1,10 +1,10 @@
 //! `COMMAND` variants, `GET_SCREEN` compatibility, and input routing.
 
 use super::{
-    BytesMut, Command, FileUploadId, FocusEvent, FrameKind, InputEvent, InputMode, KeyAction,
-    KeyEvent, ListenerTransport, ModSet, MouseAction, MouseButton, MouseEvent, PasteEvent,
-    PasteTrust, PerfOp, PhysicalKey, ReportedAgentState, ResourceId, StateScope, TerminalSignal,
-    assert_round_trip, framed_tlv, tlv_field,
+    BytesMut, Command, DecodeError, FileUploadId, FocusEvent, FrameKind, InputEvent, InputMode,
+    KeyAction, KeyEvent, ListenerTransport, ModSet, MouseAction, MouseButton, MouseEvent,
+    PasteEvent, PasteTrust, PerfOp, PhysicalKey, ReportedAgentState, ResourceId, StateScope,
+    TerminalSignal, assert_round_trip, framed_tlv, tlv_field,
 };
 
 /// Command verbs share one wire shape (tag + positional body); one table
@@ -144,99 +144,44 @@ fn command_variants_round_trip() {
         });
     }
 }
-
-#[test]
-fn get_screen_without_format_is_byte_identical() {
-    // Backward-compat (D9): a GET_SCREEN frame encoded after `cells`
-    // landed but before `format` existed has a body that ends after
-    // `cells`. A current decoder must read the missing `format` as `0`
-    // (no rendering), not error on EOF — the same `at_body_end` guard
-    // `cells` itself relies on for the pre-`cells` shape below.
-    let expected = FrameKind::Command {
-        request_id: 7,
-        command: Command::GetScreen {
-            terminal_id: ResourceId::local(9),
-            request_scrollback: Some(3),
-            cells: true,
-            format: 0,
-        },
-    };
-
-    // Command::GetScreen positional value, minus the trailing format byte.
-    let mut get_screen = vec![0x07u8]; // COMMAND_TAG_GET_SCREEN
-    get_screen.push(0x00); // RESOURCE_ID_TAG_LOCAL
-    get_screen.extend_from_slice(&9u32.to_be_bytes());
-    get_screen.push(0x01); // request_scrollback = Some
-    get_screen.extend_from_slice(&3u32.to_be_bytes());
-    get_screen.push(0x01); // cells = true
-    // no format byte
-
+/// A `COMMAND` frame with `request_id` around this positional body.
+fn command_frame(request_id: u32, body: &[u8]) -> Vec<u8> {
     let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &7u32.to_be_bytes()); // field::command::REQUEST_ID
-    tlv_field(&mut fields, 2, &get_screen); // field::command::COMMAND
-    let buf = framed_tlv(0x31, &fields);
+    tlv_field(&mut fields, 1, &request_id.to_be_bytes()); // REQUEST_ID
+    tlv_field(&mut fields, 2, body); // COMMAND
+    framed_tlv(0x31, &fields)
+}
 
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, expected, "absent format byte must decode as 0");
-    assert!(tail.is_empty());
+/// `GET_SCREEN` for local Terminal `id`, `request_scrollback: None`, up to
+/// (not including) its `cells` byte.
+fn get_screen_head(id: u32) -> Vec<u8> {
+    let mut body = vec![0x07u8, 0x00]; // COMMAND_TAG_GET_SCREEN, RESOURCE_ID_TAG_LOCAL
+    body.extend_from_slice(&id.to_be_bytes());
+    body.push(0x00); // request_scrollback = None
+    body
 }
 
 #[test]
-fn command_get_screen_decodes_pre_cells_body_as_false() {
-    // Backward-compat (phux-8yl): a GET_SCREEN frame encoded *before* the
-    // trailing `cells` bool existed has a body that ends after
-    // `request_scrollback`, with a length header one byte shorter. A
-    // current decoder must read the missing `cells` as `false`, not error
-    // on EOF. `cells` is a trailing positional field *inside* the COMMAND
-    // field's value (the Command::GetScreen body), bounded by that field's
-    // length. Build the COMMAND field value with a GetScreen body that ends
-    // after `request_scrollback` (the pre-cells shape); the Command sub-decoder
-    // sees `at_body_end` and defaults `cells = false`.
-    let expected = FrameKind::Command {
-        request_id: 7,
-        command: Command::GetScreen {
-            terminal_id: ResourceId::local(9),
-            request_scrollback: Some(3),
-            cells: false,
-            format: 0,
-        },
-    };
-
-    // Command::GetScreen positional value, minus the trailing cells byte.
-    let mut get_screen = vec![0x07u8]; // COMMAND_TAG_GET_SCREEN
-    get_screen.push(0x00); // RESOURCE_ID_TAG_LOCAL
-    get_screen.extend_from_slice(&9u32.to_be_bytes());
-    get_screen.push(0x01); // request_scrollback = Some
-    get_screen.extend_from_slice(&3u32.to_be_bytes());
-    // no cells byte
-
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &7u32.to_be_bytes()); // field::command::REQUEST_ID
-    tlv_field(&mut fields, 2, &get_screen); // field::command::COMMAND
-    let buf = framed_tlv(0x31, &fields);
-
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, expected, "absent cells byte must decode as false");
-    assert!(tail.is_empty());
+fn get_screen_cells_and_format_are_required_not_inferred() {
+    // Presence is never inferred from the bytes left: a body that stops
+    // before `cells` or `format` is truncated, so a field a newer build
+    // appends cannot be misread as one of them.
+    let mut no_format = get_screen_head(9);
+    no_format.push(0x01);
+    for body in [get_screen_head(9), no_format] {
+        assert_eq!(
+            FrameKind::decode(&command_frame(7, &body)).unwrap_err(),
+            DecodeError::UnexpectedEof
+        );
+    }
 }
 
 #[test]
-fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
-    // Two GET_SCREEN frames concatenated in one buffer: decoding the first
-    // (whose COMMAND field value omits the trailing `cells` byte, the pre-cells
-    // shape of an old peer) must NOT consume the *second* frame's leading byte
-    // as its `cells`. Under TLV the outer frame is length-delimited and the
-    // COMMAND field value is too, so the boundary holds at both levels (phux-8yl).
-    let mut get_screen = vec![0x07u8]; // COMMAND_TAG_GET_SCREEN
-    get_screen.push(0x00); // RESOURCE_ID_TAG_LOCAL
-    get_screen.extend_from_slice(&1u32.to_be_bytes());
-    get_screen.push(0x00); // request_scrollback = None
-    // no cells byte
-    let mut first_fields = Vec::new();
-    tlv_field(&mut first_fields, 1, &1u32.to_be_bytes()); // REQUEST_ID
-    tlv_field(&mut first_fields, 2, &get_screen); // COMMAND
-    let first = framed_tlv(0x31, &first_fields);
-
+fn get_screen_skips_a_tail_without_bleeding_into_the_next_frame() {
+    // Bytes a newer build appends after `format` are skipped, bounded by
+    // the COMMAND field and the frame, so the next frame decodes intact.
+    let mut grown = get_screen_head(1);
+    grown.extend_from_slice(&[0x01, 0x02, 0xEE, 0xEE, 0xEE]);
     let second = FrameKind::Command {
         request_id: 2,
         command: Command::GetScreen {
@@ -248,8 +193,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
     };
     let mut second_buf = BytesMut::new();
     second.encode(&mut second_buf);
-
-    let mut buf = first;
+    let mut buf = command_frame(1, &grown);
     buf.extend_from_slice(&second_buf);
 
     let (decoded_first, tail) = FrameKind::decode(&buf).unwrap();
@@ -260,13 +204,11 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
             command: Command::GetScreen {
                 terminal_id: ResourceId::local(1),
                 request_scrollback: None,
-                cells: false,
-                format: 0,
+                cells: true,
+                format: 2,
             },
         },
-        "first frame's absent cells must default false, not steal frame 2's byte",
     );
-    // The remainder must decode as the intact second frame.
     let (decoded_second, rest) = FrameKind::decode(tail).unwrap();
     assert_eq!(decoded_second, second);
     assert!(rest.is_empty());

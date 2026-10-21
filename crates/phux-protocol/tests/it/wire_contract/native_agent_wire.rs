@@ -137,16 +137,42 @@ fn native_json_rejects_oversize_before_deserialization() {
 
 #[test]
 fn native_json_rejects_malformed_and_wrong_dto() {
-    for json in [
-        b"{".as_slice(),
-        b"{}",
-        b"{\"type\":\"not_a_request\"}",
-        b"{\"type\":\"register\"}",
-    ] {
+    for json in [b"{".as_slice(), b"{}", b"{\"type\":\"register\"}"] {
         assert!(matches!(
             common::decode(&raw_json(json)),
             Err(DecodeError::InvalidNativeAgentPayload)
         ));
+    }
+}
+
+/// A request type or field this build does not know is newer, not
+/// malformed: still refused, but as unsupported, so a server keeps the
+/// connection.
+#[test]
+fn native_json_refuses_an_unknown_type_or_field_as_unsupported() {
+    // `NativeCommand` denies unknown fields; add one to a real command.
+    let mut command = serde_json::to_value(NativeRequest::Command {
+        agent_session_id: ResourceId::local(9),
+        command: NativeCommand {
+            operation_id: 1,
+            activation: "activation".into(),
+            intent: NativeIntent::Prompt { text: "hi".into() },
+        },
+    })
+    .unwrap();
+    command["command"]["later"] = serde_json::Value::Bool(true);
+    let unknown_field = serde_json::to_vec(&command).unwrap();
+    for json in [br#"{"type":"not_a_request"}"#.as_slice(), &unknown_field] {
+        let err = common::decode(&raw_json(json)).unwrap_err();
+        assert_eq!(
+            err,
+            DecodeError::UnsupportedPayload {
+                payload: "NativeRequest"
+            },
+            "{}",
+            String::from_utf8_lossy(json)
+        );
+        assert!(err.is_unsupported());
     }
 }
 

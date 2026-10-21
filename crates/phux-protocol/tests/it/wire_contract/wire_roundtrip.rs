@@ -53,6 +53,7 @@ mod command_payloads;
 mod commands;
 mod events;
 mod frame_strategies;
+mod hello_growth;
 mod host_inventory;
 mod layout_and_l3;
 mod resource_kinds;

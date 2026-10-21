@@ -6,6 +6,14 @@ use super::{
 };
 
 /// Decode a `HELLO` frame's positional `client_caps` field value.
+///
+/// `HELLO` precedes negotiation, so a value this build does not know cannot
+/// be refused in place: it would close the connection and a newer client
+/// would redial forever. Every byte is therefore total. An unknown
+/// `ColorSupport` is `TrueColor` and an unknown `OutputMode` is `Raw` (the
+/// defaults), a flag or presence byte is set when nonzero, and an
+/// over-large payload limit is clamped to this build's cap. Bytes appended
+/// after the bootstrap block are skipped.
 pub(super) fn decode_client_capabilities(
     d: &mut Decoder<'_>,
 ) -> Result<crate::caps::ClientCapabilities, DecodeError> {
@@ -31,44 +39,41 @@ pub(super) fn decode_client_capabilities(
     Ok(caps)
 }
 
-/// Decode the color-support byte of a client capability block.
+/// Decode the color-support byte of a client capability block; an unknown
+/// tier is `TrueColor`, so an unknown client is never silently downgraded.
 pub(super) fn decode_color_support(
     d: &mut Decoder<'_>,
 ) -> Result<crate::caps::ColorSupport, DecodeError> {
-    let color_value = d.read_u8()?;
-    crate::caps::ColorSupport::from_wire(color_value)
-        .ok_or_else(|| DecodeError::unknown_enum("ColorSupport", color_value))
+    Ok(crate::caps::ColorSupport::from_wire(d.read_u8()?).unwrap_or_default())
 }
 
-/// Decode the hyperlink-support flag of a client capability block.
+/// Decode the hyperlink-support flag of a client capability block: any
+/// nonzero byte is set.
 pub(super) fn decode_hyperlinks_flag(d: &mut Decoder<'_>) -> Result<bool, DecodeError> {
-    match d.read_u8()? {
-        0 => Ok(false),
-        1 => Ok(true),
-        value => Err(DecodeError::unknown_enum("hyperlinks", value)),
-    }
+    Ok(d.read_u8()? != 0)
 }
 
-/// Decode the output-mode byte of a client capability block.
+/// Decode the output-mode byte of a client capability block; an unknown
+/// mode is `Raw`.
 pub(super) fn decode_output_mode(
     d: &mut Decoder<'_>,
 ) -> Result<crate::caps::OutputMode, DecodeError> {
-    let output_mode_tag = d.read_u8()?;
-    match output_mode_tag {
-        0 => Ok(crate::caps::OutputMode::Raw),
-        1 => Ok(crate::caps::OutputMode::StateSync),
-        value => Err(DecodeError::unknown_enum("OutputMode", value)),
-    }
+    Ok(crate::caps::OutputMode::from_wire(d.read_u8()?))
 }
 
 /// Decode the presence-tagged default palette of a client capability block.
+///
+/// The presence byte is a flag: `0` is absent and any other value means the
+/// six foreground and background bytes follow. A richer palette therefore
+/// keeps those six bytes and appends the rest after the bootstrap block,
+/// where this build skips it.
 pub(super) fn decode_default_colors(
     d: &mut Decoder<'_>,
 ) -> Result<Option<crate::caps::TerminalDefaultColors>, DecodeError> {
     let palette_tag = d.read_u8()?;
     match palette_tag {
         0 => Ok(None),
-        1 => Ok(Some(crate::caps::TerminalDefaultColors {
+        _ => Ok(Some(crate::caps::TerminalDefaultColors {
             foreground: crate::caps::TerminalColor {
                 r: d.read_u8()?,
                 g: d.read_u8()?,
@@ -80,7 +85,6 @@ pub(super) fn decode_default_colors(
                 b: d.read_u8()?,
             },
         })),
-        value => Err(DecodeError::unknown_enum("default_colors presence", value)),
     }
 }
 
@@ -93,8 +97,7 @@ pub(super) fn decode_bootstrap_capabilities(
     let native_features = EngineFeatureSet::from_wire(d.read_u32_be()?);
     let max_chunk_bytes = d.read_u32_be()?;
     let max_history_page_bytes = d.read_u32_be()?;
-    let limits = BootstrapLimits::new(max_chunk_bytes, max_history_page_bytes)
-        .ok_or(DecodeError::BootstrapLimitExceeded)?;
+    let limits = BootstrapLimits::clamped(max_chunk_bytes, max_history_page_bytes);
     Ok(BootstrapCapabilities {
         profiles,
         native_codecs,

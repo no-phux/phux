@@ -1,13 +1,12 @@
-//! Keyed supervisory commands (`docs/spec/L1.md` §5.1.1): the trailing
+//! Keyed supervisory commands (`docs/spec/L1.md` §5.1.1): the optional
 //! `operation_id: bytes16` on `KILL_RESOURCE`, `KILL_RESOURCE_IF`,
 //! `KILL_RESOURCES`, and `SIGNAL_TERMINAL`, the `KEYED_SIGNAL` bit, and
 //! `INCARNATION_CHANGED`.
 //!
-//! The goldens are built by hand from the spec layout, not from the encoder,
-//! so an unkeyed command is pinned to the bytes every encoder before the
-//! field wrote. A keyed command is that body with sixteen bytes appended
-//! inside the length-delimited `COMMAND` field, which is why an older
-//! decoder, which stops after the last field it knows, never reads them.
+//! The goldens are built by hand from the spec layout, not from the encoder.
+//! The key sits behind a presence byte (`0` unkeyed, `1` then sixteen
+//! bytes), never inferred from the bytes left, so a field a newer build
+//! appends after it is skipped by this decoder instead of misread as a key.
 
 #![allow(clippy::unwrap_used, clippy::panic, reason = "tests")]
 
@@ -42,7 +41,7 @@ const fn key() -> IdempotencyKey {
     IdempotencyKey::new([0x5a; 16]).unwrap()
 }
 
-/// `(unkeyed command, its positional body as written before the key)`.
+/// `(unkeyed command, its positional body up to the key's presence byte)`.
 fn unkeyed_goldens() -> Vec<(Command, Vec<u8>)> {
     vec![
         (
@@ -94,8 +93,9 @@ fn keyed(command: &Command) -> Command {
 }
 
 #[test]
-fn unkeyed_supervisory_commands_keep_their_pre_key_bytes() {
-    for (unkeyed, body) in unkeyed_goldens() {
+fn an_unkeyed_command_ends_in_an_absent_key() {
+    for (unkeyed, mut body) in unkeyed_goldens() {
+        body.push(0x00);
         let frame = command(unkeyed.clone());
         assert_eq!(
             encode(&frame),
@@ -108,13 +108,13 @@ fn unkeyed_supervisory_commands_keep_their_pre_key_bytes() {
 }
 
 #[test]
-fn a_keyed_command_is_the_unkeyed_body_plus_sixteen_trailing_bytes() {
+fn a_keyed_command_is_a_present_key_then_sixteen_bytes() {
     for (unkeyed, mut body) in unkeyed_goldens() {
         let keyed = keyed(&unkeyed);
+        body.push(0x01);
         body.extend_from_slice(key().as_bytes());
         // The key lives inside field 2's length, so nothing past the
-        // command field moves: an older decoder bounded by that length
-        // reads the fields it knows and never sees the key.
+        // command field moves.
         assert_eq!(
             encode(&command(keyed.clone())),
             command_frame(&body),
@@ -127,8 +127,29 @@ fn a_keyed_command_is_the_unkeyed_body_plus_sixteen_trailing_bytes() {
 }
 
 #[test]
-fn a_zero_or_truncated_trailing_key_is_malformed() {
-    for (_, body) in unkeyed_goldens() {
+fn bytes_a_newer_build_appends_after_the_key_are_skipped() {
+    for (unkeyed, body) in unkeyed_goldens() {
+        let mut unkeyed_tail = body.clone();
+        unkeyed_tail.extend_from_slice(&[0x00, 0xEE, 0xEE, 0xEE]);
+        assert_eq!(
+            decode(&command_frame(&unkeyed_tail)).unwrap(),
+            command(unkeyed.clone())
+        );
+        let mut keyed_tail = body;
+        keyed_tail.push(0x01);
+        keyed_tail.extend_from_slice(key().as_bytes());
+        keyed_tail.extend_from_slice(&[0xEE; 20]);
+        assert_eq!(
+            decode(&command_frame(&keyed_tail)).unwrap(),
+            command(keyed(&unkeyed))
+        );
+    }
+}
+
+#[test]
+fn a_zero_or_truncated_key_is_malformed() {
+    for (_, mut body) in unkeyed_goldens() {
+        body.push(0x01);
         let mut zero = body.clone();
         zero.extend_from_slice(&[0; 16]);
         assert_eq!(

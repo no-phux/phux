@@ -45,8 +45,16 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
         if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {
             return Err(DecodeError::NativeAgentLimitExceeded);
         }
-        let request = crate::native_agent::NativeRequestPayload::decode(bytes)
-            .map_err(|_| DecodeError::InvalidNativeAgentPayload)?;
+        let request =
+            crate::native_agent::NativeRequestPayload::decode(bytes).map_err(|message| {
+                if crate::wire::error::names_unknown_json(&message) {
+                    DecodeError::UnsupportedPayload {
+                        payload: "NativeRequest",
+                    }
+                } else {
+                    DecodeError::InvalidNativeAgentPayload
+                }
+            })?;
         return Ok(Command::NativeAgent { request });
     }
     // Each family claims a disjoint tag set and returns `None` (reading
@@ -111,50 +119,42 @@ pub(super) fn decode_terminal_subscription_command(
     let command = match tag {
         COMMAND_TAG_ATTACH_RESOURCE => Command::AttachResource {
             terminal_id: decode_terminal_id(dec)?,
-            // Trailing additive role byte (ADR-0127); absent = default.
-            role_policy: if dec.at_body_end() {
-                None
-            } else {
-                Some(crate::wire::frame::RolePolicy::from_u8(dec.read_u8()?))
-            },
-            agent_after_seq: if dec.at_body_end() {
-                None
-            } else {
-                Some(dec.read_u64_be()?)
-            },
+            // Role (ADR-0127) and agent resume cursor, each behind a
+            // presence byte; absent role = default.
+            role_policy: dec.read_option("Option<RolePolicy> tag", |d| {
+                Ok(crate::wire::frame::RolePolicy::from_u8(d.read_u8()?))
+            })?,
+            agent_after_seq: dec.read_option("Option<u64> tag", Decoder::read_u64_be)?,
         },
         COMMAND_TAG_DETACH_RESOURCE => Command::DetachResource {
             terminal_id: decode_terminal_id(dec)?,
         },
         COMMAND_TAG_KILL_RESOURCE => Command::KillResource {
             terminal_id: decode_terminal_id(dec)?,
-            operation_id: decode_trailing_key(dec)?,
+            operation_id: decode_optional_key(dec)?,
         },
         COMMAND_TAG_KILL_RESOURCE_IF => Command::KillResourceIf {
             terminal_id: decode_terminal_id(dec)?,
             precondition: decode_kill_precondition(dec)?,
-            operation_id: decode_trailing_key(dec)?,
+            operation_id: decode_optional_key(dec)?,
         },
         _ => return Ok(None),
     };
     Ok(Some(command))
 }
 
-/// Read the trailing `operation_id` when bytes remain; it must be 16
+/// Read the presence-tagged `operation_id`; a present key must be 16
 /// non-zero bytes.
-pub(super) fn decode_trailing_key(
+pub(super) fn decode_optional_key(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<IdempotencyKey>, DecodeError> {
-    if dec.at_body_end() {
-        return Ok(None);
-    }
-    let mut bytes = [0; 16];
-    for byte in &mut bytes {
-        *byte = dec.read_u8()?;
-    }
-    IdempotencyKey::new(bytes)
-        .map(Some)
-        .ok_or(DecodeError::InvalidIdempotencyKey)
+    dec.read_option("Option<IdempotencyKey> tag", |dec| {
+        let mut bytes = [0; 16];
+        for byte in &mut bytes {
+            *byte = dec.read_u8()?;
+        }
+        IdempotencyKey::new(bytes).ok_or(DecodeError::InvalidIdempotencyKey)
+    })
 }
 
 /// Read a `KILL_RESOURCE_IF` precondition, keeping unknown condition bits so
@@ -243,7 +243,7 @@ pub(super) fn decode_session_command(
         },
         COMMAND_TAG_KILL_RESOURCES => Command::KillResources {
             ids: decode_resource_ids(dec)?,
-            operation_id: decode_trailing_key(dec)?,
+            operation_id: decode_optional_key(dec)?,
         },
         COMMAND_TAG_CLOSE_TAB_RESOURCES => Command::CloseTabResources {
             ids: decode_resource_ids(dec)?,
@@ -281,14 +281,8 @@ pub(super) fn decode_open_listener_command(dec: &mut Decoder<'_>) -> Result<Comm
 pub(super) fn decode_get_screen_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let terminal_id = decode_terminal_id(dec)?;
     let request_scrollback = decode_optional_u32(dec)?;
-    // `cells` and `format` are trailing additive bytes; absent = `false` / `0`.
-    let cells = if dec.at_body_end() {
-        false
-    } else {
-        dec.read_u8()? != 0
-    };
-
-    let format = if dec.at_body_end() { 0 } else { dec.read_u8()? };
+    let cells = dec.read_u8()? != 0;
+    let format = dec.read_u8()?;
     Ok(Command::GetScreen {
         terminal_id,
         request_scrollback,

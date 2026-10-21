@@ -33,12 +33,11 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         } => {
             enc.write_u8(COMMAND_TAG_ATTACH_RESOURCE);
             encode_terminal_id(terminal_id, enc);
-            if role_policy.is_some() || agent_after_seq.is_some() {
-                enc.write_u8(role_policy.unwrap_or_default().to_u8());
-            }
-            if let Some(after_seq) = agent_after_seq {
-                enc.write_u64_be(*after_seq);
-            }
+            enc.write_option(
+                role_policy.map(crate::wire::frame::RolePolicy::to_u8),
+                Encoder::write_u8,
+            );
+            enc.write_option(*agent_after_seq, Encoder::write_u64_be);
         }
         Command::DetachResource { terminal_id } => {
             enc.write_u8(COMMAND_TAG_DETACH_RESOURCE);
@@ -50,7 +49,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCE);
             encode_terminal_id(terminal_id, enc);
-            encode_trailing_key(operation_id.as_ref(), enc);
+            encode_optional_key(operation_id.as_ref(), enc);
         }
         Command::KillResourceIf {
             terminal_id,
@@ -60,7 +59,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             enc.write_u8(COMMAND_TAG_KILL_RESOURCE_IF);
             encode_terminal_id(terminal_id, enc);
             encode_kill_precondition(precondition, enc);
-            encode_trailing_key(operation_id.as_ref(), enc);
+            encode_optional_key(operation_id.as_ref(), enc);
         }
         Command::GetState { scope } => {
             enc.write_u8(COMMAND_TAG_GET_STATE);
@@ -101,7 +100,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         Command::KillResources { ids, operation_id } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCES);
             encode_resource_ids(ids, enc);
-            encode_trailing_key(operation_id.as_ref(), enc);
+            encode_optional_key(operation_id.as_ref(), enc);
         }
         Command::CloseTabResources { ids } => {
             enc.write_u8(COMMAND_TAG_CLOSE_TAB_RESOURCES);
@@ -190,7 +189,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             enc.write_u8(COMMAND_TAG_SIGNAL_TERMINAL);
             encode_terminal_id(terminal_id, enc);
             enc.write_u8(signal.to_u8());
-            encode_trailing_key(operation_id.as_ref(), enc);
+            encode_optional_key(operation_id.as_ref(), enc);
         }
         Command::PutFile {
             upload_id,
@@ -310,14 +309,15 @@ pub(super) fn encode_input_event_body(event: &InputEvent, enc: &mut Encoder<'_>)
     }
 }
 
-/// Write the trailing `operation_id: bytes16` of a keyed supervisory command
-/// (`docs/spec/L1.md` §5.1.1), or nothing when unkeyed.
-pub(super) fn encode_trailing_key(key: Option<&IdempotencyKey>, enc: &mut Encoder<'_>) {
-    if let Some(key) = key {
+/// Write the optional `operation_id: bytes16` of a keyed supervisory
+/// command (`docs/spec/L1.md` §5.1.1) behind a presence byte, so a field a
+/// newer build appends after it stays unambiguous.
+pub(super) fn encode_optional_key(key: Option<&IdempotencyKey>, enc: &mut Encoder<'_>) {
+    enc.write_option(key, |e, key| {
         for byte in key.as_bytes() {
-            enc.write_u8(*byte);
+            e.write_u8(*byte);
         }
-    }
+    });
 }
 
 /// Write a `KILL_RESOURCE_IF` precondition as a record (the trailing key

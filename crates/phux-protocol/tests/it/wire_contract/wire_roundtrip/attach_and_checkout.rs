@@ -30,7 +30,7 @@ fn session_attach_without_a_role_matches_its_golden_bytes() {
 }
 
 #[test]
-fn agent_attach_cursor_preserves_legacy_bytes_and_uses_a_canonical_role_slot() {
+fn agent_attach_role_and_cursor_each_sit_behind_a_presence_byte() {
     use phux_protocol::wire::frame::RolePolicy;
     let frame = |role_policy, agent_after_seq| FrameKind::Command {
         request_id: 9,
@@ -46,33 +46,40 @@ fn agent_attach_cursor_preserves_legacy_bytes_and_uses_a_canonical_role_slot() {
         tlv_field(&mut fields, 2, body);
         framed_tlv(0x31, &fields)
     };
-    for (role, slot) in [
-        (None, None),
-        (Some(RolePolicy::PRIMARY), Some(0)),
-        (Some(RolePolicy::VIEWER), Some(1)),
-        (Some(RolePolicy::TAKEOVER), Some(2)),
+    let cursor = 0x0102_0304_0506_0708u64;
+    for (role, role_bytes) in [
+        (None, vec![0]),
+        (Some(RolePolicy::PRIMARY), vec![1, 0]),
+        (Some(RolePolicy::VIEWER), vec![1, 1]),
+        (Some(RolePolicy::TAKEOVER), vec![1, 2]),
     ] {
-        let mut body = vec![1, 0, 0, 0, 0, 7];
-        if let Some(slot) = slot {
-            body.push(slot);
+        for after_seq in [None, Some(cursor)] {
+            let mut body = vec![1, 0, 0, 0, 0, 7];
+            body.extend_from_slice(&role_bytes);
+            match after_seq {
+                None => body.push(0),
+                Some(seq) => {
+                    body.push(1);
+                    body.extend_from_slice(&seq.to_be_bytes());
+                }
+            }
+            let mut encoded = BytesMut::new();
+            frame(role, after_seq).encode(&mut encoded);
+            assert_eq!(encoded.as_ref(), golden(&body));
+            assert_eq!(
+                FrameKind::decode(&encoded).unwrap().0,
+                frame(role, after_seq)
+            );
+            // Bytes a newer build appends are skipped, not misread.
+            body.extend_from_slice(&[0xEE; 9]);
+            assert_eq!(
+                FrameKind::decode(&golden(&body)).unwrap().0,
+                frame(role, after_seq)
+            );
         }
-        let mut encoded = BytesMut::new();
-        frame(role, None).encode(&mut encoded);
-        assert_eq!(encoded.as_ref(), golden(&body));
-        assert_eq!(FrameKind::decode(&encoded).unwrap().0, frame(role, None));
     }
-    let mut body = vec![1, 0, 0, 0, 0, 7, 0];
-    body.extend_from_slice(&0x0102_0304_0506_0708u64.to_be_bytes());
-    let mut encoded = BytesMut::new();
-    frame(None, Some(0x0102_0304_0506_0708)).encode(&mut encoded);
-    assert_eq!(encoded.as_ref(), golden(&body));
-    assert_eq!(
-        FrameKind::decode(&encoded).unwrap().0,
-        frame(Some(RolePolicy::PRIMARY), Some(0x0102_0304_0506_0708)),
-        "the role's omission canonicalizes to its explicit default slot"
-    );
-    for length in 1..8 {
-        let mut partial = vec![1, 0, 0, 0, 0, 7, 0];
+    for length in 0..8 {
+        let mut partial = vec![1, 0, 0, 0, 0, 7, 0, 1];
         partial.extend(std::iter::repeat_n(0, length));
         assert!(
             FrameKind::decode(&golden(&partial)).is_err(),

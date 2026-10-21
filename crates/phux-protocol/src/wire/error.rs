@@ -118,6 +118,15 @@ pub enum DecodeError {
     #[error("invalid CHECKOUT JSON payload")]
     InvalidCheckoutPayload,
 
+    /// A well-formed JSON payload named an operation, variant, or field this
+    /// build does not know: newer, not malformed. A receiver refuses it
+    /// with `Unsupported` and keeps the connection.
+    #[error("unsupported {payload} payload: unknown operation or field")]
+    UnsupportedPayload {
+        /// The payload's DTO, for diagnostics.
+        payload: &'static str,
+    },
+
     /// A `SPAWN_RESOURCE` body broke its kind's field rules
     /// (`docs/spec/L1.md` §3.1).
     #[error(
@@ -168,6 +177,22 @@ pub enum DecodeError {
 }
 
 impl DecodeError {
+    /// Whether this is a value this build does not know in an otherwise
+    /// well-framed message (an unknown frame type, tag, enum value, presence
+    /// byte, or JSON operation or field), which a newer 1.x peer may send:
+    /// refuse it as `Unsupported` and keep the connection. Every other
+    /// error is malformed input.
+    #[must_use]
+    pub const fn is_unsupported(&self) -> bool {
+        matches!(
+            self,
+            Self::UnknownFrameKind { .. }
+                | Self::UnknownEnumValue { .. }
+                | Self::UnsupportedCommand { .. }
+                | Self::UnsupportedPayload { .. }
+        )
+    }
+
     /// [`Self::UnknownEnumValue`] for `field` carrying `value`.
     pub(crate) fn unknown_enum(field: &'static str, value: impl Into<u32>) -> Self {
         Self::UnknownEnumValue {
@@ -189,4 +214,12 @@ impl DecodeError {
             other => other,
         }
     }
+}
+
+/// Whether a `serde_json` error message names an unknown variant or field:
+/// a well-formed payload from a newer peer, as opposed to bad JSON, a
+/// missing field, or a mistyped value. `serde`'s `unknown_variant` and
+/// `unknown_field` messages open with these words; a test pins them.
+pub(crate) fn names_unknown_json(message: &str) -> bool {
+    message.starts_with("unknown variant") || message.starts_with("unknown field")
 }

@@ -235,7 +235,8 @@ fn malformed_outer_frames_are_rejected() {
 }
 
 /// HELLO bodies from before the protocol-0.7 capability record, or with a
-/// truncated record, are malformed; an unknown `ColorSupport` tag is named.
+/// truncated record, are malformed. (Unknown values inside a complete
+/// record are tolerated: see `hello_growth`.)
 #[test]
 fn hello_rejects_legacy_and_truncated_capabilities() {
     let full_caps = [
@@ -248,14 +249,8 @@ fn hello_rejects_legacy_and_truncated_capabilities() {
     let cases: [(Option<&[u8]>, DecodeError); 4] = [
         (None, DecodeError::UnexpectedEof),
         (Some(&[0x00]), DecodeError::UnexpectedEof),
+        (Some(&[0xFF]), DecodeError::UnexpectedEof),
         (Some(&full_caps), DecodeError::UnexpectedEof),
-        (
-            Some(&[0xFF]),
-            DecodeError::UnknownEnumValue {
-                field: "ColorSupport",
-                value: 0xFF,
-            },
-        ),
     ];
     for (caps, want) in cases {
         let mut fields = Vec::new();
