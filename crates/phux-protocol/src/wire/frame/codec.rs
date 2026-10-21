@@ -1,17 +1,10 @@
 //! Sub-record codec helpers shared by the frame encoder and the wire
 //! decoder.
 
-use crate::caps::{
-    BootstrapCodec, BootstrapProfile, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
-};
 use crate::ids::{
     BootstrapId, GroupId, RESOURCE_ID_TAG_LOCAL, RESOURCE_ID_TAG_SATELLITE, ResourceId,
     SatelliteHost, SessionId, StreamId,
 };
-use crate::input::focus::FocusEvent;
-use crate::input::key::KeyEvent;
-use crate::input::mouse::MouseEvent;
-use crate::input::paste::PasteEvent;
 use crate::wire::decode::{Decoder, utf8_value};
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
@@ -24,104 +17,23 @@ use super::{
     SCOPE_TAG_RESOURCE, Scope, ViewportInfo,
 };
 
+mod bootstrap;
+mod input;
 mod results;
+
+pub(in crate::wire) use bootstrap::{
+    decode_bootstrap_codec, decode_bootstrap_profile, decode_bootstrap_stream_profile,
+    encode_bootstrap_codec, encode_bootstrap_profile,
+};
+pub(in crate::wire) use input::{
+    decode_focus_event, decode_key_event, decode_mouse_event, decode_paste_event,
+    encode_focus_event, encode_key_event, encode_mouse_event, encode_paste_event,
+};
 
 pub(in crate::wire) use results::{
     decode_move_result, decode_server_instance, decode_spawn_result, encode_move_result,
     encode_server_instance, encode_spawn_result,
 };
-
-pub(in crate::wire) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut Encoder<'_>) {
-    match codec {
-        BootstrapCodec::SynthesizedVtV1 => {
-            enc.write_u8(BootstrapCodec::SYNTHESIZED_VT_V1_TAG);
-        }
-        BootstrapCodec::Native(version) => {
-            enc.write_u8(BootstrapCodec::NATIVE_TAG);
-            enc.write_u8(version.as_wire());
-        }
-        BootstrapCodec::AgentEventsJsonlV1 => {
-            enc.write_u8(BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG);
-        }
-    }
-}
-
-pub(in crate::wire) fn decode_bootstrap_codec(
-    dec: &mut Decoder<'_>,
-) -> Result<BootstrapCodec, DecodeError> {
-    match dec.read_u8()? {
-        BootstrapCodec::SYNTHESIZED_VT_V1_TAG => Ok(BootstrapCodec::SynthesizedVtV1),
-        BootstrapCodec::NATIVE_TAG => {
-            let value = dec.read_u8()?;
-            let codec = EngineCodec::from_wire(value)
-                .ok_or_else(|| DecodeError::unknown_enum("EngineCodec", value))?;
-            Ok(BootstrapCodec::Native(codec))
-        }
-        BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG => Ok(BootstrapCodec::AgentEventsJsonlV1),
-        value => Err(DecodeError::unknown_enum("BootstrapCodec", value)),
-    }
-}
-
-pub(in crate::wire) fn encode_bootstrap_profile(profile: BootstrapProfile, enc: &mut Encoder<'_>) {
-    match profile {
-        BootstrapProfile::NativeState { codec, features } => {
-            enc.write_u8(BootstrapProfile::NATIVE_STATE_TAG);
-            enc.write_u8(codec.as_wire());
-            enc.write_u32_be(features.as_wire());
-        }
-        BootstrapProfile::SynthesizedVtRaw => {
-            enc.write_u8(BootstrapProfile::SYNTHESIZED_VT_RAW_TAG);
-        }
-        BootstrapProfile::SynthesizedVtStateSync => {
-            enc.write_u8(BootstrapProfile::SYNTHESIZED_VT_STATE_SYNC_TAG);
-        }
-    }
-}
-
-pub(in crate::wire) fn decode_bootstrap_profile(
-    dec: &mut Decoder<'_>,
-) -> Result<BootstrapProfile, DecodeError> {
-    match dec.read_u8()? {
-        BootstrapProfile::NATIVE_STATE_TAG => {
-            let value = dec.read_u8()?;
-            let codec = EngineCodec::from_wire(value)
-                .ok_or_else(|| DecodeError::unknown_enum("EngineCodec", value))?;
-            let features = EngineFeatureSet::from_wire(dec.read_u32_be()?);
-            if !features.supports_native() {
-                return Err(DecodeError::InvalidBootstrapProfile);
-            }
-            Ok(BootstrapProfile::NativeState { codec, features })
-        }
-        BootstrapProfile::SYNTHESIZED_VT_RAW_TAG => Ok(BootstrapProfile::SynthesizedVtRaw),
-        BootstrapProfile::SYNTHESIZED_VT_STATE_SYNC_TAG => {
-            Ok(BootstrapProfile::SynthesizedVtStateSync)
-        }
-        value => Err(DecodeError::unknown_enum("BootstrapProfile", value)),
-    }
-}
-
-pub(in crate::wire) const fn decode_bootstrap_stream_profile(
-    codec: BootstrapCodec,
-    output_mode: u8,
-    resume_after_seq: Option<u64>,
-) -> Result<BootstrapStreamProfile, DecodeError> {
-    match (codec, output_mode, resume_after_seq) {
-        (BootstrapCodec::Native(codec), 0, None) => {
-            Ok(BootstrapStreamProfile::NativeState { codec })
-        }
-        (BootstrapCodec::SynthesizedVtV1, 0, None) => Ok(BootstrapStreamProfile::SynthesizedVtRaw),
-        (BootstrapCodec::SynthesizedVtV1, 1, None) => {
-            Ok(BootstrapStreamProfile::SynthesizedVtStateSync)
-        }
-        (BootstrapCodec::AgentEventsJsonlV1, 0, None) => {
-            Ok(BootstrapStreamProfile::AgentEventsJsonlV1)
-        }
-        (BootstrapCodec::AgentEventsJsonlV1, 0, Some(after_seq)) => {
-            Ok(BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq })
-        }
-        _ => Err(DecodeError::InvalidBootstrapProfile),
-    }
-}
 
 pub(in crate::wire) fn decode_stream_id(dec: &mut Decoder<'_>) -> Result<StreamId, DecodeError> {
     StreamId::new(dec.read_u64_be()?).ok_or(DecodeError::InvalidStreamId)
@@ -193,118 +105,6 @@ pub(in crate::wire) fn decode_viewport_info(
         pixel_w,
         pixel_h,
     })
-}
-
-pub(in crate::wire) const fn encode_focus_event(event: FocusEvent) -> u8 {
-    match event {
-        FocusEvent::Gained => 0,
-        FocusEvent::Lost => 1,
-    }
-}
-
-pub(in crate::wire) fn decode_focus_event(tag: u8) -> Result<FocusEvent, DecodeError> {
-    match tag {
-        0 => Ok(FocusEvent::Gained),
-        1 => Ok(FocusEvent::Lost),
-        other => Err(DecodeError::unknown_enum("FocusEvent", other)),
-    }
-}
-
-pub(in crate::wire) fn encode_key_event(event: &KeyEvent, enc: &mut Encoder<'_>) {
-    // `#[repr(u32)]` discriminants (ADR-0024); decoded via `TryFrom<u32>`.
-    enc.write_u32_be(event.action as u32);
-    enc.write_u32_be(event.key as u32);
-    enc.write_u16_be(event.mods.bits());
-    enc.write_u16_be(event.consumed_mods.bits());
-    enc.write_u8(u8::from(event.composing));
-    encode_option_str(event.text.as_deref(), enc);
-    encode_optional_u32(event.unshifted_codepoint, enc);
-}
-
-pub(in crate::wire) fn decode_key_event(dec: &mut Decoder<'_>) -> Result<KeyEvent, DecodeError> {
-    use crate::input::key::{KeyAction, ModSet, PhysicalKey};
-
-    let action_raw = dec.read_u32_be()?;
-    let action = KeyAction::try_from(action_raw).map_err(|_| DecodeError::UnknownEnumValue {
-        field: "KeyAction",
-        value: action_raw,
-    })?;
-    let key_raw = dec.read_u32_be()?;
-    let key = PhysicalKey::try_from(key_raw).map_err(|_| DecodeError::UnknownEnumValue {
-        field: "PhysicalKey",
-        value: key_raw,
-    })?;
-    let mods = ModSet::from_bits_truncate(dec.read_u16_be()?);
-    let consumed_mods = ModSet::from_bits_truncate(dec.read_u16_be()?);
-    let composing = dec.read_u8()? != 0;
-    let text = decode_option_str(dec)?.map(str::to_owned);
-    let unshifted_codepoint = decode_optional_u32(dec)?;
-    Ok(KeyEvent {
-        action,
-        key,
-        mods,
-        consumed_mods,
-        composing,
-        text,
-        unshifted_codepoint,
-    })
-}
-
-pub(in crate::wire) fn encode_mouse_event(event: &MouseEvent, enc: &mut Encoder<'_>) {
-    enc.write_u32_be(event.action as u32);
-    enc.write_u32_be(event.button as u32);
-    enc.write_u16_be(event.mods.bits());
-    enc.write_f64_be(event.x);
-    enc.write_f64_be(event.y);
-}
-
-pub(in crate::wire) fn decode_mouse_event(
-    dec: &mut Decoder<'_>,
-) -> Result<MouseEvent, DecodeError> {
-    use crate::input::key::ModSet;
-    use crate::input::mouse::{MouseAction, MouseButton};
-
-    let action_raw = dec.read_u32_be()?;
-    let action = MouseAction::try_from(action_raw).map_err(|_| DecodeError::UnknownEnumValue {
-        field: "MouseAction",
-        value: action_raw,
-    })?;
-    let button_raw = dec.read_u32_be()?;
-    let button = MouseButton::try_from(button_raw).map_err(|_| DecodeError::UnknownEnumValue {
-        field: "MouseButton",
-        value: button_raw,
-    })?;
-    let mods = ModSet::from_bits_truncate(dec.read_u16_be()?);
-    let x = dec.read_f64_be()?;
-    let y = dec.read_f64_be()?;
-    Ok(MouseEvent {
-        action,
-        button,
-        mods,
-        x,
-        y,
-    })
-}
-
-pub(in crate::wire) fn encode_paste_event(event: &PasteEvent, enc: &mut Encoder<'_>) {
-    enc.write_u8(event.trust as u8);
-    enc.write_bytes(&event.data);
-}
-
-pub(in crate::wire) fn decode_paste_event(
-    dec: &mut Decoder<'_>,
-) -> Result<PasteEvent, DecodeError> {
-    use crate::input::paste::PasteTrust;
-    let trust_tag = dec.read_u8()?;
-    let trust = match trust_tag {
-        0 => PasteTrust::Trusted,
-        1 => PasteTrust::Untrusted,
-        other => {
-            return Err(DecodeError::unknown_enum("PasteTrust", other));
-        }
-    };
-    let data = dec.read_bytes()?.to_vec();
-    Ok(PasteEvent { trust, data })
 }
 
 /// Encode a [`ResourceId`] (ADR-0016): tag `0` + `u32`, or tag `1` + host
