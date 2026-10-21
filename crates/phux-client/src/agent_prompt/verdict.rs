@@ -174,9 +174,13 @@ pub fn classify(result: &CommandResult) -> ApplyVerdict {
             ApplyVerdict::Refused(Refusal::CanonicalLimitExceeded(message))
         }
         ErrorCode::UnsafePaste => ApplyVerdict::Refused(Refusal::UnsafePaste(message)),
-        ErrorCode::InvalidCommand | ErrorCode::MalformedMessage | ErrorCode::UnknownMessageType => {
-            ApplyVerdict::Refused(Refusal::InvalidBatch(message))
-        }
+        // `UNSUPPORTED`: the server did not understand the batch, so nothing
+        // was written and the identical batch cannot succeed there, as with
+        // the acknowledged-input journal.
+        ErrorCode::InvalidCommand
+        | ErrorCode::MalformedMessage
+        | ErrorCode::UnknownMessageType
+        | ErrorCode::Unsupported => ApplyVerdict::Refused(Refusal::InvalidBatch(message)),
         ErrorCode::PermissionDenied => ApplyVerdict::Refused(Refusal::PermissionDenied(message)),
         ErrorCode::UnsupportedSatelliteRoute | ErrorCode::SatelliteUnreachable => {
             ApplyVerdict::Refused(Refusal::SatelliteTarget { host: message })

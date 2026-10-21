@@ -189,6 +189,15 @@ fn every_reply_has_exactly_one_reading() {
         (error(ErrorCode::InvalidCommand), |v| {
             matches!(v, ApplyVerdict::Refused(Refusal::InvalidBatch(_)))
         }),
+        (error(ErrorCode::Unsupported), |v| {
+            matches!(v, ApplyVerdict::Refused(Refusal::InvalidBatch(_)))
+        }),
+        (error(ErrorCode::UNREADABLE_REPLY), |v| {
+            matches!(v, ApplyVerdict::Unknown(_))
+        }),
+        (error(ErrorCode::Unknown(299)), |v| {
+            matches!(v, ApplyVerdict::Unknown(_))
+        }),
         (error(ErrorCode::PermissionDenied), |v| {
             matches!(v, ApplyVerdict::Refused(Refusal::PermissionDenied(_)))
         }),
