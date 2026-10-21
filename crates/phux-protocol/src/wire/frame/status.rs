@@ -230,7 +230,8 @@ impl ErrorCode {
     /// request may have taken effect; only the answer is unreadable. Unlike
     /// [`Self::Unsupported`], which promises nothing happened, it is an
     /// [`Self::Unknown`] code: outcome not stated. Wire value `0` is never
-    /// allocated, so no server sends it.
+    /// allocated to a defined code, but it does travel: a hub that cannot
+    /// read a satellite's reply settles the relayed request with it.
     pub const UNREADABLE_REPLY: Self = Self::Unknown(0);
 
     /// Decode a wire value totally: a defined code, or [`Self::Unknown`]

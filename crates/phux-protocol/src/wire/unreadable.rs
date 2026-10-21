@@ -1,13 +1,14 @@
-//! A spawn or move result this build cannot read, kept verbatim for relaying.
+//! A spawn or move result this build cannot read, kept for diagnostics.
 
 /// A `RESOURCE_SPAWNED` or `RESOURCE_MOVED` result this build cannot read,
-/// kept as its exact wire bytes.
+/// with the exact wire bytes it arrived as.
 ///
 /// A newer server's result (an unknown result or error tag, a payload this
 /// build does not know how to read) settles the request with the outcome not
-/// stated, and a hub relaying it re-encodes these bytes verbatim, outer tag
-/// and payload included, so a newer client downstream reads what the
-/// satellite said. Encoding one only ever echoes the bytes it holds.
+/// stated. The bytes are for diagnostics only and are never sent on: an
+/// unreadable result encodes as the reserved result tag `255` ("outcome not
+/// stated"), so a hub relaying one can never forward a satellite's
+/// satellite-local ids to a client that would read them as the hub's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnreadableResult {
     bytes: Vec<u8>,
@@ -15,7 +16,8 @@ pub struct UnreadableResult {
 
 impl UnreadableResult {
     /// The result exactly as it arrived on the wire: its result tag, then
-    /// whatever followed. Encoding writes these bytes back unchanged.
+    /// whatever followed. Encoding writes the reserved tag `255`, never
+    /// these bytes.
     #[must_use]
     pub fn from_wire(bytes: impl Into<Vec<u8>>) -> Self {
         Self {

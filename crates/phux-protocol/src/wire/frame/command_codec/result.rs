@@ -41,22 +41,20 @@ pub(in crate::wire) fn decode_command_result(
     let tag = dec.read_u8()?;
     match tag {
         COMMAND_RESULT_TAG_OK => Ok(CommandResult::Ok),
-        // The value ends its field, so an unknown value tag, or an unknown
-        // enum anywhere inside a known value (an arrangement node, a split
-        // direction, an entry target), settles the request instead of
-        // failing the frame.
-        COMMAND_RESULT_TAG_OK_WITH => match decode_command_value(dec) {
-            Err(DecodeError::UnknownEnumValue { field, value }) => Ok(unknown_result(field, value)),
-            value => value.map(CommandResult::OkWith),
-        },
+        // The value ends its field, so an unknown value tag, or any value
+        // this build does not know anywhere inside a known value (an
+        // arrangement node, a split direction, a bool byte, a JSON field),
+        // settles the request instead of failing the frame.
+        COMMAND_RESULT_TAG_OK_WITH => settle(decode_command_value(dec), CommandResult::OkWith),
         COMMAND_RESULT_TAG_ERROR => {
             let code = ErrorCode::from_wire_or_unknown(dec.read_u16_be()?);
             let message = dec.read_str()?.to_owned();
             Ok(CommandResult::Error { code, message })
         }
-        crate::wire::frame::COMMAND_RESULT_TAG_REFUSED => Ok(CommandResult::Refused(
-            crate::wire::frame::org::decode_refusal(dec)?,
-        )),
+        crate::wire::frame::COMMAND_RESULT_TAG_REFUSED => settle(
+            crate::wire::frame::org::decode_refusal(dec),
+            CommandResult::Refused,
+        ),
         crate::wire::frame::COMMAND_RESULT_TAG_ACCEPTED => {
             let mut bytes = [0; 16];
             for byte in &mut bytes {
@@ -66,6 +64,24 @@ pub(in crate::wire) fn decode_command_result(
             Ok(CommandResult::Accepted { operation })
         }
         other => Ok(unknown_result("CommandResult", u32::from(other))),
+    }
+}
+
+/// A decoded result body, or [`unknown_result`] when it failed on a value
+/// this build does not know: a `COMMAND_RESULT` always decodes as one, so a
+/// consumer waiting on it never hangs. Malformed bytes stay an error.
+fn settle<T>(
+    decoded: Result<T, DecodeError>,
+    wrap: impl FnOnce(T) -> CommandResult,
+) -> Result<CommandResult, DecodeError> {
+    match decoded {
+        Ok(value) => Ok(wrap(value)),
+        Err(DecodeError::UnknownEnumValue { field, value }) => Ok(unknown_result(field, value)),
+        Err(error) if error.is_unsupported() => Ok(CommandResult::Error {
+            code: ErrorCode::UNREADABLE_REPLY,
+            message: format!("reply carried a value this build does not know: {error}"),
+        }),
+        Err(error) => Err(error),
     }
 }
 

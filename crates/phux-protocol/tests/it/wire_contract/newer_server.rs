@@ -17,7 +17,8 @@ use phux_protocol::wire::frame::{
     ArrangementDoc, ArrangementGroup, ArrangementNode, ArrangementOwner, ArrangementValue,
     CommandResult, CommandValue, EntryRef, EntryTarget, ErrorCode, FrameKind, MoveError,
     MoveResult, SpawnError, SpawnResult, SplitDirection, TYPE_BOOTSTRAP_TOMBSTONE,
-    TYPE_DIRECTORY_LISTING, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_SPAWNED, TombstoneReason,
+    TYPE_COMMAND_RESULT, TYPE_DIRECTORY_LISTING, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_SPAWNED,
+    TombstoneReason,
 };
 
 use crate::common::{assert_round_trip, decode, encode, framed_tlv, local_id_bytes, tlv_field};
@@ -41,7 +42,7 @@ fn unreadable_results() -> [Vec<u8>; 3] {
 }
 
 #[test]
-fn an_unreadable_spawn_result_settles_the_spawn_verbatim() {
+fn an_unreadable_spawn_result_settles_the_spawn_and_never_relays_its_bytes() {
     for result in unreadable_results() {
         let framed = reply(TYPE_RESOURCE_SPAWNED, &result);
         let decoded = decode(&framed).unwrap();
@@ -54,13 +55,22 @@ fn an_unreadable_spawn_result_settles_the_spawn_verbatim() {
                 ))),
             }
         );
-        // A hub relaying it re-encodes the satellite's bytes exactly.
-        assert_eq!(encode(&decoded), framed, "{result:02x?}");
+        // A hub relaying it sends the reserved unknown tag, never the
+        // satellite's bytes (which may name satellite-local ids).
+        let relayed = reply(TYPE_RESOURCE_SPAWNED, &[0xFF]);
+        assert_eq!(encode(&decoded), relayed, "{result:02x?}");
+        assert!(matches!(
+            decode(&relayed).unwrap(),
+            FrameKind::ResourceSpawned {
+                result: SpawnResult::Err(SpawnError::Unknown(_)),
+                ..
+            }
+        ));
     }
 }
 
 #[test]
-fn an_unreadable_move_result_settles_the_move_verbatim() {
+fn an_unreadable_move_result_settles_the_move_and_never_relays_its_bytes() {
     for result in unreadable_results() {
         let framed = reply(TYPE_RESOURCE_MOVED, &result);
         let decoded = decode(&framed).unwrap();
@@ -73,7 +83,35 @@ fn an_unreadable_move_result_settles_the_move_verbatim() {
                 ))),
             }
         );
-        assert_eq!(encode(&decoded), framed, "{result:02x?}");
+        assert_eq!(
+            encode(&decoded),
+            reply(TYPE_RESOURCE_MOVED, &[0xFF]),
+            "{result:02x?}"
+        );
+    }
+}
+
+/// A `COMMAND_RESULT` always decodes as one: a newer value inside a
+/// `REFUSED` or `OK_WITH` body settles the request as an unreadable reply.
+#[test]
+fn a_newer_value_inside_a_command_result_body_still_settles_the_request() {
+    for result in [
+        // REFUSED, STALE, a record whose `Option` tag is a newer value.
+        vec![0x03, 0x03, 0, 0, 0, 1, 2],
+        // OK_WITH, FILE_UPLOAD, `next_offset`, then a newer path presence.
+        vec![0x01, 0x05, 0, 0, 0, 0, 0, 0, 0, 9, 2],
+    ] {
+        let decoded = decode(&reply(TYPE_COMMAND_RESULT, &result)).unwrap();
+        assert!(
+            matches!(
+                decoded,
+                FrameKind::CommandResult {
+                    request_id: 7,
+                    result: CommandResult::Error { code, .. },
+                } if code == ErrorCode::UNREADABLE_REPLY
+            ),
+            "{result:02x?}: {decoded:?}"
+        );
     }
 }
 
@@ -296,17 +334,15 @@ fn checkout_reply(json: &[u8]) -> Vec<u8> {
 #[test]
 fn a_newer_checkout_answer_settles_and_new_fields_are_skipped() {
     use phux_protocol::checkout::{CheckoutAnswer, CheckoutStatus};
-    use phux_protocol::wire::decode::newer_server_fallback;
     use phux_protocol::wire::frame::{CommandResult, CommandValue};
 
+    // A `COMMAND_RESULT` always decodes as one: the newer answer kind is an
+    // unreadable reply settling request 7.
     let future = checkout_reply(br#"{"kind":"worktrees","items":[]}"#);
-    let error = FrameKind::decode(&future).unwrap_err();
-    assert!(error.is_unsupported(), "{error:?}");
-    let Ok(Some(FrameKind::Error {
-        request_id: Some(7),
-        code,
-        ..
-    })) = newer_server_fallback(&future, error)
+    let FrameKind::CommandResult {
+        request_id: 7,
+        result: CommandResult::Error { code, .. },
+    } = decode(&future).unwrap()
     else {
         panic!("the checkout request settles");
     };

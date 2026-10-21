@@ -20,7 +20,13 @@ use crate::wire::error::DecodeError;
 //
 // The result is the field value's whole tail, so one this build cannot read
 // (an unknown result or error tag, or an unknown value inside a known one)
-// is kept verbatim as `Unknown` and re-encoded byte for byte.
+// decodes as `Unknown` with its bytes kept for diagnostics. `Unknown` always
+// encodes as the reserved result tag `RESULT_TAG_UNKNOWN`, never those bytes.
+
+/// The result tag reserved for "outcome not stated" in `RESOURCE_SPAWNED`
+/// and `RESOURCE_MOVED`: never allocated to a result, so every build decodes
+/// it as `Unknown`.
+pub(in crate::wire) const RESULT_TAG_UNKNOWN: u8 = 0xFF;
 
 /// The whole result as [`UnreadableResult`] when `decoded` failed on a value
 /// this build does not know; malformed bytes stay an error.
@@ -67,11 +73,11 @@ pub(in crate::wire) fn decode_spawn_result(
     })
 }
 
-/// Write an `Err` result: its tag and the error, or an unreadable result's
-/// bytes verbatim.
+/// Write an `Err` result: its tag and the error, or the reserved unknown
+/// tag for an unreadable one.
 fn encode_spawn_error(err: &SpawnError, enc: &mut Encoder<'_>) {
-    if let SpawnError::Unknown(raw) = err {
-        enc.write_raw(raw.as_bytes());
+    if let SpawnError::Unknown(_) = err {
+        enc.write_u8(RESULT_TAG_UNKNOWN);
         return;
     }
     enc.write_u8(SPAWN_RESULT_ERR);
@@ -118,7 +124,7 @@ fn decode_spawn_error(dec: &mut Decoder<'_>) -> Result<SpawnError, DecodeError> 
 
 pub(in crate::wire) fn encode_move_result(result: &MoveResult, enc: &mut Encoder<'_>) {
     match result {
-        MoveResult::Err(MoveError::Unknown(raw)) => enc.write_raw(raw.as_bytes()),
+        MoveResult::Err(MoveError::Unknown(_)) => enc.write_u8(RESULT_TAG_UNKNOWN),
         MoveResult::Ok(terminal_id) => {
             enc.write_u8(MOVE_RESULT_OK);
             encode_terminal_id(terminal_id, enc);
@@ -133,7 +139,7 @@ pub(in crate::wire) fn encode_move_result(result: &MoveResult, enc: &mut Encoder
                 MoveError::UnsupportedSatelliteRoute => {
                     enc.write_u8(MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE);
                 }
-                // Written verbatim by the first arm.
+                // Written as the reserved tag by the first arm.
                 MoveError::Unknown(_) => {}
             }
         }
