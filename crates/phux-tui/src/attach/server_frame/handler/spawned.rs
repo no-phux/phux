@@ -21,6 +21,9 @@ pub(super) fn handle_terminal_spawned<W: crate::attach::RenderSink>(
     request_id: u32,
     result: SpawnResult,
 ) -> Result<FrameOutcome, AttachError> {
+    if matches!(result, SpawnResult::Err(SpawnError::Unknown(_))) {
+        return Ok(uncertain_spawn(ctx, request_id));
+    }
     if let Some(title) = ctx.pending_floating.remove(&request_id) {
         return handle_floating_spawned(ctx, title, result);
     }
@@ -86,6 +89,33 @@ pub(super) fn handle_terminal_spawned<W: crate::attach::RenderSink>(
             tracing::warn!(request_id, "ResourceSpawned: unknown SpawnResult variant");
             Ok(FrameOutcome::default())
         }
+    }
+}
+
+/// What a spawn settles with when the server answered without this build
+/// being able to tell whether it created a pane.
+pub(super) const UNCERTAIN_SPAWN: &str =
+    "the new pane's outcome is unknown (a newer server's answer); it may exist";
+
+/// A parked split, window, or floating spawn whose answer does not say
+/// whether a pane was created: it settles with a notice saying so, never as
+/// "nothing was created". A pane the server did create surfaces through
+/// its spawn event like any other.
+fn uncertain_spawn<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    request_id: u32,
+) -> FrameOutcome {
+    let parked = ctx.pending_floating.remove(&request_id).is_some()
+        | ctx.pending_windows.remove(&request_id).is_some()
+        | ctx.pending_splits.remove(&request_id).is_some();
+    if !parked {
+        return FrameOutcome::default();
+    }
+    tracing::warn!(request_id, "spawn answered with an unknown outcome");
+    let _ = actions::write_bell(ctx.out);
+    FrameOutcome {
+        notices: vec![Notice::warn(UNCERTAIN_SPAWN.to_owned())],
+        ..FrameOutcome::default()
     }
 }
 

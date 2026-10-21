@@ -88,11 +88,16 @@ pub(super) fn error_frame_outcome<W: crate::attach::RenderSink>(
         return handle_adopt_reply(ctx, parked, Some(AdoptRefusal { code, message }))
             .map(|outcome| with_satellite_chrome(outcome, marked));
     }
-    // A spawn a newer server refused in place (`UNSUPPORTED`), or whose
-    // reply this build could not read, settles like a refused spawn.
+    // A spawn a newer server refused in place (`UNSUPPORTED`) settles like
+    // a refused spawn. A code this build does not know, `UNREADABLE_REPLY`
+    // included, does not say whether a pane was created: unknown outcome.
     if let Some(id) = request_id.filter(|id| is_pending_spawn(ctx, *id)) {
-        let refused = SpawnResult::Err(SpawnError::SpawnFailed(message));
-        return handle_terminal_spawned(ctx, id, refused)
+        let settled = if matches!(code, ErrorCode::Unknown(_)) {
+            SpawnResult::Err(SpawnError::Unknown(0))
+        } else {
+            SpawnResult::Err(SpawnError::SpawnFailed(message))
+        };
+        return handle_terminal_spawned(ctx, id, settled)
             .map(|outcome| with_satellite_chrome(outcome, marked));
     }
     if let Some(id) = request_id {

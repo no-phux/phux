@@ -138,3 +138,42 @@ async fn a_spawn_answered_unsupported_settles_and_keeps_the_attach() {
     assert!(!matches!(step, FrameStep::Exit(_)));
     assert!(state.mirror.pending_floating.is_empty(), "the spawn settled");
 }
+
+/// A parked spawn answered with an unreadable reply, or with a newer
+/// server's unknown refusal, settles as an unknown outcome and keeps the
+/// attach.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unreadable_spawn_answer_settles_as_unknown_and_keeps_the_attach() {
+    use phux_protocol::wire::frame::{ErrorCode, SpawnError, SpawnResult};
+
+    for frame in [
+        FrameKind::Error {
+            request_id: Some(9),
+            code: ErrorCode::UNREADABLE_REPLY,
+            message: "unreadable".to_owned(),
+        },
+        FrameKind::ResourceSpawned {
+            request_id: 9,
+            result: SpawnResult::Err(SpawnError::Unknown(0xFE)),
+        },
+    ] {
+        let (mut state, mut client, _server, mut out) = Box::pin(newer_server_loop()).await;
+        state
+            .mirror
+            .pending_floating
+            .insert(9, "Agent Board".to_owned());
+        let step = state
+            .apply_server_frame(
+                &mut client,
+                &mut out,
+                None,
+                frame,
+                false,
+                &mut RepaintAccumulator::default(),
+            )
+            .await
+            .expect("an unknown spawn outcome is not a protocol fault");
+        assert!(!matches!(step, FrameStep::Exit(_)));
+        assert!(state.mirror.pending_floating.is_empty(), "the spawn settled");
+    }
+}
