@@ -42,6 +42,78 @@ fn interactive_setup_spawn_is_not_replayed_even_when_server_supports_idempotency
     );
 }
 
+fn inventory_read(plane: &mut ControlPlane) -> u32 {
+    plane
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match decode(bytes) {
+            FrameKind::Command {
+                request_id,
+                command: Command::GetState { .. },
+            } => Some(request_id),
+            _ => None,
+        })
+        .expect("topology read")
+}
+
+fn answer_inventory(plane: &mut ControlPlane, request_id: u32, snapshot: SessionSnapshot) {
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+        })
+        .unwrap();
+}
+
+/// An empty session emits no terminal-close event to refresh the inventory.
+#[test]
+fn session_deletion_refreshes_inventory_and_fences_an_older_read() {
+    use phux_protocol::ids::{Revision, SessionKey};
+    use phux_protocol::wire::frame::AgentEvent;
+
+    for read_in_flight in [false, true] {
+        let mut plane = ControlPlane::new(ControlOptions::default());
+        plane.connection_opened();
+        let _ = plane.take_outbound();
+        plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+        let initial = inventory_read(&mut plane);
+        let mut before = snapshot();
+        before
+            .sessions
+            .push(SessionInfo::new(SessionId::new(2), "empty"));
+        answer_inventory(&mut plane, initial, before.clone());
+        let _ = plane.take_outbound();
+        let _ = plane.take_events();
+        assert!(plane.topology().unwrap().session_named("empty").is_some());
+        let old_read = read_in_flight.then(|| plane.refresh_topology().unwrap());
+        let _ = plane.take_outbound();
+        plane
+            .feed(FrameKind::Event {
+                terminal: None,
+                stamp: None,
+                event: AgentEvent::SessionDeleted {
+                    session: SessionKey::new([2; 16]).unwrap(),
+                    name: "empty".into(),
+                    revision: Revision::new(2),
+                },
+            })
+            .unwrap();
+        if let Some(old_read) = old_read {
+            assert!(plane.take_outbound().is_empty(), "coalesce in-flight reads");
+            answer_inventory(&mut plane, old_read, before);
+        }
+        let refresh = inventory_read(&mut plane);
+        answer_inventory(&mut plane, refresh, snapshot());
+        assert!(plane.topology().unwrap().session_named("empty").is_none());
+        assert!(
+            plane
+                .take_events()
+                .iter()
+                .any(|event| matches!(event, Event::TopologyChanged))
+        );
+    }
+}
+
 fn replacement_hello(incarnation: u8) -> FrameKind {
     let mut hello = hello_ok(PROTOCOL_VERSION.patch);
     if let FrameKind::HelloOk { server_id, .. } = &mut hello {

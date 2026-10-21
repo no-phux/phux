@@ -104,7 +104,10 @@ impl ControlPlane {
         }
         match event {
             AgentEvent::JournalGap { .. } | AgentEvent::SourceGap { .. } => self.recover_roster(),
-            AgentEvent::ResourceSpawned { .. } => {
+            // An empty session has no RESOURCE_CLOSED to drive inventory
+            // recovery. The organization replica drops its record, but the
+            // topology's session list still needs a fresh server snapshot.
+            AgentEvent::ResourceSpawned { .. } | AgentEvent::SessionDeleted { .. } => {
                 self.fence_topology_read();
                 self.queue_refresh_topology();
             }

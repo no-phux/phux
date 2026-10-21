@@ -10,6 +10,8 @@ gpui_kit::assets::icon_assets!(
         AppWindow,
         LaptopMinimal,
         PanelsTopLeft,
+        // Settings > Layout: tab placement.
+        PanelTop,
         Server,
         Clock,
         FolderPlus,
