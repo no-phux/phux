@@ -12,9 +12,9 @@ contexts = ["pane"]
 command = ["true"]
 
 [[events]]
-id = "idle"
-title = "Pane idle"
-on = "pane.idle"
+id = "exit"
+title = "Pane exited"
+on = "pane-exit"
 command = ["true"]
 
 [[panes]]
@@ -36,7 +36,7 @@ title = "Ops Bench"
 description = "Composes the showcase providers into one workspace profile."
 contexts = ["workspace"]
 actions = ["summarize"]
-events = ["idle"]
+events = ["exit"]
 
 [[profiles.panes]]
 id = "board"

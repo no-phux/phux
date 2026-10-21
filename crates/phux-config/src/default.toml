@@ -275,10 +275,10 @@ which-key-delay-ms = 400
 #   contexts = ["workspace", "pane"]
 #
 #   [[events]]
-#   id = "idle"
-#   title = "Pane idle"
-#   on = "pane.idle"
-#   command = ["sh", "-c", "printf idle"]
+#   id = "exit"
+#   title = "Pane exited"
+#   on = "pane-exit"          # a hook event name (docs.phux.sh/reference/hooks)
+#   command = ["sh", "-c", "printf exited"]
 #
 #   [[panes]]
 #   id = "board"

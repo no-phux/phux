@@ -21,14 +21,14 @@ command = ["sh", "scripts/restore-latest.sh"]
 
 [[events]]
 id = "idle-autosave"
-title = "Autosave on idle"
-on = "pane.idle"
+title = "Autosave when a client detaches"
+on = "client-detached"
 command = ["sh", "scripts/autosave.sh"]
 
 [[events]]
 id = "session-autosave"
-title = "Autosave on session changes"
-on = "session.changed"
+title = "Autosave when a pane exits"
+on = "pane-exit"
 command = ["sh", "scripts/autosave.sh"]
 
 [[profiles]]

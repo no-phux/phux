@@ -109,7 +109,7 @@ pub(crate) fn parse(text: &str) -> Result<Recipe, String> {
 
 /// The recipe a new checkout starts from (`phux project init`).
 pub(crate) const STARTER: &str = "\
-# phux project recipe (ADR-0152). `phux project open` builds this session
+# phux project recipe. `phux project open` builds this session
 # the first time; reopening a live session never reruns it. Commands run
 # only after you approve these exact bytes (`phux project trust`).
 
