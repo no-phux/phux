@@ -3,7 +3,7 @@
 
 use super::paint::{self, Observation};
 use crate::input::{InputMetrics, KeyDisposition, TerminalInput};
-use gpui;
+use gpui::{self, AppContext as _};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn present(
@@ -182,6 +182,42 @@ pub(super) fn paint_preedit(
         window,
         cx,
     );
+}
+
+/// A new input entity for `view`. The terminal re-renders when it changes
+/// and forwards its notices and uploads as [`super::TerminalEvent`]s.
+pub(super) fn bind_input(
+    client: std::sync::Weak<phux_client_runtime::Client>,
+    view: phux_client_runtime::ViewId,
+    terminal: phux_protocol::ResourceId,
+    focus: gpui::FocusHandle,
+    option_as_alt: bool,
+    window: &gpui::Window,
+    cx: &mut gpui::Context<super::Terminal>,
+) -> (
+    gpui::Entity<crate::input::TerminalInput>,
+    gpui::Subscription,
+) {
+    let input =
+        cx.new(|_cx| crate::input::TerminalInput::new(client, view, terminal, focus, window));
+    input.update(cx, |state, _| state.set_option_as_alt(option_as_alt));
+    cx.observe(&input, |_, _, cx| cx.notify()).detach();
+    let notices = cx.subscribe(
+        &input,
+        |_, _, event: &crate::input::InputEvent, cx| match event {
+            crate::input::InputEvent::Notice(notice) => cx.emit(super::TerminalEvent::Notice {
+                title: notice.title,
+                body: notice.body.clone(),
+            }),
+            crate::input::InputEvent::Upload(batch) => {
+                cx.emit(super::TerminalEvent::Upload(batch.clone()));
+            }
+            crate::input::InputEvent::ConfirmPaste(paste) => {
+                cx.emit(super::TerminalEvent::ConfirmPaste(paste.clone()));
+            }
+        },
+    );
+    (input, notices)
 }
 
 #[cfg(test)]
