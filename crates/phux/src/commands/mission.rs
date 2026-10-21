@@ -720,7 +720,7 @@ const fn classify(err: &phux_work::Error) -> (&'static str, u8, &'static str) {
         phux_work::Error::UnsupportedSchema { .. } => (
             codes::MISSION_UNSUPPORTED_SCHEMA,
             1,
-            "this binary reads mission schema version 1 only",
+            "this binary reads mission schema version 2 only",
         ),
         phux_work::Error::Busy => (
             codes::MISSION_BUSY,

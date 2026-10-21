@@ -111,9 +111,10 @@ brief path as `mission start`. The keeper stays up while any task is
 that terminal's agent record before recording `failed`, so a `done` that
 lands in the same moment becomes `done_unchecked`.
 
-`done_unchecked`, `done`, and `failed` do not bump the work store
-`user_version`, and they have no serde fallback. An older binary opens the
-file and then cannot read a task row in one of those states.
+`done_unchecked`, `done`, and `failed` stamp the work store at
+`user_version` 2 and add no tables. An older binary refuses the file at
+open with an unsupported-schema error instead of failing on a task row
+in one of those states.
 
 The transition is pure in
 [state.rs](../crates/phux-mission/src/state.rs) and applied by

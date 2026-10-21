@@ -158,14 +158,15 @@ impl<'de> Deserialize<'de> for OperationId {
 ///
 /// `NeedsYou` is the needs-you state. An unresolved [`SignalKind::CredentialLost`]
 /// projects every objective that carries it into this state. `Done` is reserved
-/// for merge cleanup and is not written from agent state. The spellings do not
-/// bump the store `user_version`.
+/// for merge cleanup and is not written from agent state. The spellings add
+/// no tables. A store that uses them is stamped `user_version` 2.
 ///
 /// # Downgrade
 ///
-/// `done_unchecked`, `done`, and `failed` have no serde fallback. An older
-/// binary still opens the file (`user_version` stays 1) and then cannot read a
-/// row in one of those states: its parser treats the spelling as corrupt.
+/// `done_unchecked`, `done`, and `failed` have no serde fallback. The store
+/// is stamped `user_version` 2 so a binary that only accepts version 1
+/// refuses the file at open with [`crate::Error::UnsupportedSchema`] instead
+/// of reading one of those rows as corrupt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectiveState {
