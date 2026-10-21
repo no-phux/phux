@@ -210,10 +210,8 @@ impl Decoder<'_> {
                 f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
                 f::REASON => {
                     let value = sub!(value, Decoder::read_u8);
-                    reason = Some(
-                        TombstoneReason::from_wire(value)
-                            .ok_or_else(|| DecodeError::unknown_enum("TombstoneReason", value))?,
-                    );
+                    reason =
+                        Some(TombstoneReason::from_wire(value).unwrap_or(TombstoneReason::Unknown));
                 }
                 f::LAST_VALID_SEQ => last_valid_seq = Some(sub!(value, Decoder::read_u64_be)),
                 _ => {}
@@ -243,9 +241,10 @@ impl Decoder<'_> {
                 f::CURSOR => cursor = Some(checked_history_cursor(value)?),
                 f::REASON => {
                     let value = sub!(value, Decoder::read_u8);
-                    reason = Some(HistoryTombstoneReason::from_wire(value).ok_or_else(|| {
-                        DecodeError::unknown_enum("HistoryTombstoneReason", value)
-                    })?);
+                    reason = Some(
+                        HistoryTombstoneReason::from_wire(value)
+                            .unwrap_or(HistoryTombstoneReason::Unknown),
+                    );
                 }
                 _ => {}
             }
@@ -289,9 +288,10 @@ impl Decoder<'_> {
                 f::CURSOR => cursor = Some(checked_history_cursor(value)?),
                 f::REASON => {
                     let value = sub!(value, Decoder::read_u8);
-                    reason = Some(HistoryRejectionReason::from_wire(value).ok_or_else(|| {
-                        DecodeError::unknown_enum("HistoryRejectionReason", value)
-                    })?);
+                    reason = Some(
+                        HistoryRejectionReason::from_wire(value)
+                            .unwrap_or(HistoryRejectionReason::Unknown),
+                    );
                 }
                 f::REQUIRED_BYTES => required_bytes = Some(sub!(value, Decoder::read_u32_be)),
                 f::REQUIRED_ROWS => required_rows = Some(sub!(value, Decoder::read_u32_be)),

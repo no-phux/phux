@@ -35,15 +35,14 @@ impl PathKind {
         }
     }
 
-    fn from_wire(tag: u8) -> Result<Self, DecodeError> {
+    /// `None` for a kind a newer server allocated; the decoder drops that
+    /// row rather than misclassify it.
+    const fn from_wire(tag: u8) -> Option<Self> {
         match tag {
-            0 => Ok(Self::File),
-            1 => Ok(Self::Directory),
-            2 => Ok(Self::Symlink),
-            _ => Err(DecodeError::UnknownEnumValue {
-                field: "path_kind",
-                value: u32::from(tag),
-            }),
+            0 => Some(Self::File),
+            1 => Some(Self::Directory),
+            2 => Some(Self::Symlink),
+            _ => None,
         }
     }
 }
@@ -68,15 +67,13 @@ impl PathStatus {
         }
     }
 
-    fn from_wire(tag: u8) -> Result<Self, DecodeError> {
+    /// An unallocated status reads as [`Self::Truncated`]: a newer server's
+    /// status is not known to be exhaustive, and a retry may return more.
+    const fn from_wire(tag: u8) -> Self {
         match tag {
-            0 => Ok(Self::Complete),
-            1 => Ok(Self::Warming),
-            2 => Ok(Self::Truncated),
-            _ => Err(DecodeError::UnknownEnumValue {
-                field: "path_status",
-                value: u32::from(tag),
-            }),
+            0 => Self::Complete,
+            1 => Self::Warming,
+            _ => Self::Truncated,
         }
     }
 }
@@ -272,30 +269,32 @@ pub(in crate::wire) fn decode_query(
     fields.finish()
 }
 
-fn decode_rows(value: &[u8]) -> Result<Vec<PathRow>, DecodeError> {
+/// The row list, and whether a row of an unknown kind was dropped.
+fn decode_rows(value: &[u8]) -> Result<(Vec<PathRow>, bool), DecodeError> {
     let mut d = Decoder::new(value);
     let count = usize::try_from(d.read_u32_be()?).map_err(|_| DecodeError::LengthOverflow)?;
     if count > MAX_PATH_RESULTS {
         return Err(DecodeError::PathResultLimitExceeded);
     }
     let mut rows = d.bounded_capacity(count);
+    let mut dropped = false;
     for _ in 0..count {
-        rows.push(d.read_record(decode_row)?);
+        match d.read_record(decode_row)? {
+            Some(row) => rows.push(row),
+            None => dropped = true,
+        }
     }
-    Ok(rows)
+    Ok((rows, dropped))
 }
 
 /// One row record: `path: str || kind: u8`; bytes a newer peer appended to
-/// the row are skipped.
-fn decode_row(d: &mut Decoder<'_>) -> Result<PathRow, DecodeError> {
+/// the row are skipped. `None` for a kind this build does not define.
+fn decode_row(d: &mut Decoder<'_>) -> Result<Option<PathRow>, DecodeError> {
     let path = d.read_str()?.to_owned();
     if !absolute_path(&path) {
         return Err(DecodeError::LengthOverflow);
     }
-    Ok(PathRow {
-        path,
-        kind: PathKind::from_wire(d.read_u8()?)?,
-    })
+    Ok(PathKind::from_wire(d.read_u8()?).map(|kind| PathRow { path, kind }))
 }
 
 #[derive(Default)]
@@ -304,6 +303,8 @@ struct ResultFields {
     root: Option<String>,
     parent: Option<String>,
     rows: Option<Vec<PathRow>>,
+    /// A row of an unknown kind was dropped, so the rows are not exhaustive.
+    rows_dropped: bool,
     status: Option<PathStatus>,
     error: Option<PathErrorCode>,
     message: Option<String>,
@@ -315,9 +316,13 @@ impl ResultFields {
             field::path_results::REQUEST_ID => set_once(&mut self.request_id, u32_field(value)?),
             field::path_results::ROOT => set_once(&mut self.root, utf8(value)?),
             field::path_results::PARENT => set_once(&mut self.parent, utf8(value)?),
-            field::path_results::ROWS => set_once(&mut self.rows, decode_rows(value)?),
+            field::path_results::ROWS => {
+                let (rows, dropped) = decode_rows(value)?;
+                self.rows_dropped = dropped;
+                set_once(&mut self.rows, rows)
+            }
             field::path_results::STATUS => {
-                set_once(&mut self.status, PathStatus::from_wire(u8_field(value)?)?)
+                set_once(&mut self.status, PathStatus::from_wire(u8_field(value)?))
             }
             field::path_results::ERROR => {
                 set_once(&mut self.error, PathErrorCode::from_wire(u8_field(value)?))
@@ -351,11 +356,15 @@ impl ResultFields {
             {
                 return Err(DecodeError::LengthOverflow);
             }
+            let status = match self.status.ok_or(DecodeError::LengthOverflow)? {
+                PathStatus::Complete if self.rows_dropped => PathStatus::Truncated,
+                status => status,
+            };
             Ok(PathResults {
                 root,
                 parent: self.parent,
                 rows: self.rows.ok_or(DecodeError::LengthOverflow)?,
-                status: self.status.ok_or(DecodeError::LengthOverflow)?,
+                status,
             })
         };
         Ok((request_id, result))

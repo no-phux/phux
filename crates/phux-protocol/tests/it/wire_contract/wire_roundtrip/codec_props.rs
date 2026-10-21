@@ -268,25 +268,15 @@ fn hello_rejects_legacy_and_truncated_capabilities() {
     }
 }
 
-/// An unknown tag in a nested tagged union surfaces `UnknownEnumValue`
-/// rather than coercing to a placeholder variant.
+/// An unknown tag in a nested tagged union that is not a correlated reply's
+/// state surfaces `UnknownEnumValue` rather than coercing to a placeholder
+/// variant. A spawn or move result's unknown tag decodes as `Unknown`
+/// instead (`newer_server.rs`).
 #[test]
 fn unknown_nested_enum_tags_are_rejected() {
     type Case<'a> = (u8, &'a [(u32, &'a [u8])], &'static str, u32);
     let local0 = [0x00u8, 0, 0, 0, 0];
-    let cases: [Case<'_>; 5] = [
-        (
-            0xA2,
-            &[(1, &7u32.to_be_bytes()), (2, &[0x01, 0xFE])],
-            "SpawnError",
-            0xFE,
-        ),
-        (
-            0xA2,
-            &[(1, &7u32.to_be_bytes()), (2, &[0xFE])],
-            "SpawnResult",
-            0xFE,
-        ),
+    let cases: [Case<'_>; 3] = [
         (0x02, &[(1, &[0xFF])], "AttachTarget", 0xFF),
         (0x14, &[(1, &local0), (2, &[0xAB])], "FocusEvent", 0xAB),
         (

@@ -4,8 +4,9 @@
 //! element of its field is `u32 length || body`, so bytes a newer encoder
 //! appends to the body are skipped; a value that ends its field grows the
 //! same way because a field's trailing bytes are ignored. An unknown
-//! `COMMAND_RESULT` or `CommandValue` tag ends its field too, so the rest is
-//! skipped and the request settles as an `Unsupported` error.
+//! `COMMAND_RESULT` or `CommandValue` tag, or an unknown enum inside a known
+//! value, ends its field too, so the rest is skipped and the request settles
+//! as an [`ErrorCode::UNREADABLE_REPLY`] error.
 
 #![allow(clippy::unwrap_used, clippy::panic, reason = "tests")]
 
@@ -82,12 +83,15 @@ fn a_grown_kill_precondition_keeps_the_trailing_key_in_place() {
 }
 
 #[test]
-fn unknown_result_and_value_tags_settle_the_request_as_unsupported() {
+fn unknown_result_and_value_tags_settle_the_request_as_unreadable() {
     let cases = [
         (vec![0xEE, 1, 2, 3], "CommandResult tag 0xee"),
         // OK_WITH, then a value tag no build defines yet.
         (vec![0x01, 0xEE, 9, 9], "CommandValue tag 0xee"),
         (vec![0xEF], "CommandResult tag 0xef"),
+        // OK_WITH, a resource-id value, then an id tag no build defines: an
+        // unknown enum inside a known value settles the request the same way.
+        (vec![0x01, 0x00, 0xFF], "ResourceId tag 0xff"),
     ];
     for (body, named) in cases {
         let decoded = decode(&frame(TYPE_COMMAND_RESULT, 8, &body)).unwrap();
@@ -98,13 +102,14 @@ fn unknown_result_and_value_tags_settle_the_request_as_unsupported() {
         else {
             panic!("{body:?} decoded as {decoded:?}");
         };
-        assert_eq!(code, ErrorCode::Unsupported);
+        // Never `Unsupported`: the server answered, so the request may have
+        // taken effect.
+        assert_eq!(code, ErrorCode::UNREADABLE_REPLY);
+        assert_ne!(code, ErrorCode::Unsupported);
         assert!(message.contains(named), "{message:?}");
     }
-    // A known value's own unknown enum stays a decode error: it is not the
-    // value's tag a newer peer may add.
-    let bad_resource = [0x01, 0x00, 0xFF];
-    assert!(decode(&frame(TYPE_COMMAND_RESULT, 8, &bad_resource)).is_err());
+    // A truncated value is still malformed.
+    assert!(decode(&frame(TYPE_COMMAND_RESULT, 8, &[0x01, 0x00, 0x00, 0x00])).is_err());
 }
 
 #[test]

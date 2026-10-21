@@ -155,7 +155,7 @@ fn row_count_bound_and_malformed_row_data() {
             });
         }
     });
-    assert_eq!(decode_rows(&at_bound).unwrap().len(), MAX_PATH_RESULTS);
+    assert_eq!(decode_rows(&at_bound).unwrap().0.len(), MAX_PATH_RESULTS);
     assert_eq!(
         decode_rows(&(u32::try_from(MAX_PATH_RESULTS).expect("bounded") + 1).to_be_bytes()),
         Err(DecodeError::PathResultLimitExceeded)
@@ -171,15 +171,7 @@ fn row_count_bound_and_malformed_row_data() {
         });
     });
     trailing.push(1);
-    assert_eq!(decode_rows(&trailing).unwrap()[0].path, "/a");
-    let unknown_kind = body(|e| {
-        e.write_u32_be(1);
-        e.write_record(|e| {
-            e.write_str("/a");
-            e.write_u8(9);
-        });
-    });
-    assert!(decode_rows(&unknown_kind).is_err());
+    assert_eq!(decode_rows(&trailing).unwrap().0[0].path, "/a");
     let relative = body(|e| {
         e.write_u32_be(1);
         e.write_record(|e| {
@@ -224,7 +216,44 @@ fn missing_status_conflicting_refusal_and_unknown_status_fail() {
         );
         e.write_field(field::path_results::STATUS, &[9]);
     });
+    // A second status field is malformed, whatever its value.
     assert!(decode_results(&mut Decoder::new(&unknown)).is_err());
+}
+
+/// A newer server's status reads as not exhaustive, and a row of a kind this
+/// build does not know is dropped and marks the reply not exhaustive.
+#[test]
+fn unknown_status_and_row_kind_degrade_instead_of_failing() {
+    let reply = |status: u8, kinds: &[u8]| {
+        body(|e| {
+            e.write_field_with(field::path_results::REQUEST_ID, |f| f.write_u32_be(1));
+            e.write_field(field::path_results::ROOT, b"/");
+            e.write_field_with(field::path_results::ROWS, |f| {
+                f.write_u32_be(u32::try_from(kinds.len()).expect("bounded"));
+                for kind in kinds {
+                    f.write_record(|f| {
+                        f.write_str("/a");
+                        f.write_u8(*kind);
+                    });
+                }
+            });
+            e.write_field(field::path_results::STATUS, &[status]);
+        })
+    };
+    let decoded = |bytes: &[u8]| {
+        let (request_id, result) = decode_results(&mut Decoder::new(bytes)).unwrap();
+        assert_eq!(request_id, 1);
+        result.unwrap()
+    };
+    assert_eq!(decoded(&reply(9, &[0])).status, PathStatus::Truncated);
+    let dropped = decoded(&reply(0, &[0, 9, 1]));
+    assert_eq!(
+        dropped.rows.iter().map(|row| row.kind).collect::<Vec<_>>(),
+        [PathKind::File, PathKind::Directory]
+    );
+    assert_eq!(dropped.status, PathStatus::Truncated);
+    assert_eq!(decoded(&reply(1, &[9])).status, PathStatus::Warming);
+    assert_eq!(decoded(&reply(0, &[2])).status, PathStatus::Complete);
 }
 
 #[test]

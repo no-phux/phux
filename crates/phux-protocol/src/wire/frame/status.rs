@@ -224,6 +224,15 @@ impl ErrorCode {
         })
     }
 
+    /// What a client settles a request with when the server's reply decoded
+    /// as a well-framed `COMMAND_RESULT` but carried a result tag, value tag,
+    /// or enum value this build does not know. The server answered, so the
+    /// request may have taken effect; only the answer is unreadable. Unlike
+    /// [`Self::Unsupported`], which promises nothing happened, it is an
+    /// [`Self::Unknown`] code: outcome not stated. Wire value `0` is never
+    /// allocated, so no server sends it.
+    pub const UNREADABLE_REPLY: Self = Self::Unknown(0);
+
     /// Decode a wire value totally: a defined code, or [`Self::Unknown`]
     /// carrying the raw value. What every decoder uses.
     #[must_use]
@@ -236,6 +245,9 @@ impl ErrorCode {
 }
 wire_enum! { as_wire / from_wire;
 /// Why a bootstrap generation can no longer preserve stream continuity.
+///
+/// A value this build does not define decodes as [`Self::Unknown`], never a
+/// frame error: the generation is retired either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TombstoneReason {
@@ -253,6 +265,8 @@ pub enum TombstoneReason {
     CodecFailure = 5,
     /// A bounded, explicit reason not represented by an earlier tag.
     Other = 6,
+    /// A reason this build does not know. Produced only by the decoder.
+    Unknown = 255,
 }
 }
 
@@ -372,6 +386,9 @@ impl CloseReason {
 
 wire_enum! { as_wire / from_wire;
 /// Why one progressive history cursor can no longer be consumed.
+///
+/// A value this build does not define decodes as [`Self::Unknown`], never a
+/// frame error: the cursor is gone either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum HistoryTombstoneReason {
@@ -391,11 +408,16 @@ pub enum HistoryTombstoneReason {
     Limit = 6,
     /// The selected native codec rejected history capture or import.
     CodecFailure = 7,
+    /// A reason this build does not know. Produced only by the decoder.
+    Unknown = 255,
 }
 }
 
 wire_enum! { as_wire / from_wire;
 /// Why one history request was rejected without advancing its cursor.
+///
+/// A value this build does not define decodes as [`Self::Unknown`], never a
+/// frame error; the cursor is still not advanced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum HistoryRejectionReason {
@@ -405,6 +427,8 @@ pub enum HistoryRejectionReason {
     TooSmall = 1,
     /// Capture is temporarily busy; retrying the same cursor is permitted.
     Busy = 2,
+    /// A reason this build does not know. Produced only by the decoder.
+    Unknown = 255,
 }
 }
 

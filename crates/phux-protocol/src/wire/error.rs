@@ -214,6 +214,27 @@ impl DecodeError {
             other => other,
         }
     }
+
+    /// Whether the frame was well framed but carried a value this build does
+    /// not define: an unknown frame type, enum value, or command tag, which a
+    /// newer 1.x peer may legitimately send. A receiver skips such a frame,
+    /// with a log, and keeps the connection. Every other variant is
+    /// malformed input.
+    ///
+    /// A server sends a new frame type or enum value only to a client whose
+    /// `HELLO` version or capabilities show it knows it, so a skip is a
+    /// fallback, never how a 1.x pair is meant to converse. Correlated
+    /// replies do not reach this: their state-bearing enums decode an
+    /// `Unknown` variant, or settle the request, instead.
+    #[must_use]
+    pub const fn is_unknown_value(&self) -> bool {
+        matches!(
+            self,
+            Self::UnknownFrameKind { .. }
+                | Self::UnknownEnumValue { .. }
+                | Self::UnsupportedCommand { .. }
+        )
+    }
 }
 
 /// Whether a `serde_json` error message names an unknown variant or field:

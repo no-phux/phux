@@ -45,7 +45,7 @@ pub(in crate::wire) fn decode_spawn_result(
     match tag {
         SPAWN_RESULT_OK => Ok(SpawnResult::Ok(decode_terminal_id(dec)?)),
         SPAWN_RESULT_ERR => Ok(SpawnResult::Err(decode_spawn_error(dec)?)),
-        other => Err(DecodeError::unknown_enum("SpawnResult", other)),
+        other => Ok(SpawnResult::Err(SpawnError::Unknown(other))),
     }
 }
 
@@ -69,6 +69,7 @@ fn encode_spawn_error(err: &SpawnError, enc: &mut Encoder<'_>) {
         SpawnError::ParentNotFound => enc.write_u8(SPAWN_ERROR_TAG_PARENT_NOT_FOUND),
         SpawnError::ParentKindMismatch => enc.write_u8(SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH),
         SpawnError::IdempotencyConflict => enc.write_u8(SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT),
+        SpawnError::Unknown(tag) => enc.write_u8(*tag),
     }
 }
 
@@ -85,7 +86,7 @@ fn decode_spawn_error(dec: &mut Decoder<'_>) -> Result<SpawnError, DecodeError> 
         SPAWN_ERROR_TAG_PARENT_NOT_FOUND => Ok(SpawnError::ParentNotFound),
         SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH => Ok(SpawnError::ParentKindMismatch),
         SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT => Ok(SpawnError::IdempotencyConflict),
-        other => Err(DecodeError::unknown_enum("SpawnError", other)),
+        other => Ok(SpawnError::Unknown(other)),
     }
 }
 
@@ -105,6 +106,7 @@ pub(in crate::wire) fn encode_move_result(result: &MoveResult, enc: &mut Encoder
                 MoveError::UnsupportedSatelliteRoute => {
                     enc.write_u8(MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE);
                 }
+                MoveError::Unknown(tag) => enc.write_u8(*tag),
             }
         }
     }
@@ -125,10 +127,10 @@ pub(in crate::wire) fn decode_move_result(
                 MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE => {
                     Ok(MoveResult::Err(MoveError::UnsupportedSatelliteRoute))
                 }
-                other => Err(DecodeError::unknown_enum("MoveError", other)),
+                other => Ok(MoveResult::Err(MoveError::Unknown(other))),
             }
         }
-        other => Err(DecodeError::unknown_enum("MoveResult", other)),
+        other => Ok(MoveResult::Err(MoveError::Unknown(other))),
     }
 }
 

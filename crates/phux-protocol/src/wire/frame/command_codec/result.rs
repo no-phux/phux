@@ -41,11 +41,12 @@ pub(in crate::wire) fn decode_command_result(
     let tag = dec.read_u8()?;
     match tag {
         COMMAND_RESULT_TAG_OK => Ok(CommandResult::Ok),
+        // The value ends its field, so an unknown value tag, or an unknown
+        // enum anywhere inside a known value (an arrangement node, a split
+        // direction, an entry target), settles the request instead of
+        // failing the frame.
         COMMAND_RESULT_TAG_OK_WITH => match decode_command_value(dec) {
-            Err(DecodeError::UnknownEnumValue {
-                field: "CommandValue",
-                value,
-            }) => Ok(unknown_result("CommandValue", value)),
+            Err(DecodeError::UnknownEnumValue { field, value }) => Ok(unknown_result(field, value)),
             value => value.map(CommandResult::OkWith),
         },
         COMMAND_RESULT_TAG_ERROR => {
@@ -68,13 +69,13 @@ pub(in crate::wire) fn decode_command_result(
     }
 }
 
-/// The result of a reply whose result or value tag this build does not know:
-/// a newer peer's shape. The tag ends its field, so the rest is skipped and
-/// the request settles as an `Unsupported` error naming the tag instead of
-/// failing the frame.
-pub(super) fn unknown_result(what: &str, tag: u32) -> CommandResult {
+/// The result of a reply whose result tag, value tag, or nested enum value
+/// this build does not know: a newer peer's shape. The request settles as an
+/// [`ErrorCode::UNREADABLE_REPLY`] error naming the field, never as
+/// `Unsupported`: the server answered, so the request may have taken effect.
+fn unknown_result(what: &str, tag: u32) -> CommandResult {
     CommandResult::Error {
-        code: ErrorCode::Unsupported,
+        code: ErrorCode::UNREADABLE_REPLY,
         message: format!("reply carried an unknown {what} tag {tag:#04x}"),
     }
 }

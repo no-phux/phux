@@ -68,7 +68,7 @@ fn zero_history_request_limits_decode_for_retryable_rejection() {
 }
 
 #[test]
-fn history_status_enums_round_trip_and_unknown_tags_are_rejected() {
+fn history_status_enums_round_trip_and_unknown_tags_decode_as_unknown() {
     for (tag, reason) in [
         (0, HistoryTombstoneReason::Stale),
         (1, HistoryTombstoneReason::Pruned),
@@ -111,15 +111,17 @@ fn history_status_enums_round_trip_and_unknown_tags_are_rejected() {
         tlv_field(&mut fields, 2, &2_u64.to_be_bytes());
         tlv_field(&mut fields, 3, &3_u64.to_be_bytes());
         tlv_field(&mut fields, 4, b"cursor");
-        tlv_field(&mut fields, 5, &[0xff]);
+        tlv_field(&mut fields, 5, &[0xfe]);
         if type_byte == TYPE_HISTORY_REJECTED {
             tlv_field(&mut fields, 6, &4096_u32.to_be_bytes());
             tlv_field(&mut fields, 7, &256_u32.to_be_bytes());
         }
-        assert!(matches!(
-            FrameKind::decode(&framed(type_byte, &fields)).unwrap_err(),
-            DecodeError::UnknownEnumValue { .. }
-        ));
+        let reason_known = match FrameKind::decode(&framed(type_byte, &fields)).unwrap().0 {
+            FrameKind::HistoryTombstone { reason, .. } => reason == HistoryTombstoneReason::Unknown,
+            FrameKind::HistoryRejected { reason, .. } => reason == HistoryRejectionReason::Unknown,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(reason_known, "a newer server's reason decodes as Unknown");
     }
 }
 
