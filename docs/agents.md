@@ -282,6 +282,22 @@ phux deny ID
 Nothing on this machine's own socket is ever held. See
 [Remote machines](./remote.md#who-can-do-what) for keys and scopes.
 
+## JSON index
+
+The commands an agent drives phux with. The [command
+line reference](./reference/cli.md) has their arguments, and the
+[parity reference](./reference/parity.md) names the MCP tool for each or
+says why it is command-line only.
+
+`agent answer`, `agent prompt`, `agent send-keys`, `agent wait`,
+`approvals`, `ask`, `channel`, `config agents`, `config run`, `host add`,
+`host ls`, `host renew`, `host upgrade`, `kill`, `launch`, `logs`, `ls`,
+`mcp`, `new`, `organize`, `play`, `rec mark`, `relaunch`, `resize`,
+`resource methods`, `resource show`, `resource wait`, `restore`, `rm`,
+`run`, `signal`, `snapshot`, `spawn`, `status`, `update`, `wait`, `watch`,
+`whoami`, `mail send`, `mail read`, `mail ack`, `claim take`, `claim renew`,
+`claim release`, `claim list`.
+
 ## Debugging
 
 - `phux agent explain @7` shows which evidence decided the state, and what

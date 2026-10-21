@@ -108,7 +108,7 @@ impl UpdateError {
                     .to_owned()
             }
             Self::UnsupportedPlatform(_) => {
-                "build from source: see docs/install.md#from-source".to_owned()
+                "build from source: see https://docs.phux.sh/installation#build-from-source".to_owned()
             }
             Self::Fetch(_) => "check network access to github.com, then retry; \
                  `phux update --check` re-reads the release manifest, and \
