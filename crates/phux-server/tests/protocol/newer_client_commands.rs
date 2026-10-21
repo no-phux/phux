@@ -6,7 +6,8 @@
 use phux_protocol::checkout::CheckoutRequest;
 use phux_protocol::ids::{IdempotencyKey, ResourceId};
 use phux_protocol::native_agent::{
-    NativeCommand, NativeIntent, NativeRequest, NativeRequestPayload,
+    NativeCommand, NativeIntent, NativeRequest, NativeRequestPayload, NativeUpdate,
+    SpawnNativeAgent,
 };
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, InputMode, KillPrecondition, RolePolicy, TerminalSignal,
@@ -68,6 +69,54 @@ fn native_command_with_a_newer_field() -> Vec<u8> {
     serde_json::to_vec(&json).unwrap()
 }
 
+/// Native requests a newer client extended: a field on the spawn spec, on
+/// the request itself, and on a publication's update.
+fn native_requests_with_a_newer_field() -> Vec<Vec<u8>> {
+    let spawn = NativeRequest::Spawn {
+        spec: SpawnNativeAgent {
+            session: "s".into(),
+            backend: "b".into(),
+            provider: "p".into(),
+            command: vec!["agent".into()],
+            cwd: None,
+            env: std::collections::BTreeMap::new(),
+            native_id: None,
+            guardian: None,
+            guardian_key: None,
+            guardian_expected: None,
+        },
+    };
+    let close = NativeRequest::Close {
+        agent_session_id: ResourceId::local(1),
+        activation: "a".into(),
+        binding_proof: "p".into(),
+        generation: 1,
+    };
+    let publish = NativeRequest::Publish {
+        agent_session_id: ResourceId::local(1),
+        activation: "a".into(),
+        binding_proof: "p".into(),
+        generation: 1,
+        publication_id: 1,
+        update: NativeUpdate::Notice {
+            level: "info".into(),
+            text: "t".into(),
+        },
+    };
+    let mut cases = Vec::new();
+    for (request, path) in [(spawn, "spec"), (close, ""), (publish, "update")] {
+        let mut json = serde_json::to_value(request).unwrap();
+        let target = if path.is_empty() {
+            &mut json
+        } else {
+            &mut json[path]
+        };
+        target["new_opt"] = serde_json::Value::Bool(true);
+        cases.push(serde_json::to_vec(&json).unwrap());
+    }
+    cases
+}
+
 #[test]
 fn an_unknown_json_op_or_field_is_refused_with_its_request_id() {
     run_local(async {
@@ -78,6 +127,10 @@ fn an_unknown_json_op_or_field_is_refused_with_its_request_id() {
             native_body(br#"{"type":"teleport"}"#),
             native_body(&native_command_with_a_newer_field()),
         ];
+        let newer = native_requests_with_a_newer_field();
+        let cases = cases
+            .into_iter()
+            .chain(newer.iter().map(|json| native_body(json)));
         for (request_id, body) in (40..).zip(cases) {
             send_raw(&mut stream, &raw_command(request_id, &body)).await;
             let result = await_command_result(&mut stream, request_id).await;

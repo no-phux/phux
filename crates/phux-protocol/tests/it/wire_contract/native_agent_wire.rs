@@ -148,6 +148,54 @@ fn native_json_rejects_malformed_and_wrong_dto() {
 /// A request type or field this build does not know is newer, not
 /// malformed: still refused, but as unsupported, so a server keeps the
 /// connection.
+/// Native requests a newer client extended: a field on the spawn spec, on
+/// the request itself, and on a publication's update.
+fn native_requests_with_a_newer_field() -> Vec<Vec<u8>> {
+    let spawn = NativeRequest::Spawn {
+        spec: SpawnNativeAgent {
+            session: "s".into(),
+            backend: "b".into(),
+            provider: "p".into(),
+            command: vec!["agent".into()],
+            cwd: None,
+            env: std::collections::BTreeMap::new(),
+            native_id: None,
+            guardian: None,
+            guardian_key: None,
+            guardian_expected: None,
+        },
+    };
+    let close = NativeRequest::Close {
+        agent_session_id: ResourceId::local(1),
+        activation: "a".into(),
+        binding_proof: "p".into(),
+        generation: 1,
+    };
+    let publish = NativeRequest::Publish {
+        agent_session_id: ResourceId::local(1),
+        activation: "a".into(),
+        binding_proof: "p".into(),
+        generation: 1,
+        publication_id: 1,
+        update: NativeUpdate::Notice {
+            level: "info".into(),
+            text: "t".into(),
+        },
+    };
+    let mut cases = Vec::new();
+    for (request, path) in [(spawn, "spec"), (close, ""), (publish, "update")] {
+        let mut json = serde_json::to_value(request).unwrap();
+        let target = if path.is_empty() {
+            &mut json
+        } else {
+            &mut json[path]
+        };
+        target["new_opt"] = serde_json::Value::Bool(true);
+        cases.push(serde_json::to_vec(&json).unwrap());
+    }
+    cases
+}
+
 #[test]
 fn native_json_refuses_an_unknown_type_or_field_as_unsupported() {
     // `NativeCommand` denies unknown fields; add one to a real command.
@@ -162,7 +210,9 @@ fn native_json_refuses_an_unknown_type_or_field_as_unsupported() {
     .unwrap();
     command["command"]["later"] = serde_json::Value::Bool(true);
     let unknown_field = serde_json::to_vec(&command).unwrap();
-    for json in [br#"{"type":"not_a_request"}"#.as_slice(), &unknown_field] {
+    let mut cases = vec![br#"{"type":"not_a_request"}"#.to_vec(), unknown_field];
+    cases.extend(native_requests_with_a_newer_field());
+    for json in &cases {
         let err = common::decode(&raw_json(json)).unwrap_err();
         assert_eq!(
             err,

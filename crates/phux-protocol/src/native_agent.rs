@@ -217,7 +217,7 @@ pub enum NativeState {
 }
 /// A bounded, structured publication from the exclusive SDK controller.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeUpdate {
     /// Replace the current controller projection.
     View {
@@ -270,6 +270,7 @@ pub struct NativePublicationReceipt {
 /// Explicit native launch. `command` is the real provider executable/argv,
 /// never the guardian executable or a shell expression.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpawnNativeAgent {
     /// Exact organization session name.
     pub session: String,
@@ -308,8 +309,14 @@ pub struct SpawnedNativeAgent {
     pub activation: String,
 }
 /// Separate host operations retain their own connection role and generation.
+///
+/// Client-to-server only, so a field or type this build does not know is
+/// refused `Unsupported` rather than silently ignored (`deny_unknown_fields`
+/// here, on [`SpawnNativeAgent`], [`NativeCommand`], [`NativeIntent`], and
+/// [`NativeUpdate`]). [`NativeCommandResult`], [`NativeView`], and
+/// [`NativeQuestion`] also arrive in server answers, so they stay tolerant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeRequest {
     /// Create an explicitly configured native owner.
     Spawn {
