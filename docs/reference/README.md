@@ -14,6 +14,7 @@ Run `just docs-gen` after changing a command, setting, or other surface listed h
 |---|---|
 | [cli.md](cli.md) | Every non-hidden `phux` invocation path with its flags, defaults, and help text. |
 | [config.md](config.md) | Every `config.toml` section, the scalar defaults, and the annotated default config. |
+| [keys.md](keys.md) | Every key phux binds out of the box, grouped as the which-key popup shows them. |
 | [actions.md](actions.md) | Every dispatcher action with its parameters, description, and palette placement. |
 | [widgets.md](widgets.md) | Every registered status-bar widget kind with its options and defaults. |
 | [hooks.md](hooks.md) | Every hook event the server fires, with its context keys, environment projection, and matching rules. |

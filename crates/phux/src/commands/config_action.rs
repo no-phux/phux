@@ -73,6 +73,23 @@ pub(crate) enum ConfigAction {
         json: bool,
     },
 
+    /// List every key binding in effect and where it came from.
+    ///
+    /// Shows the shipped defaults, your config and its `extends` layers, and
+    /// enabled plugins' keys merged exactly as the terminal UI merges them.
+    /// Prefix-table keys are printed after the prefix (`C-a z`). Bindings the
+    /// UI would skip (a key that does not parse, an unknown action, a
+    /// conflict) are listed as warnings on stderr.
+    Keys {
+        /// Only show bindings for this action, such as `split-pane`.
+        #[usage(value_name = "ACTION")]
+        action: Option<String>,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
     /// List plugin manifests declared by `[[plugins]]`.
     Plugins {
         /// Emit a stable JSON document instead of human text.

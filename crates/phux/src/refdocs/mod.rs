@@ -12,6 +12,7 @@ pub(crate) mod environment;
 pub(crate) mod exit_codes;
 pub(crate) mod files;
 pub(crate) mod hooks;
+pub(crate) mod keys;
 pub(crate) mod kinds;
 pub(crate) mod parity;
 pub(crate) mod widgets;
@@ -65,6 +66,7 @@ pub(crate) fn pages() -> Vec<Page> {
     let content = vec![
         cli::page(),
         config::page(),
+        keys::page(),
         actions::page(),
         widgets::page(),
         hooks::page(),

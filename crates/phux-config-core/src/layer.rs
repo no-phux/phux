@@ -21,6 +21,9 @@ pub const MAX_EXTENDS_DEPTH: usize = 4;
 const EXTENDS_KEY: &str = "extends";
 const APPEND_SUFFIX: &str = "-append";
 
+mod provenance;
+use provenance::{Recorder, finalize_keys};
+
 const DEFAULTS_DISPLAY_PATH: &str = "<embedded default.toml>";
 
 /// One layer of the resolved config stack, in merge order.
@@ -69,6 +72,9 @@ pub struct ConfigProvenance {
 /// manifest in a shared layer is made absolute against that layer's
 /// directory, since `[[plugins]]` otherwise resolve against the user's file.
 const MANIFEST_ARRAY_KEYS: [&str; 2] = ["plugins", "plugins-append"];
+/// Tables whose entries a later layer replaces whole instead of merging: a
+/// rebound key must not inherit arguments from the binding it replaces.
+const WHOLE_ENTRY_TABLES: [&str; 2] = ["keybindings.prefix-table", "keybindings.global"];
 
 /// Parse `input` as a plain TOML table.
 ///
@@ -384,51 +390,6 @@ fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Provenance recorder for one layer's merge.
-struct Recorder<'a> {
-    layer: usize,
-    keys: &'a mut BTreeMap<String, KeyOrigin>,
-}
-
-impl Recorder<'_> {
-    /// A plain assignment replaced whatever lower layers set at `path`.
-    fn record_set(&mut self, path: &str, value: &toml::Value) {
-        let elements = match value {
-            toml::Value::Array(items) => Some(vec![self.layer; items.len()]),
-            _ => None,
-        };
-        self.keys.insert(
-            path.to_owned(),
-            KeyOrigin {
-                layer: self.layer,
-                elements,
-            },
-        );
-    }
-
-    /// An `-append` added `added` elements to the array at `path`.
-    fn record_append(&mut self, path: &str, added: usize) {
-        match self.keys.get_mut(path) {
-            Some(origin) if origin.elements.is_some() => {
-                origin.layer = self.layer;
-                if let Some(elements) = origin.elements.as_mut() {
-                    elements.extend(std::iter::repeat_n(self.layer, added));
-                }
-            }
-            // The append created the array, so it owns every element.
-            _ => {
-                self.keys.insert(
-                    path.to_owned(),
-                    KeyOrigin {
-                        layer: self.layer,
-                        elements: Some(vec![self.layer; added]),
-                    },
-                );
-            }
-        }
-    }
-}
-
 /// Dotted path for `key` under `prefix`, double-quoting non-bare keys. Shared
 /// with `phux_config::check` so its findings match provenance paths exactly.
 #[must_use]
@@ -450,7 +411,8 @@ pub fn child_path(prefix: &str, key: &str) -> String {
 }
 
 /// Recursively merge `overlay` (from `layer`) into `base`. Tables merge per
-/// key; everything else, arrays included, replaces. `x-append` appends to
+/// key, except the entries of [`WHOLE_ENTRY_TABLES`]; everything else, arrays
+/// included, replaces. `x-append` appends to
 /// `x`; appending to a non-array, a non-array append, or `x` beside
 /// `x-append` in one table is an error naming `layer`.
 fn merge_layer(
@@ -487,8 +449,9 @@ fn merge_layer(
 
     for (key, value) in plain {
         let path = child_path(prefix, &key);
+        let merges_entries = !WHOLE_ENTRY_TABLES.contains(&prefix);
         match (base.remove(&key), value) {
-            (Some(toml::Value::Table(b)), toml::Value::Table(o)) => {
+            (Some(toml::Value::Table(b)), toml::Value::Table(o)) if merges_entries => {
                 base.insert(
                     key,
                     toml::Value::Table(merge_layer(b, o, layer, &path, recorder)?),
@@ -537,99 +500,11 @@ fn merge_layer(
     Ok(base)
 }
 
-/// Project the recorded origins onto the final table's leaves, dropping
-/// entries left stale by shape changes across layers.
-fn finalize_keys(
-    table: &toml::Table,
-    recorded: &BTreeMap<String, KeyOrigin>,
-    prefix: &str,
-    out: &mut BTreeMap<String, KeyOrigin>,
-) {
-    for (key, value) in table {
-        let path = child_path(prefix, key);
-        match value {
-            toml::Value::Table(t) => finalize_keys(t, recorded, &path, out),
-            leaf => {
-                let mut origin = recorded.get(&path).cloned().unwrap_or(KeyOrigin {
-                    layer: 0,
-                    elements: None,
-                });
-                if let toml::Value::Array(items) = leaf {
-                    let matches = origin
-                        .elements
-                        .as_ref()
-                        .is_some_and(|e| e.len() == items.len());
-                    if !matches {
-                        origin.elements = Some(vec![origin.layer; items.len()]);
-                    }
-                } else {
-                    origin.elements = None;
-                }
-                out.insert(path, origin);
-            }
-        }
-    }
-}
+#[cfg(test)]
+mod budget_tests;
 
 #[cfg(test)]
-mod budget_tests {
-    use super::merged_with_budget;
-
-    #[test]
-    fn aggregate_budget_counts_unique_diamond_layers_and_preserves_unbounded_loading() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().join("config.toml");
-        let input = "extends=['a.toml','b.toml']\n";
-        let branch = "extends=['common.toml']\n";
-        let common = "[[remote]]\nname='x'\nendpoint='ssh://x'\n";
-        std::fs::write(dir.path().join("a.toml"), branch).expect("a");
-        std::fs::write(dir.path().join("b.toml"), branch).expect("b");
-        std::fs::write(dir.path().join("common.toml"), common).expect("common");
-        let exact = input.len() + 2 * branch.len() + common.len();
-        let merge = |budget| merged_with_budget("", input, &root, budget).map(|(table, _)| table);
-        let ordinary = merge(None).expect("ordinary loader");
-        assert_eq!(merge(Some(exact)).expect("exact budget"), ordinary);
-        assert!(merge(Some(exact - 1)).is_err());
-        std::fs::write(
-            dir.path().join("common.toml"),
-            format!("{common}#{}", "界".repeat(1000)),
-        )
-        .expect("large common");
-        assert!(merge(Some(exact)).is_err());
-        assert_eq!(merge(None).expect("unbounded behavior unchanged"), ordinary);
-    }
-}
+mod retired_distro_tests;
 
 #[cfg(test)]
-mod retired_distro_tests {
-    use super::{herdr_layer_to_starter, merged_with_budget, rewrite_retired_distro_layer};
-    use std::path::Path;
-
-    #[test]
-    fn a_missing_herdr_layer_loads_the_starter_beside_it() {
-        assert_eq!(
-            herdr_layer_to_starter(Path::new("/tmp/not-a-distro/herdr.toml")),
-            None
-        );
-        let dir = tempfile::tempdir().expect("tempdir");
-        let distros = dir.path().join("distros");
-        std::fs::create_dir_all(distros.join("starter")).expect("starter dir");
-        std::fs::create_dir_all(distros.join("herdr")).expect("herdr dir");
-        let starter = distros.join("starter").join("starter.toml");
-        std::fs::write(&starter, "defaults.history-limit = 12345\n").expect("starter.toml");
-        let herdr = distros.join("herdr").join("herdr.toml");
-
-        let user = dir.path().join("config.toml");
-        let input = format!("extends = [\"{}\"]\n", herdr.display());
-        let (merged, _) =
-            merged_with_budget("", &input, &user, None).expect("retired path still loads");
-        assert_eq!(
-            merged["defaults"]["history-limit"].as_integer(),
-            Some(12345)
-        );
-
-        // A still-present herdr stub wins unchanged.
-        std::fs::write(&herdr, "defaults.history-limit = 7\n").expect("stub");
-        assert_eq!(rewrite_retired_distro_layer(&herdr), herdr);
-    }
-}
+mod whole_entry_tests;

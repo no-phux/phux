@@ -92,209 +92,159 @@ The base layer embedded in the binary (`crates/phux-config/src/default.toml`), v
 ```toml
 # phux default configuration.
 #
-# This file ships with the phux binary (embedded via include_str!) and
-# defines what phux looks and feels like out of the box. The loader
-# layers your ~/.config/phux/config.toml ON TOP of this file: any key
-# you set there overrides the matching default below; anything you omit
-# keeps the default.
+# These are the settings phux ships with. Your ~/.config/phux/config.toml
+# is layered on top: any key you set there replaces the one below, and
+# everything you leave out keeps its default. Keep your file to the
+# settings you actually change.
 #
-# Chord syntax (see crates/phux-config/src/keybind.rs):
-#   C-a    Ctrl+a
-#   M-a    Meta/Alt+a
-#   S-a    Shift+a  (equivalent: a bare uppercase letter "A")
-#   Tab    named key (case-sensitive)
-#   F1     function key 1..24
-#   |      ASCII punctuation; shifted glyphs (|, ?, ", etc.) decompose
-#          to physical-key + implicit Shift on a US layout.
+#   phux config check   validate your file
+#   phux config show    print the merged result
+#   phux config keys    list every key binding and where it came from
 #
-# Every setting is listed in docs/reference/config.md; `phux config check`
-# validates this file.
+# Key syntax:
+#   C-a     Ctrl+a
+#   M-a     Alt+a (also A-a)
+#   S-a     Shift+a; a bare capital "A" means the same
+#   Tab     a named key: Tab, BackTab, Enter, Esc, Space, Backspace,
+#           Delete, Insert, Up, Down, Left, Right, Home, End, PageUp,
+#           PageDown, F1 to F24 (case-sensitive)
+#   |       punctuation is the key you press, so "|" is Shift+\ on a
+#           US layout; on other layouts write S- explicitly
+#
+# Every setting is listed at https://docs.phux.sh/reference/config.
 
 [defaults]
-# shell = unset → honor $SHELL (fallback /bin/sh).
-# TERM advertised to the inner program of every server-spawned pane. The
-# xterm-256color baseline is the safe universal value (phux-7vx): it gives
-# 256 colours and the standard xterm keys with no kitty-keyboard
-# advertisement, so ncurses TUIs like htop keep working. A per-spawn
-# SPAWN_RESOURCE env override for TERM always wins over this. Set to
-# "ghostty" to opt into ghostty's extended terminfo once your apps are
-# known to round-trip the kitty keyboard protocol. Evidence so far
-# (phux-0o8 harness, crates/phux-server/tests/terminal/kip_roundtrip.rs): the phux
-# stack round-trips the kitty protocol end-to-end — nvim opts in via
-# CSI-u and works, fzf/less/vim/btop are regression-free under
-# TERM=ghostty — but htop, the app that broke last time, is unproven, so
-# the shipped default stays conservative.
+# shell: the program a new pane runs. Unset uses $SHELL, then /bin/sh.
+
+# TERM for programs in new panes. xterm-256color works everywhere: 256
+# colours and the standard xterm keys. Set "ghostty" for its extended
+# terminfo and the kitty keyboard protocol once the programs you use
+# handle it (htop is the usual holdout).
 term = "xterm-256color"
-# Per-pane scrollback, bounded twice: libghostty prunes on whichever of the
-# line limit and the byte limit is reached first. On anything but a
-# narrow grid the BYTE limit is what binds, so raising history-limit alone
-# buys no depth. history-bytes is the one that decides how deep a pane is:
+
+# Scrollback per pane. Whichever limit is reached first trims the oldest
+# lines, and on anything wider than a narrow pane the byte limit is the
+# one that binds, so history-bytes decides how deep a pane goes:
 #
-#   history-bytes      rows kept @80 cols   @200 cols
-#   2 MiB              ~2669                ~1030
-#   10 MiB (default)   ~14400               ~5790
-#   32 MiB             ~47500               ~19031
+#   history-bytes      rows kept at 80 cols   at 200 cols
+#   2 MiB              ~2669                  ~1030
+#   10 MiB (default)   ~14400                 ~5790
+#   32 MiB             ~47500                 ~19031
 #
-# Attach does not scale with this number: the native bootstrap takes a lease
-# on the retained history and encodes nothing up front; each page is encoded
-# from the live scrollback only when a client asks for it. What it costs is
-# resident memory, and only once a pane has produced that much output: an
-# idle pane holds no history, a flooded one about this many bytes, for the
-# life of the session. Multiply by your busy-pane count before
-# raising it; lower it to cap a server with many noisy panes. 67108864
-# (64 MiB) is the accepted maximum. Pruning is page-granular, so the engine
-# keeps at least one standard page of history whatever you set.
+# The cost is memory, and only once a pane has printed that much: an idle
+# pane holds nothing, a flooded one about this many bytes. Multiply by
+# your busy panes before raising it. 67108864 (64 MiB) is the maximum.
 history-limit = 50000
 history-bytes = 10485760
-# Bytes of AgentEventsJsonlV1 records an agent session retains.
-# The ring is replayed when a client attaches to the session stream, so this
-# is both how far back `phux agent log` can see and what each attach re-sends.
-# An append past the ceiling evicts the oldest records and counts a tombstone
-# the bootstrap reports; it is never an error. 67108864 (64 MiB) is the
-# accepted maximum.
+
+# How much of each agent's event log phux keeps (`phux agent log`). The
+# oldest records drop first. 67108864 (64 MiB) is the maximum.
 agent-log-bytes = 4194304
-# The server's event journal: how many recent events it keeps, and
-# their estimated encoded size, so a watcher or waiter that reconnects with a
-# cursor is replayed what it missed. Whichever bound is reached first evicts
-# the oldest events; a cursor older than what remains is told it missed events
-# (a journal gap) and re-reads state. 1048576 events and 67108864 (64 MiB) are
-# the accepted maxima.
+
+# How many recent events the server keeps for a watcher (`phux watch`,
+# `phux wait`) that reconnects, so it can catch up on what it missed.
+# Whichever limit is reached first drops the oldest. 1048576 events and
+# 67108864 bytes are the maximums.
 event-journal-entries = 4096
 event-journal-bytes = 1048576
-# Retain on exit: keep a Terminal inspectable after its process
-# exits -- its exit status, last screen, and history -- until it expires, the
-# count bound evicts it (oldest first), or it is killed. Off by default: a
-# spawner asks for it per pane. true retains every pane that does not say, the
-# seed pane included. retain-on-exit-secs is what a default retention lasts; no
-# retention outlasts retain-on-exit-max-secs. A retained pane holds its grid and
-# history (up to history-bytes: about 2.5 GiB at 256 full panes with the
-# 10 MiB default) but no PTY. 4096 is the accepted maximum count.
+
+# Keep a pane inspectable after its program exits: its exit status, last
+# screen, and scrollback stay until they expire or are closed. Off by
+# default; `phux run` and `phux spawn` can ask for it per pane. A kept
+# pane holds its scrollback in memory. 4096 is the maximum count.
 retain-on-exit = false
 retain-on-exit-secs = 600
 retain-on-exit-max-secs = 86400
 retain-on-exit-max = 256
-# Client-side outer-terminal mouse tracking on attach: divider
-# drag-to-resize and click-to-focus work without an inner program turning
-# mouse mode on. false = pass-through-only (native click-drag selection).
+
+# Mouse support: click a pane to focus it, drag a divider to resize.
+# false leaves the mouse to your terminal's own selection.
 mouse = true
 
-# What a program's OSC 52 clipboard write does: "allow" sets the
-# host clipboard, "ask" prompts first, "deny" drops it. Only the focused pane
-# can write; clipboard reads are never answered.
+# What happens when a program copies to the clipboard (OSC 52): "allow"
+# copies, "ask" asks first, "deny" ignores it. Only the focused pane can
+# copy, and programs can never read your clipboard.
 clipboard-write = "allow"
 
-# How a newly-spawned pane picks its working directory. One of:
-#   "inherit-focused"     — match the focused pane's CWD (tmux behavior).
-#   "home"                — always start in $HOME.
-#   "session-root"        — the directory the session was created in.
-#   "last-cwd-per-window" — remember the last CWD per window and reuse.
-# Default "inherit-focused" requires server-side PTY working-dir tracking
-# (OSC 7 from the shell, or a kernel-side query); wiring is a follow-up
-# to phux-4li.1. The knob lands first so consumers can target it.
+# Where a new pane starts:
+#   "inherit-focused"     the focused pane's directory (like tmux)
+#   "home"                always $HOME
+#   "session-root"        the directory the session was created in
+#   "last-cwd-per-window" the last directory used in that tab
+# Following the focused pane needs your shell to report its directory
+# (OSC 7); most do.
 cwd-inheritance = "inherit-focused"
 
-# What naked `phux` (or `phux attach` with no name) opens with when it
-# auto-creates its default session: this command runs via `$SHELL -c`.
-# `phux new` deliberately ignores this and gives an explicitly-created
-# session a plain shell. Unset (= no key) means "use defaults.shell"
-# (which in turn honors $SHELL, then /bin/sh).
-# spawn-on-attach = "/usr/bin/zellij-like-launcher"
+# spawn-on-attach: the command a plain `phux` runs when it creates its
+# first session, through `$SHELL -c`. `phux new` ignores it. Unset runs
+# the shell.
+# spawn-on-attach = "htop"
 
-# Template for auto-created session names (naked `phux` / `phux attach`
-# with no name). ${cwd-basename} expands to the basename of the client's
-# working directory at session-create time (`:` in it becomes `_` so the
-# name stays selector-safe); ${random-name} expands to a generated
-# adjective-noun pair such as drifting-cedar (`phux new` redraws a taken
-# pick, then falls back to a numeric suffix); unknown placeholders pass
-# through verbatim.
-#
-# We ship ${cwd-basename} rather than a literal "default": a bench of
-# project checkouts then reads as its directories in the session picker,
-# which is the only way the picker is useful with more than one session
-# open. Set session-name-template = "default" for the old behavior.
+# Names for sessions phux creates for you. ${cwd-basename} is the
+# directory you ran phux from, so a row of project checkouts reads as
+# their names in the session picker; ${random-name} is a word pair such as
+# drifting-cedar. Set "default" for one fixed name.
 session-name-template = "${cwd-basename}"
 
-# Policy for picking one geometry when concurrent views of a single
-# Terminal disagree on size. A Terminal is one PTY + one grid,
-# so it renders one size; a view wanting another size letterboxes rather
-# than reflowing. One of:
-#   "smallest" — use the smallest view's size; larger views letterbox.
-#                Nothing is ever cropped (tmux's default).
-#   "largest"  — use the largest view's size; smaller views may crop.
-#   "latest"   — track the most recently resized view.
-#   "manual"   — hold a fixed size (implies a future resize verb).
-# Not yet consumed at the size-decision point: multi-view/multi-client
-# geometry negotiation is a follow-up (today the last resize wins). The
-# knob lands first so consumers can target it.
+# When two clients view one pane at different sizes, which size wins:
+#   "smallest" the smallest view; bigger ones get blank margins (like tmux)
+#   "largest"  the largest view; smaller ones are cropped
+#   "latest"   whichever client resized last
+#   "manual"   keep the current size
 window-size = "smallest"
 
 [keybindings]
-# Prefix: chord captured by the TUI before everything else. After hitting
-# the prefix, your next keystroke is matched against `prefix-table`.
+# The prefix. Press it, then a key from the prefix table below.
 prefix = "C-a"
 
-# Which-key popup: press the prefix and hesitate for which-key-delay-ms
-# and a small panel pops up listing every prefix-table continuation
-# (built from YOUR bindings, including rebinds). It is display-only: any
-# key dismisses it and executes its binding exactly as if the popup were
-# not there; Esc dismisses it and cancels the prefix. Set
-# which-key = false to disable.
-#
-# 400 ms is deliberately snappier than tmux-ish 600: the popup is phux's
-# primary discovery surface, so it should feel like a hint that arrives
-# while you hesitate, not a timeout you wait out.
+# After the prefix, hesitate for which-key-delay-ms and a popup lists
+# every key you can press next, rebinds included. It never eats a key:
+# whatever you press runs as if the popup were not there, and Esc cancels
+# the prefix.
 which-key = true
 which-key-delay-ms = 400
 
+# Keys pressed after the prefix. Set a key to "none" to unbind it.
+# https://docs.phux.sh/reference/keys lists these grouped as the popup
+# shows them.
 [keybindings.prefix-table]
-# Pane splits, tmux-style: " stacks panes (horizontal divider), % places
-# them side-by-side (vertical divider).
+# Split. " and % are tmux's keys; | and - draw the divider they make.
 '"' = { action = "split-pane", direction = "horizontal" }
 "%" = { action = "split-pane", direction = "vertical" }
-# Ergonomic aliases for the same two actions: the chord draws the divider
-# it creates, so you never have to remember which of " and % is which.
 "|" = { action = "split-pane", direction = "vertical" }
 "-" = { action = "split-pane", direction = "horizontal" }
 
-# Kill: x terminates the focused pane's terminal; X (Shift-x) terminates
-# every terminal in the tab after a confirm naming how many. Soft-kill
-# via shell exit; see phux-4li.12. close-view (unbound; context menu and
-# palette) hides a pane and ends nothing; reopen-views shows hidden
-# terminals again.
+# Close the focused pane; X closes the whole tab after asking. close-view
+# (no key; in the palette and context menu) hides a pane without ending
+# it, and reopen-views brings hidden panes back.
 "x" = "kill-pane"
 "X" = "kill-window"
 
-# Move focus, vi-style.
+# Move between panes: h j k l like vim, o / ; in order, = back to the
+# last one.
 "h" = { action = "focus-direction", direction = "left" }
 "j" = { action = "focus-direction", direction = "down" }
 "k" = { action = "focus-direction", direction = "up" }
 "l" = { action = "focus-direction", direction = "right" }
-
-# Cycle through panes in DFS order. n/p cycle tabs, so the
-# pane-cycle bindings live on o / ; (phux-4li.16).
 "o" = "next-pane"
 ";" = "previous-pane"
-# One-entry, client-local MRU jump-back (repeat to toggle between two panes).
 "=" = "last-pane"
 
-# Zoom: toggle the focused pane to fill the whole tab (tmux prefix-z).
+# Zoom the focused pane to fill the tab, and back.
 "z" = "toggle-zoom"
 
-# Sidebar: show/hide the sessions-and-tabs strip (mnemonic: VS Code's Ctrl-B).
+# Show or hide the sidebar.
 "b" = "toggle-sidebar"
 
-# Copy-mode: enter text selection mode. Arrow keys adjust selection,
-# Enter copies to clipboard, Escape cancels.
+# Copy mode: scroll back, search, select, and copy. Arrows move, Enter
+# copies, Esc leaves.
 "[" = "copy-mode"
 
-# Tabs, tmux-style (phux-4li.15/.16). The action names keep tmux's
-# `window` spelling. c opens a new tab; n/p cycle tabs; X kills the active
-# tab (see kill bindings above); 0-9 jump to a tab by the position shown in
-# the status bar; w opens the tab picker (below).
+# Tabs. Actions keep tmux's word "window" for a tab. 0-9 jump to the tab
+# with that number in the status bar; < and > move the tab left or right.
 "c" = "new-window"
 "n" = "next-window"
 "p" = "previous-window"
-# The Tab key hops to the next tab too, matching tabbed-UI muscle memory.
 "Tab" = "next-window"
 "0" = { action = "select-window", index = 0 }
 "1" = { action = "select-window", index = 1 }
@@ -306,148 +256,81 @@ which-key-delay-ms = 400
 "7" = { action = "select-window", index = 7 }
 "8" = { action = "select-window", index = 8 }
 "9" = { action = "select-window", index = 9 }
-# < and > move the active tab one slot left or right in the order the
-# status bar and sidebar show. Dragging a tab or a sidebar tab row does
-# the same with the mouse.
 "<" = { action = "move-window", delta = -1 }
 ">" = { action = "move-window", delta = 1 }
 
-# Directory picker: browse directories on the attached server's host and
-# open a new tab in the one you pick. G for "go" (the Go-to-Folder
-# chord's Shift-G); lowercase g is give-input (supervisory control below).
+# Open a new tab in a directory you pick (G), or find a path and type it
+# into the pane (F).
 "G" = "go-to-directory"
 "F" = "find-path"
 
-# Rename the active tab. With an explicit name it renames immediately,
-# e.g. "," = { action = "rename-window", name = "build" }. The bare
-# binding opens an interactive type-a-name prompt pre-filled with the
-# current name (phux-ahv.1).
+# Rename the tab (,) or the session ($). Give a name to skip the prompt:
+#   "," = { action = "rename-window", name = "build" }
 "," = "rename-window"
-
-# Rename the current session (tmux convention: $ renames the session, ,
-# renames the tab). With an explicit name it renames immediately, e.g.
-# "$" = { action = "rename-session", name = "notes" }. The bare binding
-# opens an interactive type-a-name prompt pre-filled with the current
-# session name; on commit the client sends the RENAME_SESSION command and
-# optimistically updates its own status bar. The server is authoritative,
-# so other attached clients pick up the new name on their next snapshot.
 "$" = "rename-session"
 
-# Command palette: a filterable list of every action, each annotated with
-# its bound chord. Choosing one runs it through the same path a keybind
-# takes (phux-ahv.8). Actions contributed by enabled plugins appear here
-# automatically as `plugin:` rows.
-#
-# Space is the primary spelling — prefix-Space is one relaxed two-key
-# motion and needs no Shift, which is what you want from the chord you
-# reach for when you have forgotten every other chord. `:` stays bound as
-# the vim-flavored alias, and `?` as the help-shaped one.
+# The command palette: every action, searchable, with its key. Space is
+# the easy one; : and ? open it too.
 "Space" = "command-palette"
 ":" = "command-palette"
 "?" = "command-palette"
 
-# Navigation, mnemonic s/w (sessions / tabs):
-#
-#   w — tab picker (`window-picker`, phux-4li.19). A filterable,
-#       hierarchical list: every session is a header with its tabs
-#       nested beneath. Picking a tab in the CURRENT session switches to
-#       it via `select-window { index }`; picking another session switches
-#       to that session. A session whose layout is already cached lists its
-#       tabs in the same step; one that is not cached offers a switch.
-#
-#   s — session picker (`session-picker`, phux-4li.20). A filterable list
-#       of all server sessions, built from the ATTACHED snapshot. The current
-#       session appears first and is marked; choosing it simply closes the
-#       picker. Choosing another row commits `switch-session { name }` through
-#       the single dispatch path, which drives an in-process re-attach on the
-#       same connection (phux-eb0): the client detaches from the current
-#       session, re-runs the ATTACH handshake against the target, rebuilds all
-#       session-scoped state, and repaints — no reconnect, no flicker.
+# Pick a tab from every session (w), or a session (s).
 "w" = "window-picker"
 "s" = "session-picker"
 
-#   A — agent-fleet dashboard (`agent-fleet`, phux-foz.7). One filterable
-#       overlay over the whole fleet: every pane of the attached session
-#       grouped under session headers, labelled with its agent's name/kind
-#       (the structured phux.agent/v1 record when declared, the OSC title
-#       otherwise), a state glyph (! blocked, * working, - idle, . done,
-#       ? unknown), an attention highlight for panes waiting on you, and
-#       the pane's branch or cwd. Enter focuses the chosen pane; rows for
-#       other sessions hop there via `switch-session` (their panes list
-#       once attached). The rows refresh live as agent events arrive.
+# Agents. A opens every agent with its state and whether it needs you;
+# a steps the sidebar's agent filter (all, this session's, needs you);
+# q jumps to the next pane waiting for an answer and Q goes back.
 "A" = "agent-fleet"
-#   a - step the sidebar's Agents filter: every agent, this session's,
-#       then only the ones that need you. The chip row under the Agents
-#       header picks one in a click, and its `@` chip steps the machine.
 "a" = "agents-filter"
-"S" = "settings"
-
-# Organize: put every pane in the session it belongs in (`phux organize`).
-# Panes join their repository's session, a repository with no session gets
-# one, and a numbered session holding one repository takes its name. Moves
-# change membership only; nothing is killed. `organize-undo` reverses it.
-"O" = "organize"
-
-# Bug report: write a local bundle (session, pane, log tails, screen) an
-# agent can open with `phux report show`. B for Bug; lowercase b is the
-# sidebar.
-"B" = "report-bug"
-
-# Recording marker (unbound): while `phux --rec` (or `phux rec --composited`)
-# is capturing, `rec-mark` drops an asciicast `m` event, and the command
-# palette offers it. Bind it to mark from the keyboard, e.g. "M" = "rec-mark";
-# `{ action = "rec-mark", label = "intro" }` names the marker.
-# `phux rec mark` posts the same event from another process.
-
-# Attention navigation. q jumps to the next pane
-# with a pending AgentEvent::Asked, cycling by tab order then DFS leaf
-# order; Q returns to the pane where that excursion began. These unoccupied
-# lowercase/uppercase mnemonic keys are client-local and never write layout
-# metadata or shared focus. The fleet dashboard above remains unchanged.
 "q" = "next-attention"
 "Q" = "return-from-attention"
 
-# New session: C (Shift-c) creates a fresh session and switches this
-# client to it in-process. With no name it opens a prompt; the session
-# picker (s) also offers a "+ New session" row. (Lowercase c is
-# a new tab; capital is the session-level peer.)
+# Settings page.
+"S" = "settings"
+
+# Move every pane into the session for its repository (`phux organize`).
+# Nothing is closed, and organize-undo reverses it.
+"O" = "organize"
+
+# Write a bug report bundle (`phux report show` opens it).
+"B" = "report-bug"
+
+# rec-mark (no key) drops a marker while `phux rec` is recording:
+#   "M" = { action = "rec-mark", label = "intro" }
+
+# Sessions: C makes a new one, N and P cycle, ) goes back to the last.
 "C" = "new-session"
-# Session motion. Prefix-L stays resize-pane; last-session is `)`.
 "N" = "next-session"
 "P" = "previous-session"
 ")" = "last-session"
 
-# Detach this client from the session.
+# Detach. The session keeps running; `phux` brings you back.
 "d" = "detach"
 
-# Supervisory control. Take seizes
-# exclusive input over the focused pane so an agent driving it is locked
-# out until you Give it back; Freeze (SIGSTOP) pauses the pane's process
-# mid-step and Resume (SIGCONT) lets it run again. Destructive signals
-# (kill / terminate / interrupt) are left to `phux signal` so a stray
-# keystroke can't tear a process down; bind them yourself if you want them.
+# Take the keyboard from an agent driving the pane (W), give it back (g),
+# pause the pane's program (f) and resume it (u). Signals that end a
+# program are left to `phux signal`, so a stray key cannot kill one.
 "W" = "take-input"
 "g" = "give-input"
 "f" = { action = "signal-terminal", signal = "freeze" }
 "u" = { action = "signal-terminal", signal = "resume" }
 
-# Resize the focused pane. Capital letters are equivalent to `S-<lower>`.
+# Resize the focused pane by 5 cells.
 "H" = { action = "resize-pane", direction = "left",  amount = 5 }
 "J" = { action = "resize-pane", direction = "down",  amount = 5 }
 "K" = { action = "resize-pane", direction = "up",    amount = 5 }
 "L" = { action = "resize-pane", direction = "right", amount = 5 }
 
-# Live config reload (phux-foz.5): re-reads this file (full layered
-# load, `extends` included) and applies keybindings, theme, and status
-# bar in place; a file that fails to parse or validate keeps the old
-# config and surfaces the error in a toast. Unbound by default — the
-# command palette offers it as "Reload the config file"; bind it
-# yourself if you iterate on config a lot:
+# reload-config (no key; in the palette) applies your config file without
+# detaching. Bind it if you edit the file often:
 #   "R" = "reload-config"
 
 [keybindings.global]
-# No other global bindings shipped by default. Add yours here, e.g.:
-#   "M-Enter" = "detach"
+# Keys that work without the prefix. None ship, so every key reaches the
+# program in the pane until you add one here:
+#   "M-Enter" = "toggle-zoom"
 
 # Plugin packages are declarative manifests. phux can inspect them with
 # `phux plugin list --json`, validate/link/toggle/unlink them with
@@ -665,10 +548,9 @@ right = [
 # Which outer-terminal row the bar reserves: "top" (default) or "bottom".
 # position = "top"
 
-# Chrome + overlay palette. Every slot below is set to its shipped value
-# in code (crates/phux-tui/src/render/theme.rs); the block is commented
-# here so you can see the whole system at once and override one slot
-# without hunting for the name. Values accept named colors ("cyan"), hex
+# Colours for phux's own chrome. Every slot below shows its shipped
+# value, commented out, so you can see the whole palette at once and
+# override one slot without hunting for its name. Values accept named colors ("cyan"), hex
 # ("#7aa2f7") and ANSI indices ("12").
 #
 # Two keys select a whole palette underneath the slots: `name` is an
