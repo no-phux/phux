@@ -181,7 +181,7 @@ coordinator and autonomous Lead are not shipping contracts.
 
 | To change       | Start at                                                                                                                                                                                                     |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/client.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `resource/terminal/`                                                         |
+| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `resource/terminal/`                                                         |
 | organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
 | input handling  | `phux-server/src/runtime/input_lane/`                                                                                                                                                                        |
 | TUI rendering   | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay`                                                                                                                        |
@@ -191,6 +191,19 @@ coordinator and autonomous Lead are not shipping contracts.
 | agent detection | `phux-agent-rules/rules/*.toml`, `phux-server/src/agent_detect/`                                                                                                                                             |
 | authorization   | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs`                                                                                                                                     |
 | remote access   | `crates/phux/src/commands/enroll.rs`, `remote_target.rs`, `phux-client-runtime/src/dial.rs`, `phux-server/src/transport/`                                                                                    |
+
+The runtime root exports the server interface. Its `server` module assembles
+startup using `startup`, `posture`, `services`, and `listeners`; configuration
+and startup errors live in `config`.
+
+The server's `runtime/connections` handles connected peers: `lifecycle` owns
+accept and teardown, `hello` authenticates and negotiates, `dispatch` and
+`frames` route admitted requests, the metadata modules apply L3 operations,
+and `writer` owns output ordering and generation fencing. `pane_events`
+journals terminal events; `agent_state` folds detector reports into agent
+metadata. These are server responsibilities; client dialing and reconnect
+remain in `phux-client-runtime`. `runtime::client` is a compatibility alias
+for `runtime::connections`.
 
 ## Decisions
 

@@ -38,7 +38,7 @@ Confirmed departure or a changed occupant withdraws declared state to
 and native-session fields. Failed process inspection is not evidence of
 vacancy. Derived reporting can resume subject to identity ownership; one
 source must not retract another source's ask or delete its declaration.
-The [pane event arbiter and regression tests](../crates/phux-server/src/runtime/client/pane_events.rs)
+The [agent state arbiter and regression tests](../crates/phux-server/src/runtime/connections/agent_state.rs)
 own this provenance rule.
 
 Rules ship for Claude Code, Codex, OpenCode, pi, OMP, Grok, Amp, Cursor,
