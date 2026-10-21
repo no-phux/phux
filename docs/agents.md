@@ -223,7 +223,7 @@ producer ingress and BIND+INPUT through the parent; they are not exclusive
 to the connection that opened the stream. Same-owner socket clients share
 that trust boundary. SDK-owned streams instead require their reserved
 native controller; generic emit cannot impersonate one. See the
-[append guard](../crates/phux-server/src/runtime/resource_commands.rs) and
+[append guard](../crates/phux-server/src/runtime/resource_commands/mod.rs) and
 [parent authorization](../crates/phux-server/src/policy/enforce.rs).
 Native ACP questions use the separate human-only broker described above.
 
