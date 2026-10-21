@@ -102,6 +102,11 @@ pub(super) fn report_session_error(
             EXIT_USAGE,
             "raise `defaults.agent-log-bytes`, or emit smaller records".to_owned(),
         ),
+        AgentSessionError::OutcomeUnknown(_) => (
+            json_err::codes::SPAWN_OUTCOME_UNKNOWN,
+            EXIT_FAILURE,
+            "run `phux ls` to see whether the agent session exists before retrying".to_owned(),
+        ),
         AgentSessionError::Refused(_) => (
             json_err::codes::AGENT_SESSION_REFUSED,
             EXIT_FAILURE,

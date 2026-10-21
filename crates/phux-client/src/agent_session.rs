@@ -248,6 +248,11 @@ pub enum AgentSessionError {
     /// The server refused for another reason; the message is its diagnostic.
     #[error("refused: {0}")]
     Refused(String),
+    /// The server answered an `open` but this build could not read whether
+    /// it created the session: it may exist. Not a refusal; a blind retry
+    /// could open a second one.
+    #[error("outcome unknown: {0}; the agent session may exist, check `phux ls` before retrying")]
+    OutcomeUnknown(String),
     /// Transport or protocol failure.
     #[error(transparent)]
     Transport(#[from] AttachError),
@@ -313,6 +318,11 @@ pub async fn open(
     crate::state::report_degradation(&interleaved);
     let result = match answer {
         Answer::Ok(result) => result,
+        // A code this build does not know (`UNREADABLE_REPLY` included)
+        // does not say whether the session was created.
+        Answer::Err(refusal) if matches!(refusal.code, ErrorCode::Unknown(_)) => {
+            return Err(AgentSessionError::OutcomeUnknown(refusal.to_string()));
+        }
         Answer::Err(refusal) => {
             return Err(AgentSessionError::Refused(refusal.to_string()));
         }
@@ -331,6 +341,9 @@ pub async fn open(
             })
         }
         SpawnResult::Err(SpawnError::UnsupportedKind) => Err(AgentSessionError::Unsupported),
+        SpawnResult::Err(SpawnError::Unknown(result)) => Err(AgentSessionError::OutcomeUnknown(
+            format!("a newer server's spawn result (tag {:#04x})", result.tag()),
+        )),
         SpawnResult::Err(other) => Err(AgentSessionError::Refused(format!("{other:?}"))),
         other => Err(AttachError::Protocol(format!(
             "SPAWN_RESOURCE answered with an unrecognised spawn result: {other:?}"

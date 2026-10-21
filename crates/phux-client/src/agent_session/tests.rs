@@ -144,6 +144,34 @@ async fn open_maps_the_structured_spawn_refusals() {
     }
 }
 
+/// An `open` answered with an unreadable reply, or a newer server's spawn
+/// result, leaves the outcome unknown: the session may exist, so it is
+/// never reported as refused.
+#[tokio::test]
+async fn open_reports_an_unreadable_answer_as_an_unknown_outcome() {
+    let specs = [
+        ScriptSpec::new()
+            .server_features(kinds())
+            .refuse_spawn(ErrorCode::UNREADABLE_REPLY, "unreadable"),
+        ScriptSpec::new()
+            .server_features(kinds())
+            .spawn_result(SpawnResult::Err(SpawnError::Unknown(
+                phux_protocol::wire::UnreadableResult::from_wire([0x01, 0xFE]),
+            ))),
+    ];
+    for spec in specs {
+        let (_dir, socket, server) = serve(spec);
+        let mut conn = Connection::connect(&socket).await.unwrap();
+        let err = open(&mut conn, &parent(), "claude", None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AgentSessionError::OutcomeUnknown(_)), "{err}");
+        assert!(err.to_string().contains("phux ls"), "{err}");
+        drop(conn);
+        server.await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn emit_appends_one_jsonl_line_per_record_and_reads_the_stamped_header() {
     let spec = ScriptSpec::new()

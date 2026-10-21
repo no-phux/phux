@@ -34,6 +34,10 @@ pub(crate) const SESSION_CREATE_FAILED: &str = "session_create_failed";
 /// The server refused a spawn (a missing command or cwd), or a placed
 /// spawn could not land at its target. Exit 1.
 pub(crate) const SPAWN_FAILED: &str = "spawn_failed";
+/// The server answered a spawn (or an agent-session open) but this build
+/// could not read whether it created anything: the pane may exist. Never a
+/// refusal; check `phux ls` before retrying. Exit 1.
+pub(crate) const SPAWN_OUTCOME_UNKNOWN: &str = "spawn_outcome_unknown";
 // The spatial edits' refusal codes live in `phux_client::spatial::codes`.
 /// A selector matched several panes where exactly one is required.
 pub(crate) const SELECTOR_NOT_SINGLE: &str = "selector_not_single";

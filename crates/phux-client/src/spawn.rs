@@ -13,8 +13,9 @@ use std::path::Path;
 
 use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::ids::{IdempotencyKey, ResourceId, SessionId};
+use phux_protocol::wire::UnreadableResult;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, SpawnError, SpawnResult, StateScope,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError, SpawnResult, StateScope,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
@@ -28,7 +29,9 @@ use crate::state::Degradation;
 /// `RESOURCE_SPAWNED` result with any interleaved notices.
 ///
 /// A correlated `ERROR` (a satellite may answer a relayed spawn that way) is
-/// folded into [`SpawnResult::Err`].
+/// folded into [`SpawnResult::Err`]: a refusal into `SpawnFailed`, but a code
+/// this build does not know (`UNREADABLE_REPLY` included) into
+/// [`SpawnError::Unknown`], since the pane may exist.
 ///
 /// # Errors
 ///
@@ -40,6 +43,10 @@ pub async fn spawn(
     let (answer, interleaved) = conn.request_spawn(frame).await?.into_parts();
     let degradation = Degradation::from_interleaved(&interleaved);
     let result = answer.unwrap_or_else(|refusal| {
+        if matches!(refusal.code, ErrorCode::Unknown(_)) {
+            // Only matched on, never encoded: no wire bytes to carry.
+            return SpawnResult::Err(SpawnError::Unknown(UnreadableResult::from_wire(Vec::new())));
+        }
         SpawnResult::Err(SpawnError::SpawnFailed(format!(
             "server refused the spawn: {refusal}"
         )))
@@ -148,6 +155,18 @@ pub fn spawned_document(terminal_id: &ResourceId, replayed: bool) -> serde_json:
     })
 }
 
+/// What a spawn whose outcome is unknown reports: never "refused" or
+/// "failed", since a retry could duplicate the pane.
+pub const SPAWN_OUTCOME_UNKNOWN: &str = "spawn outcome unknown: the server answered, but this \
+     build could not read whether it created the pane; it may exist, so check `phux ls` \
+     before retrying";
+
+/// Whether `err` leaves the spawn's outcome unknown rather than refused.
+#[must_use]
+pub const fn spawn_outcome_unknown(err: &SpawnError) -> bool {
+    matches!(err, SpawnError::Unknown(_))
+}
+
 /// The actionable sentence for a typed `SpawnError`, shared by `phux spawn`,
 /// `phux launch`, and the MCP `phux_spawn` tool.
 #[must_use]
@@ -162,6 +181,7 @@ pub fn spawn_error_message(err: &SpawnError) -> String {
         SpawnError::SatelliteUnreachable(reason) => {
             format!("spawn failed: satellite unreachable: {reason}")
         }
+        SpawnError::Unknown(_) => SPAWN_OUTCOME_UNKNOWN.to_owned(),
         // `SpawnError` is `#[non_exhaustive]`: a code with no arm here is a
         // vocabulary this client does not have, i.e. version skew.
         _ => format!(
@@ -416,6 +436,23 @@ mod tests {
             initial_size: None,
             resource: None,
         }
+    }
+
+    /// A spawn answered with an unreadable reply leaves its outcome unknown:
+    /// never folded into a refusal, and the message points at `phux ls`.
+    #[tokio::test]
+    async fn an_unreadable_spawn_answer_is_an_unknown_outcome() {
+        let spec = crate::testkit::ScriptSpec::new()
+            .refuse_spawn(ErrorCode::UNREADABLE_REPLY, "reply carried an unknown tag");
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (socket, server) = crate::testkit::serve_one(temp.path(), spec);
+        let (result, _degradation) = spawn_on(&socket, &spawn_frame()).await.expect("transport");
+        let SpawnResult::Err(error) = &result else {
+            panic!("got {result:?}");
+        };
+        assert!(spawn_outcome_unknown(error), "got {result:?}");
+        assert!(spawn_error_message(error).contains("phux ls"));
+        server.await.expect("scripted server");
     }
 
     /// A spawn refused by a correlated `ERROR` (a satellite) or by its own

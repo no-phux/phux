@@ -396,6 +396,17 @@ fn print_spawned(terminal_id: &ResourceId, replayed: bool, json: bool) -> ExitCo
 /// ([`phux_client::spawn::spawn_error_message`]), as the JSON error document
 /// under `json`. Exits 1.
 pub(crate) fn report_spawn_error(json: bool, err: &SpawnError) -> ExitCode {
+    if phux_client::spawn::spawn_outcome_unknown(err) {
+        return json_err::emit(
+            json,
+            &CliError::new(
+                codes::SPAWN_OUTCOME_UNKNOWN,
+                phux_client::spawn::spawn_error_message(err),
+                "run `phux ls` to see whether the pane exists before retrying",
+            ),
+            1,
+        );
+    }
     json_err::emit(
         json,
         &CliError::new(
