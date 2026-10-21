@@ -92,8 +92,9 @@ type byte of one it cannot read; only bulk frames such as
 A hub's link to a satellite is a 1.x client of that satellite. A frame the
 hub cannot read for an unknown value is logged and skipped; when it
 answered a request the hub relayed, the request settles as an unknown
-outcome (`UNREADABLE_REPLY`), never as refused or `UNSUPPORTED`, since the
-satellite may have acted. The hub never relays bytes it cannot read: a
+outcome, never as refused or `UNSUPPORTED`, since the satellite may have
+acted: a spawn or move result carries the reserved result tag `255`
+(outcome not stated), anything else an `UNREADABLE_REPLY` error. The hub never relays bytes it cannot read: a
 satellite's ids inside them would not be translated to the hub's. An
 uncorrelated `ERROR` from a satellite is logged and does not end the link.
 Malformed bytes still end the link. A hub relays a command to a satellite
@@ -116,8 +117,8 @@ only when that satellite advertises the feature, and refuses
   leaves no room for a field after it.
 - Ids and other leaves are frozen. A new shape is a new tag, a new enum
   value is a new number, and a retired field id is never reused. Value
-  `255` is reserved in reason enums: it is how a client holds an unknown
-  one. A fixed-size field such as `PATH_QUERY`'s grows through a new field
+  `255` is reserved in reason enums and spawn and move result tags: it is
+  how a peer holds an unknown one. A fixed-size field such as `PATH_QUERY`'s grows through a new field
   id, not a longer value. The field `wire_type` byte is always `4`.
 - Syntax an older peer validates is part of 1.0 as well: a path in
   `PATH_RESULTS` is an absolute POSIX path, and an arrangement names a
