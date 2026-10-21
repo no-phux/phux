@@ -51,6 +51,7 @@ production state or install an unreleased build.
 - [Organization](./organization.md): durable records, transaction ordering, execution and restore authority.
 - [Substrate](./substrate.md): principals, the org's home keeper, and one-way adapters.
 - [Protocol](./protocol.md): framing, handshake, capabilities, replica recovery and bounded retries.
+- [Compatibility](./compatibility.md): what an older or newer 1.x peer sees, and how to keep a change compatible.
 - [Development](./development.md): environments, build cache, per-area setup, gates, CI.
 - [Releasing](./releasing.md): what ships, how, and the manual controls.
 - [Contributing](../CONTRIBUTING.md) and [agent instructions](../AGENTS.md).

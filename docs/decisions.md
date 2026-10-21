@@ -26,7 +26,7 @@ records explain history; [look them up deliberately](./architecture.md#historica
   ships as a feature bit or a skippable field or record tail; a server
   answers what it does not know with `UNSUPPORTED` and stays connected. A
   new major is a deliberate, announced break
-  ([compatibility](./protocol.md#compatibility)).
+  ([compatibility](./compatibility.md)).
 - The kind catalog in `phux-protocol::kinds` is the one table for discovery
   and authorization; anything it does not name is denied.
 - `wire-schema.json` is generated from the codec and test-pinned; the code is

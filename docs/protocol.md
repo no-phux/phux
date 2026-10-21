@@ -81,19 +81,11 @@ denies a client-originated `PONG`.
 
 The protocol is `1.0`. Any 1.x client works with any 1.x server, older or
 newer, and servers may be far older than clients. Minor and patch are
-informational; no peer gates on them.
-
-- New behavior is a feature bit in `HELLO_OK` (`APPROVALS`,
-  ...) or a field or record tail an old peer skips, never a
-  changed shape.
-- A client checks the bit first and degrades that one feature when it is
-  missing; it does not refuse the connection.
-- A server answers what it does not know and stays connected: an unknown
-  frame type gets `ERROR` `UNSUPPORTED`; an unknown command tag or enum
-  value gets a `COMMAND_RESULT` error `UNSUPPORTED` with the request id.
-- Clients tolerate unknown fields, record tails, events, kinds, close
-  reasons, error codes, and result tags.
-- A new major is a deliberate, announced break; 0.x cannot talk to 1.x.
+informational. New behavior is a feature bit in `HELLO_OK` or a field or
+record tail an old peer skips; a client checks the bit and degrades that
+one feature. A peer answers a value it does not know with `UNSUPPORTED` and
+stays connected; only unreadable bytes close. A new major is a deliberate,
+announced break. [Compatibility](./compatibility.md) has the full rules.
 
 The feature names, their bits, and which commands each gates are in the
 generated [kinds reference](./reference/kinds.md). `phux status --json`
@@ -358,7 +350,8 @@ details.
   bump the protocol version for an additive change. A shipped capability bit is
   never withdrawn or repointed.
 - Grow a positional record only at its tail; never reorder, retype, or
-  remove a field. A non-final composite record needs a length prefix.
+  remove a field. A non-final composite record needs a length prefix and a
+  mid-record optional a presence byte ([compatibility](./compatibility.md#making-a-change-compatible)).
 - Classify any new command in `kinds.rs`, or dispatch denies it.
 - Regenerate the schema (`PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p
   phux-protocol wire_schema_matches`), fill in any `?` types, and
