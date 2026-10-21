@@ -299,3 +299,54 @@ fn future_native_outcome_is_opaque_but_oversized_body_is_refused() {
         Err(DecodeError::NativeAgentLimitExceeded)
     ));
 }
+
+/// The types that also travel server to client stay tolerant: a stored
+/// launch recipe and a relayed publication from a newer server still read,
+/// and a newer state or disposition folds to `Unknown`.
+#[test]
+fn shared_native_types_tolerate_a_newer_peer() {
+    let spec: SpawnNativeAgent = serde_json::from_str(
+        r#"{"session":"s","backend":"b","provider":"p","command":["a"],"cwd":null,"env":{},"later":1}"#,
+    )
+    .unwrap();
+    assert_eq!(spec.provider, "p");
+    let update: NativeUpdate =
+        serde_json::from_str(r#"{"type":"state","state":"thinking","turn_id":null,"later":1}"#)
+            .unwrap();
+    assert!(matches!(
+        update,
+        NativeUpdate::State {
+            state: NativeState::Unknown,
+            ..
+        }
+    ));
+    let result: NativeCommandResult =
+        serde_json::from_str(r#"{"operation_id":1,"disposition":"deferred","detail":null}"#)
+            .unwrap();
+    assert_eq!(result.disposition, NativeDisposition::Unknown);
+}
+
+/// The server's request decode is the strict side: a value a tolerant type
+/// folded to `Unknown` is refused, not run as `Unknown`.
+#[test]
+fn a_request_carrying_a_newer_value_is_refused_as_unsupported() {
+    let mut publish = serde_json::to_value(NativeRequest::Publish {
+        agent_session_id: ResourceId::local(1),
+        activation: "a".into(),
+        binding_proof: "p".into(),
+        generation: 1,
+        publication_id: 1,
+        update: NativeUpdate::State {
+            state: NativeState::Working,
+            turn_id: None,
+        },
+    })
+    .unwrap();
+    publish["update"]["state"] = serde_json::Value::String("thinking".into());
+    assert_eq!(
+        common::decode(&raw_json(&serde_json::to_vec(&publish).unwrap())).unwrap_err(),
+        DecodeError::UnsupportedPayload {
+            payload: "NativeRequest"
+        }
+    );
+}

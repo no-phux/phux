@@ -65,7 +65,9 @@ pub enum NativeDisposition {
     Completed = 0x02,
     /// This operation was refused.
     Refused = 0x03,
-    /// The outcome is ambiguous and must not trigger automatic resend.
+    /// The outcome is ambiguous and must not trigger automatic resend. A
+    /// disposition this build does not know also reads as this.
+    #[serde(other)]
     Unknown = 0x04,
 }
 
@@ -214,10 +216,17 @@ pub enum NativeState {
     Blocked,
     /// The turn ended; its session may remain available.
     Done,
+    /// A state this build does not know (a newer peer's value).
+    #[serde(other)]
+    Unknown,
 }
 /// A bounded, structured publication from the exclusive SDK controller.
+///
+/// Tolerant: the server relays it to every client inside the agent stream.
+/// A request carrying one is held to this build's fields by the server's
+/// strict request decode instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum NativeUpdate {
     /// Replace the current controller projection.
     View {
@@ -269,8 +278,11 @@ pub struct NativePublicationReceipt {
 }
 /// Explicit native launch. `command` is the real provider executable/argv,
 /// never the guardian executable or a shell expression.
+///
+/// Tolerant: the server stores it as the launch recipe a client reads back.
+/// A spawn request is held to this build's fields by the server's strict
+/// request decode instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SpawnNativeAgent {
     /// Exact organization session name.
     pub session: String,
@@ -310,11 +322,11 @@ pub struct SpawnedNativeAgent {
 }
 /// Separate host operations retain their own connection role and generation.
 ///
-/// Client-to-server only, so a field or type this build does not know is
-/// refused `Unsupported` rather than silently ignored (`deny_unknown_fields`
-/// here, on [`SpawnNativeAgent`], [`NativeCommand`], [`NativeIntent`], and
-/// [`NativeUpdate`]). [`NativeCommandResult`], [`NativeView`], and
-/// [`NativeQuestion`] also arrive in server answers, so they stay tolerant.
+/// The server refuses a request naming a field, type, or value this build
+/// does not know as `Unsupported` rather than silently ignoring it: its
+/// decode is strict, while the nested types that also travel server to
+/// client ([`SpawnNativeAgent`], [`NativeUpdate`], [`NativeCommandResult`],
+/// [`NativeView`], [`NativeQuestion`]) stay tolerant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeRequest {
@@ -441,9 +453,18 @@ impl NativeRequestPayload {
         if encoded.len() > MAX_NATIVE_PAYLOAD_BYTES {
             return Err("native payload exceeds 16 KiB".into());
         }
-        let request = serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
-        // Canonicalize the parsed DTO: ignored future fields cannot survive as
-        // wire data that differs from the request inspected by policy.
+        let request: NativeRequest =
+            serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
+        // The request side is strict: a field or value the tolerant DTOs
+        // dropped or folded is refused, never run without it.
+        let original: serde_json::Value =
+            serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
+        let canonical = serde_json::to_value(&request).map_err(|error| error.to_string())?;
+        if !strict::survives_round_trip(&original, &canonical) {
+            return Err(strict::UNKNOWN_FIELD_OR_VALUE.to_owned());
+        }
+        // Canonicalize the parsed DTO: the wire data is exactly the request
+        // inspected by policy.
         Self::new(request)
     }
 }
@@ -479,5 +500,6 @@ fn encode_payload<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+mod strict;
 mod validation;
 pub use validation::validate_answer;
