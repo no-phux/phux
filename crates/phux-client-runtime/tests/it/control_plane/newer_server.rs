@@ -240,3 +240,29 @@ fn a_directory_listing_answered_unsupported_settles_as_failed() {
     assert_eq!(listings[0].path, "/home");
     assert!(listings[0].error.is_some());
 }
+
+/// A correlated `ERROR` for an acknowledged input settles it in the input
+/// journal, so the terminal's next input goes out instead of waiting out
+/// the retry horizon.
+#[test]
+fn a_correlated_error_settles_acknowledged_input() {
+    for (code, expected) in [
+        (ErrorCode::Unsupported, DeliveryOutcome::Refused),
+        (ErrorCode::UNREADABLE_REPLY, DeliveryOutcome::Unknown),
+    ] {
+        let mut plane = acknowledged_plane();
+        let (delivery, request) = apply_input_request(&mut plane);
+        plane
+            .feed(FrameKind::Error {
+                request_id: Some(request),
+                code,
+                message: "a newer server".into(),
+            })
+            .expect("a correlated error is not fatal");
+        assert_eq!(outcome(&mut plane, delivery), expected, "{code:?}");
+        if expected == DeliveryOutcome::Refused {
+            let (_, next) = apply_input_request(&mut plane);
+            assert_ne!(next, request, "the terminal accepts its next input");
+        }
+    }
+}

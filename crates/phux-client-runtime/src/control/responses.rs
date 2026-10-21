@@ -385,9 +385,15 @@ impl ControlPlane {
             }
             return Ok(());
         }
+        // An acknowledged input or an organization request settles in its
+        // own journal; the general pending map never holds those ids.
+        if let Some(request_id) = request_id
+            && (self.input_replay.owns(request_id) || self.owns_org_request(request_id))
+        {
+            return self.command_result(request_id, CommandResult::Error { code, message });
+        }
         if let Some(request_id) = request_id
             && !self.pending.contains_key(&request_id)
-            && !self.input_replay.owns(request_id)
         {
             // The binding extension that allocated this correlation owns its
             // reply. Surface the original wire shape exactly once.
