@@ -14,8 +14,12 @@ impl super::super::SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) -> Result<(), AttachError> {
+        let previous_dims = self.viewport_dims;
         let viewport = current_viewport_or_default();
         self.viewport_dims = (viewport.cols.max(1), viewport.rows.max(1));
+        // Same cell grid: the server updates pixels without a resync, and the
+        // mirror still matches the screen. Clearing here would leave it blank.
+        let grid_unchanged = self.viewport_dims == previous_dims;
         self.cell_px_dims = host_cell_px(&viewport);
         // Predictions are pane-local: bound them to the focused pane's grid.
         let (predict_cols, predict_rows) = self
@@ -34,10 +38,11 @@ impl super::super::SessionLoop {
             conn.send(&viewport_resize_frame(viewport)).await?;
         }
         self.size_workspace_panes(conn, sidebar).await?;
-        // Clear rather than repaint stale pre-resize mirrors; the server's
-        // resync snapshot repopulates at the new size. A held switch keeps
-        // the old frame up instead: its release clears and paints whole.
-        if !self.paint_held() {
+        // A real reflow clears rather than repainting a stale mirror; the
+        // server's resync snapshot fills the new size. A held switch keeps
+        // the old frame up instead. A same-grid resize is left on screen:
+        // there is no snapshot coming to refill a clear.
+        if !grid_unchanged && !self.paint_held() {
             let _ = out.write_all(b"\x1b[2J\x1b[H");
         }
         crate::attach::pane_state::invalidate_all_fronts(&mut self.mirror.panes);

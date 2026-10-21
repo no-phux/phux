@@ -229,8 +229,11 @@ impl TerminalActor {
     }
 
     /// Apply a resize to the `Terminal` and the PTY winsize, returning
-    /// whether anything moved. An unchanged geometry earns no resync (that
-    /// would rotate the bootstrap generation for nothing).
+    /// whether the grid reflowed. An unchanged grid earns no resync (that
+    /// would rotate the bootstrap generation for nothing). A cell-pixel
+    /// change at the same grid updates winsize and the input encoder only:
+    /// text did not reflow, so retiring native history and replacing a
+    /// scrolled client with the live screen would drop the view for nothing.
     pub(super) fn handle_resize(
         &mut self,
         cols: u16,
@@ -242,7 +245,7 @@ impl TerminalActor {
         let cols = cols.max(1);
         let rows = rows.max(1);
         // The settled geometry repeated is a no-op; it must not invalidate
-        // native history cursors.
+        // native history cursors. A failed ioctl stays pending and retries.
         if cols == self.cols && rows == self.rows && cell_px.is_none_or(|cell| cell == self.cell_px)
         {
             self.apply_pty_resize();
@@ -250,6 +253,10 @@ impl TerminalActor {
         }
         // Sticky cell size: see the `ResizeRequest::cell_px` doc.
         let (cell_w, cell_h) = cell_px.unwrap_or(self.cell_px);
+        if cols == self.cols && rows == self.rows {
+            self.install_cell_px(cell_w, cell_h);
+            return false;
+        }
 
         // Pixel dimensions are `cells x cell size`, always nonzero.
         let applied = {
@@ -270,21 +277,27 @@ impl TerminalActor {
         }
         self.cols = applied.0;
         self.rows = applied.1;
-        self.cell_px = (cell_w, cell_h);
-        self.size_report.set(SizeReportSize {
-            rows: applied.1,
-            columns: applied.0,
-            cell_width: u32::from(cell_w),
-            cell_height: u32::from(cell_h),
-        });
-        self.publish_input_snapshot();
+        self.install_cell_px(cell_w, cell_h);
         // A reflow rebuilds every consumer reference and may move detector
         // regions: force both ticks to rescan.
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
+        true
+    }
+
+    /// Record a cell size for winsize, XTWINOPS, and mouse encoding, and
+    /// push it to the kernel. Does not touch the grid or native cursors.
+    fn install_cell_px(&mut self, cell_w: u16, cell_h: u16) {
+        self.cell_px = (cell_w, cell_h);
+        self.size_report.set(SizeReportSize {
+            rows: self.rows,
+            columns: self.cols,
+            cell_width: u32::from(cell_w),
+            cell_height: u32::from(cell_h),
+        });
+        self.publish_input_snapshot();
         self.pty_resize_pending = true;
         self.apply_pty_resize();
-        true
     }
 
     /// A failed kernel resize is not a settled no-op. A later identical
