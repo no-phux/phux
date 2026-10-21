@@ -64,8 +64,10 @@ and the runtime, the C ABI, and the web client all apply it:
   `RESOURCE_MOVED`, `METADATA_VALUE`, `METADATA_KEYS`,
   `DIRECTORY_LISTING`, `PATH_RESULTS`) settles its request as an error with
   code `0`, `UNREADABLE_REPLY`. It is not `UNSUPPORTED`: the server
-  answered, so the request may have taken effect, and acknowledged input
-  under it is reported unknown rather than safe to retype;
+  answered, so the request may have taken effect. Acknowledged input, a
+  spawn, or an agent prompt answered this way (or with an error code or
+  spawn error the client does not know) settles as outcome unknown, never
+  as refused, so nothing is retyped or re-prompted;
 - an unreadable `ATTACHED` or `ATTACH_READY` fails the attach instead of
   leaving it waiting;
 - any other frame with an unknown value is skipped with a warning;
