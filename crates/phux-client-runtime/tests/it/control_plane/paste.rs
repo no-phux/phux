@@ -101,3 +101,44 @@ fn a_user_paste_into_a_satellite_pane_goes_as_one_paste_event() {
     assert!(!sent[0].0, "APPLY_INPUT is local-only");
     assert_eq!(sent[0].1.trust, PasteTrust::Trusted);
 }
+
+/// A user paste the conservative `APPLY_INPUT` batch rule refuses goes raw,
+/// never refused: only a paste that rule admits is sent acknowledged.
+#[test]
+fn a_user_paste_over_the_batch_rule_goes_as_one_paste_event() {
+    use phux_client_core::input_replay::validate_apply_input_batch;
+    use phux_protocol::wire::frame::MAX_APPLY_INPUT_COMMAND_BODY;
+
+    let batch = |len: usize| {
+        vec![InputEvent::Paste(PasteEvent {
+            trust: PasteTrust::Trusted,
+            data: vec![b'x'; len],
+        })]
+    };
+    let largest = (0..=MAX_APPLY_INPUT_COMMAND_BODY)
+        .rev()
+        .find(|len| validate_apply_input_batch(&batch(*len)).is_ok())
+        .expect("an empty paste fits");
+
+    let mut plane = acknowledging();
+    let text = "x".repeat(largest);
+    assert!(plane.apply_user_paste(&terminal(), &text).is_some());
+    let sent = pastes(&plane.take_outbound());
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].0, "the largest admitted paste goes acknowledged");
+
+    let mut plane = acknowledging();
+    let text = "x".repeat(largest + 1);
+    assert_eq!(plane.apply_user_paste(&terminal(), &text), None);
+    let sent = pastes(&plane.take_outbound());
+    assert_eq!(sent.len(), 1, "never split (input.md 5.1)");
+    assert!(!sent[0].0, "one byte more goes as a raw paste");
+    assert_eq!(sent[0].1.data, text.as_bytes());
+    assert!(
+        !plane
+            .take_events()
+            .iter()
+            .any(|event| matches!(event, Event::InputDelivery { .. })),
+        "nothing refused locally"
+    );
+}

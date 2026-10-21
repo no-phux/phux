@@ -108,12 +108,6 @@ pub const EVENT_QUEUE_CAP: usize = 4096;
 /// Clipboard events are droppable, never replayed to recover an overflow.
 pub const CLIPBOARD_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 
-/// Exact encoded command-body overhead of an `apply_line` /
-/// `apply_tab_completion` batch (a paste plus one key).
-const APPLY_LINE_OVERHEAD: usize = 46;
-/// Exact encoded command-body overhead of an `apply_paste` batch.
-const APPLY_PASTE_OVERHEAD: usize = 30;
-
 /// A spawn a consumer asks for.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnRequest {
