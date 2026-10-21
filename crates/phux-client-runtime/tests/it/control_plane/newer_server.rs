@@ -266,3 +266,73 @@ fn a_correlated_error_settles_acknowledged_input() {
         }
     }
 }
+
+fn reads_topology(plane: &mut ControlPlane) -> bool {
+    plane.take_outbound().iter().any(|bytes| {
+        matches!(
+            decode(bytes),
+            FrameKind::Command {
+                command: Command::GetState { .. },
+                ..
+            }
+        )
+    })
+}
+
+/// An unreadable spawn answer leaves the outcome unknown: the spawn settles
+/// saying so and the topology is re-read to list a pane that may exist. A
+/// definite refusal admitted nothing and reads nothing.
+#[test]
+fn an_unreadable_spawn_answer_is_an_unknown_outcome_not_a_refusal() {
+    for (frame, uncertain) in [
+        (unsupported(0), false),
+        (
+            FrameKind::Error {
+                request_id: Some(0),
+                code: ErrorCode::UNREADABLE_REPLY,
+                message: "unreadable".into(),
+            },
+            true,
+        ),
+        (
+            FrameKind::ResourceSpawned {
+                request_id: 0,
+                result: SpawnResult::Err(phux_protocol::wire::frame::SpawnError::Unknown(0xFE)),
+            },
+            true,
+        ),
+    ] {
+        let (mut plane, attach_id) = negotiated();
+        attach(&mut plane, attach_id, b"home");
+        let _ = plane.take_outbound();
+        let _ = plane.take_events();
+        let request_id = plane.spawn_terminal(SpawnRequest::default());
+        let _ = plane.take_outbound();
+        let frame = match frame {
+            FrameKind::Error { code, message, .. } => FrameKind::Error {
+                request_id: Some(request_id),
+                code,
+                message,
+            },
+            FrameKind::ResourceSpawned { result, .. } => {
+                FrameKind::ResourceSpawned { request_id, result }
+            }
+            other => other,
+        };
+        plane.feed(frame).expect("settles");
+        let events = plane.take_events();
+        let error = events
+            .iter()
+            .find_map(|event| match event {
+                Event::TerminalSpawned {
+                    request_id: id,
+                    terminal_id: None,
+                    error: Some(error),
+                } if *id == request_id => Some(error.clone()),
+                _ => None,
+            })
+            .expect("the spawn settles");
+        assert_eq!(error.contains("outcome is unknown"), uncertain, "{error}");
+        assert_eq!(reads_topology(&mut plane), uncertain, "{error}");
+    }
+}

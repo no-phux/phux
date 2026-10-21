@@ -1,10 +1,11 @@
 //! Spawn, command, and pending-request results.
 
 use super::super::{
-    CommandResult, ControlError, ControlPlane, Event, FrameKind, Pending, ResourceId,
+    CommandResult, ControlError, ControlPlane, ErrorCode, Event, FrameKind, Pending, ResourceId,
     SessionSnapshot, SpawnResult, Status,
 };
 use crate::control::topology::View;
+use phux_protocol::wire::frame::SpawnError;
 
 impl ControlPlane {
     pub(in crate::control) fn resource_spawned(
@@ -18,10 +19,14 @@ impl ControlPlane {
         self.pending.remove(&request_id);
         let spawned = result.spawned_id().cloned();
         let error = match result {
+            SpawnResult::Err(SpawnError::Unknown(_)) => Some(UNCERTAIN_SPAWN.to_owned()),
             SpawnResult::Err(error) => Some(spawn_error_message(error)),
             _ if spawned.is_none() => Some("unrecognized spawn result".to_owned()),
             _ => None,
         };
+        if matches!(result, SpawnResult::Err(SpawnError::Unknown(_))) {
+            self.refresh_after_uncertain_spawn();
+        }
         if let Some(id) = &spawned {
             // The server pumps a spawned terminal's output to its spawner
             // and answers before it broadcasts the spawn event, so this set
@@ -84,14 +89,29 @@ impl ControlPlane {
             return Ok(());
         }
         match pending {
-            // A correlated `ERROR` (a newer server's `UNSUPPORTED`, or a
-            // reply this build cannot read) refuses the spawn; nothing was
-            // admitted, so it settles like a refused `RESOURCE_SPAWNED`.
+            // A correlated `ERROR` settles the spawn. `UNSUPPORTED` (or any
+            // definite refusal) admitted nothing. A code this build does not
+            // know, `UNREADABLE_REPLY` included, leaves the outcome unknown:
+            // the pane may exist, so the topology is re-read to list it.
             Pending::Spawn { .. } if error.is_some() => {
+                let uncertain = matches!(
+                    result,
+                    CommandResult::Error {
+                        code: ErrorCode::Unknown(_),
+                        ..
+                    }
+                );
+                if uncertain {
+                    self.refresh_after_uncertain_spawn();
+                }
                 self.push_event(Event::TerminalSpawned {
                     request_id,
                     terminal_id: None,
-                    error,
+                    error: if uncertain {
+                        Some(UNCERTAIN_SPAWN.to_owned())
+                    } else {
+                        error
+                    },
                 });
                 self.retire_unadmitted_agent_subscriptions();
             }
@@ -249,6 +269,22 @@ impl ControlPlane {
         self.sync_agent_metadata();
         self.reconcile_agent_delivery_catalog(snapshot);
         Ok(())
+    }
+}
+
+/// What a spawn settles with when the server answered but this build could
+/// not read whether it created anything.
+pub(in crate::control) const UNCERTAIN_SPAWN: &str = "the spawn's outcome is unknown: the server's answer could not be read, so a pane may \
+     exist; it is listed once the topology refresh lands";
+
+impl ControlPlane {
+    /// Re-read the topology after a spawn whose outcome is unknown, so a pane
+    /// the server did create is listed rather than left invisible.
+    fn refresh_after_uncertain_spawn(&mut self) {
+        if self.handshake_ready && self.options.automatic_lifecycle {
+            self.fence_topology_read();
+            self.queue_refresh_topology();
+        }
     }
 }
 
