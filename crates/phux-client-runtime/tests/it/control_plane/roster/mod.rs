@@ -263,7 +263,7 @@ fn reconnect_resubscribes_and_does_not_correlate_old_metadata() {
 }
 
 #[test]
-fn live_topology_changes_fence_delayed_state_snapshots() {
+fn live_label_changes_overlay_a_delayed_state_snapshot_without_a_retry() {
     let (mut plane, read) = discovered();
     answer_metadata(&mut plane, read, None);
     let request_id = plane.refresh_topology().unwrap();
@@ -284,14 +284,47 @@ fn live_topology_changes_fence_delayed_state_snapshots() {
     let descriptor = plane.topology().unwrap().pane(&terminal()).unwrap();
     assert_eq!(descriptor.title.as_deref(), Some("new title"));
     assert_eq!(descriptor.cwd.as_deref(), Some("/new"));
-    let retry = state_id(&outbound(&mut plane));
+    assert!(
+        outbound(&mut plane).is_empty(),
+        "a label change outdates the label, not the inventory"
+    );
+}
+
+#[test]
+fn an_animating_title_cannot_starve_a_spawn_out_of_the_inventory() {
+    let (mut plane, read) = discovered();
+    answer_metadata(&mut plane, read, None);
+    let spawn = plane.spawn_terminal(SpawnRequest::default());
+    let _ = outbound(&mut plane);
+    plane
+        .feed(FrameKind::ResourceSpawned {
+            request_id: spawn,
+            result: SpawnResult::Ok(ResourceId::local(8)),
+        })
+        .unwrap();
+    let inventory = state_id(&outbound(&mut plane));
+    for frame in ["⠋", "⠙", "⠹"] {
+        event(
+            &mut plane,
+            Some(terminal()),
+            AgentEvent::TitleChanged {
+                title: frame.into(),
+            },
+        );
+    }
     let mut current = snapshot();
-    current.resources[0].title = Some("new title".into());
-    current.resources[0].cwd = Some("/new".into());
-    answer_state(&mut plane, retry, current);
+    current.resources.push(ResourceInfo::new(
+        ResourceId::local(8),
+        WindowId::new(1),
+        20,
+        4,
+    ));
+    answer_state(&mut plane, inventory, current);
+    let topology = plane.topology().unwrap();
+    assert!(topology.pane(&ResourceId::local(8)).is_some());
     assert_eq!(
-        plane.topology().unwrap().panes[0].title.as_deref(),
-        Some("new title")
+        topology.pane(&terminal()).unwrap().title.as_deref(),
+        Some("⠹")
     );
 }
 
@@ -534,109 +567,4 @@ fn a_denied_read_is_a_stable_answer_that_recovery_does_not_repeat() {
     }
 }
 
-#[test]
-fn the_asked_flag_is_subscribed_before_it_is_read_and_reports_the_level() {
-    let (mut plane, agent, asked) = discovered_both();
-    assert_ne!(agent, asked);
-    answer_metadata(&mut plane, asked, Some(b"1"));
-    assert_eq!(asked_levels(&mut plane), vec![true]);
-    let (mut plane, _, asked) = discovered_both();
-    answer_metadata(&mut plane, asked, None);
-    assert_eq!(asked_levels(&mut plane), vec![false]);
-}
-
-#[test]
-fn a_live_clear_retracts_the_question_and_fences_the_delayed_read() {
-    let (mut plane, _, asked) = discovered_both();
-    asked_changed(&mut plane, Some(b"1"));
-    asked_event(&mut plane, "q1");
-    asked_changed(&mut plane, None);
-    // The read was issued before both changes: its `1` must not resurrect
-    // the retracted question.
-    answer_metadata(&mut plane, asked, Some(b"1"));
-    let events = plane.take_events();
-    let order: Vec<_> = events
-        .iter()
-        .filter_map(|event| match event {
-            Event::AgentAskedState { asked, .. } => Some(format!("level {asked}")),
-            Event::AgentAsked { question_id, .. } => Some(format!("asked {question_id}")),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(order, ["level true", "asked q1", "level false"]);
-    // Raw consumers still see the live frames.
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, Event::Frame(frame) if matches!(&**frame, FrameKind::MetadataChanged { key, .. } if key == RESOURCE_ASKED_KEY)))
-            .count(),
-        2
-    );
-}
-
-#[test]
-fn a_question_cleared_during_a_gap_is_retracted_by_recovery() {
-    let (mut plane, _, asked) = discovered_both();
-    answer_metadata(&mut plane, asked, Some(b"1"));
-    asked_event(&mut plane, "q1");
-    let _ = plane.take_events();
-    // The clear's METADATA_CHANGED was lost with the gap.
-    journal_gap(&mut plane);
-    let inventory = state_id(&outbound(&mut plane));
-    answer_state(&mut plane, inventory, snapshot());
-    let reread = asked_id(&outbound(&mut plane));
-    assert_ne!(reread, asked);
-    answer_metadata(&mut plane, reread, None);
-    assert_eq!(asked_levels(&mut plane), vec![false]);
-}
-
-#[test]
-fn reconnect_rereads_the_flag_and_ignores_the_previous_connection() {
-    let (mut plane, _, old_asked) = discovered_both();
-    answer_metadata(&mut plane, old_asked, Some(b"1"));
-    let _ = plane.take_events();
-    plane.connection_lost(None);
-    plane.connection_opened();
-    let _ = outbound(&mut plane);
-    plane.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
-    let request_id = state_id(&outbound(&mut plane));
-    answer_state(&mut plane, request_id, snapshot());
-    let asked = asked_id(&outbound(&mut plane));
-    // A late reply correlated by the old connection is not this one's read.
-    answer_metadata(&mut plane, old_asked, Some(b"1"));
-    answer_metadata(&mut plane, asked, None);
-    assert_eq!(asked_levels(&mut plane), vec![false]);
-}
-
-#[test]
-fn an_ordinary_refresh_leaves_a_pending_question_alone() {
-    let (mut plane, agent, asked) = discovered_both();
-    answer_metadata(&mut plane, agent, None);
-    answer_metadata(&mut plane, asked, Some(b"1"));
-    asked_event(&mut plane, "q1");
-    let _ = plane.take_events();
-    assert!(refresh_after_settling(&mut plane, snapshot()).is_empty());
-    assert!(
-        asked_levels(&mut plane).is_empty(),
-        "no level, so no retraction"
-    );
-}
-
-#[test]
-fn an_unexpected_flag_value_still_reads_as_asked() {
-    let (mut plane, _, asked) = discovered_both();
-    answer_metadata(&mut plane, asked, Some(b"yes"));
-    assert_eq!(asked_levels(&mut plane), vec![true]);
-}
-
-#[test]
-fn a_closed_terminal_publishes_no_late_asked_level() {
-    let (mut plane, _, asked) = discovered_both();
-    event(
-        &mut plane,
-        Some(terminal()),
-        AgentEvent::ResourceClosed { exit_status: None },
-    );
-    answer_metadata(&mut plane, asked, Some(b"1"));
-    assert!(asked_levels(&mut plane).is_empty());
-}
+mod asked;

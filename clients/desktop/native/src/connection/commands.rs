@@ -80,8 +80,9 @@ impl Connection {
         identity: &ConnectionIdentity,
         terminal: &ResourceId,
     ) -> Result<u32, CommandError> {
+        let admitted = self.admitted.contains(terminal);
         self.client
-            .with_control(|control| queue_termination(control, identity, terminal))
+            .with_control(|control| queue_termination(control, identity, terminal, admitted))
     }
 
     /// Current mutation identity, after the handshake.
@@ -215,10 +216,13 @@ fn queue_spawn(
     Ok(spawn(control, request))
 }
 
+/// `admitted`: this connection's spawn/attach named the terminal, so it is
+/// live even before a topology read lists it.
 fn queue_termination(
     control: &mut ControlPlane,
     identity: &ConnectionIdentity,
     id: &ResourceId,
+    admitted: bool,
 ) -> Result<u32, CommandError> {
     let refused = |reason, body| command(reason, "Terminate refused", body);
     let server_id = control
@@ -243,10 +247,11 @@ fn queue_termination(
             "Satellite terminals cannot be terminated from this window.",
         ));
     }
-    if control
-        .topology()
-        .and_then(|topology| topology.pane(id))
-        .is_none()
+    if !admitted
+        && control
+            .topology()
+            .and_then(|topology| topology.pane(id))
+            .is_none()
     {
         return Err(refused("TerminalNotFound", "That terminal is gone."));
     }
