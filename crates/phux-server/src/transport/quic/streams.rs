@@ -3,7 +3,7 @@
 use super::{
     ADMISSION_DEADLINE, AdmittedFrame, Arc, AtomicBool, FRAME_BODY_DEADLINE, LENGTH_PREFIX,
     MAX_PENDING_STREAM_BINDS, QuicStreamEvent, QuicStreamFailure, SendWindow, debug, framing, io,
-    read_length_prefixed, refuse_terminal_stream,
+    refuse_terminal_stream,
 };
 
 /// Accept client-opened Terminal streams for one upgraded connection. Each
@@ -39,11 +39,16 @@ pub(super) async fn accept_terminal_streams(
         let terminal_frame_bytes = terminal_frame_bytes.clone();
         bind_tasks.spawn(async move {
             let _permit = permit;
-            let bind = tokio::time::timeout(ADMISSION_DEADLINE, read_stream_bind(&mut recv)).await;
-            let Some(bind) = bind.ok().flatten() else {
-                debug!("quic terminal stream refused: no well-formed STREAM_BIND within deadline");
-                refuse_terminal_stream(send, recv);
-                return;
+            let bind = tokio::time::timeout(ADMISSION_DEADLINE, read_stream_bind(&mut recv))
+                .await
+                .unwrap_or_else(|_| Err("no STREAM_BIND within the admission deadline".to_owned()));
+            let bind = match bind {
+                Ok(bind) => bind,
+                Err(reason) => {
+                    debug!(%reason, "quic terminal stream refused");
+                    refuse_terminal_stream(send, recv);
+                    return;
+                }
             };
             let event = QuicStreamEvent::Bound {
                 terminal_id: bind.terminal_id,
@@ -148,14 +153,20 @@ pub(super) fn stream_failure(err: &io::Error) -> QuicStreamFailure {
 /// Verify the stream's provenance before a frame can enter shared dispatch:
 /// only Terminal-scoped input/ack frames for the bound Terminal (and, where
 /// the frame names one, the bound generation) are allowed.
+///
+/// A frame a newer 1.x client sends with a value this build does not know
+/// (a new key code, say) cannot be checked, but cannot be applied either: it
+/// passes to the shared admit path, which refuses it `Unsupported` and
+/// keeps the stream. Malformed bytes are a provenance failure, as before.
 pub(super) fn terminal_frame_matches(
     framed: &[u8],
     terminal_id: &phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
 ) -> bool {
     use phux_protocol::wire::frame::FrameKind;
-    let Ok((frame, tail)) = FrameKind::decode(framed) else {
-        return false;
+    let (frame, tail) = match FrameKind::decode(framed) {
+        Ok(decoded) => decoded,
+        Err(err) => return err.is_unsupported(),
     };
     if !tail.is_empty() {
         return false;
@@ -193,21 +204,34 @@ pub(super) fn terminal_frame_matches(
     }
 }
 
-/// Read one `STREAM_BIND` header off a fresh Terminal stream.
+/// Read one `STREAM_BIND` header off a fresh Terminal stream, or the reason
+/// it was refused, for the log.
 pub(super) async fn read_stream_bind(
     recv: &mut quinn::RecvStream,
-) -> Option<phux_protocol::wire::stream_bind::StreamBind> {
-    let (len_buf, body) = read_length_prefixed(
-        recv,
-        phux_protocol::wire::stream_bind::MAX_STREAM_BIND_BYTES,
-    )
-    .await?;
-    let mut framed = Vec::with_capacity(LENGTH_PREFIX + body.len());
-    framed.extend_from_slice(&len_buf);
-    framed.extend_from_slice(&body);
-    phux_protocol::wire::stream_bind::decode(&framed)
-        .ok()
+) -> Result<phux_protocol::wire::stream_bind::StreamBind, String> {
+    use phux_protocol::wire::stream_bind::{MAX_STREAM_BIND_BYTES, decode};
+    let mut len_buf = [0u8; LENGTH_PREFIX];
+    match read_exact_quic(recv, &mut len_buf).await {
+        Ok(true) => {}
+        Ok(false) => return Err("stream finished before STREAM_BIND".to_owned()),
+        Err(err) => return Err(format!("STREAM_BIND length unreadable: {err}")),
+    }
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len == 0 || len > MAX_STREAM_BIND_BYTES {
+        return Err(format!(
+            "STREAM_BIND declared {len} bytes, outside 1..={MAX_STREAM_BIND_BYTES}"
+        ));
+    }
+    let mut framed = vec![0u8; LENGTH_PREFIX + len];
+    framed[..LENGTH_PREFIX].copy_from_slice(&len_buf);
+    match read_exact_quic(recv, &mut framed[LENGTH_PREFIX..]).await {
+        Ok(true) => {}
+        Ok(false) => return Err("stream finished inside STREAM_BIND".to_owned()),
+        Err(err) => return Err(format!("STREAM_BIND body unreadable: {err}")),
+    }
+    decode(&framed)
         .map(|(bind, _)| bind)
+        .map_err(|err| format!("STREAM_BIND did not decode: {err}"))
 }
 
 /// Fill `buf` from the stream: `Ok(true)` when filled, `Ok(false)` on a clean

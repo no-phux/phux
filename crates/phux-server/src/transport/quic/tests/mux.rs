@@ -31,6 +31,29 @@ fn terminal_stream_provenance_rejects_cross_target_and_control_frames() {
     assert!(!terminal_frame_matches(&encoded, &bound, stream));
 }
 
+/// A newer client's input with a value this build does not know is passed
+/// on for the admit path to refuse `Unsupported`, never treated as a
+/// provenance failure that tears the stream down; truncated bytes still are.
+#[test]
+fn terminal_stream_passes_a_newer_value_on_and_refuses_malformed_bytes() {
+    use phux_protocol::wire::field::input_focus;
+
+    let bound = ResourceId::local(7);
+    let stream = phux_protocol::ids::StreamId::new(3).unwrap();
+    let framed = |event: &[u8]| {
+        let mut body = BytesMut::new();
+        let mut enc = phux_protocol::wire::encode::Encoder::new(&mut body);
+        enc.write_u8(phux_protocol::wire::frame::TYPE_INPUT_FOCUS);
+        enc.write_field(input_focus::TERMINAL_ID, &[0, 0, 0, 0, 7]);
+        enc.write_field(input_focus::EVENT, event);
+        let mut out = u32::try_from(body.len()).unwrap().to_be_bytes().to_vec();
+        out.extend_from_slice(&body);
+        out
+    };
+    assert!(terminal_frame_matches(&framed(&[0x7E]), &bound, stream));
+    assert!(!terminal_frame_matches(&framed(&[]), &bound, stream));
+}
+
 /// A loopback connection whose control stream already carried [`FRAME`].
 struct Connected {
     _dir: tempfile::TempDir,

@@ -363,7 +363,7 @@ pub mod admission;
 pub mod mux;
 pub mod streams;
 
-use admission::{admit_connection, read_length_prefixed};
+use admission::admit_connection;
 pub(crate) use mux::*;
 pub(crate) use streams::*;
 
