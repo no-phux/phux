@@ -50,8 +50,8 @@ Do not infer a nested grammar from a type name in the schema. Field ids
 are append-only; a retired id is never reused, and the schema lists them.
 
 `FRAME_COMPRESSED` (`0x9A`) wraps one deflated frame. A server uses it only
-if the client's `HELLO` offered compression, and only for bodies of 4 KiB
-or more.
+if the client's `HELLO` offered compression, only for bodies of 4 KiB or
+more, and never for a frame that settles a request.
 
 ## Handshake
 

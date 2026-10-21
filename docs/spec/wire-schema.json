@@ -16,7 +16,7 @@
     "BootstrapProfile": "positional tagged union",
     "ClientCapabilities": "positional record in a fixed field order; the two default-color RGB triples are a fixed-width leaf",
     "Command": "positional tagged union keyed by the command tag; each InputEvent and the KILL_RESOURCE_IF precondition is a record",
-    "CommandResult": "positional tagged union; an unknown result or value tag decodes as an `UNSUPPORTED` error result",
+    "CommandResult": "positional tagged union; an unknown result or value tag decodes as an `UNREADABLE_REPLY` error result",
     "DirectoryEntryList": "u32 count, then that many row records (name: u32-prefixed str, flags: u8)",
     "Env": "u32 count, then that many (key, value) pairs of u32-prefixed UTF-8 strings",
     "GridSize": "4 bytes: cols u16 then rows u16, big-endian",
