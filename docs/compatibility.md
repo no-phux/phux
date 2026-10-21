@@ -50,17 +50,31 @@ the session.
 
 A newer server sends a new frame kind, event, enum value, or record shape
 only to clients whose `HELLO` version or capabilities show they know it.
-Clients are still tolerant, because that rule can be gotten wrong:
+Clients are still tolerant, because that rule can be gotten wrong.
+`phux_protocol::wire::decode::newer_server_fallback` is the shared rule,
+and the runtime, the C ABI, and the web client all apply it:
 
 - unknown tagged fields and record tails are skipped;
-- unknown events, kinds, close reasons, and error codes are surfaced as
-  unknown rather than treated as a protocol failure;
-- an unknown `COMMAND_RESULT` tag decodes as error `UNSUPPORTED`;
-- unknown values inside a result or event (a spawn or move error, a
-  tombstone reason, a path kind, ...) read as an `Unknown` variant that
-  carries the raw value.
+- a reply this build cannot read (`COMMAND_RESULT`, `RESOURCE_SPAWNED`,
+  `RESOURCE_MOVED`, `METADATA_VALUE`, `METADATA_KEYS`,
+  `DIRECTORY_LISTING`, `PATH_RESULTS`) settles its request as an error with
+  code `0`, `UNREADABLE_REPLY`. It is not `UNSUPPORTED`: the server
+  answered, so the request may have taken effect, and acknowledged input
+  under it is reported unknown rather than safe to retype;
+- any other frame with an unknown value is skipped with a warning;
+- unknown spawn and move errors and tombstone, history, and rejection
+  reasons decode as an `Unknown` variant (a reason as wire value `255`,
+  which a client never encodes); a tombstoned stream reads as released;
+- an unknown path status reads as truncated, and a path row of an unknown
+  kind is dropped and marks the answer truncated;
+- unknown close reasons, detach reasons, error codes, and agent events
+  were already surfaced as unknown.
 
-A client closes only on bytes it cannot read.
+Only malformed bytes close the connection. A `HELLO_OK` or
+`BOOTSTRAP_BEGIN` naming an output mode, profile, or engine codec the
+client did not offer is malformed too, since the server must pick from the
+offer. A reply inside `FRAME_COMPRESSED` that cannot be read is skipped
+rather than settled, because its type byte is inside the compression.
 
 ## Federation
 
@@ -81,7 +95,9 @@ only when that satellite advertises the feature, and refuses
   a correlated `UNSUPPORTED` instead of an uncorrelated one.
 - Grow a positional record only at its tail. A record that is not last in
   its field carries a `u32` length. An optional value in the middle of a
-  record carries a presence byte (`0` absent, `1` present); never infer
+  record carries a presence byte (`0` absent, `1` present), as the keyed
+  kill and signal commands, `ATTACH_RESOURCE`, and `NATIVE_AGENT_RESULT`
+  detail do; never infer
   presence from how many bytes remain, since that leaves no room for a
   field after it.
 - Ids and other leaves are frozen. A new shape is a new tag, a new enum
