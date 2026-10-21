@@ -516,7 +516,8 @@ pub(in crate::wire) fn encode_actor_ref(actor: &ActorRef, enc: &mut Encoder<'_>)
     }
 }
 
-/// Read an [`ActorRef`] written by [`encode_actor_ref`].
+/// Read an [`ActorRef`] written by [`encode_actor_ref`]. A later field goes
+/// after the pair, written even when both are absent; bytes past it skip.
 pub(in crate::wire) fn decode_actor_ref(dec: &mut Decoder<'_>) -> Result<ActorRef, DecodeError> {
     let client = crate::ids::ClientId::new(dec.read_u32_be()?);
     let credential_id = decode_option_str(dec)?.map(str::to_owned);

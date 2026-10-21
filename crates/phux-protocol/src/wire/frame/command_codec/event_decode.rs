@@ -23,11 +23,9 @@ pub(super) fn decode_native_result_event(body: &[u8]) -> Result<AgentEvent, Deco
             body: body.to_vec(),
         });
     };
-    let detail = if dec.remaining_in_body() == 0 {
-        None
-    } else {
-        Some(dec.read_str()?.to_owned())
-    };
+    // A presence byte, never "whatever bytes remain": a newer peer's bytes
+    // after it are skipped.
+    let detail = dec.read_option("NativeAgentResult detail", |d| Ok(d.read_str()?.to_owned()))?;
     Ok(AgentEvent::NativeAgentResult {
         agent_session_id,
         operation_id,

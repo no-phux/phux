@@ -201,3 +201,60 @@ fn the_newer_server_fallback_settles_replies_and_skips_the_rest() {
         Err(DecodeError::UnexpectedEof)
     );
 }
+
+/// `frame` with `extra` appended to the value of its top-level field `id`.
+fn grow_field(frame: &[u8], id: u32, extra: &[u8]) -> Vec<u8> {
+    let mut dec = phux_protocol::wire::decode::Decoder::new(&frame[5..]);
+    let mut fields = Vec::new();
+    while let Some((field_id, value)) = dec.read_field().unwrap() {
+        let mut value = value.to_vec();
+        if field_id == id {
+            value.extend_from_slice(extra);
+        }
+        tlv_field(&mut fields, field_id, &value);
+    }
+    framed_tlv(frame[4], &fields)
+}
+
+/// Server-to-client values that end their field grow at their end: a 1.0
+/// client skips what a newer server appends after an actor's principal pair
+/// or after a snapshot's extension block.
+#[test]
+fn a_newer_servers_tail_after_an_actor_or_a_snapshot_is_skipped() {
+    use phux_protocol::ids::{ClientId, PrincipalId, SessionId, WindowId};
+    use phux_protocol::wire::field;
+    use phux_protocol::wire::frame::{ActorRef, AgentEvent, EventStamp};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+
+    let event = FrameKind::Event {
+        terminal: None,
+        event: AgentEvent::Bell,
+        stamp: Some(Box::new(EventStamp::new(4, 9).with_actor(Some(
+            ActorRef::new(ClientId::new(3)).with_principal(PrincipalId::new([0x91; 16])),
+        )))),
+    };
+    let grown = grow_field(&encode(&event), field::event::ACTOR, &[0xEE, 0xEE]);
+    assert_eq!(decode(&grown).unwrap(), event);
+
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "main")])
+        .with_windows(vec![WindowInfo::new(
+            WindowId::new(1),
+            SessionId::new(1),
+            "w",
+        )])
+        .with_resources(vec![ResourceInfo::new(
+            ResourceId::local(1),
+            WindowId::new(1),
+            80,
+            24,
+        )])
+        .with_journal_head(Some(12));
+    let attached = FrameKind::Attached {
+        attach_id: 1,
+        snapshot,
+        initial_client_id: ClientId::new(2),
+    };
+    let grown = grow_field(&encode(&attached), field::attached::SNAPSHOT, &[0xEE; 6]);
+    assert_eq!(decode(&grown).unwrap(), attached);
+}

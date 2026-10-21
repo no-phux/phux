@@ -28,9 +28,8 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 encode_terminal_id(agent_session_id, &mut body_enc);
                 body_enc.write_u64_be(*operation_id);
                 body_enc.write_u8(disposition.to_u8());
-                if let Some(detail) = detail {
-                    body_enc.write_str(detail);
-                }
+                // A presence byte, so a newer peer can append after it.
+                body_enc.write_option(detail.as_deref(), Encoder::write_str);
                 crate::wire::frame::EVENT_TAG_NATIVE_AGENT_RESULT
             }
             AgentEvent::CommandStarted => EVENT_TAG_COMMAND_STARTED,

@@ -188,15 +188,20 @@ fn native_outcomes_match_the_typed_wire_contract() {
         let mut body = vec![0, 0, 0, 0, 9]; // local ResourceId @9
         body.extend_from_slice(&u64::MAX.to_be_bytes());
         body.push(tag);
+        // `detail` sits behind a presence byte, never inferred from length.
+        body.push(u8::from(detail.is_some()));
         if let Some(detail) = detail {
             body.extend_from_slice(&u32::try_from(detail.len()).unwrap().to_be_bytes());
             body.extend_from_slice(detail.as_bytes());
         }
-        let wire = FrameKind::Event {
+        let raw = |body: Vec<u8>| FrameKind::Event {
             terminal: Some(ResourceId::local(8)),
             event: AgentEvent::Unknown { tag: 0x1c, body },
             stamp: None,
         };
+        let mut grown = body.clone();
+        grown.extend_from_slice(&[0xEE, 0xEE]);
+        let wire = raw(body);
         let expected = FrameKind::Event {
             terminal: Some(ResourceId::local(8)),
             event: AgentEvent::NativeAgentResult {
@@ -210,6 +215,11 @@ fn native_outcomes_match_the_typed_wire_contract() {
         let encoded = common::encode(&wire);
         assert_eq!(common::encode(&expected), encoded);
         assert_eq!(common::decode(&encoded).unwrap(), expected);
+        // A newer peer's bytes after `detail` are skipped.
+        assert_eq!(
+            common::decode(&common::encode(&raw(grown))).unwrap(),
+            expected
+        );
     }
 }
 
