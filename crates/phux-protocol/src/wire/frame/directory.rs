@@ -230,7 +230,9 @@ impl ListingFields {
             field::directory_listing::PATH => self.path = utf8_value(value)?,
             field::directory_listing::PARENT => self.parent = Some(utf8_value(value)?),
             field::directory_listing::ENTRIES => self.entries = decode_entries(value)?,
-            field::directory_listing::TRUNCATED => self.truncated = read_u8(value)? != 0,
+            field::directory_listing::TRUNCATED => {
+                self.truncated = Decoder::new(value).read_bool("DirectoryListing.truncated")?;
+            }
             field::directory_listing::ERROR => {
                 self.error = Some(DirectoryErrorCode::from_wire(read_u8(value)?));
             }

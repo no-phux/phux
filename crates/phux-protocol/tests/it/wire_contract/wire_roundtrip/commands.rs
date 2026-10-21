@@ -111,10 +111,6 @@ fn command_variants_round_trip() {
         Command::PerfControl {
             op: PerfOp::AllocOff,
         },
-        // An undefined op still round-trips; the server refuses it by name.
-        Command::PerfControl {
-            op: PerfOp::Unknown(0xEE),
-        },
         Command::OpenListener {
             transport: ListenerTransport::Quic,
             port_range: None,
@@ -125,10 +121,10 @@ fn command_variants_round_trip() {
             port_range: Some((60000, 61000)),
             linger_secs: 120,
         },
-        // An undefined transport and an inverted range still round-trip:
-        // refusing them is the server's job, with a message.
+        // An inverted range still round-trips: refusing it is the server's
+        // job, with a message.
         Command::OpenListener {
-            transport: ListenerTransport::Unknown(7),
+            transport: ListenerTransport::Quic,
             port_range: Some((9, 3)),
             linger_secs: u32::MAX,
         },

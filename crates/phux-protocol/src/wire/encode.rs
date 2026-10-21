@@ -109,6 +109,12 @@ impl<'a> Encoder<'a> {
         self.buf.extend_from_slice(value);
     }
 
+    /// Append `bytes` verbatim, with no length prefix: an already-encoded
+    /// value relayed unchanged.
+    pub(crate) fn write_raw(&mut self, bytes: &[u8]) {
+        self.buf.extend_from_slice(bytes);
+    }
+
     /// Write a tail-extensible positional record: `u32` big-endian body
     /// length, then the body `build` writes. A newer peer appends fields at
     /// the end of the body; an older [`Decoder::read_record`] reads its known

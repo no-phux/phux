@@ -269,11 +269,9 @@ fn versioned_native_offer_forces_mixed_peers_to_synthesis_or_rejection() {
     );
     assert_eq!(
         FrameKind::decode(&framed(TYPE_HELLO_OK, &legacy_hello_ok)).unwrap_err(),
-        DecodeError::UnknownEnumValue {
-            field: "BootstrapProfile",
-            value: 0,
-        },
-        "a new client must never accept the retired selected-profile tag"
+        DecodeError::InvalidBootstrapProfile,
+        "a new client must never accept the retired selected-profile tag, and \
+         closes rather than skipping the HELLO_OK it waits on"
     );
 
     let old_client_profiles =

@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use phux_protocol::ids::{GroupId, ResourceId};
+use phux_protocol::wire::UnreadableResult;
 use phux_protocol::wire::frame::{
     FrameKind, SpawnError, SpawnResult, TYPE_METADATA_CHANGED, TYPE_RESOURCE_SPAWNED,
 };
@@ -113,7 +114,9 @@ fn a_spawn_answered_with_an_unknown_refusal_settles() {
         let reply = reply.expect("the spawn settles");
         assert_eq!(
             reply.result(),
-            &Ok(SpawnResult::Err(SpawnError::Unknown(0xFE)))
+            &Ok(SpawnResult::Err(SpawnError::Unknown(
+                UnreadableResult::from_wire([0x01, 0xFE])
+            )))
         );
     });
 }

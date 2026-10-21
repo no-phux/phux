@@ -19,14 +19,17 @@ impl Decoder<'_> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 f::ROLE_POLICY => {
-                    role_policy = Some(crate::wire::frame::RolePolicy::from_u8(sub!(
+                    role_policy = Some(crate::wire::frame::RolePolicy::from_wire(sub!(
                         value,
                         Decoder::read_u8
-                    )));
+                    ))?);
                 }
                 f::TARGET => target = Some(sub!(value, decode_attach_target)),
                 f::VIEWPORT => viewport = Some(sub!(value, decode_viewport_info)),
-                f::REQUEST_SCROLLBACK => request_scrollback = sub!(value, Decoder::read_u8) != 0,
+                f::REQUEST_SCROLLBACK => {
+                    request_scrollback = sub!(value, |d: &mut Decoder<'_>| d
+                        .read_bool("Attach.request_scrollback"));
+                }
                 f::SCROLLBACK_LIMIT_LINES => {
                     scrollback_limit_lines = sub!(value, Decoder::read_u32_be);
                 }

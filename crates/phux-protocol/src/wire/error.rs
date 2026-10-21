@@ -178,10 +178,12 @@ pub enum DecodeError {
 
 impl DecodeError {
     /// Whether this is a value this build does not know in an otherwise
-    /// well-framed message (an unknown frame type, tag, enum value, presence
-    /// byte, or JSON operation or field), which a newer 1.x peer may send:
-    /// refuse it as `Unsupported` and keep the connection. Every other
-    /// error is malformed input.
+    /// well-framed message (an unknown frame type, tag, enum value, bool or
+    /// presence byte, or JSON operation or field), which a newer 1.x peer may
+    /// send: refuse it as `Unsupported` and keep the connection. A
+    /// `SPAWN_RESOURCE` field combination its kind's rules refuse counts too,
+    /// since a newer minor may relax a rule. Every other error is malformed
+    /// input.
     #[must_use]
     pub const fn is_unsupported(&self) -> bool {
         matches!(
@@ -190,6 +192,7 @@ impl DecodeError {
                 | Self::UnknownEnumValue { .. }
                 | Self::UnsupportedCommand { .. }
                 | Self::UnsupportedPayload { .. }
+                | Self::InvalidSpawnForKind { .. }
         )
     }
 

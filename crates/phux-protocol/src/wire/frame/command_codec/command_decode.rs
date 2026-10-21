@@ -122,7 +122,7 @@ pub(super) fn decode_terminal_subscription_command(
             // Role (ADR-0127) and agent resume cursor, each behind a
             // presence byte; absent role = default.
             role_policy: dec.read_option("Option<RolePolicy> tag", |d| {
-                Ok(crate::wire::frame::RolePolicy::from_u8(d.read_u8()?))
+                crate::wire::frame::RolePolicy::from_wire(d.read_u8()?)
             })?,
             agent_after_seq: dec.read_option("Option<u64> tag", Decoder::read_u64_be)?,
         },
@@ -253,21 +253,30 @@ pub(super) fn decode_session_command(
         COMMAND_TAG_SHUTDOWN => Command::Shutdown,
         COMMAND_TAG_OPEN_LISTENER => decode_open_listener_command(dec)?,
         COMMAND_TAG_GET_PERF => Command::GetPerf {
-            reset: dec.read_u8()? != 0,
+            reset: dec.read_bool("GetPerf.reset")?,
         },
-        // Total: an undefined op decodes so the server can refuse it by name.
-        COMMAND_TAG_PERF_CONTROL => Command::PerfControl {
-            op: PerfOp::from_u8(dec.read_u8()?),
-        },
+        // An undefined op is a newer value, refused as unsupported.
+        COMMAND_TAG_PERF_CONTROL => {
+            let raw = dec.read_u8()?;
+            match PerfOp::from_u8(raw) {
+                PerfOp::Unknown(_) => return Err(DecodeError::unknown_enum("PerfOp", raw)),
+                op => Command::PerfControl { op },
+            }
+        }
         _ => return Ok(None),
     };
     Ok(Some(command))
 }
 
-/// Decode an `OPEN_LISTENER` body. Total: unknown transports and bad ranges
-/// decode so the server can refuse them with a message; `0, 0` is any port.
+/// Decode an `OPEN_LISTENER` body. An unknown transport is a newer value,
+/// refused as unsupported; bad ranges decode so the server can refuse them
+/// with a message; `0, 0` is any port.
 pub(super) fn decode_open_listener_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
-    let transport = ListenerTransport::from_u8(dec.read_u8()?);
+    let raw = dec.read_u8()?;
+    let transport = ListenerTransport::from_u8(raw);
+    if matches!(transport, ListenerTransport::Unknown(_)) {
+        return Err(DecodeError::unknown_enum("ListenerTransport", raw));
+    }
     let min = dec.read_u16_be()?;
     let max = dec.read_u16_be()?;
     let linger_secs = dec.read_u32_be()?;
@@ -278,11 +287,18 @@ pub(super) fn decode_open_listener_command(dec: &mut Decoder<'_>) -> Result<Comm
     })
 }
 
+/// The highest `GET_SCREEN` format selector this build renders.
+const MAX_GET_SCREEN_FORMAT: u8 = 2;
+
 pub(super) fn decode_get_screen_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let terminal_id = decode_terminal_id(dec)?;
     let request_scrollback = decode_optional_u32(dec)?;
-    let cells = dec.read_u8()? != 0;
+    let cells = dec.read_bool("GetScreen.cells")?;
     let format = dec.read_u8()?;
+    // `0` none, `1` HTML, `2` VT; a newer selector is refused as unsupported.
+    if format & crate::wire::frame::GET_SCREEN_FORMAT_SELECTOR_MASK > MAX_GET_SCREEN_FORMAT {
+        return Err(DecodeError::unknown_enum("GetScreen.format", format));
+    }
     Ok(Command::GetScreen {
         terminal_id,
         request_scrollback,

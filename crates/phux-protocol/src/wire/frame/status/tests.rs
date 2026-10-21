@@ -1,4 +1,7 @@
-use super::{CloseReason, ErrorCode, ErrorScope};
+use super::{
+    CloseReason, ErrorCode, ErrorScope, HistoryRejectionReason, HistoryTombstoneReason,
+    TombstoneReason,
+};
 
 #[test]
 fn close_reason_tags_are_stable_and_unknown_is_forgiving() {
@@ -103,4 +106,45 @@ fn scopes_partition_the_codes_as_documented() {
     assert_eq!(ErrorCode::Overflow.scope(), ErrorScope::Request);
     assert_eq!(ErrorCode::PreconditionFailed.scope(), ErrorScope::Request);
     assert_eq!(ErrorCode::IncarnationChanged.scope(), ErrorScope::Request);
+}
+
+/// `255` is the `Unknown` byte of every reason enum, never a real reason:
+/// only `255` decodes as `Unknown`, and every known reason encodes below it.
+#[test]
+fn byte_255_is_reserved_for_unknown_reasons() {
+    assert_eq!(
+        TombstoneReason::from_wire(255),
+        Some(TombstoneReason::Unknown)
+    );
+    assert_eq!(
+        HistoryTombstoneReason::from_wire(255),
+        Some(HistoryTombstoneReason::Unknown)
+    );
+    assert_eq!(
+        HistoryRejectionReason::from_wire(255),
+        Some(HistoryRejectionReason::Unknown)
+    );
+    for value in 0..255 {
+        assert_ne!(
+            TombstoneReason::from_wire(value),
+            Some(TombstoneReason::Unknown)
+        );
+        assert_ne!(
+            HistoryTombstoneReason::from_wire(value),
+            Some(HistoryTombstoneReason::Unknown)
+        );
+        assert_ne!(
+            HistoryRejectionReason::from_wire(value),
+            Some(HistoryRejectionReason::Unknown)
+        );
+    }
+    for reason in [
+        CloseReason::Exited,
+        CloseReason::Killed,
+        CloseReason::ParentClosed,
+        CloseReason::ServerShutdown,
+    ] {
+        assert_ne!(reason.as_wire(), 255, "{reason:?}");
+    }
+    assert_eq!(CloseReason::Unknown.as_wire(), 255);
 }

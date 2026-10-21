@@ -242,6 +242,19 @@ impl<'a> Decoder<'a> {
         self.take_array().map(f64::from_be_bytes)
     }
 
+    /// Read a bool byte: `0` is `false` and `1` is `true`. Any other value is
+    /// one a newer peer may give meaning, so it is `UnknownEnumValue { field }`
+    /// (refused as unsupported), never read as `true`. Every bool and
+    /// presence byte outside `HELLO` decodes through this or
+    /// [`Self::read_option`].
+    pub(crate) fn read_bool(&mut self, field: &'static str) -> Result<bool, DecodeError> {
+        match self.read_u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            other => Err(DecodeError::unknown_enum(field, other)),
+        }
+    }
+
     /// Read a presence byte (`0` = `None`, `1` = `Some`) and, when present, the
     /// value via `body`; any other byte is `UnknownEnumValue { field }`.
     pub(crate) fn read_option<T>(

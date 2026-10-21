@@ -229,12 +229,5 @@ pub(super) fn read_i32_value(value: &[u8]) -> Result<i32, DecodeError> {
 
 /// Read a one-byte flag: `0` or `1`; anything else is malformed.
 pub(super) fn decode_flag(dec: &mut Decoder<'_>, field: &'static str) -> Result<bool, DecodeError> {
-    match dec.read_u8()? {
-        0 => Ok(false),
-        1 => Ok(true),
-        other => Err(DecodeError::UnknownEnumValue {
-            field,
-            value: u32::from(other),
-        }),
-    }
+    dec.read_bool(field)
 }

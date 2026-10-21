@@ -50,6 +50,7 @@ async fn a_newer_servers_unknown_frames_and_values_do_not_end_the_attach() {
         HistoryTombstoneReason, SpawnError, SpawnResult, TYPE_HISTORY_TOMBSTONE,
         TYPE_METADATA_CHANGED, TYPE_RESOURCE_SPAWNED,
     };
+    use phux_protocol::wire::UnreadableResult;
     use tokio::io::AsyncWriteExt as _;
 
     let (mut state, mut client, mut server, mut out) = Box::pin(newer_server_loop()).await;
@@ -90,7 +91,7 @@ async fn a_newer_servers_unknown_frames_and_values_do_not_end_the_attach() {
         spawned,
         FrameKind::ResourceSpawned {
             request_id: 77,
-            result: SpawnResult::Err(SpawnError::Unknown(0xFE)),
+            result: SpawnResult::Err(SpawnError::Unknown(UnreadableResult::from_wire([0x01, 0xFE]))),
         }
     );
     // The tombstone's reason maps onto the kernel's in `kernel_input`; this

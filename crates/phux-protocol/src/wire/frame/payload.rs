@@ -327,10 +327,10 @@ pub enum SpawnError {
     /// The `idempotency_key` is bound to a different payload (ADR-0126);
     /// nothing was created.
     IdempotencyConflict,
-    /// A refusal this build does not know, with its raw tag: a newer server's
-    /// error tag, or a `SpawnResult` tag no 1.0 build defines. Produced only
-    /// by the decoder; whether anything was created is not stated.
-    Unknown(u8),
+    /// A result this build cannot read, kept verbatim: a newer server's
+    /// error tag, a `SpawnResult` tag no 1.0 build defines, or a payload this
+    /// build cannot decode. Whether anything was created is not stated.
+    Unknown(crate::wire::UnreadableResult),
 }
 
 /// The `RESOURCE_SPAWNED` result (SPEC §7.2 / §10.1).
@@ -396,10 +396,10 @@ pub enum MoveError {
     MoveFailed(String),
     /// A satellite-tagged Terminal was named; moves are local-only.
     UnsupportedSatelliteRoute,
-    /// A refusal this build does not know, with its raw tag: a newer server's
-    /// error tag, or a `MoveResult` tag no 1.0 build defines. Produced only by
-    /// the decoder; whether the move happened is not stated.
-    Unknown(u8),
+    /// A result this build cannot read, kept verbatim: a newer server's
+    /// error tag, a `MoveResult` tag no 1.0 build defines, or a payload this
+    /// build cannot decode. Whether the move happened is not stated.
+    Unknown(crate::wire::UnreadableResult),
 }
 
 /// The `RESOURCE_MOVED` result (ADR-0056); the id is stable across a move.

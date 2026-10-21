@@ -266,6 +266,8 @@ pub enum TombstoneReason {
     /// A bounded, explicit reason not represented by an earlier tag.
     Other = 6,
     /// A reason this build does not know. Produced only by the decoder.
+    /// `255` is reserved for it: no reason is ever allocated that byte, so
+    /// relaying an unknown reason as `255` can never claim a real one.
     Unknown = 255,
 }
 }
@@ -342,6 +344,7 @@ pub enum CloseReason {
     /// The server is stopping.
     ServerShutdown = 3,
     /// No reason, or one this build does not know. Encoded as an absent field.
+    /// `255` is reserved for it and never allocated to a reason.
     #[default]
     Unknown = 255,
 }
@@ -409,6 +412,8 @@ pub enum HistoryTombstoneReason {
     /// The selected native codec rejected history capture or import.
     CodecFailure = 7,
     /// A reason this build does not know. Produced only by the decoder.
+    /// `255` is reserved for it: no reason is ever allocated that byte, so
+    /// relaying an unknown reason as `255` can never claim a real one.
     Unknown = 255,
 }
 }
@@ -428,6 +433,8 @@ pub enum HistoryRejectionReason {
     /// Capture is temporarily busy; retrying the same cursor is permitted.
     Busy = 2,
     /// A reason this build does not know. Produced only by the decoder.
+    /// `255` is reserved for it: no reason is ever allocated that byte, so
+    /// relaying an unknown reason as `255` can never claim a real one.
     Unknown = 255,
 }
 }

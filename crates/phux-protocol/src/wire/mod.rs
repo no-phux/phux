@@ -13,6 +13,7 @@ pub mod info;
 pub mod listeners;
 pub mod ssh_origin;
 pub mod stream_bind;
+mod unreadable;
 
 pub use error::DecodeError;
 pub use framing::{FramingError, LENGTH_PREFIX_LEN};
@@ -20,3 +21,4 @@ pub use listeners::{
     ListenerDisabledReason, REMOTE_LISTENERS_SCHEMA_VERSION, RemoteListenerSlot,
     RemoteListenerTransport, RemoteListenersReport,
 };
+pub use unreadable::UnreadableResult;

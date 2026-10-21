@@ -150,11 +150,8 @@ pub(super) fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue
         COMMAND_VALUE_TAG_BYTES => Ok(CommandValue::Bytes(dec.read_bytes()?.to_vec())),
         COMMAND_VALUE_TAG_FILE_UPLOAD => {
             let next_offset = dec.read_u64_be()?;
-            let path = if dec.read_u8()? == 0 {
-                None
-            } else {
-                Some(dec.read_str()?.to_owned())
-            };
+            let path =
+                dec.read_option("FileUploadAck.path tag", |d| Ok(d.read_str()?.to_owned()))?;
             Ok(CommandValue::FileUpload(FileUploadAck {
                 next_offset,
                 path,

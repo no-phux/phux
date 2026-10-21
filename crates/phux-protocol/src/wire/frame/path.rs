@@ -246,7 +246,8 @@ impl QueryFields {
         let recursive = match self.recursive {
             Some(0) => false,
             Some(1) => true,
-            _ => return Err(DecodeError::LengthOverflow),
+            Some(other) => return Err(DecodeError::unknown_enum("PathQuery.recursive", other)),
+            None => return Err(DecodeError::LengthOverflow),
         };
         Ok((
             self.request_id.ok_or(DecodeError::LengthOverflow)?,

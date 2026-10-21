@@ -5,6 +5,7 @@ use super::*;
 use phux_protocol::wire::frame::{
     ErrorCode, HistoryRejectionReason, HistoryTombstoneReason, SpawnError, SpawnResult,
 };
+use phux_protocol::wire::UnreadableResult;
 
 fn unsupported(request_id: u32) -> FrameKind {
     FrameKind::Error {
@@ -33,7 +34,7 @@ async fn a_split_refused_with_an_unknown_tag_or_unsupported_leaves_the_session()
     let request_id = requested_spawn(&mut session, "vertical");
     session.on_frame(FrameKind::ResourceSpawned {
         request_id,
-        result: SpawnResult::Err(SpawnError::Unknown(0xFE)),
+        result: SpawnResult::Err(SpawnError::Unknown(UnreadableResult::from_wire([0x01, 0xFE]))),
     });
     assert!(!session.pane_pending());
     // A newer server's refusal does not say whether a pane exists.

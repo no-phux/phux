@@ -12,11 +12,12 @@ use phux_protocol::ids::{
     ArrangementKey, BootstrapId, ResourceId, Revision, SatelliteHost, SessionKey, StreamId,
 };
 use phux_protocol::wire::DecodeError;
+use phux_protocol::wire::UnreadableResult;
 use phux_protocol::wire::frame::{
     ArrangementDoc, ArrangementGroup, ArrangementNode, ArrangementOwner, ArrangementValue,
     CommandResult, CommandValue, EntryRef, EntryTarget, ErrorCode, FrameKind, MoveError,
     MoveResult, SpawnError, SpawnResult, SplitDirection, TYPE_BOOTSTRAP_TOMBSTONE,
-    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_SPAWNED, TombstoneReason,
+    TYPE_DIRECTORY_LISTING, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_SPAWNED, TombstoneReason,
 };
 
 use crate::common::{assert_round_trip, decode, encode, framed_tlv, local_id_bytes, tlv_field};
@@ -29,42 +30,59 @@ fn reply(type_byte: u8, result: &[u8]) -> Vec<u8> {
     framed_tlv(type_byte, &fields)
 }
 
+/// Results a 1.0 build cannot read: an unknown error tag with a payload, an
+/// unknown result tag, and a known `Ok` tag around an unknown id tag.
+fn unreadable_results() -> [Vec<u8>; 3] {
+    [
+        vec![0x01, 0xFE, 1, 2],
+        vec![0xFD, 9, 9],
+        vec![0x00, 0x7E, 0, 0, 0, 1],
+    ]
+}
+
 #[test]
-fn an_unknown_spawn_refusal_or_result_tag_settles_the_spawn() {
-    for (result, tag) in [(vec![0x01, 0xFE, 1, 2], 0xFE), (vec![0xFD], 0xFD)] {
+fn an_unreadable_spawn_result_settles_the_spawn_verbatim() {
+    for result in unreadable_results() {
+        let framed = reply(TYPE_RESOURCE_SPAWNED, &result);
+        let decoded = decode(&framed).unwrap();
         assert_eq!(
-            decode(&reply(TYPE_RESOURCE_SPAWNED, &result)).unwrap(),
+            decoded,
             FrameKind::ResourceSpawned {
                 request_id: 7,
-                result: SpawnResult::Err(SpawnError::Unknown(tag)),
+                result: SpawnResult::Err(SpawnError::Unknown(UnreadableResult::from_wire(
+                    result.clone()
+                ))),
             }
         );
+        // A hub relaying it re-encodes the satellite's bytes exactly.
+        assert_eq!(encode(&decoded), framed, "{result:02x?}");
     }
 }
 
 #[test]
-fn an_unknown_move_refusal_or_result_tag_settles_the_move() {
-    for (result, tag) in [(vec![0x01, 0xFE, 1, 2], 0xFE), (vec![0xFD], 0xFD)] {
+fn an_unreadable_move_result_settles_the_move_verbatim() {
+    for result in unreadable_results() {
+        let framed = reply(TYPE_RESOURCE_MOVED, &result);
+        let decoded = decode(&framed).unwrap();
         assert_eq!(
-            decode(&reply(TYPE_RESOURCE_MOVED, &result)).unwrap(),
+            decoded,
             FrameKind::ResourceMoved {
                 request_id: 7,
-                result: MoveResult::Err(MoveError::Unknown(tag)),
+                result: MoveResult::Err(MoveError::Unknown(UnreadableResult::from_wire(
+                    result.clone()
+                ))),
             }
         );
+        assert_eq!(encode(&decoded), framed, "{result:02x?}");
     }
 }
 
 #[test]
-fn unknown_spawn_and_move_refusals_round_trip() {
-    assert_round_trip(&FrameKind::ResourceSpawned {
-        request_id: 3,
-        result: SpawnResult::Err(SpawnError::Unknown(0x70)),
-    });
-    assert_round_trip(&FrameKind::ResourceMoved {
-        request_id: 3,
-        result: MoveResult::Err(MoveError::Unknown(0x70)),
-    });
+fn an_unreadable_result_names_its_unknown_tag_and_malformed_bytes_still_fail() {
+    assert_eq!(UnreadableResult::from_wire(vec![0x01, 0xFE, 1]).tag(), 0xFE);
+    assert_eq!(UnreadableResult::from_wire(vec![0xFD]).tag(), 0xFD);
+    // A known error whose string is truncated is malformed, not newer.
+    assert!(decode(&reply(TYPE_RESOURCE_SPAWNED, &[0x01, 0x01, 0, 0, 0, 9])).is_err());
 }
 
 #[test]
@@ -169,14 +187,18 @@ fn newer_values_are_classified_and_malformed_bytes_are_not() {
 }
 
 /// A correlated reply whose body carries a value no `Unknown` variant covers
-/// (here a spawned id of an unknown resource-id shape) settles its request
-/// as an unreadable `ERROR`; an uncorrelated one is skipped; malformed bytes
-/// stay an error.
+/// (here a directory listing's `truncated` flag with a newer value) settles
+/// its request as an unreadable `ERROR`; an uncorrelated one is skipped;
+/// malformed bytes stay an error.
 #[test]
 fn the_newer_server_fallback_settles_replies_and_skips_the_rest() {
     use phux_protocol::wire::decode::newer_server_fallback;
 
-    let unknown_id = reply(TYPE_RESOURCE_SPAWNED, &[0x00, 0xFF, 1, 2]);
+    let mut listing = Vec::new();
+    tlv_field(&mut listing, 1, &7_u32.to_be_bytes());
+    tlv_field(&mut listing, 2, b"/srv");
+    tlv_field(&mut listing, 5, &[2]);
+    let unknown_id = framed_tlv(TYPE_DIRECTORY_LISTING, &listing);
     let error = FrameKind::decode(&unknown_id).unwrap_err();
     let Ok(Some(FrameKind::Error {
         request_id: Some(7),

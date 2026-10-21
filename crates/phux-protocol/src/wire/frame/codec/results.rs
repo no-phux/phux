@@ -10,12 +10,30 @@ use super::super::{
     SpawnResult,
 };
 use super::{decode_terminal_id, encode_terminal_id};
+use crate::wire::UnreadableResult;
 use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 
 // `SpawnResult` (SPEC §7.2 / §10.1): `Ok` + `ResourceId`, or `Err` + a
 // `SpawnError` tag, with a message for `SpawnFailed` / `SatelliteUnreachable`.
+//
+// The result is the field value's whole tail, so one this build cannot read
+// (an unknown result or error tag, or an unknown value inside a known one)
+// is kept verbatim as `Unknown` and re-encoded byte for byte.
+
+/// The whole result as [`UnreadableResult`] when `decoded` failed on a value
+/// this build does not know; malformed bytes stay an error.
+fn or_unreadable<T>(
+    decoded: Result<T, DecodeError>,
+    raw: &[u8],
+    unknown: impl FnOnce(UnreadableResult) -> T,
+) -> Result<T, DecodeError> {
+    match decoded {
+        Err(err) if err.is_unsupported() => Ok(unknown(UnreadableResult::from_wire(raw))),
+        other => other,
+    }
+}
 
 pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encoder<'_>) {
     match result {
@@ -31,25 +49,32 @@ pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encod
             enc.write_u8(SPAWN_RESULT_OK);
             encode_terminal_id(terminal_id, enc);
         }
-        SpawnResult::Err(err) => {
-            enc.write_u8(SPAWN_RESULT_ERR);
-            encode_spawn_error(err, enc);
-        }
+        SpawnResult::Err(err) => encode_spawn_error(err, enc),
     }
 }
 
 pub(in crate::wire) fn decode_spawn_result(
     dec: &mut Decoder<'_>,
 ) -> Result<SpawnResult, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        SPAWN_RESULT_OK => Ok(SpawnResult::Ok(decode_terminal_id(dec)?)),
-        SPAWN_RESULT_ERR => Ok(SpawnResult::Err(decode_spawn_error(dec)?)),
-        other => Ok(SpawnResult::Err(SpawnError::Unknown(other))),
-    }
+    let raw = dec.remaining();
+    let decoded = match dec.read_u8()? {
+        SPAWN_RESULT_OK => decode_terminal_id(dec).map(SpawnResult::Ok),
+        SPAWN_RESULT_ERR => decode_spawn_error(dec).map(SpawnResult::Err),
+        other => Err(DecodeError::unknown_enum("SpawnResult", other)),
+    };
+    or_unreadable(decoded, raw, |raw| {
+        SpawnResult::Err(SpawnError::Unknown(raw))
+    })
 }
 
+/// Write an `Err` result: its tag and the error, or an unreadable result's
+/// bytes verbatim.
 fn encode_spawn_error(err: &SpawnError, enc: &mut Encoder<'_>) {
+    if let SpawnError::Unknown(raw) = err {
+        enc.write_raw(raw.as_bytes());
+        return;
+    }
+    enc.write_u8(SPAWN_RESULT_ERR);
     match err {
         SpawnError::GroupNotFound => {
             enc.write_u8(SPAWN_ERROR_TAG_GROUP_NOT_FOUND);
@@ -69,7 +94,8 @@ fn encode_spawn_error(err: &SpawnError, enc: &mut Encoder<'_>) {
         SpawnError::ParentNotFound => enc.write_u8(SPAWN_ERROR_TAG_PARENT_NOT_FOUND),
         SpawnError::ParentKindMismatch => enc.write_u8(SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH),
         SpawnError::IdempotencyConflict => enc.write_u8(SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT),
-        SpawnError::Unknown(tag) => enc.write_u8(*tag),
+        // Written verbatim above.
+        SpawnError::Unknown(_) => {}
     }
 }
 
@@ -86,12 +112,13 @@ fn decode_spawn_error(dec: &mut Decoder<'_>) -> Result<SpawnError, DecodeError> 
         SPAWN_ERROR_TAG_PARENT_NOT_FOUND => Ok(SpawnError::ParentNotFound),
         SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH => Ok(SpawnError::ParentKindMismatch),
         SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT => Ok(SpawnError::IdempotencyConflict),
-        other => Ok(SpawnError::Unknown(other)),
+        other => Err(DecodeError::unknown_enum("SpawnError", other)),
     }
 }
 
 pub(in crate::wire) fn encode_move_result(result: &MoveResult, enc: &mut Encoder<'_>) {
     match result {
+        MoveResult::Err(MoveError::Unknown(raw)) => enc.write_raw(raw.as_bytes()),
         MoveResult::Ok(terminal_id) => {
             enc.write_u8(MOVE_RESULT_OK);
             encode_terminal_id(terminal_id, enc);
@@ -106,7 +133,8 @@ pub(in crate::wire) fn encode_move_result(result: &MoveResult, enc: &mut Encoder
                 MoveError::UnsupportedSatelliteRoute => {
                     enc.write_u8(MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE);
                 }
-                MoveError::Unknown(tag) => enc.write_u8(*tag),
+                // Written verbatim by the first arm.
+                MoveError::Unknown(_) => {}
             }
         }
     }
@@ -115,22 +143,20 @@ pub(in crate::wire) fn encode_move_result(result: &MoveResult, enc: &mut Encoder
 pub(in crate::wire) fn decode_move_result(
     dec: &mut Decoder<'_>,
 ) -> Result<MoveResult, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        MOVE_RESULT_OK => Ok(MoveResult::Ok(decode_terminal_id(dec)?)),
-        MOVE_RESULT_ERR => {
-            let err_tag = dec.read_u8()?;
-            match err_tag {
-                MOVE_ERROR_TAG_MOVE_FAILED => Ok(MoveResult::Err(MoveError::MoveFailed(
-                    dec.read_str()?.to_owned(),
-                ))),
-                MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE => {
-                    Ok(MoveResult::Err(MoveError::UnsupportedSatelliteRoute))
-                }
-                other => Ok(MoveResult::Err(MoveError::Unknown(other))),
-            }
-        }
-        other => Ok(MoveResult::Err(MoveError::Unknown(other))),
+    let raw = dec.remaining();
+    let decoded = match dec.read_u8()? {
+        MOVE_RESULT_OK => decode_terminal_id(dec).map(MoveResult::Ok),
+        MOVE_RESULT_ERR => decode_move_error(dec).map(MoveResult::Err),
+        other => Err(DecodeError::unknown_enum("MoveResult", other)),
+    };
+    or_unreadable(decoded, raw, |raw| MoveResult::Err(MoveError::Unknown(raw)))
+}
+
+fn decode_move_error(dec: &mut Decoder<'_>) -> Result<MoveError, DecodeError> {
+    match dec.read_u8()? {
+        MOVE_ERROR_TAG_MOVE_FAILED => Ok(MoveError::MoveFailed(dec.read_str()?.to_owned())),
+        MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE => Ok(MoveError::UnsupportedSatelliteRoute),
+        other => Err(DecodeError::unknown_enum("MoveError", other)),
     }
 }
 

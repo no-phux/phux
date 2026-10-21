@@ -38,7 +38,7 @@ pub(in crate::wire) fn encode_key_event(event: &KeyEvent, enc: &mut Encoder<'_>)
 }
 
 pub(in crate::wire) fn decode_key_event(dec: &mut Decoder<'_>) -> Result<KeyEvent, DecodeError> {
-    use crate::input::key::{KeyAction, ModSet, PhysicalKey};
+    use crate::input::key::{KeyAction, PhysicalKey};
 
     let action_raw = dec.read_u32_be()?;
     let action = KeyAction::try_from(action_raw).map_err(|_| DecodeError::UnknownEnumValue {
@@ -50,9 +50,9 @@ pub(in crate::wire) fn decode_key_event(dec: &mut Decoder<'_>) -> Result<KeyEven
         field: "PhysicalKey",
         value: key_raw,
     })?;
-    let mods = ModSet::from_bits_truncate(dec.read_u16_be()?);
-    let consumed_mods = ModSet::from_bits_truncate(dec.read_u16_be()?);
-    let composing = dec.read_u8()? != 0;
+    let mods = decode_mods(dec, "KeyEvent.mods")?;
+    let consumed_mods = decode_mods(dec, "KeyEvent.consumed_mods")?;
+    let composing = dec.read_bool("KeyEvent.composing")?;
     let text = decode_option_str(dec)?.map(str::to_owned);
     let unshifted_codepoint = decode_optional_u32(dec)?;
     Ok(KeyEvent {
@@ -77,7 +77,6 @@ pub(in crate::wire) fn encode_mouse_event(event: &MouseEvent, enc: &mut Encoder<
 pub(in crate::wire) fn decode_mouse_event(
     dec: &mut Decoder<'_>,
 ) -> Result<MouseEvent, DecodeError> {
-    use crate::input::key::ModSet;
     use crate::input::mouse::{MouseAction, MouseButton};
 
     let action_raw = dec.read_u32_be()?;
@@ -90,7 +89,7 @@ pub(in crate::wire) fn decode_mouse_event(
         field: "MouseButton",
         value: button_raw,
     })?;
-    let mods = ModSet::from_bits_truncate(dec.read_u16_be()?);
+    let mods = decode_mods(dec, "MouseEvent.mods")?;
     let x = dec.read_f64_be()?;
     let y = dec.read_f64_be()?;
     Ok(MouseEvent {
@@ -121,4 +120,14 @@ pub(in crate::wire) fn decode_paste_event(
     };
     let data = dec.read_bytes()?.to_vec();
     Ok(PasteEvent { trust, data })
+}
+
+/// Read a modifier set. A bit this build does not define is a newer value,
+/// refused as unsupported: dropping it would apply a different key.
+fn decode_mods(
+    dec: &mut Decoder<'_>,
+    field: &'static str,
+) -> Result<crate::input::key::ModSet, DecodeError> {
+    let bits = dec.read_u16_be()?;
+    crate::input::key::ModSet::from_bits(bits).ok_or_else(|| DecodeError::unknown_enum(field, bits))
 }

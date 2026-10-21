@@ -133,7 +133,9 @@ impl Fields {
                 field::org::HOLDER => {
                     out.holder = Some(decode_actor_ref(&mut Decoder::new(value))?);
                 }
-                field::org::AWAITING => out.awaiting = Some(read_u8(value)? != 0),
+                field::org::AWAITING => {
+                    out.awaiting = Some(Decoder::new(value).read_bool("awaiting")?);
+                }
                 field::org::INSTANCE => {
                     out.instance = Some(ServerInstance::new(key_bytes(value)?));
                 }

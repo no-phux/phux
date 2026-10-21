@@ -19,11 +19,9 @@ pub(super) fn decode_resource_ids(
 }
 
 pub(super) fn decode_detach_clients_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
-    let session = if dec.read_u8()? != 0 {
-        Some(dec.read_str()?.to_owned())
-    } else {
-        None
-    };
+    let session = dec.read_option("DetachClients.session tag", |d| {
+        Ok(d.read_str()?.to_owned())
+    })?;
     Ok(Command::DetachClients { session })
 }
 
@@ -31,7 +29,7 @@ pub(super) fn decode_get_terminal_state_command(
     dec: &mut Decoder<'_>,
 ) -> Result<Command, DecodeError> {
     let terminal_id = decode_terminal_id(dec)?;
-    let include_scrollback = dec.read_u8()? != 0;
+    let include_scrollback = dec.read_bool("GetTerminalState.include_scrollback")?;
     let max_scrollback_lines = dec.read_u16_be()?;
     Ok(Command::GetTerminalState {
         terminal_id,
@@ -100,7 +98,7 @@ pub(super) fn decode_put_file_command(dec: &mut Decoder<'_>) -> Result<Command, 
     let extension = decode_put_file_extension(dec)?;
     let offset = dec.read_u64_be()?;
     let data = decode_put_file_chunk(dec, offset)?;
-    let final_chunk = dec.read_u8()? != 0;
+    let final_chunk = dec.read_bool("PutFile.final_chunk")?;
     let sha256 = decode_optional_sha256(dec)?;
     Ok(Command::PutFile {
         upload_id,
@@ -114,11 +112,7 @@ pub(super) fn decode_put_file_command(dec: &mut Decoder<'_>) -> Result<Command, 
 }
 
 pub(super) fn decode_get_file_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
-    let host = if dec.read_u8()? == 0 {
-        None
-    } else {
-        Some(dec.read_str()?.to_owned())
-    };
+    let host = dec.read_option("GetFile.host tag", |d| Ok(d.read_str()?.to_owned()))?;
     let path = dec.read_str()?.to_owned();
     let offset = dec.read_u64_be()?;
     let max_bytes = dec.read_u32_be()?;
@@ -137,6 +131,19 @@ pub(super) fn decode_checkout_command(dec: &mut Decoder<'_>) -> Result<Command, 
     let terminal_id = decode_terminal_id(dec)?;
     let request =
         crate::checkout::decode_request(dec.read_bytes()?).map_err(checkout_decode_error)?;
+    // `CheckoutArea` decodes total for answers; in a request an area this
+    // build does not know is a newer value, refused as unsupported.
+    if matches!(
+        request,
+        crate::checkout::CheckoutRequest::Diff {
+            area: crate::checkout::CheckoutArea::Unknown,
+            ..
+        }
+    ) {
+        return Err(DecodeError::UnsupportedPayload {
+            payload: "CheckoutRequest",
+        });
+    }
     Ok(Command::Checkout {
         terminal_id,
         request,
@@ -191,14 +198,13 @@ pub(super) fn decode_put_file_chunk(
 pub(super) fn decode_optional_sha256(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<[u8; 32]>, DecodeError> {
-    if dec.read_u8()? == 0 {
-        return Ok(None);
-    }
-    let mut digest = [0; 32];
-    for byte in &mut digest {
-        *byte = dec.read_u8()?;
-    }
-    Ok(Some(digest))
+    dec.read_option("PutFile.sha256 tag", |dec| {
+        let mut digest = [0; 32];
+        for byte in &mut digest {
+            *byte = dec.read_u8()?;
+        }
+        Ok(digest)
+    })
 }
 
 pub(super) fn decode_report_asked_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {

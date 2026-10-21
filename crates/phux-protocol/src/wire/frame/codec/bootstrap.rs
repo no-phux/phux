@@ -1,4 +1,8 @@
 //! The bootstrap codec, profile, and stream-profile sub-record codecs.
+//!
+//! Only a server sends these, and only to name a choice from the client's
+//! own offer, so a value the client does not know is malformed, not newer:
+//! skipping `HELLO_OK` or `BOOTSTRAP_BEGIN` would hang the handshake.
 
 use crate::caps::{
     BootstrapCodec, BootstrapProfile, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
@@ -29,12 +33,12 @@ pub(in crate::wire) fn decode_bootstrap_codec(
         BootstrapCodec::SYNTHESIZED_VT_V1_TAG => Ok(BootstrapCodec::SynthesizedVtV1),
         BootstrapCodec::NATIVE_TAG => {
             let value = dec.read_u8()?;
-            let codec = EngineCodec::from_wire(value)
-                .ok_or_else(|| DecodeError::unknown_enum("EngineCodec", value))?;
+            let codec =
+                EngineCodec::from_wire(value).ok_or(DecodeError::InvalidBootstrapProfile)?;
             Ok(BootstrapCodec::Native(codec))
         }
         BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG => Ok(BootstrapCodec::AgentEventsJsonlV1),
-        value => Err(DecodeError::unknown_enum("BootstrapCodec", value)),
+        _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }
 
@@ -60,8 +64,8 @@ pub(in crate::wire) fn decode_bootstrap_profile(
     match dec.read_u8()? {
         BootstrapProfile::NATIVE_STATE_TAG => {
             let value = dec.read_u8()?;
-            let codec = EngineCodec::from_wire(value)
-                .ok_or_else(|| DecodeError::unknown_enum("EngineCodec", value))?;
+            let codec =
+                EngineCodec::from_wire(value).ok_or(DecodeError::InvalidBootstrapProfile)?;
             let features = EngineFeatureSet::from_wire(dec.read_u32_be()?);
             if !features.supports_native() {
                 return Err(DecodeError::InvalidBootstrapProfile);
@@ -72,7 +76,7 @@ pub(in crate::wire) fn decode_bootstrap_profile(
         BootstrapProfile::SYNTHESIZED_VT_STATE_SYNC_TAG => {
             Ok(BootstrapProfile::SynthesizedVtStateSync)
         }
-        value => Err(DecodeError::unknown_enum("BootstrapProfile", value)),
+        _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }
 
