@@ -13,7 +13,8 @@
  *
  * Requires an attached client whose HELLO_OK advertised LIST_DIRECTORY
  * (0x00008000); otherwise PHUX_CLIENT_INVALID_STATE and nothing is queued,
- * because an older server drops the frame and a reply would never come.
+ * because an older server answers the frame with an uncorrelated
+ * Unsupported ERROR and no DIRECTORY_LISTING reply would ever come.
  * request_id shares the strictly increasing host request space with spawn,
  * subscribe and arrangement refresh/mutation. path is UTF-8 without NUL, at
  * most 4096 bytes: empty or "~" for the serving user's home, "~/rest", or an

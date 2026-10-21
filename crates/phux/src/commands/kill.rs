@@ -89,8 +89,8 @@ pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
             Err(err) => return report_no_server(&err, &socket_path, "kill --server"),
         };
 
-        // An older server drops the SHUTDOWN tag silently, which would read
-        // as a stop that never happens; refuse before sending.
+        // A server without the bit answers SHUTDOWN with Unsupported and
+        // keeps running; refuse before sending so the reason is ours.
         if !shutdown_supported(&conn) {
             error!(
                 "{}",
