@@ -4,7 +4,7 @@ use super::{
     BytesMut, CancellationToken, ClientId, Command, CommandResult, ConnectionClose, DetachReason,
     ErrorCode, FrameKind, FrameOrigin, InputCredits, InputLaneHandle, InputStalled, JoinSet,
     NegotiatedConnection, Outbound, SharedState, WireResourceId, before_hello_close,
-    decode_client_frame, is_pre_hello_type, mpsc, reject_frame_before_hello,
+    decode_client_frame, is_pre_hello_type, mpsc, reject_frame_before_hello, trace,
 };
 
 pub(super) const MAX_PENDING_INPUT_RECEIPTS: usize = 128;
@@ -42,32 +42,81 @@ pub(super) const fn requires_terminal_stream(frame: &FrameKind) -> bool {
     )
 }
 
+/// Why a framed client message is not dispatched.
+pub(super) enum Undispatched {
+    /// A protocol violation: the connection ends.
+    Close(ConnectionClose),
+    /// Well framed, but newer than this build understands (protocol 1.x):
+    /// queue this `Unsupported` answer and keep reading.
+    Refuse(Box<FrameKind>),
+}
+
+/// Validate one framed message for dispatch, then run the frame guard
+/// (workload-auth §6) before any routing or handler. A message this build
+/// does not support, or the guard refuses, is answered here and yields
+/// `Ok(None)`: the connection keeps reading. A violation is the `Err` that
+/// ends it.
+pub(super) async fn admit_frame(
+    state: &SharedState,
+    framed: &BytesMut,
+    negotiated: Option<&NegotiatedConnection>,
+    origin: FrameOrigin,
+    client_id: ClientId,
+    out_tx: &mpsc::Sender<Outbound>,
+) -> Result<Option<FrameKind>, ConnectionClose> {
+    let frame = match validate_dispatch_frame(framed, negotiated, origin, client_id) {
+        Ok(frame) => frame,
+        Err(Undispatched::Close(close)) => return Err(close),
+        Err(Undispatched::Refuse(refusal)) => {
+            if out_tx.send(Outbound::Frame(*refusal)).await.is_err() {
+                trace!(?client_id, "Unsupported refusal dropped: writer gone");
+            }
+            return Ok(None);
+        }
+    };
+    let refused = crate::runtime::dispatch_guard::refuse_frame(
+        state,
+        client_id,
+        &frame,
+        negotiated.is_some(),
+        out_tx,
+    )
+    .await;
+    Ok((!refused).then_some(frame))
+}
+
+impl From<ConnectionClose> for Undispatched {
+    fn from(close: ConnectionClose) -> Self {
+        Self::Close(close)
+    }
+}
+
 pub(super) fn validate_dispatch_frame(
     framed: &BytesMut,
     negotiated: Option<&NegotiatedConnection>,
     origin: FrameOrigin,
     client_id: ClientId,
-) -> Result<FrameKind, ConnectionClose> {
+) -> Result<FrameKind, Undispatched> {
     // Before HELLO only HELLO and PING are legal. Refuse anything else by its
     // type byte, so an unauthenticated peer never reaches the other body
     // decoders (server-to-client snapshots and lists included).
     if negotiated.is_none() && !is_pre_hello_type(framed) {
-        return Err(before_hello_close(client_id));
+        return Err(before_hello_close(client_id).into());
     }
     let frame = decode_client_frame(framed, negotiated)?;
     if negotiated.is_some_and(|selection| selection.quic_streams())
         && origin == FrameOrigin::Control
         && requires_terminal_stream(&frame)
     {
-        return Err(ConnectionClose {
+        return Err(Undispatched::Close(ConnectionClose {
             attached_reason: Some("Terminal frame sent on QUIC control stream"),
             detach_reason: DetachReason::ProtocolError,
             code: ErrorCode::MalformedMessage,
             message: "Terminal-scoped frame requires a bound QUIC stream".to_owned(),
-        });
+        }));
     }
     if let Some(close) = reject_frame_before_hello(&frame, negotiated.is_some(), client_id) {
-        return Err(close);
+        return Err(close.into());
     }
     Ok(frame)
 }

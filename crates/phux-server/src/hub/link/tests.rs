@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use super::*;
+use phux_protocol::Version;
 
 mod planning;
 mod supervisor;
@@ -12,6 +13,37 @@ mod write_bounds;
 use planning::entry;
 use supervisor::{host, relay_pair, wait_for_status};
 use write_bounds::{ScriptConn, ScriptTransport};
+
+/// A satellite on any minor or patch of the hub's major is linked; only
+/// a different major is refused.
+#[test]
+fn link_admits_any_minor_and_patch_of_the_hubs_major() {
+    let offered = hub_link_capabilities();
+    let admits = |major: u16, minor: u16, patch: u16| {
+        validate_link_hello_ok(
+            &offered,
+            major,
+            minor,
+            patch,
+            BootstrapProfile::SynthesizedVtRaw,
+            offered.bootstrap.limits,
+        )
+        .is_ok()
+    };
+    let Version {
+        major,
+        minor,
+        patch,
+    } = PROTOCOL_VERSION;
+    assert!(admits(major, minor, patch));
+    assert!(admits(major, minor + 7, patch + 3), "a newer minor links");
+    assert!(admits(major, minor, patch + 1), "a newer patch links");
+    assert!(!admits(major + 1, minor, patch), "a newer major is refused");
+    assert!(
+        !admits(major - 1, minor, patch),
+        "an older major is refused"
+    );
+}
 
 /// Revoking the link's token on the satellite ends the link live and
 /// refuses the redial (`docs/spec/workload-auth.md` §7).

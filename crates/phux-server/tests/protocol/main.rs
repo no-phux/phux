@@ -12,6 +12,7 @@ mod byc_6_5_keystroke_merge_order;
 mod command_dispatch;
 mod command_isolation;
 mod frame_too_large;
+mod newer_client;
 mod open_listener;
 mod policy_deny;
 mod web_caps_image_gate;

@@ -87,13 +87,9 @@ pub(super) fn validate_link_hello_ok(
     selected_profile: BootstrapProfile,
     selected_limits: BootstrapLimits,
 ) -> Result<(), String> {
-    if (protocol_major, protocol_minor, protocol_patch)
-        != (
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch,
-        )
-    {
+    // The major is the compatibility line: a satellite on any 1.x minor or
+    // patch interoperates, and anything it adds is negotiated or ignorable.
+    if protocol_major != PROTOCOL_VERSION.major {
         return Err(format!(
             "satellite HELLO_OK selected unsupported protocol {protocol_major}.{protocol_minor}.{protocol_patch}",
         ));

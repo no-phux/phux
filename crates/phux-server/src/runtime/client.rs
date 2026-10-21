@@ -20,6 +20,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
 use phux_protocol::policy::TransportType;
+use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::Scope;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, DetachReason, ErrorCode, FrameKind, RESOURCE_AGENT_KEY,
@@ -91,12 +92,12 @@ pub(crate) use connection_state::{
     detach_and_release_consumer_state, fire_client_detached, release_connection_state,
     release_revoked_consumer_state,
 };
-#[cfg(test)]
-use dispatch::spawn_input_receipt;
 use dispatch::{
-    CommandDispatch, CommandDispatchOutcome, MAX_PENDING_INPUT_RECEIPTS, validate_dispatch_frame,
+    CommandDispatch, CommandDispatchOutcome, MAX_PENDING_INPUT_RECEIPTS, Undispatched, admit_frame,
 };
 pub(super) use dispatch::{Route, route};
+#[cfg(test)]
+use dispatch::{spawn_input_receipt, validate_dispatch_frame};
 use hello::{
     HelloRequest, before_hello_close, decode_client_frame, framing_violation_close,
     is_pre_hello_type, negotiate_hello, reject_frame_before_hello,
@@ -215,24 +216,20 @@ where
             }
         };
 
-        let frame =
-            match validate_dispatch_frame(&framed, negotiated.as_ref(), frame_origin, client_id) {
-                Ok(frame) => frame,
-                Err(close) => break 'conn ConnectionEnding::Violation(close),
-            };
-
-        // workload-auth §6: the frame guard, before any routing or handler.
-        if super::dispatch_guard::refuse_frame(
+        let admitted = admit_frame(
             &state,
+            &framed,
+            negotiated.as_ref(),
+            frame_origin,
             client_id,
-            &frame,
-            negotiated.is_some(),
             &plumbing.out_tx,
         )
-        .await
-        {
-            continue;
-        }
+        .await;
+        let frame = match admitted {
+            Ok(Some(frame)) => frame,
+            Ok(None) => continue,
+            Err(close) => break 'conn ConnectionEnding::Violation(close),
+        };
 
         let dispatch = FrameDispatch {
             reader: &mut reader,

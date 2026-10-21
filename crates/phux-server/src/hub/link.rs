@@ -68,6 +68,8 @@ use framing::{
     ws_idle_error,
 };
 use negotiate::negotiate_link;
+#[cfg(test)]
+use negotiate::{hub_link_capabilities, validate_link_hello_ok};
 pub(crate) use net::{NetLinkConn, NetLinkReader, NetLinkTransport, NetLinkWriter};
 use plan::read_link_token;
 pub use plan::{DialSpec, plan_link, ssh_argv};

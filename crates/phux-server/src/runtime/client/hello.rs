@@ -1,18 +1,20 @@
 //! Decoding client frames, the pre-HELLO gate, and negotiating HELLO: version, authority, and bootstrap profile.
 
 use super::{
-    BootstrapLimits, BootstrapProfile, BytesMut, ClientCapabilities, ClientId, ConnectionClose,
-    DetachReason, ErrorCode, FrameKind, LayerSet, NegotiatedConnection, Outbound, PROTOCOL_VERSION,
-    QUIC_STREAMS, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
-    SharedState, Standing, TransportType, debug, framing_violation, io, mpsc,
-    runtime_server_features, select_bootstrap_profile, trace, warn,
+    BootstrapLimits, BootstrapProfile, BytesMut, ClientCapabilities, ClientId, CommandResult,
+    ConnectionClose, DecodeError, DetachReason, ErrorCode, FrameKind, LayerSet,
+    NegotiatedConnection, Outbound, PROTOCOL_VERSION, QUIC_STREAMS, ServerCapabilities,
+    ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet, SharedState, Standing, TransportType,
+    Undispatched, debug, framing_violation, io, mpsc, runtime_server_features,
+    select_bootstrap_profile, trace, warn,
 };
 
-/// The wire carries one concrete version rather than a range. A patch release
-/// is editorial/behavior-preserving, while a major or minor change may alter
-/// the wire contract; therefore only `major.minor` must match.
-pub(super) const fn protocol_is_compatible(client_major: u16, client_minor: u16) -> bool {
-    client_major == PROTOCOL_VERSION.major && client_minor == PROTOCOL_VERSION.minor
+/// The major is the compatibility line (protocol 1.0 on): any client of the
+/// server's major interoperates, whatever its minor and patch, because
+/// everything a minor adds is negotiated or ignorable. Only a major
+/// mismatch is refused.
+pub(super) const fn protocol_is_compatible(client_major: u16) -> bool {
+    client_major == PROTOCOL_VERSION.major
 }
 
 pub(super) fn incompatible_protocol_message(
@@ -33,8 +35,8 @@ pub(super) fn incompatible_protocol_message(
     };
     format!(
         "incompatible protocol: client offered {client_major}.{client_minor}.{client_patch}, \
-         server requires {}.{}.x; {remediation} so protocol major.minor match",
-        PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor,
+         server requires {}.x; {remediation} so the protocol majors match",
+        PROTOCOL_VERSION.major,
     )
 }
 
@@ -60,33 +62,67 @@ pub(super) fn framing_violation_close(
 pub(super) fn decode_client_frame(
     framed: &BytesMut,
     negotiated: Option<&NegotiatedConnection>,
-) -> Result<FrameKind, ConnectionClose> {
+) -> Result<FrameKind, Undispatched> {
     // FRAME_COMPRESSED is server-to-client only (proto.md §6.4); refuse the
     // envelope before decode. The type byte follows the u32 length header.
     if framed.get(4) == Some(&phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED) {
         warn!("client sent FRAME_COMPRESSED; closing");
-        return Err(ConnectionClose {
+        return Err(Undispatched::Close(ConnectionClose {
             attached_reason: Some("client-sent FRAME_COMPRESSED"),
             detach_reason: DetachReason::ProtocolError,
             code: ErrorCode::MalformedMessage,
             message: "FRAME_COMPRESSED is server-to-client only".to_owned(),
-        });
+        }));
     }
     let decoded = negotiated.map_or_else(
         || FrameKind::decode(framed),
         |selection| FrameKind::decode_with_limits(framed, selection.limits),
     );
-    match decoded {
-        Ok((frame, _rest)) => Ok(frame),
-        Err(err) => {
-            warn!(error = ?err, "client sent undecodable frame; closing");
-            Err(ConnectionClose {
-                attached_reason: Some("undecodable frame"),
-                detach_reason: DetachReason::ProtocolError,
-                code: ErrorCode::MalformedMessage,
-                message: format!("could not decode client frame: {err:?}"),
-            })
-        }
+    decoded
+        .map(|(frame, _rest)| frame)
+        .map_err(|err| undecodable(&err, negotiated.is_some()))
+}
+
+/// A frame that did not decode. After HELLO, one a newer 1.x client may
+/// send (an unknown type byte, command tag, or command enum value) is
+/// refused in place; anything else is malformed and closes the connection.
+pub(super) fn undecodable(err: &DecodeError, negotiated: bool) -> Undispatched {
+    if let Some(refusal) = negotiated.then(|| unsupported_refusal(err)).flatten() {
+        debug!(error = %err, "client sent a frame this server does not support");
+        return Undispatched::Refuse(Box::new(refusal));
+    }
+    warn!(error = ?err, "client sent undecodable frame; closing");
+    Undispatched::Close(ConnectionClose {
+        attached_reason: Some("undecodable frame"),
+        detach_reason: DetachReason::ProtocolError,
+        code: ErrorCode::MalformedMessage,
+        message: format!("could not decode client frame: {err:?}"),
+    })
+}
+
+/// The `Unsupported` answer to a well-framed message newer than this build:
+/// an uncorrelated `ERROR` naming an unknown frame type, or a correlated
+/// `COMMAND_RESULT` for a command it cannot decode. `None` for any other
+/// decode failure.
+pub(super) fn unsupported_refusal(err: &DecodeError) -> Option<FrameKind> {
+    match *err {
+        DecodeError::UnknownFrameKind { tag } => Some(FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::Unsupported,
+            message: format!("unsupported frame type 0x{tag:02x}"),
+        }),
+        DecodeError::UnsupportedCommand {
+            request_id,
+            field,
+            value,
+        } => Some(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::Error {
+                code: ErrorCode::Unsupported,
+                message: format!("unsupported command: unknown {field} value {value}"),
+            },
+        }),
+        _ => None,
     }
 }
 
@@ -168,7 +204,7 @@ pub(super) async fn negotiate_hello(
         color_support = ?client_caps.color_support,
         "HELLO",
     );
-    if !protocol_is_compatible(protocol_major, protocol_minor) {
+    if !protocol_is_compatible(protocol_major) {
         let message = incompatible_protocol_message(protocol_major, protocol_minor, protocol_patch);
         warn!(?client_id, %message, "HELLO protocol mismatch");
         return Err(ConnectionClose {
