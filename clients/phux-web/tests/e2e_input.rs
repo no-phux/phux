@@ -1119,6 +1119,49 @@ async fn attach_with_cells(cell_px: (u16, u16)) -> web_sys::WebSocket {
     panic!("the second connection never attached");
 }
 
+/// Close `socket` and resolve when the browser's close event fires.
+///
+/// The server tears the connection down before it completes that handshake,
+/// which is what queues the pixel-only resize. Waiting on the event, rather
+/// than a delay, is what puts the detach at a known point.
+async fn await_socket_close(socket: web_sys::WebSocket) {
+    let closed = Rc::new(Cell::new(false));
+    let flag = Rc::clone(&closed);
+    let on_close = Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_: web_sys::CloseEvent| {
+        flag.set(true);
+    });
+    socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+    on_close.forget();
+    socket.close().unwrap();
+    for _ in 0..POLLS {
+        if closed.get() {
+            return;
+        }
+        sleep(POLL).await;
+    }
+    panic!(
+        "the second connection never closed (ready_state {})",
+        socket.ready_state()
+    );
+}
+
+/// A cell size other than the one this canvas reports, so the second client
+/// is a real pixel change at the same 80×24 grid. 10×20 unless the measured
+/// face is already that.
+fn foreign_cell_px(canvas: &HtmlCanvasElement) -> (u16, u16) {
+    let measured = metrics::measured(canvas).cell_px();
+    let foreign = if measured == (10, 20) {
+        (12, 24)
+    } else {
+        (10, 20)
+    };
+    assert_ne!(
+        foreign, measured,
+        "the second client must report a different cell size"
+    );
+    foreign
+}
+
 /// The server divides mouse positions by the cell size of the most recent
 /// viewport that reported pixels. The browser reports its own, so another
 /// client's cell size does not move its clicks off their cells.
@@ -1282,6 +1325,123 @@ async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
 
     js_sys::Reflect::set(&window, &"open".into(), &real_open).unwrap();
     assert_eq!(*opened.borrow(), ["https://example.com/touch"]);
+    client.close();
+}
+
+/// How long a finger rests before the drag selects. The gesture treats 400ms
+/// as a hold; the suite's other hold uses this same window.
+const HOLD: Duration = Duration::from_millis(450);
+
+/// A pixel-only detach during a scrollback hold must not wipe the selection.
+///
+/// PHUX-387: another client's cell size, at the same cols and rows, used to
+/// be handled as a reflow. Detach queues that resize with a client resync, and
+/// the debounced snapshot replaced the scrolled view with the live screen, so
+/// the hold copied nothing. The second client attaches and, on its `ATTACHED`
+/// frame, closes. That close event is the point in the hold that detaches it.
+/// The drag runs only after the event, once the hold window has elapsed, so
+/// the snapshot cannot arrive after the copy. The marker is this run's own, so
+/// the test does not read another test's screen.
+#[wasm_bindgen_test]
+async fn a_hold_still_selects_scrollback_when_another_cell_size_detaches() {
+    let canvas = mounted_canvas("hold-detach-canvas");
+    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
+        .await
+        .expect("connect to live phux server");
+    let mut sized = false;
+    for _ in 0..POLLS {
+        let rows = client.rows_text();
+        if rows.len() == 24 && rows.iter().all(|row| row.chars().count() == 80) {
+            sized = true;
+            break;
+        }
+        sleep(POLL).await;
+    }
+    assert!(
+        sized,
+        "the pane is 80x24, the grid the other client will report: {}",
+        screen(&client)
+    );
+    // Let an attach-time reflow from a previous geometry land before the marker.
+    settle(&client).await;
+
+    let surface = input_surface(&canvas);
+    let marker = format!("PHUX_HOLD_{}", js_sys::Date::now() as u64);
+    // Primary screen, with mouse and focus reporting off, whatever an earlier
+    // test left on. The marker is this run's own line.
+    program_prints(
+        &client,
+        &surface,
+        &[
+            "[?1049l", "[?1000l", "[?1002l", "[?1003l", "[?1006l", "[?1004l",
+        ],
+        &marker,
+        &[],
+    )
+    .await;
+    for _ in 0..40 {
+        assert!(keydown(&surface, "Enter", "Enter", false));
+    }
+    assert!(
+        wait_until(&client, false, &marker).await,
+        "marker scrolled away: {}",
+        screen(&client)
+    );
+
+    let row_px = metrics::measured(&canvas).cell_h;
+    let mut reached = false;
+    for _ in 0..30 {
+        finger(&canvas, "pointerdown", (10, 2), 0.0);
+        for step in 1..=4 {
+            finger(&canvas, "pointermove", (10, 2), f64::from(step) * row_px);
+        }
+        finger(&canvas, "pointerup", (10, 6), 0.0);
+        if client.rows_text().iter().any(|row| row.contains(&marker)) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(
+        reached,
+        "the drag reached the marker in scrollback: {}",
+        screen(&client)
+    );
+
+    let rows = client.rows_text();
+    let row = rows.iter().position(|r| r.contains(&marker)).unwrap();
+    let col = rows[row].find(&marker).unwrap();
+    let (row, first, last) = (row as u16, col as u16, (col + marker.len() - 1) as u16);
+    let foreign = foreign_cell_px(&canvas);
+
+    // Press, then attach. ATTACHED is the known point: detach there, while
+    // the finger is still down and has not yet dragged.
+    finger(&canvas, "pointerdown", (first, row), 0.0);
+    let other = attach_with_cells(foreign).await;
+    await_socket_close(other).await;
+    // The close has been observed. Rest the hold from that event so the
+    // selecting drag cannot start before the detach, and a debounced resync
+    // owed by the old handler has the whole window to land first.
+    sleep(HOLD).await;
+    finger(&canvas, "pointermove", (first + 3, row), 0.0);
+    finger(&canvas, "pointermove", (last, row), 0.0);
+    finger(&canvas, "pointerup", (last, row), 0.0);
+    assert_eq!(
+        copy_event(&surface),
+        (true, marker),
+        "the hold-drag selected the marker"
+    );
+
+    // The enters pushed the seeded marker off the live screen of the shared
+    // pane; echo it back so suites that run later against the same server
+    // still find it.
+    fresh_line(&surface);
+    type_text(&surface, "PHUX_WEB_OK");
+    assert!(keydown(&surface, "Enter", "Enter", false));
+    assert!(
+        wait_until(&client, true, "PHUX_WEB_OK").await,
+        "{}",
+        screen(&client)
+    );
     client.close();
 }
 
