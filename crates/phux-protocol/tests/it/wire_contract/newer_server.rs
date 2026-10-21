@@ -2,7 +2,7 @@
 //!
 //! A state-bearing enum in a server frame decodes an `Unknown` variant, a
 //! correlated reply it cannot read settles its request, and anything else a
-//! newer peer may send fails with an error [`DecodeError::is_unknown_value`]
+//! newer peer may send fails with an error [`DecodeError::is_unsupported`]
 //! classifies, so a client skips that one frame instead of dropping the
 //! connection. Malformed bytes stay malformed.
 
@@ -153,7 +153,7 @@ fn newer_values_are_classified_and_malformed_bytes_are_not() {
     let unknown_scope = framed_tlv(phux_protocol::wire::frame::TYPE_METADATA_CHANGED, &scope);
     for bytes in [unknown_kind, unknown_scope] {
         let error = FrameKind::decode(&bytes).unwrap_err();
-        assert!(error.is_unknown_value(), "{error:?}");
+        assert!(error.is_unsupported(), "{error:?}");
     }
     // A truncated body and an oversized length are malformed.
     let mut truncated = Vec::new();
@@ -163,7 +163,41 @@ fn newer_values_are_classified_and_malformed_bytes_are_not() {
         vec![0xFF, 0xFF, 0xFF, 0xFF, 0x01],
     ] {
         let error = FrameKind::decode(&bytes).unwrap_err();
-        assert!(!error.is_unknown_value(), "{error:?}");
+        assert!(!error.is_unsupported(), "{error:?}");
     }
-    assert!(!DecodeError::UnexpectedEof.is_unknown_value());
+    assert!(!DecodeError::UnexpectedEof.is_unsupported());
+}
+
+/// A correlated reply whose body carries a value no `Unknown` variant covers
+/// (here a spawned id of an unknown resource-id shape) settles its request
+/// as an unreadable `ERROR`; an uncorrelated one is skipped; malformed bytes
+/// stay an error.
+#[test]
+fn the_newer_server_fallback_settles_replies_and_skips_the_rest() {
+    use phux_protocol::wire::decode::newer_server_fallback;
+
+    let unknown_id = reply(TYPE_RESOURCE_SPAWNED, &[0x00, 0xFF, 1, 2]);
+    let error = FrameKind::decode(&unknown_id).unwrap_err();
+    let Ok(Some(FrameKind::Error {
+        request_id: Some(7),
+        code,
+        ..
+    })) = newer_server_fallback(&unknown_id, error)
+    else {
+        panic!("a correlated reply settles its request");
+    };
+    assert_eq!(code, ErrorCode::UNREADABLE_REPLY);
+
+    let unknown_kind = framed_tlv(0x6E, &[]);
+    let error = FrameKind::decode(&unknown_kind).unwrap_err();
+    assert_eq!(newer_server_fallback(&unknown_kind, error), Ok(None));
+
+    let mut truncated = Vec::new();
+    tlv_field(&mut truncated, 1, &[0x00, 0x00]);
+    let malformed = framed_tlv(TYPE_RESOURCE_SPAWNED, &truncated);
+    let error = FrameKind::decode(&malformed).unwrap_err();
+    assert_eq!(
+        newer_server_fallback(&malformed, error),
+        Err(DecodeError::UnexpectedEof)
+    );
 }

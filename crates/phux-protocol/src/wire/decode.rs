@@ -422,6 +422,61 @@ pub fn frame_request_id(framed: &[u8]) -> Option<u32> {
     request_id
 }
 
+/// What a client reads in place of a server frame that failed to decode.
+///
+/// - A correlated reply (`COMMAND_RESULT`, `RESOURCE_SPAWNED`,
+///   `RESOURCE_MOVED`, `METADATA_VALUE`, `METADATA_KEYS`,
+///   `DIRECTORY_LISTING`, `PATH_RESULTS`) carrying a value this build does
+///   not know is `Ok(Some(ERROR))` for its `request_id` with
+///   [`ErrorCode::UNREADABLE_REPLY`]: the request settles as answered with
+///   the outcome not stated, instead of waiting forever.
+/// - Any other frame carrying such a value (an unknown frame type, or an
+///   uncorrelated frame) is `Ok(None)`: skip it, with a log, and keep the
+///   connection.
+/// - Malformed bytes are `Err(error)`, as before.
+///
+/// A server sends a new frame type or enum value only to a client whose
+/// `HELLO` version or capabilities show it knows it, so this is a fallback,
+/// never how a 1.x pair is meant to converse; most state-bearing enums in
+/// server frames already decode an `Unknown` variant instead.
+///
+/// # Errors
+///
+/// `error` itself when it is not [`DecodeError::is_unsupported`].
+pub fn newer_server_fallback(
+    framed: &[u8],
+    error: DecodeError,
+) -> Result<Option<FrameKind>, DecodeError> {
+    if !error.is_unsupported() {
+        return Err(error);
+    }
+    let reply = framed
+        .get(super::LENGTH_PREFIX_LEN)
+        .is_some_and(|&type_byte| is_correlated_reply(type_byte));
+    Ok(reply
+        .then(|| frame_request_id(framed))
+        .flatten()
+        .map(|request_id| FrameKind::Error {
+            request_id: Some(request_id),
+            code: ErrorCode::UNREADABLE_REPLY,
+            message: format!("this build cannot read the server's reply: {error}"),
+        }))
+}
+
+/// Whether `type_byte` is a server-to-client reply that settles a request.
+const fn is_correlated_reply(type_byte: u8) -> bool {
+    matches!(
+        type_byte,
+        TYPE_METADATA_VALUE
+            | TYPE_METADATA_KEYS
+            | TYPE_DIRECTORY_LISTING
+            | TYPE_PATH_RESULTS
+            | TYPE_RESOURCE_SPAWNED
+            | TYPE_RESOURCE_MOVED
+            | TYPE_COMMAND_RESULT
+    )
+}
+
 #[cfg(test)]
 mod request_id_tests {
     use super::*;
