@@ -20,9 +20,12 @@ use crate::render::chrome::status_bar::Notice;
 /// close does); the same code is fatal and non-fatal on the same server. An
 /// uncorrelated error names its code in a notice.
 fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -> FrameOutcome {
-    // A raced correlated error is inert.
-    if request_id.is_some() {
-        return FrameOutcome::default();
+    // A correlated error answers a path query or directory listing it
+    // names (a newer server's `UNSUPPORTED`, or a reply this build cannot
+    // read) as a refusal; each consumer drops an id it is not waiting on,
+    // so a raced correlated error stays inert.
+    if let Some(request_id) = request_id {
+        return correlated_refusal(request_id, message);
     }
     // Uncorrelated `SATELLITE_UNREACHABLE` is a degraded-federation
     // transition with its own wording.
@@ -41,6 +44,33 @@ fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -
     );
     FrameOutcome {
         notices: vec![Notice::warn(format!("server error: {message}"))],
+        ..FrameOutcome::default()
+    }
+}
+
+/// A correlated `ERROR` as the refused answer to whichever path query or
+/// directory listing carries `request_id`.
+fn correlated_refusal(request_id: u32, message: &str) -> FrameOutcome {
+    use phux_protocol::wire::frame::{
+        DirectoryErrorCode, DirectoryListingError, PathErrorCode, PathQueryError,
+    };
+    FrameOutcome {
+        path_results: Some((
+            request_id,
+            Err(PathQueryError {
+                root: String::new(),
+                code: PathErrorCode::Other,
+                message: message.to_owned(),
+            }),
+        )),
+        directory_listing: Some((
+            request_id,
+            Err(DirectoryListingError {
+                path: String::new(),
+                code: DirectoryErrorCode::Other,
+                message: message.to_owned(),
+            }),
+        )),
         ..FrameOutcome::default()
     }
 }
