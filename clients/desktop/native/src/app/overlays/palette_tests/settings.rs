@@ -105,9 +105,10 @@ fn settings_catalog_covers_controls_without_shortcut_or_status_dead_ends(cx: &mu
             "Line height",
             "Horizontal padding",
             "Unfocused panes",
-            "Automatic checks",
-            "Manage phux updates",
-            "Channel",
+            "Check automatically",
+            "Update phux with Desktop",
+            "Desktop",
+            "phux",
             "Machines",
             "Count Rust allocations",
         ] {
@@ -116,7 +117,7 @@ fn settings_catalog_covers_controls_without_shortcut_or_status_dead_ends(cx: &mu
                 "{title} is directly searchable"
             );
         }
-        for title in ["Status", "Ghostty config status", "Remote machines"] {
+        for title in ["Status", "Ghostty config", "Remote machines"] {
             assert!(
                 !entries.iter().any(|(key, _)| key.title.as_ref() == title),
                 "{title} is information, not an editable setting"

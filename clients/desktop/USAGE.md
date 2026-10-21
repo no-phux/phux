@@ -62,34 +62,35 @@ starts the server passes its environment on.
 ### Updates
 
 **Settings > Updates** checks the channel's release manifest
-([release contract](../../docs/releasing.md)) at launch
-and every six hours without blocking terminal input. Turn automatic checks off
-or use **Check now** at any time. **Download update** downloads the bundle,
-verifies its checksum and signature, and stages it beside `Phux.app` while you
-keep working. **Restart to update** then quits, swaps the staged bundle in
-after the app has exited, and reopens it. If the swap fails, the previous app
-is moved back. Quitting normally also installs a staged update. The helper logs
-to `~/Library/Logs/Phux/update.log`. The titlebar shows the same button.
-Quitting the desktop detaches; it does not stop your server-owned terminals.
+([release contract](../../docs/releasing.md)) and the phux CLI's own release
+at launch and every six hours without blocking terminal input. Turn
+**Check automatically** off or use **Check now** at any time. The page shows
+both products, installed and incoming versions side by side, and one button
+that moves whatever is due. The titlebar shows the same button.
 
-When an update changes the wire protocol, the Updates page says so, because
-the phux CLI and server must move too. With **Manage phux updates** on, the
-button becomes **Update phux & restart**. It updates and hands off the server
-first, then restarts into the new desktop.
+**Update phux & Desktop** does it in one click: it downloads the desktop
+bundle and verifies its checksum and signature beside `Phux.app`, updates phux
+with the installed CLI's checksum-verified updater and hands the live server
+off, then quits, swaps the staged bundle in after the app has exited, and
+reopens it on the server it was built for. Sessions keep running throughout.
+When only one product is due the button reads **Update Desktop** or
+**Update phux**; an update phux alone needs no restart. If the swap fails, the
+previous app is moved back. A downloaded bundle that has not been swapped in
+yet offers **Restart to update**, and quitting normally also installs it. The
+helper logs to `~/Library/Logs/Phux/update.log`. Quitting the desktop detaches;
+it does not stop your server-owned terminals.
 
-Choose **Stable** (the latest published desktop release) or **Next** (verified
-main builds). You can switch back to Stable even from a newer Next build.
-Desktop and runtime channels are independent.
+**Update phux with Desktop** is on by default. The handoff never silently
+closes agent sessions; a refused handoff keeps the downloaded desktop, says
+why, and offers **Retry server handoff** without downloading phux again.
+Homebrew, Cargo and Nix installations show their native update command instead
+of replacing package-managed files. Turning it off leaves the CLI and running
+server untouched, and the page warns when a desktop update changes the wire
+protocol phux speaks. Only this Mac's phux is updated, not remote hosts.
 
-**Manage phux updates** is off by default. When enabled, **Update phux & hand
-off server** uses the installed CLI's checksum-verified updater and graceful
-handoff, then reconnects the windows. It never silently closes agent sessions
-to force a handoff. Homebrew, Cargo and Nix installations show their native
-update command instead of replacing package-managed files. A refused handoff
-offers **Retry server handoff** without downloading the runtime again.
-Turning management
-off leaves the CLI and running server untouched; you regain control of updates.
-Only this Mac's runtime is managed, not remote hosts.
+Choose **Stable** (the latest published release) or **Next** (verified main
+builds) for each product under **Release channels**. You can switch back to
+Stable even from a newer Next build.
 
 Update preferences live in `$XDG_CONFIG_HOME/phux-desktop/updates.json` (default
 `~/.config/phux-desktop/updates.json`). Bare development executables and launches
@@ -219,7 +220,12 @@ another.
 
 The window is one sheet of glass over the desktop blur; panes float on it as
 cards with no header. Move the pointer to a pane's top edge for its controls
-(split, zoom, close; double-click the capsule to zoom). Drag the gap between
+capsule: who runs there, the terminal/conversation switch (or, for an agent
+without one yet, **Set up conversation**), then split, zoom and the pane's
+menu (double-click the capsule to zoom). A zoomed pane shows the panes it
+hides as card edges stacked behind its top; click them to restore the split.
+A split tab carries a small map of its panes: the focused one lit, an agent's
+in its state's colour, and the ones a zoom hides faded. Drag the gap between
 panes, the sidebar edge, or tabs to rearrange; double-click a tab to rename it.
 Splits grow in and closed panes fold away; the PTY is resized once, when the
 motion settles. Cycling panes, directional navigation, and revealing a

@@ -106,7 +106,7 @@ only when that satellite advertises the feature, and refuses
 ## Making a change compatible
 
 - Ship new behavior behind a feature bit in
-  [`caps/features.rs`](../crates/phux-protocol/src/caps/features.rs).
+  [`caps/server_features.rs`](../crates/phux-protocol/src/caps/server_features.rs).
   Do not bump the major for an additive change; a shipped bit is never
   withdrawn or repointed.
 - A new request is a `COMMAND` sub-tag, so an older server answers it with

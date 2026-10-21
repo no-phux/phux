@@ -92,6 +92,7 @@ More:
   runtime-info  Inspect this binary's protocol and capabilities
   archive       Export sessions to an archive file, or import one
   worktree      Manage git worktrees and their bound sessions
+  idea          Capture an idea
   mcp           Run the bundled MCP stdio adapter
   skill         Print the agent skill this binary ships with
   completion    Print a shell completion script
@@ -2001,6 +2002,44 @@ Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux idea`
+
+```text
+Capture an idea
+
+TEXT is written to the local ideas spool first, then signed and posted to
+`https://ingest.phux.sh/ideas/capture`. Success prints the capture id. A network
+failure leaves the idea queued; the next `phux idea` sends it with the same
+idempotency key and a fresh signature. `--flush` sends queued ideas and does not
+capture a new one.
+
+`--private` ensures the body contains the `#private` tag.
+
+`PHUX_IDEAS_KEY_ID` and `PHUX_IDEAS_KEY` are read from
+`$XDG_CONFIG_HOME/phux/ops.env` (`~/.config/phux/ops.env` when `XDG_CONFIG_HOME`
+is unset). `PHUX_IDEAS_KEY_ID` is the key id, for example `cli-mbp`.
+`PHUX_IDEAS_KEY` is 64 hex characters: the 32-byte HMAC secret. The secret is
+never printed.
+
+Examples:
+phux idea "ship the spool before the post"
+phux idea --private "keep this off the triage model"
+phux idea --flush
+
+Usage: phux idea [--private] [--flush] [TEXT]
+
+Arguments:
+  [TEXT]  Idea text. Required unless `--flush`.
+
+Flags:
+      --private        Ensure the body contains the `#private` tag.
+      --flush          Send queued ideas and do not capture a new one.
   -h, --help           Print help
 
 Global flags:

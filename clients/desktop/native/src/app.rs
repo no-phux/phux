@@ -95,6 +95,17 @@ pub fn preview_performance_monitor(capture: Option<PathBuf>, cx: &mut App) -> an
     performance::preview(capture, cx)
 }
 
+/// Open a desk and capture every Settings page into `directory`, then quit.
+#[cfg(feature = "ui-fixtures")]
+pub fn capture_settings_fixture(
+    options: AppOptions,
+    directory: PathBuf,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let root = open(options, cx)?;
+    settings_panel::preview::capture(root, directory, cx)
+}
+
 /// Measure native menu creation without opening visible windows.
 #[cfg(feature = "ui-fixtures")]
 pub fn benchmark_menu_fixture(cx: &mut App) -> anyhow::Result<()> {

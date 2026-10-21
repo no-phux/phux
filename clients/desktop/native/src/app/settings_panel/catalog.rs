@@ -3,9 +3,10 @@
 
 use std::rc::Rc;
 
-use gpui::{App, IntoElement, SharedString, Window};
-use gpui_kit::component::IconName;
+use gpui::prelude::*;
+use gpui::{App, FontWeight, IntoElement, SharedString, Window, div, px, relative};
 use gpui_kit::component::setting::{self as kit, RenderOptions, SettingField};
+use gpui_kit::component::{ActiveTheme, IconName};
 
 use super::Page;
 
@@ -134,36 +135,75 @@ impl Item {
 }
 
 pub(crate) struct Group {
-    inner: kit::SettingGroup,
     title: Option<SharedString>,
+    description: Option<SharedString>,
     items: Vec<Item>,
 }
+
+/// Pages inset their groups this far past Kit's list padding, so every
+/// heading, label and control shares the page header's text column.
+pub(crate) const GUTTER: f32 = 20.;
+const KIT_LIST_PADDING: f32 = 16.;
 
 impl Group {
     pub fn new() -> Self {
         Self {
-            inner: kit::SettingGroup::new(),
             title: None,
+            description: None,
             items: Vec::new(),
         }
     }
 
     pub fn title(mut self, title: impl Into<SharedString>) -> Self {
-        let title = title.into();
-        self.inner = self.inner.title(title.clone());
-        self.title = Some(title);
+        self.title = Some(title.into());
         self
     }
 
     pub fn description(mut self, description: impl Into<SharedString>) -> Self {
-        self.inner = self.inner.description(description);
+        self.description = Some(description.into());
         self
     }
 
     pub fn item(mut self, item: Item) -> Self {
-        self.inner = self.inner.item(item.control.clone());
         self.items.push(item);
         self
+    }
+
+    /// Kit's group, headed by a small section label in place of Kit's
+    /// body-size title, so a heading reads as a heading and not a setting.
+    fn native(&self) -> kit::SettingGroup {
+        let heading = (self.title.is_some() || self.description.is_some()).then(|| {
+            let (title, description) = (self.title.clone(), self.description.clone());
+            kit::SettingItem::render(move |_, _, cx| {
+                let muted = cx.theme().muted_foreground;
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    // Sit closer to the settings the label heads than Kit's row gap.
+                    .mb(px(-4.))
+                    .children(title.clone().map(|title| {
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(muted)
+                            .child(title)
+                    }))
+                    .children(description.clone().map(|description| {
+                        div()
+                            // The measure of a setting's own description.
+                            .max_w(relative(0.6))
+                            .text_xs()
+                            .line_height(px(17.))
+                            .text_color(muted.opacity(0.85))
+                            .child(description)
+                    }))
+            })
+        });
+        kit::SettingGroup::new()
+            .px(px(GUTTER - KIT_LIST_PADDING))
+            .items(heading)
+            .items(self.items.iter().map(|item| item.control.clone()))
     }
 
     pub fn items(mut self, items: impl IntoIterator<Item = Item>) -> Self {
@@ -193,13 +233,13 @@ impl Content {
     }
 
     pub fn group(mut self, group: Group) -> Self {
+        self.inner = self.inner.group(group.native());
         self.entries.extend(
             group
                 .items
                 .into_iter()
                 .map(|item| (group.title.clone(), item)),
         );
-        self.inner = self.inner.group(group.inner);
         self
     }
 }

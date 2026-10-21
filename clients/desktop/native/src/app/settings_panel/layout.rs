@@ -52,18 +52,14 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
             &look_of(&tabs, cx),
             position,
             [
-                (settings::TabPosition::Top, "Top", Icons::LayoutDashboard),
-                (
-                    settings::TabPosition::Bottom,
-                    "Bottom",
-                    Icons::LayoutDashboard,
-                ),
+                (settings::TabPosition::Top, "Top", Icons::PanelTop),
+                (settings::TabPosition::Bottom, "Bottom", Icons::PanelBottom),
                 (settings::TabPosition::Side, "Sidebar", Icons::PanelLeft),
             ]
             .map(|(value, label, icon)| Segment {
                 value,
                 label,
-                icon,
+                icon: Some(icon),
                 selector: format!("tab-position-{}", value.as_str()),
             }),
             |value| click_sets(&tabs, move |prefs| prefs.tab_position = value),
@@ -83,7 +79,7 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
             .map(|(value, label, icon)| Segment {
                 value,
                 label,
-                icon,
+                icon: Some(icon),
                 selector: format!("sidebar-grouping-{}", value.as_str()),
             }),
             |value| click_sets(&groups, move |prefs| prefs.sidebar_grouping = value),
@@ -188,7 +184,7 @@ fn sidebar_hosts(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
 
 pub(super) fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
     let spacing = SettingGroup::new()
-        .title("Terminal spacing")
+        .title("Cells & padding")
         .items(slider_item(
             desk,
             handle,

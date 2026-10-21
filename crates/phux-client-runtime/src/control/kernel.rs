@@ -203,7 +203,9 @@ impl ControlPlane {
                     });
                 }
                 phux_client_core::engine::EngineStatus::Title(title) => {
-                    self.fence_topology_read();
+                    if let Some(relabel) = self.relabel_in_flight(&key.terminal_id) {
+                        relabel.title = Some(title.clone());
+                    }
                     if let Some(pane) = self
                         .topology
                         .as_mut()

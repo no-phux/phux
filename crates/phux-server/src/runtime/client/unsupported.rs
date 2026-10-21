@@ -1,28 +1,23 @@
-//! Refusing a well-framed client frame that is newer than this build, in place, without closing.
-//!
-//! Protocol 1.x (`docs/protocol.md` "Compatibility"): after HELLO, a frame
-//! whose type, tag, enum value, presence byte, or JSON operation or field
-//! this build does not know is answered `Unsupported` and the connection
-//! keeps reading. Nothing in it is applied. Structurally malformed bytes
-//! (truncation, bad UTF-8, oversize counts) still close.
-//!
-//! The refusal precedes the frame guard: it reads no server state, so it
-//! tells a scoped grant only which values this build does not know (what
-//! `HELLO_OK`'s feature bits already say) and echoes the request id the
-//! client sent.
+// Refusing a well-framed client frame that is newer than this build, in place, without closing.
+//
+// Protocol 1.x (`docs/protocol.md` "Compatibility"): after HELLO, a frame
+// whose type, tag, enum value, presence byte, or JSON operation or field
+// this build does not know is answered `Unsupported` and the connection
+// keeps reading. Nothing in it is applied. Structurally malformed bytes
+// (truncation, bad UTF-8, oversize counts) still close.
+//
+// The refusal precedes the frame guard: it reads no server state, so it
+// tells a scoped grant only which values this build does not know (what
+// `HELLO_OK`'s feature bits already say) and echoes the request id the
+// client sent.
 
 use phux_protocol::wire::decode::frame_request_id;
 use phux_protocol::wire::frame::TYPE_COMMAND;
 
-use super::{
-    CommandResult, ConnectionClose, DecodeError, DetachReason, ErrorCode, FrameKind, Undispatched,
-    debug, warn,
-};
-
 /// A frame that did not decode. After HELLO, one a newer 1.x client may
 /// send is refused in place; anything else is malformed and closes the
 /// connection.
-pub(super) fn undecodable(err: &DecodeError, framed: &[u8], negotiated: bool) -> Undispatched {
+fn undecodable(err: &DecodeError, framed: &[u8], negotiated: bool) -> Undispatched {
     if let Some(refusal) = negotiated
         .then(|| unsupported_refusal(err, framed))
         .flatten()
@@ -43,7 +38,7 @@ pub(super) fn undecodable(err: &DecodeError, framed: &[u8], negotiated: bool) ->
 /// correlated where the frame carries a request id: a `COMMAND_RESULT` for
 /// a `COMMAND`, a correlated `ERROR` for another request frame, and an
 /// uncorrelated `ERROR` otherwise. `None` for a malformed frame.
-pub(super) fn unsupported_refusal(err: &DecodeError, framed: &[u8]) -> Option<FrameKind> {
+fn unsupported_refusal(err: &DecodeError, framed: &[u8]) -> Option<FrameKind> {
     if !err.is_unsupported() {
         return None;
     }
@@ -83,7 +78,7 @@ pub(super) fn unsupported_refusal(err: &DecodeError, framed: &[u8]) -> Option<Fr
 }
 
 #[cfg(test)]
-mod tests {
+mod unsupported_tests {
     use bytes::BytesMut;
     use phux_protocol::wire::encode::Encoder;
     use phux_protocol::wire::frame::{TYPE_GET_METADATA, TYPE_INPUT_KEY};

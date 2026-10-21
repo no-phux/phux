@@ -12,6 +12,7 @@ mod byc_6_5_keystroke_merge_order;
 mod command_dispatch;
 mod command_isolation;
 mod frame_too_large;
+mod native_integrations;
 mod newer_client;
 mod newer_client_commands;
 mod newer_client_hello;

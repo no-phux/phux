@@ -6,6 +6,7 @@
 //! where the drop will paste.
 
 use crate::settings::TabPosition;
+use crate::workspace::layout;
 use gpui::prelude::*;
 use gpui::{
     AnimationExt, Context, IntoElement, ParentElement, StyleRefinement, Styled, Window, div, px,
@@ -23,9 +24,10 @@ mod card;
 mod controls;
 mod depth;
 mod split;
+mod stack;
 
-use card::pane_view;
 use split::split_tree;
+use stack::zoom_stack;
 
 pub(super) fn main_column(
     desk: &mut Desk,
@@ -99,9 +101,12 @@ fn workspace_body(
         .pr(px(gutter))
         .pb(px(foot(desk, look)))
         .child(if let Some(id) = zoomed {
+            let behind = root
+                .as_ref()
+                .map_or(0, |root| layout::placements(root).len().saturating_sub(1));
             desk.placement(&id).cloned().map_or_else(
                 || div().into_any_element(),
-                |placement| pane_view(desk, &placement, window, cx),
+                |placement| zoom_stack(desk, &placement, behind, look, window, cx),
             )
         } else if let Some(root) = root {
             split_tree(desk, &root, look, window, cx).into_any_element()

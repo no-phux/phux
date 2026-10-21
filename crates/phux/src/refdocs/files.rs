@@ -56,6 +56,11 @@ pub(crate) fn page() -> Page {
          `XDG_CONFIG_HOME` to isolate configuration for a test or an \
          alternate environment. `phux config path` prints the resolved \
          path.\n\n\
+         Beside `config.toml`, `ops.env` holds the ideas-capture \
+         credentials `phux idea` reads: `PHUX_IDEAS_KEY_ID` (the key id) \
+         and `PHUX_IDEAS_KEY` (64 hex characters, the 32-byte HMAC \
+         secret). The secret is never printed. The file is not \
+         `config.toml` and is never committed.\n\n\
          Beside it, `known-authorities` holds the certificate authority \
          each paired server's leaf was issued by, one line per server \
          keyed by the `[[remote]]` entry's `cert-fingerprint`. \
@@ -80,6 +85,7 @@ pub(crate) fn page() -> Page {
          ├── remote-tokens       # structured credential store (owner-only, 0600)\n\
          ├── enrollment-tickets  # single-use enrollment ticket hashes (owner-only, 0600)\n\
          ├── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
+         ├── ideas/              # phux idea spool, one file per unsent capture\n\
          ├── service-wrapper.sh  # `phux service install --restore` wrapper\n\
          └── workspace.json      # `--restore` archive, kept current by `--autosave`\n\
          ```\n\n\
@@ -148,6 +154,10 @@ pub(crate) fn page() -> Page {
            the scope and lifetime the credential it enrolls gets; the \
            first redemption consumes it. It sits beside the \
            workload registry and moves with `PHUX_WORKLOAD_KEYS`.\n\
+         - `ideas/` is the `phux idea` spool (`ideas/spool/`, one file per \
+           idea that does not yet have a 2xx). The file keeps the \
+           idempotency key. A network failure leaves it; the next \
+           `phux idea` sends those same bytes. A 2xx removes it.\n\
          - `reports/` holds local bug-report bundles written by the TUI \
            `report-bug` action (`C-a B`) and by `phux report new`. Each \
            subdirectory is one report (session, pane, version, log tails, \
@@ -178,7 +188,7 @@ pub(crate) fn page() -> Page {
         title: "phux file locations reference",
         summary: "The symbolic path rule for every file phux reads or \
                   writes: socket, config, logs, TLS material, tokens, \
-                  bug reports.",
+                  bug reports, and the ideas spool.",
         lede: "Where phux keeps its socket, config, state, logs, and credentials.",
         body,
     }
@@ -250,6 +260,11 @@ mod tests {
             &phux_config::instance::reports_dir(),
             &format!("{state_leaf}/reports"),
         );
+        ends_with(
+            &crate::commands::idea::ideas_spool_dir(),
+            &format!("{state_leaf}/ideas/spool"),
+        );
+        ends_with(&crate::commands::idea::ops_env_path(), "phux/ops.env");
         // `$PHUX_SOCKET` overrides the whole path, so the shape holds
         // only when the variable is unset (as it is in the test runner;
         // guarded so an operator's environment cannot fail the suite).
@@ -273,6 +288,7 @@ mod tests {
             "remote-key.pem",
             "remote-tokens",
             "reports/",
+            "ideas/",
             "service-wrapper.sh",
             "workspace.json",
             "server.pid",

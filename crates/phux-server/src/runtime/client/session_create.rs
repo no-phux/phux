@@ -1,28 +1,21 @@
-//! Session creation over L3 metadata: requests, idempotent results, and keep-empty.
-
-use super::{
-    CancellationToken, ClientId, DetachReason, FrameKind, Outbound, Scope, ServerInterceptedKey,
-    SharedState, WireResourceId, debug, detach_and_release_consumer_state, info, mpsc, warn,
-};
-
 #[derive(serde::Deserialize)]
-pub(super) struct SessionCreateRequest {
-    pub(super) name: String,
-    pub(super) command: Option<Vec<String>>,
-    pub(super) cwd: Option<String>,
+struct SessionCreateRequest {
+    name: String,
+    command: Option<Vec<String>>,
+    cwd: Option<String>,
     #[serde(default)]
-    pub(super) env: std::collections::BTreeMap<String, String>,
+    env: std::collections::BTreeMap<String, String>,
     #[serde(default)]
-    pub(super) agent_session: Option<Vec<u8>>,
+    agent_session: Option<Vec<u8>>,
     #[serde(default)]
-    pub(super) request_token: Option<String>,
+    request_token: Option<String>,
     /// ADR-0105: the session survives its last window.
     #[serde(default)]
-    pub(super) keep_empty: bool,
+    keep_empty: bool,
     /// ADR-0105: create the session with no seed terminal (implies
     /// `keep_empty`); refused alongside a `command`.
     #[serde(default)]
-    pub(super) empty: bool,
+    empty: bool,
 }
 
 /// Translate a `SESSION_CREATE_KEY` request into a `SessionCreate` commit
@@ -30,7 +23,7 @@ pub(super) struct SessionCreateRequest {
 /// `keep_empty` a persistent one with a seed pane, and a bare create an
 /// ephemeral one whose last pane's exit deletes it. Returns the seed pane's
 /// wire id, or `None` for an empty session.
-pub(super) fn run_session_create(
+fn run_session_create(
     state: &SharedState,
     writer: ClientId,
     request: SessionCreateRequest,
@@ -76,7 +69,7 @@ pub(super) fn run_session_create(
 /// is `null` and `empty` is `true` for an empty session; a seeded session's
 /// document keeps its pre-ADR-0105 fields. `session_id` binds the receipt to
 /// the created identity even if another client later renames the session.
-pub(super) fn session_create_payload(
+fn session_create_payload(
     name: &str,
     session_id: Option<u32>,
     wire: Option<&WireResourceId>,
@@ -99,7 +92,7 @@ pub(super) fn session_create_payload(
 /// persistent, `false` ephemeral. A change is broadcast to the key's
 /// subscribers; ephemeral on an empty session deletes it, detaching its
 /// clients and possibly self-exiting.
-pub(super) fn apply_session_keep_empty(
+fn apply_session_keep_empty(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
@@ -157,7 +150,7 @@ pub(super) fn apply_session_keep_empty(
 /// Detach the clients attached to a session that was just killed, with
 /// `DETACHED { SESSION_KILLED }`. Each delivery waits in its own task, so a
 /// wedged client's full mailbox cannot block the write that killed it.
-pub(in crate::runtime) fn detach_clients_of_killed_session(
+pub(super) fn detach_clients_of_killed_session(
     state: &SharedState,
     clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
 ) {
@@ -178,7 +171,7 @@ pub(in crate::runtime) fn detach_clients_of_killed_session(
 /// Why a parsed `SESSION_CREATE_KEY` request is ignored, if it is. Each
 /// refusal is silent on the wire (`SET_METADATA` has no reply) and logged by
 /// the caller.
-pub(super) fn session_create_refusal(request: &SessionCreateRequest) -> Option<&'static str> {
+fn session_create_refusal(request: &SessionCreateRequest) -> Option<&'static str> {
     use phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES;
 
     // ADR-0105: an empty session has no seed terminal.
@@ -204,7 +197,7 @@ pub(super) fn session_create_refusal(request: &SessionCreateRequest) -> Option<&
 
 /// The key a create publishes its result under: a one-shot, request-specific
 /// key for a nonce-bearing client, the original global key for a legacy one.
-pub(super) fn session_create_result_key(request_token: Option<&str>) -> String {
+fn session_create_result_key(request_token: Option<&str>) -> String {
     use phux_protocol::wire::frame::{SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX};
 
     request_token.map_or_else(
@@ -215,7 +208,7 @@ pub(super) fn session_create_result_key(request_token: Option<&str>) -> String {
 
 /// Publish a successful create's result document under `result_key`, and
 /// track a one-shot key so it is consumed on its owner's first read.
-pub(super) fn publish_session_create_result(
+fn publish_session_create_result(
     state: &SharedState,
     client_id: ClientId,
     result_key: String,
@@ -235,7 +228,7 @@ pub(super) fn publish_session_create_result(
 
 /// The digest a create's token is bound to: every field of the request but
 /// the token (ADR-0126). `env` is a sorted map, so the encoding is canonical.
-pub(super) fn session_create_digest(request: &SessionCreateRequest) -> [u8; 32] {
+fn session_create_digest(request: &SessionCreateRequest) -> [u8; 32] {
     use sha2::Digest as _;
 
     let canonical = serde_json::json!({
@@ -250,7 +243,7 @@ pub(super) fn session_create_digest(request: &SessionCreateRequest) -> [u8; 32] 
     sha2::Sha256::digest(canonical.to_string().as_bytes()).into()
 }
 
-pub(super) fn valid_session_create_token(token: &str) -> bool {
+fn valid_session_create_token(token: &str) -> bool {
     token.len() == 36
         && token.bytes().enumerate().all(|(index, byte)| {
             if matches!(index, 8 | 13 | 18 | 23) {
@@ -261,12 +254,12 @@ pub(super) fn valid_session_create_token(token: &str) -> bool {
         })
 }
 
-pub(super) fn is_reserved_session_create_result(scope: &Scope, key: &str) -> bool {
+fn is_reserved_session_create_result(scope: &Scope, key: &str) -> bool {
     matches!(scope, Scope::Global)
         && key.starts_with(phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX)
 }
 
-pub(super) fn handle_session_create_metadata(
+fn handle_session_create_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
@@ -338,7 +331,7 @@ pub(super) fn handle_session_create_metadata(
 
 /// Run an admitted create and publish its result. A keyed create binds the
 /// result to its token before publishing, so a repeat answers the same one.
-pub(super) fn run_and_publish_session_create(
+fn run_and_publish_session_create(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,

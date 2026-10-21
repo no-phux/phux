@@ -1,50 +1,6 @@
-//! Decoding client frames, the pre-HELLO gate, and negotiating HELLO: version, authority, and bootstrap profile.
-
-use super::{
-    BootstrapLimits, BootstrapProfile, BytesMut, ClientCapabilities, ClientId, ConnectionClose,
-    DetachReason, ErrorCode, FrameKind, LayerSet, NegotiatedConnection, Outbound, PROTOCOL_VERSION,
-    QUIC_STREAMS, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
-    SharedState, Standing, TransportType, Undispatched, debug, framing_violation, io, mpsc,
-    runtime_server_features, select_bootstrap_profile, trace, warn,
-};
-
-/// The major is the compatibility line (protocol 1.0 on): any client of the
-/// server's major interoperates, whatever its minor and patch, because
-/// everything a minor adds is negotiated or ignorable. Only a major
-/// mismatch is refused.
-pub(super) const fn protocol_is_compatible(client_major: u16) -> bool {
-    client_major == PROTOCOL_VERSION.major
-}
-
-pub(super) fn incompatible_protocol_message(
-    client_major: u16,
-    client_minor: u16,
-    client_patch: u16,
-) -> String {
-    let client = (client_major, client_minor, client_patch);
-    let server = (
-        PROTOCOL_VERSION.major,
-        PROTOCOL_VERSION.minor,
-        PROTOCOL_VERSION.patch,
-    );
-    let remediation = if client < server {
-        "update the phux app/client"
-    } else {
-        "update the phux server"
-    };
-    format!(
-        "incompatible protocol: client offered {client_major}.{client_minor}.{client_patch}, \
-         server requires {}.x; {remediation} so the protocol majors match",
-        PROTOCOL_VERSION.major,
-    )
-}
-
 /// SPEC §5: a framing violation is answered with `FRAME_TOO_LARGE` before
 /// closing. `None` for every other read error: the transport died.
-pub(super) fn framing_violation_close(
-    err: &io::Error,
-    client_id: ClientId,
-) -> Option<ConnectionClose> {
+fn framing_violation_close(err: &io::Error, client_id: ClientId) -> Option<ConnectionClose> {
     let framing = framing_violation(err)?;
     warn!(?client_id, error = %framing, "client framing violation; closing");
     Some(ConnectionClose {
@@ -58,7 +14,7 @@ pub(super) fn framing_violation_close(
 /// Decode one framed message. Once HELLO has been negotiated the connection's
 /// selected limits apply, so an oversized borrowed payload is rejected before
 /// the decoder copies it into owned storage.
-pub(super) fn decode_client_frame(
+fn decode_client_frame(
     framed: &BytesMut,
     negotiated: Option<&NegotiatedConnection>,
 ) -> Result<FrameKind, Undispatched> {
@@ -79,11 +35,11 @@ pub(super) fn decode_client_frame(
     );
     decoded
         .map(|(frame, _rest)| frame)
-        .map_err(|err| super::unsupported::undecodable(&err, framed, negotiated.is_some()))
+        .map_err(|err| undecodable(&err, framed, negotiated.is_some()))
 }
 
 /// Nothing stateful may precede HELLO; PING is a stateless liveness probe.
-pub(super) fn reject_frame_before_hello(
+fn reject_frame_before_hello(
     frame: &FrameKind,
     negotiated: bool,
     client_id: ClientId,
@@ -95,7 +51,7 @@ pub(super) fn reject_frame_before_hello(
 }
 
 /// Whether a framed message's type byte is one `PRE_HELLO` admits.
-pub(super) fn is_pre_hello_type(framed: &[u8]) -> bool {
+fn is_pre_hello_type(framed: &[u8]) -> bool {
     use phux_protocol::wire::frame::{TYPE_HELLO, TYPE_PING};
     matches!(
         framed.get(phux_protocol::wire::LENGTH_PREFIX_LEN),
@@ -105,7 +61,7 @@ pub(super) fn is_pre_hello_type(framed: &[u8]) -> bool {
 
 /// A protocol violation, not a version verdict: clients treat
 /// `VERSION_INCOMPATIBLE` as a permanent refusal and stop redialing.
-pub(super) fn before_hello_close(client_id: ClientId) -> ConnectionClose {
+fn before_hello_close(client_id: ClientId) -> ConnectionClose {
     warn!(?client_id, "stateful frame before HELLO; closing");
     ConnectionClose {
         attached_reason: None,
@@ -116,19 +72,19 @@ pub(super) fn before_hello_close(client_id: ClientId) -> ConnectionClose {
 }
 
 /// The HELLO frame's payload.
-pub(super) struct HelloRequest {
-    pub(super) client_name: String,
-    pub(super) protocol_major: u16,
-    pub(super) protocol_minor: u16,
-    pub(super) protocol_patch: u16,
-    pub(super) client_caps: ClientCapabilities,
+struct HelloRequest {
+    client_name: String,
+    protocol_major: u16,
+    protocol_minor: u16,
+    protocol_patch: u16,
+    client_caps: ClientCapabilities,
 }
 
 /// Negotiate the connection: version compatibility, the policy engine's
 /// verdict on the authenticated peer, and the bootstrap profile both sides can
 /// speak. All of it is cached in `negotiated` exactly once — before any
 /// stateful frame can be processed — and acknowledged with `HELLO_OK`.
-pub(super) async fn negotiate_hello(
+async fn negotiate_hello(
     state: &SharedState,
     client_id: ClientId,
     out_tx: &mpsc::Sender<Outbound>,
@@ -174,9 +130,7 @@ pub(super) async fn negotiate_hello(
     }
     authorize_hello(state, client_id).await?;
     // After authorization, so the announcement cannot influence it.
-    state.with_mut(|s| {
-        crate::runtime::whoami::admit_ssh_origin(s, client_id, client_caps.ssh_origin);
-    });
+    state.with_mut(|s| super::whoami::admit_ssh_origin(s, client_id, client_caps.ssh_origin));
     let (selected_profile, bootstrap_limits) = select_hello_profile(&client_caps, client_id)?;
 
     let mut effective_client_caps = client_caps;
@@ -227,6 +181,7 @@ pub(super) async fn negotiate_hello(
                 ServerFeatureExt::Organization,
                 ServerFeatureExt::SessionKill,
                 ServerFeatureExt::NativeAgent,
+                ServerFeatureExt::NativeAgentLaunch,
                 ServerFeatureExt::PerfControl,
                 ServerFeatureExt::SessionProject,
                 ServerFeatureExt::FileDownload,
@@ -248,10 +203,7 @@ pub(super) async fn negotiate_hello(
 /// local root peer. Every refusal here is HELLO's authentication outcome, so
 /// the peer gets `ERROR { PERMISSION_DENIED }` then `DETACHED {
 /// AUTHENTICATION_FAILED }` (workload-auth §7).
-pub(super) async fn authorize_hello(
-    state: &SharedState,
-    client_id: ClientId,
-) -> Result<(), ConnectionClose> {
+async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(), ConnectionClose> {
     let identity = state.with(|s| {
         let peer = s.peer_identity(client_id).cloned()?;
         Some((peer, s.authenticated_credential(client_id).cloned()))
@@ -286,7 +238,7 @@ pub(super) async fn authorize_hello(
     // ADR-0163: a connection that arrived on a delegated credential's own
     // socket acts as that credential, never as the owner the socket's uid
     // would otherwise make it.
-    if let Some(id) = crate::runtime::delegation::delegated_credential(&peer, credential.as_ref()) {
+    if let Some(id) = super::delegation::delegated_credential(&peer, credential.as_ref()) {
         let grant = state.with(|s| s.delegated_grant(id, chrono::Utc::now()));
         let Some(grant) = grant else {
             warn!(
@@ -325,7 +277,7 @@ pub(super) async fn authorize_hello(
 /// Select the protocol-0.7 bootstrap profile both peers can speak. `NativeState`
 /// requires an exact common codec and every required engine feature, so no
 /// common profile is a connection-ending `CodecUnavailable`.
-pub(super) fn select_hello_profile(
+fn select_hello_profile(
     client_caps: &ClientCapabilities,
     client_id: ClientId,
 ) -> Result<(BootstrapProfile, BootstrapLimits), ConnectionClose> {

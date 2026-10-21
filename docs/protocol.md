@@ -343,10 +343,14 @@ details.
 
 ## Changing the wire
 
+Native onboarding is additive inside `NATIVE_AGENT`, gated by its own
+`NATIVE_AGENT_LAUNCH` bit; see
+[ACP onboarding](./acp.md#desktop-onboarding-on-the-connected-host).
+
 - Allocate a new type byte or sub-tag in `wire/frame/mod.rs`; duplicates
   fail to compile.
 - Add field ids in `wire/field.rs`, append-only.
-- Gate new behavior on a feature bit in `caps/features.rs`. Do not
+- Gate new behavior on a feature bit in `caps/server_features.rs`. Do not
   bump the protocol version for an additive change. A shipped capability bit is
   never withdrawn or repointed.
 - Grow a positional record only at its tail; never reorder, retype, or

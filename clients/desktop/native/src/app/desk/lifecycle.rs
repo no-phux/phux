@@ -189,7 +189,7 @@ impl Desk {
 
     pub(super) fn attach(&mut self, initial: Option<ResourceId>, cx: &mut Context<Self>) {
         // Native launch completions belong to the client that initiated them.
-        self.native_launch = Default::default();
+        self.reset_native_launch();
         if self.session.is_empty() {
             // The launch could not name a session; its reason is already shown.
             self.connect_error = Some("No session to open".into());

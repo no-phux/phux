@@ -1,9 +1,64 @@
-//! Bootstrap profile, engine codec, and native feature negotiation.
+/// A `u8` wire bit-set of `$item` flags whose `Default` is every known flag.
+/// Unknown bits are dropped on decode.
+macro_rules! u8_flag_set {
+    ($(#[$doc:meta])* $name:ident of $item:ident { $($variant:ident),+ $(,)? }) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub struct $name(u8);
 
-use super::{
-    BootstrapLimits, ClientCapabilities, DEFAULT_BOOTSTRAP_CHUNK_BYTES, DEFAULT_HISTORY_PAGE_BYTES,
-    OutputMode,
-};
+        impl $name {
+            const KNOWN: u8 = 0 $(| ($item::$variant as u8))+;
+
+            /// The empty set.
+            #[must_use]
+            pub const fn new() -> Self {
+                Self(0)
+            }
+
+            /// Every known flag.
+            #[must_use]
+            pub const fn all() -> Self {
+                Self(Self::KNOWN)
+            }
+
+            /// The set of `items`.
+            #[must_use]
+            pub const fn with(items: &[$item]) -> Self {
+                let mut bits = 0;
+                let mut i = 0;
+                while i < items.len() {
+                    bits |= items[i] as u8;
+                    i += 1;
+                }
+                Self(bits)
+            }
+
+            /// Whether `item` is in the set.
+            #[must_use]
+            pub const fn contains(self, item: $item) -> bool {
+                self.0 & (item as u8) != 0
+            }
+
+            /// Known wire bits.
+            #[must_use]
+            pub const fn as_wire(self) -> u8 {
+                self.0 & Self::KNOWN
+            }
+
+            /// Decode known bits, ignoring future ones.
+            #[must_use]
+            pub const fn from_wire(bits: u8) -> Self {
+                Self(bits & Self::KNOWN)
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::all()
+            }
+        }
+    };
+}
 
 /// One synchronization profile a peer can bootstrap.
 #[repr(u8)]
@@ -427,43 +482,4 @@ pub fn select_bootstrap_profile(
         })
         .map(|(_, profile)| (profile, limits))
         .ok_or(CodecUnavailable)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_advertisement_is_opt_in_and_indivisible() {
-        let synth = BootstrapProfileSet::with(&[
-            BootstrapProfileKind::SynthesizedVtRaw,
-            BootstrapProfileKind::SynthesizedVtStateSync,
-        ]);
-        let base = BootstrapCapabilities::new();
-        assert_eq!(base.profiles, synth);
-        assert_eq!(base.native_codecs.as_wire(), 0);
-        assert_eq!(base.native_features.as_wire(), 0);
-
-        let native = base.with_native(
-            EngineCodec::LibghosttyCheckpointV2,
-            EngineFeatureSet::required_native(),
-        );
-        assert!(native.profiles.contains(BootstrapProfileKind::NativeState));
-        assert!(
-            native
-                .profiles
-                .contains(BootstrapProfileKind::SynthesizedVtRaw)
-        );
-        assert!(
-            native
-                .native_codecs
-                .contains(EngineCodec::LibghosttyCheckpointV2)
-        );
-        assert_eq!(native.native_features.as_wire(), 0x0000_000f);
-
-        let partial =
-            EngineFeatureSet::with(&[EngineFeature::Continuation, EngineFeature::ReadyBoundary]);
-        let withdrawn = native.with_native(EngineCodec::LibghosttyCheckpointV2, partial);
-        assert_eq!(withdrawn, base);
-    }
 }

@@ -8,11 +8,11 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 
 use super::super::skin::Look;
 
-/// One option: its value, label, icon, and debug selector.
+/// One option: its value, label, optional icon, and debug selector.
 pub(crate) struct Segment<T> {
     pub value: T,
     pub label: &'static str,
-    pub icon: IconName,
+    pub icon: Option<IconName>,
     pub selector: String,
 }
 
@@ -43,7 +43,7 @@ where
             div().debug_selector(|| selector.clone()).child(
                 Button::new(SharedString::from(selector.clone()))
                     .label(segment.label)
-                    .icon(segment.icon)
+                    .when_some(segment.icon, |button, icon| button.icon(icon))
                     .small()
                     .ghost()
                     .toggled(on)
