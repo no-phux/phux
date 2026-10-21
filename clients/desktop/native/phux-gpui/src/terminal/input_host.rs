@@ -194,7 +194,10 @@ pub(super) fn bind_input(
     option_as_alt: bool,
     window: &gpui::Window,
     cx: &mut gpui::Context<super::Terminal>,
-) -> (gpui::Entity<crate::input::TerminalInput>, gpui::Subscription) {
+) -> (
+    gpui::Entity<crate::input::TerminalInput>,
+    gpui::Subscription,
+) {
     let input =
         cx.new(|_cx| crate::input::TerminalInput::new(client, view, terminal, focus, window));
     input.update(cx, |state, _| state.set_option_as_alt(option_as_alt));
@@ -216,7 +219,6 @@ pub(super) fn bind_input(
     );
     (input, notices)
 }
-
 
 #[cfg(test)]
 mod tests {

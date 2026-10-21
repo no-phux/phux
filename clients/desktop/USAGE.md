@@ -242,7 +242,10 @@ actions. A paste goes to the program as a paste: a shell, editor or coding
 agent that turns on bracketed paste takes many lines at once and runs none of
 them. Only a program that would read the lines as typed keys, where each line
 break is Enter, asks first. On Linux a selection is also the primary
-selection, so a middle click pastes it.
+selection, so a middle click pastes it. A program's own copy (OSC 52, as
+OpenCode, Claude Code, Neovim and tmux send it, also from a remote host)
+lands on the clipboard while its pane has keyboard focus in the active
+window; a background pane or window never copies.
 Dropping files onto a pane pastes their shell-quoted paths, and Command-V of a
 copied file pastes its path rather than its name. Command-V of a clipboard
 image (a screenshot, a copied picture) saves it under the temporary directory
