@@ -57,13 +57,14 @@ A newer server sends a new frame kind, event, enum value, or record shape
 only to clients whose `HELLO` version or capabilities show they know it.
 Clients are still tolerant, because that rule can be gotten wrong.
 `phux_protocol::wire::decode::newer_server_fallback` is the shared rule,
-and the runtime, the C ABI, and the web client all apply it:
+and the runtime, the C ABI, the TUI, and the web client all apply it:
 
 - unknown tagged fields and record tails are skipped;
-- a reply this build cannot read (`COMMAND_RESULT`, `RESOURCE_SPAWNED`,
-  `RESOURCE_MOVED`, `METADATA_VALUE`, `METADATA_KEYS`,
-  `DIRECTORY_LISTING`, `PATH_RESULTS`) settles its request as an error with
-  code `0`, `UNREADABLE_REPLY`. It is not `UNSUPPORTED`: the server
+- a reply this build cannot read (`COMMAND_RESULT`, `METADATA_VALUE`,
+  `METADATA_KEYS`, `DIRECTORY_LISTING`, `PATH_RESULTS`) settles its request
+  as an error with code `0`, `UNREADABLE_REPLY`; an unreadable
+  `RESOURCE_SPAWNED` or `RESOURCE_MOVED` settles as an `Unknown` spawn or
+  move result. Neither is `UNSUPPORTED`: the server
   answered, so the request may have taken effect. Acknowledged input, a
   spawn, or an agent prompt answered this way (or with an error code or
   spawn error the client does not know) settles as outcome unknown, never
@@ -94,8 +95,9 @@ hub cannot read for an unknown value is logged and skipped; when it
 answered a request the hub relayed, the request settles as an unknown
 outcome, never as refused or `UNSUPPORTED`, since the satellite may have
 acted: a spawn or move result carries the reserved result tag `255`
-(outcome not stated), anything else an `UNREADABLE_REPLY` error. The hub never relays bytes it cannot read: a
-satellite's ids inside them would not be translated to the hub's. An
+(outcome not stated), anything else an `UNREADABLE_REPLY` error. The hub
+never relays a reply it cannot read, since a satellite's ids inside it
+would not be translated to the hub's. An
 uncorrelated `ERROR` from a satellite is logged and does not end the link.
 Malformed bytes still end the link. A hub relays a command to a satellite
 only when that satellite advertises the feature, and refuses
@@ -130,7 +132,8 @@ only when that satellite advertises the feature, and refuses
 - JSON requests are decoded strictly by the server, so an older server
   refuses an unknown op or field as `UNSUPPORTED` rather than ignoring it.
   JSON a client reads (answers, agent stream updates, stored recipes) skips
-  unknown fields and folds unknown enum values to `unknown`.
+  unknown fields; native agent states and dispositions fold an unknown
+  value to `unknown`.
 - Say in the PR what an older client sees, and what an older server does
   with the new request. The probes live in the [server's protocol
   tests](../crates/phux-server/tests/protocol) (`newer_client*.rs`) and the
