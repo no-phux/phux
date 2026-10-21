@@ -73,13 +73,14 @@ define_server_features! {
     /// The server accepts sandboxed, chunked `Command::PutFile` uploads.
     FileUpload = FILE_UPLOAD = 0x0000_0020,
     /// The server accepts `MOVE_RESOURCE` (ADR-0056). A client MUST see the
-    /// bit first: an older server drops the unknown frame silently.
+    /// bit first: a 1.x server without it answers an uncorrelated
+    /// `ERROR Unsupported` for the frame type and keeps the connection.
     MoveResource = MOVE_RESOURCE = 0x0000_0040,
     /// The server accepts opaque terminal-emulator replies for attached PTYs.
     TerminalReply = TERMINAL_REPLY = 0x0000_0080,
     /// The server accepts the local-only `SHUTDOWN`. A client MUST see the
-    /// bit first: an older server drops the tag, indistinguishable from a
-    /// stop that did not happen.
+    /// bit first: a 1.x server without it answers `COMMAND_RESULT
+    /// Unsupported` and keeps running.
     Shutdown = SHUTDOWN = 0x0000_0100,
     /// The server honors `SPAWN_RESOURCE.initial_size`. Sending it
     /// unadvertised is safe (skipped by length); the bit tells a
@@ -99,8 +100,9 @@ define_server_features! {
     /// bit tells a client the kind it asked for is the kind it got.
     ResourceKinds = RESOURCE_KINDS = 0x0000_4000,
     /// The server answers `LIST_DIRECTORY` for its own host
-    /// (`docs/spec/L3.md` §4). A client MUST see the bit first, or the
-    /// request waits forever on an older server.
+    /// (`docs/spec/L3.md` §4). A client MUST see the bit first: a 1.x
+    /// server without it answers an uncorrelated `ERROR Unsupported` for the
+    /// frame type, so no `DIRECTORY_LISTING` ever answers the request.
     ListDirectory = LIST_DIRECTORY = 0x0000_8000,
     /// `GET_STATE { SERVER }` carries the trailing host-session inventory:
     /// one row per federation satellite, empty on a non-hub. The bit lets a
