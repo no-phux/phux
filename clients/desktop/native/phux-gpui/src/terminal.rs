@@ -241,6 +241,9 @@ impl Render for Terminal {
         let rebound = self.rebind.swap(false, Ordering::AcqRel);
         if rebound {
             self.rebind_input(window, cx);
+            // A replaced presentation (re-attach, re-bootstrap) may have
+            // cleared the runtime's focus; the next report asserts it again.
+            self.reported_focus = None;
         }
         let has_focus = self.focus.is_focused(window);
         match focus_step(self.settings.focused, self.was_focused, rebound, has_focus) {
