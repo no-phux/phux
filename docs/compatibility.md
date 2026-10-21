@@ -38,8 +38,7 @@ frame sent before `HELLO`.
 `HELLO` itself always decodes. An unknown color support reads as
 truecolor and an unknown output mode as raw; a flag is set when its byte is
 nonzero; a limit above this server's cap is clamped to the cap and a zero
-limit takes the default. Unknown compression bits are kept but never
-selected.
+limit takes the default. An unknown compression algorithm reads as none.
 
 A client checks a feature bit before it sends the request the bit gates,
 and degrades that one feature when the bit is missing. It does not refuse
