@@ -165,8 +165,9 @@ fn serve(stream: &UnixStream, store: &mut Store, waiters: &mut Waiters) -> Serve
     };
     match request {
         Request::WaitMail(wait) => waiters.admit(stream, wait, store),
-        Request::SendMail(send) => {
-            let _ = reply(stream, &handle(store, Request::SendMail(send)));
+        // Both can leave mail to take: a new message, or a released take.
+        request @ (Request::SendMail(_) | Request::ReleaseMail(_)) => {
+            let _ = reply(stream, &handle(store, request));
             waiters.wake(store);
         }
         other => {
@@ -270,6 +271,7 @@ fn handle(store: &mut Store, request: Request) -> Response {
         Request::ReadMail(request) => store.read_mail(&request).map(Response::Mail),
         Request::AckMail(request) => store.ack_mail(&request).map(Response::Acked),
         Request::WaitMail(request) => store.take_mail(&request).map(Response::Mail),
+        Request::ReleaseMail(request) => store.release_mail(&request).map(Response::Released),
         Request::TakeClaim(request) => store.take_claim(&request).map(Response::ClaimOutcome),
         Request::RenewClaim(request) => store.renew_claim(&request).map(Response::Claims),
         Request::ReleaseClaim(request) => store.release_claim(&request).map(Response::Released),

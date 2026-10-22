@@ -139,6 +139,17 @@ pub struct WaitMail {
     pub limit: u32,
 }
 
+/// Return taken messages to the reader's undelivered mail, because they
+/// never reached the agent's conversation: the reply to the taker was lost,
+/// or the harness could not inject them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseMail {
+    /// Whose mail.
+    pub reader: String,
+    /// The taken messages. Ids not taken by this reader are ignored.
+    pub ids: Vec<OpaqueId>,
+}
+
 impl WaitMail {
     /// The reader, checked, and the bounded limit.
     fn checked(&self) -> Result<(Address, u32), Error> {
@@ -348,6 +359,30 @@ impl Store {
         }
         tx.commit()?;
         Ok(mail)
+    }
+}
+
+impl Store {
+    /// Undo [`Store::take_mail`] for `request.ids`, so a later take returns
+    /// them again. Returns how many were taken and are now released.
+    ///
+    /// # Errors
+    ///
+    /// Validation and store errors.
+    pub fn release_mail(&mut self, request: &ReleaseMail) -> Result<u64, Error> {
+        let reader = Address::parse(&request.reader)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut released = 0;
+        for id in &request.ids {
+            released += tx.execute(
+                "DELETE FROM mail_injected WHERE mail_id = ?1 AND recipient_key = ?2",
+                params![id.as_slice(), reader.key()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(u64::try_from(released).unwrap_or(u64::MAX))
     }
 }
 

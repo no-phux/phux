@@ -38,7 +38,11 @@ async function settle(): Promise<void> {
 test("mail reaches the conversation as a follow-up that starts a turn when idle", async () => {
   const pi = fakePi();
   const source = scripted([{ text: "[phux mail] A message", ids: ["a"] }]);
-  const inbox = registerPhuxMail(pi.api, { env: { PHUX_TERMINAL_ID: "749" }, wait: source.wait });
+  const inbox = registerPhuxMail(pi.api, {
+    env: { PHUX_TERMINAL_ID: "749" },
+    wait: source.wait,
+    release: async () => { throw new Error("nothing to release"); },
+  });
   assert.notEqual(inbox, null);
   pi.fire("session_start");
   await settle();

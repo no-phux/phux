@@ -178,3 +178,24 @@ fn a_wait_longer_than_an_hour_is_refused() {
         Err(Error::InvalidText { .. })
     ));
 }
+
+#[test]
+fn a_released_take_is_taken_again_and_only_the_takers_rows_are_touched() {
+    let (_dir, mut store) = store();
+    let id = send(&mut store, "a", &["@730", "@731"], "t", "hello")
+        .mail
+        .id;
+    assert_eq!(take(&mut store, "@730", 0).len(), 1);
+    assert_eq!(take(&mut store, "@731", 0).len(), 1);
+    let release = |reader: &str| ReleaseMail {
+        reader: reader.into(),
+        ids: vec![id],
+    };
+    assert_eq!(store.release_mail(&release("pi@730")).unwrap(), 1);
+    assert_eq!(store.release_mail(&release("@730")).unwrap(), 0, "once");
+    assert_eq!(take(&mut store, "@730", 0).len(), 1, "taken again");
+    assert!(
+        take(&mut store, "@731", 0).is_empty(),
+        "another reader's take stands"
+    );
+}

@@ -197,10 +197,18 @@ once, framed as a message from another agent rather than from the user.
 | Grok | hook context after each tool, and a `block` at stop |
 
 Claude Code and Grok only have hooks, so an agent idle at its prompt sees
-its mail at its next hook. The harness side is two commands:
-`phux mail wait --json` holds until there is mail and takes it, and
-`phux mail hook-context --event EVENT` prints the hook reply. Mail taken
-this way still shows as unread in `phux mail read`.
+its mail at its next hook. Workers whose conversation an SDK controller owns
+(`PHUX_AGENT_REPORTING=0`) get no mail from their hooks either: the
+controller decides what enters that conversation.
+
+The harness side is three commands. `phux mail wait --json` holds until
+there is mail and takes it; with `--until-stdin-closes` it gives up, taking
+nothing, when the harness that started it exits, however abruptly.
+`phux mail hook-context --event EVENT` prints the hook reply. A harness that
+took mail but could not inject it returns it with `phux mail release ID...`,
+and mail whose output cannot be written is released by the command itself,
+as is a take whose reply the keeper could not send. Taken mail still shows
+as unread in `phux mail read`.
 
 `claim take` grants every path or none, and exits 1 naming the holders on a
 conflict. It prints a fence; `phux claim renew FENCE` and

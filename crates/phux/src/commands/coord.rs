@@ -84,6 +84,23 @@ pub(crate) enum MailAction {
         /// At most this many messages, oldest first. Default and most 16.
         #[usage(long, value_name = "N")]
         limit: Option<u32>,
+        /// Give up, taking nothing, once stdin closes. A harness holds stdin
+        /// open for its whole life, so a wait never outlives it.
+        #[usage(long)]
+        until_stdin_closes: bool,
+        #[usage(flatten)]
+        me: AsOpt,
+        #[usage(flatten)]
+        json: super::JsonOpt,
+    },
+    /// Return taken mail so the next wait takes it again
+    ///
+    /// For harness integrations whose injection failed after `wait` took
+    /// the mail. Ids this address did not take are ignored.
+    Release {
+        /// Message ids, as `wait` returned them.
+        #[usage(required, value_name = "ID")]
+        ids: Vec<String>,
         #[usage(flatten)]
         me: AsOpt,
         #[usage(flatten)]
@@ -195,9 +212,19 @@ pub(crate) fn run_mail(action: &MailAction) -> ExitCode {
         MailAction::Wait {
             timeout,
             limit,
+            until_stdin_closes,
             me,
             json,
-        } => delivery::wait(*timeout, *limit, &whoami(me), json.json),
+        } => delivery::wait(
+            delivery::WaitArgs {
+                timeout: *timeout,
+                limit: *limit,
+                until_stdin_closes: *until_stdin_closes,
+            },
+            &whoami(me),
+            json.json,
+        ),
+        MailAction::Release { ids, me, json } => delivery::release(ids, &whoami(me), json.json),
         MailAction::HookContext { event, me } => delivery::hook_context(*event, &whoami(me)),
     }
 }

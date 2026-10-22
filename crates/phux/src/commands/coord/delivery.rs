@@ -1,14 +1,18 @@
-//! `phux mail wait` and `phux mail hook-context`: how a harness takes its
+//! `phux mail wait`, `hook-context` and `release`: how a harness takes its
 //! agent's mail to put in the agent's conversation.
 //!
 //! Both take what they return (see [`phux_work::Store::take_mail`]), so a
-//! message reaches one agent's conversation at most once. Neither touches a
-//! terminal. The text they produce is the one framing every harness uses:
+//! message reaches one agent's conversation at most once. Mail whose output
+//! cannot be written is released at once, and a harness releases what it
+//! could not inject, so a take that never reached anyone is undone. Neither
+//! touches a terminal. The text they produce is the one framing every harness uses:
 //! mail from another agent, not an instruction from the user.
 
+use std::io::Write as _;
+use std::os::fd::AsFd as _;
 use std::process::ExitCode;
 
-use phux_work::{Mail, WaitMail};
+use phux_work::{Client, Mail, ReleaseMail, WaitMail};
 use serde_json::{Value, json};
 use usage::ValueEnum;
 
@@ -56,23 +60,43 @@ impl HookEvent {
     }
 }
 
-pub(super) fn wait(timeout: Option<u64>, limit: Option<u32>, me: &str, json: bool) -> ExitCode {
+/// `mail wait` options.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct WaitArgs {
+    pub(super) timeout: Option<u64>,
+    pub(super) limit: Option<u32>,
+    pub(super) until_stdin_closes: bool,
+}
+
+pub(super) fn wait(args: WaitArgs, me: &str, json: bool) -> ExitCode {
     let request = WaitMail {
         reader: me.to_owned(),
-        timeout_ms: timeout.unwrap_or(DEFAULT_WAIT_SECS).saturating_mul(1000),
-        limit: limit.unwrap_or(0),
+        timeout_ms: args
+            .timeout
+            .unwrap_or(DEFAULT_WAIT_SECS)
+            .saturating_mul(1000),
+        limit: args.limit.unwrap_or(0),
     };
-    let mail = match take(request, json) {
-        Ok(mail) => mail,
+    let client = match store(json) {
+        Ok(client) => client,
         Err(code) => return code,
     };
-    let text = inbox_text(&mail);
-    if json {
-        emit(&json!({"schema": SCHEMA, "reader": me, "mail": mail, "text": text}));
+    let taken = if args.until_stdin_closes {
+        client.wait_mail_while(request, std::io::stdin().as_fd())
     } else {
-        outln!("{}", text.unwrap_or_else(|| format!("no mail for {me}")));
-    }
-    ExitCode::SUCCESS
+        client.wait_mail(request)
+    };
+    let mail = match taken {
+        Ok(mail) => mail,
+        Err(err) => return super::super::mission::report_as(json, &err, SCHEMA),
+    };
+    let text = inbox_text(&mail);
+    let line = if json {
+        json!({"schema": SCHEMA, "reader": me, "mail": mail, "text": text}).to_string()
+    } else {
+        text.unwrap_or_else(|| format!("no mail for {me}"))
+    };
+    hand_over(&client, me, &mail, &line)
 }
 
 pub(super) fn hook_context(event: HookEvent, me: &str) -> ExitCode {
@@ -81,22 +105,76 @@ pub(super) fn hook_context(event: HookEvent, me: &str) -> ExitCode {
         timeout_ms: 0,
         limit: HOOK_LIMIT,
     };
-    match take(request, false) {
-        Ok(mail) => {
-            if let Some(text) = inbox_text(&mail) {
-                emit(&hook_reply(event, &text));
+    let client = match store(false) {
+        Ok(client) => client,
+        Err(code) => return code,
+    };
+    let mail = match client.wait_mail(request) {
+        Ok(mail) => mail,
+        Err(err) => return super::super::mission::report_as(false, &err, SCHEMA),
+    };
+    inbox_text(&mail).map_or(ExitCode::SUCCESS, |text| {
+        hand_over(&client, me, &mail, &hook_reply(event, &text).to_string())
+    })
+}
+
+pub(super) fn release(ids: &[String], me: &str, json: bool) -> ExitCode {
+    let parsed: Result<Vec<_>, _> = ids
+        .iter()
+        .map(|id| serde_json::from_value(Value::from(id.as_str())))
+        .collect();
+    let Ok(ids) = parsed else {
+        return super::usage_error(
+            json,
+            "not a message id",
+            "use the 32 hex digits `phux mail wait` returns",
+        );
+    };
+    let client = match store(json) {
+        Ok(client) => client,
+        Err(code) => return code,
+    };
+    let request = ReleaseMail {
+        reader: me.to_owned(),
+        ids,
+    };
+    match client.release_mail(request) {
+        Ok(released) => {
+            if json {
+                emit(&json!({"schema": SCHEMA, "reader": me, "released": released}));
+            } else {
+                outln!("released {released}");
             }
             ExitCode::SUCCESS
         }
-        Err(code) => code,
+        Err(err) => super::super::mission::report_as(json, &err, SCHEMA),
     }
 }
 
-fn take(request: WaitMail, json: bool) -> Result<Vec<Mail>, ExitCode> {
-    let client = store(json)?;
-    client
-        .wait_mail(request)
-        .map_err(|err| super::super::mission::report_as(json, &err, SCHEMA))
+/// Print `line`, the taken mail's only way out. If it cannot be written,
+/// the reader is gone: release the mail so the next wait takes it again.
+fn hand_over(client: &Client, me: &str, mail: &[Mail], line: &str) -> ExitCode {
+    let written = {
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{line}").and_then(|()| stdout.flush())
+    };
+    let Err(err) = written else {
+        return ExitCode::SUCCESS;
+    };
+    if mail.is_empty() {
+        return ExitCode::from(1);
+    }
+    let request = ReleaseMail {
+        reader: me.to_owned(),
+        ids: mail.iter().map(|message| message.id).collect(),
+    };
+    match client.release_mail(request) {
+        Ok(_) => error!("could not hand the mail over ({err}); released it for the next wait"),
+        Err(release) => error!(
+            "could not hand the mail over ({err}) or release it ({release}); it stays unread"
+        ),
+    }
+    ExitCode::from(1)
 }
 
 /// The hook reply that puts `text` in front of the model for `event`.

@@ -34,12 +34,20 @@ test("declares a Grok plugin with phux MCP and lifecycle hooks", async () => {
   assert.equal(marketplace.plugins[0].source, "./integrations/grok");
   assert.equal(marketplace.plugins[0].version, pkg.version);
   assert.deepEqual(Object.keys(hooks.hooks).sort(), Object.keys(ARMS).sort());
+  // Grok feeds the model only tool-result context and a Stop block.
+  const mailEvents = ["PostToolUse", "PostToolUseFailure", "Stop"];
   for (const [event, groups] of Object.entries(hooks.hooks)) {
     for (const group of groups) {
+      const [lifecycle, mail, ...rest] = group.hooks;
+      assert.deepEqual(lifecycle.args, ["${GROK_PLUGIN_ROOT}/scripts/phux-hook.sh", ARMS[event]]);
+      assert.deepEqual(rest, []);
+      if (mailEvents.includes(event)) {
+        assert.deepEqual(mail.args, ["${GROK_PLUGIN_ROOT}/scripts/phux-mail.sh", event]);
+      } else {
+        assert.equal(mail, undefined, `${event} is passive`);
+      }
       for (const hook of group.hooks) {
         assert.equal(hook.command, "sh");
-        assert.equal(hook.args[0], "${GROK_PLUGIN_ROOT}/scripts/phux-hook.sh");
-        assert.equal(hook.args[1], ARMS[event]);
         assert.equal(hook.timeout, 5);
       }
     }

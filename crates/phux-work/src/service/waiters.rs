@@ -4,13 +4,15 @@
 //! Instead the waiting connection is kept here, polled only for hang-up, and
 //! answered when a send may have given it mail, when its deadline passes,
 //! or never if its client leaves first. Taking marks what it returns, so two
-//! waiters for one reader never both receive a message.
+//! waiters for one reader never both receive a message. A take whose reply
+//! cannot be written is released at once: mail provably not handed over is
+//! never counted as delivered.
 
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use super::reply;
-use crate::coord::{Mail, WaitMail};
+use crate::coord::{Mail, ReleaseMail, WaitMail};
 use crate::error::Error;
 use crate::store::Store;
 use crate::wire::Response;
@@ -37,12 +39,10 @@ impl Waiters {
                     wait,
                 }),
                 Err(err) => {
-                    let _ = reply(stream, &taken(Err(err.into())));
+                    let _ = reply(stream, &Response::Fault(Error::from(err).into()));
                 }
             },
-            result => {
-                let _ = reply(stream, &taken(result));
-            }
+            result => hand_over(stream, &wait.reader, result, store),
         }
     }
 
@@ -51,7 +51,7 @@ impl Waiters {
         self.0.retain(|waiter| match store.take_mail(&waiter.wait) {
             Ok(mail) if mail.is_empty() => true,
             result => {
-                let _ = reply(&waiter.stream, &taken(result));
+                hand_over(&waiter.stream, &waiter.wait.reader, result, store);
                 false
             }
         });
@@ -92,8 +92,29 @@ impl Waiters {
     }
 }
 
-fn taken(result: Result<Vec<Mail>, Error>) -> Response {
-    result.map_or_else(|err| Response::Fault(err.into()), Response::Mail)
+/// Reply with what a take returned, and release it if the reply is lost.
+fn hand_over(
+    stream: &UnixStream,
+    reader: &str,
+    result: Result<Vec<Mail>, Error>,
+    store: &mut Store,
+) {
+    let mail = match result {
+        Ok(mail) => mail,
+        Err(err) => {
+            let _ = reply(stream, &Response::Fault(err.into()));
+            return;
+        }
+    };
+    let ids = mail.iter().map(|message| message.id).collect();
+    if reply(stream, &Response::Mail(mail)).is_err() {
+        // The release is best effort: a store failure here leaves the mail
+        // unread in the inbox, never lost.
+        let _ = store.release_mail(&ReleaseMail {
+            reader: reader.to_owned(),
+            ids,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -108,7 +129,7 @@ mod tests {
     use crate::id::OperationId;
     use crate::service::{Endpoint, run_keeper};
     use crate::wire::{BUILD, Envelope, Request};
-    use crate::{Client, KeeperExit};
+    use crate::{Client, KeeperExit, Store};
 
     #[test]
     fn a_waiter_that_hangs_up_takes_nothing() {
@@ -138,8 +159,8 @@ mod tests {
         .unwrap();
         gone.write_all(format!("{line}\n").as_bytes()).unwrap();
         drop(gone);
-        // The keeper notices the hang-up before it serves the next client.
-        std::thread::sleep(Duration::from_millis(100));
+        // The keeper accepts in order and reports a parked hang-up before a
+        // new connection, so the send below finds the waiter already gone.
         let client = Client::new(endpoint, None);
         client
             .send_mail(SendMail {
@@ -153,5 +174,33 @@ mod tests {
         let mail = client.wait_mail(wait(0)).unwrap();
         assert_eq!(mail.len(), 1, "the message was not spent on a dead client");
         assert_eq!(keeper.join().unwrap(), KeeperExit::Idle);
+    }
+
+    #[test]
+    fn a_take_whose_reply_cannot_be_written_is_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("work").join("work-v1.sqlite")).unwrap();
+        store
+            .send_mail(&SendMail {
+                thread: "t".into(),
+                from: "a".into(),
+                to: vec!["@730".into()],
+                body: "kept".into(),
+                operation_id: OperationId::generate().unwrap(),
+            })
+            .unwrap();
+        let (keeper_end, client_end) = UnixStream::pair().unwrap();
+        drop(client_end);
+        let wait = WaitMail {
+            reader: "@730".into(),
+            timeout_ms: 0,
+            limit: 0,
+        };
+        super::Waiters::default().admit(&keeper_end, wait.clone(), &mut store);
+        assert_eq!(
+            store.take_mail(&wait).unwrap().len(),
+            1,
+            "the lost reply's take was released"
+        );
     }
 }

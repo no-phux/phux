@@ -5,8 +5,8 @@
 # tool input, or tool output. Conversation text reaches phux only on stdin:
 # the transcript entry `phux agent hook-transcript` prints (ADR-0156), and the
 # raw payload under `PHUX_AGENT_EMIT_RAW=1`. Best effort and silent: every phux call is
-# allowed to fail. The one thing printed back to Claude is this pane's mail
-# (`mail_reply`).
+# allowed to fail, and nothing is printed back to Claude. Mail has its own hook,
+# `phux-mail.sh`.
 set -u
 
 [ "$#" -eq 1 ] || exit 2
@@ -122,20 +122,6 @@ emit_transcript() {
   entry=
 }
 
-# This pane's unread mail as the hook's one JSON reply, taken so it reaches
-# the conversation once. Nothing is typed into the pane. An idle agent sees
-# its mail at its next hook. No mail, or a failure, prints nothing and the
-# mail stays unread in the store.
-# SessionStart, UserPromptSubmit and the PostToolUse pair carry it as
-# context; Stop carries it as a block, so the agent goes on and handles it.
-mail_reply() {
-  case "$hook_event" in
-    SessionStart | UserPromptSubmit | PostToolUse | PostToolUseFailure | Stop)
-      "$phux" mail hook-context --event "$hook_event" 2>/dev/null || :
-      ;;
-  esac
-}
-
 case "$1" in
   start)
     run_phux agent set "$target" --name claude --kind claude
@@ -197,5 +183,4 @@ case "$1" in
     exit 2
     ;;
 esac
-mail_reply
 exit 0

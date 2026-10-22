@@ -2331,6 +2331,7 @@ Commands:
   hook-context  Take unread mail and print it as a Claude Code or Grok hook
                 reply
   read          Read your unread mail and mark it read
+  release       Return taken mail so the next wait takes it again
   send          Store a message for each recipient
   wait          Wait for unread mail and take it for your agent's conversation
   help          Print this message or the help of the given subcommand(s)
@@ -2407,6 +2408,30 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux mail release`
+
+```text
+Return taken mail so the next wait takes it again
+
+For harness integrations whose injection failed after `wait` took the mail. Ids
+this address did not take are ignored.
+
+Usage: phux mail release [--as <ADDRESS>] [--json] <ID>…
+
+Arguments:
+  <ID>…  Message ids, as `wait` returned them.
+
+Flags:
+      --as <ADDRESS>   Speak as this address instead of this pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux mail send`
 
 ```text
@@ -2445,18 +2470,21 @@ none.
 Usage: phux mail wait [FLAGS]
 
 Flags:
-      --timeout <SECS>  Seconds to wait when there is no mail; 0 answers at
-                        once. Default 300, at most 3600.
-      --limit <N>       At most this many messages, oldest first. Default and
-                        most 16.
-      --as <ADDRESS>    Speak as this address instead of this pane.
-      --json            Emit stable, versioned JSON on stdout instead of the
-                        human view. On failure, stdout stays empty and stderr
-                        carries one JSON error object.
-  -h, --help            Print help
+      --timeout <SECS>      Seconds to wait when there is no mail; 0 answers at
+                            once. Default 300, at most 3600.
+      --limit <N>           At most this many messages, oldest first. Default
+                            and most 16.
+      --until-stdin-closes  Give up, taking nothing, once stdin closes. A
+                            harness holds stdin open for its whole life, so a
+                            wait never outlives it.
+      --as <ADDRESS>        Speak as this address instead of this pane.
+      --json                Emit stable, versioned JSON on stdout instead of the
+                            human view. On failure, stdout stays empty and
+                            stderr carries one JSON error object.
+  -h, --help                Print help
 
 Global flags:
-      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mcp`

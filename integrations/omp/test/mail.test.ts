@@ -36,7 +36,12 @@ describe("OMP mail", () => {
   test("taken mail is a follow-up message that starts a turn when idle", async () => {
     const omp = fakeOmp();
     const source = parkedAfter([{ text: "[phux mail] A message", ids: ["a"] }]);
-    const inbox = registerOmpMail(omp.api, { env: { PHUX_TERMINAL_ID: "17" }, executable: "phux", wait: source.wait });
+    const inbox = registerOmpMail(omp.api, {
+      env: { PHUX_TERMINAL_ID: "17" },
+      executable: "phux",
+      wait: source.wait,
+      release: async () => { throw new Error("nothing to release"); },
+    });
     omp.fire("session_start");
     await settle();
     expect(omp.sent).toEqual([{

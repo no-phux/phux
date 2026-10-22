@@ -52,8 +52,8 @@ mod wire;
 pub use client::{Client, Launcher};
 pub use coord::{
     ADDRESS_ENV, AckMail, Address, Claim, ClaimFilter, ClaimOutcome, DEFAULT_CLAIM_SECS,
-    MAX_CLAIM_SECS, MAX_WAIT_MS, Mail, ReadMail, ReleaseClaim, RenewClaim, SendMail, Sent,
-    TakeClaim, WaitMail, caller_address, claim_path, pane_address,
+    MAX_CLAIM_SECS, MAX_WAIT_MS, Mail, ReadMail, ReleaseClaim, ReleaseMail, RenewClaim, SendMail,
+    Sent, TakeClaim, WaitMail, caller_address, claim_path, pane_address,
 };
 pub use error::Error;
 pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, SignalKind};

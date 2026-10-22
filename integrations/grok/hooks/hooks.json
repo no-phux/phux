@@ -44,6 +44,12 @@
             "command": "sh",
             "args": ["${GROK_PLUGIN_ROOT}/scripts/phux-hook.sh", "tool-end"],
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "sh",
+            "args": ["${GROK_PLUGIN_ROOT}/scripts/phux-mail.sh", "PostToolUse"],
+            "timeout": 5
           }
         ]
       }
@@ -55,6 +61,12 @@
             "type": "command",
             "command": "sh",
             "args": ["${GROK_PLUGIN_ROOT}/scripts/phux-hook.sh", "tool-end"],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "sh",
+            "args": ["${GROK_PLUGIN_ROOT}/scripts/phux-mail.sh", "PostToolUseFailure"],
             "timeout": 5
           }
         ]
@@ -92,6 +104,12 @@
             "type": "command",
             "command": "sh",
             "args": ["${GROK_PLUGIN_ROOT}/scripts/phux-hook.sh", "done"],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "sh",
+            "args": ["${GROK_PLUGIN_ROOT}/scripts/phux-mail.sh", "Stop"],
             "timeout": 5
           }
         ]

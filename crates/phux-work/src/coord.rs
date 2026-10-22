@@ -38,7 +38,7 @@ mod mail;
 pub use claims::{
     Claim, ClaimFilter, ClaimOutcome, MAX_CLAIM_SECS, ReleaseClaim, RenewClaim, TakeClaim,
 };
-pub use mail::{AckMail, MAX_WAIT_MS, Mail, ReadMail, SendMail, Sent, WaitMail};
+pub use mail::{AckMail, MAX_WAIT_MS, Mail, ReadMail, ReleaseMail, SendMail, Sent, WaitMail};
 
 /// Tables this module owns. Additive: they do not change `user_version`, so
 /// a binary that predates them still opens the store and ignores them.

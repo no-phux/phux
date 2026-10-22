@@ -453,3 +453,51 @@ fn another_hosts_pane_is_not_a_mail_address_here() {
         "{refused}"
     );
 }
+
+#[test]
+fn mail_that_cannot_be_handed_over_is_released_for_the_next_wait() {
+    let cli = CliStore::new();
+    send_mail(&cli, "@730", "keep me");
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let lost = command(cli.root.path(), "@730")
+        .args(["mail", "wait", "--timeout", "0", "--json"])
+        .stdout(writer)
+        .output()
+        .unwrap();
+    assert_eq!(lost.status.code(), Some(1), "the reader was gone");
+    let wait = ["mail", "wait", "--timeout", "0", "--json"];
+    let taken = cli.json("@730", &wait, 0);
+    assert_eq!(taken["mail"][0]["body"], "keep me", "released, then taken");
+    let id = taken["mail"][0]["id"].as_str().unwrap().to_owned();
+    let released = cli.json("@730", &["mail", "release", &id, "--json"], 0);
+    assert_eq!(released["released"], 1);
+    assert_eq!(cli.json("@730", &wait, 0)["mail"][0]["body"], "keep me");
+}
+
+#[test]
+fn a_wait_bound_to_stdin_ends_with_its_caller_and_takes_nothing() {
+    let cli = CliStore::new();
+    let mut waiter = command(cli.root.path(), "@730")
+        .args([
+            "mail",
+            "wait",
+            "--timeout",
+            "60",
+            "--until-stdin-closes",
+            "--json",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(waiter.stdin.take());
+    let started = Instant::now();
+    let status = waiter.wait().unwrap();
+    assert!(!status.success(), "abandoned, not answered");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    send_mail(&cli, "@730", "for the live waiter");
+    let taken = cli.json("@730", &["mail", "wait", "--timeout", "0", "--json"], 0);
+    assert_eq!(taken["mail"][0]["body"], "for the live waiter");
+}

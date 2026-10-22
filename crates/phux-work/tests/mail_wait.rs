@@ -135,3 +135,42 @@ fn mail_already_waiting_is_returned_at_once() {
     assert!(elapsed < Duration::from_secs(10));
     assert_eq!(keeper.join().unwrap(), KeeperExit::Idle);
 }
+
+#[test]
+fn a_wait_whose_caller_exits_hangs_up_and_takes_nothing() {
+    use std::os::fd::AsFd as _;
+    let root = tempfile::tempdir().unwrap();
+    let endpoint = endpoint(root.path());
+    let keeper = keeper(&endpoint, Duration::from_millis(300));
+    let (lifeline, parent) = std::io::pipe().unwrap();
+    let waiter = {
+        let client = Client::new(endpoint.clone(), None);
+        thread::spawn(move || {
+            let request = WaitMail {
+                reader: "@730".into(),
+                timeout_ms: 30_000,
+                limit: 0,
+            };
+            client.wait_mail_while(request, lifeline.as_fd())
+        })
+    };
+    thread::sleep(PARK);
+    drop(parent);
+    let started = Instant::now();
+    assert!(
+        waiter.join().unwrap().is_err(),
+        "the wait ended with its caller"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let client = Client::new(endpoint, None);
+    send(&client, &["@730"], "for the next waiter");
+    let mail = client
+        .wait_mail(WaitMail {
+            reader: "@730".into(),
+            timeout_ms: 0,
+            limit: 0,
+        })
+        .unwrap();
+    assert_eq!(mail.len(), 1, "the dead wait took nothing");
+    assert_eq!(keeper.join().unwrap(), KeeperExit::Idle);
+}

@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { MailInbox, waitForMail, type MailDelivery } from "@phux/integration-runtime/mail";
+import { MailInbox, releaseMail, waitForMail, type MailDelivery } from "@phux/integration-runtime/mail";
 
 /** Custom message type of mail from other agents in a Pi session. */
 export const PHUX_MAIL_CUSTOM_TYPE = "phux.mail";
@@ -9,6 +9,8 @@ export interface PhuxMailOptions {
   readonly env: NodeJS.ProcessEnv;
   /** Takes the next mail; tests replace the `phux mail wait` subprocess. */
   readonly wait?: (signal: AbortSignal) => Promise<MailDelivery | null>;
+  /** Returns mail Pi refused; tests replace the `phux mail release` subprocess. */
+  readonly release?: (delivery: MailDelivery) => Promise<void>;
   readonly onError?: (error: unknown) => void;
 }
 
@@ -28,7 +30,9 @@ export function registerPhuxMail(pi: ExtensionAPI, options: PhuxMailOptions): Ma
 
 function conversationInbox(pi: ExtensionAPI, options: PhuxMailOptions): MailInbox {
   return new MailInbox({
+    // The runtime runs `$PHUX_BIN` from `env` when it is set, as OMP does.
     wait: options.wait ?? ((signal) => waitForMail({ env: options.env }, signal)),
+    release: options.release ?? ((delivery) => releaseMail({ env: options.env }, delivery.ids)),
     deliver: (delivery) => {
       pi.sendMessage(
         { customType: PHUX_MAIL_CUSTOM_TYPE, content: delivery.text, display: true, details: { ids: delivery.ids } },

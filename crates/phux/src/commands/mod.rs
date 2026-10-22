@@ -435,6 +435,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             coord::MailAction::Ack { .. } => Some("mail ack"),
             coord::MailAction::Wait { .. } => Some("mail wait"),
             coord::MailAction::HookContext { .. } => Some("mail hook-context"),
+            coord::MailAction::Release { .. } => Some("mail release"),
         },
         // Every verb starts the keeper, which watches this server, and
         // `start` / `add --start` dial it. `--socket` names that server.
