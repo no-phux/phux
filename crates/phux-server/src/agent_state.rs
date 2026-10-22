@@ -3,7 +3,7 @@
 //! An explicit `SET_METADATA` that supplies a `state` outranks the detector
 //! until `DELETE`; one that supplies only identity is preserved field for
 //! field while the detector fills `state` around it. The detector deletes
-//! only records it wrote. The one exception (`docs/spec/L3.md` §3.7): on
+//! only records it wrote. The one exception (`docs/program-sequences.md#the-agent-record`): on
 //! positive evidence that the declared occupant is gone, the server may
 //! withdraw the declaration ([`withdraw_state`]: `state` becomes
 //! `"unknown"`, identity preserved, never a `DELETE`).

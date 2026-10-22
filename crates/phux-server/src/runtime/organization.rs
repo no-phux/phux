@@ -1,4 +1,4 @@
-//! Organization commands (ADR-0161, `docs/spec/L1.md` §5.7): every
+//! Organization commands (ADR-0161, `docs/organization.md`): every
 //! mutating one commits through [`ServerState::commit_command_from`] and
 //! answers `Ok` with a [`Committed`] receipt, `Accepted` when execution
 //! effects follow as events, or `Refused` with a typed reason. Reads

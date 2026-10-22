@@ -1,4 +1,4 @@
-//! The server's authorization (`docs/spec/workload-auth.md` §5-§8, ADR-0116,
+//! The server's authorization (`docs/remote.md#who-can-do-what`, ADR-0116,
 //! ADR-0125): one grant per connection, minted at HELLO, enforced at every
 //! dispatch.
 //!
@@ -71,7 +71,7 @@ pub const POLICY_TARGET: &str = "phux_server::policy";
 /// (§7); denied frames are still dropped.
 pub const DENIAL_ERROR_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Why a live connection's authority was withdrawn (`workload-auth.md` §7).
+/// Why a live connection's authority was withdrawn (`docs/remote.md#managing-credentials`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Revocation {
     /// The credential was removed or revoked, its store stopped loading, or
@@ -109,7 +109,7 @@ pub enum Goodbye {
     /// reason, then close.
     Announce(Revocation),
     /// Close with no frame: the connection never completed HELLO, so there
-    /// is no attach for a `DETACHED` to end (`workload-auth.md` §7).
+    /// is no attach for a `DETACHED` to end (`docs/remote.md#managing-credentials`).
     Silent,
 }
 

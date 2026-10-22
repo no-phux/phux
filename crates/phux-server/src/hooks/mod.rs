@@ -1,4 +1,4 @@
-//! Server-side event-hook dispatcher (`docs/consumers/tui.md` §9).
+//! Server-side event-hook dispatcher (`docs/hooks.md`).
 //!
 //! Config `[[hooks.<name>]]` entries (first match wins; only `run` and the
 //! `noop` sentinel act server-side) and enabled plugins' `[[events]]` hooks

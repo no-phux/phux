@@ -56,7 +56,7 @@ pub struct ConnectionGrant {
     /// When this connection was last sent an uncorrelated denial.
     last_denial_error: Option<Instant>,
     /// Set once the connection's authority was withdrawn while it was live;
-    /// every guard then denies everything (`workload-auth.md` §7 step 1).
+    /// every guard then denies everything (`docs/remote.md#managing-credentials`).
     revoked: Option<Revocation>,
     /// The authenticated principal every action on this connection is
     /// attributed to (ADR-0163).
@@ -87,7 +87,7 @@ impl ConnectionGrant {
     }
 
     /// A scoped grant of `granted` with no requested attenuation: one
-    /// clause per grant (`workload-auth.md` §5.1), bound to `credential_id`.
+    /// clause per grant (`docs/remote.md#who-can-do-what`), bound to `credential_id`.
     /// Its principal is that credential ([`WORKLOAD_PRINCIPAL`] when none is
     /// named), an automation until [`Self::with_kind`] says otherwise.
     ///

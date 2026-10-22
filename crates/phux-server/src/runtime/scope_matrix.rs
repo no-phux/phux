@@ -1,5 +1,5 @@
 //! The dispatch guard as a paired client meets it on the wire
-//! (`docs/spec/workload-auth.md` §6, §7).
+//! (`docs/remote.md#who-can-do-what`).
 //!
 //! Each test runs the real client loop (`handle_client`) over a scripted
 //! transport, with a workload identity stamped the way the QUIC acceptor

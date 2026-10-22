@@ -9,8 +9,9 @@ use sha2::{Digest, Sha256};
 
 use super::{DIGEST_PREFIX, MAX_EXPIRY_SECONDS, WorkloadError};
 
-/// A satellite name obeys the federation host-key rules (`workload-auth.md`
-/// §5): 1..=255 UTF-8 bytes, no NUL or control character. A `/` or `:` is
+/// A satellite name obeys the federation host-key rules (`docs/remote.md`).
+///
+/// It is 1..=255 UTF-8 bytes, no NUL or control character. A `/` or `:` is
 /// refused too, as `phux host` refuses them in a registry name.
 ///
 /// # Errors

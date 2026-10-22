@@ -1,5 +1,4 @@
-//! A kill's close, committed in the lock that admits it (`docs/spec/L1.md`
-//! §5.2).
+//! A kill's close, committed in the lock that admits it (`docs/protocol.md`).
 //!
 //! The reply to `KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and
 //! `CLOSE_TAB_RESOURCES` follows the commit, so the commit is the whole

@@ -18,7 +18,7 @@
 //! ([`identify::Occupancy`]). Only a confirmed vacancy, seen
 //! [`VACANT_CONFIRMATIONS`] times, retracts; a failed query changes nothing.
 //! That is what makes a retraction trustworthy enough to withdraw a human's
-//! declaration (`docs/spec/L3.md` §3.7). Occupants are `(pgid, start time)`
+//! declaration (`docs/program-sequences.md#the-agent-record`). Occupants are `(pgid, start time)`
 //! pairs, so a restart or a recycled pgid is a new occupant.
 
 #![allow(

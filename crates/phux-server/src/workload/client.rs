@@ -1,5 +1,5 @@
 //! The client half of workload certificate enrollment (ADR-0116,
-//! `workload-auth.md` §8): the private key is generated here and never
+//! `docs/remote.md#who-can-connect`): the private key is generated here and never
 //! leaves; only a CSR travels to the authority, and what comes back is
 //! validated in full before anything is stored.
 //!

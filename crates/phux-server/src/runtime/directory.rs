@@ -1,4 +1,4 @@
-//! `LIST_DIRECTORY` host query (`docs/spec/L3.md` §4): the child directories
+//! `LIST_DIRECTORY` host query (`docs/protocol.md`): the child directories
 //! of a path on this host, as the server's user.
 //!
 //! The blocking walk runs on tokio's blocking pool under a deadline and a
@@ -52,8 +52,8 @@ enum ListingRoute {
     Refused(String),
 }
 
-/// Dispatch one `LIST_DIRECTORY` for an L3 consumer (`docs/spec/L3.md`
-/// §1.2), answering from a spawned task so the frame loop keeps running.
+/// Dispatch one `LIST_DIRECTORY` for an L3 consumer (`docs/protocol.md#commands-events-resources`),
+/// answering from a spawned task so the frame loop keeps running.
 pub(super) fn handle_list_directory(
     state: &SharedState,
     client_id: ClientId,
@@ -183,7 +183,7 @@ impl Drop for HostPermit {
     }
 }
 
-/// Resolve where a request is answered (`docs/spec/L3.md` §4.1).
+/// Resolve where a request is answered (`docs/protocol.md#commands-events-resources`).
 fn listing_route(state: &SharedState, host: Option<SatelliteHost>) -> ListingRoute {
     let Some(host) = host else {
         return ListingRoute::Local;

@@ -1,4 +1,4 @@
-//! Keyed operations never run twice (ADR-0126, `docs/spec/L1.md` §5.1.1): a
+//! Keyed operations never run twice (ADR-0126, `docs/protocol.md`): a
 //! keyed spawn, session create, or kill repeated answers the original result
 //! and does nothing; the same key with another payload is refused; and the
 //! key rides the resulting event. The ten-minute horizon and the hub's

@@ -101,7 +101,7 @@ pub(super) async fn handle_attach_terminal(
 
 /// Bootstrap one Terminal's content stream into `content_tx` without
 /// touching the caller's subscription. The QUIC `STREAM_BIND` path
-/// (proto.md §4.2) subscribes on the control mailbox and bootstraps on the
+/// (docs/protocol.md#quic-stream-routing) subscribes on the control mailbox and bootstraps on the
 /// stream's; the COMMAND path uses one mailbox for both.
 ///
 /// Failures cancel the generation but never unsubscribe; the returned

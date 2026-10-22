@@ -93,7 +93,7 @@ impl PolicyEngine for ScopedPolicy {
 }
 
 /// The owner's transport is the kernel-authenticated Unix socket, carrying
-/// the serving user's uid (`workload-auth.md` §3: kernel-uid authority).
+/// the serving user's uid (`docs/remote.md#who-can-connect`: kernel-uid authority).
 fn is_owner_socket(peer: &PeerIdentity) -> bool {
     matches!(peer.transport, TransportType::UnixSocket)
         && peer.uid == nix::unistd::geteuid().as_raw()
@@ -149,7 +149,7 @@ pub enum PolicyError {
 
 impl PolicyError {
     /// The one refusal every failed check returns: diagnostics must not
-    /// reveal which test failed (`workload-auth.md` §7).
+    /// reveal which test failed (`docs/remote.md#managing-credentials`).
     fn refused() -> Self {
         Self::Unauthorized("not authorized".to_owned())
     }

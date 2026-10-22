@@ -38,7 +38,7 @@ pub(crate) enum OperationDomain {
     /// The trailing `operation_id` of the supervisory verbs, one namespace
     /// for all four (`KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`,
     /// `SIGNAL_TERMINAL`), so a key names one operation whichever verb it
-    /// rode (`docs/spec/L1.md` §5.1.1).
+    /// rode (`docs/protocol.md#receipts-retries-and-backpressure`).
     Signal,
 }
 

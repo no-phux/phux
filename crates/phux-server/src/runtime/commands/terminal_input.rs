@@ -216,7 +216,7 @@ pub(crate) fn with_attached_input_destination<R>(
             Ok(terminal) => terminal.clone(),
             Err(error) => {
                 warn!(?client_id, ?wire_terminal_id, frame_label, %error, "dropping input");
-                // input.md §9: no reply frame, so an uncorrelated ERROR.
+                // docs/protocol.md#input: no reply frame, so an uncorrelated ERROR.
                 send_wrong_kind_error(s, client_id, error);
                 return None;
             }
@@ -245,7 +245,7 @@ pub(crate) fn handle_terminal_input(
         );
         return;
     }
-    // A routed focus-gained fires `focus-changed` (tui.md §9) after the lock.
+    // A routed focus-gained fires `focus-changed` (docs/hooks.md) after the lock.
     let is_focus_gained = matches!(
         input,
         TerminalInput::Focus(phux_protocol::input::focus::FocusEvent::Gained)
@@ -295,7 +295,7 @@ pub(crate) fn handle_terminal_input(
     }
 }
 
-/// Discard a client terminal-engine reply (input.md §6): the canonical
+/// Discard a client terminal-engine reply (docs/protocol.md#terminal-queries): the canonical
 /// terminal already answered the query once, and a second answer reaches
 /// the child as typed input.
 pub(crate) fn handle_terminal_reply(

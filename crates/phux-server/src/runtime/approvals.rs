@@ -1,4 +1,4 @@
-//! Held commands (ADR-0128, `docs/spec/workload-auth.md` §6.1): the
+//! Held commands (ADR-0128, `docs/agents.md#safety`): the
 //! requester's waiter, the decision handler, and withdrawal on disconnect.
 //!
 //! A held command waits in a task on the requester's own connection, so it

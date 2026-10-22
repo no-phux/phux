@@ -1,5 +1,5 @@
 //! Agent-event subscriptions and the one fan-out path (ADR-0123,
-//! `docs/spec/L1.md` §7.3).
+//! `docs/protocol.md#receipts-retries-and-backpressure`).
 //!
 //! `SUBSCRIBE_EVENTS` (unfiltered) and `SUBSCRIBE_RESOURCE_EVENTS` (a
 //! Terminal scope with a type filter) share one registry, so each client

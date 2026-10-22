@@ -1,4 +1,4 @@
-//! The event journal over the wire (ADR-0123, `docs/spec/L1.md` §7.3): one
+//! The event journal over the wire (ADR-0123, `docs/protocol.md`): one
 //! server-wide `seq`, cursor replay, typed gaps for every loss, one registry
 //! behind both subscribe verbs, and the actor behind each event or metadata
 //! change.

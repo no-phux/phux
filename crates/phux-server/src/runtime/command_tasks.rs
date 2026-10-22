@@ -69,7 +69,7 @@ impl CommandTasks {
     /// A worker for one connection. `cancel` is the connection's token: once
     /// it fires, the job in flight stops at its next await and no queued job
     /// starts, so a revoked connection's queued `PUT_FILE` or `TRANSCRIBE`
-    /// never runs (`docs/spec/workload-auth.md` §7 step 2).
+    /// never runs (`docs/remote.md#managing-credentials`).
     pub(super) fn new(cancel: CancellationToken) -> Self {
         Self::with_budget(
             GLOBAL_BUDGET

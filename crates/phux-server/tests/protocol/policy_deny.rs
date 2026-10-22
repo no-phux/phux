@@ -1,5 +1,5 @@
 //! The HELLO authorization seam and policy postures (ADR-0072,
-//! `docs/spec/workload-auth.md` §7-§8): a denying engine refuses HELLO with
+//! `docs/remote.md#managing-credentials`): a denying engine refuses HELLO with
 //! `PermissionDenied` and `DETACHED { AUTHENTICATION_FAILED }` before the
 //! close; the owner socket keeps all six verbs
 //! at Global under both the default and the `paired` engine; `local` mode,

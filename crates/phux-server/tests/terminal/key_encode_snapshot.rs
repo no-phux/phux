@@ -1,5 +1,5 @@
 //! Byte-exact contract for the server-side key encoder across the legacy,
-//! modifyOtherKeys, and kitty keyboard protocol modes (docs/spec/input.md §2.6).
+//! modifyOtherKeys, and kitty keyboard protocol modes (docs/protocol.md#input).
 //! Any change in the PTY bytes a (key, mods, terminal mode) triple produces
 //! must show up here as a diff.
 

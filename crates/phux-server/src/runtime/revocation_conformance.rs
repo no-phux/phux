@@ -1,5 +1,5 @@
-//! The live-revocation conformance sweep (`docs/spec/workload-auth.md` §7,
-//! §9 "revoked/expired authority ... while live").
+//! The live-revocation conformance sweep (`docs/remote.md#managing-credentials`,
+//! "revoked/expired authority ... while live").
 //!
 //! Every case runs the real client loop (`handle_client`) over a scripted
 //! transport. The workload's grant is minted by the `paired` engine from a

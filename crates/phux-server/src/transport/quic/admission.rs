@@ -49,7 +49,7 @@ pub(super) async fn admit_connection(
     }
 
     // One refusal for every workload failure; the peer learns only that it
-    // was refused (`workload-auth.md` §7). The handshake asked for, but did
+    // was refused (`docs/remote.md#managing-credentials`). The handshake asked for, but did
     // not require, a certificate (ADR-0154), so this is the check that
     // refuses a certificate-less or unenrolled peer, before any stream is
     // read: no bearer preamble and no phux byte.

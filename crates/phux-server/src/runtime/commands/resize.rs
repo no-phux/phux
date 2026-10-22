@@ -8,7 +8,7 @@ use super::*;
 
 /// Handle a client's `RESIZE_TERMINAL` (L1 §3.1): set one Terminal's exact
 /// size (and, when carried, its cell pixel size), bypassing the window-size
-/// policy, so a headless caller or a layout-owning client can size a pane. A later view-derived recompute may supersede it (tui.md §4.2).
+/// policy, so a headless caller or a layout-owning client can size a pane. A later view-derived recompute may supersede it (docs/architecture.md).
 /// There is no reply frame, so not-found paths log and drop.
 pub(crate) fn handle_terminal_resize(
     state: &SharedState,

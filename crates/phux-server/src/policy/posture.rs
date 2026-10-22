@@ -2,7 +2,7 @@
 
 // --- Posture: which engine a server runs ---
 
-/// The authorization posture a server starts in (`workload-auth.md` §8).
+/// The authorization posture a server starts in (`docs/remote.md#who-can-connect`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyPosture {
     /// `mode = "local"`, or no mode and nothing past the owner's socket: the
@@ -80,7 +80,7 @@ pub struct ResumeFallback {
 }
 
 impl PolicyPosture {
-    /// Decide the posture (`docs/spec/workload-auth.md` §8). With no mode
+    /// Decide the posture (`docs/remote.md#who-can-connect`). With no mode
     /// the server is `local`, and anything that would reach past the owner's
     /// socket is a startup error rather than a door nothing authorizes.
     ///

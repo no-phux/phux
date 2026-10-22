@@ -137,7 +137,7 @@ impl core::fmt::Debug for ServerIncarnation {
 }
 
 /// The connection and keyed operation behind a kill, stamped on the
-/// `pane_closed` of every resource it closes (`docs/spec/L1.md` §7.3).
+/// `pane_closed` of every resource it closes (`docs/protocol.md`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CloseAttribution {
     /// The connection that sent the kill.
@@ -206,10 +206,10 @@ pub struct ServerState {
         phux_protocol::wire::frame::CloseReason,
     >,
     /// Who and which keyed operation closed a resource, for `pane_closed`
-    /// (`docs/spec/L1.md` §7.3); lives from kill to reap.
+    /// (`docs/protocol.md#receipts-retries-and-backpressure`); lives from kill to reap.
     close_attributions: std::collections::HashMap<phux_core::ids::ResourceId, CloseAttribution>,
     /// Every resource whose exit watcher still runs, with its wire id once
-    /// a kill reaped it ahead of its process (`docs/spec/L1.md` §5.2); see
+    /// a kill reaped it ahead of its process (`docs/protocol.md#commands-events-resources`); see
     /// [`bindings`].
     exit_watches: std::collections::HashMap<
         phux_core::ids::ResourceId,

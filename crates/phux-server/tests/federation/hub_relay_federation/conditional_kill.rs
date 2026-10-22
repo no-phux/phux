@@ -1,4 +1,4 @@
-//! `KILL_RESOURCE_IF` through the hub (ADR-0109, `docs/spec/L1.md` §9.1).
+//! `KILL_RESOURCE_IF` through the hub (ADR-0109, `docs/protocol.md`).
 //! The hub relays the precondition and the satellite evaluates it; because
 //! every hub consumer is one connection on the satellite, the hub itself
 //! refuses a kill after a second hub consumer attached or typed, or whose

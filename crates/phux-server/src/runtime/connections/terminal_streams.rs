@@ -74,7 +74,7 @@ pub(super) const fn is_metadata_frame(frame: &FrameKind) -> bool {
     )
 }
 
-/// Handle one QUIC Terminal-stream event (proto.md §4.2). `Bound` binds and
+/// Handle one QUIC Terminal-stream event (docs/protocol.md#quic-stream-routing). `Bound` binds and
 /// bootstraps the stream; `Ended` detaches as `DETACH_RESOURCE` would,
 /// ignoring a stale generation.
 pub(super) async fn handle_stream_event(

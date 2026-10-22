@@ -1,4 +1,4 @@
-//! Satellites that dial in (ADR-0182, `workload-auth.md` §8.3).
+//! Satellites that dial in (ADR-0182, `docs/remote.md#linking-machines`).
 //!
 //! A satellite with no reachable listener dials the hub's QUIC listener under
 //! [`SATELLITE_ALPN`] and presents its satellite credential. The listener

@@ -1,5 +1,5 @@
 //! The enrollment ALPN and the paired listener's post-handshake check, on a
-//! real QUIC listener (`docs/spec/workload-auth.md` §3, §8.2, ADR-0154).
+//! real QUIC listener (`docs/remote.md#who-can-connect`, ADR-0154).
 //! Every refusal has a positive control on the same listener.
 
 #![allow(

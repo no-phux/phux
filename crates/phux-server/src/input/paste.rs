@@ -1,6 +1,6 @@
 //! Paste encoding: untrusted payloads that fail `paste::is_safe` are
 //! rejected, and the rest are encoded with bracketing chosen by the pane's
-//! DEC 2004 mode (docs/spec/input.md §5, ADR-0006).
+//! DEC 2004 mode (docs/protocol.md#input, ADR-0006).
 
 use libghostty_vt::{
     Error, Terminal as GhosttyTerminal,

@@ -94,7 +94,7 @@ impl WorkloadRegistry {
     }
 
     /// Parse and validate one registry image. One invalid record makes the
-    /// whole image malformed (`workload-auth.md` §2).
+    /// whole image malformed (`docs/remote.md#who-can-connect`).
     ///
     /// # Errors
     ///

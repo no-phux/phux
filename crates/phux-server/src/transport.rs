@@ -1,7 +1,7 @@
 //! Transport abstraction for the accept loop.
 //!
 //! Every transport yields complete encoded frames (length prefix included,
-//! `docs/spec/proto.md` §5, owned by [`phux_protocol::wire::framing`]), so the
+//! `docs/protocol.md#framing`, owned by [`phux_protocol::wire::framing`]), so the
 //! dispatch loop and codec are transport-agnostic. UDS and the QUIC-class
 //! transports carry frames on a byte stream; WebSocket carries exactly one
 //! frame per binary message (a size mismatch is malformed, not a batch),

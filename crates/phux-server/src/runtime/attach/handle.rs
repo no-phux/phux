@@ -38,7 +38,7 @@ pub(crate) async fn handle_attach(
     root_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
     connection_token: &CancellationToken,
-    // QUIC multi-stream (proto.md §4.2): publish the snapshot only; per-pane
+    // QUIC multi-stream (docs/protocol.md#quic-stream-routing): publish the snapshot only; per-pane
     // registration, pumps, and bootstraps start at `STREAM_BIND`.
     defer_subscription: bool,
 ) {

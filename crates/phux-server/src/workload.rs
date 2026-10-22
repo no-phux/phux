@@ -4,7 +4,7 @@
 //! admitted and with what scope ceiling. The CA is separate from the server
 //! leaf, so leaves renew without changing workload identity. Files are
 //! owner-only, no-follow, and replaced atomically under a lock
-//! (`workload-auth.md` §2); each write advances a generation a running
+//! (`docs/remote.md#who-can-connect`); each write advances a generation a running
 //! server observes ([`ReloadingWorkloadRegistry`]). Enrollment accepts only
 //! public material ([`ClientMaterial`]), and no diagnostic names the CA key
 //! path.
@@ -219,7 +219,7 @@ impl WorkloadPaths {
 pub const PAIRED_DEVICE_SCOPE: &str = "inventory,observe,create,bind,input,signal@global";
 
 /// Who a registry credential was enrolled for (ADR-0163 §6,
-/// `workload-auth.md` §2): a person's paired device, or an automation.
+/// `docs/remote.md#who-can-connect`): a person's paired device, or an automation.
 /// It decides input-lease precedence, never scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -295,7 +295,7 @@ pub struct WorkloadCredential {
     /// Who it was enrolled for, as recorded; `None` for a record that
     /// predates the field ([`Self::enrolled_for`] infers it).
     pub recorded_for: Option<EnrolledFor>,
-    /// The satellite this credential is (`workload-auth.md` §8.3,
+    /// The satellite this credential is (`docs/remote.md#linking-machines`,
     /// ADR-0182): admitted only on the satellite ALPN, never on the terminal
     /// endpoint, and it carries no scope ceiling. `None` for every other
     /// credential.
@@ -317,7 +317,7 @@ impl WorkloadCredential {
         self.revoked_at.is_none() && self.expires_at.is_none_or(|expires| expires > now)
     }
 
-    /// The scope ceiling as one canonical set (`workload-auth.md` §5).
+    /// The scope ceiling as one canonical set (`docs/remote.md#who-can-do-what`).
     ///
     /// # Errors
     ///

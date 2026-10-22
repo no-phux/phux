@@ -1,4 +1,4 @@
-//! `KILL_RESOURCE_IF` (`docs/spec/L1.md` §5.2.1, ADR-0109): kill one
+//! `KILL_RESOURCE_IF` (`docs/protocol.md#receipts-retries-and-backpressure`, ADR-0109): kill one
 //! resource only when the caller's preconditions still hold.
 //!
 //! The check and the kill share one state-lock acquisition, so no attach

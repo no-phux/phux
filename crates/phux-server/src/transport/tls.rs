@@ -276,7 +276,7 @@ pub(crate) fn acceptor_from_pem_with_client_ca(
 /// verifies any presented, but completes without one: the enrollment ALPN
 /// answers devices that hold none yet, and the listener refuses a terminal
 /// connection with no enrolled certificate before reading any stream
-/// (`workload-auth.md` §3, ADR-0154).
+/// (`docs/remote.md#who-can-connect`, ADR-0154).
 pub(crate) fn quic_server_config_with_client_ca(
     cert_path: &Path,
     key_path: &Path,

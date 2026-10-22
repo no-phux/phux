@@ -1,4 +1,4 @@
-//! Filtering at the source (`docs/spec/workload-auth.md` §6).
+//! Filtering at the source (`docs/remote.md#who-can-do-what`).
 //!
 //! The rows whose result is assembled from several resources admit a scoped
 //! grant that holds the row's verb anywhere, then return only what the grant

@@ -43,7 +43,7 @@ pub(super) fn decode_client_frame(
     framed: &BytesMut,
     negotiated: Option<&NegotiatedConnection>,
 ) -> Result<FrameKind, Undispatched> {
-    // FRAME_COMPRESSED is server-to-client only (proto.md §6.4); refuse the
+    // FRAME_COMPRESSED is server-to-client only (docs/protocol.md#framing); refuse the
     // envelope before decode. The type byte follows the u32 length header.
     if framed.get(4) == Some(&phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED) {
         warn!("client sent FRAME_COMPRESSED; closing");
@@ -340,7 +340,7 @@ pub(super) struct NegotiatedConnection {
     pub(super) profile: BootstrapProfile,
     pub(super) limits: BootstrapLimits,
     pub(super) server_features: ServerFeatureSet,
-    /// The frame compression HELLO selected (`docs/spec/proto.md` §6.4).
+    /// The frame compression HELLO selected (`docs/protocol.md#framing`).
     /// [`Compression::None`] for every consumer that offered nothing, which
     /// is every local one.
     pub(super) compression: Compression,

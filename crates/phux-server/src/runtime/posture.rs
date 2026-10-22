@@ -12,7 +12,7 @@ use tracing::{error, info};
 pub(in crate::runtime) type PostureEngine = Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>;
 
 /// Resolve the startup posture from `[policy] mode` and the configured entry
-/// points, refuse the contradictions (`docs/spec/workload-auth.md` §8), and
+/// points, refuse the contradictions (`docs/remote.md#who-can-connect`), and
 /// build the engine it calls for.
 ///
 /// A `resuming` image (ADR-0032) never exits on a refusal: the previous
@@ -81,7 +81,7 @@ pub(in crate::runtime) fn record_refused_listeners(
 ///
 /// `paired` loads the workload authority here, before anything binds, so
 /// missing, malformed, or unsafe material refuses to start
-/// (`docs/spec/workload-auth.md` §8).
+/// (`docs/remote.md#who-can-connect`).
 pub(in crate::runtime) fn posture_policy_engine(
     cfg: &ServerConfig,
     posture: crate::policy::PolicyPosture,
@@ -107,7 +107,7 @@ pub(in crate::runtime) fn posture_policy_engine(
 /// Whether a remote entry point is configured: a WebSocket, QUIC, or
 /// WebTransport listener (flag or environment) or a relay connector. With no
 /// mode, or `local`, the server refuses to start beside one
-/// (`docs/spec/workload-auth.md` §8).
+/// (`docs/remote.md#who-can-connect`).
 pub(in crate::runtime) const fn remote_listener_configured(
     ws_addr: Option<SocketAddr>,
     quic_addr: Option<SocketAddr>,
@@ -134,7 +134,7 @@ pub(in crate::runtime) fn install_policy_posture(
 
 /// Whether the auto-bound overlay listener may run: some overlay port is
 /// unclaimed, its gate is open, and the posture admits a remote door, which
-/// `[policy] mode = "local"` never does (`docs/spec/workload-auth.md` §8).
+/// `[policy] mode = "local"` never does (`docs/remote.md#who-can-connect`).
 ///
 /// With no mode set (`mode_unset`) the server is `local` too; where the
 /// overlay listener would otherwise have bound, that is said once at info,

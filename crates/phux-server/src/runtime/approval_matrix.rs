@@ -1,5 +1,5 @@
 //! Server-held approvals as clients meet them on the wire (ADR-0128,
-//! `docs/spec/workload-auth.md` §6.1).
+//! `docs/agents.md#safety`).
 //!
 //! Each test runs real client loops (`handle_client`) over transports the
 //! test feeds as it goes, so a decision can name the id the server minted.

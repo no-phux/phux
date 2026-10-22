@@ -64,7 +64,7 @@ pub(in crate::runtime) struct CommandContext {
     /// This connection's cancellation.
     pub(in crate::runtime) token: CancellationToken,
     pub(in crate::runtime) root_token: CancellationToken,
-    /// QUIC multi-stream (proto.md §4.2): subscribe now, bootstrap when the
+    /// QUIC multi-stream (docs/protocol.md#quic-stream-routing): subscribe now, bootstrap when the
     /// client binds a stream (`STREAM_BIND`).
     pub(in crate::runtime) defer_subscription: bool,
 }

@@ -102,7 +102,7 @@ pub(super) type Admitted = (
 
 /// Admit a WebSocket upgrade: the pairing token first, then, with a workload
 /// CA, the client certificate through the registry's current generation.
-/// Every refusal is the same 401 (`workload-auth.md` §3, §7).
+/// Every refusal is the same 401 (`docs/remote.md#who-can-connect`).
 pub(super) fn admit_upgrade(
     req: &Request,
     store: &crate::auth::ReloadingTokenStore,

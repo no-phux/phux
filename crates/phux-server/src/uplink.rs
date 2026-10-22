@@ -1,5 +1,4 @@
-//! Satellite uplinks: dialing out to a hub (ADR-0182, `workload-auth.md`
-//! §8.3).
+//! Satellite uplinks: dialing out to a hub (ADR-0182, `docs/remote.md#linking-machines`).
 //!
 //! A server the hub cannot reach joins as a satellite by dialing the hub. On
 //! the hub, `phux host ticket NAME` mints a [`JoinCode`]; on this server,

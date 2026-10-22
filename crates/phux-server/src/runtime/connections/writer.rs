@@ -45,7 +45,7 @@ fn encode_into_batch(
     terminal_message
 }
 
-/// Which frames are worth wrapping (proto.md §6.4): bootstrap and history
+/// Which frames are worth wrapping (docs/protocol.md#framing): bootstrap and history
 /// payloads only. Those are large and gate first paint; live
 /// `RESOURCE_OUTPUT` measured slower when compressed.
 const fn compress_policy(frame: &FrameKind, negotiated: Compression) -> Compression {
@@ -172,7 +172,7 @@ async fn next_admitted(
     }
 }
 
-/// The frames a revoked connection is owed (`workload-auth.md` §7 step 3).
+/// The frames a revoked connection is owed (`docs/remote.md#managing-credentials`).
 fn goodbye_frames(revocation: Revocation) -> [FrameKind; 2] {
     [
         FrameKind::Error {
@@ -187,7 +187,7 @@ fn goodbye_frames(revocation: Revocation) -> [FrameKind; 2] {
     ]
 }
 
-/// Say what a revoked connection is owed, then close (`workload-auth.md` §7
+/// Say what a revoked connection is owed, then close (`docs/remote.md#managing-credentials`
 /// steps 3 and 4). Nothing queued behind the revocation is written: the
 /// mailbox drops with this task. Each step is bounded by
 /// [`WRITER_DRAIN_TIMEOUT`], so a peer that stopped reading cannot hold the
@@ -304,7 +304,7 @@ async fn finish_with_terminal_error<W: FrameWriter>(
 /// Writer task: drain the outbound mailbox into the transport, batching what
 /// is already queued, until the mailbox closes. Once `revocation` fires,
 /// nothing still queued is written; the goodbye is, and the transport closes
-/// (`docs/spec/workload-auth.md` §7).
+/// (`docs/remote.md#managing-credentials`).
 pub(super) async fn writer_task<W: FrameWriter>(
     mut writer: W,
     mut rx: tokio::sync::mpsc::Receiver<Outbound>,

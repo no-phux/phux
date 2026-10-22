@@ -1,5 +1,5 @@
 //! A relayed satellite `EVENT` is journaled by the hub (ADR-0123,
-//! `docs/spec/L1.md` §7.3): stamped with the hub's `seq`, in hub order,
+//! `docs/protocol.md`): stamped with the hub's `seq`, in hub order,
 //! between the hub's local events.
 
 use super::*;

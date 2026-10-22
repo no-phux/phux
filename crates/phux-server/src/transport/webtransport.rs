@@ -2,7 +2,7 @@
 //!
 //! Browsers cannot open raw QUIC. The consumer opens
 //! one bidirectional stream per session and the identical length-prefixed
-//! phux frames (`docs/spec/proto.md` §5) flow over it.
+//! phux frames (`docs/protocol.md#framing`) flow over it.
 //!
 //! Routable consumers authenticate with the pairing token (ADR-0031) on the
 //! `CONNECT` request, inside TLS: an `Authorization: Bearer` header (native)

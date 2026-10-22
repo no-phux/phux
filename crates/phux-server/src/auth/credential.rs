@@ -77,7 +77,7 @@ impl PruneOutcome {
 }
 
 /// Identity and policy captured at connection establishment. Revocation
-/// and expiry still end the connection live (`workload-auth.md` §7), via
+/// and expiry still end the connection live (`docs/remote.md#managing-credentials`), via
 /// [`BearerAdmission`] and the grant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedCredential {
@@ -108,7 +108,7 @@ pub struct ConnectionIdentity {
     /// Structured remote credential, when bearer authentication was used.
     pub credential: Option<AuthenticatedCredential>,
     /// The ssh endpoints a same-uid `phux stdio-bridge` announced
-    /// (`docs/spec/L3.md` §3.9); relabels the whoami route only, never read
+    /// (`docs/reference/cli.md#phux-whoami`); relabels the whoami route only, never read
     /// by policy.
     pub ssh_origin: Option<phux_protocol::wire::ssh_origin::SshOrigin>,
     /// The pairing credential that admitted the connection, so its

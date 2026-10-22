@@ -103,7 +103,7 @@ pub(super) fn process_attached(
 }
 
 /// `INPUT_*` frames have no reply, so a refusal after the gates is pushed as
-/// an uncorrelated `ERROR` (input.md §5.1): input is never lost silently.
+/// an uncorrelated `ERROR` (docs/protocol.md#input): input is never lost silently.
 fn refuse_attached(state: &SharedState, client_id: ClientId, refusal: CommandResult) {
     let CommandResult::Error { code, message } = refusal else {
         return;

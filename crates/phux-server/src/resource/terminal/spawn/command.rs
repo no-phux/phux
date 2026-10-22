@@ -30,7 +30,7 @@ pub(super) fn resolve_shell_from(configured: Option<&str>, env_shell: Option<Str
 ///
 /// Matched on basename: `-l` for bash/zsh/sh, `--login` for fish, `None` for anything else.
 /// Unknown shells get no flag because an unrecognized flag can fail the exec
-/// (ADR-0073, `docs/operations.md`).
+/// (ADR-0073).
 #[must_use]
 pub fn login_flag_for_shell(shell: &str) -> Option<&'static str> {
     let name = std::path::Path::new(shell)

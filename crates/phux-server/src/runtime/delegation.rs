@@ -15,7 +15,7 @@
 //! credential is withdrawn ([`revoke_delegated_agent`]), when its session
 //! is deleted, when it expires, or when the server stops. Withdrawal and
 //! session deletion also revoke every live connection acting as it
-//! (`workload-auth.md` §7); expiry ends them through the revocation
+//! (`docs/remote.md#managing-credentials`); expiry ends them through the revocation
 //! watcher, which judges the grant's expiry.
 //!
 //! **Upgrade and restart.** A hot upgrade carries every live credential
@@ -120,7 +120,7 @@ pub fn delegate_agent(
     })
 }
 
-/// Handle `DELEGATE_AGENT` (`docs/spec/L1.md` §5.7.5) for `client_id`,
+/// Handle `DELEGATE_AGENT` (`docs/substrate.md`) for `client_id`,
 /// which the dispatch guard admitted only on the owner socket. A repeat of
 /// `operation` answers the live credential it minted.
 pub(super) fn handle_delegate_agent(
@@ -197,7 +197,7 @@ pub(super) fn handle_delegate_agent(
     }
 }
 
-/// Handle `REVOKE_DELEGATION` (`docs/spec/L1.md` §5.7.5): idempotent, so a
+/// Handle `REVOKE_DELEGATION` (`docs/substrate.md`): idempotent, so a
 /// credential already gone answers `Ok` too.
 pub(super) fn handle_revoke_delegation(state: &SharedState, credential_id: &str) -> CommandResult {
     revoke_delegated_agent(state, credential_id);

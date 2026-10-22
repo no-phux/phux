@@ -151,7 +151,7 @@ pub(super) struct PutFileChunk {
 }
 
 pub(super) async fn handle_put_file(state: &SharedState, chunk: PutFileChunk) -> CommandResult {
-    // docs/spec/L1.md §1.1: PUT_FILE is a Terminal-facet command — the
+    // docs/protocol.md#commands-events-resources: PUT_FILE is a Terminal-facet command — the
     // upload lands beside a PTY's working directory, which an
     // `AgentSession` does not have.
     match state.with(|server| {

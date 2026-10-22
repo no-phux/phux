@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
 /// One emitted event plus the key of the operation that caused it
-/// (`docs/spec/L1.md` §7.3).
+/// (`docs/protocol.md#receipts-retries-and-backpressure`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Emitted {
     /// The event.

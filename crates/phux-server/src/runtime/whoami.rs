@@ -42,7 +42,7 @@ pub(super) fn is_whoami_key(scope: &Scope, key: &str) -> bool {
 /// "no answer", never a guess).
 ///
 /// The record carries the asking connection's own grant and nobody else's
-/// (`workload-auth.md` §6: the key answers only the asking connection).
+/// (`docs/remote.md#who-can-do-what`: the key answers only the asking connection).
 pub(super) fn record_for(s: &ServerState, client_id: ClientId) -> Option<Vec<u8>> {
     let peer = s.peer_identity(client_id)?;
     let record = build_record(
