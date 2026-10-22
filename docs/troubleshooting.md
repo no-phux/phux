@@ -9,9 +9,13 @@ the exact message and what to do.
 $ phux doctor
 phux: ok:    config             /Users/me/.config/phux/config.toml is valid
 phux: ok:    instance           profile default; state /Users/me/.local/state/phux
+phux: ok:    socket-path        /tmp/phux-me/phux.sock
 phux: ok:    server             reachable at /tmp/phux-me/phux.sock (2 session(s), 5 pane(s)); client protocol 1.0.0
-phux: warn:  server-health      the running server is 1.4.0; this binary is 1.5.0
-  hint: server-health: run `phux upgrade` to hand the server over in place (panes survive), or attach with `phux`, which now does it automatically
+phux: ok:    server-health      0 server start(s) in the last hour
+phux: ok:    plugins            3 manifest(s) valid
+phux: ok:    agent-shim         no claude-in-phux shim installed
+phux: warn:  remote-cert        no auto-provisioned certificate at /Users/me/.local/state/phux/remote-cert.pem
+  hint: remote-cert: run `phux pair` — it provisions the certificate and mints a device token
 ...
 
 phux: warn: no failures, 1 warning(s)

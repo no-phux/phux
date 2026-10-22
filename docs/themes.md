@@ -35,8 +35,8 @@ theme with the same name.
 ```text
 $ phux theme list
 * nord
-  tokyo-night
   phux-dark (plugin com.phux.demo.theme-pack)
+  tokyo-night
 ```
 
 `*` marks the selected theme. `phux theme remove NAME` deletes an
