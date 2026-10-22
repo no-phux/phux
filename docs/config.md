@@ -135,10 +135,11 @@ When a problem comes from a file you extend rather than your own, the line
 after it names that file (`  from /path/to/layer.toml`).
 
 **Check the file before you attach.** A file that does not load at all,
-because of a TOML syntax error or an unknown key, still lets you attach,
-but phux shows the error on the status bar and runs with no key bindings
-until you fix it and run `phux config reload`. A server won't start on such
-a file. A file that loads but has one bad key binding loses only that
+because of a TOML syntax error or an unknown key, still lets you attach:
+phux ignores the whole file, runs on the shipped defaults (so `C-a d` still
+detaches), and shows the error on the status bar until you fix it and run
+`phux config reload`. A reload of a file that still fails keeps whatever
+config you had. A server won't start on such a file. A file that loads but has one bad key binding loses only that
 binding; the rest still work.
 
 ## Starter file
