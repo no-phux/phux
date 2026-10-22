@@ -49,7 +49,15 @@ working_directory = "workspace"
 
 ```text
 $ phux launch opencode --acp --session work --json
-{"schema_version":1,"terminal_id":8,"agent_session_id":"@9","activation":"activation-A","integration":"opencode","native":true,"ready":false}
+{
+  "activation": "906237cf1ef22ebb16be4073a3eae502",
+  "agent_session_id": "@9",
+  "integration": "opencode",
+  "native": true,
+  "ready": false,
+  "schema_version": 1,
+  "terminal_id": 8
+}
 ```
 
 Keep `agent_session_id`; every later command uses it, not `terminal_id`.
@@ -70,11 +78,12 @@ jq '[.records[]
      | .data.update.view] | last' log.json
 ```
 
-The view has `activation`, `connected`, `capabilities`, `turn_id`,
-`provider_session_id`, and `questions`. A missing field means not ready.
-Check the capability for what you are about to do: `connected: true` alone
-can also mean the agent is asking a startup question. Read the view again
-before every action, because turn and question ids go stale.
+The view has `activation`, `backend`, `connected`, `capabilities`,
+`turn_id`, `provider_session_id`, and `questions`. A missing field means
+not ready. Check the capability for what you are about to do:
+`connected: true` alone can also mean the agent is asking a startup
+question. Read the view again before every action, because turn and
+question ids go stale.
 
 ## Sending a prompt
 
@@ -82,12 +91,21 @@ before every action, because turn and question ids go stale.
 and activation from the view:
 
 ```sh
-phux agent native-command @9 --activation activation-A --operation-id 7263519 \
+phux agent native-command @9 --activation 906237cf1ef22ebb16be4073a3eae502 --operation-id 7263519 \
   --intent '{"type":"prompt","text":"Review this checkout"}' --json
 ```
 
 ```json
-{"schema_version":1,"agent_session_id":"@9","activation":"activation-A","result":{"operation_id":7263519,"disposition":"queued","detail":"ACP prompt scheduled; ACP v1 has no admission receipt"}}
+{
+  "activation": "906237cf1ef22ebb16be4073a3eae502",
+  "agent_session_id": "@9",
+  "result": {
+    "detail": "ACP prompt scheduled; ACP v1 has no admission receipt",
+    "disposition": "queued",
+    "operation_id": 7263519
+  },
+  "schema_version": 1
+}
 ```
 
 Pick a new random, nonzero `--operation-id` for each request and keep it
@@ -104,7 +122,7 @@ When the agent asks permission, the view's `questions` lists the question
 and its options. A person reads it and chooses; then:
 
 ```sh
-phux agent native-command @9 --activation activation-A --operation-id 8812004 \
+phux agent native-command @9 --activation 906237cf1ef22ebb16be4073a3eae502 --operation-id 8812004 \
   --intent '{"type":"answer","question_id":"acp-question:1","response":{"option_id":"allow-once"}}' --json
 ```
 

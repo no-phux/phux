@@ -185,7 +185,7 @@ The phux repository has working plugins to copy in
 
 ```text
 $ phux plugin log --failed
-2026-10-21 14:02:11  action  example.pane-tools/summarize  exit 1  212ms
+2026-10-21 22:34:06  action  example.pane-tools/summarize  exit 1  79ms
     summarize.py: no pane text
 ```
 

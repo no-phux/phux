@@ -119,7 +119,7 @@ Each line is the key path, the kind of problem, and the detail:
 $ phux config check
 sidebar.enabledd: unknown key: unknown field `enabledd`, expected one of `enabled`, `width`, `position`, `agents-share`, `hosts`, `hosts-provider`, `hosts-refresh-secs`
 keybindings.prefix-table.q: unknown name: unknown action `kill-pain` (did you mean `kill-pane`?)
-status.right[0]: bad value: widget time: unknown option `formt` (did you mean `format`?)
+status.right[0]: bad value: invalid option for widget time: unknown option `formt` (did you mean `format`?)
 3 problems
 ```
 
@@ -206,10 +206,11 @@ layers (merge order; later layers win):
   [3] /Users/you/.config/phux/config.toml (user)
 
 keys:
+  defaults.agent-log-bytes                 <- [1] defaults
   ...
-  keybindings.prefix  <- [3] user
+  keybindings.prefix                       <- [3] user
   ...
-  status.position     <- [2] work.toml
+  status.position                          <- [2] work.toml
   ...
 ```
 

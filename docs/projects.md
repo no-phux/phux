@@ -77,7 +77,7 @@ phux won't run one you haven't approved:
 
 ```sh
 $ phux project trust
-Trusted /Users/you/code/site/.phux/project.toml (sha256 9f2c...).
+Trusted /Users/you/code/site/.phux/project.toml (sha256 4a0a322c9cd97a4bf30265435d47ab9979098c780cf08003d88ce46501b715ef).
 ```
 
 An approval covers the recipe's exact bytes in that repository, on this

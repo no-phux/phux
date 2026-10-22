@@ -44,7 +44,12 @@ document you can read with [`jq`](https://jqlang.org):
 
 ```text
 $ phux spawn --json -- bash
-{"schema_version":1,"terminal_id":7,"satellite":null,"replayed":false}
+{
+  "replayed": false,
+  "satellite": null,
+  "schema_version": 1,
+  "terminal_id": 7
+}
 ```
 
 ```sh
@@ -118,7 +123,7 @@ prints its output. It exits with the command's own status:
 ```text
 $ phux run @7 'git status --short'
  M src/main.rs
-exit=0 (412ms)
+exit=0 (155ms)
 ```
 
 ```sh
@@ -182,8 +187,11 @@ object per line with `--json`:
 
 ```text
 $ phux watch @7
+@7	unknown
+@7	dirty
 @7	command_started
 @7	command_finished exit=0
+@7	idle
 ```
 
 With `--until EVENT`, it exits 0 at the first matching event:
@@ -236,12 +244,7 @@ without a bump, so ignore keys you don't know. Run the command, or read its
 On failure, stdout is empty and stderr carries one JSON object:
 
 ```json
-{
-  "error": { "code": "no_such_target", "message": "no such target: @99" },
-  "exit_code": 1,
-  "remedy": "run `phux ls` to see live sessions and panes",
-  "schema_version": 1
-}
+{"error":{"code":"no_such_target","message":"no such target: @99"},"exit_code":1,"remedy":"run `phux ls` to see live sessions and panes","schema_version":1}
 ```
 
 Branch on `error.code`, which comes from a fixed list, not on `message`.

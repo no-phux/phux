@@ -137,8 +137,8 @@ with exit status and duration. Failed runs show the end of their output:
 
 ```text
 $ phux plugin log --failed
-2026-10-21 14:02:11  hook    hooks.pane-exit[1]  exit 127  4ms
-    sh: notify-send: command not found
+2026-10-21 22:33:56  hook    hooks.pane-exit[0]  exit 127  9ms
+    /bin/sh: notify-send: command not found
 ```
 
 Hooks from your file are named by their entry, `hooks.<event>[<index>]`,
