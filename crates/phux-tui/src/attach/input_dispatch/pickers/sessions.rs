@@ -1,0 +1,325 @@
+//! Session picker rows: the attached server's sessions, grouped by project
+//! or by host, with satellite machines and their sessions.
+
+use phux_protocol::ids::SessionId;
+
+use phux_core::host_list::HostJson;
+
+use crate::attach::hosts::AttachOrigin;
+use crate::attach::sidebar_zones::PeerInputs;
+use crate::layout::ArrangementDoc;
+use crate::render::overlay::SelectItem;
+
+use super::super::args::{switch_host_action, switch_session_args};
+use super::{new_session_item, window_holding};
+
+/// Per-session counts a session picker row reads.
+#[derive(Debug, Default)]
+pub(in crate::attach::input_dispatch) struct SessionCounts {
+    /// Panes of each session that want a person.
+    pub needs_you: std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
+}
+
+/// Session picker rows, read at a glance (`docs/consumers/attention.md`):
+/// `focused` first (committing it is a silent no-op), then the sessions
+/// with panes that need you, then the rest by name. Each commits
+/// `switch-session { name }`.
+pub(in crate::attach::input_dispatch) fn session_picker_items(
+    sessions: &[phux_protocol::wire::info::SessionInfo],
+    focused: Option<phux_protocol::ids::SessionId>,
+    counts: &SessionCounts,
+) -> Vec<SelectItem> {
+    let mut ordered: Vec<_> = sessions.iter().collect();
+    ordered.sort_by(|left, right| session_picker_order(focused, counts, left, right));
+    ordered
+        .into_iter()
+        .map(|session| attached_session_row(session, counts))
+        .collect()
+}
+
+/// Focused session first, then sessions with panes that need you, then name.
+/// Equal names keep their input order.
+fn session_picker_order(
+    focused: Option<SessionId>,
+    counts: &SessionCounts,
+    left: &phux_protocol::wire::info::SessionInfo,
+    right: &phux_protocol::wire::info::SessionInfo,
+) -> std::cmp::Ordering {
+    let needs = |id: SessionId| counts.needs_you.get(&id).copied().unwrap_or(0);
+    let left_current = Some(left.id) == focused;
+    let right_current = Some(right.id) == focused;
+    right_current
+        .cmp(&left_current)
+        .then_with(|| (needs(left.id) == 0).cmp(&(needs(right.id) == 0)))
+        .then_with(|| left.name.cmp(&right.name))
+}
+
+/// One attached-host session row: its name, and how many of its panes need
+/// you when any do.
+fn attached_session_row(
+    session: &phux_protocol::wire::info::SessionInfo,
+    counts: &SessionCounts,
+) -> SelectItem {
+    let item = SelectItem::new(
+        session.name.clone(),
+        phux_config::keybind::ResolvedAction {
+            action: "switch-session".to_owned(),
+            args: switch_session_args(&session.name, Some(session.id)),
+        },
+    );
+    match counts.needs_you.get(&session.id).copied().unwrap_or(0) {
+        0 => item,
+        waiting => item.secondary(format!("{waiting} need you")),
+    }
+}
+
+/// Header for this host's group in the host-grouped session picker.
+pub(in crate::attach::input_dispatch) const LOCAL_HOST_HEADER: &str = "Local";
+
+/// Live-refresh key: an open session picker is rebuilt when a fresh host
+/// inventory or hosts-provider answer lands.
+pub(in crate::attach) const SESSION_PICKER_LIVE_KEY: &str = "session-picker";
+
+/// The full session-picker rows (host-grouped sessions plus "+ New
+/// session"), one builder for the open and the live refresh.
+///
+/// A project identity or non-empty project tag regroups only the attached
+/// host's sessions. Satellites and other machines stay under their own
+/// headers; another machine's row names its project.
+pub(in crate::attach) fn session_picker_rows(
+    peers: &PeerInputs<'_>,
+    workspace: &ArrangementDoc,
+) -> Vec<SelectItem> {
+    let here = match peers.origin {
+        Some(AttachOrigin::Remote(name)) => name.as_str(),
+        Some(AttachOrigin::Local) | None => LOCAL_HOST_HEADER,
+    };
+    let counts = SessionCounts {
+        needs_you: crate::attach::sidebar_zones::peer_needs_you(peers),
+    };
+    let machines = peers.other_machines();
+    let grouped = peers
+        .sessions
+        .iter()
+        .any(|session| phux_client::project_identity::of_session(session).is_some())
+        || peers.project_tags.values().any(|tag| !tag.is_empty());
+    let mut items = if grouped {
+        assemble_host_groups(
+            project_grouped_session_items(peers.sessions, peers.focused_session, &counts, peers),
+            here,
+            peers.hosts,
+            &machines,
+            workspace,
+        )
+    } else {
+        host_grouped_session_items(
+            peers.sessions,
+            peers.focused_session,
+            &counts,
+            here,
+            peers.hosts,
+            &machines,
+            workspace,
+        )
+    };
+    items.push(new_session_item());
+    items
+}
+
+/// Attached-host sessions grouped by project (ADR-0168): a session's
+/// explicit project link, else its identity, else its
+/// `phux.session.project/v1` label. Groups sort by name;
+/// in each, primary checkouts lead and their linked worktrees follow marked
+/// `└`. A group header counts the panes that need you. Sessions in no
+/// project sit under `Sessions`. Each row is an [`attached_session_row`].
+fn project_grouped_session_items(
+    sessions: &[phux_protocol::wire::info::SessionInfo],
+    focused: Option<SessionId>,
+    counts: &SessionCounts,
+    peers: &PeerInputs<'_>,
+) -> Vec<SelectItem> {
+    use phux_client::project_groups::{Block, GroupRow, group_rows};
+    let mut ordered: Vec<_> = sessions.iter().collect();
+    ordered.sort_by(|left, right| session_picker_order(focused, counts, left, right));
+    let identities: Vec<_> = ordered
+        .iter()
+        .map(|session| phux_client::project_identity::of_session(session))
+        .collect();
+    let rows: Vec<GroupRow<'_>> = ordered
+        .iter()
+        .zip(&identities)
+        .map(|(session, identity)| GroupRow {
+            project: identity.as_ref(),
+            link: phux_client::project_identity::link_of_session(session),
+            label: peers.project_tags.get(&session.id).map(String::as_str),
+            needs_you: counts.needs_you.get(&session.id).copied().unwrap_or(0),
+        })
+        .collect();
+    let mut groups = Vec::new();
+    let mut ungrouped = Vec::new();
+    for block in group_rows(&rows, 1) {
+        match block {
+            Block::Single(index) => ungrouped.push(index),
+            Block::Project(block) => groups.push(block),
+        }
+    }
+    groups.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut items = Vec::new();
+    for group in groups {
+        items.push(SelectItem::header(match group.needs_you {
+            0 => group.name.clone(),
+            n => format!("{} - {n} need you", group.name),
+        }));
+        for member in group.members {
+            let mut row = attached_session_row(ordered[member.index], counts).indented();
+            if member.linked {
+                row.label = format!("└ {}", row.label);
+            }
+            items.push(row);
+        }
+    }
+    if !ungrouped.is_empty() {
+        items.push(SelectItem::header("Sessions"));
+        items.extend(
+            ungrouped
+                .into_iter()
+                .map(|index| attached_session_row(ordered[index], counts).indented()),
+        );
+    }
+    items
+}
+
+/// Session picker rows grouped by host: with no other host exactly
+/// [`session_picker_items`]; otherwise the attached server's sessions under
+/// `here`, then each hub satellite and each other machine under its own
+/// header (kept, marked unreachable, when it could not be listed). A
+/// satellite row commits `switch-session { name, host, id }` (`id` is the
+/// satellite-local session id); a machine row commits `switch-host { host, name }`
+/// (ADR-0140).
+pub(in crate::attach::input_dispatch) fn host_grouped_session_items(
+    sessions: &[phux_protocol::wire::info::SessionInfo],
+    focused: Option<phux_protocol::ids::SessionId>,
+    counts: &SessionCounts,
+    here: &str,
+    satellites: &[phux_protocol::wire::info::HostInventory],
+    machines: &[&HostJson],
+    workspace: &ArrangementDoc,
+) -> Vec<SelectItem> {
+    assemble_host_groups(
+        session_picker_items(sessions, focused, counts),
+        here,
+        satellites,
+        machines,
+        workspace,
+    )
+}
+
+/// The attached-host block, then each satellite and other machine. No other
+/// host returns the block unchanged.
+fn assemble_host_groups(
+    local: Vec<SelectItem>,
+    here: &str,
+    satellites: &[phux_protocol::wire::info::HostInventory],
+    machines: &[&HostJson],
+    workspace: &ArrangementDoc,
+) -> Vec<SelectItem> {
+    if satellites.is_empty() && machines.is_empty() {
+        return local;
+    }
+    let mut items = vec![SelectItem::header(here)];
+    items.extend(local.into_iter().map(SelectItem::indented));
+    for host in satellites {
+        items.extend(satellite_host_items(host, workspace));
+    }
+    for host in machines {
+        items.extend(machine_items(host));
+    }
+    items
+}
+
+/// ADR-0140: one hosts-provider machine's header plus its session rows, in
+/// the provider's (name-sorted) order.
+fn machine_items(host: &HostJson) -> Vec<SelectItem> {
+    if !host.reachable {
+        return vec![SelectItem::header(format!("{} - unreachable", host.label))];
+    }
+    let mut items = vec![SelectItem::header(host.label.clone())];
+    items.extend(host.sessions.iter().map(|session| {
+        // The host stays on the row so it still reads once a typed query
+        // hides the headers.
+        let mut details = vec![format!("on {}", host.label)];
+        if let Some(project) = &session.project {
+            details.push(format!("project {}", project.name));
+        }
+        let exec = &session.exec;
+        let needs = exec.failed.saturating_add(exec.lost);
+        if needs > 0 {
+            details.push(format!("{needs} need you"));
+        }
+        SelectItem::new(
+            session.name.clone(),
+            switch_host_action(host.name.clone(), session.name.clone()),
+        )
+        .secondary(details.join(", "))
+        .indented()
+    }));
+    items
+}
+
+/// One satellite's header plus its name-sorted session rows.
+fn satellite_host_items(
+    host: &phux_protocol::wire::info::HostInventory,
+    workspace: &ArrangementDoc,
+) -> Vec<SelectItem> {
+    if host.unreachable.is_some() {
+        return vec![SelectItem::header(format!("{} - unreachable", host.host))];
+    }
+    let mut items = vec![SelectItem::header(host.host.to_string())];
+    let mut sessions: Vec<_> = host.sessions.iter().collect();
+    sessions.sort_by(|a, b| a.name.cmp(&b.name));
+    items.extend(
+        sessions
+            .into_iter()
+            .map(|session| satellite_session_item(host, session, workspace)),
+    );
+    items
+}
+
+/// One satellite session's row. The label is the session's own name (the
+/// header carries the host); the secondary names the host too, so the row
+/// still reads correctly once a typed query hides the headers.
+fn satellite_session_item(
+    host: &phux_protocol::wire::info::HostInventory,
+    session: &phux_protocol::wire::info::HostSessionInfo,
+    workspace: &ArrangementDoc,
+) -> SelectItem {
+    let mut details = vec![format!("on {}", host.host)];
+    if session
+        .active_resource
+        .as_ref()
+        .is_some_and(|id| window_holding(workspace, id).is_some())
+    {
+        details.push("open here".to_owned());
+    }
+    let mut args = std::collections::BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
+    args.insert(
+        "host".to_owned(),
+        toml::Value::String(host.host.to_string()),
+    );
+    // Satellite-local id. The row still opens by name + host; the id is
+    // what keeps the picker selection on this session across a rename.
+    args.insert(
+        "id".to_owned(),
+        toml::Value::Integer(i64::from(session.id.get())),
+    );
+    SelectItem::new(
+        session.name.clone(),
+        phux_config::keybind::ResolvedAction {
+            action: "switch-session".to_owned(),
+            args,
+        },
+    )
+    .secondary(details.join(", "))
+    .indented()
+}
