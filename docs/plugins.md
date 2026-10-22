@@ -82,7 +82,7 @@ id = "summarize"
 title = "Summarize pane"
 contexts = ["pane"]
 command = ["python3", "summarize.py"]
-keys = "g s"
+keys = "t s"
 
 [[events]]
 id = "log-exit"
@@ -108,7 +108,7 @@ like `summarize.py` work.
 
 | Table | Adds |
 | --- | --- |
-| `[[actions]]` | A command in the palette. `keys` binds it in the prefix table (`"g s"` is <kbd>C-a</kbd> <kbd>g</kbd> <kbd>s</kbd>); your own binding wins if both use the key. |
+| `[[actions]]` | A command in the palette. `keys` binds it in the prefix table (`"t s"` is <kbd>C-a</kbd> <kbd>t</kbd> <kbd>s</kbd>); a key that is already bound, by you or by the shipped defaults, keeps its binding and the plugin's is dropped. |
 | `[[events]]` | A hook: `on` names a [hook event](./hooks.md#events), and `command` runs every time it fires, with the same environment as a config hook. An `on` that is no hook event would never fire: `phux plugin validate` rejects it, suggesting the nearest event, and the server skips it with a warning. |
 | `[[panes]]` | A program to open as a pane. `placement` is `split`, `tab`, `zoomed`, or `overlay` (a floating box). |
 | `[[widgets]]` | A status-bar widget: `id`, a `slot` (`left`, `center`, or `right`, the default), and a `kind` with its [options](./reference/widgets.md). It goes after your own widgets. |
@@ -147,7 +147,7 @@ plugin and the action's `id`:
 
 ```toml
 [keybindings.prefix-table]
-"S" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
+"Y" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
 ```
 
 Your bindings win over a manifest's `keys`. Binding the same key yourself

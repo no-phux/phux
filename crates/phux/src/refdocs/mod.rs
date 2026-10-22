@@ -88,21 +88,29 @@ fn index_page(content: &[Page]) -> Page {
     use std::fmt::Write as _;
 
     let mut body = String::from(
-        "Run `just docs-gen` after changing a command, setting, or other \
-         surface listed here; a unit test fails until the pages match the \
-         binary.\n\n\
-         | Page | Contents |\n\
+        "| Page | Contents |\n\
          |---|---|\n",
     );
     for page in content {
-        let Page { file, summary, .. } = page;
-        let _ = writeln!(body, "| [{file}]({file}) | {summary} |");
+        let Page {
+            file,
+            title,
+            summary,
+            ..
+        } = page;
+        let _ = writeln!(body, "| [{title}]({file}) | {summary} |");
     }
+    body.push_str(
+        "\nWorking on phux? Run `just docs-gen` after changing a command, \
+         setting, or anything else listed here; a unit test fails until the \
+         pages match the binary.\n",
+    );
     Page {
         file: "README.md",
-        title: "Reference",
+        title: "All reference pages",
         summary: "Index of the generated reference pages.",
-        lede: "Every page in this directory is generated from the `phux` binary.",
+        lede: "Every page here is generated from the `phux` binary, so it \
+               matches the code the rest of the docs describe.",
         body,
     }
 }
@@ -195,7 +203,7 @@ mod tests {
         assert_eq!(index.len(), 1, "exactly one index page");
         for page in content {
             assert!(
-                index[0].body.contains(&format!("[{0}]({0})", page.file)),
+                index[0].body.contains(&format!("]({})", page.file)),
                 "index README.md does not link {}",
                 page.file
             );

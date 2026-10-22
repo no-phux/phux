@@ -46,7 +46,7 @@ Every page in the phux docs, grouped by what you're trying to do.
 
 Generated from the `phux` binary, so they match the code these docs describe.
 
-- [Reference index](./reference/README.md): what each generated page covers.
+- [All reference pages](./reference/README.md): what each generated page covers.
 - [CLI](./reference/cli.md): the `--help` text of every command.
 - [Configuration settings](./reference/config.md): every key in the config file, with its default.
 - [Default key bindings](./reference/keys.md): every key phux binds out of the box.

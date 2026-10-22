@@ -1,6 +1,6 @@
-//! The attach entry points (`run_*`), the outer re-attach loop
-//! (`attach_session`), and the `LoopExit` vocabulary it shares with
-//! `main_loop`.
+//! The attach entry points (`run_*`) and the outer re-attach loop
+//! (`attach_session`). The `LoopExit` vocabulary it shares with
+//! `main_loop` lives in `loop_exit`.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -9,18 +9,24 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use phux_protocol::caps::OutputMode;
-use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use tracing::Instrument as _;
 
 use crate::attach::connection::{Connection, Dial};
 use crate::attach::input_dispatch::ReattachTarget;
 use crate::attach::outcome::{AttachEnd, AttachError};
-use crate::attach::paint::StatusBarPaint;
 use crate::attach::record::{SessionRecorder, TeeSink};
 use crate::predict::PredictiveConfig;
-use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
+use crate::render::chrome::status_bar::Notice;
 
+// Re-exported so `main_loop`, `loop_state`, and the tests keep their
+// `entry::` paths.
+#[cfg(test)]
+pub(super) use super::loop_exit::is_local_detach;
+pub(super) use super::loop_exit::{
+    CarriedSidebar, EntryPick, LoopExit, SwitchCarry, detached_loop_exit, finish_onboarding_claim,
+    finish_return_onboarding_after_paint, seed_sidebar_enabled,
+};
 use super::main_loop::main_loop;
 use super::session_io::{attach_client_caps, attach_client_name, send_attach, wait_for_attached};
 use super::terminal::{RawModeGuard, exit_after_detach, install_panic_hook_once};
@@ -251,7 +257,8 @@ fn negotiated_output_mode(conn: &Connection) -> Result<OutputMode, AttachError> 
 }
 
 /// ADR-0048: whether the raw-mode guard also enables outer mouse tracking
-/// (`mouse` config, default on; a load failure falls back to off).
+/// (`mouse` config, default on; a config that fails to load also leaves it
+/// on, matching the shipped default).
 fn mouse_capture_enabled() -> bool {
     phux_config::loader::load().map_or(true, |config| config.defaults.mouse)
 }
@@ -507,112 +514,5 @@ async fn detach_and_drain(
                 orphan_kills.observe_switch_drain(other, std::time::Instant::now());
             }
         }
-    }
-}
-
-/// How a `main_loop` entry ended: `Detached` (the process then exits via
-/// `exit_after_detach`) or `SwitchTo` (the outer loop re-handshakes and
-/// re-enters with fresh session state).
-#[derive(Debug)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "SwitchTo carries the full re-attach request including resource identity"
-)]
-pub(super) enum LoopExit {
-    /// The session ended; `end` says why, for the cooked-terminal message.
-    Detached {
-        end: AttachEnd,
-        locally_requested: bool,
-    },
-    /// Re-attach on the same connection — to an existing session or a
-    /// newly-created one.
-    SwitchTo {
-        /// Where to re-attach.
-        target: ReattachTarget,
-        /// The sidebar's runtime state, so a switch neither reverts a
-        /// `toggle-sidebar` nor snaps back a dragged width.
-        sidebar: CarriedSidebar,
-        /// Stray satellite panes still owed a kill (connection state).
-        orphan_kills: super::orphans::OrphanKills,
-        /// Per-identity review status for this connection. Session
-        /// loops rebuild pane slots; this does not.
-        review: crate::attach::review::ReviewIndex,
-        /// Server-wide peer caches, so the next entry's sidebar paints them
-        /// on its first frame.
-        peers: super::loop_state::CarriedPeers,
-    },
-}
-
-/// Classify a detach independently from the wire frame that completed it.
-/// A server `DETACHED` is local only when this client had already requested
-/// detach; pane death remains its own ending even if the events race.
-pub(super) const fn is_local_detach(end: AttachEnd, local_intent: bool) -> bool {
-    local_intent && matches!(end, AttachEnd::Detached { .. })
-}
-
-pub(super) const fn detached_loop_exit(end: AttachEnd, local_intent: bool) -> LoopExit {
-    LoopExit::Detached {
-        end,
-        locally_requested: is_local_detach(end, local_intent),
-    }
-}
-
-/// A one-step cross-session pick (`switch-session` naming a window, pane, or
-/// resource) that the next loop entry focuses once its layout lands.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) struct EntryPick {
-    /// The window index to select.
-    pub(super) window: Option<usize>,
-    /// The pane within it: its DFS leaf ordinal.
-    pub(super) pane: Option<usize>,
-    /// The authoritative resource to focus, from a graph-discovered agent
-    /// row. Wins over the indices and works before a TUI layout exists.
-    pub(super) resource: Option<ResourceId>,
-}
-
-/// What one `main_loop` entry hands the next across a session switch.
-pub(super) struct SwitchCarry {
-    /// The sidebar's runtime state.
-    pub sidebar: CarriedSidebar,
-    /// Server-wide peer caches, so the first frame paints them.
-    pub peers: super::loop_state::CarriedPeers,
-}
-
-/// Sidebar state carried across an in-process session switch; runtime-only
-/// (ADR-0101).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CarriedSidebar {
-    /// `toggle-sidebar`'s current state.
-    pub enabled: bool,
-    /// The strip width when a drag moved it away from `[sidebar] width`;
-    /// `None` lets the next entry's config load decide, as before.
-    pub width: Option<u16>,
-}
-
-/// The sidebar's enabled flag at `main_loop` entry: config decides the first
-/// attach; after that the carried runtime value wins in both directions.
-pub(super) const fn seed_sidebar_enabled(carried: Option<bool>, configured: bool) -> bool {
-    match carried {
-        Some(enabled) => enabled,
-        None => configured,
-    }
-}
-
-pub(super) fn finish_onboarding_claim(
-    claim: Option<crate::attach::onboarding::AttachClaim>,
-    delivery_accepted: bool,
-) {
-    if delivery_accepted && let Some(claim) = claim {
-        let _ = claim.commit();
-    }
-}
-
-pub(super) fn finish_return_onboarding_after_paint(
-    claim: &mut Option<crate::attach::onboarding::AttachClaim>,
-    status_bar: Option<&StatusBarPainter>,
-    paint: StatusBarPaint,
-) {
-    if paint.delivered(status_bar, crate::attach::onboarding::RETURN_NOTICE) {
-        finish_onboarding_claim(claim.take(), true);
     }
 }

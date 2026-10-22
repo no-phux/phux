@@ -3,7 +3,7 @@
 Every `phux` command except `phux` and `phux attach` runs without a UI, so a
 shell script, a cron job, or a coding agent can create panes, type into them,
 read their screens, and wait for output. A person can watch the same panes in
-the TUI while the script runs, or nobody can.
+the terminal UI while the script runs, or nobody needs to.
 
 ```sh
 #!/bin/sh
@@ -12,26 +12,13 @@ phux run build 'cargo build' && echo "build passed"
 phux snapshot build
 ```
 
-[Agents](./agents.md) covers what is specific to coding agents.
+[Coding agents](./agents.md) covers what is specific to agents.
 
 ## Targets
 
-A target names what a command acts on. Every command that takes one reads
-the same grammar:
-
-| Target | Means | Example |
-| --- | --- | --- |
-| `name` | A session | `phux snapshot work` |
-| `name:G` | Tab G of a session | `phux kill work:1` |
-| `name:G.P` | Pane P of tab G | `phux send-keys work:1.0 C-c` |
-| `@N` | A pane by id | `phux run @7 'cargo test'` |
-| `host/@N` | A pane on a linked machine | `phux snapshot edge/@7` |
-| `#tag` | Every pane with that tag | `phux kill '#build'` |
-| `%name` | The pane an agent of that name runs in | `phux wait %reviewer` |
-| `^key` | A session or pane by its key | `phux kill ^3f9a2c` |
-| `.` | The focused pane | `phux signal . kill` |
-
-Tab and pane numbers count from zero. `phux help targets` prints this table.
+A target names the session, tab, or pane a command acts on: `work`,
+`work:1.0`, `@7`, `'#build'`, and so on. [Targets](./concepts.md#targets)
+has the whole grammar, and `phux help targets` prints it.
 
 **Use `@N` in scripts.** Names and tags are for people and can change under
 you. `.` is whatever a person is looking at right now, so use it only when
@@ -91,8 +78,11 @@ around for `phux resource show` and `phux resource wait` until the time runs
 out or you `phux kill` it. Write `--retain=SECS` when a command follows, so
 the number is not read as the command.
 
-`phux spawn` and `phux new --json` never start a server. `phux new` without
-`--json` does, and attaches.
+`phux new` starts a server if none is running; without `--json` it also
+attaches. `phux new --json` fails if the session already exists, so a
+script that runs twice should pick a fresh name or end the old session
+first with `phux kill --yes NAME`. `phux spawn` never starts a server: with none running it
+exits 1 with `no_server`.
 
 ## Typing into a pane
 

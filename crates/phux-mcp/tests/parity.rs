@@ -11,7 +11,7 @@
 //! - the CLI grammar, from `docs/reference/cli.md`, which the `phux` crate's
 //!   freshness test renders from the usage spec and byte-pins, so it is the
 //!   grammar and not a hand-kept list;
-//! - the JSON index in `docs/agents.md`, independently of the tool table;
+//! - the "Commands agents use" list in `docs/agents.md`, independently of the tool table;
 //! - [`AGENT_FACING`], a fixed coverage floor so shrinking the guide cannot
 //!   silently erase existing agent verbs, including mail and claim renew.
 
@@ -122,8 +122,8 @@ const AGENT_FACING: &[&str] = &[
 fn agent_facing_verbs(cli: &BTreeSet<String>) -> BTreeSet<String> {
     let agents = repo_file("docs/agents.md");
     let start = agents
-        .find("\n## JSON index")
-        .expect("agents.md has the JSON index");
+        .find("\n## Commands agents use")
+        .expect("agents.md lists the commands agents use");
     let end = agents[start + 1..]
         .find("\n## ")
         .map_or(agents.len(), |offset| start + 1 + offset);
@@ -154,7 +154,7 @@ fn tool_verbs() -> BTreeSet<&'static str> {
         .collect()
 }
 
-/// (a) Every agent-facing CLI verb in the JSON index has a tool, or an
+/// (a) Every agent-facing CLI verb in the agents.md command list has a tool, or an
 /// explicit row saying why not.
 #[test]
 fn every_agent_facing_cli_verb_has_a_tool() {
@@ -164,14 +164,14 @@ fn every_agent_facing_cli_verb_has_a_tool() {
     for verb in AGENT_FACING {
         assert!(
             documented.contains(*verb),
-            "the public JSON index lost {verb}"
+            "agents.md lost the command {verb}"
         );
     }
     assert!(documented.len() >= AGENT_FACING.len());
     for verb in &documented {
         assert!(
             cli.contains(verb),
-            "JSON index names `phux {verb}`, which is not in the CLI grammar"
+            "agents.md names `phux {verb}`, which is not in the CLI grammar"
         );
         let exempt = CLI_ONLY.iter().any(|(name, _)| *name == verb);
         assert!(

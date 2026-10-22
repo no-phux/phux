@@ -33,17 +33,17 @@ phux status            # pid, uptime, protocol, clients, sessions
 phux config check      # whether the config file is valid
 phux logs              # where the logs are
 phux logs --server -f  # follow the server log
-phux logs --client     # the newest TUI log
+phux logs --client     # the newest terminal UI log
 ```
 
-The TUI writes its log to a file, never to the screen. The server writes
+The terminal UI writes its log to a file, never to the screen. The server writes
 `server.log` in the state directory however it was started.
 [File locations](./reference/files.md) lists every path: the socket, config,
 state, logs, and credentials.
 
 ## Reporting a bug
 
-Press <kbd>C-a</kbd> <kbd>B</kbd> in the TUI. It writes a report with
+Press <kbd>C-a</kbd> <kbd>B</kbd> in the terminal UI. It writes a report with
 versions, logs, and the current screen to the state directory. From a shell,
 `phux report new` writes one without the screen, and `phux report show`
 prints the newest.
@@ -101,7 +101,7 @@ kept.
 headless commands from [Shell scripting](./scripting.md) there.
 
 **`refusing to attach from inside one of this server's own panes`.**
-Attaching from a pane of the same server would draw the TUI inside itself.
+Attaching from a pane of the same server would draw the terminal UI inside itself.
 Switch sessions with <kbd>C-a</kbd> <kbd>s</kbd>, or set
 `PHUX_ALLOW_NESTED=1` if you mean to nest.
 
@@ -180,26 +180,23 @@ install an older release:
 3. Back up the state directory's `org/` and `work/` folders while the server
    is stopped.
 
-**Never move the store aside to start empty.** The server would lose track
-of every pane it was running. A newer server keeps a backup before it
+**Never move the `org/` or `work/` folder aside to start empty.** The
+server would lose track of every pane it was running. A newer server keeps a backup before it
 migrates an existing store.
 
-Some changes are one way. The work store moves to a new version the first
-time a newer binary opens it, and an older binary then refuses that file.
-An older server also can't load a store holding a recent operation it
-doesn't know, such as a project link or a session kill, until a newer
-server has pruned that record (after a day, or 10,000 newer records). An
-older server also ignores a session's project link.
+Some upgrades can't be undone by installing the old binary:
+
+- The `work/` store, which holds agent mail and claims among other
+  things, moves to a new format the first time a newer binary opens it,
+  and an older binary then refuses it.
+- The `org/` store can hold a recent operation an older server doesn't
+  know, such as a project link or a session kill. The older server refuses
+  the store until a newer one has pruned that record, after a day or
+  10,000 newer records.
+- An older server ignores a session's project link.
 
 ## Exit codes
 
-| Code | Means |
-| --- | --- |
-| `0` | Success. |
-| `1` | Failure: no server, no such target, or the command failed. |
-| `2` | Usage error, or the server refused the request. |
-| `3` | A linked machine didn't answer. Retry later. |
-| `124` | `wait`, `watch`, or `resource wait` timed out. |
-| `125` | `run` timed out. |
-
-[Exit codes](./reference/exit-codes.md) has the full reference.
+Every command exits 0 on success, 1 on failure, and 2 on a usage error or
+a refused request. [Shell scripting](./scripting.md#exit-codes) lists the
+rest, and [Exit codes](./reference/exit-codes.md) has the full reference.
