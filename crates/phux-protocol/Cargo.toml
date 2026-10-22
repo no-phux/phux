@@ -35,6 +35,8 @@ serde = { workspace = true }
 # Trailing additive JSON on `SessionSnapshot` (remote listener bind report,
 # phux-kyna) and any future open-shaped diagnostic field on the state reply.
 serde_json = { workspace = true }
+# Complete nested schemas for the public terminal workflow, derived from its DTOs.
+schemars = "1.2.3"
 # Derives TryFrom<u32> for the wire's PhysicalKey enum (ADR-0024). Pure Rust,
 # wasm-safe; the same crate libghostty-vt uses for its key discriminants.
 int-enum = "1.2"

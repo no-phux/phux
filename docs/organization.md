@@ -28,6 +28,14 @@ fences are concurrency/authority checks, not optional UI bookkeeping. The
 legacy TUI layout metadata adapter translates into this model; it does not
 supplant it.
 
+## Complete creation intentions
+
+The [public terminal workflow](./public-api.md) commits membership, a stable
+arrangement entry and launch intent together. Invalid or stale placement
+refuses before any process starts; callers do not spawn then publish a layout
+or compensate with a kill. OS launch follows the durable commit and can fail.
+Its receipt distinguishes that failure from refusing the organization edit.
+
 ## Commit before publication
 
 The dataflow is **command + actor → pure apply → durable commit → mirror →

@@ -629,6 +629,14 @@ pub(crate) fn clear_agent_host_env(cmd: &mut CommandBuilder) {
     }
 }
 
+pub(super) const STRICT_CWD_KEY: &str = "PHUX_FD_SHRINK_STRICT_CWD";
+
+/// Apply recorded cwd intent without permitting any executor fallback directory.
+pub(crate) fn apply_strict_spawn_cwd(builder: &mut CommandBuilder, cwd: &std::path::Path) {
+    builder.cwd(cwd);
+    builder.env(STRICT_CWD_KEY, "1");
+}
+
 /// Apply a wire-supplied cwd to `cmd`.
 ///
 /// A cwd already on `cmd` (from a server-wide override command) wins. A path

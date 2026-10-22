@@ -1075,6 +1075,7 @@ fn import_tree(
             } else {
                 ExitPolicy::Remove
             },
+            durable_result: false,
             activation: Some(activation),
             revision: Revision::FIRST,
         });
@@ -1111,6 +1112,7 @@ fn import_tree(
                 native_id: a.native_id.clone(),
             })),
             on_exit: ExitPolicy::Remove,
+            durable_result: false,
             activation: Some(activation),
             revision: Revision::FIRST,
         });

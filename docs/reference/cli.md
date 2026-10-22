@@ -47,6 +47,7 @@ Panes:
   insert-pane   Insert an existing pane into a layout
   mv            Move a pane into another session, or beside another pane
   swap-pane     Swap two panes in a layout
+  terminal      Create and place terminals; inspect API and receipts
   resource      Inspect a resource or wait for its process to exit
 
 Agents:
@@ -5072,6 +5073,83 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux terminal`
+
+```text
+Create and place terminals; inspect API and receipts
+
+Always returns versioned JSON. Creation commits membership, placement and launch
+intent together; a receipt is not process or task completion.
+
+Usage: phux terminal <SUBCOMMAND>
+
+Commands:
+  create     Create, place and start a terminal from one strict JSON intention.
+  describe   Read the connected server's public workflow schemas and retry
+             contracts.
+  operation  Recover a retained creation receipt without executing or retrying
+             anything. A missing receipt means unknown, not that the original
+             request was refused.
+  help       Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux terminal create`
+
+```text
+Create, place and start a terminal from one strict JSON intention.
+
+Use `terminal describe` for the complete nested request schema. Argv runs in a
+new process, never by typing into an existing shell. The resource and
+failed/completed execution remain until explicit removal.
+
+Usage: phux terminal create <--request-json <JSON>>
+
+Flags:
+      --request-json <JSON>  JSON intention containing `idempotency_key`,
+                             session and optional argv/cwd/env/name/placement.
+  -h, --help                 Print help
+
+Global flags:
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux terminal describe`
+
+```text
+Read the connected server's public workflow schemas and retry contracts.
+
+Usage: phux terminal describe
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux terminal operation`
+
+```text
+Recover a retained creation receipt without executing or retrying anything. A
+missing receipt means unknown, not that the original request was refused.
+
+Usage: phux terminal operation <--session <KEY>> <--idempotency-key <HEX32>>
+
+Flags:
+      --session <KEY>            Original full durable destination session key.
+      --idempotency-key <HEX32>  Same key supplied to terminal create.
+  -h, --help                     Print help
+
+Global flags:
+      --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux theme`

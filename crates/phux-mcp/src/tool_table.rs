@@ -122,6 +122,21 @@ pub(crate) const TOOLS: &[Row] = &[
         exec: Exec::InProcess,
         touches: Touches::LocalRead,
     },
+    cli(
+        "phux_terminal_operation",
+        "terminal operation",
+        Touches::Wire(&["GET_CREATION"]),
+    ),
+    cli(
+        "phux_terminal_create",
+        "terminal create",
+        Touches::Wire(&["RESOURCE_CREATE"]),
+    ),
+    cli(
+        "phux_api_describe",
+        "terminal describe",
+        Touches::Wire(&["DESCRIBE_API"]),
+    ),
     cli("phux_ls", "ls", Touches::Wire(&[RESOLVE])),
     cli(
         "phux_upload",

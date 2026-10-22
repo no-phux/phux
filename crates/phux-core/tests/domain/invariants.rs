@@ -217,6 +217,7 @@ impl World {
             Step::CreateResource { s, retain, inbox } => (
                 owner,
                 Op::ResourceCreate {
+                    placement: None,
                     session: if *inbox {
                         None
                     } else {

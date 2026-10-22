@@ -139,7 +139,8 @@ fn delegation_samples(world: &World) -> Vec<FrameKind> {
 fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
     use phux_protocol::ids::{ActivationId, OperationId, Revision, ServerInstance};
     use phux_protocol::wire::frame::{
-        ArrangementDoc, ExitPolicy, LiveTarget, MoveItem, OrgFilter, SessionLifetime, TerminateMode,
+        ArrangementDoc, CreatePlacement, ExitPolicy, LiveTarget, MoveItem, OrgFilter, SessionLifetime,
+        TerminateMode,
     };
     let k = &world.org;
     let op = OperationId::new([5; 16]).unwrap();
@@ -167,6 +168,7 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
             session: k.session,
         }),
         command(Command::ResourceCreate {
+            placement: None,
             operation: op,
             session: k.session,
             kind: phux_protocol::ids::ResourceKind::Terminal,
@@ -234,6 +236,20 @@ fn organization_samples(world: &World, t: &WireResourceId) -> Vec<FrameKind> {
             operation: op,
             session: k.session,
             project: Some("phux".to_owned()),
+        }),
+        command(Command::GetCreation {
+            operation: op,
+            session: k.session,
+        }),
+        command(Command::ResourceCreate {
+            placement: Some(Box::new(CreatePlacement::NewGroup)),
+            operation: op,
+            session: k.session,
+            kind: phux_protocol::ids::ResourceKind::Terminal,
+            launch: None,
+            name: None,
+            on_exit: ExitPolicy::Retain,
+            launch_mode: phux_protocol::wire::frame::LaunchMode::Immediate,
         }),
     ]
 }

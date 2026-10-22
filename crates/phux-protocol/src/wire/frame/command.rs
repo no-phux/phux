@@ -189,6 +189,17 @@ impl ApprovalOutcome {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Command {
+    /// Connected-server public workflow description and nested schemas.
+    /// Requires `features_ext.API_DESCRIPTION`; support is not authorization.
+    DescribeApi,
+    /// Read a retained placed-creation receipt without repeating any effect.
+    /// Requires `API_DESCRIPTION` and inventory on the original destination session.
+    GetCreation {
+        /// Retry identity of the original creation.
+        operation: OperationId,
+        /// Original durable destination, not the resource's current session.
+        session: SessionKey,
+    },
     /// Dedicated SDK-owned `AgentSession` broker request. The wire body is
     /// length-prefixed JSON bounded by `MAX_NATIVE_PAYLOAD_BYTES`; controller
     /// requests additionally require exclusive binding proof and generation.
@@ -597,6 +608,9 @@ pub enum Command {
         /// Whether the first activation starts now or the record stays
         /// dormant until relaunched.
         launch_mode: LaunchMode,
+        /// Optional placement committed with membership and launch intent.
+        /// Requires `features_ext.CREATE_PLACEMENT`; never silently downgrade.
+        placement: Option<Box<super::CreatePlacement>>,
     },
     /// Move one resource between sessions; membership only, no restart.
     ResourceMove {
@@ -819,6 +833,7 @@ impl Command {
         matches!(
             self,
             Self::GetOrganization { .. }
+                | Self::GetCreation { .. }
                 | Self::SessionCreate { .. }
                 | Self::SessionRename { .. }
                 | Self::SessionSetProject { .. }

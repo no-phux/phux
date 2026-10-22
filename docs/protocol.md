@@ -256,6 +256,25 @@ parent closes its children atomically; closing a child never kills its
 parent. Process exit under Retain is not purge: see
 [activations and exit policy](./organization.md#activations-and-reconciliation).
 
+### Complete terminal creation and discovery
+
+`features_ext.CREATE_PLACEMENT` (`0x2000`) gates the optional `RESOURCE_CREATE`
+placement field and creation receipts. The placement is either a new group or
+a split beside a stable entry with a durable resource key, incarnation and
+activation fence. It requires both `CREATE` and `ORGANIZE` on the destination
+session; no cross-session anchor is admitted. The new fields are append-only
+organization TLVs: placement `43`, entry `44`, replayed `45`, authority `46`.
+Creation receipts additionally use the existing arrangement/activation fields.
+Absent placement keeps the legacy create bytes and `CREATE`-only authority.
+
+`features_ext.API_DESCRIPTION` (`0x4000`) gates `DESCRIBE_API` (command tag
+`0x40`, no body) and `GET_CREATION` (`0x41`, organization operation/session
+TLVs). Description returns JSON containing complete nested public workflow
+schemas, not an application IDL inferred from top-level frame shapes. Lookup
+is read-only, needs `INVENTORY` on the original destination session, and
+returns a retained creation receipt or `NOT_FOUND`. A missing receipt cannot
+establish that the original mutation never ran. See the [public contract](./public-api.md).
+
 ### File transfer
 
 `PUT_FILE` uses a live Terminal to select the destination host, not to grant

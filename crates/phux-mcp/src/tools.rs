@@ -255,6 +255,7 @@ pub(crate) fn catalog() -> Value {
         entries.extend(crate::coord_tools::schemas());
         entries.extend(crate::resource_tools::schemas());
         entries.extend(crate::approval_tools::schemas());
+        entries.extend(crate::terminal_tools::schemas());
     }
     // Hints derived from the kind catalog, never hand-set (ADR-0125).
     if let Value::Array(entries) = &mut tools {
@@ -274,6 +275,9 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
     // ADR-0128: confirm before any parsing, socket resolution, or traffic.
     crate::annotations::require_confirmation(name, args)?;
     match name {
+        "phux_terminal_create" => crate::terminal_tools::create(args).await,
+        "phux_terminal_operation" => crate::terminal_tools::operation(args).await,
+        "phux_api_describe" => crate::terminal_tools::describe(args).await,
         "phux_ls" => phux_ls(args).await,
         "phux_snapshot" => phux_snapshot(args).await,
         "phux_send_keys" => phux_send_keys(args).await,

@@ -38,6 +38,7 @@ mod command_encode;
 mod events;
 mod field_values;
 mod model;
+mod placement;
 mod records;
 mod refusal;
 mod values;
@@ -60,8 +61,8 @@ use field_values::{
     write_u8, write_u32, write_u64,
 };
 pub use model::{
-    ArrangementDoc, ArrangementGroup, ArrangementNode, ArrangementOwner, EntryRef, EntryTarget,
-    LaunchSpec, LiveTarget, MoveItem, OrgFilter, Outcome, RecordRevision,
+    ArrangementDoc, ArrangementGroup, ArrangementNode, ArrangementOwner, CreatePlacement, EntryRef,
+    EntryTarget, LaunchSpec, LiveTarget, MoveItem, OrgFilter, Outcome, RecordRevision,
 };
 use model::{
     FILTER_ALL, FILTER_INTAKE, FILTER_SESSION, FILTER_WORKSPACE, MAX_ENTRY_HOST_BYTES,

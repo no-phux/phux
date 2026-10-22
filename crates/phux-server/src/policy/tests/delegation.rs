@@ -128,7 +128,9 @@ fn a_delegated_agent_is_refused_terminate_signal_and_organize_even_in_its_sessio
         };
         let reads = matches!(
             org,
-            Command::GetOrganization { .. } | Command::ArrangementGet { .. }
+            Command::GetOrganization { .. }
+                | Command::ArrangementGet { .. }
+                | Command::GetCreation { .. }
         );
         if !reads {
             assert!(!admits(&world, &grant, &frame), "{org:?}");

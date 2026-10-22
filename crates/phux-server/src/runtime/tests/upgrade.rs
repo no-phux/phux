@@ -81,6 +81,59 @@ async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
         .await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
+    use phux_core::{Delta, ExitPolicy, Transition};
+    use phux_protocol::wire::frame::CloseReason;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut old, wire, _, tokens) = old_image_with_retained_panes();
+            let pane = old.terminal_from_wire(&wire).unwrap();
+            let mut record = old.registry().record(pane).unwrap().clone();
+            let key = record.key;
+            record.on_exit = ExitPolicy::Retain;
+            record.durable_result = true;
+            old.registry_mut().commit(&Transition {
+                deltas: vec![Delta::PutResource(record)],
+                ..Transition::default()
+            });
+            old.activation_ended(pane, phux_core::ExitOutcome::exited(5), false);
+            let blob = old.build_upgrade_blob(7).await;
+            let resumed = SharedState::new();
+            let root = CancellationToken::new();
+            resume_session_tree(&resumed, &blob, &root).unwrap();
+            let pane = resumed
+                .with(|state| state.terminal_from_wire(&wire))
+                .unwrap();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            resumed.with_mut(|state| {
+                let client = state.new_client_id();
+                state.subscribe_terminal(client, pane, Some(tx));
+            });
+            assert_eq!(
+                next_close_of(&mut rx, &wire).await,
+                (CloseReason::ServerShutdown, Some(5))
+            );
+            resumed.with(|state| {
+                let record = state
+                    .org()
+                    .resource(&key)
+                    .expect("durable result survives handoff screen retirement");
+                assert!(record.durable_result);
+                assert_eq!(
+                    record.activation.as_ref().unwrap().state,
+                    phux_core::ExecState::Completed
+                );
+                assert!(state.resource_handle(pane).is_none());
+            });
+            root.cancel();
+            for token in tokens {
+                token.cancel();
+            }
+        })
+        .await;
+}
+
 /// A well-formed empty handoff rebuilds, then the adopted listener accepts.
 #[tokio::test(flavor = "current_thread")]
 async fn transactional_resume_serves_on_the_adopted_listener() {

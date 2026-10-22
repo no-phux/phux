@@ -1530,6 +1530,7 @@ fn dispatch(
             socket,
         }),
         Some(Command::Resource { action }) => commands::resource::run_resource(&action, socket),
+        Some(Command::Terminal { action }) => commands::terminal::run(&action, socket),
         Some(Command::Rec {
             action,
             target,
