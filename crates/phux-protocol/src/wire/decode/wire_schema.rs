@@ -75,8 +75,14 @@ const SCHEMA_PATH: &str = "docs/spec/wire-schema.json";
 /// Set to regenerate the schema from the codec instead of checking it.
 const UPDATE_ENV: &str = "PHUX_UPDATE_WIRE_SCHEMA";
 
-/// The field-id table the codec encodes and decodes by.
-const FIELD_RS: &str = include_str!("../field.rs");
+/// The field-id table the codec encodes and decodes by: the modules
+/// `field.rs` re-exports, one source file per frame family.
+const FIELD_RS: &str = concat!(
+    include_str!("../field/connection.rs"),
+    include_str!("../field/metadata.rs"),
+    include_str!("../field/lifecycle.rs"),
+    include_str!("../field/organization.rs"),
+);
 
 /// `field.rs` modules that number a field-tagged record nested inside a
 /// positional value, not a frame body. The schema covers frame bodies only.

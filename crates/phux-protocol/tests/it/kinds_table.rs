@@ -43,7 +43,7 @@ fn every_agent_event_tag_is_catalogued_once() {
     let manifest =
         std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR");
     let source =
-        std::fs::read_to_string(std::path::PathBuf::from(manifest).join("src/wire/frame/mod.rs"))
+        std::fs::read_to_string(std::path::PathBuf::from(manifest).join("src/wire/frame/tags.rs"))
             .expect("read the event codec declarations");
     let declared: Vec<_> = source.lines().filter_map(declared_event).collect();
     assert!(

@@ -37,7 +37,7 @@ value:     bytes
 ```
 
 Decoders match fields by id in any order and skip ids they do not know, so
-additive optional fields can be skipped by an older peer. Most nested
+an older peer skips additive optional fields. Most nested
 records are positional and big-endian, with string leaves encoded as
 `u32 length || bytes`; top-level UTF-8 field values are raw bytes. A
 record that is not last in its field (list rows, input events,
@@ -347,9 +347,9 @@ Native onboarding is additive inside `NATIVE_AGENT`, gated by its own
 `NATIVE_AGENT_LAUNCH` bit; see
 [ACP onboarding](./acp.md#from-the-desktop-app).
 
-- Allocate a new type byte or sub-tag in `wire/frame/mod.rs`; duplicates
-  fail to compile.
-- Add field ids in `wire/field.rs`, append-only.
+- Allocate type bytes in `wire/frame/mod.rs`, sub-tags in
+  `wire/frame/*tags.rs`; duplicates fail to compile.
+- Add field ids in `wire/field/`, append-only.
 - Gate new behavior on a feature bit in `caps/server_features.rs`. Do not
   bump the protocol version for an additive change. A shipped capability bit is
   never withdrawn or repointed.
