@@ -236,6 +236,7 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
         (
             "snap_org_resource_create",
             command(Command::ResourceCreate {
+                placement: None,
                 operation: op(),
                 session: session(),
                 kind: ResourceKind::Terminal,
@@ -248,6 +249,7 @@ fn command_fixtures() -> Vec<(&'static str, FrameKind)> {
         (
             "snap_org_resource_create_deferred",
             command(Command::ResourceCreate {
+                placement: None,
                 operation: op(),
                 session: session(),
                 kind: ResourceKind::Terminal,

@@ -2906,6 +2906,7 @@ dependencies = [
  "libghostty-vt",
  "png",
  "proptest",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",

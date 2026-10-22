@@ -11,8 +11,13 @@ use crate::tool_table::{Exec, TOOLS};
 fn sweep_args(tool: &str) -> Value {
     let dead = "/nonexistent/phux-mcp-sweep.sock";
     let mut args = match tool {
+        "phux_terminal_operation" | "phux_terminal_create" => {
+            json!({"idempotency_key":"0123456789abcdef0123456789abcdef", "session":"aebagbafaydqqcikbmga2dqpca"})
+        }
         "phux_operation_status" => json!({ "idempotency_key": "0123456789abcdef0123456789abcdef" }),
-        "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_approvals" => json!({}),
+        "phux_api_describe" | "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_approvals" => {
+            json!({})
+        }
         "phux_snapshot" | "phux_resource_methods" | "phux_resource_show" => {
             json!({ "target": "@1" })
         }

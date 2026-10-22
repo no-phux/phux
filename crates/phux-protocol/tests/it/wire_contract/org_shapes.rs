@@ -252,6 +252,7 @@ fn org_command() -> impl Strategy<Value = Command> {
             .prop_map(
                 |(operation, session, kind, launch, name, retain, deferred)| {
                     Command::ResourceCreate {
+                        placement: None,
                         operation,
                         session,
                         kind,

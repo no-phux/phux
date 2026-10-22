@@ -772,11 +772,17 @@ enum CommandTag {
     ServiceHttpOpen = 0x3d,
     ServiceHttpRead = 0x3e,
     ServiceHttpClose = 0x3f,
+    DescribeApi = 0x40,
+    GetCreation = 0x41,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
 // slots and decode as `UnknownEnumValue`.
 wire_tags! { Command;
+/// Wire tag for [`Command::DescribeApi`].
+pub(crate) const COMMAND_TAG_DESCRIBE_API: u8 = CommandTag::DescribeApi as u8;
+/// Wire tag for [`Command::GetCreation`].
+pub(crate) const COMMAND_TAG_GET_CREATION: u8 = CommandTag::GetCreation as u8;
 /// Wire tag for [`Command::AttachResource`].
 pub(crate) const COMMAND_TAG_ATTACH_RESOURCE: u8 = CommandTag::AttachResource as u8;
 /// Wire tag for [`Command::DetachResource`].
@@ -1015,8 +1021,8 @@ pub use directory::{
 pub use kind::FrameKind;
 pub use org::{
     ActivationInfo, ArrangementDoc, ArrangementGroup, ArrangementNode, ArrangementOwner,
-    ArrangementValue, Committed, Delegation, EntryRef, EntryTarget, ExecState, ExitPolicy,
-    LaunchMode, LaunchSpec, LiveTarget, MAX_ARRANGEMENT_BYTES, MAX_ARRANGEMENT_DEPTH,
+    ArrangementValue, Committed, CreatePlacement, Delegation, EntryRef, EntryTarget, ExecState,
+    ExitPolicy, LaunchMode, LaunchSpec, LiveTarget, MAX_ARRANGEMENT_BYTES, MAX_ARRANGEMENT_DEPTH,
     MAX_CREDENTIAL_ID_BYTES, MAX_LAUNCH_LIST, MAX_LAUNCH_RESTORE_BYTES, MAX_ORG_ATTRS,
     MAX_ORG_BATCH, MAX_ORG_CURSOR_BYTES, MAX_ORG_NAME_BYTES, MAX_SOCKET_PATH_BYTES, MoveItem,
     OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal, ResourceRecord, SessionLifetime,

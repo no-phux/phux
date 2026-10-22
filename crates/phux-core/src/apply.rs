@@ -23,8 +23,8 @@ use crate::activation::{
 use crate::actor::{Actor, PrincipalId, Verb};
 use crate::arrangement::{Arrangement, ArrangementOwner, Group, first_group, validate_groups};
 use crate::command::{
-    Applied, Command, Created, Effect, LaunchMode, MAX_MOVE_BATCH, NewResource, Op, Refusal, Reply,
-    SourcePin, TerminateMode,
+    Applied, Command, CreatePlacement, Created, Effect, LaunchMode, MAX_MOVE_BATCH, NewResource,
+    Op, Refusal, Reply, SourcePin, TerminateMode,
 };
 use crate::keys::{
     ActivationId, ArrangementKey, FreshKeys, OperationId, ResourceKey, Revision, SessionKey,
@@ -106,6 +106,7 @@ impl Out {
                     session: None,
                     resource: None,
                     arrangement: None,
+                    entry: None,
                 },
             },
             undo: None,
@@ -126,6 +127,7 @@ impl Out {
                     session: None,
                     resource: None,
                     arrangement: None,
+                    entry: None,
                 },
             },
             undo: None,
@@ -155,7 +157,11 @@ fn dispatch(tx: &mut Tx<'_>, op: &Op, fresh: &mut dyn FreshKeys) -> Result<Out, 
         }
         Op::SessionDelete { session } => session_delete(tx, *session),
         Op::SessionKill { session } => session_kill(tx, *session),
-        Op::ResourceCreate { session, resource } => resource_create(tx, fresh, *session, resource),
+        Op::ResourceCreate {
+            session,
+            resource,
+            placement,
+        } => resource_create(tx, fresh, *session, resource, placement.as_ref()),
         Op::ResourceMove {
             resource,
             from,
@@ -515,6 +521,7 @@ impl<'a> Tx<'a> {
             },
             launch: spec.launch.clone(),
             on_exit: spec.on_exit,
+            durable_result: false,
             activation,
             revision: Revision::FIRST,
         };
@@ -732,6 +739,7 @@ fn session_create(
             session: Some(key),
             resource,
             arrangement: Some(arrangement),
+            entry: None,
         },
     ))
 }
@@ -912,20 +920,132 @@ fn resource_create(
     fresh: &mut dyn FreshKeys,
     session: Option<SessionKey>,
     spec: &NewResource,
+    placement: Option<&CreatePlacement>,
 ) -> Result<Out, Refusal> {
     let session = session.unwrap_or_else(|| tx.org.authority().intake_session());
     if tx.session(session).is_none() {
         return Err(Refusal::NotFound);
     }
     let key = tx.create_resource(fresh, session, spec)?;
+    if placement.is_some() && spec.on_exit == ExitPolicy::Retain {
+        tx.resource_mut(key)
+            .ok_or(Refusal::NotFound)?
+            .durable_result = true;
+    }
+    let placed = placement
+        .map(|placement| place_created_resource(tx, fresh, session, key, placement))
+        .transpose()?;
     Ok(Out::created(
         Some(Revision::FIRST),
         Created {
             session: None,
             resource: Some(key),
-            arrangement: None,
+            arrangement: placed.map(|(arrangement, _)| arrangement),
+            entry: placed.map(|(_, entry)| entry),
         },
     ))
+}
+
+/// Commit a placement in the same transition as its resource and launch intent.
+fn place_created_resource(
+    tx: &mut Tx<'_>,
+    fresh: &mut dyn FreshKeys,
+    session: SessionKey,
+    resource: ResourceKey,
+    placement: &CreatePlacement,
+) -> Result<(ArrangementKey, [u8; 16]), Refusal> {
+    use crate::arrangement::{EntryRef, Group, LayoutNode};
+    let key = tx
+        .session(session)
+        .and_then(|s| s.arrangement)
+        .ok_or(Refusal::NotFound)?;
+    let arrangement = tx.arrangement(key).ok_or(Refusal::NotFound)?;
+    let revision = arrangement.revision;
+    let mut groups = arrangement.groups.clone();
+    let entry = EntryRef::member(tx.fresh_key(fresh)?, resource);
+    match placement {
+        CreatePlacement::NewGroup => groups.push(Group {
+            id: tx.fresh_key(fresh)?,
+            name: None,
+            tree: LayoutNode::Leaf(entry.clone()),
+        }),
+        CreatePlacement::Beside {
+            entry: anchor,
+            resource: target,
+            instance,
+            activation,
+            dir,
+            ratio,
+        } => {
+            validate_placement_target(tx, session, *target, *instance, *activation)?;
+            split_created_entry(&mut groups, *anchor, *target, entry.clone(), *dir, *ratio)?;
+        }
+    }
+    arrangement_replace(
+        tx,
+        fresh,
+        ArrangementOwner::Session(session),
+        revision,
+        &groups,
+    )?;
+    Ok((key, entry.entry))
+}
+
+fn split_created_entry(
+    groups: &mut [Group],
+    anchor: [u8; 16],
+    target: ResourceKey,
+    entry: crate::arrangement::EntryRef,
+    dir: crate::arrangement::SplitDir,
+    ratio: f32,
+) -> Result<(), Refusal> {
+    let group = groups
+        .iter_mut()
+        .find(|group| group.tree.leaves().iter().any(|leaf| leaf.entry == anchor))
+        .ok_or(Refusal::NotFound)?;
+    let anchor = group
+        .tree
+        .leaves()
+        .into_iter()
+        .find(|leaf| leaf.entry == anchor)
+        .cloned()
+        .ok_or(Refusal::NotFound)?;
+    if anchor.resource() != Some(target) {
+        return Err(Refusal::invalid(
+            "placement",
+            "entry no longer shows the observed resource",
+        ));
+    }
+    group
+        .tree
+        .split(&anchor, entry, dir, ratio)
+        .map_err(|error| Refusal::invalid("placement", error.to_string()))
+}
+
+fn validate_placement_target(
+    tx: &Tx<'_>,
+    session: SessionKey,
+    resource: ResourceKey,
+    instance: crate::keys::InstanceId,
+    activation: ActivationId,
+) -> Result<(), Refusal> {
+    let record = tx.resource(resource).ok_or(Refusal::NotFound)?;
+    if record.session != session {
+        return Err(Refusal::invalid(
+            "placement",
+            "anchor is not a member of the destination session",
+        ));
+    }
+    let current = record
+        .activation
+        .as_ref()
+        .ok_or(Refusal::Stale { current: None })?;
+    if current.instance != instance || current.id != activation || !current.state.is_current() {
+        return Err(Refusal::Stale {
+            current: Some(current.id),
+        });
+    }
+    Ok(())
 }
 
 /// Move `moves` (resource, destination) and build the undo that puts each
@@ -1283,6 +1403,7 @@ fn arrangement_replace(
             session: None,
             resource: None,
             arrangement: created,
+            entry: None,
         },
     ))
 }

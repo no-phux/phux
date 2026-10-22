@@ -293,6 +293,18 @@ impl ServerState {
                 stored: false,
             });
         }
+        // Incremental server intentions must obey the same bounds as decoded
+        // whole-document writes, before anything is stored or launched.
+        for delta in &applied.transition.deltas {
+            if let phux_core::Delta::PutArrangement(arrangement) = delta {
+                crate::org_wire::document(&arrangement.groups)
+                    .validate_wire()
+                    .map_err(|error| Refusal::InvalidArgument {
+                        field: "arrangement",
+                        reason: error.to_string(),
+                    })?;
+            }
+        }
         // The journal position after this commit's events are recorded,
         // counting records the caller journals ahead of them.
         let journaled = applied
@@ -450,6 +462,7 @@ impl ServerState {
         };
         let op = match target {
             TerminalTarget::Session(session) => Op::ResourceCreate {
+                placement: None,
                 session: Some(
                     self.sessions
                         .registry
@@ -538,6 +551,7 @@ impl ServerState {
             .ok_or(Refusal::NotFound)?;
         let commit = self.commit(
             Op::ResourceCreate {
+                placement: None,
                 session: Some(session),
                 resource: NewResource {
                     kind: ResourceKind::AgentSession,
@@ -747,6 +761,9 @@ pub enum TerminalTarget<'a> {
         lifetime: SessionLifetime,
     },
 }
+
+#[cfg(test)]
+mod creation_bounds;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]

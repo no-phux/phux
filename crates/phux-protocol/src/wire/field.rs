@@ -738,6 +738,14 @@ pub mod org {
     /// Session project link (`str`, at most 256 bytes); absent on
     /// `SESSION_SET_PROJECT` clears it.
     pub const PROJECT: u32 = 42;
+    /// Creation placement (tagged record); requires `CREATE_PLACEMENT`.
+    pub const PLACEMENT: u32 = 43;
+    /// Stable entry created with a resource (`bytes16`).
+    pub const ENTRY: u32 = 44;
+    /// Whether an organization operation replayed its retained receipt (`bool`).
+    pub const REPLAYED: u32 = 45;
+    /// Durable authority of a creation receipt (`bytes16`).
+    pub const AUTHORITY: u32 = 46;
 }
 
 /// Fields of a `LaunchSpec` value (`docs/spec/L1.md` §5.7).

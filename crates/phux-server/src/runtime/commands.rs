@@ -1056,6 +1056,7 @@ async fn dispatch_local(
             handle_get_state_federated(state, client_id, &scope, out_tx).await
         }
         Command::GetPerf { reset } => handle_get_perf(state, reset),
+        Command::DescribeApi => super::api::describe(state),
         Command::PerfControl { op } => super::perf_control::handle(op).await,
         Command::Transcribe {
             upload_id,

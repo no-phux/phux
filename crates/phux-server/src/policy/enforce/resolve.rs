@@ -104,7 +104,8 @@ fn keyed_session(s: &ServerState, request: Request<'_>) -> Option<Point> {
                 .map(|session| session_point(s, Some(session))),
             _ => None,
         },
-        Command::SessionRename { session, .. }
+        Command::GetCreation { session, .. }
+        | Command::SessionRename { session, .. }
         | Command::SessionSetProject { session, .. }
         | Command::SessionSetLifetime { session, .. }
         | Command::SessionDelete { session, .. }

@@ -409,6 +409,7 @@ fn samples(world: &World, agent: &WireResourceId) -> Vec<FrameKind> {
         command(Command::CloseTabResources {
             ids: vec![t.clone()],
         }),
+        command(Command::DescribeApi),
         command(Command::GetState {
             scope: StateScope::Server,
         }),

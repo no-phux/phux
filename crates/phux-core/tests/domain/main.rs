@@ -2,6 +2,7 @@
 //! randomized command sequences.
 
 mod commands;
+mod create_placement;
 mod invariants;
 mod layout;
 mod registry;

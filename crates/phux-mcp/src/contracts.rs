@@ -27,6 +27,9 @@ pub(crate) fn enhance(catalog: &mut Value) {
     for entry in entries {
         let name = entry["name"].as_str().unwrap_or_default().to_owned();
         let mut output = outputs[&name].clone();
+        let definitions = output
+            .as_object_mut()
+            .and_then(|object| object.remove("$defs"));
         if crate::operations::supports_mutation(&name) {
             let properties = &mut entry["inputSchema"]["properties"];
             if properties.get("idempotency_key").is_none() {
@@ -36,6 +39,9 @@ pub(crate) fn enhance(catalog: &mut Value) {
             entry["inputSchema"]["then"] = json!({ "required": ["idempotency_key"] });
             entry["inputSchema"]["properties"]["background"] = json!({ "type": "boolean", "description": "Return an operation receipt immediately instead of waiting (including server approval holds). Requires idempotency_key. Observe with phux_operation_status; cancellation only ends observation. Adapter exit loses the ledger and cancels unfinished work; effects may already have happened." });
             output = json!({ "type": "object", "anyOf": [output, operation_output()] });
+        }
+        if let Some(definitions) = definitions {
+            output["$defs"] = definitions;
         }
         entry["outputSchema"] = output;
         add_resource_id(&mut entry["inputSchema"]);
@@ -60,6 +66,18 @@ pub(crate) fn output_schemas() -> Value {
             serde_json::from_str(family).expect("compiled output schemas");
         schemas.extend(family);
     }
+    schemas.insert(
+        "phux_terminal_operation".into(),
+        phux_protocol::api::terminal_created_schema(),
+    );
+    schemas.insert(
+        "phux_terminal_create".into(),
+        phux_protocol::api::terminal_created_schema(),
+    );
+    schemas.insert(
+        "phux_api_describe".into(),
+        crate::terminal_tools::description_schema(),
+    );
     Value::Object(schemas)
 }
 

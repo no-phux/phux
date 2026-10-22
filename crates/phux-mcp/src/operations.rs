@@ -33,6 +33,10 @@ impl Operations {
         if name == "phux_operation_status" {
             return self.status(&args);
         }
+        // This key names a server receipt to read, not a mutation in this adapter ledger.
+        if name == "phux_terminal_operation" {
+            return execute(name, args).await;
+        }
         let mut args = crate::contracts::normalize_target(args)?;
         crate::annotations::require_confirmation(&name, &args)?;
         let background = take_background(&mut args)?;
@@ -201,7 +205,7 @@ pub(crate) fn supports_mutation(name: &str) -> bool {
 pub(crate) fn server_keyed(name: &str) -> bool {
     matches!(
         name,
-        "phux_new" | "phux_spawn" | "phux_kill" | "phux_signal"
+        "phux_new" | "phux_spawn" | "phux_terminal_create" | "phux_kill" | "phux_signal"
     )
 }
 

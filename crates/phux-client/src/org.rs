@@ -67,9 +67,9 @@ pub enum OrgError {
     /// The reply had a shape this command never produces.
     #[error("unexpected reply: {0}")]
     Unexpected(String),
-    /// The connection dropped after the command was sent: it may or may not
-    /// have committed. Resend `operation` on a new connection, or reconcile.
-    #[error("the connection dropped before the server answered; the outcome is unknown")]
+    /// No trustworthy outcome was received after a possible send. It may
+    /// have committed; reconcile before considering a retained identical retry.
+    #[error("the operation outcome could not be confirmed; reconcile before retrying")]
     OutcomeUnknown {
         /// The operation to resend or reconcile.
         operation: Option<OperationId>,
@@ -147,6 +147,18 @@ pub async fn request(
     command: Command,
 ) -> Result<(OrgOutcome, Degradation), OrgError> {
     require(conn)?;
+    if matches!(
+        &command,
+        Command::ResourceCreate {
+            placement: Some(_),
+            ..
+        }
+    ) && !conn
+        .server_features_ext()
+        .contains(ServerFeatureExt::CreatePlacement)
+    {
+        return Err(OrgError::Unsupported);
+    }
     let operation = command.idempotency_key().copied();
     match conn.request(request_id, command).await {
         Ok(reply) => {
@@ -156,6 +168,7 @@ pub async fn request(
                 Degradation::from_interleaved(&interleaved),
             ))
         }
+        Err(_) if operation.is_some() => Err(OrgError::OutcomeUnknown { operation }),
         Err(AttachError::Disconnected) => Err(OrgError::OutcomeUnknown { operation }),
         Err(err) => Err(OrgError::Attach(err)),
     }
@@ -172,8 +185,10 @@ pub async fn commit(
     request_id: u32,
     command: Command,
 ) -> Result<Committed, OrgError> {
+    let operation = command.idempotency_key().copied();
     match request(conn, request_id, command).await?.0 {
         OrgOutcome::Committed(committed) => Ok(*committed),
+        OrgOutcome::Unknown { .. } => Err(OrgError::OutcomeUnknown { operation }),
         other => Err(outcome_error(other)),
     }
 }
@@ -792,6 +807,7 @@ pub async fn create_resource(
         conn,
         FIRST_REQUEST_ID,
         Command::ResourceCreate {
+            placement: None,
             operation: mint_operation(),
             session,
             kind,
@@ -1119,6 +1135,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn placed_create_refuses_before_sending_to_an_older_organization_server() {
+        let (mut conn, server, _dir) = connect(org_spec(OrgFixture::new())).await;
+        let command = Command::ResourceCreate {
+            operation: mint_operation(),
+            session: SessionKey::new([8; 16]).unwrap(),
+            kind: ResourceKind::Terminal,
+            launch: None,
+            name: None,
+            on_exit: ExitPolicy::Retain,
+            launch_mode: LaunchMode::Immediate,
+            placement: Some(Box::new(
+                phux_protocol::wire::frame::CreatePlacement::NewGroup,
+            )),
+        };
+        assert!(matches!(
+            commit(&mut conn, 1, command).await,
+            Err(OrgError::Unsupported)
+        ));
+        assert!(matches!(
+            crate::terminal::describe(&mut conn).await,
+            Err(OrgError::Unsupported)
+        ));
+        drop(conn);
+        let seen = server.await.unwrap();
+        assert!(
+            !seen.iter().any(|frame| matches!(
+                frame,
+                phux_protocol::wire::frame::FrameKind::Command { .. }
+            ))
+        );
+    }
+
+    #[tokio::test]
     async fn fetch_reads_every_page_and_resolves_key_prefixes() {
         let mut fixture = OrgFixture::new().page_size(1);
         let work = fixture.session("work", SessionLifetime::Persistent);
@@ -1215,6 +1264,7 @@ mod tests {
                 f,
                 phux_protocol::wire::frame::FrameKind::Command {
                     command: Command::ResourceCreate {
+                        placement: None,
                         launch_mode: LaunchMode::Deferred,
                         ..
                     },

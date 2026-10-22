@@ -18,6 +18,8 @@ Addressed to the server or the connection rather than to one resource.
 
 | Method | Carrier | Requires | Mutating | Gate | Status |
 |---|---|---|---|---|---|
+| `GET_CREATION` | command `0x41` | INVENTORY | no | `api_description` (features_ext) | shipped |
+| `DESCRIBE_API` | command `0x40` | INVENTORY | no | `api_description` (features_ext) | shipped |
 | `HELLO` | frame `0x01` | exempt: handshake | no | none | shipped |
 | `PING` | frame `0x7f` | exempt: liveness | no | none | shipped |
 | `ATTACH` | frame `0x02` | OBSERVE, CREATE, BIND | yes | none | shipped |
@@ -43,7 +45,7 @@ Addressed to the server or the connection rather than to one resource.
 | `SESSION_RENAME` | command `0x20` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `SESSION_SET_LIFETIME` | command `0x21` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `SESSION_DELETE` | command `0x22` | TERMINATE | yes | `organization` (features_ext) | shipped |
-| `RESOURCE_CREATE` | command `0x23` | CREATE | yes | `organization` (features_ext) | shipped |
+| `RESOURCE_CREATE` | command `0x23` | CREATE, ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `RESOURCE_MOVE` | command `0x24` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `RESOURCE_MOVE_MANY` | command `0x25` | ORGANIZE | yes | `organization` (features_ext) | shipped |
 | `RESOURCE_RENAME` | command `0x26` | ORGANIZE | yes | `organization` (features_ext) | shipped |
@@ -283,10 +285,13 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `NATIVE_AGENT { type: command }` | INPUT | `NamedTerminal` |
 | `NATIVE_AGENT { type: register/receive/complete/publish/close }` | BIND | `ParentOfNamed` |
 | `GET_ORGANIZATION` | INVENTORY | `OrganizationView` |
+| `DESCRIBE_API` | INVENTORY | `Global { owner_uds_only: false }` |
+| `GET_CREATION` | INVENTORY | `KeyedSession` |
 | `SESSION_CREATE` | CREATE | `Global { owner_uds_only: false }` |
 | `SESSION_RENAME`, `SESSION_SET_PROJECT`, `SESSION_SET_LIFETIME`, `INBOX_RESOLVE` | ORGANIZE | `KeyedSession` |
 | `SESSION_DELETE`, `SESSION_KILL` | TERMINATE | `KeyedSession` |
 | `RESOURCE_CREATE` | CREATE | `KeyedSession` |
+| `RESOURCE_CREATE` with placement | CREATE+ORGANIZE | `KeyedSession` |
 | `RESOURCE_MOVE`, `RESOURCE_MOVE_MANY` | ORGANIZE | `MoveSessions` |
 | `RESOURCE_RENAME` | ORGANIZE | `KeyedResource` |
 | `RESOURCE_TERMINATE` | TERMINATE | `NamedTerminal` |

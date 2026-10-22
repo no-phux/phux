@@ -418,10 +418,21 @@ fn put_session(tx: &Transaction<'_>, s: &Session) -> Result<(), StoreError> {
             s.lifetime.as_str(),
             s.awaiting_organization,
             to_i64(s.revision.get()),
-            serde_json::to_string(s)?,
+            stored_json(s)?,
         ],
     )?;
     Ok(())
+}
+
+/// Serialize only rows the exact `load()` decoder can read back.
+///
+/// Check recursion bounds before commit, including trees inside undo receipts.
+fn stored_json<T: serde::Serialize + serde::de::DeserializeOwned>(
+    value: &T,
+) -> Result<String, StoreError> {
+    let encoded = serde_json::to_string(value)?;
+    let _: T = serde_json::from_str(&encoded)?;
+    Ok(encoded)
 }
 
 fn put_resource(tx: &Transaction<'_>, r: &Resource) -> Result<(), StoreError> {
@@ -438,7 +449,7 @@ fn put_resource(tx: &Transaction<'_>, r: &Resource) -> Result<(), StoreError> {
             r.kind.as_str(),
             r.activation.as_ref().map(|a| a.state.as_str()),
             to_i64(r.revision.get()),
-            serde_json::to_string(r)?,
+            stored_json(r)?,
         ],
     )?;
     Ok(())
@@ -458,7 +469,7 @@ fn put_arrangement(tx: &Transaction<'_>, a: &Arrangement) -> Result<(), StoreErr
             a.key.as_bytes().as_slice(),
             owner.as_slice(),
             to_i64(a.revision.get()),
-            serde_json::to_string(a)?,
+            stored_json(a)?,
         ],
     )?;
     Ok(())
@@ -515,7 +526,7 @@ fn put_receipt(tx: &Transaction<'_>, receipt: &Receipt) -> Result<bool, StoreErr
         params![
             receipt.operation.as_bytes().as_slice(),
             to_i64(receipt.at.as_millis()),
-            serde_json::to_string(receipt)?,
+            stored_json(receipt)?,
         ],
     )?;
     Ok(!existed)
@@ -843,6 +854,7 @@ mod tests {
         let create = Command {
             operation: op_id(1),
             op: Op::ResourceCreate {
+                placement: None,
                 session: None,
                 resource: shell(),
             },
@@ -893,6 +905,7 @@ mod tests {
         let create = Command {
             operation: op_id(1),
             op: Op::ResourceCreate {
+                placement: None,
                 session: None,
                 resource: shell(),
             },

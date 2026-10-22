@@ -341,6 +341,7 @@ fn rows(world: &mut World) -> Vec<Row> {
             &[&[&s("signal", &ta), &s("signal", &tb)]],
             &[&[&s("signal", &ta)], &[&s("signal", &gb)]],
         ),
+        on_global(command(Command::DescribeApi), "inventory"),
         // Filtered at the source: INVENTORY anywhere admits.
         row(
             command(Command::GetState {
@@ -523,6 +524,8 @@ fn rows(world: &mut World) -> Vec<Row> {
         on_alpha(&org[12], "inventory"),
         on_alpha(&org[13], "organize"),
         on_alpha(&org[14], "organize"),
+        on_alpha(&org[15], "inventory"),
+        on_alpha(&org[16], "create,organize"),
     ]);
     rows.push(on_terminal(
         command(Command::ReleaseInput { terminal_id: t }),
