@@ -109,7 +109,7 @@ like `summarize.py` work.
 | Table | Adds |
 | --- | --- |
 | `[[actions]]` | A command in the palette. `keys` binds it in the prefix table (`"g s"` is <kbd>C-a</kbd> <kbd>g</kbd> <kbd>s</kbd>); your own binding wins if both use the key. |
-| `[[events]]` | A hook: `on` names a [hook event](./hooks.md#events), and `command` runs every time it fires, with the same environment as a config hook. |
+| `[[events]]` | A hook: `on` names a [hook event](./hooks.md#events), and `command` runs every time it fires, with the same environment as a config hook. An `on` that is no hook event would never fire: `phux plugin validate` rejects it, suggesting the nearest event, and the server skips it with a warning. |
 | `[[panes]]` | A program to open as a pane. `placement` is `split`, `tab`, `zoomed`, or `overlay` (a floating box). |
 | `[[widgets]]` | A status-bar widget: `id`, a `slot` (`left`, `center`, or `right`, the default), and a `kind` with its [options](./reference/widgets.md). It goes after your own widgets. |
 | `[[sidebar]]` | A fixed section between Agents and Sessions: `title`, a `format` for each pane's row, and `rows` (1 to 8, default 3). |
@@ -168,7 +168,8 @@ The phux repository has working plugins to copy in
 ## Debugging
 
 - `phux plugin validate` checks every configured manifest and says what
-  is wrong with one that fails.
+  is wrong with one that fails, including an event hook that can never
+  fire.
 - `phux plugin list` shows which plugins are enabled.
 - `phux config keys` lists plugin keys with `plugin <id>` as their source.
 - `phux plugin log` lists the newest runs of every action and hook, oldest

@@ -127,6 +127,11 @@ hooks.pane-exited: unknown name: unknown hook event `pane-exited` (did you mean 
 3 problems
 ```
 
+A plugin's hooks live in its manifest, so `phux plugin validate` checks
+those: an `[[events]]` entry whose `on` is not a hook event fails, with
+the nearest event suggested. The server skips such an entry with a
+warning.
+
 `phux plugin log` shows the last runs of every hook and plugin action,
 with exit status and duration. Failed runs show the end of their output:
 
