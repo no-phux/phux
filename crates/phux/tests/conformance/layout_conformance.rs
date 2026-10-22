@@ -4,7 +4,7 @@
 //! (the generic tree a session arrangement's groups are made of,
 //! ADR-0160), `phux_client::layout::LayoutNode` (the client tree every
 //! consumer persists as the L3 `phux.tui.layout/v1` CBOR envelope,
-//! `docs/spec/L3.md` §3.2), and `phux_server::upgrade::blob::LayoutBlob` (the
+//! `docs/organization.md`), and `phux_server::upgrade::blob::LayoutBlob` (the
 //! window layout an upgrade blob from an older image carries, keyed by wire
 //! id, which the resuming server reads into an arrangement). Each has its own
 //! round-trip test; this file builds one corpus into all three and projects
@@ -107,7 +107,7 @@ fn l3_and_blob_round_trips_land_back_on_the_corpus_shape() {
     }
 }
 
-/// Encode `node` as the one window of a v3 layout envelope (L3.md §3.2) and
+/// Encode `node` as the one window of a v3 layout envelope (docs/organization.md) and
 /// decode it back, returning the tree the decoder produced.
 fn round_trip_layout_through_the_envelope(node: &L3Node) -> Result<L3Node, LayoutDecodeError> {
     let first = leaves(node).into_iter().next().expect("a tree has a leaf");

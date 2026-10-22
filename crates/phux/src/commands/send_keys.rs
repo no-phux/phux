@@ -9,7 +9,7 @@ use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_tar
 /// `phux send-keys TARGET KEYS...` — send input to a pane via the
 /// side-effect-free `ROUTE_INPUT` route.
 ///
-/// `TARGET` is the full selector grammar (`docs/consumers/tui.md` §3):
+/// `TARGET` is the full selector grammar (`docs/concepts.md#targets`):
 /// `session`, `session:group`, `session:group.pane`, `@id`, `.`. It
 /// is resolved client-side to a single pane (the selected one — the focused
 /// pane when the selector spans several), then the events route to exactly

@@ -8,7 +8,7 @@ use phux_client::attach::connection::Connection;
 use phux_dial::TlsClientIdentity;
 
 // Default QUIC port for an enrolled server (ADR-0081), the one
-// `docs/remote-access.md` uses throughout.
+// `docs/remote.md#adding-a-machine` uses throughout.
 use phux_client_runtime::target::DEFAULT_QUIC_PORT;
 
 use super::events::EnrollFailure;

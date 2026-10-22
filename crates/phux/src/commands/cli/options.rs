@@ -85,7 +85,7 @@ impl std::str::FromStr for EnvAssignment {
 /// `phux snapshot --format`: which libghostty-vt Formatter rendering to
 /// request from the server (D9, fallback rung three — below typed
 /// commands and semantic streams, above synthetic input,
-/// `docs/consumers/agents.md`). The server never reimplements extraction
+/// `docs/scripting.md#reading-a-screen`). The server never reimplements extraction
 /// (CONTRIBUTING); this only names the two renderings it forwards to the
 /// engine's own Formatter. Mutually exclusive with `--cells`
 /// (`ScreenState::cells` is a different, sparse per-cell projection) and
@@ -156,7 +156,7 @@ pub(crate) struct RecOpts {
 /// per-verb. Deliberately **no `-j` short flag**: considered and rejected in
 /// ADR-0065 §7 (`--json` is typed by scripts and agents, where explicitness
 /// beats two saved characters), cross-referenced in
-/// `docs/consumers/agents.md` §5.3.
+/// `docs/scripting.md#json-output-and-errors`.
 #[derive(Debug, Args)]
 pub(crate) struct JsonOpt {
     /// Emit stable, versioned JSON on stdout instead of the human view.

@@ -37,7 +37,7 @@
 //! renew --json` wrap one such object under `"host"`, beside an
 //! `"enrollment"` object (`status`, `error`, `credential_id`, `expires_at`,
 //! `previous_credential_id`, `previous_revoked`, `warnings`; documented in
-//! `docs/remote-access.md`) saying what happened to the workload client
+//! `docs/reference/cli.md#phux-host-add`) saying what happened to the workload client
 //! certificate.
 //! `host rm --json` emits `{"schema_version":1,"removed":{"name":..,"role":..}}`.
 //!

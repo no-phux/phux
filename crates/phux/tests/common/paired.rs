@@ -1,7 +1,7 @@
 //! A `paired` server and an enrolled client, for suites that dial a remote
 //! listener: `phux server` runs one only under `[policy] mode = "paired"`,
 //! and admits only a connection presenting an enrolled workload certificate
-//! (ADR-0179, `docs/spec/workload-auth.md` §8).
+//! (ADR-0179, `docs/remote.md#who-can-connect`).
 
 #![allow(
     dead_code,

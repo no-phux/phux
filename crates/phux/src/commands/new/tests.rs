@@ -152,7 +152,7 @@ fn fresh_session_name_suffixes_a_deterministic_template() {
 }
 
 /// `phux new --json` pins `schema_version` 1 plus the two documented
-/// fields — the shape `docs/consumers/agents.md` §4.4 promises.
+/// fields — the shape `docs/scripting.md#creating-panes-and-sessions` promises.
 #[test]
 fn new_session_json_pins_the_contract_shape() {
     let doc = new_session_json("work", 2);

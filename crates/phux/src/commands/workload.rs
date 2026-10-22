@@ -1,5 +1,5 @@
 //! `phux workload` — the mTLS workload authority (ADR-0116,
-//! `docs/spec/workload-auth.md` §8): `authority [--init|--rotate]`, `add-key` (enroll a
+//! `docs/remote.md#who-can-connect`): `authority [--init|--rotate]`, `add-key` (enroll a
 //! certificate or sign a CSR, read from stdin or `--file`, never argv), `list`,
 //! and `revoke`. Like `phux pair` these write the state directory directly;
 //! a running server sees the new registry generation on its next connection.

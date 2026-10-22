@@ -110,7 +110,7 @@ const REDACT_MIN_RUN: usize = 40;
 /// Replace every run of [`REDACT_MIN_RUN`] or more characters of the base64
 /// or base64url alphabet with `<redacted>`. usage-rs quotes the word it
 /// refused, and a bare base64 line of a key, or a base64url secret such as a
-/// JWK `d`, carries no PEM marker to catch (`workload-auth.md` §8).
+/// JWK `d`, carries no PEM marker to catch (`docs/remote.md#who-can-connect`).
 pub(crate) fn redact_long_base64(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut run = String::new();

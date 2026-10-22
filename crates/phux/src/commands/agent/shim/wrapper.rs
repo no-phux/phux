@@ -10,7 +10,7 @@ use super::{SCHEMA_MARKER, SHIM_SCHEMA};
 ///
 /// Every `--phux-hook` arm reads Claude's stdin payload through
 /// `phux agent hook-payload`, then: `start` writes identity once (never a
-/// `--state`, which would outrank the server's derivation, L3.md §3.7);
+/// `--state`, which would outrank the server's derivation, docs/program-sequences.md);
 /// the lifecycle arms feed the pane's `AgentSession` stream with
 /// `agent emit`; `blocked` also calls `phux ask` and `clear` deletes the
 /// record. A session is opened at most once per process and never for a

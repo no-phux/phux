@@ -24,7 +24,7 @@ use glance_rows::with_hosts;
 pub(crate) use lines::format_session_line;
 use lines::local_session_lines;
 
-/// How deep `phux ls` reads (`docs/consumers/attention.md`): the glance by
+/// How deep `phux ls` reads (`docs/reference/cli.md#phux-ls`): the glance by
 /// default, one session's terminals with `SESSION`, and keys, revisions, and
 /// runs with `-l`.
 #[derive(Debug, Clone, PartialEq, Eq)]

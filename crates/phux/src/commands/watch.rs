@@ -91,7 +91,7 @@ pub(crate) struct WatchArgs<'a> {
 /// No `schema_version` on this stream (ADR-0071): a per-line field is overhead
 /// and a header line is missed by reconnecting consumers. The binary version
 /// and the `event` vocabulary are the contract; consumers ignore unknown events
-/// and fields (see `docs/consumers/agents.md`).
+/// and fields (see `docs/scripting.md#watching-events`).
 ///
 /// `--until EVENT` gates the stream: the first matching item is printed and the
 /// watch exits 0. `--timeout SECS` always exits 124 on expiry, like `wait`. A

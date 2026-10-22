@@ -284,7 +284,7 @@ fn run_cli() -> ExitCode {
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Key material never belongs on a `phux workload` command line, and argv is
     // echoed in too many places to scrub, so that verb is refused before parsing
-    // (`workload-auth.md` §8).
+    // (`docs/remote.md#who-can-connect`).
     if workload_argv_carries_key_material(&raw[1..]) {
         return commands::json_err::emit(
             json_output_requested(),

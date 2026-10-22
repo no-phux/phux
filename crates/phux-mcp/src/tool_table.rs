@@ -467,9 +467,9 @@ pub(crate) const TOOLS: &[Row] = &[
     ),
 ];
 
-/// CLI verbs in `docs/consumers/agents.md`'s JSON index (its headings and
-/// body) that have no MCP tool, each with its reason. The parity gate
-/// requires every agent-facing verb there to have a tool or a row here.
+/// CLI verbs on the `docs/agents.md#commands-agents-use` list that have
+/// no MCP tool, each with its reason. The parity gate requires
+/// every agent-facing verb there to have a tool or a row here.
 pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
     (
         "logs",

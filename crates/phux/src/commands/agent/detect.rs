@@ -8,7 +8,7 @@
 //! `unknown`, except for two declarations: the ADR-0035 `phux-ask` title
 //! sentinel and a `[[plugins]]` agent declaration.
 //!
-//! This is a LEVEL read (`docs/spec/L3.md` §3.7): nothing here is evidence
+//! This is a LEVEL read (`docs/program-sequences.md#the-agent-record`): nothing here is evidence
 //! that a turn finished. The completion gate is `phux agent wait`.
 
 use phux_agent_rules::explain::{
