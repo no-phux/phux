@@ -101,7 +101,7 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: Option<u32>) -> ExitCo
 /// ending signals are dangerous (ADR-0128) and need `yes` or a typed "y",
 /// asked before anything is dialed.
 ///
-/// `key` is `--idempotency-key` (`docs/spec/L1.md` §5.1.1): a retry under the
+/// `key` is `--idempotency-key` (`docs/protocol.md`): a retry under the
 /// same key answers the first result and delivers nothing. A server that
 /// does not advertise `KEYED_SIGNAL` would signal again, so a keyed signal to
 /// one is refused before the signal is sent.

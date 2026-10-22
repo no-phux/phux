@@ -11,16 +11,16 @@ use phux_protocol::input::paste::PasteEvent;
 /// so eight is ample).
 pub const DEFAULT_CLIENT_MAILBOX: usize = 8;
 
-/// One input event for a pane (`docs/spec/input.md`).
+/// One input event for a pane (`docs/protocol.md#input`).
 #[derive(Debug, Clone)]
 pub enum TerminalInput {
-    /// A keystroke (`INPUT_KEY` on the wire — `docs/spec/input.md` §2).
+    /// A keystroke (`INPUT_KEY` on the wire — `docs/protocol.md#input`).
     Key(KeyEvent),
-    /// A mouse event (`INPUT_MOUSE` — `docs/spec/input.md` §3).
+    /// A mouse event (`INPUT_MOUSE` — `docs/protocol.md#input`).
     Mouse(MouseEvent),
-    /// A focus gained/lost notification (`INPUT_FOCUS` — `docs/spec/input.md` §4).
+    /// A focus gained/lost notification (`INPUT_FOCUS` — `docs/protocol.md#input`).
     Focus(FocusEvent),
-    /// A bracketed paste (`INPUT_PASTE` — `docs/spec/input.md` §5).
+    /// A bracketed paste (`INPUT_PASTE` — `docs/protocol.md#input`).
     Paste(PasteEvent),
 }
 

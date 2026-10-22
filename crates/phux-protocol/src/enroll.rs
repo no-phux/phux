@@ -1,5 +1,5 @@
 //! The enrollment exchange on [`crate::policy::ENROLL_ALPN`]
-//! (`docs/spec/workload-auth.md` §8.2, ADR-0154).
+//! (`docs/remote.md#pairing-with-a-link`, ADR-0154).
 //!
 //! One bidirectional stream carries one request and one reply, each sent
 //! whole and then finished:
@@ -32,7 +32,7 @@ pub const MAX_REQUEST: usize = 1 + 1 + MAX_TICKET + 4 + MAX_CSR;
 pub const MAX_REPLY: usize = 1 + 4 + MAX_REPLY_BODY;
 
 /// The body of every refusal: which check failed is not disclosed
-/// (`workload-auth.md` §7).
+/// (`docs/remote.md#managing-credentials`).
 pub const REFUSED: &str = "refused";
 
 /// One enrollment request: the single-use ticket and a CSR for the key the

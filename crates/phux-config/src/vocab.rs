@@ -72,7 +72,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "exit-mode",
 ];
 
-/// Hook point: pane creation (`docs/consumers/tui.md` §9).
+/// Hook point: pane creation (`docs/hooks.md`).
 pub const AFTER_NEW_PANE: &str = "after-new-pane";
 /// Hook point: inner process exit.
 pub const PANE_EXIT: &str = "pane-exit";
@@ -88,7 +88,7 @@ pub const AGENT_STATE_CHANGED: &str = "agent-state-changed";
 /// fires it, since worktree creation never reaches the server.
 pub const WORKTREE_CREATED: &str = "worktree-created";
 
-/// Every valid hook event name (`docs/consumers/tui.md` §9).
+/// Every valid hook event name (`docs/hooks.md`).
 pub const HOOK_EVENTS: &[&str] = &[
     AFTER_NEW_PANE,
     PANE_EXIT,

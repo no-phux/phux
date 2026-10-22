@@ -5,7 +5,7 @@
 //! before `Enter` is instead one paste followed by the real key, so a
 //! paste-aware TUI can tell text from submission. Bytes go through the same
 //! [`StdinParser`] the interactive client uses, and events ride the
-//! side-effect-free `ROUTE_INPUT` command (L1.md §5.1): nothing attaches,
+//! side-effect-free `ROUTE_INPUT` command (docs/protocol.md): nothing attaches,
 //! subscribes, or resizes the pane.
 
 use std::path::Path;

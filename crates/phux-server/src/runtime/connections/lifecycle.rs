@@ -30,7 +30,7 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     fire_client_detached(state, client_id, attached_session);
 }
 
-/// `workload-auth.md` §7 step 2: [`detach_and_release_consumer_state`] in
+/// `docs/remote.md#managing-credentials`: [`detach_and_release_consumer_state`] in
 /// the caller's lock, so nothing outlives the revocation. Returns the
 /// attached session for [`fire_client_detached`], run off-lock.
 pub(crate) fn release_revoked_consumer_state(

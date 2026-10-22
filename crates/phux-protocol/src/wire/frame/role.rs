@@ -1,4 +1,4 @@
-//! Attach intent (ADR-0127, `docs/spec/L1.md` §8.1): the one `role_policy`
+//! Attach intent (ADR-0127, `docs/protocol.md#attach-and-output`): the one `role_policy`
 //! byte an `ATTACH_RESOURCE` may end with and a session `ATTACH` may carry.
 //!
 //! A role is declared intent, not a second arbitration system: the input

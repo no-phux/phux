@@ -1,6 +1,6 @@
 //! PHA-406/PHA-284: the bridge subscribes to the connection-wide event
 //! stream after attach and folds cwd/command/exit events into typed status
-//! effects (`docs/consumers/sdk.md` "Native status effects").
+//! effects (`docs/embedding.md#runtime-consumer-contract`).
 use super::*;
 use phux_protocol::wire::frame::{AgentEvent, CloseReason, TombstoneReason};
 use std::ptr;
@@ -322,7 +322,7 @@ fn resource_closed_becomes_an_exited_status_effect() {
 }
 
 /// A `RESOURCE_CLOSED` naming a terminating signal surfaces it on EXITED's
-/// `first_row` (`docs/spec/L1.md` `RESOURCE_CLOSED` field 4, ADR-0124).
+/// `first_row` (`docs/protocol.md` `RESOURCE_CLOSED` field 4, ADR-0124).
 #[test]
 fn resource_closed_with_a_signal_surfaces_it_on_the_exited_status_effect() {
     let client = attached_mixed_client();

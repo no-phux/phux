@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// `[defaults]` table. See `docs/consumers/tui.md` §12 for shipped values.
+/// `[defaults]` table. See `docs/reference/config.md` for shipped values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DefaultsCfg {

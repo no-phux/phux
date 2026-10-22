@@ -155,8 +155,8 @@ pub fn session_of(snapshot: &SessionSnapshot, id: &ResourceId) -> Option<Session
 /// The session's most recent input target as the server reports it, when it
 /// is still a Terminal in the session.
 ///
-/// The session-level `SESSION_STATE.recent_input` (`docs/spec/L1.md`
-/// §9.1), else the session's legacy window's `active_resource` (ADR-0161
+/// The session-level `SESSION_STATE.recent_input` (`docs/protocol.md`),
+/// else the session's legacy window's `active_resource` (ADR-0161
 /// §7). The window is read whenever `recent_input` is absent, from any
 /// server: a snapshot does not say whether its server reports
 /// `recent_input`, and every server falls the window back to the session's

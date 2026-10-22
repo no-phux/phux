@@ -2,7 +2,7 @@
 //!
 //! One current-thread tokio executor (ADR-0003) drives a
 //! [`tokio::task::LocalSet`] (ADR-0014). The runtime binds the UDS
-//! (`docs/spec/proto.md` §4) plus any configured remote listeners, and
+//! (`docs/protocol.md#transports`) plus any configured remote listeners, and
 //! unlinks the socket it bound on shutdown.
 #![allow(
     clippy::future_not_send,

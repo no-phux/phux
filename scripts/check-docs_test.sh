@@ -87,4 +87,26 @@ printf '\nThe standalone client workspace includes `phux-gpui`.\n' >>"$repo/docs
 expect_pass --only=crates
 printf '\n| `phux-missing` | Stale root crate |\n' >>"$repo/docs/architecture.md"
 expect_fail 'phux-missing is not a crate in this tree' --only=crates
+# Code comments under crates/ and clients/ must cite docs that exist; strings,
+# URLs, and history permalinks are not citations.
+mkdir -p "$repo/crates/phux-fixture/src" "$repo/clients/web/src"
+cat >"$repo/crates/phux-fixture/src/lib.rs" <<'RS'
+//! Framing (`docs/Parent/Leaf.md#repeat-1`), see also docs/guide.md.
+/// [ADR-0007](https://github.com/no-phux/phux/blob/abc/docs/adr/0007-x.md)
+const FIXTURE: &str = "docs/missing.md";
+RS
+printf '/*\n * Wire header (docs/Parent/Leaf.md).\n */\n' >"$repo/clients/web/src/wire.h"
+expect_pass --only=citations
+printf '// Retired (`docs/spec/L1.md` 5.7).\n' >>"$repo/crates/phux-fixture/src/lib.rs"
+expect_fail 'line 4: docs/spec/L1.md does not exist' --only=citations
+printf '//! Header.\n' >"$repo/crates/phux-fixture/src/lib.rs"
+printf '/// Moved (`docs/Parent/Leaf.md#gone`).\n' >>"$repo/crates/phux-fixture/src/lib.rs"
+expect_fail 'docs/Parent/Leaf.md has no heading #gone' --only=citations
+printf '/// Wrong case (docs/parent/Leaf.md).\n' >"$repo/crates/phux-fixture/src/lib.rs"
+expect_fail 'docs/parent/Leaf.md does not exist' --only=citations
+printf '    # Retired page, bare (proto.md 4.2).\n' >"$repo/clients/web/src/tool.py"
+printf '//! Header.\n' >"$repo/crates/phux-fixture/src/lib.rs"
+expect_fail 'proto.md is a retired spec page' --only=citations
+rm "$repo/clients/web/src/tool.py"
+expect_pass --only=citations
 printf 'docs fixtures: all cases passed\n'

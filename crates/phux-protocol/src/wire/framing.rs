@@ -12,10 +12,10 @@ use thiserror::Error;
 use super::frame::{ErrorCode, FrameKind, MAX_FRAME_LEN};
 
 /// Bytes in the wire length prefix: a big-endian `u32`, per
-/// `docs/spec/proto.md` §5.
+/// `docs/protocol.md#framing`.
 pub const LENGTH_PREFIX_LEN: usize = 4;
 
-/// A frame header that violates `docs/spec/proto.md` §5; fatal to the
+/// A frame header that violates `docs/protocol.md#framing`; fatal to the
 /// connection, since a length-prefixed stream cannot resynchronise.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

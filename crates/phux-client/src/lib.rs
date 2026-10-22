@@ -3,7 +3,7 @@
 //! The control-plane half of a phux client: connect over UDS, QUIC, or
 //! WebSocket through the client runtime's one transport (ADR-0171), and
 //! drive the wire verbs behind every `phux` agent verb and the `phux-mcp`
-//! adapter (`docs/consumers/sdk.md`). It owns
+//! adapter (`docs/architecture.md#crates`). It owns
 //! no PTY and no screen and links no `ratatui`; the interactive attach is
 //! `phux-tui`, which depends on this crate (ADR-0100). The pane-interior
 //! substrate is `phux-client-core`, re-exported as [`layout`],

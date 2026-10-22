@@ -23,7 +23,8 @@ use toml_edit::{Table, value};
 use super::super::json_err::{self, CliError, codes};
 use super::super::satellite as satellite_registry;
 use super::super::toml_registry;
-use super::{HubReload, add_hub_reload, registry_failure, reload_local_hub};
+use super::add::registry_failure;
+use super::hub::{HubReload, add_hub_reload, reload_local_hub};
 
 /// The `config.toml` key the uplink registry owns.
 const UPLINK_KEY: &str = "uplink";

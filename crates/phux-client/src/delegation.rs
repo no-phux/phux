@@ -1,5 +1,5 @@
 //! Delegated agent credentials over one owner connection
-//! (`docs/spec/L1.md` §5.7.5, ADR-0163).
+//! (`docs/substrate.md#narrow-delegation-that-keeps-the-human`, ADR-0163).
 //!
 //! [`delegate_agent`] asks the server to mint a credential an agent acts
 //! through: `INVENTORY`, `OBSERVE`, `INPUT`, and `BIND` on one session, on behalf of

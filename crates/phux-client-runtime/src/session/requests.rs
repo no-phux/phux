@@ -23,7 +23,7 @@ impl Session {
     /// [`super`]).
     ///
     /// The reply is a `COMMAND_RESULT` for `request_id`, or an `ERROR`
-    /// correlated to it (proto.md §9), folded into [`CommandResult::Error`];
+    /// correlated to it (docs/protocol.md), folded into [`CommandResult::Error`];
     /// without that a peer refusing an unimplemented command would hang the
     /// caller. An uncorrelated `ERROR` (a hub's satellite degradation
     /// notice) is not an answer and lands in [`Reply::interleaved`].
@@ -324,7 +324,7 @@ impl MetadataBatch {
     }
 
     /// The unanswered read in `window` that `frame` answers, if any
-    /// (proto.md §9: an `ERROR` carrying a read's id answers it).
+    /// (docs/protocol.md: an `ERROR` carrying a read's id answers it).
     fn unanswered_read(&self, frame: &FrameKind, window: &std::ops::Range<usize>) -> Option<usize> {
         let request_id = match frame {
             FrameKind::MetadataValue { request_id, .. }

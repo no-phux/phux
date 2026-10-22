@@ -67,7 +67,7 @@ fn a_user_paste_too_large_for_one_command_goes_as_one_paste_event() {
     assert!(text.len() > 64 * 1024);
     assert_eq!(plane.apply_user_paste(&terminal(), &text), None);
     let sent = pastes(&plane.take_outbound());
-    assert_eq!(sent.len(), 1, "never split (input.md 5.1)");
+    assert_eq!(sent.len(), 1, "never split (docs/protocol.md#input)");
     let (acknowledged, paste) = &sent[0];
     assert!(!acknowledged);
     assert_eq!(paste.trust, PasteTrust::Trusted);
@@ -131,7 +131,7 @@ fn a_user_paste_over_the_batch_rule_goes_as_one_paste_event() {
     let text = "x".repeat(largest + 1);
     assert_eq!(plane.apply_user_paste(&terminal(), &text), None);
     let sent = pastes(&plane.take_outbound());
-    assert_eq!(sent.len(), 1, "never split (input.md 5.1)");
+    assert_eq!(sent.len(), 1, "never split (docs/protocol.md#input)");
     assert!(!sent[0].0, "one byte more goes as a raw paste");
     assert_eq!(sent[0].1.data, text.as_bytes());
     assert!(

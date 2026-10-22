@@ -1,5 +1,5 @@
 //! Wire codec: length-prefixed, field-tagged TLV frames, big-endian
-//! (`docs/spec/appendix-encoding.md`). Terminal content is opaque VT bytes and
+//! (`docs/protocol.md#framing`). Terminal content is opaque VT bytes and
 //! bootstrap payloads (ADR-0013, ADR-0070).
 
 pub mod compress;

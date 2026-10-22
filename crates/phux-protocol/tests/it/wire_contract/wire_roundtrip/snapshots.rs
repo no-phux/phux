@@ -219,7 +219,7 @@ fn snapshot_without_keep_empty_sessions_has_no_session_facets() {
     assert_eq!(encode(marked).len(), plain_len + 4 + 4 + 4 + 4 + 5);
 }
 
-/// All three trailing lists at once (L1.md §9.1 order: facets, hosts,
+/// All three trailing lists at once (docs/protocol.md order: facets, hosts,
 /// keep-empty session facets) round-trip, in `ATTACHED` and in a
 /// `GET_STATE` reply, each flag staying on its own row.
 #[test]

@@ -51,14 +51,14 @@ pub(super) const MAX_PENDING_STREAM_BINDS: usize = 16;
 /// Application error code resetting a refused or malformed Terminal stream.
 pub(super) const BIND_REFUSED_CODE: u32 = 0x10;
 
-/// Reset a Terminal stream unread (proto.md §4.2). The uncorrelated `ERROR`
+/// Reset a Terminal stream unread (docs/protocol.md#quic-stream-routing). The uncorrelated `ERROR`
 /// on control carries the reason.
 pub(crate) fn refuse_terminal_stream(mut send: quinn::SendStream, mut recv: quinn::RecvStream) {
     let _ = send.reset(quinn::VarInt::from_u32(BIND_REFUSED_CODE));
     let _ = recv.stop(quinn::VarInt::from_u32(BIND_REFUSED_CODE));
 }
 
-/// A Terminal stream's lifecycle event (proto.md §4.2, ADR-0115).
+/// A Terminal stream's lifecycle event (docs/protocol.md#quic-stream-routing, ADR-0115).
 #[derive(Debug)]
 pub(crate) enum QuicStreamEvent {
     /// A well-formed `STREAM_BIND` arrived; admission belongs to the client
@@ -104,7 +104,7 @@ pub(crate) enum QuicStreamFailure {
     Transport(String),
 }
 
-/// QUIC read half with multi-stream upgrade (`docs/spec/proto.md` §4.2).
+/// QUIC read half with multi-stream upgrade (`docs/protocol.md#quic-stream-routing`).
 ///
 /// Before [`FrameReader::take_stream_events`] it reads the control stream
 /// directly; afterwards control and every bound Terminal stream pump into

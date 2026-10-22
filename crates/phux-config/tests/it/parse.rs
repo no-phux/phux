@@ -10,7 +10,7 @@ use phux_config::{
 
 use crate::common::path;
 
-/// The canonical example from `docs/consumers/tui.md` §4.2.
+/// The canonical example from `docs/config.md`.
 const CANONICAL: &str = r##"
 [defaults]
 shell          = "/bin/zsh"

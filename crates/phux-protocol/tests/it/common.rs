@@ -1,7 +1,7 @@
 //! Shared byte-building helpers for the wire test files.
 //!
 //! One authoritative copy of the TLV primitives from
-//! `docs/spec/appendix-encoding.md` (message bodies are field-tagged:
+//! `docs/protocol.md#framing` (message bodies are field-tagged:
 //! `field_id: varint || wire_type: u8 (4 = BYTES) || varint length || value`)
 //! plus the hand-rolled ATTACHED/SessionSnapshot encoder used to
 //! build malformed and edge-case frames the real encoder refuses to produce.

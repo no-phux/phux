@@ -35,13 +35,13 @@ fn an_unknown_record_type_is_a_record_invalid_refusal_not_a_usage_error() {
         "--json",
     ])
     .expect("an unknown --type must reach the verb, not die at argv");
-    let Some(crate::commands::Command::Agent {
+    let Some(crate::commands::Command::Agent(crate::commands::AgentArgs {
         action:
             super::super::AgentAction::Emit {
                 flags: super::super::action_flags::EmitFlags { event_type, .. },
                 ..
             },
-    }) = cli.command
+    })) = cli.command
     else {
         panic!("`agent emit` must parse to the emit action");
     };

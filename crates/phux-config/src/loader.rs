@@ -1,4 +1,4 @@
-//! Config loader (`docs/consumers/tui.md` §4.1): a missing config file means
+//! Config loader (`docs/config.md`): a missing config file means
 //! the shipped defaults; a missing `extends` layer is an error.
 
 use std::path::Path;

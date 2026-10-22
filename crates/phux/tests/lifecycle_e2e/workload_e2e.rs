@@ -1,4 +1,4 @@
-//! `phux workload` (ADR-0116, `docs/spec/workload-auth.md` §8): the
+//! `phux workload` (ADR-0116, `docs/remote.md#who-can-connect`): the
 //! authority prints only its fingerprint and no key bytes reach stdout or
 //! stderr; a revoked credential's next connection is refused with no restart;
 //! and the startup refusals of workload-auth §8 (ADR-0179).

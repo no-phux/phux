@@ -137,7 +137,7 @@ impl EventStamp {
 }
 
 /// The kind, binding, and facet of a `SPAWN_RESOURCE`: fields 11-17
-/// (`docs/spec/L1.md` §1.2).
+/// (`docs/protocol.md#commands-events-resources`).
 ///
 /// An all-default value encodes to no fields and decodes back as `None`.
 /// The decoder enforces per-kind rules: an

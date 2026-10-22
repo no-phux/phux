@@ -411,8 +411,8 @@ fn unexpected_frame_outcome(frame: &FrameKind) -> Result<FrameOutcome, AttachErr
     Ok(FrameOutcome::default())
 }
 
-/// Server-to-client frames carry the high type bit (`docs/spec/proto.md`
-/// §7); `HELLO_OK` is one, but only the handshake may carry it.
+/// Server-to-client frames carry the high type bit (`docs/protocol.md`);
+/// `HELLO_OK` is one, but only the handshake may carry it.
 const fn is_ignorable_server_frame(frame: &FrameKind) -> bool {
     frame.type_byte() & 0x80 != 0 && !matches!(frame, FrameKind::HelloOk { .. })
 }

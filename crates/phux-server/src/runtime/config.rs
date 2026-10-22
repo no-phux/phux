@@ -70,7 +70,7 @@ pub struct ServerConfig {
     /// HELLO authorization engine override (ADR-0072). `None` lets
     /// [`Self::policy_mode`] choose; tests and embedders inject one here.
     pub policy_engine: Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>,
-    /// `[policy] mode` (`docs/spec/workload-auth.md` §8). `None` is `local`
+    /// `[policy] mode` (`docs/remote.md#who-can-connect`). `None` is `local`
     /// unless a remote entry point or authority location is configured,
     /// which refuses to start (ADR-0179); with an injected
     /// [`Self::policy_engine`] it leaves that engine in charge.
@@ -237,12 +237,12 @@ pub enum ServerError {
     Uplink(#[from] crate::uplink::UplinkError),
 
     /// A `[policy]` mode the rest of the configuration contradicts
-    /// (`docs/spec/workload-auth.md` §8).
+    /// (`docs/remote.md#who-can-connect`).
     #[error("policy: {0}")]
     Policy(#[from] crate::policy::PostureError),
 
     /// The `paired` posture with missing, malformed, or unsafe workload
-    /// authority material (`docs/spec/workload-auth.md` §8).
+    /// authority material (`docs/remote.md#who-can-connect`).
     #[error("policy: paired mode needs usable workload authority material: {0}")]
     PolicyMaterial(#[source] crate::workload::WorkloadError),
 

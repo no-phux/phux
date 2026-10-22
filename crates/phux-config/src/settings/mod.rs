@@ -139,7 +139,7 @@ pub enum SettingKind {
     Color,
 }
 
-/// When a change to a setting takes effect (`docs/consumers/tui.md` §4.3).
+/// When a change to a setting takes effect (`docs/config.md#when-a-change-takes-effect`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Applies {
     /// On `reload-config` / `phux config reload`.

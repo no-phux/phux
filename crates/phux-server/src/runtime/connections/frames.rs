@@ -366,7 +366,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                     return FrameFlow::Continue(());
                 };
                 // Terminal-content replies ride the bound stream when one
-                // exists (proto.md §4.9); control otherwise.
+                // exists (docs/protocol.md#quic-stream-routing); control otherwise.
                 let history_tx = self.plumbing.sender_for(&terminal_id);
                 serve_history_request(
                     self.state,

@@ -1,4 +1,4 @@
-//! Server-held approvals (ADR-0128, `docs/spec/workload-auth.md` §6.1):
+//! Server-held approvals (ADR-0128, `docs/agents.md#safety`):
 //! list the actions awaiting a decision, and decide one.
 //!
 //! The pending set is the server-owned `phux.approval/v1/<id>` records

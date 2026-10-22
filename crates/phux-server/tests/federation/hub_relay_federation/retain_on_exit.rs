@@ -1,4 +1,4 @@
-//! Retain-on-exit through the hub (ADR-0124, `docs/spec/L1.md` §3.1, §9.1).
+//! Retain-on-exit through the hub (ADR-0124, `docs/protocol.md#commands-events-resources`).
 //! A hub forwards `SPAWN_RESOURCE` field 16 `retain_secs` to a satellite that
 //! advertises `RETAIN_ON_EXIT`, so the satellite keeps the exited Terminal as
 //! a facet instead of closing it. The refusal toward a satellite without the

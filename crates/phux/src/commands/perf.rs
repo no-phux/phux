@@ -280,7 +280,7 @@ async fn alloc(json: bool, state: AllocSwitch, conn: &mut Connection) -> Result<
 }
 
 async fn report(opts: PerfOptions, conn: &mut Connection) -> Result<(), AttachError> {
-    // L1.md §5.1: a client MUST observe the GET_PERF feature bit before
+    // docs/protocol.md: a client MUST observe the GET_PERF feature bit before
     // sending the command; an older server would treat tag 0x18 as a decode
     // error and drop the connection, which reads as a crash, not an answer.
     if let Some(features) = phux_client::state::probe_hello_features(conn).await?

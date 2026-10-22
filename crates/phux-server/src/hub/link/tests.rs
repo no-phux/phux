@@ -47,7 +47,7 @@ fn link_admits_any_minor_and_patch_of_the_hubs_major() {
 }
 
 /// Revoking the link's token on the satellite ends the link live and
-/// refuses the redial (`docs/spec/workload-auth.md` §7).
+/// refuses the redial (`docs/remote.md#managing-credentials`).
 #[tokio::test(flavor = "current_thread")]
 async fn revoking_the_links_token_on_the_satellite_drops_the_link() {
     let local = tokio::task::LocalSet::new();

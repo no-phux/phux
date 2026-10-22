@@ -1,5 +1,5 @@
 //! Transport-derived peer identity and the QUIC ALPN tokens
-//! (`docs/spec/proto.md` §10). None of these types are encoded on the wire;
+//! (`docs/remote.md#who-can-connect`). None of these types are encoded on the wire;
 //! policy logic lives in `phux-server` (ADR-0072).
 
 use std::net::IpAddr;
@@ -24,7 +24,7 @@ pub struct PeerIdentity {
     pub source_addr: Option<IpAddr>,
 }
 
-/// ALPN protocol id for the QUIC transport (`docs/spec/proto.md` §10). Both
+/// ALPN protocol id for the QUIC transport (`docs/remote.md#who-can-connect`). Both
 /// ends must offer it exactly, so a non-phux QUIC client never reaches the
 /// frame layer.
 pub const QUIC_ALPN: &[u8] = b"phux-quic/1";
@@ -36,14 +36,14 @@ pub const QUIC_RELAY_ALPN: &[u8] = b"phux-relay/1";
 
 /// ALPN protocol id for workload enrollment on a QUIC listener.
 ///
-/// See `docs/spec/workload-auth.md` §8.2 and ADR-0154. A connection that
+/// See `docs/remote.md#pairing-with-a-link` and ADR-0154. A connection that
 /// negotiates it carries one enrollment exchange ([`crate::enroll`]) and no
 /// phux frame, so it MUST never equal [`QUIC_ALPN`].
 pub const ENROLL_ALPN: &[u8] = b"phux-enroll/1";
 
 /// ALPN protocol id for a satellite's outbound link to its hub.
 ///
-/// See `docs/spec/workload-auth.md` §8.3 and ADR-0182. The satellite dials
+/// See `docs/remote.md#linking-machines` and ADR-0182. The satellite dials
 /// and presents its satellite credential; the hub then opens bidirectional
 /// streams, each one phux connection with the hub as the client. It MUST
 /// never equal any other phux ALPN: the ALPN alone decides the role.

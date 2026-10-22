@@ -37,7 +37,7 @@ value:     bytes
 ```
 
 Decoders match fields by id in any order and skip ids they do not know, so
-additive optional fields can be skipped by an older peer. Most nested
+an older peer skips additive optional fields. Most nested
 records are positional and big-endian, with string leaves encoded as
 `u32 length || bytes`; top-level UTF-8 field values are raw bytes. A
 record that is not last in its field (list rows, input events,
@@ -183,10 +183,10 @@ generate escape sequences.
 
 The canonical server terminal answers each child query once. Replica
 emulator replies are not another source of PTY input. `INPUT_TERMINAL_REPLY`
-remains for compatibility but the server [discards it](../crates/phux-server/src/runtime/commands.rs).
+remains for compatibility but the server [discards it](../crates/phux-server/src/runtime/commands/terminal_input.rs).
 New clients suppress replica replies; never resend them as paste or raw input.
-The [engine regression tests](../crates/phux-client-core/src/engine/ghostty.rs)
-exercise this single-reply boundary.
+[Engine tests](../crates/phux-client-core/src/engine/ghostty/tests/synthesized.rs)
+pin this single reply.
 
 ### Receipts, retries, and backpressure
 
@@ -347,9 +347,9 @@ Native onboarding is additive inside `NATIVE_AGENT`, gated by its own
 `NATIVE_AGENT_LAUNCH` bit; see
 [ACP onboarding](./acp.md#from-the-desktop-app).
 
-- Allocate a new type byte or sub-tag in `wire/frame/mod.rs`; duplicates
-  fail to compile.
-- Add field ids in `wire/field.rs`, append-only.
+- Allocate type bytes in `wire/frame/mod.rs`, sub-tags in
+  `wire/frame/*tags.rs`; duplicates fail to compile.
+- Add field ids in `wire/field/`, append-only.
 - Gate new behavior on a feature bit in `caps/server_features.rs`. Do not
   bump the protocol version for an additive change. A shipped capability bit is
   never withdrawn or repointed.

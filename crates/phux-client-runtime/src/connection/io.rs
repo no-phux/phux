@@ -14,12 +14,11 @@
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use futures_util::FutureExt;
 use phux_dial::DialError;
 use phux_dial::ws::{WsActivity, WsReader, WsWriter, recv_activity_alive};
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::framing::{self, FramingError};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use phux_protocol::wire::framing::FramingError;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::control::encode;
 use crate::dial::dial_message;
@@ -44,6 +43,12 @@ const SEND_STALL_CHUNK: usize = 16 * 1024;
 
 /// The application-close reason a client's QUIC teardown sends.
 const CLOSE_REASON: &[u8] = b"session closed";
+
+mod read;
+
+use read::{
+    read_stream_frames, read_ws_frames, refused_or, try_read_stream_frames, try_read_ws_frame,
+};
 
 /// Why reading or writing an established link failed.
 ///
@@ -86,7 +91,7 @@ pub(crate) struct QuicLink {
     endpoint: quinn::Endpoint,
     connection: quinn::Connection,
     /// Whether the connection may carry per-Terminal streams: a plain QUIC
-    /// stream, not an end-to-end session a relay splices (proto.md §4.2,
+    /// stream, not an end-to-end session a relay splices (docs/protocol.md#quic-stream-routing,
     /// "Relay": such a consumer stays on the single-stream shape).
     terminal_streams: bool,
 }
@@ -430,266 +435,5 @@ const fn unspecified_like(addr: std::net::SocketAddr) -> std::net::SocketAddr {
     }
 }
 
-async fn read_stream_frames(
-    reader: &mut Box<dyn AsyncRead + Unpin + Send + Sync>,
-    pending: &mut BytesMut,
-    quic: Option<&QuicLink>,
-) -> Result<Option<Vec<Bytes>>, LinkError> {
-    loop {
-        let frames = take_complete_frames(pending)?;
-        if !frames.is_empty() {
-            return Ok(Some(frames));
-        }
-        let read = reader
-            .read_buf(pending)
-            .await
-            .map_err(|error| read_error(error, quic))?;
-        if read != 0 {
-            continue;
-        }
-        if let Some(reason) = quic.and_then(|link| link.connection.close_reason()) {
-            return Err(LinkError::Closed(phux_dial::quic::close_error(&reason)));
-        }
-        return Ok(None);
-    }
-}
-
-/// Complete frames already buffered, else whatever one read polled once
-/// (against a no-op waker) adds. Sound because these reads are cancel-safe
-/// and the next `read_frames().await` re-polls with a real waker.
-fn try_read_stream_frames(
-    reader: &mut Box<dyn AsyncRead + Unpin + Send + Sync>,
-    pending: &mut BytesMut,
-    quic: Option<&QuicLink>,
-) -> Result<Vec<Bytes>, LinkError> {
-    let frames = take_complete_frames(pending)?;
-    if !frames.is_empty() {
-        return Ok(frames);
-    }
-    match reader.read_buf(pending).now_or_never() {
-        None | Some(Ok(0)) => Ok(Vec::new()),
-        Some(Ok(_)) => take_complete_frames(pending),
-        Some(Err(error)) => Err(read_error(error, quic)),
-    }
-}
-
-fn read_error(error: std::io::Error, quic: Option<&QuicLink>) -> LinkError {
-    refused_or(LinkError::Read(error), quic)
-}
-
-/// A failed read or write. A QUIC stream sees a connection close as a bare
-/// "connection lost" in either direction; when that close was the server
-/// refusing the bearer token, report the refusal instead, which ends the
-/// session (the driver does not redial it) and words it as "re-pair".
-fn refused_or(error: LinkError, quic: Option<&QuicLink>) -> LinkError {
-    if !matches!(error, LinkError::Read(_) | LinkError::Write(_)) {
-        return error;
-    }
-    match quic
-        .and_then(|link| link.connection.close_reason())
-        .map(|reason| phux_dial::quic::close_error(&reason))
-    {
-        Some(refused @ DialError::AuthRefused(_)) => LinkError::Closed(refused),
-        _ => error,
-    }
-}
-
-/// Split a read's complete frames off `pending` without copying them: each
-/// frame is a frozen view of the read buffer. A queued frame therefore keeps
-/// its read slab alive until the consumer decodes it, bounded by the inbound
-/// queue's ceilings (a slab is `pending`'s 64 KiB, or one oversized frame).
-fn take_complete_frames(pending: &mut BytesMut) -> Result<Vec<Bytes>, LinkError> {
-    let mut frames = Vec::new();
-    while frames.len() < MAX_INBOUND_BATCH {
-        match framing::split_frame(pending) {
-            Ok(Some(frame)) => frames.push(frame.freeze()),
-            Err(error) if frames.is_empty() => return Err(LinkError::Framing(error)),
-            // Preserve already-decoded frames. On error, the malformed bytes
-            // remain at the front of `pending` and fail the next pump step.
-            Ok(None) | Err(_) => break,
-        }
-    }
-    Ok(frames)
-}
-
-async fn read_ws_frames(
-    reader: &mut WsReader,
-    writer: &mut WsWriter,
-    deferred_error: &mut Option<LinkError>,
-) -> Result<Option<Vec<Bytes>>, LinkError> {
-    match recv_activity_alive(reader, writer)
-        .await
-        .map_err(LinkError::Ws)?
-    {
-        WsActivity::Message(frame) => {
-            let mut frames = vec![ws_frame(frame)?];
-            while frames.len() < MAX_INBOUND_BATCH {
-                match try_read_ws_frame(reader) {
-                    Ok(mut more) if !more.is_empty() => frames.append(&mut more),
-                    Ok(_) => break,
-                    Err(error) => {
-                        *deferred_error = Some(error);
-                        break;
-                    }
-                }
-            }
-            Ok(Some(frames))
-        }
-        // A pong or a peer ping: no phux payload, but proof of life.
-        WsActivity::Control => Ok(Some(vec![Bytes::new()])),
-        WsActivity::Closed => Ok(None),
-    }
-}
-
-/// A message tungstenite already decoded, if any. A close seen here is
-/// none; the next read reports it.
-fn try_read_ws_frame(reader: &mut WsReader) -> Result<Vec<Bytes>, LinkError> {
-    match reader.try_recv_message().map_err(LinkError::Ws)? {
-        Some(frame) => Ok(vec![ws_frame(frame)?]),
-        None => Ok(Vec::new()),
-    }
-}
-
-/// One binary message as one frame: the check the server applies to its
-/// own inbound messages, since a message that disagrees with its declared
-/// length would desynchronize the framed stream.
-fn ws_frame(message: Vec<u8>) -> Result<Bytes, LinkError> {
-    framing::check_frame(&message).map_err(LinkError::Framing)?;
-    Ok(Bytes::from(message))
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_rebind_socket_keeps_the_peer_family() {
-        let v4 = unspecified_like("127.0.0.1:4433".parse().expect("addr"));
-        let v6 = unspecified_like("[::1]:4433".parse().expect("addr"));
-        assert!(v4.is_ipv4() && v4.port() == 0);
-        assert!(v6.is_ipv6() && v6.port() == 0);
-    }
-
-    #[test]
-    fn complete_frames_are_delivered_before_a_later_malformed_frame() {
-        let mut pending = BytesMut::new();
-        FrameKind::Ping { nonce: 7 }.encode(&mut pending);
-        pending.extend_from_slice(&[0, 0, 0, 0]);
-
-        let valid = take_complete_frames(&mut pending).expect("valid prefix");
-
-        assert_eq!(valid.len(), 1);
-        assert!(take_complete_frames(&mut pending).is_err());
-    }
-
-    #[test]
-    fn a_stream_read_drains_complete_frames_in_bounded_batches() {
-        let mut pending = BytesMut::new();
-        for nonce in 0..300 {
-            FrameKind::Ping { nonce }.encode(&mut pending);
-        }
-
-        let first = take_complete_frames(&mut pending).expect("first batch");
-        let second = take_complete_frames(&mut pending).expect("second batch");
-
-        assert_eq!(first.len(), MAX_INBOUND_BATCH);
-        assert_eq!(second.len(), 300 - MAX_INBOUND_BATCH);
-        assert!(pending.is_empty());
-        let (first_frame, tail) = FrameKind::decode(&first[0]).expect("frame decodes");
-        assert!(tail.is_empty());
-        assert!(matches!(first_frame, FrameKind::Ping { nonce: 0 }));
-        let (last_frame, tail) =
-            FrameKind::decode(second.last().expect("last frame")).expect("frame decodes");
-        assert!(tail.is_empty());
-        assert!(matches!(last_frame, FrameKind::Ping { nonce: 299 }));
-    }
-
-    /// A non-blocking read takes what is buffered and never waits; a
-    /// clean close reads as nothing until the blocking read reports it.
-    #[tokio::test]
-    async fn a_non_blocking_read_takes_what_is_there_and_never_waits() {
-        let (near, mut far) = tokio::io::duplex(4096);
-        let (reader, writer) = tokio::io::split(near);
-        let mut io = Io::stream(Box::new(reader), Box::new(writer));
-        assert!(io.try_read_frames().expect("nothing yet").is_empty());
-        far.write_all(&encode(&FrameKind::Ping { nonce: 4 }))
-            .await
-            .expect("write");
-        let frames = io.try_read_frames().expect("one frame");
-        assert_eq!(frames.len(), 1);
-        drop(far);
-        assert!(io.try_read_frames().expect("closed").is_empty());
-        assert!(io.read_frames().await.expect("clean close").is_none());
-    }
-
-    #[test]
-    fn joined_frames_keep_order() {
-        assert_eq!(join_frames(&[]), Vec::<u8>::new());
-        assert_eq!(join_frames(&[vec![1, 2], vec![], vec![3]]), vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn a_websocket_message_budget_grows_with_its_size_and_then_caps() {
-        assert_eq!(message_budget(0), SEND_BUDGET);
-        assert_eq!(message_budget(SEND_STALL_CHUNK), SEND_BUDGET);
-        assert_eq!(
-            message_budget(SEND_STALL_CHUNK + 1),
-            SEND_BUDGET.saturating_mul(2)
-        );
-        assert_eq!(message_budget(16 * 1024 * 1024), SEND_BUDGET_CEILING);
-    }
-
-    /// Three chunks, each accepted just inside the budget. The whole write
-    /// takes longer than one budget, which is what a slow live link does.
-    #[tokio::test(start_paused = true)]
-    async fn a_link_that_keeps_taking_chunks_survives_past_one_budget() {
-        use futures_util::FutureExt;
-
-        let chunk = SEND_STALL_CHUNK;
-        let (mut client, mut peer) = tokio::io::duplex(chunk);
-        let payload = vec![7u8; chunk * 3];
-        let writing = write_all_within_budget(&mut client, &payload);
-        tokio::pin!(writing);
-
-        assert!(
-            writing.as_mut().now_or_never().is_none(),
-            "the second chunk waits on a full buffer"
-        );
-        tokio::time::advance(almost_one_budget()).await;
-        assert!(
-            writing.as_mut().now_or_never().is_none(),
-            "the first wait stays inside one budget"
-        );
-        read_one_chunk(&mut peer, chunk).await;
-
-        assert!(
-            writing.as_mut().now_or_never().is_none(),
-            "the third chunk waits"
-        );
-        tokio::time::advance(almost_one_budget()).await;
-        assert!(
-            writing.as_mut().now_or_never().is_none(),
-            "a fresh chunk restarts the budget"
-        );
-        read_one_chunk(&mut peer, chunk).await;
-
-        let end = writing
-            .as_mut()
-            .now_or_never()
-            .expect("the last chunk fits once the peer reads");
-        assert!(end.is_ok(), "{end:?}");
-    }
-
-    fn almost_one_budget() -> Duration {
-        SEND_BUDGET
-            .checked_sub(Duration::from_secs(1))
-            .expect("the send budget is longer than one second")
-    }
-
-    async fn read_one_chunk(peer: &mut tokio::io::DuplexStream, n: usize) {
-        let mut buf = vec![0u8; n];
-        peer.read_exact(&mut buf)
-            .await
-            .expect("the chunk is buffered");
-    }
-}
+mod tests;

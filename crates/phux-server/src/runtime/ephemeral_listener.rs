@@ -1,4 +1,4 @@
-//! On-demand listeners: `OPEN_LISTENER` (`docs/spec/L1.md` §5.6, ADR-0120).
+//! On-demand listeners: `OPEN_LISTENER` (`docs/remote.md#attaching-over-ssh`, ADR-0120).
 //!
 //! `phux attach --ssh HOST` runs `phux bootstrap` on the far end, which asks
 //! the server there for a door that exists for one attach: a QUIC listener on
@@ -192,7 +192,7 @@ pub(super) fn handle_open_listener(
 
 /// Why this door may not open, if it may not: only the owner's socket asks,
 /// and never under `[policy] mode = "local"`, which admits no remote door
-/// (`docs/spec/workload-auth.md` §8).
+/// (`docs/remote.md#who-can-connect`).
 fn door_refusal(state: &SharedState, client_id: ClientId) -> Option<CommandResult> {
     if !from_local_socket(state, client_id) {
         warn!(?client_id, "OPEN_LISTENER refused: local socket only");

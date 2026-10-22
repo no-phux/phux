@@ -1,4 +1,4 @@
-//! Negotiated frame compression (`docs/spec/proto.md` §6.4).
+//! Negotiated frame compression (`docs/protocol.md#framing`).
 //!
 //! `FRAME_COMPRESSED` wraps one deflated inner frame body (type byte plus
 //! payload); the decoder inflates and dispatches it, so inner records stay
