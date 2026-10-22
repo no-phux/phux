@@ -23,8 +23,7 @@ pub(crate) fn enhance(catalog: &mut Value) {
     let Some(entries) = catalog.as_array_mut() else {
         return;
     };
-    let outputs: Value =
-        serde_json::from_str(include_str!("outputs.json")).expect("compiled output schemas");
+    let outputs = output_schemas();
     for entry in entries {
         let name = entry["name"].as_str().unwrap_or_default().to_owned();
         let mut output = outputs[&name].clone();
@@ -41,6 +40,27 @@ pub(crate) fn enhance(catalog: &mut Value) {
         entry["outputSchema"] = output;
         add_resource_id(&mut entry["inputSchema"]);
     }
+}
+
+/// Every tool's output schema, by tool name, from one file per tool family.
+#[allow(
+    clippy::expect_used,
+    reason = "the compiled schema files are validated in contract tests"
+)]
+pub(crate) fn output_schemas() -> Value {
+    let families = [
+        include_str!("outputs.json"),
+        include_str!("agent_outputs.json"),
+        include_str!("host_outputs.json"),
+        include_str!("coord_outputs.json"),
+    ];
+    let mut schemas = serde_json::Map::new();
+    for family in families {
+        let family: serde_json::Map<String, Value> =
+            serde_json::from_str(family).expect("compiled output schemas");
+        schemas.extend(family);
+    }
+    Value::Object(schemas)
 }
 
 fn add_resource_id(input: &mut Value) {

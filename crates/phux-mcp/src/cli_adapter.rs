@@ -33,6 +33,15 @@ pub(crate) struct CliAdapter {
     program: OsString,
 }
 
+/// The `phux` binary installed beside this adapter, else `phux` on `PATH`.
+pub(crate) fn phux_program() -> OsString {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("phux")))
+        .filter(|path| path.is_file())
+        .map_or_else(|| OsString::from("phux"), PathBuf::into_os_string)
+}
+
 #[derive(Debug)]
 pub(crate) struct CliOutput {
     pub(crate) stdout: String,
@@ -58,12 +67,9 @@ impl CliAdapter {
     }
 
     fn discover() -> Self {
-        let program = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join("phux")))
-            .filter(|path| path.is_file())
-            .map_or_else(|| OsString::from("phux"), PathBuf::into_os_string);
-        Self { program }
+        Self {
+            program: phux_program(),
+        }
     }
 
     #[cfg(test)]

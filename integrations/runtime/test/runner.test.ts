@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import test from "node:test";
 
 import { nodeProcessRunner } from "../src/runner.js";
@@ -143,3 +144,31 @@ async function waitFor(condition: () => boolean, timeoutMs: number): Promise<boo
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+test("a lifeline child ends with its parent, even one killed outright", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "phux-lifeline-"));
+  const marker = join(dir, "ended");
+  try {
+    const runner = new URL("../src/runner.js", import.meta.url).href;
+    const grandchild = `process.stdin.on("end", () => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "eof"); process.exit(0); }); process.stdin.resume();`;
+    const parent = `import(${JSON.stringify(runner)}).then(({ nodeProcessRunner }) => {
+      nodeProcessRunner({ executable: process.execPath, args: ["-e", ${JSON.stringify(grandchild)}], lifeline: true });
+      process.stdout.write("spawned\\n");
+    });`;
+    const child = spawn(process.execPath, ["-e", parent], { stdio: ["ignore", "pipe", "inherit"] });
+    await new Promise((resolve) => child.stdout.once("data", resolve));
+    child.kill("SIGKILL");
+    const deadline = Date.now() + 5000;
+    while (!existsSync(marker)) {
+      assert.ok(Date.now() < deadline, "the grandchild never saw its lifeline close");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(readFileSync(marker, "utf8"), "eof");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lifeline and stdin are exclusive", async () => {
+  await assert.rejects(nodeProcessRunner({ executable: process.execPath, args: [], lifeline: true, stdin: "x" }), TypeError);
+});

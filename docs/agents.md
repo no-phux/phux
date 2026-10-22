@@ -183,9 +183,33 @@ phux claim list
 
 An address is a pane (`@749`), a labelled pane (`pi@749`), or a plain name
 for something outside a pane. You speak as `--as`, else
-`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`. Sending mail stores it,
-then prompts each recipient pane's agent to read it. A pane with no agent
-isn't prompted.
+`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`. Addresses are panes on
+this machine; `host/@N` is refused.
+
+Sending mail only stores it. Nothing is ever typed into the recipient's
+pane: its harness takes the mail and puts it in the agent's conversation,
+once, framed as a message from another agent rather than from the user.
+
+| Harness | How mail arrives |
+| --- | --- |
+| pi, Oh My Pi | a `phux.mail` follow-up message; starts a turn when the agent is idle |
+| OpenCode | a queued synthetic message in the session the pane shows; resumes it when idle |
+| Claude Code (plugin) | hook context on session start, prompt submit and after each tool; a `block` at stop so the agent goes on and handles it |
+| Grok | hook context after each tool, and a `block` at stop |
+
+Claude Code and Grok only have hooks, so an agent idle at its prompt sees
+its mail at its next hook. Workers whose conversation an SDK controller owns
+(`PHUX_AGENT_REPORTING=0`) get no mail from their hooks either: the
+controller decides what enters that conversation.
+
+The harness side is three commands. `phux mail wait --json` holds until
+there is mail and takes it; with `--until-stdin-closes` it gives up, taking
+nothing, when the harness that started it exits, however abruptly.
+`phux mail hook-context --event EVENT` prints the hook reply. A harness that
+took mail but could not inject it returns it with `phux mail release ID...`,
+and mail whose output cannot be written is released by the command itself,
+as is a take whose reply the keeper could not send. Taken mail still shows
+as unread in `phux mail read`.
 
 `claim take` grants every path or none, and exits 1 naming the holders on a
 conflict. It prints a fence; `phux claim renew FENCE` and

@@ -1,4 +1,5 @@
-//! Real CLI lease receipts, using an owned keeper and disposable state only.
+//! Real CLI lease receipts and mail delivery, using an owned keeper and
+//! disposable state only.
 #![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
@@ -360,4 +361,143 @@ fn unsafe_release_forms_and_malformed_native_context_fail_closed() {
         cli.json("@749", &["claim", "list", "--json"], 0)["claims"],
         first["claim"]["claims"]
     );
+}
+
+fn send_mail(cli: &CliStore, to: &str, body: &str) -> Value {
+    cli.json(
+        "@749",
+        &["mail", "send", to, "-t", "pr-1", "-m", body, "--json"],
+        0,
+    )
+}
+
+#[test]
+fn mail_is_stored_and_taken_once_for_the_agent_without_a_bell() {
+    let cli = CliStore::new();
+    let sent = send_mail(&cli, "opencode@730", "rebased");
+    assert_eq!(sent["schema"], "phux.coord/v1");
+    assert!(sent.get("bells").is_none(), "nothing rings a pane: {sent}");
+    let wait = ["mail", "wait", "--timeout", "0", "--json"];
+    let taken = cli.json("@730", &wait, 0);
+    assert_eq!(taken["reader"], "@730");
+    assert_eq!(taken["mail"][0]["body"], "rebased");
+    let text = taken["text"].as_str().unwrap();
+    assert!(text.contains("From @749 in thread pr-1"), "{text}");
+    let again = cli.json("@730", &wait, 0);
+    assert_eq!(again["mail"], serde_json::json!([]));
+    assert!(again["text"].is_null());
+    let inbox = cli.json("@730", &["mail", "read", "--peek", "--json"], 0);
+    assert_eq!(inbox["mail"].as_array().unwrap().len(), 1, "still unread");
+    assert!(
+        cli.run(
+            "@749",
+            &["mail", "send", "@730", "-t", "x", "-m", "y", "--no-ring"]
+        )
+        .status
+        .code()
+        .is_some_and(|code| code != 0)
+    );
+}
+
+#[test]
+fn hook_context_prints_one_hook_reply_or_nothing() {
+    let cli = CliStore::new();
+    let hook = |event: &str| {
+        let out = cli.run("@730", &["mail", "hook-context", "--event", event]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    assert_eq!(hook("PostToolUse"), "", "no mail, no reply");
+    send_mail(&cli, "@730", "first");
+    let context: Value = serde_json::from_str(&hook("PostToolUse")).unwrap();
+    assert_eq!(
+        context["hookSpecificOutput"]["hookEventName"],
+        "PostToolUse"
+    );
+    let text = context["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(text.contains("first"), "{text}");
+    assert_eq!(hook("Stop"), "", "taken once");
+    send_mail(&cli, "@730", "second");
+    let stop: Value = serde_json::from_str(&hook("Stop")).unwrap();
+    assert_eq!(stop["decision"], "block");
+    assert!(stop["reason"].as_str().unwrap().contains("second"));
+}
+
+#[test]
+fn another_hosts_pane_is_not_a_mail_address_here() {
+    let cli = CliStore::new();
+    let refused = cli.json(
+        "@749",
+        &[
+            "mail",
+            "wait",
+            "--as",
+            "mac/@730",
+            "--timeout",
+            "0",
+            "--json",
+        ],
+        2,
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("this host"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn mail_that_cannot_be_handed_over_is_released_for_the_next_wait() {
+    let cli = CliStore::new();
+    send_mail(&cli, "@730", "keep me");
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let lost = command(cli.root.path(), "@730")
+        .args(["mail", "wait", "--timeout", "0", "--json"])
+        .stdout(writer)
+        .output()
+        .unwrap();
+    assert_eq!(lost.status.code(), Some(1), "the reader was gone");
+    let wait = ["mail", "wait", "--timeout", "0", "--json"];
+    let taken = cli.json("@730", &wait, 0);
+    assert_eq!(taken["mail"][0]["body"], "keep me", "released, then taken");
+    let id = taken["mail"][0]["id"].as_str().unwrap().to_owned();
+    let released = cli.json("@730", &["mail", "release", &id, "--json"], 0);
+    assert_eq!(released["released"], 1);
+    assert_eq!(cli.json("@730", &wait, 0)["mail"][0]["body"], "keep me");
+}
+
+#[test]
+fn a_wait_bound_to_stdin_ends_with_its_caller_and_takes_nothing() {
+    let cli = CliStore::new();
+    let mut waiter = command(cli.root.path(), "@730")
+        .args([
+            "mail",
+            "wait",
+            "--timeout",
+            "60",
+            "--until-stdin-closes",
+            "--json",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(waiter.stdin.take());
+    let started = Instant::now();
+    let status = waiter.wait().unwrap();
+    assert!(!status.success(), "abandoned, not answered");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    send_mail(&cli, "@730", "for the live waiter");
+    let taken = cli.json("@730", &["mail", "wait", "--timeout", "0", "--json"], 0);
+    assert_eq!(taken["mail"][0]["body"], "for the live waiter");
 }

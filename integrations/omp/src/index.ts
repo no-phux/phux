@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { PhuxCli } from "../../runtime/src/adapter.js";
 import { registerOmpLifecycle } from "./lifecycle.js";
+import { registerOmpMail } from "./mail.js";
 import { normalizeTerminalIdentity } from "../../runtime/src/awareness.js";
 import { PhuxError } from "../../runtime/src/errors.js";
 import { boundedResult, createPhuxTools, type ToolContext } from "../../runtime/src/tools.js";
@@ -40,6 +41,11 @@ export default function phuxExtension(pi: ExtensionAPI): void {
       ...(environment.PHUX_SOCKET ? { socket: environment.PHUX_SOCKET } : {}),
       env: environment,
     }), parentTarget, transcriptMode(environment.PHUX_AGENT_TRANSCRIPT));
+    registerOmpMail(pi, {
+      env: environment,
+      executable: environment.PHUX_BIN || "phux",
+      onError: (error) => console.warn(`[phux] mail: ${error instanceof Error ? error.message : String(error)}`),
+    });
   }
 
   function tools(ctx?: ExtensionContext) {

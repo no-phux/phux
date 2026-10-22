@@ -85,10 +85,6 @@ pub(crate) const PERF_READ: &str = "GET_PERF (no reset)";
 const DETECTOR: &str = "the detector projection (manifest replay over the pane's screen, plus \
      `[[plugins]]` agent declarations) is built in the phux binary, not phux-client";
 
-/// Why mail and claims run the CLI: one work-store client and one identity rule.
-const COORD: &str = "the work store's keeper is started and addressed by the phux binary, and \
-     the caller's address comes from its pane, which the CLI resolves";
-
 /// Why the `AgentSession` verbs stay on the CLI.
 const AGENT_SESSION: &str = "the Terminal-to-AgentSession resolution and the result documents \
      are assembled in the CLI command (`commands/agent/resource_session.rs`)";
@@ -402,29 +398,13 @@ pub(crate) const TOOLS: &[Row] = &[
         AGENT_SESSION,
         Touches::Wire(&[RESOLVE, "ATTACH_RESOURCE", "DETACH_RESOURCE"]),
     ),
-    residue(
-        "phux_mail_send",
-        "mail send",
-        COORD,
-        // The doorbell is an acknowledged prompt into each recipient's agent.
-        Touches::Wire(&["GET_METADATA", "APPLY_INPUT"]),
-    ),
-    residue("phux_mail_read", "mail read", COORD, Touches::LocalWrite),
-    residue("phux_mail_ack", "mail ack", COORD, Touches::LocalWrite),
-    residue("phux_claim_take", "claim take", COORD, Touches::LocalWrite),
-    residue(
-        "phux_claim_renew",
-        "claim renew",
-        COORD,
-        Touches::LocalWrite,
-    ),
-    residue(
-        "phux_claim_release",
-        "claim release",
-        COORD,
-        Touches::LocalWrite,
-    ),
-    residue("phux_claim_list", "claim list", COORD, Touches::LocalRead),
+    cli("phux_mail_send", "mail send", Touches::LocalWrite),
+    cli("phux_mail_read", "mail read", Touches::LocalWrite),
+    cli("phux_mail_ack", "mail ack", Touches::LocalWrite),
+    cli("phux_claim_take", "claim take", Touches::LocalWrite),
+    cli("phux_claim_renew", "claim renew", Touches::LocalWrite),
+    cli("phux_claim_release", "claim release", Touches::LocalWrite),
+    cli("phux_claim_list", "claim list", Touches::LocalRead),
     residue(
         "phux_status",
         "status",

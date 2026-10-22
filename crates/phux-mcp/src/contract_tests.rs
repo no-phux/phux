@@ -18,7 +18,7 @@ pub(crate) fn validate_output(name: &str, value: &Value) {
 #[test]
 fn every_tool_publishes_valid_input_and_output_schemas() {
     let catalog = crate::tools::catalog();
-    let outputs: Value = serde_json::from_str(include_str!("outputs.json")).unwrap();
+    let outputs = crate::contracts::output_schemas();
     assert_eq!(
         catalog.as_array().unwrap().len(),
         outputs.as_object().unwrap().len()
@@ -110,7 +110,7 @@ async fn successful_resource_inspection_allows_refused_metadata_reads() {
 fn project_contract_advertises_the_actual_repository_field() {
     let doc = json!({"schema_version":1,"repo":{"path":"/checkout","head":null,"branch":null,"detached":true},"worktrees":[]});
     validate_output("phux_project_inspect", &doc);
-    let outputs: Value = serde_json::from_str(include_str!("outputs.json")).unwrap();
+    let outputs = crate::contracts::output_schemas();
     assert!(
         outputs["phux_project_inspect"]["properties"]
             .get("repository")

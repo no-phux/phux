@@ -11,8 +11,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::coord::{
-    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, RenewClaim, SendMail,
-    Sent, TakeClaim,
+    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, ReleaseMail,
+    RenewClaim, SendMail, Sent, TakeClaim, WaitMail,
 };
 use crate::error::Error;
 use crate::id::Alias;
@@ -23,6 +23,9 @@ use crate::store::{
     StateEdit,
 };
 use crate::wire::{BUILD, Envelope, Fault, MAX_LINE, Request, Response};
+
+mod lifeline;
+use lifeline::{Patience, await_reply};
 
 /// How long a call waits for a keeper to start answering.
 const CONNECT_BUDGET: Duration = Duration::from_secs(2);
@@ -296,6 +299,60 @@ impl Client {
         }
     }
 
+    /// Take the reader's undelivered mail, waiting up to the request's
+    /// timeout for some to arrive. The keeper holds the request open; an
+    /// empty result means the deadline passed. See [`crate::Store::take_mail`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn wait_mail(&self, request: WaitMail) -> Result<Vec<Mail>, Error> {
+        self.wait_mail_bound(request, None)
+    }
+
+    /// [`Client::wait_mail`], abandoned without taking anything as soon as
+    /// `lifeline` (the read end of a pipe the caller's parent holds open)
+    /// closes. A wait whose parent died cannot take the next message.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`], and [`Error::Keeper`] once the lifeline closes.
+    pub fn wait_mail_while(
+        &self,
+        request: WaitMail,
+        lifeline: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<Vec<Mail>, Error> {
+        self.wait_mail_bound(request, Some(lifeline))
+    }
+
+    fn wait_mail_bound(
+        &self,
+        request: WaitMail,
+        lifeline: Option<std::os::fd::BorrowedFd<'_>>,
+    ) -> Result<Vec<Mail>, Error> {
+        let patience = Patience {
+            reply: Duration::from_millis(request.timeout_ms).saturating_add(REPLY_TIMEOUT),
+            lifeline,
+        };
+        match self.call_within(Request::WaitMail(request), patience)? {
+            Response::Mail(mail) => Ok(mail),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Return taken mail to the reader's undelivered mail. See
+    /// [`crate::Store::release_mail`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn release_mail(&self, request: ReleaseMail) -> Result<u64, Error> {
+        match self.call(Request::ReleaseMail(request))? {
+            Response::Released(count) => Ok(count),
+            other => Err(unexpected(&other)),
+        }
+    }
+
     /// Acquire a new lease. See [`crate::Store::take_claim`].
     ///
     /// # Errors
@@ -354,8 +411,9 @@ impl Client {
         stream: &UnixStream,
         line: &str,
         allow_upgrade: bool,
+        patience: Patience<'_>,
     ) -> Result<Option<Response>, Error> {
-        let response = exchange(stream, line)?;
+        let response = exchange(stream, line, patience)?;
         let legacy_rejection = matches!(
             &response,
             Response::Fault(Fault::BadRequest { keeper: None, .. })
@@ -369,7 +427,7 @@ impl Client {
         }))?;
         let probe_stream = UnixStream::connect(&self.endpoint.socket)
             .map_err(|err| Error::Keeper(format!("legacy compatibility probe: {err}")))?;
-        match exchange(&probe_stream, &probe)? {
+        match exchange(&probe_stream, &probe, prompt())? {
             stale @ Response::Fault(Fault::Stale { .. }) => classify_reply(stale, allow_upgrade),
             _ => classify_reply(response, allow_upgrade),
         }
@@ -392,6 +450,11 @@ impl Client {
     }
 
     fn call(&self, request: Request) -> Result<Response, Error> {
+        self.call_within(request, prompt())
+    }
+
+    /// One request, whose reply may take as long as `patience` allows.
+    fn call_within(&self, request: Request, patience: Patience<'_>) -> Result<Response, Error> {
         let line = encode_request(request)?;
         let started = Instant::now();
         let mut pause = PAUSE_START;
@@ -400,14 +463,16 @@ impl Client {
         let mut replaced_stale = false;
         loop {
             match UnixStream::connect(&self.endpoint.socket) {
-                Ok(stream) => match self.compatible_exchange(&stream, &line, !replaced_stale)? {
-                    // That keeper exits after saying so; start this build's.
-                    None => {
-                        replaced_stale = true;
-                        keeper = None;
+                Ok(stream) => {
+                    match self.compatible_exchange(&stream, &line, !replaced_stale, patience)? {
+                        // That keeper exits after saying so; start this build's.
+                        None => {
+                            replaced_stale = true;
+                            keeper = None;
+                        }
+                        Some(response) => return Ok(response),
                     }
-                    Some(response) => return Ok(response),
-                },
+                }
                 Err(err) if socket_unavailable(&err) => {
                     self.start_if_needed(&mut keeper, &mut spawns)?;
                 }
@@ -455,16 +520,25 @@ fn encode_request(request: Request) -> Result<String, Error> {
     Ok(line)
 }
 
-fn exchange(stream: &UnixStream, line: &str) -> Result<Response, Error> {
+/// The patience of an ordinary call: a reply within [`REPLY_TIMEOUT`].
+const fn prompt() -> Patience<'static> {
+    Patience {
+        reply: REPLY_TIMEOUT,
+        lifeline: None,
+    }
+}
+
+fn exchange(stream: &UnixStream, line: &str, patience: Patience<'_>) -> Result<Response, Error> {
     let broken = |err: std::io::Error| Error::Keeper(format!("exchange failed: {err}"));
     stream
-        .set_read_timeout(Some(REPLY_TIMEOUT))
+        .set_read_timeout(Some(patience.reply))
         .map_err(broken)?;
     stream
         .set_write_timeout(Some(REPLY_TIMEOUT))
         .map_err(broken)?;
     let mut writer = stream;
     writer.write_all(line.as_bytes()).map_err(broken)?;
+    await_reply(stream, patience)?;
     let mut reply = String::new();
     BufReader::new(stream.take(MAX_LINE))
         .read_line(&mut reply)
@@ -487,33 +561,4 @@ fn unexpected(response: &Response) -> Error {
 }
 
 #[cfg(test)]
-mod compatibility_tests {
-    #![allow(clippy::unwrap_used, reason = "test assertions")]
-    use super::*;
-
-    #[test]
-    fn versioned_errors_and_a_used_upgrade_budget_never_trigger_a_probe() {
-        let dir = tempfile::tempdir().unwrap();
-        let client = Client::new(Endpoint::new(dir.path(), dir.path()), None);
-        for (keeper, allow_upgrade) in [(Some(BUILD.to_owned()), true), (None, false)] {
-            let (stream, mut peer) = UnixStream::pair().unwrap();
-            let fault = Response::Fault(Fault::BadRequest {
-                message: "invalid payload".into(),
-                keeper,
-            });
-            let reply = serde_json::to_string(&fault).unwrap() + "\n";
-            std::io::Write::write_all(&mut peer, reply.as_bytes()).unwrap();
-            let line = encode_request(Request::List(ListFilter {
-                repo: None,
-                archived: false,
-            }))
-            .unwrap();
-            // The endpoint has no listener. Any compatibility probe would fail,
-            // rather than returning this unchanged parser error.
-            let response = client.compatible_exchange(&stream, &line, allow_upgrade);
-            assert!(
-                matches!(response, Err(Error::Keeper(message)) if message == "invalid payload")
-            );
-        }
-    }
-}
+mod compatibility_tests;

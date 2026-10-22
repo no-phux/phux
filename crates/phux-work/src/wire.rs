@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::coord::{
-    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, RenewClaim, SendMail,
-    Sent, TakeClaim,
+    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, ReleaseMail,
+    RenewClaim, SendMail, Sent, TakeClaim, WaitMail,
 };
 use crate::error::Error;
 use crate::id::Alias;
@@ -20,7 +20,7 @@ use crate::store::{
 /// Keeper compatibility includes a semantic epoch, even during development
 /// within one package version. Bump the epoch for incompatible request or
 /// mutation semantics; otherwise an already-running keeper could retain them.
-pub(crate) const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "/keeper-3");
+pub(crate) const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "/keeper-5");
 
 /// Longest request or response line, in bytes.
 pub(crate) const MAX_LINE: u64 = 1 << 20;
@@ -58,6 +58,10 @@ pub(crate) enum Request {
     SendMail(SendMail),
     ReadMail(ReadMail),
     AckMail(AckMail),
+    /// Answered with [`Response::Mail`], possibly after the keeper parks it.
+    WaitMail(WaitMail),
+    /// Answered with [`Response::Released`].
+    ReleaseMail(ReleaseMail),
     TakeClaim(TakeClaim),
     RenewClaim(RenewClaim),
     ReleaseClaim(ReleaseClaim),

@@ -5,7 +5,8 @@
 # tool input, or tool output. Conversation text reaches phux only on stdin:
 # the transcript entry `phux agent hook-transcript` prints (ADR-0156), and the
 # raw payload under `PHUX_AGENT_EMIT_RAW=1`. Best effort and silent: every phux call is
-# allowed to fail, and nothing is printed back to Grok.
+# allowed to fail, and nothing is printed back to Grok. Mail has its own hook,
+# `phux-mail.sh`.
 set -u
 
 [ "$#" -eq 1 ] || exit 2

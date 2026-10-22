@@ -30,6 +30,10 @@ as `working`, `blocked`, or `done` in the sidebar and to `phux agent wait`.
 `PHUX_AGENT_TRANSCRIPT=0` turns the transcript records off; `=full` adds
 tool output.
 
+Inside a phux pane it waits for the pane's mail (`phux mail wait`) and puts
+each message in the conversation with `pi.sendMessage` as a `phux.mail`
+follow-up that starts a turn when pi is idle. Nothing is typed into the pane.
+
 ## Safety
 
 Input and destructive actions resolve the target first and refuse pi's own

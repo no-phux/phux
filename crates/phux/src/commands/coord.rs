@@ -2,42 +2,33 @@
 //! (ADR-0187).
 //!
 //! Both talk to the work store's keeper, which `phux mission` also uses and
-//! starts on demand. `mail send` then rings each recipient's pane: one
-//! acknowledged, single-line prompt naming the sender and thread, so an idle
-//! agent wakes and reads. Mail is stored before the bell rings, and a bell
-//! that cannot ring (no server, no agent in the pane) never loses the mail.
+//! starts on demand. `mail send` only stores the message. Nothing is ever
+//! typed into a recipient's terminal: its harness takes the mail with
+//! `mail wait` or `mail hook-context` and puts it in the agent's
+//! conversation through the harness's own API ([`delivery`]).
 //!
 //! Who you are: `--as`, else `$PHUX_AGENT_ADDRESS`, else this pane (`@N`
 //! from `$PHUX_TERMINAL_ID`), else `$USER`.
 
 use std::io::Read as _;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::agent_meta::AgentRecord;
-use phux_client::agent_prompt::prompt_agent;
-use phux_protocol::ResourceId;
-use phux_protocol::ids::InputOperationId;
-use phux_server::runtime::default_socket_path;
 use phux_work::{
-    AckMail, Address, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, RenewClaim,
-    SendMail, TakeClaim,
+    AckMail, Claim, ClaimFilter, ClaimOutcome, ReadMail, ReleaseClaim, RenewClaim, SendMail,
+    TakeClaim,
 };
 
 use super::json_err::{self, codes};
 
+mod delivery;
+use delivery::HookEvent;
+
 /// Schema of every `phux mail` and `phux claim` JSON document.
 const SCHEMA: &str = "phux.coord/v1";
-/// Default claim lifetime.
-const DEFAULT_TTL_SECS: u64 = 60 * 60;
-/// Longest preview of a message in a doorbell prompt.
-const PREVIEW_CHARS: usize = 100;
-/// Overrides who this process speaks as.
-const ADDRESS_ENV: &str = "PHUX_AGENT_ADDRESS";
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum MailAction {
-    /// Send a message and ring each recipient's pane
+    /// Store a message for each recipient
     Send {
         /// Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name.
         #[usage(required, value_name = "TO")]
@@ -48,9 +39,6 @@ pub(crate) enum MailAction {
         /// Thread slug, such as the branch or task the message is about.
         #[usage(short = 't', long, value_name = "SLUG")]
         thread: String,
-        /// Store the message without prompting any pane.
-        #[usage(long)]
-        no_ring: bool,
         #[usage(flatten)]
         me: AsOpt,
         #[usage(flatten)]
@@ -81,6 +69,57 @@ pub(crate) enum MailAction {
         me: AsOpt,
         #[usage(flatten)]
         json: super::JsonOpt,
+    },
+    /// Wait for unread mail and take it for your agent's conversation
+    ///
+    /// For harness integrations. Returns as soon as there is mail neither
+    /// read nor taken before, or at the deadline with none. What it returns
+    /// is taken: no later `wait` or `hook-context` for this address returns
+    /// it again, while `read` still shows it unread. `text` is the mail
+    /// framed for the agent, or null when there is none.
+    Wait {
+        /// Seconds to wait when there is no mail; 0 answers at once. Default 300, at most 3600.
+        #[usage(long, value_name = "SECS")]
+        timeout: Option<u64>,
+        /// At most this many messages, oldest first. Default and most 16.
+        #[usage(long, value_name = "N")]
+        limit: Option<u32>,
+        /// Give up, taking nothing, once stdin closes. A harness holds stdin
+        /// open for its whole life, so a wait never outlives it.
+        #[usage(long)]
+        until_stdin_closes: bool,
+        #[usage(flatten)]
+        me: AsOpt,
+        #[usage(flatten)]
+        json: super::JsonOpt,
+    },
+    /// Return taken mail so the next wait takes it again
+    ///
+    /// For harness integrations whose injection failed after `wait` took
+    /// the mail. Ids this address did not take are ignored.
+    Release {
+        /// Message ids, as `wait` returned them.
+        #[usage(required, value_name = "ID")]
+        ids: Vec<String>,
+        #[usage(flatten)]
+        me: AsOpt,
+        #[usage(flatten)]
+        json: super::JsonOpt,
+    },
+    /// Take unread mail and print it as a Claude Code or Grok hook reply
+    ///
+    /// For hook-only harnesses. Prints nothing when there is no mail.
+    /// Otherwise takes up to 4 messages, like `wait --timeout 0`, and prints
+    /// one hook JSON object: `additionalContext` for a context event, or a
+    /// `block` decision whose reason is the mail for `stop`, so the agent
+    /// keeps going and handles it.
+    #[usage(name = "hook-context")]
+    HookContext {
+        /// The hook event the reply answers.
+        #[usage(long, value_enum, value_name = "EVENT")]
+        event: HookEvent,
+        #[usage(flatten)]
+        me: AsOpt,
     },
 }
 
@@ -148,42 +187,20 @@ pub(crate) struct AsOpt {
     me: Option<String>,
 }
 
-/// Who this process speaks as.
+/// Who this process speaks as ([`phux_work::caller_address`]).
 fn whoami(me: &AsOpt) -> String {
-    let env = |name| {
-        std::env::var(name)
-            .ok()
-            .filter(|value: &String| !value.is_empty())
-    };
-    me.me
-        .clone()
-        .or_else(|| env(ADDRESS_ENV))
-        .or_else(|| env("PHUX_TERMINAL_ID").map(|id| terminal_address(&id)))
-        .unwrap_or_else(super::mission::actor)
+    phux_work::caller_address(me.me.as_deref())
 }
 
-fn terminal_address(value: &str) -> String {
-    format!("@{}", value.strip_prefix('@').unwrap_or(value))
-}
-
-pub(crate) fn run_mail(action: &MailAction, socket: Option<PathBuf>) -> ExitCode {
+pub(crate) fn run_mail(action: &MailAction) -> ExitCode {
     match action {
         MailAction::Send {
             to,
             message,
             thread,
-            no_ring,
             me,
             json,
-        } => send(
-            to,
-            message,
-            thread,
-            *no_ring,
-            &whoami(me),
-            json.json,
-            socket,
-        ),
+        } => send(to, message, thread, &whoami(me), json.json),
         MailAction::Read {
             thread,
             all,
@@ -192,6 +209,23 @@ pub(crate) fn run_mail(action: &MailAction, socket: Option<PathBuf>) -> ExitCode
             json,
         } => read(thread.clone(), *all, *peek, &whoami(me), json.json),
         MailAction::Ack { id, me, json } => ack(id, &whoami(me), json.json),
+        MailAction::Wait {
+            timeout,
+            limit,
+            until_stdin_closes,
+            me,
+            json,
+        } => delivery::wait(
+            delivery::WaitArgs {
+                timeout: *timeout,
+                limit: *limit,
+                until_stdin_closes: *until_stdin_closes,
+            },
+            &whoami(me),
+            json.json,
+        ),
+        MailAction::Release { ids, me, json } => delivery::release(ids, &whoami(me), json.json),
+        MailAction::HookContext { event, me } => delivery::hook_context(*event, &whoami(me)),
     }
 }
 
@@ -244,19 +278,7 @@ fn usage_error(json: bool, message: impl Into<String>, remedy: &str) -> ExitCode
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one argument per `mail send` input"
-)]
-fn send(
-    to: &[String],
-    message: &str,
-    thread: &str,
-    no_ring: bool,
-    me: &str,
-    json: bool,
-    socket: Option<PathBuf>,
-) -> ExitCode {
+fn send(to: &[String], message: &str, thread: &str, me: &str, json: bool) -> ExitCode {
     let body = if message == "-" {
         let mut text = String::new();
         if let Err(err) = std::io::stdin().read_to_string(&mut text) {
@@ -284,106 +306,16 @@ fn send(
         Ok(sent) => sent,
         Err(err) => return super::mission::report_as(json, &err, SCHEMA),
     };
-    let bells: Vec<(String, String)> = if no_ring {
-        Vec::new()
-    } else {
-        ring(&sent.mail, me, socket)
-    };
     if json {
-        emit(&serde_json::json!({
-            "schema": SCHEMA,
-            "mail": sent.mail,
-            "bells": bells.iter().map(|(to, outcome)| serde_json::json!({"to": to, "outcome": outcome})).collect::<Vec<_>>(),
-        }));
+        emit(&serde_json::json!({"schema": SCHEMA, "mail": sent.mail}));
     } else {
         outln!(
             "sent {} to {}",
             sent.mail.id.to_hex(),
             sent.mail.to.join(", ")
         );
-        for (to, outcome) in &bells {
-            outln!("  {to}: {outcome}");
-        }
     }
     ExitCode::SUCCESS
-}
-
-/// The one line a doorbell types into a recipient's agent.
-fn doorbell(mail: &Mail) -> String {
-    let first = mail
-        .body
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("");
-    let mut preview: String = first
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .take(PREVIEW_CHARS)
-        .collect();
-    if first.chars().count() > PREVIEW_CHARS || mail.body.lines().nth(1).is_some() {
-        preview.push('…');
-    }
-    format!(
-        "[phux mail] {} in thread {}: {preview} (read: phux mail read --thread {}; reply: phux mail send {} -t {} -m ...)",
-        mail.from, mail.thread, mail.thread, mail.from, mail.thread
-    )
-}
-
-/// Ring every recipient pane other than the sender's. Each outcome is one
-/// word or a short reason; none of them fails the send.
-fn ring(mail: &Mail, me: &str, socket: Option<PathBuf>) -> Vec<(String, String)> {
-    let me = Address::parse(me).ok();
-    let panes: Vec<(String, u32)> = mail
-        .to
-        .iter()
-        .filter_map(|to| {
-            let address = Address::parse(to).ok()?;
-            if me.as_ref().is_some_and(|me| me.key() == address.key()) {
-                return None;
-            }
-            let pane = address.key().strip_prefix('@')?.parse().ok()?;
-            Some((to.clone(), pane))
-        })
-        .collect();
-    if panes.is_empty() {
-        return Vec::new();
-    }
-    let Ok(rt) = super::cli_runtime() else {
-        return panes
-            .into_iter()
-            .map(|(to, _)| (to, "not rung: no async runtime".to_owned()))
-            .collect();
-    };
-    let socket = socket.unwrap_or_else(default_socket_path);
-    let text = doorbell(mail);
-    rt.block_on(async {
-        let mut outcomes = Vec::with_capacity(panes.len());
-        for (to, pane) in panes {
-            let Some(operation_id) = InputOperationId::new(uuid::Uuid::new_v4().into_bytes())
-            else {
-                outcomes.push((to, "not rung: no operation id".to_owned()));
-                continue;
-            };
-            let accept = |_: &AgentRecord| None;
-            let outcome = prompt_agent(
-                &socket,
-                &ResourceId::local(pane),
-                &text,
-                operation_id,
-                &accept,
-                None,
-            )
-            .await;
-            outcomes.push((
-                to,
-                match outcome {
-                    Ok(_) => "rung".to_owned(),
-                    Err(err) => format!("not rung: {err}"),
-                },
-            ));
-        }
-        outcomes
-    })
 }
 
 fn read(thread: Option<String>, all: bool, peek: bool, me: &str, json: bool) -> ExitCode {
@@ -467,22 +399,7 @@ fn absolute(path: &str) -> Result<String, String> {
             .map_err(|err| format!("could not read the current directory: {err}"))?
             .join(path)
     };
-    let mut normal = PathBuf::from("/");
-    for component in joined.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                normal.pop();
-            }
-            std::path::Component::Normal(part) => normal.push(part),
-            std::path::Component::RootDir
-            | std::path::Component::CurDir
-            | std::path::Component::Prefix(_) => {}
-        }
-    }
-    normal
-        .to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{} is not UTF-8", joined.display()))
+    phux_work::claim_path(&joined).ok_or_else(|| format!("{} is not UTF-8", joined.display()))
 }
 
 fn absolutes(json: bool, paths: &[String]) -> Result<Vec<String>, ExitCode> {
@@ -536,7 +453,7 @@ fn take(
         holder: me.to_owned(),
         paths,
         exclusive: !shared,
-        ttl_secs: ttl.unwrap_or(DEFAULT_TTL_SECS),
+        ttl_secs: ttl.unwrap_or(phux_work::DEFAULT_CLAIM_SECS),
         note: note.unwrap_or_default().to_owned(),
     }) {
         Ok(outcome) => outcome,
@@ -573,7 +490,7 @@ fn renew(fence: u64, ttl: Option<u64>, me: &str, json: bool) -> ExitCode {
     match client.renew_claim(RenewClaim {
         holder: me.to_owned(),
         fence,
-        ttl_secs: ttl.unwrap_or(DEFAULT_TTL_SECS),
+        ttl_secs: ttl.unwrap_or(phux_work::DEFAULT_CLAIM_SECS),
     }) {
         Ok(claims) => {
             if json {
@@ -633,41 +550,10 @@ fn list(path: Option<&str>, holder: Option<String>, json: bool) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use phux_protocol::ResourceId;
+    use phux_work::{Address, pane_address};
+
     use super::*;
-
-    fn mail(body: &str) -> Mail {
-        serde_json::from_value(serde_json::json!({
-            "id": "0123456789abcdef0123456789abcdef",
-            "thread": "desktop-ux",
-            "from": "pi@749",
-            "to": ["@730"],
-            "body": body,
-            "created_at": "2026-10-18T00:00:00Z",
-            "read_at": null,
-            "acked_at": null,
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn the_doorbell_is_one_line_naming_sender_thread_and_the_way_back() {
-        let line = doorbell(&mail("rebased #1622\nsecond line\twith a tab"));
-        assert!(!line.contains('\n') && !line.contains('\t'), "{line}");
-        assert!(
-            line.contains("pi@749") && line.contains("desktop-ux"),
-            "{line}"
-        );
-        assert!(
-            line.contains("rebased #1622…"),
-            "a longer body is elided: {line}"
-        );
-        assert!(
-            line.contains("phux mail read --thread desktop-ux"),
-            "{line}"
-        );
-        let long = doorbell(&mail(&"x".repeat(500)));
-        assert!(long.chars().count() < 400, "{long}");
-    }
 
     #[test]
     fn claimed_paths_are_absolute_and_normalized_without_touching_disk() {
@@ -680,15 +566,15 @@ mod tests {
         for id in [730, 749] {
             let native = ResourceId::local(id).to_string();
             let expected = format!("@{id}");
-            assert_eq!(terminal_address(&native), expected);
-            assert_eq!(terminal_address(&id.to_string()), expected);
+            assert_eq!(pane_address(&native), expected);
+            assert_eq!(pane_address(&id.to_string()), expected);
             assert_eq!(
-                Address::parse(&terminal_address(&native)).unwrap().key(),
+                Address::parse(&pane_address(&native)).unwrap().key(),
                 expected
             );
         }
-        assert_ne!(terminal_address("@730"), terminal_address("@749"));
-        assert!(Address::parse(&terminal_address("malformed")).is_err());
+        assert_ne!(pane_address("@730"), pane_address("@749"));
+        assert!(Address::parse(&pane_address("malformed")).is_err());
     }
 
     #[test]
