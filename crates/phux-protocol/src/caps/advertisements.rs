@@ -67,7 +67,7 @@ pub struct ClientCapabilities {
     /// §6.4). Empty is right for a Unix socket.
     pub compression: CompressionSet,
     /// The ssh endpoints `phux stdio-bridge` stamps on the HELLO it relays
-    /// (HELLO field 9, `docs/spec/L3.md` §3.9).
+    /// (HELLO field 9, `docs/remote.md#who-can-do-what`).
     pub ssh_origin: Option<crate::wire::ssh_origin::SshOrigin>,
     /// Whether this client can demultiplex per-Terminal QUIC streams. An
     /// explicit offer, never inferred from the transport.

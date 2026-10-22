@@ -218,7 +218,7 @@ pub const MAX_APPROVAL_MAX_PENDING_TOTAL: u32 = 65_536;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct LimitsCfg {
-    /// Largest L3 metadata value stored at one key (`docs/spec/L3.md` §2),
+    /// Largest L3 metadata value stored at one key (`docs/protocol.md#commands-events-resources`),
     /// in bytes; a larger write is refused (ADR-0129).
     pub metadata_value_bytes: u32,
 }
@@ -231,7 +231,7 @@ impl Default for LimitsCfg {
     }
 }
 
-/// Shipped `limits.metadata-value-bytes`: 256 KiB, `docs/spec/L3.md` §2's
+/// Shipped `limits.metadata-value-bytes`: 256 KiB, `docs/protocol.md#commands-events-resources`'s
 /// recommended cap.
 pub const DEFAULT_METADATA_VALUE_BYTES: u32 = 256 * 1024;
 

@@ -274,7 +274,7 @@ pub(in crate::wire) fn decode_scope(dec: &mut Decoder<'_>) -> Result<Scope, Deco
 }
 
 /// Decode the shared `{request_id, scope, key}` body of `GET_METADATA` and
-/// `DELETE_METADATA` (`docs/spec/L3.md` §1).
+/// `DELETE_METADATA` (`docs/protocol.md#commands-events-resources`).
 pub(in crate::wire) fn decode_metadata_scope_key(
     dec: &mut Decoder<'_>,
 ) -> Result<(u32, Scope, String), DecodeError> {

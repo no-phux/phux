@@ -14,7 +14,7 @@
 //! Without `--json` the same failure prints the shared human error label and
 //! indented hints; message values and machine documents remain unchanged.
 //! The closed `code` vocabulary lives in
-//! [`codes`]; consumers read `docs/consumers/agents.md` §5.3.
+//! [`codes`]; consumers read `docs/scripting.md#json-output-and-errors`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

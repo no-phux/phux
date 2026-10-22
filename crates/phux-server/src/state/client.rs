@@ -191,7 +191,7 @@ impl ServerState {
     /// Detach `client_id`: attachment teardown (idempotent).
     ///
     /// Clears attachment-scoped state (leases, pumps, subscriptions, L3 and
-    /// event subscriptions per `docs/spec/L3.md` §1.2). Connection-scoped
+    /// event subscriptions per `docs/protocol.md#commands-events-resources`). Connection-scoped
     /// state (layers, peer identity) survives until
     /// [`Self::forget_connection`].
     pub fn detach(&mut self, client_id: ClientId) {
@@ -208,7 +208,7 @@ impl ServerState {
         // Cancel owned pumps, then drop the client from subscriber lists.
         self.resources.cancel_pumps_for_client(client_id);
         self.resources.drop_client_subscriptions(client_id);
-        // L3 subscriptions are attachment-scoped (L3.md §1.2).
+        // L3 subscriptions are attachment-scoped (docs/protocol.md#commands-events-resources).
         self.metadata.drop_client(client_id);
         self.clients.metadata_mailboxes.remove(&client_id);
         // The mailbox half of each `ATTACH_RESOURCE` registration.

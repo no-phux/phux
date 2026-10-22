@@ -5,7 +5,7 @@
 //!
 //! Two Terminal-scoped keys are recovered this way: the `phux.agent/v1`
 //! declaration ([`Event::AgentMetadata`]) and the server-owned
-//! `phux.agent.asked/v1` flag ([`Event::AgentAskedState`], L3.md §1.3).
+//! `phux.agent.asked/v1` flag ([`Event::AgentAskedState`], docs/protocol.md).
 //! `AgentAsked` only announces a question; the flag is the level that says
 //! whether one is still pending, so it is what retracts a question after a
 //! gap or a reconnect instead of leaving it to resurrect.
@@ -104,7 +104,7 @@ impl ControlPlane {
     }
 
     /// The server ended this attachment, and with it every metadata
-    /// subscription (L3.md §1.2). The next inventory subscribes afresh.
+    /// subscription (docs/protocol.md). The next inventory subscribes afresh.
     pub(super) fn forget_roster_subscriptions(&mut self) {
         self.roster.subscribed.clear();
     }

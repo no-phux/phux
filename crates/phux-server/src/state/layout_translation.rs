@@ -1,5 +1,5 @@
 //! R17: the TUI layout key `phux.tui.layout/v1/<session-id>` (Group 1,
-//! `docs/spec/L3.md` §3.2) translated to and from the session's
+//! `docs/organization.md#records-handles-and-arrangements`) translated to and from the session's
 //! arrangement, for clients that still write and read it.
 //!
 //! A write commits `ARRANGEMENT_REPLACE` attributed to the writer (last

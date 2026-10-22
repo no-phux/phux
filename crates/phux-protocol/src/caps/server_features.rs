@@ -179,7 +179,7 @@ define_server_features! {
     /// bit tells a client the kind it asked for is the kind it got.
     ResourceKinds = RESOURCE_KINDS = 0x0000_4000,
     /// The server answers `LIST_DIRECTORY` for its own host
-    /// (`docs/spec/L3.md` §4). A client MUST see the bit first: a 1.x
+    /// (`docs/protocol.md#commands-events-resources`). A client MUST see the bit first: a 1.x
     /// server without it answers an uncorrelated `ERROR Unsupported` for the
     /// frame type, so no `DIRECTORY_LISTING` ever answers the request.
     ListDirectory = LIST_DIRECTORY = 0x0000_8000,
@@ -191,10 +191,10 @@ define_server_features! {
     /// the bit before sending `empty: true`: an older server seeds a shell.
     KeepEmptySessions = KEEP_EMPTY_SESSIONS = 0x0002_0000,
     /// The server answers `GET_METADATA { Global, "phux.whoami/v1" }` with the
-    /// asking connection's identity (`docs/spec/L3.md` §3.9, ADR-0106); the
+    /// asking connection's identity (`docs/remote.md#who-can-do-what`, ADR-0106); the
     /// bit makes an absent value meaningful.
     Whoami = WHOAMI = 0x0004_0000,
-    /// The server understands `LIST_DIRECTORY.host` (`docs/spec/L3.md` §4.1):
+    /// The server understands `LIST_DIRECTORY.host` (`docs/protocol.md#commands-events-resources`):
     /// a hub relays to the named satellite, anything else is refused by name.
     /// A client MUST see the bit before trusting a listing came from the host
     /// it named; an older server lists its own host.
@@ -202,7 +202,7 @@ define_server_features! {
     /// The server honors HELLO field 9 `ssh_origin`, only from a same-uid
     /// Unix-socket peer, and only to relabel the whoami route `ssh-stdio`;
     /// auth is unchanged. The bit lets a whoami reader trust that `uds`
-    /// means no bridge announced ssh (`docs/spec/L3.md` §3.9).
+    /// means no bridge announced ssh (`docs/remote.md#who-can-do-what`).
     SshOrigin = SSH_ORIGIN = 0x0010_0000,
     /// The server evaluates `KILL_RESOURCE_IF` (ADR-0109) and answers
     /// `bind_instance` spawns with the instance token. A client MUST see the
