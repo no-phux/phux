@@ -55,6 +55,8 @@ const ALL_CODES: &[ErrorCode] = &[
     ErrorCode::Overflow,
     ErrorCode::PreconditionFailed,
     ErrorCode::IncarnationChanged,
+    ErrorCode::NotFound,
+    ErrorCode::Unavailable,
     ErrorCode::InternalError,
 ];
 
@@ -72,7 +74,7 @@ fn the_decodable_wire_space_is_exactly_the_known_codes() {
 
 #[test]
 fn unallocated_codes_decode_as_unknown_and_round_trip() {
-    for value in [0, 5, 8, 99, 214, 300, 65534] {
+    for value in [0, 5, 8, 99, 216, 300, 65534] {
         let code = ErrorCode::from_wire_or_unknown(value);
         assert_eq!(code, ErrorCode::Unknown(value));
         assert_eq!(code.as_wire(), value);
@@ -106,6 +108,8 @@ fn scopes_partition_the_codes_as_documented() {
     assert_eq!(ErrorCode::Overflow.scope(), ErrorScope::Request);
     assert_eq!(ErrorCode::PreconditionFailed.scope(), ErrorScope::Request);
     assert_eq!(ErrorCode::IncarnationChanged.scope(), ErrorScope::Request);
+    assert_eq!(ErrorCode::NotFound.scope(), ErrorScope::Request);
+    assert_eq!(ErrorCode::Unavailable.scope(), ErrorScope::Request);
 }
 
 /// `255` is the `Unknown` byte of every reason enum, never a real reason:

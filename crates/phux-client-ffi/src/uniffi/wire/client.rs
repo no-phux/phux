@@ -18,6 +18,7 @@ mod organization;
 mod quic_live;
 mod search;
 mod selection;
+mod service_http;
 
 const SCROLLBACK_LINES: u32 = 1000;
 

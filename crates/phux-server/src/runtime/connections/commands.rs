@@ -139,6 +139,8 @@ pub(in crate::runtime) enum Route {
     /// seconds, and neither control frames nor uploads should queue behind
     /// it.
     Detached,
+    /// The connection's service exchanges, which bound their own tasks.
+    ServiceHttp,
     /// The command handler.
     Handler,
 }
@@ -156,6 +158,9 @@ pub(in crate::runtime) fn route(command: &Command, has_input_lane: bool) -> Rout
     }
     if matches!(command, Command::Checkout { .. }) {
         return Route::Detached;
+    }
+    if crate::runtime::service_http::is_service_http(command) {
+        return Route::ServiceHttp;
     }
     crate::runtime::command_tasks::CommandTasks::retained_bytes(command)
         .map_or(Route::Handler, Route::Bulk)
@@ -177,6 +182,8 @@ pub(super) struct CommandDispatch<'a> {
     /// The waiters of this connection's held commands (ADR-0128). Aborted
     /// with the connection, which withdraws their approvals.
     pub(super) held_commands: &'a mut JoinSet<()>,
+    /// This connection's open service exchanges.
+    pub(super) service_http: &'a crate::runtime::service_http::Exchanges,
 }
 
 pub(super) enum CommandDispatchOutcome {
@@ -238,6 +245,16 @@ impl CommandDispatch<'_> {
             (Route::Detached, _) => {
                 self.submit_detached(request_id, command, command_started)
                     .await;
+                return None;
+            }
+            (Route::ServiceHttp, _) => {
+                crate::runtime::service_http::submit(
+                    self.context(),
+                    self.service_http,
+                    request_id,
+                    command,
+                )
+                .await;
                 return None;
             }
             _ => {}

@@ -153,6 +153,8 @@ pub(super) fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) 
             enc.write_u8(crate::wire::frame::COMMAND_VALUE_TAG_CHECKOUT);
             enc.write_bytes(&crate::checkout::encode_answer(answer));
         }
+        CommandValue::ServiceHttpHead(head) => super::service_http::encode_head(head, enc),
+        CommandValue::ServiceHttpChunk(chunk) => super::service_http::encode_chunk(chunk, enc),
     }
 }
 
@@ -200,6 +202,12 @@ pub(super) fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue
         crate::wire::frame::COMMAND_VALUE_TAG_CHECKOUT => Ok(CommandValue::Checkout(Box::new(
             crate::checkout::decode_answer(dec.read_bytes()?).map_err(checkout_decode_error)?,
         ))),
+        crate::wire::frame::COMMAND_VALUE_TAG_SERVICE_HTTP_HEAD => Ok(
+            CommandValue::ServiceHttpHead(super::service_http::decode_head(dec)?),
+        ),
+        crate::wire::frame::COMMAND_VALUE_TAG_SERVICE_HTTP_CHUNK => Ok(
+            CommandValue::ServiceHttpChunk(super::service_http::decode_chunk(dec)?),
+        ),
         other => Err(DecodeError::unknown_enum("CommandValue", other)),
     }
 }

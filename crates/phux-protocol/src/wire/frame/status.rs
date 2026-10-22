@@ -85,6 +85,12 @@ pub enum ErrorCode {
     /// A hub refused a keyed retry because the owning satellite restarted,
     /// so a replay could run twice (`docs/spec/L1.md` §9.1).
     IncarnationChanged,
+    /// The named thing does not exist here: a host service this server
+    /// does not serve, or an exchange that is not open.
+    NotFound,
+    /// The named service exists but cannot answer now (not installed, or
+    /// not starting); the message says which.
+    Unavailable,
 
     /// Catch-all for unexpected server-side failures.
     InternalError,
@@ -143,6 +149,8 @@ impl ErrorCode {
             Self::Overflow => 211,
             Self::PreconditionFailed => 212,
             Self::IncarnationChanged => 213,
+            Self::NotFound => 214,
+            Self::Unavailable => 215,
             Self::InternalError => 65535,
             Self::Unknown(value) => value,
         }
@@ -172,6 +180,8 @@ impl ErrorCode {
             | Self::Overflow
             | Self::PreconditionFailed
             | Self::IncarnationChanged
+            | Self::NotFound
+            | Self::Unavailable
             | Self::Unsupported
             | Self::Unknown(_) => ErrorScope::Request,
             Self::TerminalNotFound
@@ -219,6 +229,8 @@ impl ErrorCode {
             211 => Self::Overflow,
             212 => Self::PreconditionFailed,
             213 => Self::IncarnationChanged,
+            214 => Self::NotFound,
+            215 => Self::Unavailable,
             65535 => Self::InternalError,
             _ => return None,
         })

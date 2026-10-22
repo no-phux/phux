@@ -37,12 +37,18 @@ fn load_templates(config_path: &Path) -> Result<Vec<LoadedTemplate>, LaunchError
     Ok(out)
 }
 
-fn builtin_opencode() -> LoadedTemplate {
-    let executable = opencode_executable(
+/// The `OpenCode` executable this host runs: the first `opencode` on `PATH`,
+/// else the installer's `~/.opencode/bin/opencode`. Never a login shell.
+#[must_use]
+pub fn opencode_executable_path() -> Option<PathBuf> {
+    opencode_executable(
         std::env::var_os("PATH").as_deref(),
         std::env::var_os("HOME").as_deref(),
     )
-    .map_or_else(
+}
+
+fn builtin_opencode() -> LoadedTemplate {
+    let executable = opencode_executable_path().map_or_else(
         || "opencode".to_owned(),
         |path| path.to_string_lossy().into_owned(),
     );

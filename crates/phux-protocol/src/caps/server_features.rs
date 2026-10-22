@@ -369,6 +369,10 @@ pub enum ServerFeatureExt {
     Checkout = 0x0000_0400,
     /// Executing-host native integration inventory and keyed launch.
     NativeAgentLaunch = 0x0000_0800,
+    /// The server answers `SERVICE_HTTP_OPEN`, `SERVICE_HTTP_READ`, and
+    /// `SERVICE_HTTP_CLOSE`: HTTP exchanges with a named service on its host
+    /// (`opencode`) or on a named satellite's, authorized by the connection.
+    HostServiceHttp = 0x0000_1000,
 }
 
 impl ServerFeatureExt {
@@ -386,6 +390,7 @@ impl ServerFeatureExt {
         Self::FileDownload,
         Self::Checkout,
         Self::NativeAgentLaunch,
+        Self::HostServiceHttp,
     ];
 
     /// The `docs/spec/proto.md` §6.2 constant, e.g. `"PATH_QUERY"`.
@@ -404,6 +409,7 @@ impl ServerFeatureExt {
             Self::FileDownload => "FILE_DOWNLOAD",
             Self::Checkout => "CHECKOUT",
             Self::NativeAgentLaunch => "NATIVE_AGENT_LAUNCH",
+            Self::HostServiceHttp => "HOST_SERVICE_HTTP",
         }
     }
 
@@ -430,7 +436,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::SessionProject as u32
         | ServerFeatureExt::FileDownload as u32
         | ServerFeatureExt::Checkout as u32
-        | ServerFeatureExt::NativeAgentLaunch as u32;
+        | ServerFeatureExt::NativeAgentLaunch as u32
+        | ServerFeatureExt::HostServiceHttp as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

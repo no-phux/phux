@@ -58,6 +58,8 @@ pub(super) struct Extensions {
     pending_paths: HashMap<u32, String>,
     path_answers: Vec<PathAnswer>,
     pub(super) checkout_answers: Vec<super::CheckoutResponse>,
+    /// The answer slot of each unanswered `SERVICE_HTTP_*` command.
+    pub(super) service_http: HashMap<u32, tokio::sync::oneshot::Sender<CommandResult>>,
 }
 
 impl ControlPlane {
@@ -403,6 +405,7 @@ impl ControlPlane {
 
     pub(super) fn reset_extension_correlations(&mut self, message: &str) {
         self.reset_checkouts(message);
+        self.reset_service_http();
         for (request_id, root) in self.extensions.pending_paths.drain() {
             self.extensions.path_answers.push(PathAnswer {
                 request_id,

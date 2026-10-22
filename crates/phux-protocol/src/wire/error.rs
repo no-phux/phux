@@ -118,6 +118,11 @@ pub enum DecodeError {
     #[error("invalid CHECKOUT JSON payload")]
     InvalidCheckoutPayload,
 
+    /// A `SERVICE_HTTP_*` request, head, or chunk exceeded its byte or
+    /// header bound (`crate::service_http`).
+    #[error("SERVICE_HTTP payload exceeds protocol limits")]
+    ServiceHttpLimitExceeded,
+
     /// A well-formed JSON payload named an operation, variant, or field this
     /// build does not know: newer, not malformed. A receiver refuses it
     /// with `Unsupported` and keeps the connection.

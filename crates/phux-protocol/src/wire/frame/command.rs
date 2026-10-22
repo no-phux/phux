@@ -388,6 +388,29 @@ pub enum Command {
         /// The operation.
         request: crate::checkout::CheckoutRequest,
     },
+    /// Send one HTTP request to a service on this server's host, or on the
+    /// named satellite's (`docs/host-services.md`). The reply is
+    /// [`CommandValue::ServiceHttpHead`], sent once the response head
+    /// arrives; the body is pulled with [`Command::ServiceHttpRead`].
+    ServiceHttpOpen {
+        /// The request.
+        request: Box<crate::service_http::ServiceHttpRequest>,
+    },
+    /// Read the next body bytes of an open exchange. The reply is
+    /// [`CommandValue::ServiceHttpChunk`]: at least one byte, the end, or,
+    /// after an idle deadline, nothing.
+    ServiceHttpRead {
+        /// The exchange [`CommandValue::ServiceHttpHead`] named.
+        exchange: u64,
+        /// Most bytes to return, at most
+        /// [`MAX_SERVICE_HTTP_BODY_BYTES`](crate::service_http::MAX_SERVICE_HTTP_BODY_BYTES).
+        max_bytes: u32,
+    },
+    /// End an exchange and release its upstream connection. Idempotent.
+    ServiceHttpClose {
+        /// The exchange [`CommandValue::ServiceHttpHead`] named.
+        exchange: u64,
+    },
     /// Report that an agent in `terminal_id` is blocked on a question
     /// (ADR-0036); the server emits [`AgentEvent::Asked`].
     ReportAsked {
@@ -1022,6 +1045,10 @@ pub enum CommandValue {
     FileChunk(FileChunk),
     /// A checkout answer (reply to `CHECKOUT`).
     Checkout(Box<crate::checkout::CheckoutAnswer>),
+    /// A host service's response head (reply to `SERVICE_HTTP_OPEN`).
+    ServiceHttpHead(crate::service_http::ServiceHttpHead),
+    /// Response body bytes (reply to `SERVICE_HTTP_READ`).
+    ServiceHttpChunk(crate::service_http::ServiceHttpChunk),
     /// One page of the organization (reply to `GET_ORGANIZATION`).
     OrganizationPage(Box<OrganizationPage>),
     /// An arrangement and its revision (reply to `ARRANGEMENT_GET`).
