@@ -132,7 +132,7 @@ const _: () = {
 impl Session {
     /// Dial `dial` within [`DIAL_TIMEOUT`] and negotiate `HELLO` as
     /// `client_name` offering `client_caps`. On a plain QUIC link the offer
-    /// adds per-Terminal streams (proto.md §4.2).
+    /// adds per-Terminal streams (docs/protocol.md#quic-stream-routing).
     ///
     /// A development build refuses the production Unix socket
     /// (`phux_config_core::socket::refuse_dev_on_production`).
@@ -337,7 +337,7 @@ impl Session {
 impl Session {
     /// Whether this negotiated QUIC session carries per-Terminal streams:
     /// a plain QUIC link (never UDS, WebSocket, or a relayed end-to-end
-    /// session, proto.md §4.2) whose `HELLO_OK` advertised `QUIC_STREAMS`.
+    /// session, docs/protocol.md#quic-stream-routing) whose `HELLO_OK` advertised `QUIC_STREAMS`.
     #[must_use]
     pub fn multistream_enabled(&self) -> bool {
         self.multistream.is_some() && self.advertises(ServerFeature::QuicStreams)

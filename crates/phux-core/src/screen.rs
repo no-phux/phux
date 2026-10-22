@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Stable JSON contract version (ADR-0022 §2). Moves only when a key is
-/// removed, renamed, or retyped (`docs/consumers/agents.md` §4.1); new
+/// removed, renamed, or retyped (`docs/scripting.md#reading-a-screen`); new
 /// optional keys leave it alone.
 pub const SCHEMA_VERSION: u32 = 3;
 

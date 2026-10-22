@@ -1,5 +1,5 @@
 //! Host directory listing over `LIST_DIRECTORY` / `DIRECTORY_LISTING`
-//! (`docs/spec/L3.md` section 4).
+//! (`docs/protocol.md#commands-events-resources`).
 //!
 //! The client keeps exactly one listing: a new request replaces it, and a
 //! reply to anything but the latest request is dropped as ordinary, so a
@@ -172,7 +172,7 @@ pub(crate) fn request_host(bytes: &[u8]) -> Result<Option<SatelliteHost>, Bridge
 }
 
 /// Queue one `LIST_DIRECTORY`, replacing any previous listing. `host` names a
-/// satellite of the attached hub (`docs/spec/L3.md` section 4.1), and needs
+/// satellite of the attached hub (`docs/protocol.md#commands-events-resources`), and needs
 /// `LIST_DIRECTORY_HOST`: an older server skips the field and lists itself,
 /// so without the bit the request is refused before anything is queued
 /// rather than answered by the wrong host.

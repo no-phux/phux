@@ -39,7 +39,7 @@ pub enum KernelSend {
         /// Negotiated response row bound.
         max_rows: u32,
     },
-    /// Subscribe to the `AgentEvent` stream (`docs/spec/L1.md` §7.5) so
+    /// Subscribe to the `AgentEvent` stream (`docs/protocol.md#commands-events-resources`) so
     /// [`KernelInput::Event`] statuses arrive. Emitted on every attach-barrier
     /// release; re-subscribing is a wire no-op.
     SubscribeEvents {

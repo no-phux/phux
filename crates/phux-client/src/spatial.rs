@@ -26,7 +26,7 @@ use refusal::{layout_error, move_error};
 const JSON_SCHEMA_VERSION: u8 = 1;
 
 /// The refusal codes a spatial edit reports, the `--json` error contract's
-/// vocabulary (`docs/consumers/agents.md` §7).
+/// vocabulary (`docs/scripting.md#json-output-and-errors`).
 pub mod codes {
     /// A selector did not parse.
     pub const INVALID_SELECTOR: &str = "invalid_selector";

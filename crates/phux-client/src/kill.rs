@@ -91,7 +91,7 @@ impl KillOutcome {
     /// Classify a `KILL_RESOURCE`/`KILL_RESOURCES` `COMMAND_RESULT`.
     ///
     /// A `KILL_RESOURCES` that named a satellite id is answered with one
-    /// outcome per id (`docs/spec/L1.md` §5.2): every id killed is
+    /// outcome per id (`docs/protocol.md#commands-events-resources`): every id killed is
     /// [`Self::Killed`], and any id a host refused or could not be reached
     /// for makes it [`Self::Refused`] naming each such id.
     #[must_use]
@@ -152,7 +152,7 @@ pub enum KeyedError {
 
 /// Whether the server behind `conn` honors a keyed kill or signal.
 ///
-/// That is `KEYED_SIGNAL` (`docs/spec/L1.md` §5.1.1). An older server ignores
+/// That is `KEYED_SIGNAL` (`docs/protocol.md`). An older server ignores
 /// the key and runs a retry again, so a caller refuses a keyed request to it
 /// rather than send one.
 #[must_use]
@@ -189,8 +189,7 @@ pub async fn kill_resources(
 /// [`kill_resources`] under an idempotency key (`phux kill --idempotency-key`).
 ///
 /// A repeat with the same key and ids answers the first result and kills
-/// nothing, and the reply names an outcome per id (`docs/spec/L1.md` §5.1.1,
-/// §5.2).
+/// nothing, and the reply names an outcome per id (`docs/protocol.md`).
 ///
 /// # Errors
 ///
@@ -257,7 +256,7 @@ pub async fn kill_resource(
 /// [`kill_resource`] under an idempotency key (`phux kill --idempotency-key`).
 ///
 /// A repeat with the same key and target answers the first result and kills
-/// nothing (`docs/spec/L1.md` §5.1.1).
+/// nothing (`docs/protocol.md#receipts-retries-and-backpressure`).
 ///
 /// # Errors
 ///

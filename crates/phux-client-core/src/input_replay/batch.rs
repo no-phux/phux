@@ -2,7 +2,7 @@
 
 use phux_protocol::input::InputEvent;
 
-/// Which `APPLY_INPUT` wire cap a batch exceeds (`docs/spec/input.md`).
+/// Which `APPLY_INPUT` wire cap a batch exceeds (`docs/protocol.md#input`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchTooLarge {
     /// More events than [`MAX_APPLY_INPUT_EVENTS`](phux_protocol::wire::frame::MAX_APPLY_INPUT_EVENTS).

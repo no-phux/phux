@@ -6,7 +6,7 @@
 /* ---------------------------------------------------------- organization
  *
  * Sessions, resources, and Intake as the server's organization records
- * them (docs/spec/L1.md section 5.7), when HELLO_OK advertised
+ * them (docs/organization.md), when HELLO_OK advertised
  * ORGANIZATION (features_ext 0x10). New in ABI version 3.
  *
  * On every connection that advertises it, the client reads the records

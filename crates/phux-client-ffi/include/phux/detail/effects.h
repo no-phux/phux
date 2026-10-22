@@ -89,7 +89,7 @@ typedef enum PhuxClientDamageKind {
  * ControlAction wire value (0 ACQUIRED, 1 SEIZED, 2 RELEASED, 9 EXPIRED;
  * lifecycle actions restate the holder unchanged). Taking over is a
  * deliberate phux_client_queue_acquire_input; focus, a second attach, or a
- * reconnect never implies it (docs/spec/L1.md 8.1). Additive like every
+ * reconnect never implies it (docs/protocol.md#attach-and-output). Additive like every
  * member here.
  */
 typedef enum PhuxClientStatusKind {
@@ -108,7 +108,7 @@ typedef enum PhuxClientStatusKind {
 } PhuxClientStatusKind;
 /**
  * status_code on a PHUX_CLIENT_STATUS_EXITED effect: the resource's
- * CloseReason wire value (`docs/spec/L1.md`, RESOURCE_CLOSED), named to
+ * CloseReason wire value (`docs/protocol.md`, RESOURCE_CLOSED), named to
  * match `phux_protocol::wire::frame::CloseReason` exactly. UNKNOWN is also
  * what an absent reason field decodes as — an older peer, or a cause this
  * build does not recognise — so do not treat it as EXITED: a resource can
@@ -124,7 +124,7 @@ typedef enum PhuxClientCloseReason {
 } PhuxClientCloseReason;
 /**
  * status_code on a PHUX_CLIENT_STATUS_DETACHED effect: the DETACHED frame's
- * DetachReason wire value (proto.md 7.2), or PHUX_CLIENT_DETACH_REASON_UNSTATED
+ * DetachReason wire value (docs/protocol.md), or PHUX_CLIENT_DETACH_REASON_UNSTATED
  * when the server stated none. bytes carries the frame's human-readable
  * message, which may be empty and must not be parsed. Do not treat UNSTATED as
  * REQUESTED: a server may end an attach without saying why.

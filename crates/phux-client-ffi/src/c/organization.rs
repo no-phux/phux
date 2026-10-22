@@ -1,6 +1,6 @@
 //! The organization surface of the C ABI: records and typed operations,
 //! over the runtime's organization replica and operation journal
-//! (`docs/spec/L1.md` §5.7, CONTRACTS §04-§06).
+//! (`docs/organization.md`, CONTRACTS §04-§06).
 //!
 //! The runtime owns the replica and the journal (one `OperationId` per
 //! action, resent with the same id after a reconnect inside the retry

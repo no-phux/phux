@@ -1,4 +1,4 @@
-//! Conditional kills (ADR-0109, `docs/spec/L1.md` §5.2.1).
+//! Conditional kills (ADR-0109, `docs/protocol.md#receipts-retries-and-backpressure`).
 //!
 //! A spawn can ask to be bound to the instance token of the id space it was
 //! allocated from ([`request_binding`]); a later [`BoundResource::kill_command`]

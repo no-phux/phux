@@ -84,7 +84,7 @@ fn satellite_degradation_error_is_not_swallowed_by_get_state() {
     }
 }
 
-/// proto.md §9: an ERROR correlated to the request is its answer.
+/// docs/protocol.md: an ERROR correlated to the request is its answer.
 #[test]
 fn correlated_error_answers_the_request_instead_of_hanging_forever() {
     let reply = request_against(vec![FrameKind::Error {

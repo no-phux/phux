@@ -130,7 +130,7 @@ pub enum WireEvent {
     /// `holder` is the server's client id of whoever drives it, `None`
     /// while the wheel is free; `mine` says it is this connection. Taking
     /// over is a deliberate `acquire_input(seize: true)`, never implied by
-    /// focus or a reattach (`docs/spec/L1.md` §8.1).
+    /// focus or a reattach (`docs/protocol.md#attach-and-output`).
     InputHolderChanged {
         terminal_id: String,
         holder: Option<u32>,
@@ -185,7 +185,7 @@ pub enum WireEvent {
         session: Option<String>,
         state: AgentState,
         /// The EFFECTIVE attention: the record's declared level, or the
-        /// spec's derivation from `state` when absent (L3.md §3.7).
+        /// spec's derivation from `state` when absent (docs/program-sequences.md#the-agent-record).
         attention: AgentAttention,
         /// How `state` was read: no record, undeclared, explicit `unknown`,
         /// recognized, or an unsupported word kept as bounded raw text.

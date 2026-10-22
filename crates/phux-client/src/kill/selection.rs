@@ -196,7 +196,7 @@ const REAP_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 const REAP_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Whether the server's kill reply already follows the whole visible
-/// teardown (`features_ext.COMMITTED_TEARDOWN`, `docs/spec/L1.md` §5.2), so
+/// teardown (`features_ext.COMMITTED_TEARDOWN`, `docs/protocol.md#commands-events-resources`), so
 /// the next `GET_STATE` omits the killed resources.
 fn kill_reply_is_the_teardown(conn: &Connection) -> bool {
     conn.negotiated_bootstrap().is_some_and(|negotiated| {

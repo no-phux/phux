@@ -1,8 +1,9 @@
 //! Headless terminal capture: the observer half of session recording
 //! (ADR-0060).
 //!
-//! Subscribes to one Terminal with `ATTACH_RESOURCE` (`docs/spec/L1.md`
-//! §5.1), a non-resizing observer subscription, and projects the pushed
+//! Subscribes to one Terminal with `ATTACH_RESOURCE`
+//! (`docs/protocol.md#commands-events-resources`), a non-resizing
+//! observer subscription, and projects the pushed
 //! frames into asciicast events. It must never send [`FrameKind::Attach`] or
 //! [`FrameKind::ViewportResize`]: from a TTY-less recorder those would shrink
 //! the live session to 80x24.

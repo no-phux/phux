@@ -49,7 +49,7 @@ pub enum LayoutKeyOwner {
 
 /// Whose layout `key` names, or `None` when it is not attributable.
 ///
-/// Only the TUI's own `phux.tui.layout/v1` family (SPEC L3.md §3.2) is
+/// Only the TUI's own `phux.tui.layout/v1` family (docs/organization.md) is
 /// recognized: a named projection under another prefix (§3.5) is private to
 /// its writer and must never be adopted by the TUI.
 #[must_use]
@@ -64,7 +64,7 @@ pub fn layout_key_session(key: &str) -> Option<LayoutKeyOwner> {
     )))
 }
 
-/// Validate a `--projection KEY` value against the SPEC L3.md §3.5 grammar
+/// Validate a `--projection KEY` value against the grammar
 /// `<prefix>.layout/v1/<session-id>`, naming `session`.
 ///
 /// # Errors

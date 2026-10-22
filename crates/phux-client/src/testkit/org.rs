@@ -1,6 +1,6 @@
 //! The organization half of the scripted server: an in-memory model of
 //! sessions, resources, arrangements, revisions, and receipts that answers
-//! every organization command (`docs/spec/L1.md` §5.7) the way the reference
+//! every organization command (`docs/organization.md`) the way the reference
 //! server does, with revision-conflict and refusal injection.
 //!
 //! Replies follow the spec's shapes: mutating commands answer

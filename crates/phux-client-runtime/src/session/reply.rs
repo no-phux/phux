@@ -3,7 +3,7 @@
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind};
 
-/// The peer's correlated `ERROR` answer to one request (proto.md §9). Its
+/// The peer's correlated `ERROR` answer to one request (docs/protocol.md). Its
 /// `Display` renders the code as words, since it reaches users verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{}: {message}", error_code_label(*.code))]
@@ -79,7 +79,7 @@ impl<T> Reply<T> {
 }
 
 /// The correlated `ERROR` that answers `request_id`, if `frame` is one
-/// (proto.md §9). An uncorrelated `ERROR` is a pushed notice, not an answer.
+/// (docs/protocol.md). An uncorrelated `ERROR` is a pushed notice, not an answer.
 pub(super) fn refusal_for(frame: &FrameKind, request_id: u32) -> Option<Refusal> {
     match frame {
         FrameKind::Error {

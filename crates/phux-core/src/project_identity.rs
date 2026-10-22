@@ -32,7 +32,7 @@ pub struct SessionProject {
     pub host: Option<String>,
 }
 
-/// Session attribute names (`docs/spec/L2.md` §2.2) that carry an identity
+/// Session attribute names (`docs/organization.md`) that carry an identity
 /// on the wire: in `SESSION_CREATE`, organization records, and the
 /// snapshot's session state.
 pub mod attr {

@@ -1,5 +1,5 @@
-//! Organization commands over one CLI or MCP connection (`docs/spec/L1.md`
-//! §5.7), behind `features_ext.ORGANIZATION`.
+//! Organization commands over one CLI or MCP connection (`docs/organization.md`),
+//! behind `features_ext.ORGANIZATION`.
 //!
 //! Every helper here refuses before sending when the server does not
 //! advertise the bit ([`OrgError::Unsupported`]); callers that keep a legacy

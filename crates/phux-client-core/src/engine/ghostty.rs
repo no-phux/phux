@@ -5,7 +5,7 @@
 //! units are pulled and authenticated by the engine-owned staged decoder.
 //!
 //! Replicas never answer terminal queries: the server's canonical terminal is
-//! the sole query answerer (`docs/spec/input.md` §6), so no `on_pty_write`
+//! the sole query answerer (`docs/protocol.md#terminal-queries`), so no `on_pty_write`
 //! callback is installed and libghostty drops the replies it would generate.
 
 use std::{

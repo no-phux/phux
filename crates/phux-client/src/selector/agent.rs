@@ -125,7 +125,7 @@ impl AgentResolveError {
         }
     }
 
-    /// The stable `--json` error code (`docs/consumers/agents.md` §7) every
+    /// The stable `--json` error code (`docs/scripting.md#json-output-and-errors`) every
     /// surface reports this refusal with, CLI and MCP alike.
     #[must_use]
     pub const fn code(&self) -> &'static str {

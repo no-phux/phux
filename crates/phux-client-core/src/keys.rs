@@ -3,7 +3,7 @@
 //! IME commit, a test).
 //!
 //! Control characters become named keys or Ctrl+letter chords, because the
-//! wire forbids C0 bytes in a key's `text` (`docs/spec/input.md` section 2).
+//! wire forbids C0 bytes in a key's `text` (`docs/protocol.md#input`).
 //! Unmappable C0 and platform PUA function codes are dropped.
 
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};

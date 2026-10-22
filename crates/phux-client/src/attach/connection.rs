@@ -81,7 +81,7 @@ impl Connection {
     }
 
     /// Dial QUIC and negotiate with the supplied client profile; a plain
-    /// QUIC link also offers per-Terminal streams (proto.md §4.2).
+    /// QUIC link also offers per-Terminal streams (docs/protocol.md#quic-stream-routing).
     ///
     /// # Errors
     ///

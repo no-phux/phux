@@ -282,7 +282,7 @@ pub enum Event {
         project: Option<String>,
     },
     /// Whether a question is pending in the terminal now: the server-owned
-    /// `phux.agent.asked/v1` flag (L3.md §1.3), from a fenced read or a live
+    /// `phux.agent.asked/v1` flag (docs/protocol.md), from a fenced read or a live
     /// change, re-read after every gap and reconnect.
     ///
     /// `asked: false` retracts every earlier [`Event::AgentAsked`] for the

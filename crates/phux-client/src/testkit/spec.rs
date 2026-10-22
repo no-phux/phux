@@ -366,7 +366,7 @@ impl ScriptSpec {
         self
     }
 
-    /// Answer every organization command (`docs/spec/L1.md` §5.7) from
+    /// Answer every organization command (`docs/organization.md`) from
     /// `fixture`, and `GET_STATE` too when no snapshot payload is set.
     /// Advertise `features_ext.ORGANIZATION` with
     /// [`Self::server_features_ext`] for a client to send them.

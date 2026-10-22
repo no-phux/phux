@@ -414,7 +414,7 @@ impl ControlPlane {
     /// The reply is [`Event::CommandResult`]; the lease change itself
     /// arrives as [`Event::InputHolderChanged`]. Taking over is deliberate:
     /// focus, a second attach, or a reconnect never implies it
-    /// (`docs/spec/L1.md` §8.1).
+    /// (`docs/protocol.md#attach-and-output`).
     pub fn acquire_input(&mut self, terminal_id: &ResourceId, seize: bool) -> u32 {
         self.send_command(Command::AcquireInput {
             terminal_id: terminal_id.clone(),

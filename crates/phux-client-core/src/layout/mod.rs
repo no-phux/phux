@@ -3,7 +3,7 @@
 //! The tree is [`LayoutNode`], a consumer convention rather than a wire type
 //! (ADR-0030); the operations are free functions over it. Tiling lives in [`crate::multi_pane::pane_rects`],
 //! the same walk paint uses. The whole [`ArrangementDoc`] persists as the v3
-//! CBOR envelope under L3 key `phux.tui.layout/v1` (docs/spec/L3.md §3.2);
+//! CBOR envelope under L3 key `phux.tui.layout/v1` (docs/organization.md);
 //! that codec lives in [`legacy`]. Focus fields are non-authoritative
 //! (ADR-0049).
 
@@ -23,7 +23,7 @@ pub enum SplitDir {
 
 /// Binary split tree of a window's panes (ADR-0012); `Split` gives its
 /// left/top child `ratio` of the parent along [`SplitDir`]. It lives in L3
-/// metadata (docs/spec/L3.md §3.2), never on the wire.
+/// metadata (docs/organization.md), never on the wire.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutNode {
     /// A single pane — recursion base.

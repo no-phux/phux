@@ -91,7 +91,7 @@ pub(crate) struct QuicLink {
     endpoint: quinn::Endpoint,
     connection: quinn::Connection,
     /// Whether the connection may carry per-Terminal streams: a plain QUIC
-    /// stream, not an end-to-end session a relay splices (proto.md §4.2,
+    /// stream, not an end-to-end session a relay splices (docs/protocol.md#quic-stream-routing,
     /// "Relay": such a consumer stays on the single-stream shape).
     terminal_streams: bool,
 }

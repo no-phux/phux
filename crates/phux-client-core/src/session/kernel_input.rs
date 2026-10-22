@@ -152,7 +152,7 @@ pub enum KernelInput<'a> {
         reason: CloseReason,
     },
     /// Apply one subscribed [`AgentEvent`] delivered on `EVENT`
-    /// (`docs/spec/L1.md` §7.5) to the frontend-status effects it can
+    /// (`docs/protocol.md#commands-events-resources`) to the frontend-status effects it can
     /// produce (cwd/command boundaries/process exit). Every event kind this
     /// build does not surface as status — including one this decoder does
     /// not recognise (`AgentEvent::Unknown`) — is a no-op.

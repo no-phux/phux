@@ -1,5 +1,5 @@
 //! Headless per-Terminal resize: set a pane's grid without a TTY or a
-//! viewport, via `RESIZE_TERMINAL` (`L1.md` §3.1).
+//! viewport, via `RESIZE_TERMINAL` (`docs/protocol.md#commands-events-resources`).
 //!
 //! The frame is unacknowledged and a view-derived `window-size` policy may
 //! override it, so [`resize_to`] reads the geometry back with `GET_STATE` on
