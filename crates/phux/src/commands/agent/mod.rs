@@ -1,3 +1,5 @@
+mod action;
+mod action_flags;
 mod answer;
 mod config;
 mod detect;
@@ -33,482 +35,9 @@ use self::detect::infer_agent_state;
 use self::model::{AgentStateReport, PaneEvidence};
 use self::record::{run_agent_clear, run_agent_set};
 
+pub(crate) use self::action::AgentAction;
 pub(crate) use self::record::fetch_agent_index;
 pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch};
-
-#[derive(Debug, usage::Subcommands)]
-pub(crate) enum AgentAction {
-    /// Internal durable SDK guardian, bootstrapped by the native spawn transaction.
-    #[usage(hide)]
-    Host,
-    /// Send a typed SDK intent to the exact `AgentSession` and activation.
-    ///
-    /// This never pastes, sends keys, takes another viewer's lease, or
-    /// assumes that a queued dialog response was consumed.
-    NativeCommand {
-        /// `AgentSession` resource @N, not its parent Terminal.
-        target: String,
-        /// Exact native activation from the session's structured view.
-        #[usage(long)]
-        activation: String,
-        /// Nonzero command identity; retain it when querying an uncertain result.
-        #[usage(long)]
-        operation_id: u64,
-        /// `NativeIntent` JSON: prompt, interrupt or answer with exact IDs.
-        #[usage(long)]
-        intent: String,
-        /// Emit the actual command receipt as JSON.
-        #[usage(long)]
-        json: bool,
-    },
-    /// List every pane's detected or declared agent and current state.
-    ///
-    /// The third column is the pane's `%name` address, `-` when it has no
-    /// agent record, or why its record name is listed but not
-    /// `%`-addressable (a name outside `[a-z][a-z0-9_-]`, a per-kind constant
-    /// like `claude`, or one several panes share). JSON carries `address`
-    /// and `address_refusal`.
-    #[usage(alias = "ls")]
-    List {
-        /// Emit machine-readable JSON instead of the table.
-        #[usage(long)]
-        json: bool,
-    },
-    /// Show inferred state for one pane.
-    Show {
-        /// Target selector (resolves to one pane). Omit for the focused
-        /// pane.
-        target: Option<String>,
-        /// Emit machine-readable JSON instead of the table.
-        #[usage(long)]
-        json: bool,
-    },
-    /// Explain the evidence behind one pane's state.
-    ///
-    /// With `--file` this runs OFFLINE: it evaluates the compiled detection
-    /// manifests against a captured screen and contacts no server at all.
-    /// That is the mode for authoring and debugging a manifest, because it
-    /// prints the text every region resolved to on that screen — a rule
-    /// scoped to a region that comes back empty can never match, and nothing
-    /// else makes that visible (the detector fails safe to `idle`, silently).
-    ///
-    /// The capture is `phux snapshot --json` output or a plain text screen,
-    /// one viewport row per line; `-` reads stdin. A JSON capture carries the
-    /// pane's OSC title; a text one does not, so pass `--title` to exercise
-    /// title-scoped rules against it (or to override the captured title).
-    Explain {
-        /// Target selector (resolves to one pane). Omit for the focused
-        /// pane. Not used in offline (`--file`) mode.
-        target: Option<String>,
-        /// Emit machine-readable JSON instead of the table.
-        #[usage(long)]
-        json: bool,
-        /// Evaluate a captured screen offline instead of querying the
-        /// server. `-` reads stdin.
-        #[usage(long, value_name = "PATH", conflicts("target"))]
-        file: Option<PathBuf>,
-        /// Agent kind whose manifest to evaluate, or one of its binary
-        /// aliases. Required with `--file`: offline there is no foreground
-        /// process group to identify the agent from.
-        #[usage(long, value_name = "KIND", requires("--file"))]
-        kind: Option<String>,
-        /// OSC 0/2 title to evaluate `title`-scoped rules against. Overrides
-        /// a JSON capture's own title; defaults to it, else to empty.
-        #[usage(long, value_name = "TEXT", requires("--file"))]
-        title: Option<String>,
-        /// How to read `--file`. `auto` picks JSON when the first
-        /// non-whitespace byte is `{`.
-        #[usage(long, choices("auto", "json", "text"), requires("--file"))]
-        format: Option<String>,
-    },
-    /// Declare the agent identity and state associated with a pane.
-    Set {
-        /// Target selector (resolves to one pane). Omit for the focused
-        /// pane.
-        target: Option<String>,
-        /// Human-facing agent name (required, non-empty).
-        #[usage(long)]
-        name: String,
-        /// Open-vocabulary kind slug, e.g. "claude" or "codex".
-        #[usage(long)]
-        kind: Option<String>,
-        /// Declared lifecycle state.
-        #[usage(long, choices("unknown", "idle", "working", "blocked", "done"))]
-        state: Option<String>,
-        /// Declared attention priority (defaults derive from state).
-        #[usage(long, choices("none", "low", "normal", "high"))]
-        attention: Option<String>,
-        /// Free-form association label (fleet/job name).
-        #[usage(long)]
-        session: Option<String>,
-    },
-    /// Report hook-sourced lifecycle evidence to the pane's detector.
-    ReportState {
-        /// Target selector (resolves to one pane).
-        target: String,
-        /// Lifecycle evidence from the integration hook.
-        #[usage(choices("working", "blocked", "done"))]
-        state: String,
-    },
-    /// Block until a pane's agent TRANSITIONS into a lifecycle state.
-    ///
-    /// Satisfied only by an observed transition, never by a level read of
-    /// the current state. That distinction is the point of the verb: `idle`
-    /// is normally the detector's fail-safe fallthrough. Claude's OSC 9;4
-    /// remove signal can assert it positively, but a level still cannot prove
-    /// that the transition happened after this wait's baseline. A gate that
-    /// fired on a level would return success on a corpse, instantly, and on
-    /// any pane with no manifest at all.
-    ///
-    /// The consequence is deliberate: a pane already resting in a target
-    /// state when the wait begins times out (124) rather than succeeding.
-    /// `phux agent show` is the level read; this verb reports transitions.
-    ///
-    /// Subscribes before reading the baseline, so no transition is lost in
-    /// between, and re-reads on the `phux wait` cadence to recover an edge a
-    /// dropped notification never delivered. A record that goes away
-    /// mid-wait ends it as a departure (exit 1), which is not a completion.
-    Wait {
-        /// Target selector (resolves to one pane). Omit for the focused
-        /// pane.
-        #[usage(conflicts("--any"))]
-        target: Option<String>,
-        /// Wait for the first matching transition from any local agent in
-        /// the fleet instead of resolving one pane.
-        #[usage(long)]
-        any: bool,
-        /// Lifecycle state to wait for; repeat to OR several. Defaults to
-        /// `idle`, `blocked`, `done` — the three ways a turn ends.
-        /// `unknown` is not spellable: it is departure, not a state.
-        #[usage(
-            long,
-            value_name = "STATE",
-            choices("idle", "working", "blocked", "done")
-        )]
-        until: Vec<String>,
-        /// Give up after this many seconds and exit 124. Unbounded when
-        /// omitted, matching `phux wait` — always pass one in a script.
-        #[usage(long, value_name = "SECS")]
-        timeout: Option<u64>,
-        /// Emit the machine-readable result document instead of a line.
-        #[usage(long)]
-        json: bool,
-    },
-    /// Hand an agent a turn's worth of work, with a delivery receipt.
-    ///
-    /// The prompt text and Enter ride ONE acknowledged, idempotent operation,
-    /// so a caller that does not get an answer can ask again under the same
-    /// operation id without risking a duplicate turn — the failure
-    /// fire-and-forget input cannot avoid, because its only recovery is a
-    /// resend. Enter is last, so a partial write can only drop the
-    /// submission and leave unsubmitted text, never submit a truncated
-    /// prompt.
-    ///
-    /// The acknowledged path is required, not preferred: an older server or
-    /// a satellite target is refused rather than downgraded, because a
-    /// success code that means "the bytes are in the kernel queue" on one
-    /// host and "accepted, maybe dropped" on another is not branchable.
-    ///
-    /// An OK is a kernel-queue receipt, not a consumption receipt. If
-    /// delivery comes back UNKNOWN, do not resend: read the pane.
-    ///
-    /// With `--wait` the same process holds one connection across the
-    /// submit, so every state change it sees is strictly post-write, and the
-    /// gate is satisfied only by an observed TRANSITION — never by a level
-    /// read of the current state, which a crashed agent also reads as.
-    ///
-    /// Acknowledged input is admitted one operation per pane: prompting
-    /// different panes in parallel is fine, but two concurrent prompts to the
-    /// SAME pane collide, and the later one is refused as busy.
-    Prompt {
-        /// Target selector (resolves to one pane).
-        target: String,
-        /// The prompt text. Single-line: a raw newline is refused, because a
-        /// pane that has not enabled bracketed paste turns each one into a
-        /// separate submission and no client can observe that mode.
-        text: String,
-        /// Require the pane's declared agent name to be this one.
-        #[usage(long, value_name = "NAME")]
-        expect_agent: Option<String>,
-        /// Require the pane's declared agent kind slug to be this one.
-        #[usage(long, value_name = "KIND")]
-        expect_kind: Option<String>,
-        /// After delivering, block until the agent transitions into a
-        /// lifecycle state.
-        #[usage(long)]
-        wait: bool,
-        /// Lifecycle state to wait for; repeat to OR several. Defaults to
-        /// `idle`, `blocked`, `done`. Requires `--wait`.
-        #[usage(
-            long,
-            value_name = "STATE",
-            choices("idle", "working", "blocked", "done")
-        )]
-        until: Vec<String>,
-        /// Give up waiting after this many seconds and exit 124. The prompt
-        /// was still delivered. Requires `--wait`.
-        #[usage(long, value_name = "SECS")]
-        timeout: Option<u64>,
-        /// Emit the machine-readable result document instead of staying
-        /// quiet on success.
-        #[usage(long)]
-        json: bool,
-    },
-    /// Send keys to a pane, but only if it still hosts the expected agent.
-    ///
-    /// The agent-addressed sibling of top-level `phux send-keys`, and it
-    /// differs from it in exactly one way: it re-checks the pane's declared
-    /// agent identity immediately before writing and refuses if the occupant
-    /// changed. `phux send-keys` addresses a pane and deliberately
-    /// checks no identity; use that one when a pane is what you mean.
-    ///
-    /// Every key is validated before any byte is written, so a typo in the
-    /// third key cannot leave the first two delivered — and since the whole
-    /// batch now rides ONE acknowledged operation, that all-or-nothing
-    /// promise covers delivery as well as validation. A caller that loses
-    /// the answer can ask again under the same operation id instead of
-    /// guessing whether the keys landed. For prose you want an agent to act
-    /// on, `phux agent prompt` is the verb.
-    SendKeys {
-        /// Target selector (resolves to one pane).
-        target: String,
-        /// Key specs: named keys (`Enter`, `C-c`, `M-x`, `Up`) or literal
-        /// text. A literal run immediately before `Enter` is sent as one
-        /// submission-safe paste.
-        #[usage(required)]
-        keys: Vec<String>,
-        /// Require the pane's declared agent name to be this one.
-        #[usage(long, value_name = "NAME")]
-        expect_agent: Option<String>,
-        /// Require the pane's declared agent kind slug to be this one.
-        #[usage(long, value_name = "KIND")]
-        expect_kind: Option<String>,
-        /// Emit machine-readable JSON instead of staying quiet on success.
-        #[usage(long)]
-        json: bool,
-    },
-    /// Answer a pane's pending agent question by validated choice.
-    ///
-    /// The `asked` event carries the question AND the suggestions the asking
-    /// agent itself published, so an orchestrator can reply with a string the
-    /// agent named instead of a blind keystroke. That is the contract: the
-    /// bytes phux types are always one of the agent's own published answers,
-    /// unless you pass `--allow-unlisted`.
-    ///
-    /// `--id` is required, and the pane must still be asking that exact
-    /// question. Answering one the agent already moved past would type into
-    /// whatever is on screen now, which is the failure this verb exists to
-    /// prevent — so a stale id, an unidentified ask, and a pane that is not
-    /// asking at all are all refusals with nothing written.
-    ///
-    /// The answer rides one acknowledged, idempotent input batch: a trusted
-    /// paste followed by Enter, written and confirmed as a single operation.
-    Answer {
-        /// Target selector (resolves to one pane).
-        target: String,
-        /// The id of the ask being answered, as carried by the `asked`
-        /// event. Required: answering "whatever is being asked right now" is
-        /// a level read, and a level read cannot tell one question from the
-        /// next.
-        #[usage(long, value_name = "ID")]
-        id: String,
-        /// Send the Nth published suggestion, 1-based, verbatim.
-        #[usage(long, value_name = "N", conflicts("--text"))]
-        choice: Option<usize>,
-        /// Send exactly this text. Refused when the ask published a
-        /// suggestion set and this is not in it (see `--allow-unlisted`).
-        #[usage(long, value_name = "TEXT")]
-        text: Option<String>,
-        /// Permit a `--text` answer outside the ask's published suggestions.
-        #[usage(long, requires("--text"))]
-        allow_unlisted: bool,
-        /// Emit machine-readable JSON instead of the one-line confirmation.
-        #[usage(long)]
-        json: bool,
-    },
-    /// Start an agent INSIDE an existing shell pane, and return when it is
-    /// ready for input.
-    ///
-    /// The layout-free sibling of `phux launch`: it creates, splits, and
-    /// moves nothing. `launch` returns a Terminal id ("a pane now exists");
-    /// this returns a readiness assertion about a pane that already existed,
-    /// which is a different success statement and therefore a different verb.
-    /// The launch resolver is shared — the same integration template, the
-    /// same argv, the same provider-native session identity — only the
-    /// delivery differs: the pane's child is a live shell, so the command is
-    /// typed as one quoted line and submitted as one acknowledged
-    /// `APPLY_INPUT` batch.
-    ///
-    /// Ready is the FIRST detector publication after submit, not
-    /// `state == idle`. No shipped detection manifest asserts `idle`
-    /// positively — it is the fail-safe fallthrough — so a gate built on it
-    /// would report ready for a pane where nothing launched. `--json`
-    /// therefore reports the provenance of the answer (which rule matched, or
-    /// that none did) rather than an opaque word.
-    ///
-    /// A `--kind` with no detection manifest is refused up front: without one
-    /// the readiness contract is unenforceable and the verb could only time
-    /// out, after having typed into the pane. `phux launch` and `phux spawn`
-    /// keep working for any agent whatsoever, because neither promises
-    /// readiness.
-    Start {
-        /// Human-facing agent name to bind to the pane. Must match
-        /// `^[a-z][a-z0-9_-]{0,31}$`.
-        name: String,
-        /// Detection-manifest kind the started agent must identify as
-        /// (`claude`, `codex`, ...). `phux agent explain --file` lists the
-        /// loaded roster.
-        #[usage(long, value_name = "KIND")]
-        kind: String,
-        /// Existing pane to start into. Never created, split, or moved.
-        #[usage(long, value_name = "TARGET")]
-        target: String,
-        /// Launch integration id. Defaults to the unique enabled
-        /// integration whose `[agent_identity] kind` matches `--kind`
-        /// (so `--kind claude` resolves `claude-code`), else the kind
-        /// slug itself; two claimants are refused by name.
-        #[usage(long, value_name = "ID")]
-        integration: Option<String>,
-        /// Give up waiting for readiness after this many seconds and exit
-        /// 124. The command was still typed.
-        #[usage(long, value_name = "SECS")]
-        timeout: Option<u64>,
-        /// Submit and return without claiming readiness (exit 0,
-        /// `ready: false`).
-        #[usage(long)]
-        no_wait: bool,
-        /// Skip the available-shell precondition. Types the launch command
-        /// into the pane whatever is running there.
-        #[usage(long)]
-        force: bool,
-        /// Emit the machine-readable result document instead of a line.
-        #[usage(long)]
-        json: bool,
-        /// Extra arguments appended to the integration's launch command.
-        #[usage(trailing_var_arg, value_name = "ARGS")]
-        args: Vec<String>,
-    },
-    /// Clear a pane's declared agent identity.
-    Clear {
-        /// Target selector (resolves to one pane). Omit for the focused
-        /// pane.
-        target: Option<String>,
-    },
-    /// Open or close a pane's agent session (an `AgentSession` resource).
-    ///
-    /// An agent session is the server-side, producer-fed event log an agent
-    /// harness appends to with `phux agent emit` and anyone reads with
-    /// `phux agent log`. It is bound to the pane the agent runs in: closing
-    /// the pane closes it, closing it never touches the pane. Needs a server
-    /// that advertises `RESOURCE_KINDS` (`phux status --json`).
-    Session {
-        #[usage(subcommand)]
-        action: resource_session::SessionAction,
-    },
-    /// Append one record to a pane's agent session.
-    ///
-    /// The record is one `AgentEventsJsonlV1` line: `--type` from the closed
-    /// set (`session_start`, `prompt`, `tool_start`, `tool_end`,
-    /// `notification`, `ask`, `stop`, `session_end`, `state`, `provider_raw`)
-    /// and `--data`, a JSON object. The server stamps `seq` and `ts_ms` and
-    /// derives the agent's lifecycle state from the stream (`prompt` /
-    /// `tool_start` -> working, `ask` -> blocked, `stop` -> done,
-    /// `session_end` -> retract). Only the client that opened
-    /// the session may append; nothing is written on a refusal. Prints
-    /// nothing on success.
-    Emit {
-        /// The session: its resource id, the pane hosting it, or `%name`.
-        target: String,
-        /// Record type, one of the closed `AgentEventsJsonlV1` set. A type
-        /// outside it is refused as `record_invalid`, with nothing written.
-        // An open string here so `EmitRecord::new` answers with the
-        // machine-readable `record_invalid` document, not a usage error.
-        #[usage(long = "type", value_name = "T")]
-        event_type: String,
-        /// Record payload: a JSON object inline, or `-` to read it from
-        /// stdin. `{}` when omitted.
-        #[usage(long, value_name = "JSON")]
-        data: Option<String>,
-        /// Emit the stamped record header as JSON instead of staying quiet.
-        #[usage(long)]
-        json: bool,
-    },
-    /// Read a pane's agent session stream.
-    ///
-    /// Attaches to the session as an observer, the way `phux rec` attaches
-    /// to a pane: the retained records arrive first and, with `--follow`,
-    /// live records after them until Ctrl-C or the session closes. There is
-    /// no `--timeout`; run a following log under a child-process deadline
-    /// exactly as you would `phux watch`.
-    Log {
-        /// The session: its resource id, the pane hosting it, or `%name`.
-        target: String,
-        /// Keep streaming live records after the retained ones.
-        #[usage(long)]
-        follow: bool,
-        /// Return only the last N retained records.
-        #[usage(long, value_name = "N")]
-        tail: Option<usize>,
-        /// Emit JSON: one envelope document, or under `--follow` one record
-        /// per line with no envelope (the `watch --json` rule).
-        #[usage(long)]
-        json: bool,
-    },
-    /// Make plain `claude` launch inside phux and declare its identity.
-    InstallClaude {
-        /// Shell rc file to activate (auto-detected from SHELL).
-        #[usage(long, choices("zsh", "bash", "fish"))]
-        shell: Option<String>,
-        /// Absolute path to the real Claude executable (auto-detected from PATH).
-        #[usage(long, value_name = "PATH")]
-        real: Option<PathBuf>,
-    },
-    /// Remove the claude-in-phux shim and shell activation.
-    UninstallClaude,
-    /// Show the AI plan limits this host can see.
-    ///
-    /// Reads each signed-in subscription's limit windows from the vendor's
-    /// own credentials: Claude Code (its OAuth usage endpoint), Codex (the
-    /// rate limits its session ledgers record, or the live chatgpt.com usage
-    /// endpoint when they are old) and Grok Build (its credits allowance). Prints
-    /// utilization and reset times per plan. Credentials are only read,
-    /// never refreshed, and go only to the vendor that issued them;
-    /// requests are spaced at least two minutes apart per vendor and back
-    /// off on rate limits, with the last reading reused in between.
-    ///
-    /// `--publish` also writes the result to the server's `phux.usage/v1`
-    /// Global metadata key, which every client allowed `observe@global` can
-    /// read and watch; the usage plugin runs this from its hooks. A publish
-    /// does nothing when another is running or the last ran under ten
-    /// seconds ago (unless `--refresh`), so bursts of hooks stay cheap. A
-    /// client may set `phux.usage.refresh/v1`; the next hook-driven publish
-    /// then skips the two-minute spacing. Does not start a server.
-    Usage {
-        /// Print the `phux.usage/v1` document instead of the human view.
-        #[usage(long)]
-        json: bool,
-
-        /// Write the snapshot to the server's `phux.usage/v1` key.
-        #[usage(long)]
-        publish: bool,
-
-        /// Ask every vendor now instead of reusing a reading under two
-        /// minutes old (a rate-limit backoff still applies).
-        #[usage(long)]
-        refresh: bool,
-    },
-    /// Internal: read one Claude Code hook payload from stdin and print the
-    /// fields the generated shim splices into its `phux` calls, as one line
-    /// of shell-safe tokens. Hidden because it is the wrapper's JSON reader,
-    /// not a promise that phux ships a JSON tool.
-    #[usage(name = "hook-payload", hide)]
-    HookPayload,
-    /// Internal: read one Claude Code hook payload from stdin and print the
-    /// `provider_raw` data of its `phux.transcript/v1` entry, or nothing.
-    /// Hidden because only the generated shim and the Claude plugin call it.
-    #[usage(name = "hook-transcript", hide)]
-    HookTranscript,
-}
 
 #[allow(
     clippy::too_many_lines,
@@ -519,10 +48,13 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         AgentAction::Host => native_host::run(),
         AgentAction::NativeCommand {
             target,
-            activation,
-            operation_id,
-            intent,
-            json,
+            flags:
+                action_flags::NativeCommandFlags {
+                    activation,
+                    operation_id,
+                    intent,
+                    json,
+                },
         } => native_control::run(target, activation, *operation_id, intent, *json, socket),
         AgentAction::List { json } => run_agent_list(*json, socket),
         // `--file` is the offline manifest debugger: no server needed.
@@ -548,11 +80,15 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         }
         AgentAction::Set {
             target,
-            name,
-            kind,
-            state,
-            attention,
-            session,
+            flags:
+                action_flags::SetFlags {
+                    name,
+                    kind,
+                    state,
+                    attention,
+                    session,
+                    json,
+                },
         } => run_agent_set(
             target.as_deref(),
             name,
@@ -560,16 +96,20 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             state.as_deref(),
             attention.as_deref(),
             session.as_deref(),
+            *json,
             socket,
         ),
         AgentAction::ReportState { target, state } => report_state::run(target, state, socket),
         AgentAction::Answer {
             target,
-            id,
-            choice,
-            text,
-            allow_unlisted,
-            json,
+            flags:
+                action_flags::AnswerFlags {
+                    id,
+                    choice,
+                    text,
+                    allow_unlisted,
+                    json,
+                },
         } => answer::run_agent_answer(
             target,
             id,
@@ -581,14 +121,17 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         ),
         AgentAction::Start {
             name,
-            kind,
-            target,
-            integration,
-            timeout,
-            no_wait,
-            force,
-            json,
             args,
+            flags:
+                action_flags::StartFlags {
+                    kind,
+                    target,
+                    integration,
+                    timeout,
+                    no_wait,
+                    force,
+                    json,
+                },
         } => start::start(
             &start::StartRequest {
                 name,
@@ -603,7 +146,7 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             },
             socket,
         ),
-        AgentAction::Clear { target } => run_agent_clear(target.as_deref(), socket),
+        AgentAction::Clear { target, json } => run_agent_clear(target.as_deref(), *json, socket),
         AgentAction::Session { action } => match action {
             resource_session::SessionAction::Open {
                 target,
@@ -623,15 +166,16 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         },
         AgentAction::Emit {
             target,
-            event_type,
-            data,
-            json,
+            flags:
+                action_flags::EmitFlags {
+                    event_type,
+                    data,
+                    json,
+                },
         } => resource_session::run_emit(target, event_type, data.as_deref(), *json, socket),
         AgentAction::Log {
             target,
-            follow,
-            tail,
-            json,
+            flags: action_flags::LogFlags { follow, tail, json },
         } => resource_session::run_log(target, *follow, *tail, *json, socket),
         AgentAction::Wait {
             target,
@@ -643,12 +187,15 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         AgentAction::Prompt {
             target,
             text,
-            expect_agent,
-            expect_kind,
-            wait,
-            until,
-            timeout,
-            json,
+            flags:
+                action_flags::PromptFlags {
+                    expect_agent,
+                    expect_kind,
+                    wait,
+                    until,
+                    timeout,
+                    json,
+                },
         } => prompt::run_agent_prompt(
             target,
             text,
@@ -663,9 +210,12 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         AgentAction::SendKeys {
             target,
             keys,
-            expect_agent,
-            expect_kind,
-            json,
+            flags:
+                action_flags::SendKeysFlags {
+                    expect_agent,
+                    expect_kind,
+                    json,
+                },
         } => send_keys::run_agent_send_keys(
             target,
             keys,
@@ -679,9 +229,12 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         }
         AgentAction::UninstallClaude => shim::run_uninstall_claude(),
         AgentAction::Usage {
-            json,
-            publish,
-            refresh,
+            flags:
+                action_flags::UsageFlags {
+                    json,
+                    publish,
+                    refresh,
+                },
         } => crate::commands::plan_usage::run_usage(*json, *publish, *refresh, socket),
         AgentAction::HookPayload => hook_payload::run(),
         AgentAction::HookTranscript => hook_transcript::run(),

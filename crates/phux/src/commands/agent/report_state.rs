@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::rc::Rc;
 
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::wire::frame::{Command, CommandResult, ReportedAgentState};
@@ -16,12 +15,11 @@ pub(super) fn run(target: &str, state: &str, socket: Option<PathBuf>) -> ExitCod
         "done" => ReportedAgentState::Done,
         _ => return ExitCode::FAILURE,
     };
-    let refused = Rc::new(std::cell::Cell::new(false));
-    let mark_refused = Rc::clone(&refused);
-    let result = with_target_pane(
+    with_target_pane(
         Some(target),
         socket,
         "agent report-state",
+        false,
         move |conn, pane| {
             Box::pin(async move {
                 let supported = conn.negotiated_bootstrap().is_some_and(|bootstrap| {
@@ -31,8 +29,7 @@ pub(super) fn run(target: &str, state: &str, socket: Option<PathBuf>) -> ExitCod
                 });
                 if !supported {
                     error!("server does not support REPORT_AGENT_STATE; upgrade it");
-                    mark_refused.set(true);
-                    return Ok(());
+                    return Ok(ExitCode::FAILURE);
                 }
                 let reply = conn
                     .request(
@@ -45,24 +42,17 @@ pub(super) fn run(target: &str, state: &str, socket: Option<PathBuf>) -> ExitCod
                     .await?
                     .into_result_ignoring_interleaved();
                 match reply {
-                    CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
+                    CommandResult::Ok | CommandResult::OkWith(_) => Ok(ExitCode::SUCCESS),
                     CommandResult::Error { code, message } => {
                         error!("agent state report refused ({code:?}): {message}");
-                        mark_refused.set(true);
-                        Ok(())
+                        Ok(ExitCode::FAILURE)
                     }
                     _ => {
                         error!("unexpected REPORT_AGENT_STATE reply");
-                        mark_refused.set(true);
-                        Ok(())
+                        Ok(ExitCode::FAILURE)
                     }
                 }
             })
         },
-    );
-    if result == ExitCode::SUCCESS && refused.get() {
-        ExitCode::FAILURE
-    } else {
-        result
-    }
+    )
 }
