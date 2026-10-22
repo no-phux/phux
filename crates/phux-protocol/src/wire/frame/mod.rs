@@ -1,8 +1,8 @@
 //! Frame header and `FrameKind` enum.
 //!
-//! See `docs/spec/proto.md` §5 (framing) and §7 (message catalog).
+//! See `docs/protocol.md#framing`; every frame is listed in `docs/spec/wire-schema.json`.
 //!
-//! Wire layout (per `docs/spec/proto.md` §5):
+//! Wire layout (per `docs/protocol.md#framing`):
 //!
 //! ```text
 //! +-------------------------+
@@ -18,7 +18,7 @@
 //! Terminal content is raw VT bytes in `RESOURCE_OUTPUT` (ADR-0013); the
 //! retired `PANE_DIFF` slot `0x40` stays unassigned.
 
-/// Maximum permitted value of the wire-frame `length` field, per `docs/spec/proto.md` §5
+/// Maximum permitted value of the wire-frame `length` field, per `docs/protocol.md#framing`
 /// ("at most `16_777_216` (16 MiB)").
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 /// Maximum bytes in one opaque engine-owned history cursor.
@@ -38,11 +38,11 @@ pub const MAX_FILE_UPLOAD_SIZE: u64 = 64 * 1024 * 1024;
 pub const MAX_APPEND_BYTES: usize = 64 * 1024;
 /// Maximum bytes in a `SPAWN_RESOURCE.provider` string (field 13): the
 /// `integration_id` bound of the `phux.agent-session/v1` record
-/// (`docs/spec/L3.md` §3.7.1).
+/// (`docs/program-sequences.md#the-agent-record`).
 pub const MAX_RESOURCE_PROVIDER_BYTES: usize = 120;
 /// Maximum bytes in a `SPAWN_RESOURCE.native_id` string (field 14): the
 /// `native_id` bound of the `phux.agent-session/v1` record
-/// (`docs/spec/L3.md` §3.7.1).
+/// (`docs/program-sequences.md#the-agent-record`).
 pub const MAX_RESOURCE_NATIVE_ID_BYTES: usize = 1024;
 
 // Message discriminants (SPEC §7). Each `wire_tags!` declaration reserves its
@@ -111,7 +111,7 @@ macro_rules! wire_enum {
 
 /// Wire type byte for one SPEC §7 message-catalog entry. As a `#[repr(u8)]`
 /// enum a duplicated type byte is compile error E0081. New allocations come
-/// from `docs/spec/appendix-reserved.md` §1.
+/// from `docs/protocol.md#changing-the-wire`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 enum FrameType {
@@ -168,94 +168,94 @@ enum FrameType {
 }
 
 wire_tags! { Message;
-/// Discriminant for `HELLO` (client to server, `docs/spec/proto.md` §6.1).
+/// Discriminant for `HELLO` (client to server, `docs/protocol.md#handshake`).
 pub const TYPE_HELLO: u8 = FrameType::Hello as u8;
-/// Discriminant for `ATTACH` (client to server, `docs/spec/proto.md` §7.1 / §13).
+/// Discriminant for `ATTACH` (client to server, `docs/protocol.md`).
 pub const TYPE_ATTACH: u8 = FrameType::Attach as u8;
-/// Discriminant for `DETACH` (client to server, `docs/spec/proto.md` §7.1 / §7.3).
+/// Discriminant for `DETACH` (client to server, `docs/protocol.md`).
 pub const TYPE_DETACH: u8 = FrameType::Detach as u8;
-/// Discriminant for `INPUT_KEY` (client to server, `docs/spec/input.md` §2).
+/// Discriminant for `INPUT_KEY` (client to server, `docs/protocol.md#input`).
 pub const TYPE_INPUT_KEY: u8 = FrameType::InputKey as u8;
-/// Discriminant for `INPUT_PASTE` (client to server, `docs/spec/input.md` §5).
+/// Discriminant for `INPUT_PASTE` (client to server, `docs/protocol.md#input`).
 pub const TYPE_INPUT_PASTE: u8 = FrameType::InputPaste as u8;
-/// Discriminant for `INPUT_MOUSE` (client to server, `docs/spec/input.md` §3).
+/// Discriminant for `INPUT_MOUSE` (client to server, `docs/protocol.md#input`).
 pub const TYPE_INPUT_MOUSE: u8 = FrameType::InputMouse as u8;
-/// Discriminant for `INPUT_FOCUS` (client to server, `docs/spec/input.md` §4).
+/// Discriminant for `INPUT_FOCUS` (client to server, `docs/protocol.md#input`).
 pub const TYPE_INPUT_FOCUS: u8 = FrameType::InputFocus as u8;
 // 0x15 (`INPUT_SELECTION`) was removed by ADR-0030 and stays unassigned.
-/// Discriminant for `HISTORY_REQUEST` (client to server, `docs/spec/L1.md` §4.5).
+/// Discriminant for `HISTORY_REQUEST` (client to server, `docs/protocol.md`).
 pub const TYPE_HISTORY_REQUEST: u8 = FrameType::HistoryRequest as u8;
 /// Discriminant for `INPUT_TERMINAL_REPLY` (client to server,
-/// `docs/spec/input.md` §6).
+/// `docs/protocol.md#terminal-queries`).
 pub const TYPE_INPUT_TERMINAL_REPLY: u8 = FrameType::InputTerminalReply as u8;
 /// Discriminant for StateSync-only `FRAME_ACK` (client to server,
-/// `docs/spec/proto.md` §8.2).
+/// `docs/protocol.md#generations-publication-and-history`).
 ///
 /// Cumulative within one `(ResourceId, StreamId, BootstrapId)` after the
 /// client applies the acknowledged transition. Raw profiles never send it.
 pub const TYPE_FRAME_ACK: u8 = FrameType::FrameAck as u8;
-/// Discriminant for `VIEWPORT_RESIZE` (client to server, `docs/spec/proto.md`
-/// §7.1 / §10.5): the outer terminal changed size; payload is the
+/// Discriminant for `VIEWPORT_RESIZE` (client to server, `docs/protocol.md`):
+/// the outer terminal changed size; payload is the
 /// [`ViewportInfo`] shape `ATTACH` carries.
 pub const TYPE_VIEWPORT_RESIZE: u8 = FrameType::ViewportResize as u8;
-/// Discriminant for `PING` (client to server, `docs/spec/proto.md` §7.4).
+/// Discriminant for `PING` (client to server, `docs/protocol.md#handshake`).
 pub const TYPE_PING: u8 = FrameType::Ping as u8;
-/// Discriminant for `HELLO_OK` (server to client, `docs/spec/proto.md` §6.1).
+/// Discriminant for `HELLO_OK` (server to client, `docs/protocol.md#handshake`).
 pub const TYPE_HELLO_OK: u8 = FrameType::HelloOk as u8;
-/// Discriminant for `ATTACHED` (server to client, `docs/spec/L1.md` §8).
+/// Discriminant for `ATTACHED` (server to client, `docs/protocol.md#attach-and-output`).
 pub const TYPE_ATTACHED: u8 = FrameType::Attached as u8;
-/// Discriminant for `DETACHED` (server to client, `docs/spec/L1.md` §1 / §7.3).
+/// Discriminant for `DETACHED` (server to client, `docs/protocol.md#commands-events-resources`).
 pub const TYPE_DETACHED: u8 = FrameType::Detached as u8;
-/// Discriminant for `ATTACH_READY` (server to client, `docs/spec/L1.md` §8).
+/// Discriminant for `ATTACH_READY` (server to client, `docs/protocol.md#attach-and-output`).
 pub const TYPE_ATTACH_READY: u8 = FrameType::AttachReady as u8;
-/// Discriminant for `BELL` (server to client, `docs/spec/L1.md` §1.2).
+/// Discriminant for `BELL` (server to client, `docs/protocol.md#commands-events-resources`).
 pub const TYPE_BELL: u8 = FrameType::Bell as u8;
-/// Discriminant for `ERROR` (server to client, `docs/spec/proto.md` §9). Fatal
+/// Discriminant for `ERROR` (server to client, `docs/protocol.md`). Fatal
 /// errors MUST be followed by `DETACHED { PROTOCOL_ERROR }` and transport close.
 pub const TYPE_ERROR: u8 = FrameType::Error as u8;
-/// Discriminant for `PONG` (server to client, `docs/spec/proto.md` §7.4).
+/// Discriminant for `PONG` (server to client, `docs/protocol.md#handshake`).
 pub const TYPE_PONG: u8 = FrameType::Pong as u8;
 /// Discriminant for generation-bound `RESOURCE_OUTPUT` (server to client,
-/// `docs/spec/L1.md` §4.1). Native-profile payloads are byte-identical raw PTY
+/// `docs/protocol.md#attach-and-output`). Native-profile payloads are byte-identical raw PTY
 /// bytes and are never capability-rewritten.
 pub const TYPE_RESOURCE_OUTPUT: u8 = FrameType::ResourceOutput as u8;
 // 0x91 (`TERMINAL_SNAPSHOT`) is retired by ADR-0070; never decode or reassign it.
-/// Discriminant for `BOOTSTRAP_BEGIN` (server to client, `docs/spec/L1.md` §4.3).
+/// Discriminant for `BOOTSTRAP_BEGIN` (server to client, `docs/protocol.md#attach-and-output`).
 pub const TYPE_BOOTSTRAP_BEGIN: u8 = FrameType::BootstrapBegin as u8;
-/// Discriminant for `BOOTSTRAP_CHUNK` (server to client, `docs/spec/L1.md` §4.3).
+/// Discriminant for `BOOTSTRAP_CHUNK` (server to client, `docs/protocol.md#attach-and-output`).
 pub const TYPE_BOOTSTRAP_CHUNK: u8 = FrameType::BootstrapChunk as u8;
-/// Discriminant for `BOOTSTRAP_READY` (server to client, `docs/spec/L1.md` §4.3).
+/// Discriminant for `BOOTSTRAP_READY` (server to client, `docs/protocol.md#attach-and-output`).
 pub const TYPE_BOOTSTRAP_READY: u8 = FrameType::BootstrapReady as u8;
-/// Discriminant for `HISTORY_PAGE` (server to client, `docs/spec/L1.md` §4.5).
+/// Discriminant for `HISTORY_PAGE` (server to client, `docs/protocol.md`).
 pub const TYPE_HISTORY_PAGE: u8 = FrameType::HistoryPage as u8;
-/// Discriminant for `BOOTSTRAP_TOMBSTONE` (server to client, `docs/spec/L1.md` §4.6).
+/// Discriminant for `BOOTSTRAP_TOMBSTONE` (server to client, `docs/protocol.md`).
 pub const TYPE_BOOTSTRAP_TOMBSTONE: u8 = FrameType::BootstrapTombstone as u8;
 /// Discriminant for cursor-scoped `HISTORY_TOMBSTONE` (server to client,
-/// `docs/spec/L1.md` §4.5).
+/// `docs/protocol.md#generations-publication-and-history`).
 pub const TYPE_HISTORY_TOMBSTONE: u8 = FrameType::HistoryTombstone as u8;
 /// Discriminant for retryable cursor-scoped `HISTORY_REJECTED` (server to
-/// client, `docs/spec/L1.md` §4.5).
+/// client, `docs/protocol.md#generations-publication-and-history`).
 pub const TYPE_HISTORY_REJECTED: u8 = FrameType::HistoryRejected as u8;
 /// Discriminant for `FRAME_COMPRESSED` (server to client): a negotiated
-/// envelope carrying one deflated inner frame (`docs/spec/proto.md` §6.4).
+/// envelope carrying one deflated inner frame (`docs/protocol.md#framing`).
 pub const TYPE_FRAME_COMPRESSED: u8 = FrameType::FrameCompressed as u8;
 }
 
 // L3 metadata discriminants (SPEC §7.4): C→S `0x50..=0x5F`, S→C `0xD0..=0xDF`.
 
 wire_tags! { Message;
-/// Discriminant for `GET_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
+/// Discriminant for `GET_METADATA` (client to server, `docs/protocol.md`).
 pub const TYPE_GET_METADATA: u8 = FrameType::GetMetadata as u8;
-/// Discriminant for `SET_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
+/// Discriminant for `SET_METADATA` (client to server, `docs/protocol.md`).
 pub const TYPE_SET_METADATA: u8 = FrameType::SetMetadata as u8;
-/// Discriminant for `DELETE_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
+/// Discriminant for `DELETE_METADATA` (client to server, `docs/protocol.md`).
 pub const TYPE_DELETE_METADATA: u8 = FrameType::DeleteMetadata as u8;
-/// Discriminant for `LIST_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
+/// Discriminant for `LIST_METADATA` (client to server, `docs/protocol.md`).
 pub const TYPE_LIST_METADATA: u8 = FrameType::ListMetadata as u8;
-/// Discriminant for `SUBSCRIBE_METADATA` (client to server, `docs/spec/L3.md` §1).
+/// Discriminant for `SUBSCRIBE_METADATA` (client to server, `docs/protocol.md`).
 pub const TYPE_SUBSCRIBE_METADATA: u8 = FrameType::SubscribeMetadata as u8;
 
-/// Discriminant for `METADATA_CHANGED` (server to client, `docs/spec/L3.md` §1).
+/// Discriminant for `METADATA_CHANGED` (server to client, `docs/protocol.md`).
 pub const TYPE_METADATA_CHANGED: u8 = FrameType::MetadataChanged as u8;
 }
 

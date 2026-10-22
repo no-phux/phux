@@ -1,6 +1,6 @@
 //! Handshake, attach, input, stream, and teardown frame bodies.
 
-/// `HELLO` body fields (`docs/spec/proto.md` §6.1).
+/// `HELLO` body fields (`docs/protocol.md#handshake`).
 pub mod hello {
     /// Free-form client identifier string.
     pub const CLIENT_NAME: u32 = 1;
@@ -17,13 +17,13 @@ pub mod hello {
     pub const COMPRESSION: u32 = 6;
     // Ids 7 and 8 are retired-unshipped (ADR-0116) and stay reserved.
     /// Positional `SshOrigin` stamped by `phux stdio-bridge`
-    /// (`docs/spec/L3.md` §3.9); honored only from a same-uid Unix peer.
+    /// (`docs/reference/cli.md#phux-whoami`); honored only from a same-uid Unix peer.
     pub const SSH_ORIGIN: u32 = 9;
     /// Client can demultiplex QUIC stream-per-Terminal; absent = false.
     pub const QUIC_STREAMS: u32 = 10;
 }
 
-/// `HELLO_OK` body fields (`docs/spec/proto.md` §6.1).
+/// `HELLO_OK` body fields (`docs/protocol.md#handshake`).
 pub mod hello_ok {
     /// Selected protocol major version (`u16`).
     pub const PROTOCOL_MAJOR: u32 = 1;
@@ -45,13 +45,13 @@ pub mod hello_ok {
     pub const COMPRESSION: u32 = 9;
 }
 
-/// `PING` / `PONG` body fields (`docs/spec/proto.md` §7.4).
+/// `PING` / `PONG` body fields (`docs/protocol.md#handshake`).
 pub mod ping {
     /// Nonce the peer echoes back (`u64`). Shared id for `PING` and `PONG`.
     pub const NONCE: u32 = 1;
 }
 
-/// `RESOURCE_OUTPUT` body fields (`docs/spec/L1.md` §8.1, ADR-0013).
+/// `RESOURCE_OUTPUT` body fields (`docs/protocol.md#attach-and-output`, ADR-0013).
 pub mod terminal_output {
     /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
@@ -65,7 +65,7 @@ pub mod terminal_output {
     pub const BOOTSTRAP_ID: u32 = 5;
 }
 
-/// `ATTACH` body fields (`docs/spec/proto.md` §7.1 / §13).
+/// `ATTACH` body fields (`docs/protocol.md`).
 pub mod attach {
     /// `AttachTarget` tagged union (positional).
     pub const TARGET: u32 = 1;
@@ -81,7 +81,7 @@ pub mod attach {
     pub const ROLE_POLICY: u32 = 6;
 }
 
-/// `INPUT_KEY` body fields (`docs/spec/input.md` §2).
+/// `INPUT_KEY` body fields (`docs/protocol.md#input`).
 pub mod input_key {
     /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
@@ -89,7 +89,7 @@ pub mod input_key {
     pub const EVENT: u32 = 2;
 }
 
-/// `INPUT_MOUSE` body fields (`docs/spec/input.md` §3).
+/// `INPUT_MOUSE` body fields (`docs/protocol.md#input`).
 pub mod input_mouse {
     /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
@@ -97,7 +97,7 @@ pub mod input_mouse {
     pub const EVENT: u32 = 2;
 }
 
-/// `INPUT_FOCUS` body fields (`docs/spec/input.md` §4).
+/// `INPUT_FOCUS` body fields (`docs/protocol.md#input`).
 pub mod input_focus {
     /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
@@ -105,7 +105,7 @@ pub mod input_focus {
     pub const EVENT: u32 = 2;
 }
 
-/// `INPUT_PASTE` body fields (`docs/spec/input.md` §5).
+/// `INPUT_PASTE` body fields (`docs/protocol.md#input`).
 pub mod input_paste {
     /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
@@ -113,7 +113,7 @@ pub mod input_paste {
     pub const EVENT: u32 = 2;
 }
 
-/// `INPUT_TERMINAL_REPLY` body fields (`docs/spec/input.md` §6).
+/// `INPUT_TERMINAL_REPLY` body fields (`docs/protocol.md#terminal-queries`).
 pub mod input_terminal_reply {
     /// Attached target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
@@ -121,7 +121,7 @@ pub mod input_terminal_reply {
     pub const BYTES: u32 = 2;
 }
 
-/// `FRAME_ACK` body fields (`docs/spec/proto.md` §7.2 / §8.2).
+/// `FRAME_ACK` body fields (`docs/protocol.md#attach-and-output`).
 pub mod frame_ack {
     /// Acked `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
@@ -133,13 +133,13 @@ pub mod frame_ack {
     pub const BOOTSTRAP_ID: u32 = 4;
 }
 
-/// `VIEWPORT_RESIZE` body fields (`docs/spec/proto.md` §7.1 / §10.5).
+/// `VIEWPORT_RESIZE` body fields (`docs/protocol.md`).
 pub mod viewport_resize {
     /// New `ViewportInfo` (positional sub-record).
     pub const VIEWPORT: u32 = 1;
 }
 
-/// `ATTACHED` body fields (`docs/spec/L1.md` §8).
+/// `ATTACHED` body fields (`docs/protocol.md#attach-and-output`).
 pub mod attached {
     /// Full `SessionSnapshot` (positional sub-record).
     pub const SNAPSHOT: u32 = 1;
@@ -149,13 +149,13 @@ pub mod attached {
     pub const ATTACH_ID: u32 = 3;
 }
 
-/// `ATTACH_READY` body fields (`docs/spec/L1.md` §8).
+/// `ATTACH_READY` body fields (`docs/protocol.md#attach-and-output`).
 pub mod attach_ready {
     /// Client-chosen attach correlation id (`u32`).
     pub const ATTACH_ID: u32 = 1;
 }
 
-/// `HISTORY_REQUEST` body fields (`docs/spec/L1.md` §4.5).
+/// `HISTORY_REQUEST` body fields (`docs/protocol.md#generations-publication-and-history`).
 pub mod history_request {
     /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
@@ -171,7 +171,7 @@ pub mod history_request {
     pub const MAX_ROWS: u32 = 6;
 }
 
-/// `BOOTSTRAP_BEGIN` body fields (`docs/spec/L1.md` §4.3).
+/// `BOOTSTRAP_BEGIN` body fields (`docs/protocol.md#attach-and-output`).
 pub mod bootstrap_begin {
     /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
@@ -193,7 +193,7 @@ pub mod bootstrap_begin {
     pub const RESUME_AFTER_SEQ: u32 = 9;
 }
 
-/// `BOOTSTRAP_CHUNK` body fields (`docs/spec/L1.md` §4.3).
+/// `BOOTSTRAP_CHUNK` body fields (`docs/protocol.md#attach-and-output`).
 pub mod bootstrap_chunk {
     /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
@@ -207,7 +207,7 @@ pub mod bootstrap_chunk {
     pub const PAYLOAD: u32 = 5;
 }
 
-/// `FRAME_COMPRESSED` body fields (`docs/spec/proto.md` §6.4).
+/// `FRAME_COMPRESSED` body fields (`docs/protocol.md#framing`).
 pub mod frame_compressed {
     /// Compression algorithm tag (`u8`).
     pub const ALGORITHM: u32 = 1;
@@ -217,7 +217,7 @@ pub mod frame_compressed {
     pub const PAYLOAD: u32 = 3;
 }
 
-/// `BOOTSTRAP_READY` body fields (`docs/spec/L1.md` §4.3).
+/// `BOOTSTRAP_READY` body fields (`docs/protocol.md#attach-and-output`).
 pub mod bootstrap_ready {
     /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
@@ -229,7 +229,7 @@ pub mod bootstrap_ready {
     pub const HISTORY_CURSOR: u32 = 4;
 }
 
-/// `HISTORY_PAGE` body fields (`docs/spec/L1.md` §4.5).
+/// `HISTORY_PAGE` body fields (`docs/protocol.md#generations-publication-and-history`).
 pub mod history_page {
     /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
@@ -249,7 +249,7 @@ pub mod history_page {
     pub const ROWS: u32 = 8;
 }
 
-/// `BOOTSTRAP_TOMBSTONE` body fields (`docs/spec/L1.md` §4.6).
+/// `BOOTSTRAP_TOMBSTONE` body fields (`docs/protocol.md#generations-publication-and-history`).
 pub mod bootstrap_tombstone {
     /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
@@ -263,7 +263,7 @@ pub mod bootstrap_tombstone {
     pub const LAST_VALID_SEQ: u32 = 5;
 }
 
-/// `HISTORY_TOMBSTONE` body fields (`docs/spec/L1.md` §4.5).
+/// `HISTORY_TOMBSTONE` body fields (`docs/protocol.md#generations-publication-and-history`).
 pub mod history_tombstone {
     /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
@@ -277,7 +277,7 @@ pub mod history_tombstone {
     pub const REASON: u32 = 5;
 }
 
-/// `HISTORY_REJECTED` body fields (`docs/spec/L1.md` §4.5).
+/// `HISTORY_REJECTED` body fields (`docs/protocol.md#generations-publication-and-history`).
 pub mod history_rejected {
     /// Target `ResourceId`.
     pub const TERMINAL_ID: u32 = 1;
@@ -295,7 +295,7 @@ pub mod history_rejected {
     pub const REQUIRED_ROWS: u32 = 7;
 }
 
-/// `DETACHED` body fields (`docs/spec/proto.md` §7.2); both optional, so an
+/// `DETACHED` body fields (`docs/protocol.md#attach-and-output`); both optional, so an
 /// empty body is valid.
 pub mod detached {
     /// `DetachReason` tag (`u8`). Absent = the peer stated no reason.
@@ -304,13 +304,13 @@ pub mod detached {
     pub const MESSAGE: u32 = 2;
 }
 
-/// `BELL` body fields (`docs/spec/L1.md` §1.2).
+/// `BELL` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod bell {
     /// Terminal that received the bell character (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
 }
 
-/// `ERROR` body fields (`docs/spec/proto.md` §9 / §14).
+/// `ERROR` body fields (`docs/protocol.md`).
 pub mod error {
     /// Optional correlating `request_id` (absent field = `None`).
     pub const REQUEST_ID: u32 = 1;

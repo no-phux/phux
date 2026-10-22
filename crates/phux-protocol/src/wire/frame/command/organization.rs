@@ -1,4 +1,4 @@
-//! The organization (`docs/spec/L1.md` §5.7) and delegation [`Command`]
+//! The organization (`docs/organization.md`) and delegation [`Command`]
 //! variants.
 
 #[cfg(doc)]
@@ -9,7 +9,7 @@ use super::Command;
 macro_rules! organization_commands {
     ($next:ident!($($rest:tt)*) $($done:tt)*) => {
         $next!($($rest)* $($done)*
-    /// Read one bounded page of the organization (`docs/spec/L1.md` §5.7):
+    /// Read one bounded page of the organization (`docs/organization.md`):
     /// the records the caller inventories, with revisions, live handles,
     /// totals, and the journal cursor to subscribe after. Answered
     /// `OkWith(OrganizationPage)`. Gated, like every organization command,

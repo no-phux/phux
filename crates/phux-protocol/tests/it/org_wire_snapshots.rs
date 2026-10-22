@@ -1,5 +1,5 @@
 //! Snapshot tests for the organization commands, results, and events
-//! (`docs/spec/L1.md` §5.7): one golden hex dump per shape, so a byte change
+//! (`docs/organization.md`): one golden hex dump per shape, so a byte change
 //! to any of them surfaces in review. The frames outside §5.7 keep their
 //! goldens in `frame_wire_snapshots.rs`.
 

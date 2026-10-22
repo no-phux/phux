@@ -316,7 +316,7 @@ pub(super) fn encode_input_event_body(event: &InputEvent, enc: &mut Encoder<'_>)
 }
 
 /// Write the optional `operation_id: bytes16` of a keyed supervisory
-/// command (`docs/spec/L1.md` §5.1.1) behind a presence byte, so a field a
+/// command (`docs/protocol.md`) behind a presence byte, so a field a
 /// newer build appends after it stays unambiguous.
 pub(super) fn encode_optional_key(key: Option<&IdempotencyKey>, enc: &mut Encoder<'_>) {
     enc.write_option(key, |e, key| {

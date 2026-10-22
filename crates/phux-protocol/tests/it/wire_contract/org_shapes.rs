@@ -1,4 +1,4 @@
-//! Additive wire shapes of the organization model (`docs/spec/L1.md` §5.7):
+//! Additive wire shapes of the organization model (`docs/organization.md`):
 //! the organization commands, results, and events round-trip for arbitrary
 //! values; the trailing `ActorRef` principals and the snapshot's session and
 //! lifetime extension fields leave every older shape byte-identical; and an

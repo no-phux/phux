@@ -1,4 +1,4 @@
-//! TLV field ids inside message bodies (`docs/spec/appendix-encoding.md`).
+//! TLV field ids inside message bodies (`docs/protocol.md#framing`).
 //!
 //! Each top-level field is `field_id: varint || wire_type: u8 || value`;
 //! decoders skip unknown ids by length. Ids are per message, start at `1`,

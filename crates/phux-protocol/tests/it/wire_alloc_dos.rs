@@ -415,7 +415,7 @@ fn padded_huge_counts_reserve_no_more_than_the_input() {
     assert_alloc_within_input(&framed_tlv(0x22, &fields), "spawn env list");
 }
 
-/// The organization bounds (`docs/spec/L1.md` §5.7) are enforced at decode:
+/// The organization bounds (`docs/organization.md`) are enforced at decode:
 /// a name over 256 bytes, an arrangement over 64 KiB, a bulk move or undo
 /// over 256 items, an attribute list over 64, and a cursor over 4 KiB are
 /// each refused, and a hostile arrangement group count reserves no more

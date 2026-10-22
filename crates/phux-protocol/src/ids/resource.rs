@@ -1,7 +1,7 @@
 //! Resource identity: the server instance, satellite hosts, [`ResourceId`],
 //! [`ResourceKind`], and [`FrameId`].
 
-/// The server's resource id space, 16 random bytes (`docs/spec/L1.md` §3.1,
+/// The server's resource id space, 16 random bytes (`docs/protocol.md#commands-events-resources`,
 /// ADR-0109).
 ///
 /// Re-minted whenever the `ResourceId` allocator restarts, so

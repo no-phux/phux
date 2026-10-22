@@ -1,6 +1,6 @@
 //! L1 resource lifecycle, command, and event frame bodies.
 
-/// `SPAWN_RESOURCE` body fields (`docs/spec/L1.md` §10.1).
+/// `SPAWN_RESOURCE` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod spawn_terminal {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -14,7 +14,7 @@ pub mod spawn_terminal {
     pub const ENV: u32 = 5;
     /// Optional first-class `TERM` for the new Terminal (absent = `None`).
     pub const TERM: u32 = 6;
-    /// Optional satellite host to spawn on (`docs/spec/L1.md` §3.1, ADR-0007).
+    /// Optional satellite host to spawn on (`docs/protocol.md`, ADR-0007).
     pub const SATELLITE: u32 = 7;
     /// Optional Terminal whose owning window hosts the spawn.
     pub const OWNER_TERMINAL: u32 = 8;
@@ -43,7 +43,7 @@ pub mod spawn_terminal {
     pub const IDEMPOTENCY_KEY: u32 = 17;
 }
 
-/// `RESOURCE_SPAWNED` body fields (`docs/spec/L1.md` §10.1).
+/// `RESOURCE_SPAWNED` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod terminal_spawned {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -56,7 +56,7 @@ pub mod terminal_spawned {
     pub const REPLAYED: u32 = 4;
 }
 
-/// `MOVE_RESOURCE` body fields (`docs/spec/L1.md` §10.1; ADR-0056).
+/// `MOVE_RESOURCE` body fields (`docs/protocol.md#commands-events-resources`; ADR-0056).
 pub mod move_terminal {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -66,7 +66,7 @@ pub mod move_terminal {
     pub const OWNER_TERMINAL: u32 = 3;
 }
 
-/// `RESOURCE_MOVED` body fields (`docs/spec/L1.md` §10.1; ADR-0056).
+/// `RESOURCE_MOVED` body fields (`docs/protocol.md#commands-events-resources`; ADR-0056).
 pub mod terminal_moved {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -74,7 +74,7 @@ pub mod terminal_moved {
     pub const RESULT: u32 = 2;
 }
 
-/// `RESOURCE_CLOSED` body fields (`docs/spec/L1.md` §10.1).
+/// `RESOURCE_CLOSED` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod terminal_closed {
     /// Closed `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
@@ -86,7 +86,7 @@ pub mod terminal_closed {
     pub const SIGNAL: u32 = 4;
 }
 
-/// `RESIZE_TERMINAL` body fields (`docs/spec/L1.md` §10.2).
+/// `RESIZE_TERMINAL` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod terminal_resize {
     /// Target `ResourceId` (positional tagged union).
     pub const TERMINAL_ID: u32 = 1;
@@ -102,7 +102,7 @@ pub mod terminal_resize {
     pub const CELL_HEIGHT_PX: u32 = 5;
 }
 
-/// `COMMAND` body fields (`docs/spec/L1.md` §5).
+/// `COMMAND` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod command {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -110,7 +110,7 @@ pub mod command {
     pub const COMMAND: u32 = 2;
 }
 
-/// `COMMAND_RESULT` body fields (`docs/spec/L1.md` §5).
+/// `COMMAND_RESULT` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod command_result {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -118,7 +118,7 @@ pub mod command_result {
     pub const RESULT: u32 = 2;
 }
 
-/// `SUBSCRIBE_EVENTS` body fields (`docs/spec/L1.md` §7.5).
+/// `SUBSCRIBE_EVENTS` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod subscribe_events {
     /// Optional `ResourceId` scope (absent field = server-scoped `None`).
     pub const TERMINAL: u32 = 1;
@@ -126,7 +126,7 @@ pub mod subscribe_events {
     pub const AFTER_SEQ: u32 = 2;
 }
 
-/// `EVENT` body fields (`docs/spec/L1.md` §7.5); 3-6 are the journal stamp
+/// `EVENT` body fields (`docs/protocol.md#commands-events-resources`); 3-6 are the journal stamp
 /// (ADR-0123).
 pub mod event {
     /// Optional `ResourceId` scope (absent field = server-scoped `None`).
@@ -143,7 +143,7 @@ pub mod event {
     pub const OPERATION_ID: u32 = 6;
 }
 
-/// `AgentEvent::JournalGap` body fields (`docs/spec/L1.md` §7.1).
+/// `AgentEvent::JournalGap` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod event_journal_gap {
     /// First missing journal sequence (`u64`, inclusive).
     pub const FIRST_MISSING: u32 = 1;
@@ -151,19 +151,19 @@ pub mod event_journal_gap {
     pub const LAST_MISSING: u32 = 2;
 }
 
-/// `AgentEvent::SourceGap` body fields (`docs/spec/L1.md` §7.1).
+/// `AgentEvent::SourceGap` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod event_source_gap {
     /// Events dropped before journaling (`u64`).
     pub const DROPPED: u32 = 1;
 }
 
 /// Fields of the field-tagged `SessionSnapshot` extension block
-/// (`docs/spec/L1.md` §9.1), the fifth trailing element.
+/// (`docs/protocol.md`), the fifth trailing element.
 pub mod snapshot_extension {
     /// One resource with non-default state: positional `ResourceId`, then
     /// [`resource_state`](super::resource_state) fields. Repeated.
     pub const RESOURCE_STATE: u32 = 1;
-    /// Newest event-journal `seq` at the cut (`u64`, `docs/spec/L1.md` §7.3).
+    /// Newest event-journal `seq` at the cut (`u64`, `docs/protocol.md`).
     pub const JOURNAL_HEAD: u32 = 2;
     /// One resource's session: positional `ResourceId`, then the owning
     /// `SessionId` (`u32`). Repeated; absent = no session reported.

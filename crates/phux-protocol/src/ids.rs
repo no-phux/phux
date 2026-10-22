@@ -137,7 +137,7 @@ fn parse_base32(text: &str) -> Option<[u8; 16]> {
 #[error("a key is 26 base32 digits naming a non-zero 16-byte value")]
 pub struct KeyParseError;
 
-/// Declare a persistent 16-byte organization key (`docs/spec/L1.md` §5.7):
+/// Declare a persistent 16-byte organization key (`docs/organization.md`):
 /// random, never all-zero, 16 raw bytes on the wire, unpadded lowercase
 /// base32 as text. Keys name records forever; live handles (`SessionId`,
 /// `ResourceId`) name current execution and never stand in for one.

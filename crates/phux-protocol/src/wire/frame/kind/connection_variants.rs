@@ -1,5 +1,5 @@
 //! The handshake, attach, input, bootstrap, and history [`FrameKind`]
-//! variants (`docs/spec/proto.md` §6-§8, `docs/spec/L1.md` §4).
+//! variants (`docs/protocol.md#handshake`, `docs/protocol.md#attach-and-output`).
 
 #[cfg(doc)]
 use super::FrameKind;
@@ -9,7 +9,7 @@ use super::FrameKind;
 macro_rules! connection_frames {
     ($next:ident!($($rest:tt)*) $($done:tt)*) => {
         $next!($($rest)* $($done)*
-    /// `HELLO` — client to server handshake (`docs/spec/proto.md` §6.1). A
+    /// `HELLO` — client to server handshake (`docs/protocol.md#handshake`). A
     /// missing or truncated capability record is malformed.
     Hello {
         /// Free-form client identifier (e.g. `"phux-client 0.1.0"`).
@@ -23,8 +23,8 @@ macro_rules! connection_frames {
         /// Client capability advertisement (SPEC §6.2).
         client_caps: ClientCapabilities,
     },
-    /// `HELLO_OK` — server handshake acknowledgement (`docs/spec/proto.md`
-    /// §6.1). Selects one [`BootstrapProfile`] for the connection's lifetime.
+    /// `HELLO_OK` — server handshake acknowledgement (`docs/protocol.md#handshake`).
+    /// Selects one [`BootstrapProfile`] for the connection's lifetime.
     HelloOk {
         /// Selected major version (wire-breaking axis pre-1.0).
         protocol_major: u16,
@@ -43,18 +43,18 @@ macro_rules! connection_frames {
         bootstrap_limits: BootstrapLimits,
     },
 
-    /// `PING` — liveness probe (`docs/spec/proto.md` §7.4), echoed in `PONG`.
+    /// `PING` — liveness probe (`docs/protocol.md#handshake`), echoed in `PONG`.
     Ping {
         /// Opaque nonce echoed by the peer in `PONG`.
         nonce: u64,
     },
-    /// `PONG` — liveness response (`docs/spec/proto.md` §7.4).
+    /// `PONG` — liveness response (`docs/protocol.md#handshake`).
     Pong {
         /// Nonce echoed from the corresponding `PING`.
         nonce: u64,
     },
 
-    /// `RESOURCE_OUTPUT` — live terminal content (`docs/spec/L1.md` §4.1).
+    /// `RESOURCE_OUTPUT` — live terminal content (`docs/protocol.md#attach-and-output`).
     ///
     /// `seq` is contiguous and non-wrapping within one `(stream_id,
     /// bootstrap_id)`. Under `NativeState`, `bytes` are the exact PTY bytes
@@ -72,7 +72,7 @@ macro_rules! connection_frames {
         bytes: bytes::Bytes,
     },
 
-    /// `ATTACH` — client requests to attach to a session (`docs/spec/L1.md` §7).
+    /// `ATTACH` — client requests to attach to a session (`docs/protocol.md`).
     Attach {
         /// Client-chosen correlation id echoed by `ATTACHED` and `ATTACH_READY`.
         attach_id: u32,
@@ -90,10 +90,10 @@ macro_rules! connection_frames {
         role_policy: Option<super::RolePolicy>,
     },
 
-    /// `DETACH` — client signals clean departure (`docs/spec/proto.md` §7.2).
+    /// `DETACH` — client signals clean departure (`docs/protocol.md#attach-and-output`).
     Detach,
 
-    /// `INPUT_KEY` — client forwards a structured key event (`docs/spec/input.md` §2).
+    /// `INPUT_KEY` — client forwards a structured key event (`docs/protocol.md#input`).
     InputKey {
         /// Target terminal.
         terminal_id: ResourceId,
@@ -101,7 +101,7 @@ macro_rules! connection_frames {
         event: KeyEvent,
     },
 
-    /// `INPUT_MOUSE` — client forwards a mouse event (`docs/spec/input.md` §3).
+    /// `INPUT_MOUSE` — client forwards a mouse event (`docs/protocol.md#input`).
     InputMouse {
         /// Target terminal.
         terminal_id: ResourceId,
@@ -110,7 +110,7 @@ macro_rules! connection_frames {
     },
 
     /// `INPUT_FOCUS` — client reports focus change on its host window
-    /// (`docs/spec/input.md` §4).
+    /// (`docs/protocol.md#input`).
     InputFocus {
         /// Target terminal.
         terminal_id: ResourceId,
@@ -118,7 +118,7 @@ macro_rules! connection_frames {
         event: FocusEvent,
     },
 
-    /// `INPUT_PASTE` — client forwards a paste payload (`docs/spec/input.md` §5).
+    /// `INPUT_PASTE` — client forwards a paste payload (`docs/protocol.md#input`).
     InputPaste {
         /// Target terminal.
         terminal_id: ResourceId,
@@ -127,7 +127,7 @@ macro_rules! connection_frames {
     },
 
     /// `INPUT_TERMINAL_REPLY` — opaque bytes the client's terminal emulator
-    /// generated in response to output (`docs/spec/input.md` §6), written
+    /// generated in response to output (`docs/protocol.md#terminal-queries`), written
     /// byte-identically to the terminal's input lane.
     InputTerminalReply {
         /// Attached target terminal.
@@ -136,7 +136,7 @@ macro_rules! connection_frames {
         bytes: bytes::Bytes,
     },
 
-    /// `FRAME_ACK` — cumulative acknowledgement (`docs/spec/proto.md` §8.2),
+    /// `FRAME_ACK` — cumulative acknowledgement (`docs/protocol.md`),
     /// valid only for the `SynthesizedVtStateSync` profile.
     FrameAck {
         /// Acked terminal.
@@ -150,7 +150,7 @@ macro_rules! connection_frames {
     },
 
     /// `VIEWPORT_RESIZE` — the attached client's outer terminal changed
-    /// size (`docs/spec/proto.md` §7.1 / §10.5). The connection identifies
+    /// size (`docs/protocol.md`). The connection identifies
     /// the client.
     ViewportResize {
         /// New outer-terminal metrics.
@@ -177,7 +177,7 @@ macro_rules! connection_frames {
     },
 
     /// `DETACHED` — server confirms detach and closes the transport
-    /// (`docs/spec/proto.md` §7.2). With that close, the only ending a
+    /// (`docs/protocol.md#attach-and-output`). With that close, the only ending a
     /// consumer may act on; an `ERROR` never ends an attach (§9).
     Detached {
         /// Why the attach ended, or `None` when unstated or unrecognised.
@@ -308,13 +308,13 @@ macro_rules! connection_frames {
         required_rows: u32,
     },
 
-    /// `BELL` — terminal received a bell character (`docs/spec/L1.md` §1.2).
+    /// `BELL` — terminal received a bell character (`docs/protocol.md#commands-events-resources`).
     Bell {
         /// Terminal that bell'd.
         terminal_id: ResourceId,
     },
 
-    /// `ERROR` — structured error (`docs/spec/proto.md` §9). A fatal error
+    /// `ERROR` — structured error (`docs/protocol.md`). A fatal error
     /// MUST be followed by `DETACHED { PROTOCOL_ERROR }` and transport close.
     Error {
         /// The `COMMAND` this error answers, or `None` when uncorrelated.

@@ -203,7 +203,7 @@ impl KillConditions {
     /// No connection other than the one that spawned the resource has
     /// attached or used it since it was spawned, and it has no child
     /// resource. Requires [`KillPrecondition::instance`]; a server refuses the
-    /// bit without it (`docs/spec/L1.md` §5.2.1 defines it exactly).
+    /// bit without it (`docs/protocol.md#receipts-retries-and-backpressure` defines it exactly).
     pub const UNATTACHED_SINCE_SPAWN: Self = Self(0x01);
     /// Every bit this build assigns a meaning to.
     const KNOWN: u8 = Self::UNATTACHED_SINCE_SPAWN.0;

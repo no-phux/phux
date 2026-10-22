@@ -52,7 +52,7 @@ pub enum ControlAction {
     /// Terminal to `Open` (ADR-0123). A decoder that predates the value
     /// cannot read it, so a server sends it only to a journal-aware
     /// subscription and reports the same transition as `Released` to any
-    /// other (`docs/spec/L1.md` §7.1).
+    /// other (`docs/protocol.md#commands-events-resources`).
     Expired = 9,
     /// The actor re-attached the Terminal with a different declared role
     /// (ADR-0127): a `VIEWER` widened to `PRIMARY`, or the reverse. Like
@@ -128,8 +128,8 @@ pub enum AgentEvent {
     ResourceSpawned {
         /// What backs the new resource; `Terminal` when absent on the wire.
         kind: ResourceKind,
-        /// The resource it is bound to, when it is a child (`docs/spec/L1.md`
-        /// §1.2); `None` for a root.
+        /// The resource it is bound to, when it is a child (`docs/protocol.md`);
+        /// `None` for a root.
         parent: Option<ResourceId>,
     },
     /// A resource closed; mirrors `RESOURCE_CLOSED`.
@@ -203,13 +203,13 @@ pub enum AgentEvent {
     },
     /// Someone just sent input to the envelope's Terminal. Unjournaled:
     /// the `EVENT` stamp is absent, so the body is only the origin label
-    /// and never a credential id (`docs/spec/L1.md` §7.1).
+    /// and never a credential id (`docs/protocol.md#commands-events-resources`).
     InputActivity {
         /// Who sent the input: the client's HELLO name, or `client:<id>`
         /// when it has none.
         origin: String,
     },
-    /// A session record was created (`docs/spec/L1.md` §5.7). Field-tagged
+    /// A session record was created (`docs/organization.md`). Field-tagged
     /// body, like every organization event.
     SessionCreated {
         /// The session.

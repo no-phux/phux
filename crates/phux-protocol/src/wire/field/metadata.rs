@@ -1,6 +1,6 @@
 //! L3 metadata and host-query frame bodies.
 
-/// `GET_METADATA` / `DELETE_METADATA` body fields (`docs/spec/L3.md` §1).
+/// `GET_METADATA` / `DELETE_METADATA` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod get_metadata {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -10,7 +10,7 @@ pub mod get_metadata {
     pub const KEY: u32 = 3;
 }
 
-/// `SET_METADATA` body fields (`docs/spec/L3.md` §1).
+/// `SET_METADATA` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod set_metadata {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -22,7 +22,7 @@ pub mod set_metadata {
     pub const VALUE: u32 = 4;
 }
 
-/// `LIST_METADATA` body fields (`docs/spec/L3.md` §1).
+/// `LIST_METADATA` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod list_metadata {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -30,7 +30,7 @@ pub mod list_metadata {
     pub const SCOPE: u32 = 2;
 }
 
-/// `SUBSCRIBE_METADATA` body fields (`docs/spec/L3.md` §1).
+/// `SUBSCRIBE_METADATA` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod subscribe_metadata {
     /// `Scope` tagged union (positional).
     pub const SCOPE: u32 = 1;
@@ -38,7 +38,7 @@ pub mod subscribe_metadata {
     pub const KEY: u32 = 2;
 }
 
-/// `METADATA_CHANGED` body fields (`docs/spec/L3.md` §1).
+/// `METADATA_CHANGED` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod metadata_changed {
     /// `Scope` tagged union (positional).
     pub const SCOPE: u32 = 1;
@@ -51,7 +51,7 @@ pub mod metadata_changed {
     pub const ACTOR: u32 = 4;
 }
 
-/// `METADATA_VALUE` body fields (`docs/spec/L3.md` §1).
+/// `METADATA_VALUE` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod metadata_value {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -59,7 +59,7 @@ pub mod metadata_value {
     pub const VALUE: u32 = 2;
 }
 
-/// `METADATA_KEYS` body fields (`docs/spec/L3.md` §1).
+/// `METADATA_KEYS` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod metadata_keys {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -67,7 +67,7 @@ pub mod metadata_keys {
     pub const KEYS: u32 = 2;
 }
 
-/// `LIST_DIRECTORY` body fields (`docs/spec/L3.md` §4).
+/// `LIST_DIRECTORY` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod list_directory {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -77,7 +77,7 @@ pub mod list_directory {
     pub const HOST: u32 = 3;
 }
 
-/// `DIRECTORY_LISTING` body fields (`docs/spec/L3.md` §4).
+/// `DIRECTORY_LISTING` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod directory_listing {
     /// Correlating `request_id` (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -95,7 +95,7 @@ pub mod directory_listing {
     pub const MESSAGE: u32 = 7;
 }
 
-/// `PATH_QUERY` body fields (`docs/spec/L3.md` §5).
+/// `PATH_QUERY` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod path_query {
     /// Correlation id (`u32`).
     pub const REQUEST_ID: u32 = 1;
@@ -109,7 +109,7 @@ pub mod path_query {
     pub const HOST: u32 = 5;
 }
 
-/// `PATH_RESULTS` body fields (`docs/spec/L3.md` §5).
+/// `PATH_RESULTS` body fields (`docs/protocol.md#commands-events-resources`).
 pub mod path_results {
     /// Correlation id (`u32`).
     pub const REQUEST_ID: u32 = 1;

@@ -53,7 +53,7 @@ pub const SESSION_KEEP_EMPTY_KEY: &str = "phux.session.keep_empty/v1";
 
 /// Global key grouping sessions under a project tag.
 ///
-/// Stored, not intercepted (`docs/spec/L3.md` §3.1). Value: `name\0project`,
+/// Stored, not intercepted (`docs/organization.md`). Value: `name\0project`,
 /// both non-empty UTF-8. A `GET` returns the stored bytes. `DELETE` clears
 /// the tag. Pickers group sessions that share the project side.
 pub const SESSION_PROJECT_KEY: &str = "phux.session.project/v1";
@@ -74,7 +74,7 @@ pub fn decode_session_project(value: &[u8]) -> Option<(&str, &str)> {
 
 /// Global key for the host a session is organized on.
 ///
-/// Stored, not intercepted (`docs/spec/L3.md` §3.1). Value: `name\0host`,
+/// Stored, not intercepted (`docs/organization.md`). Value: `name\0host`,
 /// both non-empty UTF-8. A `GET` returns the stored bytes. `DELETE` clears
 /// the tag. A focused satellite pane names its own host at save time; this
 /// tag is the host recorded for a pane on the attached server.
@@ -96,7 +96,7 @@ pub fn decode_session_host(value: &[u8]) -> Option<(&str, &str)> {
 
 /// Global key for the directory a session is organized in.
 ///
-/// Stored, not intercepted (`docs/spec/L3.md` §3.1). Value: `name\0directory`,
+/// Stored, not intercepted (`docs/organization.md`). Value: `name\0directory`,
 /// both non-empty UTF-8. A `GET` returns the stored bytes. `DELETE` clears
 /// the tag. Workspace save uses this tag when it is set, so a directory the
 /// child could not enter still round-trips. The pane's own cwd stays the
@@ -152,7 +152,7 @@ pub fn decode_session_keep_empty(value: &[u8]) -> Option<(&str, bool)> {
 }
 
 /// Terminal-scoped key holding freeform tags as a JSON array of unique,
-/// non-empty strings (`docs/spec/L3.md` §3.6, ADR-0027). Stored opaquely.
+/// non-empty strings (`docs/scripting.md#organizing-panes`, ADR-0027). Stored opaquely.
 pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
 
 /// Terminal-scoped key holding outgoing link edges as a JSON array of
@@ -162,7 +162,7 @@ pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 
 /// Terminal-scoped key holding the declared agent identity and lifecycle.
 ///
-/// `docs/spec/L3.md` §3.7, ADR-0040. A consumer that finds it MUST
+/// `docs/program-sequences.md#the-agent-record`, ADR-0040. A consumer that finds it MUST
 /// prefer it over title or screen heuristics. Stored opaquely.
 pub const RESOURCE_AGENT_KEY: &str = "phux.agent/v1";
 
@@ -207,7 +207,7 @@ pub const CONFIG_RELOAD_KEY: &str = "phux.config.reload/v1";
 /// `Global`-scope key family of the server-owned approval records (ADR-0128).
 ///
 /// `phux.approval/v1/<id>` holds one held action's JSON description
-/// (`docs/spec/L3.md` §3.10) while it awaits a decision, and is deleted when
+/// (`docs/agents.md#safety`) while it awaits a decision, and is deleted when
 /// the action is decided, expires, or is withdrawn. No client may set or
 /// delete a key in this family.
 pub const APPROVAL_KEY_PREFIX: &str = "phux.approval/v1/";
@@ -220,7 +220,7 @@ pub const APPROVAL_KEY_PREFIX: &str = "phux.approval/v1/";
 pub const APPROVAL_DECIDE_KEY_PREFIX: &str = "phux.approval.decide/v1/";
 
 /// `Global`-scope key family a device registers a background-push grant
-/// under (ADR-0155, `docs/spec/L3.md` §3.11).
+/// under (ADR-0155, `docs/protocol.md#commands-events-resources`).
 ///
 /// `phux.push/v1/<device>` holds a client-owned UTF-8 JSON object naming the
 /// gateway the device trusts, the bearer secret that gateway minted for it,

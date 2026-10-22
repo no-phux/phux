@@ -1,4 +1,4 @@
-//! Snapshot-graph types delivered with `ATTACHED` (`docs/spec/L1.md` §7).
+//! Snapshot-graph types delivered with `ATTACHED` (`docs/protocol.md`).
 //!
 //! Wire mirrors of `phux_core`'s session/window shapes (this crate cannot
 //! depend on `phux-core`): enough to render chrome. Layout is not here; it

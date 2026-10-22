@@ -1,5 +1,4 @@
-//! Closed scope grants for the terminal endpoint (`docs/spec/workload-auth.md`
-//! §5).
+//! Closed scope grants for the terminal endpoint (`docs/remote.md#who-can-do-what`).
 //!
 //! A grant pairs a nonempty [`Verbs`] set with one [`Selector`]. A
 //! [`TerminalScopeSet`] is a canonical set of grants; an

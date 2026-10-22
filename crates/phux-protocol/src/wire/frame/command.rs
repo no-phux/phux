@@ -101,7 +101,7 @@ impl Command {
     }
 
     /// The operation id of a keyed supervisory command
-    /// (`docs/spec/L1.md` §5.1.1) or of a mutating organization command
+    /// (`docs/protocol.md#receipts-retries-and-backpressure`) or of a mutating organization command
     /// (§5.7), or `None`.
     #[must_use]
     pub const fn idempotency_key(&self) -> Option<&crate::ids::IdempotencyKey> {
@@ -130,7 +130,7 @@ impl Command {
         }
     }
 
-    /// Whether this is an organization command (`docs/spec/L1.md` §5.7):
+    /// Whether this is an organization command (`docs/organization.md`):
     /// one a server serves only while it advertises
     /// [`ServerFeatureExt::Organization`](crate::caps::ServerFeatureExt::Organization),
     /// and the only kind a reply may answer with [`CommandResult::Refused`]

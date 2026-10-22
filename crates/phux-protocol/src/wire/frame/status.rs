@@ -83,7 +83,7 @@ pub enum ErrorCode {
     /// was killed.
     PreconditionFailed,
     /// A hub refused a keyed retry because the owning satellite restarted,
-    /// so a replay could run twice (`docs/spec/L1.md` §9.1).
+    /// so a replay could run twice (`docs/protocol.md`).
     IncarnationChanged,
     /// The named thing does not exist here: a host service this server
     /// does not serve, or an exchange that is not open.
@@ -286,7 +286,7 @@ pub enum TombstoneReason {
 }
 
 wire_enum! { as_wire / from_wire;
-/// Why the server ended an attach (`docs/spec/proto.md` §7.2), carried by
+/// Why the server ended an attach (`docs/protocol.md#attach-and-output`), carried by
 /// `DETACHED`.
 ///
 /// An unrecognised byte decodes as `None` (unstated), never as a frame
@@ -306,14 +306,14 @@ pub enum DetachReason {
     /// The peer violated the protocol; the sender is closing the transport.
     /// A fatal `ERROR` MUST be followed by `DETACHED` carrying this reason.
     ProtocolError = 4,
-    /// A post-HELLO authentication outcome failed (`workload-auth.md` §7).
+    /// A post-HELLO authentication outcome failed (`docs/remote.md#managing-credentials`).
     /// A pre-HELLO TLS refusal carries no frame, so it never states this.
     AuthenticationFailed = 5,
     /// The credential behind the connection's authority was revoked, or its
-    /// ceiling no longer contains the minted grant (`workload-auth.md` §7).
+    /// ceiling no longer contains the minted grant (`docs/remote.md#managing-credentials`).
     AuthorizationRevoked = 6,
     /// The credential behind the connection's authority reached its expiry
-    /// (`workload-auth.md` §7).
+    /// (`docs/remote.md#managing-credentials`).
     AuthorizationExpired = 7,
     /// The server hit an unrecoverable internal fault.
     InternalError = 255,
@@ -340,7 +340,7 @@ impl DetachReason {
 }
 
 /// Why a resource ceased to exist (`RESOURCE_CLOSED.reason`,
-/// `docs/spec/L1.md` §3.1).
+/// `docs/protocol.md#commands-events-resources`).
 ///
 /// An absent field or unrecognised value is [`Unknown`](Self::Unknown),
 /// never a decode error, so the ending is never hidden.

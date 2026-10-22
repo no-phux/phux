@@ -126,8 +126,8 @@ pub(super) fn fixtures() -> Vec<(&'static str, FrameKind)> {
                 )),
             },
         ),
-        // GET_STATE reply carrying all three trailing lists in the L1.md
-        // §9.1 order (ADR-0105): a zero-count resource-facet list, one
+        // GET_STATE reply carrying all three trailing lists in wire
+        // order (ADR-0105): a zero-count resource-facet list, one
         // satellite in the host inventory, then one keep-empty session row.
         (
             "snap_command_result_state_with_keep_empty_session",

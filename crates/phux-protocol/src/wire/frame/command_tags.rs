@@ -9,9 +9,10 @@ use super::tag_registry;
 #[cfg(doc)]
 use super::{AttachTarget, Command, CommandResult, CommandValue, StateScope};
 
-/// Wire tag for one [`Command`] variant inside the `COMMAND` envelope (SPEC
-/// §5.1); duplicates are E0081. Registry: `docs/spec/appendix-reserved.md`
-/// §2. `0x0a`, `0x0b`, and `0x2a` are freed and reserved.
+/// Wire tag for one [`Command`] variant inside the `COMMAND` envelope
+/// (`docs/protocol.md#commands-events-resources`); duplicates are E0081.
+/// Registry: `docs/protocol.md#changing-the-wire`.
+/// `0x0a`, `0x0b`, and `0x2a` are freed and reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 enum CommandTag {
@@ -152,9 +153,9 @@ pub(crate) const COMMAND_TAG_CLOSE_TAB_RESOURCES: u8 = CommandTag::CloseTabResou
 pub(crate) const COMMAND_TAG_NATIVE_AGENT: u8 = CommandTag::NativeAgent as u8;
 }
 
-// Organization commands (`docs/spec/L1.md` §5.7), contiguous from `0x1e`;
+// Organization commands (`docs/organization.md`), contiguous from `0x1e`;
 // `0x2f`..=`0x34` are reserved for the workspace commands
-// (`docs/spec/appendix-reserved.md` §2).
+// (`docs/protocol.md#changing-the-wire`).
 wire_tags! { Command;
 /// Wire tag for [`Command::GetOrganization`].
 pub(crate) const COMMAND_TAG_GET_ORGANIZATION: u8 = CommandTag::GetOrganization as u8;
@@ -190,7 +191,7 @@ pub(crate) const COMMAND_TAG_ARRANGEMENT_GET: u8 = CommandTag::ArrangementGet as
 pub(crate) const COMMAND_TAG_ARRANGEMENT_REPLACE: u8 = CommandTag::ArrangementReplace as u8;
 }
 
-// Delegated agent credentials (`docs/spec/L1.md` §5.7.5, ADR-0163), after the
+// Delegated agent credentials (`docs/substrate.md`, ADR-0163), after the
 // reserved workspace block. Not organization commands: they are served
 // whatever `ORGANIZATION` says, and answer with ordinary results.
 wire_tags! { Command;
@@ -200,7 +201,7 @@ pub(crate) const COMMAND_TAG_DELEGATE_AGENT: u8 = CommandTag::DelegateAgent as u
 pub(crate) const COMMAND_TAG_REVOKE_DELEGATION: u8 = CommandTag::RevokeDelegation as u8;
 }
 
-// `SESSION_KILL` (`docs/spec/L1.md` §5.7), an organization command gated on
+// `SESSION_KILL` (`docs/organization.md`), an organization command gated on
 // `features_ext.SESSION_KILL`, after the delegation pair.
 wire_tags! { Command;
 /// Wire tag for [`Command::SessionKill`].

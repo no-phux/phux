@@ -44,7 +44,7 @@ macro_rules! supervisory_commands {
     KillResource {
         /// The Terminal to terminate.
         terminal_id: ResourceId,
-        /// Idempotency key (`docs/spec/L1.md` §5.1.1), a trailing `bytes16`
+        /// Idempotency key (`docs/protocol.md`), a trailing `bytes16`
         /// read only when bytes remain; a repeat answers the first result.
         /// Send only to a server advertising
         /// [`ServerFeature::KeyedSignal`](crate::caps::ServerFeature::KeyedSignal).
@@ -277,7 +277,7 @@ macro_rules! supervisory_commands {
         terminal_id: ResourceId,
     },
     /// Append complete codec records to a producer-fed resource's output
-    /// (`docs/spec/L1.md` §5.1), at most
+    /// (`docs/protocol.md#commands-events-resources`), at most
     /// [`MAX_APPEND_BYTES`](super::MAX_APPEND_BYTES). Refused with
     /// [`ErrorCode::WrongResourceKind`], [`ErrorCode::NotProducer`],
     /// [`ErrorCode::RecordInvalid`] (nothing appended), or
@@ -289,7 +289,7 @@ macro_rules! supervisory_commands {
         bytes: Vec<u8>,
     },
     /// Kill one resource only if every precondition holds, checked and
-    /// applied atomically (`docs/spec/L1.md` §5.2.1, ADR-0109); otherwise
+    /// applied atomically (`docs/protocol.md`, ADR-0109); otherwise
     /// `PRECONDITION_FAILED`. Gated on
     /// [`ServerFeature::ConditionalKill`](crate::caps::ServerFeature::ConditionalKill).
     KillResourceIf {
@@ -301,7 +301,7 @@ macro_rules! supervisory_commands {
         /// like [`Command::KillResource::operation_id`].
         operation_id: Option<crate::ids::IdempotencyKey>,
     },
-    /// Open a listener for one remote attach (`docs/spec/L1.md` §5.6,
+    /// Open a listener for one remote attach (`docs/remote.md#attaching-over-ssh`,
     /// ADR-0120) that admits only a token minted for it and closes after
     /// `linger_secs` idle. **Local only**: refused off the Unix socket.
     /// Answered `OkWith(Json)` with port, cert fingerprint, token, and
@@ -318,7 +318,7 @@ macro_rules! supervisory_commands {
         linger_secs: u32,
     },
     /// [`Self::KillResources`] that does not release keep-empty on a fully
-    /// covered session (`docs/spec/L1.md` §5.2.2). Gated on
+    /// covered session (`docs/protocol.md#commands-events-resources`). Gated on
     /// [`ServerFeature::CloseTabResources`](crate::caps::ServerFeature::CloseTabResources).
     CloseTabResources {
         /// The Terminals to terminate.

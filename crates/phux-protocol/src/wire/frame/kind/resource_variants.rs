@@ -12,7 +12,7 @@ macro_rules! resource_frames {
     // L3 metadata frames (SPEC §7.4). Values are opaque bytes; the server
     // MUST NOT emit `MetadataChanged` to a non-L3 consumer (SPEC §16.4).
     /// `GET_METADATA` — read the value at `(scope, key)`
-    /// (`docs/spec/L3.md` §1); answered by `METADATA_VALUE`.
+    /// (`docs/protocol.md#commands-events-resources`); answered by `METADATA_VALUE`.
     GetMetadata {
         /// Correlates this request with its `METADATA_VALUE` reply.
         request_id: u32,
@@ -24,7 +24,7 @@ macro_rules! resource_frames {
     },
 
     /// `SET_METADATA` — atomically write `value` at `(scope, key)` and
-    /// broadcast `METADATA_CHANGED` (`docs/spec/L3.md` §1). A server MAY cap
+    /// broadcast `METADATA_CHANGED` (`docs/protocol.md`). A server MAY cap
     /// value size with [`ErrorCode::ResourceExhausted`].
     SetMetadata {
         /// Request correlation id.
@@ -38,7 +38,7 @@ macro_rules! resource_frames {
     },
 
     /// `DELETE_METADATA` — idempotently remove `key` from `scope`
-    /// (`docs/spec/L3.md` §1); a tombstone is broadcast iff the key existed.
+    /// (`docs/protocol.md`); a tombstone is broadcast iff the key existed.
     DeleteMetadata {
         /// Request correlation id.
         request_id: u32,
@@ -48,8 +48,8 @@ macro_rules! resource_frames {
         key: String,
     },
 
-    /// `LIST_METADATA` — list the key names in `scope` (`docs/spec/L3.md`
-    /// §1); answered by `METADATA_KEYS`.
+    /// `LIST_METADATA` — list the key names in `scope` (`docs/protocol.md`);
+    /// answered by `METADATA_KEYS`.
     ListMetadata {
         /// Correlates this request with its `METADATA_KEYS` reply.
         request_id: u32,
@@ -58,7 +58,7 @@ macro_rules! resource_frames {
     },
 
     /// `SUBSCRIBE_METADATA` — idempotently opt into `METADATA_CHANGED` for
-    /// `(scope, key)` (`docs/spec/L3.md` §1); implicit teardown on detach.
+    /// `(scope, key)` (`docs/protocol.md#commands-events-resources`); implicit teardown on detach.
     SubscribeMetadata {
         /// Scope to watch.
         scope: Scope,
@@ -68,7 +68,7 @@ macro_rules! resource_frames {
     },
 
     /// `METADATA_CHANGED` — `(scope, key)` was written (`Some`) or deleted
-    /// (`None`) (`docs/spec/L3.md` §1). The value rides inline.
+    /// (`None`) (`docs/protocol.md#commands-events-resources`). The value rides inline.
     MetadataChanged {
         /// Scope the change happened in.
         scope: Scope,
@@ -81,7 +81,7 @@ macro_rules! resource_frames {
         actor: Option<ActorRef>,
     },
 
-    /// `METADATA_VALUE` — reply to `GET_METADATA` (`docs/spec/L3.md` §1).
+    /// `METADATA_VALUE` — reply to `GET_METADATA` (`docs/protocol.md#commands-events-resources`).
     MetadataValue {
         /// Correlates this reply with a prior `GET_METADATA.request_id`.
         request_id: u32,
@@ -89,7 +89,7 @@ macro_rules! resource_frames {
         value: Option<Vec<u8>>,
     },
 
-    /// `METADATA_KEYS` — reply to `LIST_METADATA` (`docs/spec/L3.md` §1).
+    /// `METADATA_KEYS` — reply to `LIST_METADATA` (`docs/protocol.md#commands-events-resources`).
     /// Servers SHOULD sort keys; clients MUST NOT rely on the order.
     MetadataKeys {
         /// Correlates this reply with a prior `LIST_METADATA.request_id`.
@@ -99,7 +99,7 @@ macro_rules! resource_frames {
     },
 
     /// `LIST_DIRECTORY` — list the child directories of `path` on the
-    /// serving host (`docs/spec/L3.md` §4). Gated on
+    /// serving host (`docs/protocol.md#commands-events-resources`). Gated on
     /// [`ServerFeature::ListDirectory`](crate::caps::ServerFeature::ListDirectory).
     ListDirectory {
         /// Correlates this request with its `DIRECTORY_LISTING` reply.
@@ -107,13 +107,13 @@ macro_rules! resource_frames {
         /// Absolute path, `~` / `~/rest`, or empty (the serving user's home).
         path: String,
         /// Satellite to list on, relayed by a federation hub
-        /// (`docs/spec/L3.md` §4.1); `None` is the serving host. Gated on
+        /// (`docs/protocol.md#commands-events-resources`); `None` is the serving host. Gated on
         /// [`ServerFeature::ListDirectoryHost`](crate::caps::ServerFeature::ListDirectoryHost).
         host: Option<SatelliteHost>,
     },
 
     /// `DIRECTORY_LISTING` — server reply to a prior `LIST_DIRECTORY`
-    /// (`docs/spec/L3.md` §4): the listing, or a typed refusal.
+    /// (`docs/protocol.md#commands-events-resources`): the listing, or a typed refusal.
     DirectoryListing {
         /// Correlates this reply with a prior `LIST_DIRECTORY.request_id`.
         request_id: u32,
@@ -144,7 +144,7 @@ macro_rules! resource_frames {
     },
 
     /// `SPAWN_RESOURCE` — spawn a new resource under `group`
-    /// (`docs/spec/L1.md` §1 / §10.1); answered by `RESOURCE_SPAWNED`.
+    /// (`docs/protocol.md#commands-events-resources`); answered by `RESOURCE_SPAWNED`.
     SpawnResource {
         /// Correlates this request with its `RESOURCE_SPAWNED` reply.
         request_id: u32,
@@ -174,13 +174,13 @@ macro_rules! resource_frames {
         /// [`ServerFeature::SpawnInitialSize`](crate::caps::ServerFeature::SpawnInitialSize);
         /// a zero axis is ignored.
         initial_size: Option<(u16, u16)>,
-        /// Kind, parent, and agent facet (fields 11-14, `docs/spec/L1.md`
-        /// §1.2). `None` is a plain Terminal spawn and writes none of them.
+        /// Kind, parent, and agent facet (fields 11-14, `docs/protocol.md`).
+        /// `None` is a plain Terminal spawn and writes none of them.
         resource: Option<Box<SpawnResource>>,
     },
 
-    /// `RESOURCE_SPAWNED` — reply to `SPAWN_RESOURCE` (`docs/spec/L1.md` §1 /
-    /// §10.1) with the new id or a typed [`SpawnError`](super::SpawnError).
+    /// `RESOURCE_SPAWNED` — reply to `SPAWN_RESOURCE` (`docs/protocol.md`)
+    /// with the new id or a typed [`SpawnError`](super::SpawnError).
     ResourceSpawned {
         /// Correlates this reply with a prior `SpawnResource.request_id`.
         request_id: u32,
@@ -189,7 +189,7 @@ macro_rules! resource_frames {
     },
 
     /// `MOVE_RESOURCE` — re-parent a live Terminal into the window owning
-    /// `owner_terminal` (`docs/spec/L1.md` §1 / §10.1; ADR-0056).
+    /// `owner_terminal` (`docs/protocol.md#commands-events-resources`; ADR-0056).
     ///
     /// The id and all process state are unchanged; layout stays client L3.
     /// Local-only: satellite ids are refused with
@@ -212,7 +212,7 @@ macro_rules! resource_frames {
         result: MoveResult,
     },
 
-    /// `RESOURCE_CLOSED` — a resource ended (`docs/spec/L1.md` §1 / §10.1).
+    /// `RESOURCE_CLOSED` — a resource ended (`docs/protocol.md#commands-events-resources`).
     ResourceClosed {
         /// The resource that ended.
         terminal_id: ResourceId,
@@ -224,8 +224,8 @@ macro_rules! resource_frames {
         signal: Option<i32>,
     },
 
-    /// `RESIZE_TERMINAL` — per-Terminal PTY resize (`docs/spec/L1.md` §1 /
-    /// §10.2), alongside `VIEWPORT_RESIZE`. A zero axis SHOULD be a no-op.
+    /// `RESIZE_TERMINAL` — per-Terminal PTY resize (`docs/protocol.md#commands-events-resources`),
+    /// alongside `VIEWPORT_RESIZE`. A zero axis SHOULD be a no-op.
     ResizeTerminal {
         /// Target Terminal.
         terminal_id: ResourceId,
@@ -239,7 +239,7 @@ macro_rules! resource_frames {
         cell_px: Option<(u16, u16)>,
     },
 
-    /// `COMMAND` — control-plane request envelope (`docs/spec/L1.md` §5,
+    /// `COMMAND` — control-plane request envelope (`docs/protocol.md#commands-events-resources`,
     /// ADR-0021). Other frames MAY interleave before its `COMMAND_RESULT`.
     Command {
         /// Correlates this request with the eventual `CommandResult`.
@@ -257,7 +257,7 @@ macro_rules! resource_frames {
     },
 
     /// `SUBSCRIBE_EVENTS` — idempotently opt into the pushed [`AgentEvent`]
-    /// stream (`docs/spec/L1.md` §7.5). A pure registration: it does not
+    /// stream (`docs/protocol.md#commands-events-resources`). A pure registration: it does not
     /// attach, resize, or snapshot. Implicit teardown on detach.
     SubscribeEvents {
         /// Per-Terminal scope, or `None` for every Terminal the client may
@@ -269,7 +269,7 @@ macro_rules! resource_frames {
         after_seq: Option<u64>,
     },
 
-    /// `EVENT` — one pushed [`AgentEvent`] (`docs/spec/L1.md` §7.5).
+    /// `EVENT` — one pushed [`AgentEvent`] (`docs/protocol.md#commands-events-resources`).
     Event {
         /// The Terminal this event concerns, or `None` if server-scoped.
         terminal: Option<ResourceId>,

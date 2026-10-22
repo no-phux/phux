@@ -1,6 +1,6 @@
 //! Organization bodies and the field-tagged records nested in values.
 
-/// Fields of every organization body (`docs/spec/L1.md` §5.7).
+/// Fields of every organization body (`docs/organization.md`).
 ///
 /// One id space serves commands, `COMMITTED` / `ARRANGEMENT` values, session
 /// and resource records, and organization events, so a field means the same
@@ -101,7 +101,7 @@ pub mod org {
     pub const PROJECT: u32 = 42;
 }
 
-/// Fields of a `LaunchSpec` value (`docs/spec/L1.md` §5.7).
+/// Fields of a `LaunchSpec` value (`docs/organization.md`).
 pub mod org_launch {
     /// One argv element (`str`). Repeated, in order; absent = the default
     /// shell.
@@ -117,7 +117,7 @@ pub mod org_launch {
     pub const RESTORE: u32 = 5;
 }
 
-/// Fields of an `ORGANIZATION_PAGE` value (`docs/spec/L1.md` §5.7).
+/// Fields of an `ORGANIZATION_PAGE` value (`docs/organization.md`).
 pub mod org_page {
     /// `AuthorityId` (16 bytes).
     pub const AUTHORITY: u32 = 1;
@@ -142,7 +142,7 @@ pub mod org_page {
     pub const NEXT_CURSOR: u32 = 10;
 }
 
-/// `AgentEvent::Asked` body fields (`docs/spec/L1.md` §7.5); field-tagged,
+/// `AgentEvent::Asked` body fields (`docs/protocol.md#commands-events-resources`); field-tagged,
 /// unlike the positional `AgentEvent` bodies, so fields stay additive.
 pub mod event_asked {
     /// Stable question id (`str`).
@@ -155,7 +155,7 @@ pub mod event_asked {
     pub const ELAPSED_SECONDS: u32 = 4;
 }
 
-/// `AgentEvent::ResourceSpawned` body fields (`docs/spec/L1.md` §7.1);
+/// `AgentEvent::ResourceSpawned` body fields (`docs/protocol.md#commands-events-resources`);
 /// field-tagged, and an empty body is a root Terminal.
 pub mod event_pane_spawned {
     /// `ResourceKind` tag (`u8`); absent = `Terminal`.

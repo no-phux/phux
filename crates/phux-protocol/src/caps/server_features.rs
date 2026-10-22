@@ -109,7 +109,7 @@ macro_rules! define_server_features {
             /// Every known feature, in bit order.
             pub const ALL: &'static [Self] = &[$(Self::$variant),*];
 
-            /// The `docs/spec/proto.md` §6.2 constant, e.g. `"ACKNOWLEDGED_INPUT"`.
+            /// The `docs/protocol.md#handshake` constant, e.g. `"ACKNOWLEDGED_INPUT"`.
             #[must_use]
             pub const fn wire_name(self) -> &'static str {
                 match self {
@@ -333,19 +333,19 @@ pub enum ServerFeatureExt {
     /// viewport vote.
     ResizeCellPx = 0x0000_0002,
     /// A kill's reply follows a commit that is the whole visible teardown
-    /// (`docs/spec/L1.md` §5.2): the next `GET_STATE` already omits the
+    /// (`docs/protocol.md#commands-events-resources`): the next `GET_STATE` already omits the
     /// killed resources, so a client need not wait for their reap.
     CommittedTeardown = 0x0000_0004,
     /// `ATTACH_RESOURCE` accepts an agent cursor and explicitly distinguishes
     /// a resumed suffix from a full retained-ring replacement.
     AgentStreamResume = 0x0000_0008,
-    /// The server accepts the organization commands (`docs/spec/L1.md`
-    /// §5.7) and enforces every rule they carry: keyed sessions and
+    /// The server accepts the organization commands (`docs/organization.md`)
+    /// and enforces every rule they carry: keyed sessions and
     /// resources, revisions, receipts, refusals, and the organization
     /// events. A client that does not see it treats organization as
     /// read-only.
     Organization = 0x0000_0010,
-    /// The server accepts `SESSION_KILL` (`docs/spec/L1.md` §5.7): one
+    /// The server accepts `SESSION_KILL` (`docs/organization.md`): one
     /// command ends every member of a session and deletes it. Advertised
     /// only beside [`Self::Organization`].
     SessionKill = 0x0000_0020,
@@ -355,7 +355,7 @@ pub enum ServerFeatureExt {
     /// switch heap accounting. A client MUST see the bit before sending the
     /// command.
     PerfControl = 0x0000_0080,
-    /// The server accepts `SESSION_SET_PROJECT` (`docs/spec/L1.md` §5.7):
+    /// The server accepts `SESSION_SET_PROJECT` (`docs/organization.md`):
     /// link a session into a named project after creation, or clear the
     /// link. Advertised only beside [`Self::Organization`]; a client MUST see
     /// the bit before sending the command.
@@ -393,7 +393,7 @@ impl ServerFeatureExt {
         Self::HostServiceHttp,
     ];
 
-    /// The `docs/spec/proto.md` §6.2 constant, e.g. `"PATH_QUERY"`.
+    /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
     #[must_use]
     pub const fn wire_name(self) -> &'static str {
         match self {

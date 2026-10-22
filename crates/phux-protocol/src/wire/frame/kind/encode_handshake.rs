@@ -20,7 +20,7 @@ use crate::wire::info::{SessionSnapshot, encode_client_id, encode_session_snapsh
 use super::{FrameKind, id_field, u8_field, u16_field, u32_field, u64_field};
 
 impl FrameKind {
-    /// Write the `HELLO` payload (`docs/spec/proto.md` §6.1).
+    /// Write the `HELLO` payload (`docs/protocol.md#handshake`).
     pub(super) fn encode_hello(
         enc: &mut Encoder<'_>,
         client_name: &str,

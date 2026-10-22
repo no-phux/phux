@@ -1,4 +1,4 @@
-//! Keyed supervisory commands (`docs/spec/L1.md` §5.1.1): the optional
+//! Keyed supervisory commands (`docs/protocol.md#receipts-retries-and-backpressure`): the optional
 //! `operation_id: bytes16` on `KILL_RESOURCE`, `KILL_RESOURCE_IF`,
 //! `KILL_RESOURCES`, and `SIGNAL_TERMINAL`, the `KEYED_SIGNAL` bit, and
 //! `INCARNATION_CHANGED`.

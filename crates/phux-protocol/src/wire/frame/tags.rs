@@ -10,20 +10,20 @@ use super::{AgentEvent, MoveResult, SpawnResult};
 use super::{FrameType, tag_registry};
 
 wire_tags! { Message;
-/// Discriminant for `METADATA_VALUE` (server to client, `docs/spec/L3.md` §1):
+/// Discriminant for `METADATA_VALUE` (server to client, `docs/protocol.md`):
 /// the `GET_METADATA` reply, `None` when the key is absent.
 pub const TYPE_METADATA_VALUE: u8 = FrameType::MetadataValue as u8;
 
-/// Discriminant for `METADATA_KEYS` (server to client, `docs/spec/L3.md` §1):
+/// Discriminant for `METADATA_KEYS` (server to client, `docs/protocol.md`):
 /// the `LIST_METADATA` reply, sorted key names only.
 pub const TYPE_METADATA_KEYS: u8 = FrameType::MetadataKeys as u8;
 
-/// Discriminant for `LIST_DIRECTORY` (client to server, `docs/spec/L3.md` §4);
+/// Discriminant for `LIST_DIRECTORY` (client to server, `docs/protocol.md`);
 /// gated on [`ServerFeature::ListDirectory`](crate::caps::ServerFeature::ListDirectory).
 pub const TYPE_LIST_DIRECTORY: u8 = FrameType::ListDirectory as u8;
 
-/// Discriminant for `DIRECTORY_LISTING` (server to client, `docs/spec/L3.md`
-/// §4): the listing or a typed refusal.
+/// Discriminant for `DIRECTORY_LISTING` (server to client, `docs/protocol.md`):
+/// the listing or a typed refusal.
 pub const TYPE_DIRECTORY_LISTING: u8 = FrameType::DirectoryListing as u8;
 
 /// `PATH_QUERY` (client to server, L3 §5).
@@ -35,18 +35,18 @@ pub const TYPE_PATH_RESULTS: u8 = FrameType::PathResults as u8;
 // L1 resource lifecycle discriminants (SPEC §7.2 / §10.1).
 
 wire_tags! { Message;
-/// Discriminant for `SPAWN_RESOURCE` (client to server, `docs/spec/L1.md` §1 /
-/// §10.1); answered by [`TYPE_RESOURCE_SPAWNED`].
+/// Discriminant for `SPAWN_RESOURCE` (client to server, `docs/protocol.md`);
+/// answered by [`TYPE_RESOURCE_SPAWNED`].
 pub const TYPE_SPAWN_RESOURCE: u8 = FrameType::SpawnResource as u8;
-/// Discriminant for `RESIZE_TERMINAL` (client to server, `docs/spec/L1.md` §1 /
-/// §10.2): a per-Terminal PTY resize.
+/// Discriminant for `RESIZE_TERMINAL` (client to server, `docs/protocol.md`):
+/// a per-Terminal PTY resize.
 pub const TYPE_RESIZE_TERMINAL: u8 = FrameType::ResizeTerminal as u8;
 
 // `0x24..=0x29` and `0xA3..=0xA7` stay unallocated: non-Terminal things are a
 // `ResourceKind`, not a parallel frame family.
 
-/// Discriminant for `MOVE_RESOURCE` (client to server, `docs/spec/L1.md` §1 /
-/// §10.1, ADR-0056): re-parent a live Terminal into the window owning
+/// Discriminant for `MOVE_RESOURCE` (client to server, `docs/protocol.md`,
+/// ADR-0056): re-parent a live Terminal into the window owning
 /// `owner_terminal`, leaving its process and state untouched. Gated on
 /// `MOVE_RESOURCE`; answered by [`TYPE_RESOURCE_MOVED`].
 pub const TYPE_MOVE_RESOURCE: u8 = FrameType::MoveResource as u8;
@@ -54,8 +54,8 @@ pub const TYPE_MOVE_RESOURCE: u8 = FrameType::MoveResource as u8;
 /// `MOVE_RESOURCE` reply carrying a [`MoveResult`].
 pub const TYPE_RESOURCE_MOVED: u8 = FrameType::ResourceMoved as u8;
 
-/// Discriminant for `RESOURCE_CLOSED` (server to client, `docs/spec/L1.md` §1 /
-/// §10.1): a resource ended.
+/// Discriminant for `RESOURCE_CLOSED` (server to client, `docs/protocol.md`):
+/// a resource ended.
 pub const TYPE_RESOURCE_CLOSED: u8 = FrameType::ResourceClosed as u8;
 /// Discriminant for `RESOURCE_SPAWNED` (server to client): the
 /// `SPAWN_RESOURCE` reply carrying a [`SpawnResult`].
@@ -119,18 +119,18 @@ pub(crate) const SCOPE_TAG_GLOBAL: u8 = 2;
 // correlated by `request_id` instead of per-verb frames.
 
 wire_tags! { Message;
-/// Discriminant for `COMMAND` (client to server, `docs/spec/L1.md` §5).
+/// Discriminant for `COMMAND` (client to server, `docs/protocol.md#commands-events-resources`).
 pub const TYPE_COMMAND: u8 = FrameType::Command as u8;
-/// Discriminant for `COMMAND_RESULT` (server to client, `docs/spec/L1.md` §5).
+/// Discriminant for `COMMAND_RESULT` (server to client, `docs/protocol.md`).
 pub const TYPE_COMMAND_RESULT: u8 = FrameType::CommandResult as u8;
 }
 
 // Agent-event push stream (SPEC §7.5, ADR-0022).
 
 wire_tags! { Message;
-/// Discriminant for `SUBSCRIBE_EVENTS` (client to server, `docs/spec/L1.md` §7.5).
+/// Discriminant for `SUBSCRIBE_EVENTS` (client to server, `docs/protocol.md`).
 pub const TYPE_SUBSCRIBE_EVENTS: u8 = FrameType::SubscribeEvents as u8;
-/// Discriminant for `EVENT` (server to client, `docs/spec/L1.md` §7.5).
+/// Discriminant for `EVENT` (server to client, `docs/protocol.md#commands-events-resources`).
 pub const TYPE_EVENT: u8 = FrameType::Event as u8;
 }
 
@@ -191,33 +191,33 @@ pub(crate) const EVENT_TAG_APPROVAL_DECIDED: u8 = 0x0e;
 /// positional length-prefixed origin label. No stamp, so no credential id
 /// crosses, and an older decoder skips the tag by its length prefix.
 pub(crate) const EVENT_TAG_INPUT_ACTIVITY: u8 = 0x0f;
-/// Wire tag for [`AgentEvent::SessionCreated`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::SessionCreated`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_SESSION_CREATED: u8 = 0x10;
-/// Wire tag for [`AgentEvent::SessionRenamed`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::SessionRenamed`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_SESSION_RENAMED: u8 = 0x11;
-/// Wire tag for [`AgentEvent::SessionDeleted`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::SessionDeleted`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_SESSION_DELETED: u8 = 0x12;
-/// Wire tag for [`AgentEvent::SessionLifetimeChanged`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::SessionLifetimeChanged`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_SESSION_LIFETIME_CHANGED: u8 = 0x13;
-/// Wire tag for [`AgentEvent::MembershipChanged`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::MembershipChanged`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_MEMBERSHIP_CHANGED: u8 = 0x14;
-/// Wire tag for [`AgentEvent::ResourceCreated`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::ResourceCreated`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_RESOURCE_CREATED: u8 = 0x15;
-/// Wire tag for [`AgentEvent::ResourceRemoved`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::ResourceRemoved`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_RESOURCE_REMOVED: u8 = 0x16;
-/// Wire tag for [`AgentEvent::ActivationChanged`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::ActivationChanged`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_ACTIVATION_CHANGED: u8 = 0x17;
-/// Wire tag for [`AgentEvent::ArrangementChanged`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::ArrangementChanged`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_ARRANGEMENT_CHANGED: u8 = 0x18;
-/// Wire tag for [`AgentEvent::LeaseChanged`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::LeaseChanged`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_LEASE_CHANGED: u8 = 0x19;
-/// Wire tag for [`AgentEvent::IntakeChanged`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::IntakeChanged`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_INTAKE_CHANGED: u8 = 0x1a;
-/// Wire tag for [`AgentEvent::ResourceRenamed`] (`docs/spec/L1.md` §5.7).
+/// Wire tag for [`AgentEvent::ResourceRenamed`] (`docs/organization.md`).
 pub(crate) const EVENT_TAG_RESOURCE_RENAMED: u8 = 0x1b;
 /// Wire tag for [`AgentEvent::NativeAgentResult`].
 pub(crate) const EVENT_TAG_NATIVE_AGENT_RESULT: u8 = 0x1c;
-/// Wire tag for [`AgentEvent::SessionProjectSet`] (`docs/spec/L1.md` §5.7),
+/// Wire tag for [`AgentEvent::SessionProjectSet`] (`docs/organization.md`),
 /// after `NATIVE_AGENT_RESULT`.
 pub(crate) const EVENT_TAG_SESSION_PROJECT_SET: u8 = 0x1d;
 }

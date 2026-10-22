@@ -55,7 +55,7 @@ mod resource_variants;
 /// Declares [`FrameKind`] around the variant list the family macros build.
 macro_rules! frame_kind_enum {
     ($($variants:tt)*) => {
-/// Decoded wire frame (`docs/spec/proto.md` §7).
+/// Decoded wire frame (`docs/protocol.md`).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum FrameKind {
@@ -83,7 +83,7 @@ impl InputEvent {
 }
 
 impl FrameKind {
-    /// Type discriminant from `docs/spec/proto.md` §7.
+    /// Type discriminant from `docs/protocol.md`.
     #[must_use]
     pub const fn type_byte(&self) -> u8 {
         match self {
@@ -268,7 +268,7 @@ fn id_field(enc: &mut Encoder<'_>, field_id: u32, id: &ResourceId) {
 }
 
 /// Write fields 1-3 (resource, stream, generation) that open every
-/// bootstrap and history frame (`docs/spec/L1.md` §4.3).
+/// bootstrap and history frame (`docs/protocol.md#attach-and-output`).
 fn generation_fields(
     enc: &mut Encoder<'_>,
     terminal_id: &ResourceId,
