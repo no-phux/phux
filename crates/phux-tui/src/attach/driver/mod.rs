@@ -24,6 +24,7 @@ mod chrome;
 mod config_ui;
 mod entry;
 mod headless;
+mod loop_exit;
 mod loop_state;
 mod main_loop;
 mod orphans;
