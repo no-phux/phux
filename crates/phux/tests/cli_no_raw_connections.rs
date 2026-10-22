@@ -44,7 +44,7 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
     ("config.rs", 4, "`config set`'s `SET_METADATA`"),
     ("perf.rs", 1, "`GET_PERF`"),
     ("status.rs", 1, "`GET_STATE` for `phux status`"),
-    ("enroll.rs", 1, "pairing/enrollment dials"),
+    ("enroll/pair.rs", 1, "pairing/enrollment dials"),
     ("whoami.rs", 1, "`GET_METADATA` of `phux.whoami/v1`"),
     (
         "archive.rs",
