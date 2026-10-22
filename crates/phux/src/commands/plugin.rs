@@ -186,37 +186,55 @@ fn run_validate(manifest_arg: Option<&Path>, json: bool) -> ExitCode {
 }
 
 fn validate_manifest(path: &Path, json: bool) -> ExitCode {
-    match plugin::load_plugin_manifest(path) {
-        Ok(manifest) if json => {
-            let entry = RegistryEntry {
-                key: "plugins",
-                index: 0,
-                manifest_text: path.to_string_lossy().into_owned(),
-                manifest_path: manifest.manifest_path.clone(),
-                enabled: true,
-                manifest,
-            };
-            print_validation_json(&[entry])
-        }
-        Ok(manifest) => {
-            outln!("valid {}", manifest.id);
-            ExitCode::SUCCESS
-        }
-        Err(err) => fail(json, &format!("could not load {}: {err}", path.display())),
-    }
+    let manifest = match plugin::load_plugin_manifest(path) {
+        Ok(manifest) => manifest,
+        Err(err) => return fail(json, &format!("could not load {}: {err}", path.display())),
+    };
+    let entry = RegistryEntry {
+        key: "plugins",
+        index: 0,
+        manifest_text: path.to_string_lossy().into_owned(),
+        manifest_path: manifest.manifest_path.clone(),
+        enabled: true,
+        manifest,
+    };
+    report_validation(&[entry], json)
 }
 
 fn validate_registry(json: bool) -> ExitCode {
     match load_registry() {
-        Ok(entries) if json => print_validation_json(&entries),
-        Ok(entries) => {
-            for entry in entries {
-                outln!("valid {}", entry.manifest.id);
-            }
-            ExitCode::SUCCESS
-        }
+        Ok(entries) => report_validation(&entries, json),
         Err(err) => fail(json, &err),
     }
+}
+
+/// Verdict for manifests that loaded: valid unless an entry loads but can
+/// never act (an `[[events]]` hook whose `on` is not a hook event), which
+/// the loader tolerates and the server only warns about.
+fn report_validation(entries: &[RegistryEntry], json: bool) -> ExitCode {
+    let problems = dead_entry_problems(entries);
+    if !problems.is_empty() {
+        return fail(json, &problems.join("; "));
+    }
+    if json {
+        return print_validation_json(entries);
+    }
+    for entry in entries {
+        outln!("valid {}", entry.manifest.id);
+    }
+    ExitCode::SUCCESS
+}
+
+/// One line per dead manifest entry, naming the manifest it is in.
+fn dead_entry_problems(entries: &[RegistryEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .flat_map(|entry| {
+            plugin::dead_events(&entry.manifest)
+                .into_iter()
+                .map(|dead| format!("{}: {dead}", entry.manifest_path.display()))
+        })
+        .collect()
 }
 
 /// How many configured plugin manifests load cleanly.
