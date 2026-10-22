@@ -12,8 +12,9 @@
 //! verify what it wrote. The bulk command lane runs the disk work off the
 //! connection dispatcher and bounds how many run at once.
 
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use phux_protocol::wire::frame::{
@@ -52,13 +53,19 @@ fn read_chunk(path: &Path, offset: u64, max_bytes: u32) -> Result<FileChunk, (Er
         ));
     }
     let max = u64::from(max_bytes);
-    if usize::try_from(max_bytes).is_ok_and(|max| max > MAX_FILE_UPLOAD_CHUNK) {
+    if max_bytes == 0 || usize::try_from(max_bytes).is_ok_and(|max| max > MAX_FILE_UPLOAD_CHUNK) {
         return Err((
             ErrorCode::InvalidCommand,
-            format!("file download chunk exceeds the {MAX_FILE_UPLOAD_CHUNK} byte limit"),
+            format!("file download chunk must be 1..={MAX_FILE_UPLOAD_CHUNK} bytes"),
         ));
     }
-    let mut file = File::open(path).map_err(open_error)?;
+    // Non-blocking so opening a FIFO cannot park this blocking worker (and its
+    // bulk-lane slot) waiting for a writer before the regular-file check.
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(open_error)?;
     let metadata = file.metadata().map_err(io_error)?;
     if !metadata.is_file() {
         return Err((
@@ -170,5 +177,19 @@ mod tests {
         );
         let over = u32::try_from(MAX_FILE_UPLOAD_CHUNK + 1).unwrap();
         assert_eq!(code(read_chunk(&path, 0, over)), ErrorCode::InvalidCommand);
+        assert_eq!(code(read_chunk(&path, 0, 0)), ErrorCode::InvalidCommand);
+    }
+
+    #[test]
+    fn refuses_a_fifo_without_waiting_for_a_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipe");
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(read_chunk(&path, 0, 1)).unwrap());
+        let refused = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("opening a FIFO blocked waiting for a writer");
+        assert_eq!(refused.unwrap_err().0, ErrorCode::InvalidCommand);
     }
 }

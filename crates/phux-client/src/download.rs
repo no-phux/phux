@@ -11,7 +11,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use phux_protocol::caps::ServerFeatureExt;
-use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, MAX_FILE_UPLOAD_CHUNK};
+use phux_protocol::wire::frame::{
+    Command, CommandResult, CommandValue, FileChunk, MAX_FILE_UPLOAD_CHUNK,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::time::{Instant, timeout_at};
@@ -159,13 +161,9 @@ async fn fetch(
         request_id = request_id.wrapping_add(1);
         match reply?.into_result_ignoring_interleaved() {
             CommandResult::OkWith(CommandValue::FileChunk(chunk)) => {
-                if let Err(err) = file.write_all(&chunk.data) {
-                    return Ok(Err(refusal(format!("local write failed: {err}"))));
+                if let Err(refused) = write_chunk(&mut file, &mut hasher, transfer, &chunk) {
+                    return Ok(Err(refused));
                 }
-                hasher.update(&chunk.data);
-                transfer.bytes = transfer
-                    .bytes
-                    .saturating_add(u64::try_from(chunk.data.len()).unwrap_or(u64::MAX));
                 if let Some(expected) = chunk.sha256 {
                     if <[u8; 32]>::from(hasher.finalize()) != expected {
                         return Ok(Err(refusal(
@@ -197,6 +195,30 @@ async fn fetch(
     reason = "MAX_FILE_UPLOAD_CHUNK is 8 MiB, far below u32::MAX"
 )]
 const CHUNK: u32 = MAX_FILE_UPLOAD_CHUNK as u32;
+
+/// Append one chunk, refusing before any write when the running total would
+/// exceed the server's reported size or, on the final chunk, not equal it.
+fn write_chunk(
+    file: &mut impl Write,
+    hasher: &mut Sha256,
+    transfer: &mut Transfer,
+    chunk: &FileChunk,
+) -> Result<(), Refusal> {
+    let bytes = transfer
+        .bytes
+        .saturating_add(u64::try_from(chunk.data.len()).unwrap_or(u64::MAX));
+    if bytes > chunk.size || (chunk.sha256.is_some() && bytes != chunk.size) {
+        return Err(refusal(format!(
+            "the server returned {bytes} bytes for a {}-byte file; retry",
+            chunk.size
+        )));
+    }
+    file.write_all(&chunk.data)
+        .map_err(|err| refusal(format!("local write failed: {err}")))?;
+    hasher.update(&chunk.data);
+    transfer.bytes = bytes;
+    Ok(())
+}
 
 /// A fresh sibling of `local` for the bytes in flight. Random so a
 /// pre-placed file or symlink at a guessable name cannot be clobbered or
@@ -297,5 +319,45 @@ mod tests {
         publish(file, &part, &local, true).unwrap();
         assert_eq!(std::fs::read(&local).unwrap(), b"new");
         assert!(!part.exists());
+    }
+
+    #[test]
+    fn chunks_inconsistent_with_the_reported_size_are_refused_before_writing() {
+        let mut transfer = Transfer {
+            host: None,
+            remote_path: "/remote/file".into(),
+            local_path: PathBuf::from("/tmp/out"),
+            bytes: 0,
+        };
+        let overrun = FileChunk {
+            size: 1,
+            data: vec![1, 2],
+            sha256: None,
+        };
+        let short_final = FileChunk {
+            size: 2,
+            data: vec![1],
+            sha256: Some(Sha256::digest([1]).into()),
+        };
+        for chunk in [overrun, short_final] {
+            let mut written = Vec::new();
+            let refused =
+                write_chunk(&mut written, &mut Sha256::new(), &mut transfer, &chunk).unwrap_err();
+            assert!(
+                refused.message.contains("-byte file"),
+                "{}",
+                refused.message
+            );
+            assert!(written.is_empty());
+            assert_eq!(transfer.bytes, 0);
+        }
+        let exact = FileChunk {
+            size: 1,
+            data: vec![7],
+            sha256: Some(Sha256::digest([7]).into()),
+        };
+        let mut written = Vec::new();
+        write_chunk(&mut written, &mut Sha256::new(), &mut transfer, &exact).unwrap();
+        assert_eq!((written, transfer.bytes), (vec![7], 1));
     }
 }
