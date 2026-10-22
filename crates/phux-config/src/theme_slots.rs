@@ -23,10 +23,11 @@ pub fn slot_names() -> Vec<&'static str> {
         .collect()
 }
 
-/// Whether the renderer can parse `spec` as a slot colour: a named colour
-/// (`cyan`, `light-red`, `bright_blue`, `grey`, `reset`, ...), an indexed
-/// colour (`0` to `255`), or `#rrggbb`. Mirrors ratatui's `Color::from_str`;
-/// phux-tui pins the agreement with a test.
+/// Whether the renderer can parse `spec` as a slot colour.
+///
+/// Accepts a named colour (`cyan`, `light-red`, `bright_blue`, `grey`,
+/// `reset`, ...), an indexed colour (`0` to `255`), or `#rrggbb`. Mirrors
+/// ratatui's `Color::from_str`; phux-tui pins the agreement with a test.
 #[must_use]
 pub fn is_color(spec: &str) -> bool {
     is_named_color(spec) || spec.parse::<u8>().is_ok() || is_hex_color(spec)
