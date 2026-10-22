@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.6.2...opencode-plugin-v0.7.0) (2026-10-22)
+
+
+### Features
+
+* **agents:** mail reaches the agent's conversation, never its terminal ([#1721](https://github.com/no-phux/phux/issues/1721)) ([b25f28e](https://github.com/no-phux/phux/commit/b25f28e02324636311892f2a16efffd4230ddd0f))
+
 ## [0.6.2](https://github.com/no-phux/phux/compare/opencode-plugin-v0.6.1...opencode-plugin-v0.6.2) (2026-10-18)
 
 ### Bug Fixes

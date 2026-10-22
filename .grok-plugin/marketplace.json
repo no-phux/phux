@@ -7,7 +7,7 @@
     {
       "name": "phux",
       "description": "Expose shared phux terminals as Grok tools and lifecycle metadata.",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "source": "./integrations/grok"
     }
   ]

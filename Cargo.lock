@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "phux"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "anstyle",
  "base64 0.23.1",
@@ -2629,7 +2629,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-host"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -2646,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "phux-agent-rules"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "regex",
  "serde",
@@ -2657,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2687,7 +2687,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "ciborium",
  "criterion",
@@ -2706,7 +2706,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2732,7 +2732,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2764,7 +2764,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "chrono",
  "insta",
@@ -2785,7 +2785,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "nix 0.31.3",
  "serde",
@@ -2797,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "proptest",
  "serde",
@@ -2808,7 +2808,7 @@ dependencies = [
 
 [[package]]
 name = "phux-crash"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "libc",
  "tempfile",
@@ -2817,7 +2817,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -2837,7 +2837,7 @@ dependencies = [
 
 [[package]]
 name = "phux-git"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "libc",
  "memchr",
@@ -2847,7 +2847,7 @@ dependencies = [
 
 [[package]]
 name = "phux-mcp"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "jsonschema",
  "phux-client",
@@ -2866,7 +2866,7 @@ dependencies = [
 
 [[package]]
 name = "phux-mission"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "phux-work",
  "serde",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "libc",
  "nix 0.31.3",
@@ -2884,7 +2884,7 @@ dependencies = [
 
 [[package]]
 name = "phux-plugin"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "phux-config",
  "serde",
@@ -2896,7 +2896,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2914,7 +2914,7 @@ dependencies = [
 
 [[package]]
 name = "phux-record"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "gif",
  "libghostty-vt",
@@ -2927,7 +2927,7 @@ dependencies = [
 
 [[package]]
 name = "phux-relay"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "phux-dial",
  "phux-protocol",
@@ -2939,7 +2939,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "phux-server-testkit"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "bytes",
  "libghostty-vt",
@@ -3018,7 +3018,7 @@ dependencies = [
 
 [[package]]
 name = "phux-tui"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "bytes",
  "insta",
@@ -3049,7 +3049,7 @@ dependencies = [
 
 [[package]]
 name = "phux-usage"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -3062,7 +3062,7 @@ dependencies = [
 
 [[package]]
 name = "phux-work"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "chrono",
  "getrandom 0.2.17",
@@ -3154,7 +3154,7 @@ dependencies = [
 
 [[package]]
 name = "portable-pty-adopt"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -3293,7 +3293,7 @@ checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quictun"
-version = "0.110.0"
+version = "0.111.0"
 dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
