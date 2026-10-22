@@ -71,6 +71,7 @@ mod org_plane;
 pub mod organization;
 mod responses;
 mod roster;
+mod service_http;
 mod state;
 mod topology;
 
@@ -94,6 +95,7 @@ pub use options::{
 };
 pub use org_plane::{ArrangementSubmitError, mint_operation};
 pub use organization::{InboxView, IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};
+pub use service_http::{MAX_SERVICE_HTTP_IN_FLIGHT, ServiceHttpCall, ServiceHttpError};
 pub use topology::{AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology};
 
 /// Upper bound on undrained events.
@@ -175,6 +177,8 @@ enum Pending {
     Transcribe(u64),
     /// A checkout method on this Terminal's checkout.
     Checkout(ResourceId),
+    /// A host-service HTTP command; its answer resolves a waiting call.
+    ServiceHttp,
     /// The runtime's own subscription to an `AgentSession` stream.
     AgentSubscription(ResourceId),
     /// The runtime's release of an `AgentSession` stream whose pane it

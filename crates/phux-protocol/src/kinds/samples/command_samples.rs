@@ -51,10 +51,13 @@ const fn command_variant(command: &Command) -> usize {
         Command::SessionSetProject { .. } => 46,
         Command::GetFile { .. } => 47,
         Command::Checkout { .. } => 48,
+        Command::ServiceHttpOpen { .. } => 49,
+        Command::ServiceHttpRead { .. } => 50,
+        Command::ServiceHttpClose { .. } => 51,
     }
 }
 
-const COMMAND_VARIANTS: usize = 49;
+const COMMAND_VARIANTS: usize = 52;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -469,6 +472,27 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             },
             &C_CHECKOUT,
         ),
+        (
+            Command::ServiceHttpOpen {
+                request: Box::new(crate::service_http::ServiceHttpRequest {
+                    host: None,
+                    service: "opencode".to_owned(),
+                    method: "GET".to_owned(),
+                    target: "/api/info".to_owned(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                }),
+            },
+            &C_SERVICE_HTTP,
+        ),
+        (
+            Command::ServiceHttpRead {
+                exchange: 1,
+                max_bytes: 1,
+            },
+            &C_SERVICE_HTTP,
+        ),
+        (Command::ServiceHttpClose { exchange: 1 }, &C_SERVICE_HTTP),
         (
             Command::ReportAsked {
                 terminal_id: terminal(),

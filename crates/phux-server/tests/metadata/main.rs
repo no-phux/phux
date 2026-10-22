@@ -23,4 +23,5 @@ mod list_directory;
 mod metadata_reply;
 mod path_query;
 mod perf_control;
+mod service_http;
 mod whoami;

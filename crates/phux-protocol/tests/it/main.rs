@@ -10,6 +10,7 @@ mod hot_path_alloc;
 mod kinds_table;
 mod org_wire_snapshots;
 mod scope_encoding;
+mod service_http_snapshots;
 mod wire_alloc_dos;
 mod wire_contract;
 mod wire_tag_registry;

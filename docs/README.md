@@ -65,6 +65,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Organization](./organization.md): how the server owns sessions and their contents.
 - [Substrate](./substrate.md): how people, hosts, and agents fit together.
 - [Protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
+- [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
 - [Compatibility](./compatibility.md): what an older or newer peer sees.
 - [Embedding](./embedding.md): put a phux terminal in your own app.
 - [Development](./development.md): set up, build, and run the checks.

@@ -1548,6 +1548,7 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
@@ -2950,6 +2951,10 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "httlib-huffman",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "iai-callgrind",
  "libc",
  "libghostty-vt",

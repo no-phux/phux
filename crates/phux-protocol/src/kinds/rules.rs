@@ -280,6 +280,13 @@ static C_GET_FILE: Rule = Rule::verbs("`GET_FILE`", &[Verb::Input], GLOBAL);
 // named Terminal, and stage/unstage write its checkout's index: `INPUT`, not
 // `OBSERVE`, on the Terminal whose working directory selects the checkout.
 static C_CHECKOUT: Rule = Rule::verbs("`CHECKOUT`", &[Verb::Input], Subject::NamedTerminal);
+// A host service answers as the serving user; an `INPUT` holder on this
+// server can already run it from any shell, so `INPUT` on the server.
+static C_SERVICE_HTTP: Rule = Rule::verbs(
+    "`SERVICE_HTTP_OPEN`, `SERVICE_HTTP_READ`, `SERVICE_HTTP_CLOSE`",
+    &[Verb::Input],
+    GLOBAL,
+);
 static C_TRANSCRIBE: Rule = Rule::verbs("`TRANSCRIBE`", &[Verb::Input], Subject::NamedTerminal);
 static C_DETACH_CLIENTS_SESSION: Rule = Rule::verbs(
     "`DETACH_CLIENTS { session: Some }`",
@@ -404,7 +411,7 @@ static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclass
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 50] = [
+pub static COMMAND_RULES: [&Rule; 51] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -426,6 +433,7 @@ pub static COMMAND_RULES: [&Rule; 50] = [
     &C_PUT_FILE,
     &C_GET_FILE,
     &C_CHECKOUT,
+    &C_SERVICE_HTTP,
     &C_TRANSCRIBE,
     &C_DETACH_CLIENTS_SESSION,
     &C_DETACH_CLIENTS_ALL,

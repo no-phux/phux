@@ -50,6 +50,13 @@ records explain history; [look them up deliberately](./architecture.md#historica
   dotfiles tracked at `$HOME`) therefore exposes every file in that
   checkout outside `.git` to that Terminal's `INPUT` holders
   ([protocol](./protocol.md#checkout-methods)).
+- A host service (OpenCode) is reached through the phux connection, not its
+  own port, tunnel, or pairing broker: the server names the service, owns
+  its loopback origin and mints its own credential, and relays one HTTP
+  exchange at a time that the client pulls in chunks. phux authorization is
+  the only gate, `INPUT` on the server as for `GET_FILE`, so revoking a
+  device revokes its OpenCode access and no service credential reaches it
+  ([host services](./host-services.md)).
 
 **Clients**
 

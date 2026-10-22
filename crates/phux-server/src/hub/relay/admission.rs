@@ -71,6 +71,19 @@ impl RelaySession {
                 ),
             });
         }
+        if crate::runtime::service_http::is_service_http(command)
+            && !self
+                .satellite_features_ext
+                .contains(ServerFeatureExt::HostServiceHttp)
+        {
+            return Some(CommandResult::Error {
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                message: format!(
+                    "satellite {} lacks HOST_SERVICE_HTTP; nothing was forwarded",
+                    self.host
+                ),
+            });
+        }
         self.keyed_capability_rejection(command)
     }
 

@@ -45,6 +45,7 @@ mod resume;
 pub mod revocation;
 #[cfg(test)]
 mod revocation_conformance;
+pub(crate) mod service_http;
 mod upgrade;
 mod upload;
 mod voice;

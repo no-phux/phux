@@ -213,6 +213,7 @@ pub(super) async fn negotiate_hello(
                 ServerFeatureExt::SessionProject,
                 ServerFeatureExt::FileDownload,
                 ServerFeatureExt::Checkout,
+                ServerFeatureExt::HostServiceHttp,
             ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),

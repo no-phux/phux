@@ -36,6 +36,7 @@ pub mod kinds;
 pub mod native_agent;
 pub mod policy;
 pub mod scope;
+pub mod service_http;
 
 #[cfg(feature = "server")]
 pub mod sgr;

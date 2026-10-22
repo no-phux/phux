@@ -3,10 +3,11 @@
 use super::{Client, ResourceId};
 use crate::control::{
     CheckoutResponse, ControlPlane, DirectoryListing, FileUploadReceipt, GlobalMetadata,
-    PathAnswer, TranscribeReceipt,
+    PathAnswer, ServiceHttpError, TranscribeReceipt,
 };
 use phux_protocol::checkout::CheckoutRequest;
 use phux_protocol::ids::SatelliteHost;
+use phux_protocol::service_http::{ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest};
 
 impl Client {
     /// Upload bytes into the terminal-owning server's sandbox.
@@ -118,5 +119,41 @@ impl Client {
     #[must_use]
     pub fn take_global_metadata(&self) -> Vec<GlobalMetadata> {
         self.inner.with(ControlPlane::take_global_metadata)
+    }
+}
+
+impl Client {
+    /// Send one HTTP request to a service on the server's host (or a named
+    /// satellite's) and wait for its response head. Refused before sending
+    /// when the server lacks `HOST_SERVICE_HTTP`.
+    pub async fn service_http_open(
+        &self,
+        request: ServiceHttpRequest,
+    ) -> Result<ServiceHttpHead, ServiceHttpError> {
+        let call = self
+            .inner
+            .with(|control| control.service_http_open(request))?;
+        call.await
+    }
+
+    /// Read the next body bytes of `exchange`. An empty, unended chunk means
+    /// the server's idle deadline passed: read again.
+    pub async fn service_http_read(
+        &self,
+        exchange: u64,
+        max_bytes: u32,
+    ) -> Result<ServiceHttpChunk, ServiceHttpError> {
+        let call = self
+            .inner
+            .with(|control| control.service_http_read(exchange, max_bytes))?;
+        call.await
+    }
+
+    /// Close `exchange`, ending a read in flight. Idempotent.
+    pub async fn service_http_close(&self, exchange: u64) -> Result<(), ServiceHttpError> {
+        let call = self
+            .inner
+            .with(|control| control.service_http_close(exchange))?;
+        call.await
     }
 }
