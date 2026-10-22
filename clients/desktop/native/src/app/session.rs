@@ -5,6 +5,7 @@ mod journey_tests;
 mod keys;
 mod projects;
 mod quick;
+mod resume;
 #[cfg(test)]
 mod tests;
 mod windows;
@@ -174,6 +175,10 @@ impl Desktop {
             _closed: None,
             fonts: false,
         });
+        let updates = desktop.read(cx).updates.clone();
+        updates.update(cx, |updater, _| {
+            updater.desktop = Some(desktop.downgrade());
+        });
         let weak = desktop.downgrade();
         // Deferred: a window can be removed from inside a `Desktop` update (quick toggle).
         let closed = cx.on_window_closed(move |cx, id| {
@@ -207,6 +212,15 @@ impl Desktop {
         options: AppOptions,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<WindowHandle<Root>> {
+        self.launch_with_restore(options, false, cx)
+    }
+
+    pub(in crate::app) fn launch_with_restore(
+        &mut self,
+        options: AppOptions,
+        restore: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<WindowHandle<Root>> {
         self.phux = options.phux;
         self.socket = options.socket;
         self.home_session = options.session.clone();
@@ -227,7 +241,13 @@ impl Desktop {
             self.fonts = true;
         }
         let focus = crate::diag::may_activate();
-        let handle = if options.quick {
+        let resumed = restore
+            .then(|| self.restore_update(focus, cx))
+            .transpose()?
+            .flatten();
+        let handle = if let Some(handle) = resumed {
+            handle
+        } else if options.quick {
             let mut request = self.quick_request(cx);
             request.initial_terminal = options.initial_terminal;
             request.startup_error = options.startup_error;

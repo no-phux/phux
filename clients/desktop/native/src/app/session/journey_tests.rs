@@ -9,6 +9,7 @@ mod identity;
 mod killing;
 mod layouts;
 mod native_launch;
+mod resume;
 mod window_transfer;
 
 use std::path::PathBuf;
