@@ -15,6 +15,7 @@ import {
 } from "./awareness.js";
 import { PhuxTargetPicker } from "./components.js";
 import { registerPhuxLifecycle } from "./lifecycle.js";
+import { registerPhuxMail } from "./mail.js";
 import type { AgentPane } from "./schemas.js";
 import { registerPhuxTools } from "./tools.js";
 import {
@@ -147,6 +148,13 @@ export function registerPhuxExtension(
       onError: (error) => {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(`[phux] lifecycle: ${message}`);
+      },
+    });
+    registerPhuxMail(pi, {
+      env: environment,
+      onError: (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[phux] mail: ${message}`);
       },
     });
   }

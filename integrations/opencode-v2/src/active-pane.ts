@@ -14,6 +14,11 @@ export class ActivePane {
 
   constructor(private readonly lifecycle: PaneLifecycle) {}
 
+  /** The session this TUI shows, if any. */
+  get visible(): string | undefined {
+    return this.sessionID;
+  }
+
   show(sessionID: string | undefined, state: OpenCodeLifecycleState = "idle"): void {
     if (sessionID !== this.sessionID) {
       if (this.sessionID !== undefined) void this.lifecycle.deleteSession(this.sessionID);

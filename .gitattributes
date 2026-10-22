@@ -7,5 +7,7 @@ docs/reference/cli.md linguist-generated=true
 docs/reference/config.md linguist-generated=true
 docs/assets/*.cast linguist-generated=true
 integrations/runtime/dist/** linguist-generated=true
+integrations/opencode-v2/index.js linguist-generated=true
+integrations/opencode-v2/tui.js linguist-generated=true
 crates/phux-record/assets/*.bdf linguist-vendored=true
 docs/spec/wire-schema.json linguist-generated=true

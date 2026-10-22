@@ -27,6 +27,13 @@ the tail of each tool's output. `PHUX_AGENT_EMIT_RAW=1` separately
 opts the whole raw hook payload in. The plugin never declares a
 state: the server derives it from the stream, or from its own detector.
 
+Mail sent to Claude's pane reaches the conversation through the hooks:
+`phux mail hook-context` returns it as `additionalContext` on `SessionStart`,
+`UserPromptSubmit`, `PostToolUse` and `PostToolUseFailure`, and as a `block`
+decision on `Stop`, so Claude goes on and handles it. Each message is
+delivered once. Claude idle at its prompt runs no hook, so its mail waits in
+the store until the next one; nothing is ever typed into the pane.
+
 For development:
 
 ```sh

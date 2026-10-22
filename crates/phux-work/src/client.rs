@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::coord::{
     AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, RenewClaim, SendMail,
-    Sent, TakeClaim,
+    Sent, TakeClaim, WaitMail,
 };
 use crate::error::Error;
 use crate::id::Alias;
@@ -296,6 +296,21 @@ impl Client {
         }
     }
 
+    /// Take the reader's undelivered mail, waiting up to the request's
+    /// timeout for some to arrive. The keeper holds the request open; an
+    /// empty result means the deadline passed. See [`crate::Store::take_mail`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::add`].
+    pub fn wait_mail(&self, request: WaitMail) -> Result<Vec<Mail>, Error> {
+        let reply = Duration::from_millis(request.timeout_ms).saturating_add(REPLY_TIMEOUT);
+        match self.call_within(Request::WaitMail(request), reply)? {
+            Response::Mail(mail) => Ok(mail),
+            other => Err(unexpected(&other)),
+        }
+    }
+
     /// Acquire a new lease. See [`crate::Store::take_claim`].
     ///
     /// # Errors
@@ -354,8 +369,9 @@ impl Client {
         stream: &UnixStream,
         line: &str,
         allow_upgrade: bool,
+        reply: Duration,
     ) -> Result<Option<Response>, Error> {
-        let response = exchange(stream, line)?;
+        let response = exchange(stream, line, reply)?;
         let legacy_rejection = matches!(
             &response,
             Response::Fault(Fault::BadRequest { keeper: None, .. })
@@ -369,7 +385,7 @@ impl Client {
         }))?;
         let probe_stream = UnixStream::connect(&self.endpoint.socket)
             .map_err(|err| Error::Keeper(format!("legacy compatibility probe: {err}")))?;
-        match exchange(&probe_stream, &probe)? {
+        match exchange(&probe_stream, &probe, REPLY_TIMEOUT)? {
             stale @ Response::Fault(Fault::Stale { .. }) => classify_reply(stale, allow_upgrade),
             _ => classify_reply(response, allow_upgrade),
         }
@@ -392,6 +408,11 @@ impl Client {
     }
 
     fn call(&self, request: Request) -> Result<Response, Error> {
+        self.call_within(request, REPLY_TIMEOUT)
+    }
+
+    /// One request, whose reply may take up to `reply` once connected.
+    fn call_within(&self, request: Request, reply: Duration) -> Result<Response, Error> {
         let line = encode_request(request)?;
         let started = Instant::now();
         let mut pause = PAUSE_START;
@@ -400,14 +421,16 @@ impl Client {
         let mut replaced_stale = false;
         loop {
             match UnixStream::connect(&self.endpoint.socket) {
-                Ok(stream) => match self.compatible_exchange(&stream, &line, !replaced_stale)? {
-                    // That keeper exits after saying so; start this build's.
-                    None => {
-                        replaced_stale = true;
-                        keeper = None;
+                Ok(stream) => {
+                    match self.compatible_exchange(&stream, &line, !replaced_stale, reply)? {
+                        // That keeper exits after saying so; start this build's.
+                        None => {
+                            replaced_stale = true;
+                            keeper = None;
+                        }
+                        Some(response) => return Ok(response),
                     }
-                    Some(response) => return Ok(response),
-                },
+                }
                 Err(err) if socket_unavailable(&err) => {
                     self.start_if_needed(&mut keeper, &mut spawns)?;
                 }
@@ -455,11 +478,9 @@ fn encode_request(request: Request) -> Result<String, Error> {
     Ok(line)
 }
 
-fn exchange(stream: &UnixStream, line: &str) -> Result<Response, Error> {
+fn exchange(stream: &UnixStream, line: &str, reply: Duration) -> Result<Response, Error> {
     let broken = |err: std::io::Error| Error::Keeper(format!("exchange failed: {err}"));
-    stream
-        .set_read_timeout(Some(REPLY_TIMEOUT))
-        .map_err(broken)?;
+    stream.set_read_timeout(Some(reply)).map_err(broken)?;
     stream
         .set_write_timeout(Some(REPLY_TIMEOUT))
         .map_err(broken)?;
@@ -510,7 +531,7 @@ mod compatibility_tests {
             .unwrap();
             // The endpoint has no listener. Any compatibility probe would fail,
             // rather than returning this unchanged parser error.
-            let response = client.compatible_exchange(&stream, &line, allow_upgrade);
+            let response = client.compatible_exchange(&stream, &line, allow_upgrade, REPLY_TIMEOUT);
             assert!(
                 matches!(response, Err(Error::Keeper(message)) if message == "invalid payload")
             );

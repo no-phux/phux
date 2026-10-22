@@ -2856,6 +2856,7 @@ dependencies = [
  "phux-protocol",
  "phux-server",
  "phux-server-testkit",
+ "phux-work",
  "serde",
  "serde_json",
  "tempfile",

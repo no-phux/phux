@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
+const mail = (event) => `mail hook-context --event ${event}`;
 const script = fileURLToPath(new URL("../scripts/phux-hook.sh", import.meta.url));
 
 // The nine registrations and the arm each one dispatches to.
@@ -60,6 +61,7 @@ case "$1 \${2:-}" in
   "status --json") printf '{"running":true,"features":%s}\\n' "\${FAKE_FEATURES:-[]}"; exit 0 ;;
   "agent hook-payload") cat > /dev/null; [ -z "\${FAKE_FIELDS:-}" ] || printf '%s\\n' "$FAKE_FIELDS"; exit 0 ;;
   "agent hook-transcript") cat > /dev/null; [ -z "\${FAKE_TRANSCRIPT:-}" ] || printf '%s\\n' "$FAKE_TRANSCRIPT"; exit 0 ;;
+  "mail hook-context") [ -z "\${FAKE_MAIL:-}" ] || printf '%s\\n' "$FAKE_MAIL"; exit 0 ;;
 esac
 case "$*" in *"--data -") printf 'stdin:%s\\n' "$(cat)" >> "$PHUX_TEST_LOG" ;; esac
 if [ "$1 \${2:-}" = "agent emit" ] && [ -n "\${FAKE_REFUSALS:-}" ]; then
@@ -172,16 +174,18 @@ test("against a server with resource kinds the arms open, feed, and close the se
   const probe = ["status --json", "agent hook-payload"];
   assert.deepEqual(lines, [
     [...probe, "agent set @42 --name claude --kind claude",
-      "agent session open @42 --provider claude --native-id=sess-1", "agent emit @42 --type session_start"],
-    [...probe, "agent set @42 --name claude --kind claude"],
-    [...probe, 'agent emit @42 --type prompt --data {"chars":18}', "agent hook-transcript"],
+      "agent session open @42 --provider claude --native-id=sess-1", "agent emit @42 --type session_start",
+      mail("SessionStart")],
+    [...probe, "agent set @42 --name claude --kind claude", mail("SessionStart")],
+    [...probe, 'agent emit @42 --type prompt --data {"chars":18}', "agent hook-transcript", mail("UserPromptSubmit")],
     [...probe, 'agent emit @42 --type tool_start --data {"tool_name":"Bash"}'],
-    [...probe, 'agent emit @42 --type tool_end --data {"tool_name":"mcp__phux__phux_ls"}', "agent hook-transcript"],
+    [...probe, 'agent emit @42 --type tool_end --data {"tool_name":"mcp__phux__phux_ls"}', "agent hook-transcript",
+      mail("PostToolUse")],
     [...probe, "agent emit @42 --type ask", "ask @42 Claude needs attention"],
     [...probe, 'agent emit @42 --type notification --data {"kind":"permission"}', "ask @42 Claude needs attention"],
     [...probe, 'agent emit @42 --type notification --data {"kind":"elicitation"}', "ask @42 Claude needs attention"],
     [...probe, 'agent emit @42 --type notification --data {"kind":"idle"}', "ask @42 Claude needs attention"],
-    [...probe, "agent hook-transcript", "agent emit @42 --type stop"],
+    [...probe, "agent hook-transcript", "agent emit @42 --type stop", mail("Stop")],
     [...probe, 'agent emit @42 --type session_end --data {"reason":"prompt_input_exit"}',
       "agent session close @42", "agent clear @42"],
   ]);
@@ -286,9 +290,11 @@ test("transcript entries ride provider_raw on stdin by default and PHUX_AGENT_TR
     ["tool-start", "{}", f("PreToolUse")],
   ]);
   const transcript = ["agent hook-transcript", "agent emit @42 --type provider_raw --data -", `stdin:${entry}`];
-  assert.deepEqual(working, ["status --json", "agent hook-payload", 'agent emit @42 --type prompt --data {"chars":13}', ...transcript]);
-  assert.deepEqual(toolEnd, ["status --json", "agent hook-payload", "agent emit @42 --type tool_end", ...transcript]);
-  assert.deepEqual(done, ["status --json", "agent hook-payload", ...transcript, "agent emit @42 --type stop"],
+  assert.deepEqual(working, ["status --json", "agent hook-payload", 'agent emit @42 --type prompt --data {"chars":13}', ...transcript,
+    mail("UserPromptSubmit")]);
+  assert.deepEqual(toolEnd, ["status --json", "agent hook-payload", "agent emit @42 --type tool_end", ...transcript,
+    mail("PostToolUse")]);
+  assert.deepEqual(done, ["status --json", "agent hook-payload", ...transcript, "agent emit @42 --type stop", mail("Stop")],
     "the reply lands before the turn's stop");
   assert.ok(toolStart.every((line) => !line.includes("transcript")), "PreToolUse carries no entry");
   for (const run of [working, toolEnd, done]) {
@@ -325,5 +331,42 @@ test("a failed tool ends with ok:false, and no temp file outlives a hook", async
     assert.deepEqual(await readdir(tmp), [], "payload and entry files are removed");
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("this pane's mail is the hook's one reply, only on events that reach the model", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "phux-claude-mail-"));
+  try {
+    const fake = await fakePhux(temp);
+    const reply = '{"decision":"block","reason":"[phux mail] A message from other agents."}';
+    const hook = (provider, action, event) => execFileSync(
+      "sh",
+      [fileURLToPath(new URL(`../../${provider}/scripts/phux-hook.sh`, import.meta.url)), action],
+      {
+        env: {
+          ...process.env, PHUX_AGENT_PHUX_BIN: fake, PHUX_TERMINAL_ID: "42", PHUX_TEST_LOG: join(temp, "log"),
+          FAKE_FEATURES: "[]", FAKE_FIELDS: `sess-1 ${event} - - 0 - -`, FAKE_MAIL: reply,
+        },
+        input: "{}",
+        encoding: "utf8",
+      },
+    );
+    for (const [action, event] of [
+      ["start", "SessionStart"], ["working", "UserPromptSubmit"], ["tool-end", "PostToolUse"],
+      ["tool-end", "PostToolUseFailure"], ["done", "Stop"],
+    ]) {
+      assert.equal(hook("claude", action, event), `${reply}\n`, `claude ${event}`);
+    }
+    for (const [action, event] of [["tool-start", "PreToolUse"], ["blocked", "Notification"], ["clear", "SessionEnd"]]) {
+      assert.equal(hook("claude", action, event), "", `claude ${event} carries no mail`);
+    }
+    for (const [action, event] of [["tool-end", "PostToolUse"], ["done", "Stop"]]) {
+      assert.equal(hook("grok", action, event), `${reply}\n`, `grok ${event}`);
+    }
+    for (const [action, event] of [["start", "SessionStart"], ["working", "UserPromptSubmit"], ["done", "StopCancelled"]]) {
+      assert.equal(hook("grok", action, event), "", `grok ${event} is passive`);
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
   }
 });

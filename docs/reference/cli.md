@@ -2312,11 +2312,12 @@ Global flags:
 ```text
 Send, read and acknowledge mail between agents
 
-Mail lives in the work store beside `phux mission` tasks and survives restarts.
-An agent is addressed by its pane, `@749`, optionally labelled, `pi@749`;
-anything outside a pane uses a name. `send` stores the message, then rings each
-recipient pane with one acknowledged single-line prompt naming the sender and
-the thread, so an idle agent wakes and reads; a pane with no agent is not rung.
+Mail lives in this host's work store beside `phux mission` tasks and survives
+restarts. An agent is addressed by its pane here, `@749`, optionally labelled,
+`pi@749`; anything outside a pane uses a name. `send` stores the message and
+nothing more: nothing is typed into a recipient's terminal. The recipient's
+harness integration takes it (`wait`, `hook-context`) and puts it in the agent's
+conversation; an agent idle under a hook-only harness sees it at its next hook.
 You speak as `--as`, else `$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`.
 
 `--json` prints a document whose `schema` is `phux.coord/v1`. Exit status: 0
@@ -2326,10 +2327,13 @@ refused.
 Usage: phux mail <SUBCOMMAND>
 
 Commands:
-  ack   Acknowledge a message, so its sender knows it was handled
-  read  Read your unread mail and mark it read
-  send  Send a message and ring each recipient's pane
-  help  Print this message or the help of the given subcommand(s)
+  ack           Acknowledge a message, so its sender knows it was handled
+  hook-context  Take unread mail and print it as a Claude Code or Grok hook
+                reply
+  read          Read your unread mail and mark it read
+  send          Store a message for each recipient
+  wait          Wait for unread mail and take it for your agent's conversation
+  help          Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -2353,6 +2357,29 @@ Flags:
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mail hook-context`
+
+```text
+Take unread mail and print it as a Claude Code or Grok hook reply
+
+For hook-only harnesses. Prints nothing when there is no mail. Otherwise takes
+up to 4 messages, like `wait --timeout 0`, and prints one hook JSON object:
+`additionalContext` for a context event, or a `block` decision whose reason is
+the mail for `stop`, so the agent keeps going and handles it.
+
+Usage: phux mail hook-context <--event <EVENT>> [--as <ADDRESS>]
+
+Flags:
+      --event <EVENT>  The hook event the reply answers.
+                       [possible values: session-start, user-prompt-submit,
+                       post-tool-use, post-tool-use-failure, stop]
+      --as <ADDRESS>   Speak as this address instead of this pane.
   -h, --help           Print help
 
 Global flags:
@@ -2383,7 +2410,7 @@ Global flags:
 ## `phux mail send`
 
 ```text
-Send a message and ring each recipient's pane
+Store a message for each recipient
 
 Usage: phux mail send <FLAGS> <TO>…
 
@@ -2394,7 +2421,34 @@ Flags:
   -m, --message <TEXT>  The message. `-` reads it from stdin.
   -t, --thread <SLUG>   Thread slug, such as the branch or task the message is
                         about.
-      --no-ring         Store the message without prompting any pane.
+      --as <ADDRESS>    Speak as this address instead of this pane.
+      --json            Emit stable, versioned JSON on stdout instead of the
+                        human view. On failure, stdout stays empty and stderr
+                        carries one JSON error object.
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mail wait`
+
+```text
+Wait for unread mail and take it for your agent's conversation
+
+For harness integrations. Returns as soon as there is mail neither read nor
+taken before, or at the deadline with none. What it returns is taken: no later
+`wait` or `hook-context` for this address returns it again, while `read` still
+shows it unread. `text` is the mail framed for the agent, or null when there is
+none.
+
+Usage: phux mail wait [FLAGS]
+
+Flags:
+      --timeout <SECS>  Seconds to wait when there is no mail; 0 answers at
+                        once. Default 300, at most 3600.
+      --limit <N>       At most this many messages, oldest first. Default and
+                        most 16.
       --as <ADDRESS>    Speak as this address instead of this pane.
       --json            Emit stable, versioned JSON on stdout instead of the
                         human view. On failure, stdout stays empty and stderr

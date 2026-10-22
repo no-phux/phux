@@ -430,9 +430,11 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
         Command::Claim { .. } => Some("claim"),
         Command::Mail { action } => match action {
-            coord::MailAction::Send { .. } => None,
+            coord::MailAction::Send { .. } => Some("mail send"),
             coord::MailAction::Read { .. } => Some("mail read"),
             coord::MailAction::Ack { .. } => Some("mail ack"),
+            coord::MailAction::Wait { .. } => Some("mail wait"),
+            coord::MailAction::HookContext { .. } => Some("mail hook-context"),
         },
         // Every verb starts the keeper, which watches this server, and
         // `start` / `add --start` dial it. `--socket` names that server.
@@ -1413,13 +1415,14 @@ pub(crate) enum Command {
 
     /// Send, read and acknowledge mail between agents
     ///
-    /// Mail lives in the work store beside `phux mission` tasks and survives
-    /// restarts. An agent is addressed by its pane, `@749`, optionally
-    /// labelled, `pi@749`; anything outside a pane uses a name. `send`
-    /// stores the message, then rings each recipient pane with one
-    /// acknowledged single-line prompt naming the sender and the thread, so
-    /// an idle agent wakes and reads; a pane with no agent is not rung.
-    /// You speak as `--as`, else `$PHUX_AGENT_ADDRESS`, else your pane, else
+    /// Mail lives in this host's work store beside `phux mission` tasks and
+    /// survives restarts. An agent is addressed by its pane here, `@749`,
+    /// optionally labelled, `pi@749`; anything outside a pane uses a name.
+    /// `send` stores the message and nothing more: nothing is typed into a
+    /// recipient's terminal. The recipient's harness integration takes it
+    /// (`wait`, `hook-context`) and puts it in the agent's conversation; an
+    /// agent idle under a hook-only harness sees it at its next hook. You
+    /// speak as `--as`, else `$PHUX_AGENT_ADDRESS`, else your pane, else
     /// `$USER`.
     ///
     /// `--json` prints a document whose `schema` is `phux.coord/v1`. Exit

@@ -28,7 +28,9 @@
 //!
 //! The same keeper holds agent coordination: mail between agents and claims
 //! on paths (ADR-0187). Those tables are additive and do not change
-//! `user_version`.
+//! `user_version`. A harness waits for its agent's mail with
+//! [`Client::wait_mail`]: the keeper parks the request until a message
+//! arrives or the deadline passes, then hands each message over once.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -49,8 +51,9 @@ mod wire;
 
 pub use client::{Client, Launcher};
 pub use coord::{
-    AckMail, Address, Claim, ClaimFilter, ClaimOutcome, MAX_CLAIM_SECS, Mail, ReadMail,
-    ReleaseClaim, RenewClaim, SendMail, Sent, TakeClaim,
+    ADDRESS_ENV, AckMail, Address, Claim, ClaimFilter, ClaimOutcome, DEFAULT_CLAIM_SECS,
+    MAX_CLAIM_SECS, MAX_WAIT_MS, Mail, ReadMail, ReleaseClaim, RenewClaim, SendMail, Sent,
+    TakeClaim, WaitMail, caller_address, claim_path, pane_address,
 };
 pub use error::Error;
 pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, SignalKind};

@@ -31,6 +31,8 @@ phux-client-runtime.workspace = true
 phux-config.workspace = true
 phux-plugin.workspace = true
 phux-protocol = { workspace = true, features = ["server"] }
+# Mail and claims call this host's work store in-process.
+phux-work.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Current-thread runtime: the client lib is async and its client-side
