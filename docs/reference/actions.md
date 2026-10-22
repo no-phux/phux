@@ -67,7 +67,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `give-input` | Pane |  | Give back the wheel: release the focused pane's input lease |
 | `signal-terminal` | Pane | `signal` = `interrupt` \| `freeze` \| `resume` \| `terminate` \| `kill` | Signal the focused pane's process group (freeze, resume, kill) |
 | `set-pane` | Pane | `mouse` = `on` \| `off` \| `toggle` | Toggle mouse capture for the focused pane |
-| `plugin-action` | — | `plugin`, `action` | Run an enabled plugin's manifest action |
+| `plugin-action` | — | `plugin` (the plugin's id), `id` (the manifest action's id) | Run an enabled plugin's manifest action |
 | `plugin-pane` | — | `plugin`, `pane` | Open an enabled plugin's manifest pane |
 | `reload-config` | phux |  | Reload the config file (keybindings, theme, status bar) |
 | `settings` | phux |  | Settings: browse, search, and edit every option in place |
@@ -85,6 +85,6 @@ Why the dash rows have no palette entry:
 - `switch-host` — requires `host` and `name` args supplied by the sidebar's machine segments or the session picker's machine groups, so a bare palette row would have no target to act on.
 - `toggle-project-group` — requires the `project` arg the sidebar's group header supplies, so a bare palette row would have no group to act on.
 - `copy-mode` — a modal input surface entered from its keybinding, not a one-shot command the palette can commit.
-- `plugin-action` — its palette rows are built dynamically from enabled plugins' manifests, one per manifest action, carrying `plugin`/`action` args a static row could not supply.
+- `plugin-action` — its palette rows are built dynamically from enabled plugins' manifests, one per manifest action, carrying `plugin`/`id` args a static row could not supply.
 - `plugin-pane` — same shape as `plugin-action`: dynamic rows from enabled plugins' manifest `[[panes]]`, carrying `plugin`/`pane` args.
 - `focus-pane` — parameterized by coordinates only the agent-fleet dashboard's rows can supply (the `select-window` precedent).

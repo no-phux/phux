@@ -1,7 +1,7 @@
 //! Settling the merged `[keybindings]` tables across config layers: the
 //! newest spelling of a key wins, and `"none"` unbinds it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{KeyChord, parse_chord_sequence};
 
@@ -9,41 +9,66 @@ use super::{KeyChord, parse_chord_sequence};
 /// defaults included.
 pub const UNBIND_ACTION: &str = "none";
 
-/// Binding tables under `[keybindings]`, as they are spelled in TOML.
-const BINDING_TABLES: [&str; 2] = ["global", "prefix-table"];
+/// The binding table plugin manifest `keys` merge into.
+const PREFIX_TABLE: &str = "prefix-table";
 
-/// Settle the merged binding tables.
+/// Binding tables under `[keybindings]`, as they are spelled in TOML.
+const BINDING_TABLES: [&str; 2] = ["global", PREFIX_TABLE];
+
+/// Settle the merged binding tables, returning the prefix-table keys that
+/// `"none"` unbound as chord sequences ([`KeybindingsCfg::unbound`]).
 ///
 /// Spellings of one key set in different
 /// layers (`"X"` in the defaults, `"S-x"` in yours) are one binding, and the
 /// later layer's wins; spellings tied in one layer stay for the resolver to
 /// report. Then every `"none"` binding is removed. Provenance forgets every
 /// removed entry.
-pub fn settle_bindings(merged: &mut toml::Table, provenance: &mut crate::ConfigProvenance) {
+///
+/// [`KeybindingsCfg::unbound`]: crate::KeybindingsCfg::unbound
+pub fn settle_bindings(
+    merged: &mut toml::Table,
+    provenance: &mut crate::ConfigProvenance,
+) -> BTreeSet<Vec<KeyChord>> {
+    let mut unbound_prefix_keys = BTreeSet::new();
     let Some(toml::Value::Table(keybindings)) = merged.get_mut("keybindings") else {
-        return;
+        return unbound_prefix_keys;
     };
     for name in BINDING_TABLES {
         let Some(toml::Value::Table(table)) = keybindings.get_mut(name) else {
             continue;
         };
         let table_path = format!("keybindings.{name}");
-        let mut removed = shadowed_spellings(table, &table_path, provenance);
-        removed.extend(
-            table
-                .iter()
-                .filter(|(_, value)| is_unbind(value))
-                .map(|(binding, _)| binding.clone()),
-        );
-        for binding in removed {
-            table.remove(&binding);
-            let path = crate::layer::child_path(&table_path, &binding);
-            let nested = format!("{path}.");
-            provenance
-                .keys
-                .retain(|key, _| key != &path && !key.starts_with(&nested));
+        let shadowed = shadowed_spellings(table, &table_path, provenance);
+        // A `"none"` another layer's spelling replaced unbinds nothing.
+        let unbound: Vec<String> = table
+            .iter()
+            .filter(|(binding, value)| is_unbind(value) && !shadowed.contains(binding))
+            .map(|(binding, _)| binding.clone())
+            .collect();
+        if name == PREFIX_TABLE {
+            let sequences = unbound.iter().map(|b| parse_chord_sequence(b));
+            unbound_prefix_keys.extend(sequences.filter_map(Result::ok));
+        }
+        for binding in shadowed.into_iter().chain(unbound) {
+            remove_binding(table, &table_path, &binding, provenance);
         }
     }
+    unbound_prefix_keys
+}
+
+/// Drop `binding` from `table` and every provenance entry under it.
+fn remove_binding(
+    table: &mut toml::Table,
+    table_path: &str,
+    binding: &str,
+    provenance: &mut crate::ConfigProvenance,
+) {
+    table.remove(binding);
+    let path = crate::layer::child_path(table_path, binding);
+    let nested = format!("{path}.");
+    provenance
+        .keys
+        .retain(|key, _| key != &path && !key.starts_with(&nested));
 }
 
 /// Bindings another spelling of the same key replaced from a later layer.
@@ -131,6 +156,42 @@ mod tests {
         assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(resolves(&mut resolver, &["C-a", "x"]), None);
         assert!(resolves(&mut resolver, &["C-a", "z"]).is_some());
+    }
+
+    #[test]
+    fn the_config_remembers_which_prefix_keys_none_unbound() {
+        let cfg = layered(
+            "[keybindings.prefix-table]\n\"S-x\" = \"none\"\n\"g s\" = { action = \"none\" }\n\
+             [keybindings.global]\n\"M-Enter\" = \"none\"\n",
+        );
+        let unbound: std::collections::BTreeSet<_> = ["X", "g s"]
+            .iter()
+            .map(|keys| super::parse_chord_sequence(keys).expect("parses"))
+            .collect();
+        assert_eq!(cfg.keybindings.unbound, unbound);
+    }
+
+    #[test]
+    fn a_none_a_later_layer_rebinds_is_not_unbound() {
+        let dir = std::env::temp_dir().join(format!("phux-settle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("base.toml"),
+            "[keybindings.prefix-table]\nX = \"none\"\n",
+        )
+        .expect("writes base");
+        let cfg = crate::parse_with_defaults(
+            "extends = [\"base.toml\"]\n[keybindings.prefix-table]\n\"S-x\" = \"toggle-zoom\"\n",
+            &dir.join("config.toml"),
+        )
+        .expect("layered config parses");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            cfg.keybindings.unbound.is_empty(),
+            "{:?}",
+            cfg.keybindings.unbound
+        );
+        assert!(cfg.keybindings.prefix_table.contains_key("S-x"));
     }
 
     #[test]

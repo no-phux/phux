@@ -86,9 +86,11 @@ fn rows(keybindings: &KeybindingsCfg, provenance: &ConfigProvenance) -> Vec<Row>
                 Action::Bare(name) => (name.clone(), BTreeMap::new()),
                 Action::Parameterized(p) => (p.action.clone(), p.args.clone()),
             };
-            let plugin = (action == "plugin-action")
-                .then(|| args.get("plugin").and_then(toml::Value::as_str))
-                .flatten();
+            // A plugin-contributed key has no layer; name its plugin.
+            let plugin = (action == plugin_actions::PLUGIN_ACTION_NAME)
+                .then(|| plugin_actions::plugin_action_target(&args))
+                .flatten()
+                .map(|(plugin, _)| plugin);
             rows.push(Row {
                 table,
                 keys: prefix.map_or_else(|| binding.clone(), |p| format!("{p} {binding}")),
@@ -238,5 +240,55 @@ mod tests {
         );
         assert!(rows.iter().any(|r| r.keys == "C-b z"), "prefix applies");
         assert!(!rows.iter().any(|r| r.keys == "C-b x"), "x unbound");
+    }
+
+    /// Rows after merging one plugin action that claims `keys`, as
+    /// `run_config_keys` merges enabled manifests.
+    fn rows_with_plugin_key(user: &str, keys: &str) -> Vec<Row> {
+        let path = std::path::Path::new("/tmp/phux-keys-test/config.toml");
+        let cfg = phux_config::parse_with_defaults(user, path).expect("parses");
+        let (_, provenance) =
+            phux_config::merged_config_with_provenance(user, path).expect("merges");
+        let mut keybindings = cfg.keybindings;
+        plugin_actions::merge_plugin_bindings(
+            &mut keybindings,
+            &[plugin_actions::PluginActionEntry {
+                plugin_id: "example.tools".to_owned(),
+                plugin_name: "Tools".to_owned(),
+                action_id: "summarize".to_owned(),
+                title: "Summarize".to_owned(),
+                keys: Some(keys.to_owned()),
+            }],
+        );
+        rows(&keybindings, &provenance)
+    }
+
+    #[test]
+    fn a_plugin_key_shows_its_plugin_unless_you_unbound_the_key() {
+        let rows = rows_with_plugin_key("", "M-s");
+        let row = rows.iter().find(|r| r.keys == "C-a M-s").expect("merged");
+        assert_eq!(row.source, "plugin example.tools");
+        assert_eq!(render_args(&row.args), "id=summarize plugin=example.tools");
+
+        let rows =
+            rows_with_plugin_key("[keybindings.prefix-table]\n\"M-S\" = \"none\"\n", "M-S-s");
+        assert!(
+            !rows.iter().any(|r| r.action == "plugin-action"),
+            "a key you unbound stays unbound"
+        );
+    }
+
+    #[test]
+    fn your_plugin_action_binding_names_your_file() {
+        let rows = rows_for(
+            "[keybindings.prefix-table]\n\
+             S = { action = \"plugin-action\", plugin = \"example.tools\", id = \"summarize\" }\n",
+        );
+        let row = rows.iter().find(|r| r.keys == "C-a S").expect("bound");
+        assert_eq!(
+            (row.action.as_str(), row.source.as_str()),
+            ("plugin-action", "config.toml")
+        );
+        assert_eq!(render_args(&row.args), "id=summarize plugin=example.tools");
     }
 }

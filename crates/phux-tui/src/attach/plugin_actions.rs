@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use phux_config::keybind::{ResolvedAction, Resolver};
+use phux_config::keybind::{ResolvedAction, Resolver, parse_chord_sequence};
 use phux_config::plugin::PluginManifest;
 use phux_config::{Action, KeybindingsCfg, ParamAction};
 
@@ -66,17 +66,42 @@ impl PluginActionEntry {
     }
 }
 
+/// The [`PLUGIN_ACTION_NAME`] argument naming the plugin.
+pub const PLUGIN_ARG: &str = "plugin";
+
+/// The [`PLUGIN_ACTION_NAME`] argument naming the plugin's action. A config
+/// binding can't spell it `action`, which names the action itself
+/// (`{ action = "plugin-action", plugin = "x", id = "y" }`).
+pub const PLUGIN_ACTION_ID_ARG: &str = "id";
+
+/// The older spelling of [`PLUGIN_ACTION_ID_ARG`], still accepted from
+/// callers that build the args directly.
+const LEGACY_PLUGIN_ACTION_ID_ARG: &str = "action";
+
 fn plugin_args(plugin_id: &str, action_id: &str) -> BTreeMap<String, toml::Value> {
-    let mut args = BTreeMap::new();
-    args.insert(
-        "plugin".to_owned(),
-        toml::Value::String(plugin_id.to_owned()),
-    );
-    args.insert(
-        "action".to_owned(),
-        toml::Value::String(action_id.to_owned()),
-    );
-    args
+    BTreeMap::from([
+        (
+            PLUGIN_ARG.to_owned(),
+            toml::Value::String(plugin_id.to_owned()),
+        ),
+        (
+            PLUGIN_ACTION_ID_ARG.to_owned(),
+            toml::Value::String(action_id.to_owned()),
+        ),
+    ])
+}
+
+/// The `(plugin, action id)` a [`PLUGIN_ACTION_NAME`] invocation names:
+/// `plugin` and `id`, or the older `action` in place of `id`. `None` when
+/// either is missing or not a string.
+#[must_use]
+pub fn plugin_action_target(args: &BTreeMap<String, toml::Value>) -> Option<(&str, &str)> {
+    let plugin = args.get(PLUGIN_ARG)?.as_str()?;
+    let action_id = args
+        .get(PLUGIN_ACTION_ID_ARG)
+        .or_else(|| args.get(LEGACY_PLUGIN_ACTION_ID_ARG))?
+        .as_str()?;
+    Some((plugin, action_id))
 }
 
 /// Flatten loaded manifests into per-action entries (pure; the driver does
@@ -101,7 +126,9 @@ pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginActionE
 ///
 /// User config always wins: a chord that collides, fails to parse, or is ambiguous with an
 /// existing binding is dropped with a warning (validated by test-building a
-/// [`Resolver`], so a bad plugin binding cannot disable every binding).
+/// [`Resolver`], so a bad plugin binding cannot disable every binding), and
+/// so is a key the config unbound with `"none"`
+/// ([`KeybindingsCfg::unbound`], in any spelling).
 ///
 /// Between plugins, the first in `[[plugins]]` order wins.
 pub fn merge_plugin_bindings(kb: &mut KeybindingsCfg, entries: &[PluginActionEntry]) {
@@ -109,6 +136,15 @@ pub fn merge_plugin_bindings(kb: &mut KeybindingsCfg, entries: &[PluginActionEnt
         let Some(keys) = entry.keys.as_deref() else {
             continue;
         };
+        if is_unbound(kb, keys) {
+            tracing::warn!(
+                plugin = %entry.plugin_id,
+                action = %entry.action_id,
+                keys,
+                "plugin binding claims a key your config unbound with \"none\"; leaving it unbound",
+            );
+            continue;
+        }
         if let Some(existing) = kb.prefix_table.get(keys) {
             tracing::warn!(
                 plugin = %entry.plugin_id,
@@ -135,6 +171,11 @@ pub fn merge_plugin_bindings(kb: &mut KeybindingsCfg, entries: &[PluginActionEnt
             );
         }
     }
+}
+
+/// `true` when `keys` names a prefix-table key the config unbound.
+fn is_unbound(kb: &KeybindingsCfg, keys: &str) -> bool {
+    parse_chord_sequence(keys).is_ok_and(|sequence| kb.unbound.contains(&sequence))
 }
 
 /// The outcome of one plugin action run, as its failure toast reads it.
@@ -252,271 +293,4 @@ fn append_output_tail(lines: &mut Vec<String>, label: &str, captured: &str) {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
-mod tests {
-    use super::*;
-    use phux_config::keybind::{Feed, parse_chord};
-
-    fn entry(plugin: &str, action: &str, keys: Option<&str>) -> PluginActionEntry {
-        PluginActionEntry {
-            plugin_id: plugin.to_owned(),
-            plugin_name: format!("{plugin} name"),
-            action_id: action.to_owned(),
-            title: format!("{action} title"),
-            keys: keys.map(ToOwned::to_owned),
-        }
-    }
-
-    fn base_kb() -> KeybindingsCfg {
-        let mut prefix_table = BTreeMap::new();
-        prefix_table.insert("d".to_owned(), Action::Bare("detach".to_owned()));
-        KeybindingsCfg {
-            prefix: "C-a".to_owned(),
-            prefix_table,
-            global: BTreeMap::new(),
-            ..KeybindingsCfg::default()
-        }
-    }
-
-    #[test]
-    fn merge_inserts_plugin_binding_and_resolver_fires_it() {
-        let mut kb = base_kb();
-        merge_plugin_bindings(&mut kb, &[entry("p", "a", Some("g"))]);
-        assert!(kb.prefix_table.contains_key("g"), "binding merged");
-
-        // The merged table resolves `C-a g` to the plugin action.
-        let mut resolver = Resolver::new(&kb).expect("merged table builds");
-        assert_eq!(
-            resolver.feed(parse_chord("C-a").unwrap()),
-            Feed::Partial,
-            "prefix chord starts the sequence"
-        );
-        let Feed::Resolved(fired) = resolver.feed(parse_chord("g").unwrap()) else {
-            panic!("expected plugin binding to resolve");
-        };
-        assert_eq!(fired.action, PLUGIN_ACTION_NAME);
-        assert_eq!(
-            fired.args.get("plugin"),
-            Some(&toml::Value::String("p".to_owned()))
-        );
-        assert_eq!(
-            fired.args.get("action"),
-            Some(&toml::Value::String("a".to_owned()))
-        );
-    }
-
-    #[test]
-    fn merge_user_binding_wins_on_exact_chord_conflict() {
-        let mut kb = base_kb(); // user binds `d` -> detach
-        merge_plugin_bindings(&mut kb, &[entry("p", "a", Some("d"))]);
-        assert_eq!(
-            kb.prefix_table.get("d"),
-            Some(&Action::Bare("detach".to_owned())),
-            "user's binding must survive the merge untouched"
-        );
-        assert_eq!(kb.prefix_table.len(), 1, "plugin binding dropped");
-    }
-
-    #[test]
-    fn merge_user_binding_wins_on_chord_equivalent_spelling() {
-        // `?` and `S-/` are the same chord (shifted-glyph rule); a plugin
-        // spelling the user's chord differently must still lose.
-        let mut kb = base_kb();
-        kb.prefix_table
-            .insert("?".to_owned(), Action::Bare("show-help".to_owned()));
-        merge_plugin_bindings(&mut kb, &[entry("p", "a", Some("S-/"))]);
-        assert!(
-            !kb.prefix_table.contains_key("S-/"),
-            "chord-equivalent plugin binding dropped"
-        );
-        assert_eq!(
-            kb.prefix_table.get("?"),
-            Some(&Action::Bare("show-help".to_owned()))
-        );
-        // The surviving table still builds a resolver (nothing poisoned).
-        Resolver::new(&kb).expect("table remains valid");
-    }
-
-    #[test]
-    fn merge_drops_ambiguous_prefix_binding_without_panicking() {
-        // User binds the two-chord sequence `g s`; a plugin claiming bare
-        // `g` would shadow it (ambiguous prefix). The plugin loses.
-        let mut kb = base_kb();
-        kb.prefix_table
-            .insert("g s".to_owned(), Action::Bare("new-window".to_owned()));
-        merge_plugin_bindings(&mut kb, &[entry("p", "a", Some("g"))]);
-        assert!(
-            !kb.prefix_table.contains_key("g"),
-            "ambiguous plugin chord dropped"
-        );
-        Resolver::new(&kb).expect("user bindings unaffected");
-    }
-
-    #[test]
-    fn merge_drops_unparsable_chord_without_panicking() {
-        let mut kb = base_kb();
-        merge_plugin_bindings(&mut kb, &[entry("p", "a", Some("NotAKey-"))]);
-        assert!(!kb.prefix_table.contains_key("NotAKey-"));
-        Resolver::new(&kb).expect("user bindings unaffected");
-    }
-
-    #[test]
-    fn merge_first_plugin_wins_between_two_plugins() {
-        let mut kb = base_kb();
-        merge_plugin_bindings(
-            &mut kb,
-            &[
-                entry("first", "a", Some("g")),
-                entry("second", "b", Some("g")),
-            ],
-        );
-        let Some(Action::Parameterized(p)) = kb.prefix_table.get("g") else {
-            panic!("expected merged parameterized binding");
-        };
-        assert_eq!(
-            p.args.get("plugin"),
-            Some(&toml::Value::String("first".to_owned())),
-            "config-order first plugin keeps the chord"
-        );
-    }
-
-    #[test]
-    fn failure_toast_is_none_on_success() {
-        let result = PluginRunResult {
-            plugin_id: "p".to_owned(),
-            action_id: "a".to_owned(),
-            result: Ok(phux_plugin::PluginActionOutput {
-                schema_version: 1,
-                plugin_id: "p".to_owned(),
-                action_id: "a".to_owned(),
-                command: vec!["true".to_owned()],
-                cwd: std::path::PathBuf::from("/"),
-                outcome: phux_plugin::PluginActionOutcome::Completed,
-                exit_code: Some(0),
-                stdout: "fine".to_owned(),
-                stderr: String::new(),
-                duration_ms: 1,
-            }),
-        };
-        assert!(run_succeeded(&result));
-        assert!(failure_toast(&result).is_none());
-    }
-
-    #[test]
-    fn failure_toast_carries_exit_code_and_stderr_tail() {
-        let result = PluginRunResult {
-            plugin_id: "p".to_owned(),
-            action_id: "a".to_owned(),
-            result: Ok(phux_plugin::PluginActionOutput {
-                schema_version: 1,
-                plugin_id: "p".to_owned(),
-                action_id: "a".to_owned(),
-                command: vec!["false".to_owned()],
-                cwd: std::path::PathBuf::from("/"),
-                outcome: phux_plugin::PluginActionOutcome::Completed,
-                exit_code: Some(2),
-                stdout: String::new(),
-                stderr: "boom: file not found".to_owned(),
-                duration_ms: 1,
-            }),
-        };
-        let Toast { title, lines } = failure_toast(&result).expect("failure produces a toast");
-        assert_eq!(title, "Plugin action failed");
-        assert_eq!(lines[0], "p a");
-        assert!(lines.iter().any(|l| l.contains("exit code 2")));
-        assert!(lines.iter().any(|l| l.contains("boom: file not found")));
-    }
-
-    #[test]
-    fn failure_toast_elides_long_output_keeping_the_tail() {
-        let mut stderr = String::new();
-        for i in 0..100 {
-            use std::fmt::Write as _;
-            let _ = writeln!(stderr, "line {i}");
-        }
-        let result = PluginRunResult {
-            plugin_id: "p".to_owned(),
-            action_id: "a".to_owned(),
-            result: Ok(phux_plugin::PluginActionOutput {
-                schema_version: 1,
-                plugin_id: "p".to_owned(),
-                action_id: "a".to_owned(),
-                command: vec!["x".to_owned()],
-                cwd: std::path::PathBuf::from("/"),
-                outcome: phux_plugin::PluginActionOutcome::Completed,
-                exit_code: Some(1),
-                stdout: String::new(),
-                stderr,
-                duration_ms: 1,
-            }),
-        };
-        let lines = failure_toast(&result).expect("toast").lines;
-        assert!(lines.len() <= TOAST_MAX_LINES + 1, "got {}", lines.len());
-        assert!(
-            lines.iter().any(|l| l.contains("line 99")),
-            "tail line kept: {lines:?}"
-        );
-        assert!(lines.iter().any(|l| l.contains("elided")));
-    }
-
-    #[test]
-    fn failure_toast_reports_pre_exec_error() {
-        let result = PluginRunResult {
-            plugin_id: "p".to_owned(),
-            action_id: "a".to_owned(),
-            result: Err("plugin \"p\" is not configured".to_owned()),
-        };
-        let lines = failure_toast(&result).expect("toast").lines;
-        assert!(lines[1].contains("not configured"));
-    }
-
-    #[test]
-    fn entries_flatten_manifest_actions_with_keys() {
-        // In-memory manifest shape; only the fields entries care about
-        // are meaningful here.
-        let manifest = PluginManifest {
-            id: "com.example.tools".to_owned(),
-            name: "Tools".to_owned(),
-            version: "0.1.0".to_owned(),
-            min_phux_version: "0.0.2".to_owned(),
-            description: None,
-            manifest_path: std::path::PathBuf::from("/x/phux-plugin.toml"),
-            plugin_root: std::path::PathBuf::from("/x"),
-            platforms: None,
-            build: Vec::new(),
-            agents: Vec::new(),
-            actions: vec![
-                phux_config::plugin::PluginManifestAction {
-                    id: "summarize".to_owned(),
-                    title: "Summarize pane".to_owned(),
-                    description: None,
-                    contexts: Vec::new(),
-                    platforms: None,
-                    command: vec!["true".to_owned()],
-                    keys: Some("g".to_owned()),
-                },
-                phux_config::plugin::PluginManifestAction {
-                    id: "report".to_owned(),
-                    title: "Report".to_owned(),
-                    description: None,
-                    contexts: Vec::new(),
-                    platforms: None,
-                    command: vec!["true".to_owned()],
-                    keys: None,
-                },
-            ],
-            events: Vec::new(),
-            panes: Vec::new(),
-            links: Vec::new(),
-            profiles: Vec::new(),
-            widgets: Vec::new(),
-            sidebar: Vec::new(),
-            themes: Vec::new(),
-        };
-        let entries = entries_from_manifests(&[manifest]);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].palette_label(), "plugin: Tools: Summarize pane");
-        assert_eq!(entries[0].keys.as_deref(), Some("g"));
-        assert_eq!(entries[1].keys, None);
-    }
-}
+mod tests;

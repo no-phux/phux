@@ -105,8 +105,13 @@ pub fn parse_str(input: &str, path: &Path) -> Result<Config, ConfigError> {
 /// [`ConfigError::LayerRead`], [`ConfigError::LayerCycle`], or
 /// [`ConfigError::Layer`] for layer-resolution failures.
 pub fn parse_with_defaults(user_input: &str, path: &Path) -> Result<Config, ConfigError> {
-    let merged = merged_config_table(user_input, path)?;
-    deserialize_merged(merged, user_input, path)
+    let settled = settled(layer::merged_with_budget(
+        DEFAULT_CONFIG_TOML,
+        user_input,
+        path,
+        None,
+    )?);
+    settled.into_config(user_input, path)
 }
 
 /// [`parse_with_defaults`] with an aggregate byte budget over `user_input`
@@ -120,13 +125,13 @@ pub fn parse_with_defaults_bounded(
     path: &Path,
     max_read_bytes: usize,
 ) -> Result<Config, ConfigError> {
-    let (merged, _) = settled(layer::merged_with_budget(
+    let settled = settled(layer::merged_with_budget(
         DEFAULT_CONFIG_TOML,
         user_input,
         path,
         Some(max_read_bytes),
     )?);
-    deserialize_merged(merged, user_input, path)
+    settled.into_config(user_input, path)
 }
 
 /// Deserialize an already-merged layer table into a [`Config`].
@@ -165,15 +170,41 @@ pub fn merged_config_with_provenance(
     user_input: &str,
     path: &Path,
 ) -> Result<(toml::Table, ConfigProvenance), ConfigError> {
-    layer::merged_with_budget(DEFAULT_CONFIG_TOML, user_input, path, None).map(settled)
+    let settled = settled(layer::merged_with_budget(
+        DEFAULT_CONFIG_TOML,
+        user_input,
+        path,
+        None,
+    )?);
+    Ok((settled.merged, settled.provenance))
+}
+
+/// A merged layer stack with its binding tables settled.
+struct Settled {
+    merged: toml::Table,
+    provenance: ConfigProvenance,
+    /// The prefix-table keys `"none"` removed, for
+    /// [`KeybindingsCfg::unbound`].
+    unbound: std::collections::BTreeSet<Vec<keybind::KeyChord>>,
+}
+
+impl Settled {
+    /// Deserialize the stack, carrying the unbound keys into the config.
+    fn into_config(self, user_input: &str, path: &Path) -> Result<Config, ConfigError> {
+        let mut config = deserialize_merged(self.merged, user_input, path)?;
+        config.keybindings.unbound = self.unbound;
+        Ok(config)
+    }
 }
 
 /// Apply [`keybind::settle_bindings`] to a freshly merged stack.
-fn settled(
-    (mut merged, mut provenance): (toml::Table, ConfigProvenance),
-) -> (toml::Table, ConfigProvenance) {
-    keybind::settle_bindings(&mut merged, &mut provenance);
-    (merged, provenance)
+fn settled((mut merged, mut provenance): (toml::Table, ConfigProvenance)) -> Settled {
+    let unbound = keybind::settle_bindings(&mut merged, &mut provenance);
+    Settled {
+        merged,
+        provenance,
+        unbound,
+    }
 }
 
 #[cfg(test)]
