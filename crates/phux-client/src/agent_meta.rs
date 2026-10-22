@@ -318,6 +318,8 @@ impl AgentRecord {
     }
 }
 
+pub use phux_client_core::agent_record::MAX_AGENT_RECORD_BYTES;
+
 /// Decode a `phux.agent/v1` value; anything but a JSON object with a
 /// non-blank `name` is "no declared agent". The record is read by
 /// `phux_client_core::agent_record`, the one reader every client shares.

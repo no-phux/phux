@@ -1,5 +1,5 @@
 //! The legacy v3 CBOR envelope an [`ArrangementDoc`] persists as, under L3
-//! key `phux.tui.layout/v1` (docs/spec/L3.md §3.2).
+//! key `phux.tui.layout/v1` (docs/organization.md#records-handles-and-arrangements).
 //!
 //! The envelope's field names (`windows`, `focused_window_index`, ...) are
 //! wire format and stay as they are; only the in-memory types were renamed.
@@ -56,7 +56,7 @@ pub enum LayoutEncodeError {
 }
 
 impl ArrangementDoc {
-    /// Encode the arrangement as the v3 CBOR envelope (docs/spec/L3.md §3.2).
+    /// Encode the arrangement as the v3 CBOR envelope (docs/organization.md).
     ///
     /// # Errors
     /// * [`LayoutEncodeError::Empty`] if there are no groups, or any

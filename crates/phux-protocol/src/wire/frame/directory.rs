@@ -1,5 +1,5 @@
 //! `LIST_DIRECTORY` / `DIRECTORY_LISTING` payload types and codec helpers
-//! (`docs/spec/L3.md` §4).
+//! (`docs/protocol.md#commands-events-resources`).
 //!
 //! A host query, not a metadata key: the client names a path and the serving
 //! server answers with that directory's child directories. The frames ride

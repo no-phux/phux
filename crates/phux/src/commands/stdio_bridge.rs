@@ -5,7 +5,7 @@
 //! Byte-transparent except for the opening HELLO, which it stamps with the
 //! `SSH_CONNECTION` endpoints as `ssh_origin` (always replacing the client's
 //! own), so the server reports the connection as `ssh-stdio`
-//! (`docs/spec/L3.md` §3.9). The stamp is a label, not a verified fact, and
+//! (`docs/remote.md#who-can-do-what`). The stamp is a label, not a verified fact, and
 //! grants nothing. Trust comes from the UDS's owner-only permissions; ssh
 //! supplies authentication, so no bearer preamble is consumed. stdout carries
 //! protocol bytes only.

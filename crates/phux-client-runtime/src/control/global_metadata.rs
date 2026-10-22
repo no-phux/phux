@@ -2,7 +2,7 @@
 //! drains its value as it is read and as it changes. Generic: the key is the
 //! binding's business (`phux.usage/v1`, say), not the runtime's.
 //!
-//! Subscriptions end with the attachment that made them (L3.md §1.2), so a
+//! Subscriptions end with the attachment that made them (docs/protocol.md), so a
 //! watched key is subscribed and read again on every attach and after a
 //! journal gap. The drain is level-shaped: a key changed twice before the
 //! binding drains it once yields only its newest value, so the queue is

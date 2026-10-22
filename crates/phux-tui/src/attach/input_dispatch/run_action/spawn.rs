@@ -51,7 +51,7 @@ pub(in crate::attach) fn new_window(
     effects.spawn_window = Some((request_id, PendingWindow { name, adopt: None }, frame));
 }
 
-/// Request a directory listing (`docs/spec/L3.md` §4) on [`listing_host`],
+/// Request a directory listing (`docs/protocol.md#commands-events-resources`) on [`listing_host`],
 /// starting at `path`, else the focused pane's cwd when it lives on that
 /// host, else home. Bells when the server lacks `LIST_DIRECTORY`.
 pub(in crate::attach) fn go_to_directory(

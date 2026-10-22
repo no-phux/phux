@@ -76,6 +76,19 @@ fn reject_set_metadata(
     if reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
         return true;
     }
+    // The agent record is read by every client and by the server's own
+    // arbiter; a writer may not make it larger than the shared reader takes.
+    if key == RESOURCE_AGENT_KEY
+        && value.len() > phux_client_core::agent_record::MAX_AGENT_RECORD_BYTES
+    {
+        warn!(
+            ?client_id,
+            request_id,
+            value_len = value.len(),
+            "SET_METADATA(agent): record exceeds 4096 bytes; ignoring",
+        );
+        return true;
+    }
     if key == RESOURCE_AGENT_SESSION_KEY
         && (!matches!(scope, Scope::Resource(WireResourceId::Local { .. }))
             || value.is_empty()
@@ -158,20 +171,41 @@ fn store_metadata_value(
     let declared_agent_record = matches!(scope, Scope::Resource(_)) && key == RESOURCE_AGENT_KEY;
     let agent_value = declared_agent_record.then(|| value.clone());
 
-    let delivered = state.with_mut(|s| {
-        if let (Some(bytes), Scope::Resource(terminal)) = (agent_value.as_deref(), scope) {
+    let (delivered, hook) = state.with_mut(|s| {
+        let hook = if let (Some(bytes), Scope::Resource(terminal)) = (agent_value.as_deref(), scope)
+        {
             s.agent_records_mut().note_explicit_set(terminal, bytes);
-        }
-        s.metadata_set_by(scope, key, value, Some(client_id))
+            agent_record_hook(s, terminal, scope, Some(bytes))
+        } else {
+            None
+        };
+        (s.metadata_set_by(scope, key, value, Some(client_id)), hook)
     });
     // The store just changed under the detector's edge filter.
     invalidate_agent_detector(state, scope, key);
+    if let Some(event) = hook {
+        crate::hooks::fire_hook(state, event);
+    }
     trace!(
         ?client_id,
         request_id,
         subscriber_count = delivered.len(),
         "SET_METADATA delivered"
     );
+}
+
+/// The `agent-state-changed` hook an explicit write of `after` to the
+/// pane's `phux.agent/v1` record owes, read before the store changes. `None`
+/// when hooks are off or the effective state is unchanged.
+fn agent_record_hook(
+    s: &ServerState,
+    terminal: &WireResourceId,
+    scope: &Scope,
+    after: Option<&[u8]>,
+) -> Option<crate::hooks::HookEvent> {
+    s.hook_dispatcher()?;
+    let before = s.metadata().get(scope, RESOURCE_AGENT_KEY);
+    crate::hooks::HookEvent::agent_record_transition(terminal, before.as_deref(), after)
 }
 
 pub(super) fn handle_set_metadata(
@@ -309,20 +343,26 @@ pub(super) fn handle_delete_metadata(
         warn!(?client_id, request_id, %key, reason, "DELETE_METADATA: ignoring");
         return;
     }
-    let delivered = state.with_mut(|s| {
+    let (delivered, hook) = state.with_mut(|s| {
         // ADR-0046 §E: deleting the record withdraws any human declaration,
         // so the detector resumes ownership of this Terminal.
-        if let Scope::Resource(terminal) = scope
+        let hook = if let Scope::Resource(terminal) = scope
             && key == RESOURCE_AGENT_KEY
         {
             s.agent_records_mut().note_explicit_delete(terminal);
-        }
+            agent_record_hook(s, terminal, scope, None)
+        } else {
+            None
+        };
         if crate::push::is_grant_key(scope, key) {
             s.push_grants_mut().forget(key);
         }
-        s.metadata_delete_by(scope, key, Some(client_id))
+        (s.metadata_delete_by(scope, key, Some(client_id)), hook)
     });
     invalidate_agent_detector(state, scope, key);
+    if let Some(event) = hook {
+        crate::hooks::fire_hook(state, event);
+    }
     trace!(
         ?client_id,
         request_id,

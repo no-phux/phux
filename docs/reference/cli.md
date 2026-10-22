@@ -213,12 +213,19 @@ Global flags:
 ```text
 Clear a pane's declared agent identity.
 
-Usage: phux agent clear [TARGET]
+Deletes the agent record, then reads it back. Exits 1
+(`agent_record_unconfirmed`) when a record is still there or the server refused
+the read.
+
+Usage: phux agent clear [--json] [TARGET]
 
 Arguments:
   [TARGET]  Target selector (resolves to one pane). Omit for the focused pane.
 
 Flags:
+      --json           Print the confirmed `{schema_version, action, terminal,
+                       record}` document; failures are one JSON error line on
+                       stderr.
   -h, --help           Print help
 
 Global flags:
@@ -235,8 +242,10 @@ The record is one `AgentEventsJsonlV1` line: `--type` from the closed set
 `stop`, `session_end`, `state`, `provider_raw`) and `--data`, a JSON object. The
 server stamps `seq` and `ts_ms` and derives the agent's lifecycle state from the
 stream (`prompt` / `tool_start` -> working, `ask` -> blocked, `stop` -> done,
-`session_end` -> retract). Only the client that opened the session may append;
-nothing is written on a refusal. Prints nothing on success.
+`session_end` -> retract). Any local connection (this machine's socket or
+localhost) may append, not only the one that opened the session; a remote peer
+is refused with `not_producer`. Nothing is written on a refusal. Prints nothing
+on success.
 
 Usage: phux agent emit <FLAGS> <TARGET>
 
@@ -564,9 +573,9 @@ Spawns an `AgentSession` resource whose parent is the Terminal TARGET resolves
 to: the server-side, producer-fed event log the agent's harness appends to with
 `phux agent emit`, and the thing `%name`, `phux agent log`, and the sidebar
 read. Closing the pane closes the session; closing the session never touches the
-pane. The caller becomes the session's producer — only the client that opened a
-session may append to it. The server does not deduplicate: a pane that already
-has a live session gets a second one.
+pane. Any local connection (this machine's socket or localhost) may append to
+it, not only the one that opened it; a remote peer never may. The server does
+not deduplicate: a pane that already has a live session gets a second one.
 
 Refused with `unsupported_server` on a server that does not advertise
 `RESOURCE_KINDS` (see `phux status --json`'s `features`).
@@ -593,6 +602,10 @@ Global flags:
 ```text
 Declare the agent identity and state associated with a pane.
 
+Writes the whole agent record (last writer wins), then reads it back. Exits 1
+(`agent_record_unconfirmed`) when the read-back shows the write did not land or
+the server refused the read; prints the confirmed record on success.
+
 Usage: phux agent set <FLAGS> [TARGET]
 
 Arguments:
@@ -609,6 +622,9 @@ Flags:
                                state).
                                [possible values: none, low, normal, high]
       --session <SESSION>      Free-form association label (fleet/job name).
+      --json                   Print the confirmed `{schema_version, action,
+                               terminal, record}` document; failures are one
+                               JSON error line on stderr.
   -h, --help                   Print help
 
 Global flags:

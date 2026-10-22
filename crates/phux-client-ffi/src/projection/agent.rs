@@ -6,7 +6,7 @@
 //! agent" — so a stale badge can never survive a pane's change of hands.
 //!
 //! When the record declares no `attention`, the effective level is derived
-//! from `state` exactly as `docs/spec/L3.md` §3.7 specifies.
+//! from `state` exactly as `docs/agents.md#agent-states` specifies.
 //!
 //! The normalized `state` and `attention` are what L3 says they mean, and a
 //! consumer's gates read them. Alongside them a badge carries how each was

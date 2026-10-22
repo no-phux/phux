@@ -124,9 +124,9 @@ impl HookEvent {
         Self::new(CLIENT_DETACHED, context)
     }
 
-    /// [`AGENT_STATE_CHANGED`]: the detector's published state changed
-    /// (ADR-0046); the notification seam for host tools. `from` is absent
-    /// on a first sighting.
+    /// [`AGENT_STATE_CHANGED`]: a pane's published agent state changed,
+    /// whoever wrote it (ADR-0046); the notification seam for host tools.
+    /// `from` is absent on a first sighting.
     #[must_use]
     pub fn agent_state_changed(
         terminal_id: &phux_protocol::ids::ResourceId,
@@ -145,6 +145,44 @@ impl HookEvent {
         }
         context.push(("to".to_owned(), to.to_owned()));
         Self::new(AGENT_STATE_CHANGED, context)
+    }
+
+    /// [`AGENT_STATE_CHANGED`] for a pane's `phux.agent/v1` record going from
+    /// `before` to `after` (stored bytes; `None` for absent), written by a
+    /// path other than the detector drain: an explicit `SET_METADATA` /
+    /// `DELETE_METADATA` (`phux agent set` / `clear`) or the OSC 7501
+    /// program-status projection. `None` unless the effective state changed.
+    ///
+    /// A value that is not a record (absent, deleted, or not a JSON object)
+    /// reads as `unknown`; nothing fires when neither side is a record.
+    #[must_use]
+    pub(crate) fn agent_record_transition(
+        terminal_id: &phux_protocol::ids::ResourceId,
+        before: Option<&[u8]>,
+        after: Option<&[u8]>,
+    ) -> Option<Self> {
+        use crate::agent_detect::record::AgentRecordJson;
+        let before = before.and_then(AgentRecordJson::decode);
+        let after = after.and_then(AgentRecordJson::decode);
+        if before.is_none() && after.is_none() {
+            return None;
+        }
+        let from = before
+            .as_ref()
+            .map(|record| record.state.as_str())
+            .filter(|state| !state.is_empty());
+        let to = after
+            .as_ref()
+            .map(|record| record.state.as_str())
+            .filter(|state| !state.is_empty())
+            .unwrap_or(AGENT_STATE_UNKNOWN);
+        if from == Some(to) {
+            return None;
+        }
+        let (kind, name) = after.as_ref().map_or(("", ""), |record| {
+            (record.kind.as_deref().unwrap_or(""), record.name.as_str())
+        });
+        Some(Self::agent_state_changed(terminal_id, kind, name, from, to))
     }
 }
 

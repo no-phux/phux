@@ -297,4 +297,4 @@ async fn handle_command_fails_fast_when_mailbox_is_full_or_closed() {
     ));
 }
 
-// --- relayed LIST_DIRECTORY (docs/spec/L3.md §4.1) ---------------------
+// --- relayed LIST_DIRECTORY (docs/protocol.md#commands-events-resources) ---------------------

@@ -1,6 +1,6 @@
 //! Rows for the `go-to-directory` picker: a
 //! [`SelectList`](crate::render::overlay::SelectList) over one
-//! `DIRECTORY_LISTING` reply (`docs/spec/L3.md` §4) from the attached server.
+//! `DIRECTORY_LISTING` reply (`docs/protocol.md`) from the attached server.
 //!
 //! On a federation hub advertising `LIST_DIRECTORY_HOST`, a satellite pane's
 //! listing is relayed from the satellite ([`ListingHost::Satellite`], §4.1)

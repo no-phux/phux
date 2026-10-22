@@ -1,6 +1,6 @@
 //! `phux agent session open|close`, `phux agent emit`, `phux agent log` —
 //! the CLI over the `AgentSession` resource (ADR-0103,
-//! `docs/consumers/agents.md` §2 and §4.19).
+//! `docs/agents.md#agents-without-an-integration`).
 //!
 //! Thin surfaces over [`phux_client::agent_session`], gated on the server's
 //! `RESOURCE_KINDS` bit. The policy here is which resource a selector names:
@@ -51,10 +51,11 @@ pub(crate) enum SessionAction {
     /// TARGET resolves to: the server-side, producer-fed event log the
     /// agent's harness appends to with `phux agent emit`, and the thing
     /// `%name`, `phux agent log`, and the sidebar read. Closing the pane
-    /// closes the session; closing the session never touches the pane. The
-    /// caller becomes the session's producer — only the client that opened a
-    /// session may append to it. The server does not deduplicate: a pane
-    /// that already has a live session gets a second one.
+    /// closes the session; closing the session never touches the pane. Any
+    /// local connection (this machine's socket or localhost) may append to
+    /// it, not only the one that opened it; a remote peer never may. The
+    /// server does not deduplicate: a pane that already has a live session
+    /// gets a second one.
     ///
     /// Refused with `unsupported_server` on a server that does not advertise
     /// `RESOURCE_KINDS` (see `phux status --json`'s `features`).

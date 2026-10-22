@@ -1,4 +1,4 @@
-//! The `phux.whoami/v1` record (`docs/spec/L3.md` §3.9, ADR-0106).
+//! The `phux.whoami/v1` record (`docs/remote.md#who-can-do-what`, ADR-0106).
 //!
 //! A server-owned, read-only `Global` metadata key. `GET_METADATA` on it is
 //! answered per connection: the value describes the connection that asked,

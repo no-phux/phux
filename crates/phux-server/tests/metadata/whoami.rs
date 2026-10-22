@@ -1,4 +1,4 @@
-//! `phux.whoami/v1` over a real Unix socket (`docs/spec/L3.md` §3.9,
+//! `phux.whoami/v1` over a real Unix socket (`docs/remote.md#who-can-do-what`,
 //! ADR-0106): `GET_METADATA` answers the asking connection's own identity,
 //! client writes of the key change nothing, and a bridge-announced
 //! `ssh_origin` reports `ssh-stdio` (another uid's announcement is refused in
