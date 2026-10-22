@@ -281,3 +281,54 @@ fn a_drag_ending_inside_the_last_cell_selects_it(cx: &mut TestAppContext) {
     });
     assert_eq!(selection(&client, view), "ready");
 }
+
+/// A program that reports the mouse (OpenCode, vim `mouse=a`, tmux) gets a
+/// drag through the real surface as press, motion and release, and the
+/// terminal makes no selection of its own.
+#[gpui::test]
+fn a_mouse_reporting_program_receives_a_surface_drag(cx: &mut TestAppContext) {
+    let client = session_with(None, b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h$ ");
+    let view = client.create_view(&terminal()).expect("view");
+    let (surface, cx) = cx.add_window_view(|window, cx| {
+        crate::terminal::Terminal::new(
+            client.clone(),
+            view,
+            terminal(),
+            crate::terminal::Settings::default(),
+            window,
+            cx,
+        )
+    });
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    let _ = client.take_outbound();
+    let bounds = cx.update(|_, cx| surface.read(cx).painted().geometry.bounds);
+    let none = gpui::Modifiers::default();
+    let left = gpui::MouseButton::Left;
+    cx.simulate_mouse_down(bounds.origin + point(px(2.), px(4.)), left, none);
+    for x in [12., 30., 50.] {
+        cx.simulate_mouse_move(bounds.origin + point(px(x), px(4.)), Some(left), none);
+    }
+    cx.simulate_mouse_up(bounds.origin + point(px(50.), px(4.)), left, none);
+    cx.run_until_parked();
+    let actions: Vec<_> = client
+        .take_outbound()
+        .iter()
+        .filter_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
+            FrameKind::InputMouse { event, .. } => Some((event.action, event.button)),
+            _ => None,
+        })
+        .collect();
+    use phux_protocol::input::mouse::{MouseAction, MouseButton as Wire};
+    assert_eq!(
+        actions,
+        [
+            (MouseAction::Press, Wire::Left),
+            (MouseAction::Motion, Wire::Left),
+            (MouseAction::Motion, Wire::Left),
+            (MouseAction::Motion, Wire::Left),
+            (MouseAction::Release, Wire::Left),
+        ]
+    );
+    assert_eq!(selected_cells(&client, view), 0, "no local selection");
+}

@@ -56,6 +56,13 @@ There is no string registry and no second listener.
   trusted. One that fits a single `APPLY_INPUT` is acknowledged; a larger
   one, or one for a satellite pane, goes as one atomic `INPUT_PASTE` and is
   never split. Outcomes stay with the connection's event drain.
+- `Terminal` reports native focus and window activation through `send_focus`,
+  reasserts it after reconnect/bootstrap, and withdraws it on blur or removal.
+  This authorizes live OSC 52 writes in the runtime. The host's sole event
+  drain delivers `Event::ClipboardWrite` once to the native clipboard only
+  while that terminal still has keyboard focus in the active window. The
+  engine excludes bootstrap/history replay and clipboard queries; payloads
+  remain bounded to 1 MiB and redacted in diagnostics.
 - A paste is held for the shell to confirm (`InputEvent::ConfirmPaste`) by
   Ghostty's `clipboard-paste-bracketed-safe` rule, the TUI's too: only when
   the program has DEC 2004 bracketed paste off and the text has a line

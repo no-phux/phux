@@ -5,6 +5,7 @@
 //! runs once on this bound entity instead of being replayed from a retained prop.
 
 mod actions;
+mod focus;
 pub mod geometry;
 mod input_host;
 mod laser;
@@ -71,6 +72,9 @@ pub struct Terminal {
     window_remote: Option<String>,
     rebind: Arc<AtomicBool>,
     was_focused: bool,
+    /// Epoch, input readiness and native focus last reported to the runtime.
+    reported_focus: Option<(u64, bool, bool)>,
+    _focus_subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<TerminalEvent> for Terminal {}
@@ -95,7 +99,7 @@ impl Terminal {
         settings.sanitize();
         crate::fonts::resolve(&mut settings.font, cx);
         let focus = cx.focus_handle();
-        let (input, _input_notices) = bind_input(
+        let (input, _input_notices) = input_host::bind_input(
             Arc::downgrade(&client),
             view,
             terminal.clone(),
@@ -104,6 +108,7 @@ impl Terminal {
             window,
             cx,
         );
+        let focus_subscriptions = focus::subscribe(&focus, window, cx);
         Self {
             element_id: SharedString::from(format!("phux-terminal-{}", view.get())),
             client,
@@ -120,6 +125,8 @@ impl Terminal {
             window_remote: None,
             rebind: Arc::new(AtomicBool::new(false)),
             was_focused: false,
+            reported_focus: None,
+            _focus_subscriptions: focus_subscriptions,
         }
     }
 
@@ -211,7 +218,7 @@ impl Terminal {
     /// A rejected presentation gets a new input entity so an old IME callback
     /// cannot re-arm. The focus handle stays on this view.
     fn rebind_input(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let (input, notices) = bind_input(
+        let (input, notices) = input_host::bind_input(
             Arc::downgrade(&self.client),
             self.view,
             self.terminal.clone(),
@@ -226,39 +233,6 @@ impl Terminal {
     }
 }
 
-/// A new input entity for `view`. The terminal re-renders when it changes
-/// and forwards its notices and uploads as [`TerminalEvent`]s.
-fn bind_input(
-    client: std::sync::Weak<Client>,
-    view: ViewId,
-    terminal: ResourceId,
-    focus: FocusHandle,
-    option_as_alt: bool,
-    window: &Window,
-    cx: &mut Context<Terminal>,
-) -> (gpui::Entity<crate::input::TerminalInput>, Subscription) {
-    let input =
-        cx.new(|_cx| crate::input::TerminalInput::new(client, view, terminal, focus, window));
-    input.update(cx, |state, _| state.set_option_as_alt(option_as_alt));
-    cx.observe(&input, |_, _, cx| cx.notify()).detach();
-    let notices = cx.subscribe(
-        &input,
-        |_, _, event: &crate::input::InputEvent, cx| match event {
-            crate::input::InputEvent::Notice(notice) => cx.emit(TerminalEvent::Notice {
-                title: notice.title,
-                body: notice.body.clone(),
-            }),
-            crate::input::InputEvent::Upload(batch) => {
-                cx.emit(TerminalEvent::Upload(batch.clone()));
-            }
-            crate::input::InputEvent::ConfirmPaste(paste) => {
-                cx.emit(TerminalEvent::ConfirmPaste(paste.clone()));
-            }
-        },
-    );
-    (input, notices)
-}
-
 impl Render for Terminal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::fonts::install(cx);
@@ -267,6 +241,9 @@ impl Render for Terminal {
         let rebound = self.rebind.swap(false, Ordering::AcqRel);
         if rebound {
             self.rebind_input(window, cx);
+            // A replaced presentation (re-attach, re-bootstrap) may have
+            // cleared the runtime's focus; the next report asserts it again.
+            self.reported_focus = None;
         }
         let has_focus = self.focus.is_focused(window);
         match focus_step(self.settings.focused, self.was_focused, rebound, has_focus) {
@@ -278,6 +255,7 @@ impl Render for Terminal {
             FocusStep::Keep => {}
         }
         self.was_focused = self.settings.focused;
+        self.report_focus(window);
 
         let (frame, recovery) = self.painted_frame(window);
         let fraction = frame

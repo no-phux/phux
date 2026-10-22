@@ -42,6 +42,7 @@ use super::typed::typed_keys;
 
 mod activity;
 mod chrome;
+mod clipboard;
 mod commands;
 mod input;
 mod labels;
