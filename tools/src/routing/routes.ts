@@ -36,6 +36,9 @@ const ROUTES: Record<string, Surface[]> = {
   // its shared actions: a change to how lanes run reruns every lane.
   ".github/workflows/*.{yml,yaml}": [],
   ".github/{actionlint.yaml,dependabot.yml}": [],
+  // Commit-message policy is enforced by commitlint, not product builds.
+  "commitlint.config.mjs": [],
+  ".github/cockpit-history-tip": [],
   ".github/workflows/ci.yml": [...SURFACES],
   ".github/actions/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],

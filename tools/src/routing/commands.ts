@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { formatOutputs, writeOutputs } from "../lib/actions.ts";
-import { Failure, type Command } from "../lib/command.ts";
+import { Failure, UsageError, type Command } from "../lib/command.ts";
 import { git } from "../lib/git.ts";
 import { inherit } from "../lib/process.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
 import { classifyEvent, diffPaths } from "./detect.ts";
+import { checkMerge } from "./merge-check.ts";
 import { CI_ONLY, LANE_RECIPES, LANES, plan, planOutputs, reused, type Plan } from "./plan.ts";
 import { alreadyValidated, artifactName, type Receipt } from "./receipt.ts";
 
@@ -27,6 +28,20 @@ function testEnv(p: Plan): Record<string, string> {
     PHUX_UNIT_TARGETS: p.unitTargets,
     PHUX_NEXTEST_FILTERSET: p.testFilterset,
   };
+}
+
+function preflight(base: string, only: boolean): void {
+  const result = checkMerge(base);
+  if (result.resolvedMerge) {
+    if (only) {
+      throw new Failure(
+        "The current merge is resolved and staged. Run just check to validate it before committing, then rerun --preflight after the merge commit.",
+      );
+    }
+    console.log("resolved merge in progress; validating the working tree before the merge commit");
+    return;
+  }
+  console.log(`committed branch merges cleanly with ${base} (${result.target.slice(0, 12)})`);
 }
 
 export const commands: Record<string, Command> = {
@@ -82,13 +97,24 @@ export const commands: Record<string, Command> = {
   },
   check: {
     summary: "Run the ci.yml lanes this checkout's changes need, through the same recipes.",
-    usage: "[--base REV] [--dry-run]",
-    help: "REV defaults to the merge base with origin/main; uncommitted changes count.",
+    usage: "[--base REV] [--dry-run | --preflight]",
+    help: "REV defaults to origin/main (its merge base with HEAD for routing). Checks committed mergeability before running lanes; uncommitted changes count for routing. Fetch origin first for a current integration check. --preflight checks mergeability only; --dry-run prints the plan only.",
     run(args) {
       const { values } = parseArgs({
         args,
-        options: { base: { type: "string" }, "dry-run": { type: "boolean", default: false } },
+        options: {
+          base: { type: "string" },
+          "dry-run": { type: "boolean", default: false },
+          preflight: { type: "boolean", default: false },
+        },
       });
+      if (values["dry-run"] && values.preflight) {
+        throw new UsageError("choose --dry-run or --preflight");
+      }
+      if (!values["dry-run"]) {
+        preflight(values.base ?? "origin/main", values.preflight);
+        if (values.preflight) return 0;
+      }
       const base = values.base ?? git(["merge-base", "origin/main", "HEAD"]).trim();
       const p = plan(new Classifier().classify(workingChanges(base)), "pull_request");
       const lanes = LANES.filter((lane) => p.lanes.has(lane));
