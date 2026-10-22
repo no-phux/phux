@@ -87,7 +87,7 @@ pub(super) fn attach_client_caps(
     if let Some(colors) = default_colors {
         client_caps = client_caps.with_default_colors(colors);
     }
-    // Offer frame compression on remote lanes only (proto.md §6.4): a remote
+    // Offer frame compression on remote lanes only (docs/protocol.md#framing): a remote
     // native bootstrap deflates ~14x, while UDS would just burn CPU.
     if !matches!(dial, crate::attach::Dial::Uds(_)) {
         client_caps = client_caps.with_compression(phux_protocol::caps::CompressionSet::all());
@@ -149,7 +149,7 @@ async fn send_attach_with_viewport(
         target,
         viewport,
         // SPEC §13: clients SHOULD opt in to scrollback. The cap below
-        // matches the default in docs/consumers/tui.md §X; a configurable knob lives
+        // matches the default in docs/config.md; a configurable knob lives
         // with the rest of `phux-config`.
         request_scrollback: true,
         scrollback_limit_lines: 10_000,

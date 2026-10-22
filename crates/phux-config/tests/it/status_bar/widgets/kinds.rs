@@ -11,7 +11,7 @@ type SessionNameCase<'a> = (&'a str, Vec<(&'a str, toml::Value)>, &'a str, &'a s
 /// prefix + truncation, the `snake_case` `max_len` alias, the no-options
 /// full name (also the historical default-format behavior), `format`
 /// placeholder substitution, and `format` composing with prefix/max-len
-/// (phux-i0e8.4.2; tui.md section 8.3).
+/// (phux-i0e8.4.2; docs/status-bar.md#widget-kinds).
 #[test]
 fn session_name_renders_per_its_options() {
     let cases: &[SessionNameCase<'_>] = &[

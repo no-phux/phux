@@ -215,7 +215,7 @@ impl SidebarPainter {
     /// One roster line: the session's dot, name, and a histogram of the
     /// panes that need a human (`●1 ◆2`) in the same glyphs and colours as
     /// agent badges. A satellite session paints a dim dot and no counts: its
-    /// metadata is not subscribable here (`docs/spec/L3.md` §5).
+    /// metadata is not subscribable here (`docs/protocol.md#commands-events-resources`).
     pub(super) fn roster_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
         let (dot, color) = self.roster_badge(s);
         let counts = self.roster_histogram(s);

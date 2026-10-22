@@ -20,7 +20,7 @@ pub(in crate::attach::input_dispatch) struct SessionCounts {
     pub needs_you: std::collections::HashMap<phux_protocol::ids::SessionId, usize>,
 }
 
-/// Session picker rows, read at a glance (`docs/consumers/attention.md`):
+/// Session picker rows, read at a glance (`docs/clients.md#terminal-ui`):
 /// `focused` first (committing it is a silent no-op), then the sessions
 /// with panes that need you, then the rest by name. Each commits
 /// `switch-session { name }`.

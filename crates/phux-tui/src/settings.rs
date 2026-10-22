@@ -9,7 +9,7 @@
 //!   itself.
 //! * **Strict** ([`TuiSettings::load_strict`], reload). Any failure fails
 //!   the whole reload and the previous settings stay; nothing is half-applied
-//!   (docs/consumers/tui.md section 4.3).
+//!   (docs/config.md#when-a-change-takes-effect).
 //!
 //! [`TuiSettings::adopt_reload`] swaps keybindings, resolver, theme, chrome
 //! breakpoints, status bar, plugin rows and sidebar sections, and which-key

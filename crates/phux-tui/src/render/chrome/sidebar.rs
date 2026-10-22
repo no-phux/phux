@@ -59,7 +59,7 @@ pub const COLLAPSE_GLYPH: &str = "‹";
 /// showing only chrome and no windows would be useless.
 const MIN_FOOTER_HEIGHT: u16 = 4;
 
-/// Whole-cell spacing tokens, shared by every sidebar row (docs/experience.md).
+/// Whole-cell spacing tokens, shared by every sidebar row (docs/status-bar.md#the-sidebar).
 const GUTTER: u16 = 1;
 const ICON_COLUMNS: usize = 2;
 
@@ -172,7 +172,7 @@ pub struct SessionRosterEntry {
     pub settled: usize,
     /// Panes whose agent state could not be determined. Always the count for
     /// a satellite session, whose per-Terminal metadata this client may not
-    /// subscribe to (`docs/spec/L3.md` §5).
+    /// subscribe to (`docs/protocol.md#commands-events-resources`).
     pub unknown: usize,
     /// `true` for a session on a federated satellite. Its state is
     /// structurally unknowable from here, so the row is painted as explicitly

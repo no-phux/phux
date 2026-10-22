@@ -71,7 +71,7 @@ fn roster_top_rank_follows_the_attention_ladder() {
     };
     assert_eq!(settled.top_rank(), attention_rank(S::Idle, false, true));
 
-    // A satellite session cannot be inspected from here (spec/L3.md §5),
+    // A satellite session cannot be inspected from here (docs/protocol.md),
     // so it lands on the bottom rung — explicitly unknown, never a calm
     // zero that reads as "nothing to see".
     let sat = SessionRosterEntry {

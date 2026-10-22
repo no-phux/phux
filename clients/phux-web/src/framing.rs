@@ -4,12 +4,12 @@
 //! so no reassembly is needed there. A WebTransport bidirectional stream is a
 //! plain byte stream — chunks arrive at arbitrary boundaries — so the reader
 //! accumulates bytes here and pulls out complete length-prefixed frames
-//! (`docs/spec/proto.md` §5: 4-byte big-endian length, then `length` bytes),
+//! (`docs/protocol.md#framing`: 4-byte big-endian length, then `length` bytes),
 //! exactly the reassembly the server's UDS/QUIC readers perform on their side.
 
 use phux_protocol::wire::frame::MAX_FRAME_LEN;
 
-/// Length-prefix size in bytes (`docs/spec/proto.md` §5).
+/// Length-prefix size in bytes (`docs/protocol.md#framing`).
 const LENGTH_PREFIX: usize = 4;
 
 /// Accumulates stream chunks and yields complete encoded frames

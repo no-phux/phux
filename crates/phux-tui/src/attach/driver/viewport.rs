@@ -161,8 +161,7 @@ pub(super) fn current_viewport_or_default() -> ViewportInfo {
 }
 
 /// Per-cell pixel fallback; MUST equal the server's `DEFAULT_CELL_PX` so
-/// `INPUT_MOUSE` positions quantize back to the same cell (SPEC input.md
-/// §3.1).
+/// `INPUT_MOUSE` positions quantize back to the same cell (docs/protocol.md#input).
 pub(super) const HOST_CELL_PX_FALLBACK: (u16, u16) = (8, 16);
 
 /// The host's per-cell pixel size, floored exactly as the server derives it

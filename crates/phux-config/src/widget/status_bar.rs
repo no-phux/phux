@@ -2,7 +2,7 @@
 //! widget output into one `width`-wide row of [`Cell`]s.
 //!
 //! Host-agnostic: it emits no VT, picks no screen row, and owns no clock.
-//! Three slots (`docs/consumers/tui.md` §8.4) are placed left-flush,
+//! Three slots (`docs/status-bar.md#the-status-bar`) are placed left-flush,
 //! right-flush, and centered in the gap between.
 
 use crate::plugin::{PluginManifest, PluginWidgetSlot};

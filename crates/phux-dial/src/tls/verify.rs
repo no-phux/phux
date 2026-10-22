@@ -31,7 +31,7 @@ pub(super) fn leaf_fingerprint(cert: &CertificateDer<'_>) -> String {
     hex
 }
 
-/// Prefix of the canonical authority fingerprint (`workload-auth.md` §2).
+/// Prefix of the canonical authority fingerprint (`docs/remote.md#who-can-connect`).
 const AUTHORITY_PREFIX: &str = "sha256:";
 
 /// The canonical `sha256:` + lowercase-hex fingerprint of a DER certificate:

@@ -309,7 +309,7 @@ pub(super) fn wheel_scroll_delta(mouse: &MouseEvent) -> Option<isize> {
 }
 
 /// Scale pane-local cells to the surface pixels `INPUT_MOUSE` carries (SPEC
-/// input.md §3.1), at the send boundary only; axes clamp to at least 1px.
+/// docs/protocol.md#input), at the send boundary only; axes clamp to at least 1px.
 pub(super) fn scale_to_surface_pixels(mut mouse: MouseEvent, cell_px: (u16, u16)) -> MouseEvent {
     mouse.x *= f64::from(cell_px.0.max(1));
     mouse.y *= f64::from(cell_px.1.max(1));

@@ -1,4 +1,4 @@
-//! phux-config: the typed `config.toml` schema (`docs/consumers/tui.md` §4),
+//! phux-config: the typed `config.toml` schema (`docs/config.md`),
 //! its layered loader, and the status-bar widget contract.
 //!
 //! Parse errors carry `line:col` derived from the TOML span; errors on a

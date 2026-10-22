@@ -88,7 +88,7 @@ impl super::super::SessionLoop {
                 self.fold_foreign_asked(request_id, value.as_deref(), repaint);
                 None
             }
-            // A refused peer read (`proto.md` §9): drop the pending entry so
+            // A refused peer read (`docs/protocol.md`): drop the pending entry so
             // the map does not grow and the ERROR does not reach the handler.
             FrameKind::Error {
                 request_id: Some(request_id),

@@ -12,7 +12,7 @@
 //! flow-control config, which quinn fixes at accept time, before the ALPN is
 //! known. The tag selects a config, never a role: admission is still by ALPN.
 //!
-//! [ADR-0007]: ../../../docs/adr/0007-mosh-class-transport-and-satellites.md
+//! [ADR-0007]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0007-mosh-class-transport-and-satellites.md
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -42,7 +42,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
 /// QUIC application close code for a refused auth preamble (`AUTH_FAILED`,
-/// `docs/spec/proto.md` §4.1), shared with the server listener and relay.
+/// `docs/protocol.md#transports`), shared with the server listener and relay.
 pub const AUTH_FAILED_CODE: u32 = quictun::tunnel::AUTH_FAILED_CODE;
 
 /// The tag phux tunnel dials put on their initial destination connection ID:

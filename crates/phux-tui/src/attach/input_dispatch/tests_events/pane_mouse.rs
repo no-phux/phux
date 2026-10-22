@@ -243,7 +243,7 @@ async fn right_press_opens_the_pane_menu_unless_the_app_owns_the_mouse() {
     );
 }
 
-/// SPEC input.md §3.1: forwarded positions are surface pixels, scaled from
+/// docs/protocol.md#input: forwarded positions are surface pixels, scaled from
 /// pane-local cells at the send boundary.
 #[tokio::test]
 async fn forwarded_input_mouse_scales_cells_to_surface_pixels() {

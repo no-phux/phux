@@ -1,5 +1,5 @@
 //! `exec` widget — the first output line of a user-supplied program
-//! (`docs/consumers/tui.md` §8.3).
+//! (`docs/status-bar.md#widget-kinds`).
 //!
 //! The widget never runs anything: the host runs each [`ExecFeed`]'s command
 //! on its interval and pushes stdout through [`ExecFeed::apply_output`], so

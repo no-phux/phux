@@ -141,7 +141,7 @@ fn style_opt_styles_time_session_name_cwd_and_exit_cells() {
 fn per_cell_styles_win_over_the_widget_style() {
     // The windows widget styles its segments itself (active bold+reverse,
     // inactive dim); only the unstyled separator inherits the widget-level
-    // style. That is the documented precedence (tui.md §8.3).
+    // style. That is the documented precedence (docs/status-bar.md#widget-kinds).
     let cells = render_windows(&[("style", red_bold())], &[win("a", true), win("b", false)]);
     assert_eq!(text_of(&cells), "0:a 1:b");
     let active = cells.cells[0].style.clone().expect("active styled");

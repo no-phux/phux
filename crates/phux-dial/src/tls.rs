@@ -6,7 +6,7 @@
 //!
 //! A client that requires paired authority ([`REQUIRE_PAIRED_ENV`], or
 //! [`TlsClientIdentity::RequirePaired`]) refuses a server that does not
-//! request its certificate (`docs/spec/workload-auth.md` §3): the handshake
+//! request its certificate (`docs/remote.md#who-can-connect`): the handshake
 //! fails before any phux byte is sent, so nothing stateful rides a channel
 //! the server did not authenticate the client on.
 //!
@@ -68,7 +68,7 @@ impl CertTrust {
 }
 
 /// A server that did not present the pinned certificate authority
-/// (`workload-auth.md` §2 `authority_changed`): the handshake was refused.
+/// (`docs/remote.md#who-can-connect` `authority_changed`): the handshake was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorityChange {
     /// The pinned authority, canonical `sha256:` form.
@@ -129,7 +129,7 @@ pub enum TlsClientIdentity {
     Held(HeldIdentity),
     /// [`Self::PemFiles`], and refuse a server that does not request the
     /// client certificate: that is a downgrade, not permission to continue
-    /// (`docs/spec/workload-auth.md` §3). Session resumption is disabled so
+    /// (`docs/remote.md#who-can-connect`). Session resumption is disabled so
     /// every handshake shows whether the server asked.
     ///
     /// A config built with this identity serves one connection: the evidence

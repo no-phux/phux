@@ -68,7 +68,7 @@ pub struct ModeOptions {
 }
 
 /// An action attached to a binding, hook, or status slot: a bare name or an
-/// inline table (`docs/consumers/tui.md` §4.2).
+/// inline table (`docs/config.md`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Action {
