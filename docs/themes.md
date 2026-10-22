@@ -178,7 +178,16 @@ all.
 - `phux theme show` prints the resolved colours and the contrast ratio.
 - `phux config show` shows what `[theme]` holds after layering.
 
-A slot name phux doesn't know, or a colour it can't parse, is ignored and
-the slot keeps its colour; `phux config check` does not flag either, so
-compare the name against the table above. A `[theme] name` that matches no
+- `phux config check` flags a slot name phux doesn't know (with the
+  nearest real slot) and a colour it can't parse.
+
+```text
+$ phux config check
+theme.acent: unknown name: unknown theme slot `acent` (did you mean `accent`?); the override is ignored
+theme.dim: bad value: `lime` is not a colour (use a name like `cyan`, an index 0-255, or `#rrggbb`); the slot keeps its default
+2 problems
+```
+
+phux itself ignores either mistake and the slot keeps its colour, so run
+the check after editing `[theme]`. A `[theme] name` that matches no
 installed theme makes `phux config reload` refuse the file.

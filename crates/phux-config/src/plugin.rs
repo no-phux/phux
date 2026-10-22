@@ -1,5 +1,6 @@
 //! Declarative plugin manifest parsing for phux config consumers.
 
+mod lint;
 mod loader;
 mod profile;
 mod validate;
@@ -7,6 +8,7 @@ mod version;
 
 use std::path::{Path, PathBuf};
 
+pub use lint::{DeadPluginEvent, dead_event, dead_events};
 pub use loader::load_plugin_manifest;
 use serde::{Deserialize, Serialize};
 pub use version::CURRENT_PHUX_VERSION;

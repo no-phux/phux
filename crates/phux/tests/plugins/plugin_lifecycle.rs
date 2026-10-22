@@ -29,7 +29,7 @@ command = ["true"]
 [[events]]
 id = "idle"
 title = "Pane idle"
-on = "pane.idle"
+on = "pane-exit"
 command = ["true"]
 
 [[panes]]
@@ -192,6 +192,53 @@ enabled = true
     assert_ne!(code, 0, "duplicate plugin ids should be refused");
     assert!(stdout.is_empty());
     assert!(stderr.contains(r#"duplicate plugin id "example.duplicate""#));
+}
+
+/// An `[[events]]` hook whose `on` is not a hook event loads but never
+/// fires, so `validate` refuses it, for one manifest and for the registry.
+#[test]
+fn validate_rejects_an_event_that_names_no_hook_event() {
+    let tmp = TempDir::new().expect("tempdir");
+    let xdg = tmp.path().join("xdg");
+    let manifest = write_manifest(&tmp.path().join("plugin"), "example.dead-event");
+    let (code, stdout, stderr) =
+        run_with_xdg(&["plugin", "validate", &manifest.to_string_lossy()], &xdg);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("valid example.dead-event"),
+        "stdout={stdout}"
+    );
+    let text = std::fs::read_to_string(&manifest).expect("read manifest");
+    std::fs::write(&manifest, text.replace("\"pane-exit\"", "\"pane-exited\""))
+        .expect("write manifest");
+    let manifest_arg = manifest.to_string_lossy();
+
+    let (code, stdout, stderr) = run_with_xdg(&["plugin", "validate", &manifest_arg], &xdg);
+    assert_ne!(
+        code, 0,
+        "a dead event must fail validation; stdout={stdout}"
+    );
+    assert!(
+        stderr.contains("event `idle` listens for `pane-exited`, which is not a hook event")
+            && stderr.contains("did you mean `pane-exit`?"),
+        "stderr={stderr}"
+    );
+
+    let (code, stdout, stderr) =
+        run_with_xdg(&["plugin", "validate", &manifest_arg, "--json"], &xdg);
+    assert_ne!(code, 0);
+    assert!(stdout.is_empty(), "stdout={stdout}");
+    assert!(stderr.contains("pane-exited"), "stderr={stderr}");
+
+    // Linking still works (the loader is lenient); the registry check fails.
+    let (code, _, stderr) = run_with_xdg(&["plugin", "link", &manifest_arg], &xdg);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let (code, _, stderr) = run_with_xdg(&["plugin", "validate"], &xdg);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("did you mean `pane-exit`?"),
+        "stderr={stderr}"
+    );
 }
 
 #[test]
