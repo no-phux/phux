@@ -2,8 +2,9 @@
 
 A theme sets the colours of phux's own chrome: the status bar, the
 sidebar, pane borders and titles, pickers, and popups. Programs in your
-panes keep your terminal's colours. phux themes use the Omarchy
-`colors.toml` format, so any Omarchy theme works as it is.
+panes keep your terminal's colours. phux themes use the `colors.toml`
+format of [Omarchy](https://omarchy.org), the Arch Linux desktop setup,
+so any Omarchy theme works as it is.
 
 ```sh
 phux theme install https://github.com/someone/omarchy-nord-theme
@@ -177,7 +178,6 @@ all.
 - `phux theme list` shows what is installed and which theme is selected.
 - `phux theme show` prints the resolved colours and the contrast ratio.
 - `phux config show` shows what `[theme]` holds after layering.
-
 - `phux config check` flags a slot name phux doesn't know (with the
   nearest real slot) and a colour it can't parse.
 

@@ -8,7 +8,7 @@ for recovery operations.
 
 ## Records, handles, and arrangements
 
-Use the [identity terms](./concepts.md#identity-and-execution) consistently.
+Use the [identity terms](./concepts.md#names-ids-and-keys) consistently.
 Clients must validate authority, record key and activation/incarnation when
 reconnecting, rather than adopting whichever object now has the same number.
 

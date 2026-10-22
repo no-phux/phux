@@ -69,7 +69,7 @@ action's `id`:
 
 ```toml
 [keybindings.prefix-table]
-"S" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
+"Y" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
 ```
 
 **A global binding takes the key away from every program.** A global
@@ -120,18 +120,19 @@ A key names the physical key you press, not the character it types:
 - `BackTab` is Shift+Tab.
 
 A binding can also be a **sequence**: several keys pressed one after
-another, separated by spaces. In the prefix table, `"g s"` is
-<kbd>C-a</kbd> <kbd>g</kbd> <kbd>s</kbd>:
+another, separated by spaces. In the prefix table, `"t s"` is
+<kbd>C-a</kbd> <kbd>t</kbd> <kbd>s</kbd>:
 
 ```toml
 [keybindings.prefix-table]
-"g s" = "session-picker"
-"g w" = "window-picker"
+"t s" = "session-picker"
+"t w" = "window-picker"
 ```
 
 A key either runs an action or starts a sequence; it can't do both,
-because phux could never tell which one you meant. Binding both `"g"` and
-`"g s"` is an error.
+because phux could never tell which one you meant. The first key of a
+sequence must be free, a shipped binding included: <kbd>g</kbd> already
+runs `give-input`, so `"g s"` is an error until you unbind `"g"`.
 
 Quote keys that TOML would read differently: `'"' = ...` binds the double
 quote, `"\\" = ...` the backslash.

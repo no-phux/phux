@@ -68,7 +68,7 @@ There's no account and no hosted service in between. [Remote machines](./remote.
 
 ## Targets
 
-Commands that act on something take a target:
+A target names the session, tab, or pane a command acts on. Every command that takes one reads the same grammar:
 
 | Target     | Means                                              | Example                       |
 | ---------- | -------------------------------------------------- | ----------------------------- |
@@ -82,11 +82,11 @@ Commands that act on something take a target:
 | `^key`     | a session or pane by key (6+ hex digits)           | `phux kill ^3f9a2c`           |
 | `.`        | the focused pane                                   | `phux signal . kill`          |
 
-`phux help targets` prints the same table. Quote `#tag` in a shell, where `#` can start a comment.
+Tab and pane numbers count from 0. `phux help targets` prints the same table. Quote `#tag` in a shell, where `#` can start a comment.
 
-## Identity and execution
+## Names, ids, and keys
 
-Names, ids, and keys answer different questions:
+There are three ways to point at something, each for a different job:
 
 - A **name** (`work`, `work:1`) is for people. You can rename a session or tab, so a name can point somewhere else tomorrow.
 - A **pane id** (`@7`) names a pane that exists right now. Inside a pane, `$PHUX_TERMINAL_ID` holds it. Prefer ids in scripts. An id can be reused after its pane is gone or the server restarts, so don't store one for later.

@@ -79,7 +79,7 @@ error as a toast. A reload is never half-applied.
 | Key bindings, which-key, theme, status bar, `[chrome]`, `[notifications]`, `clipboard-write`, plugin actions, panes and sidebar sections | On `phux config reload` (or the `reload-config` action). |
 | `[sidebar]`, `mouse`, `[experimental] predictive-echo` | The next time you attach. Detach and run `phux attach` again. |
 | The rest of `[defaults]` (shell, `TERM`, scrollback, session names, ...), `[[hooks]]`, plugin event hooks, `[policy]`, `[voice]`, `[limits]` | When the server starts. |
-| `[[satellites]]`, `[[uplink]]` | On `phux config reload`, by the server. |
+| `[[satellites]]`, `[[uplink]]` ([linked machines](./remote.md#linking-machines)) | On `phux config reload`, by the server. |
 
 The server reads its settings once, at start. `phux upgrade` restarts the
 server in place without closing any pane, so it is the way to apply them
@@ -134,13 +134,14 @@ status.right[0]: bad value: invalid option for widget time: unknown option `form
 When a problem comes from a file you extend rather than your own, the line
 after it names that file (`  from /path/to/layer.toml`).
 
-**Check the file before you attach.** A file that does not load at all,
-because of a TOML syntax error or an unknown key, still lets you attach:
-phux ignores the whole file, runs on the shipped defaults (so `C-a d` still
-detaches), and shows the error on the status bar until you fix it and run
-`phux config reload`. A reload of a file that still fails keeps whatever
-config you had. A server won't start on such a file. A file that loads but has one bad key binding loses only that
-binding; the rest still work.
+**A broken file never locks you out of a session.** When the file does
+not load at all, because of a TOML syntax error or an unknown key, attaching
+still works: phux ignores the whole file, runs on the shipped defaults (so
+<kbd>C-a</kbd> <kbd>d</kbd> still detaches), and shows the error on the
+status bar until you fix it and run `phux config reload`. A reload of a
+file that still fails keeps the config you had. A server, though, won't
+start on such a file, so check before you restart one. A file that loads
+but has one bad key binding loses only that binding.
 
 ## Starter file
 

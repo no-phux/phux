@@ -43,7 +43,7 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 | `--install-dir <dir>`           | install somewhere other than `~/.local/bin`                   |
 | `--no-modify-path`              | leave your shell profile alone                                |
 | `--version <X.Y.Z>`             | install a specific release instead of the latest             |
-| `--channel <stable\|next>`      | follow tagged releases (the default) or every green `main`    |
+| `--channel <stable\|next>`      | follow tagged releases (the default), or every `main` build that passes CI |
 | `--desktop`                     | also install the desktop app                                  |
 | `--dry-run`                     | print what would be downloaded and where, and install nothing |
 
@@ -92,7 +92,7 @@ phux update --rollback # put the previous version back
 
 `phux update` downloads the new release, checks it, replaces both programs, and restarts the server in place. **Your panes keep running through an update**, and attached clients reconnect on their own.
 
-`phux upgrade` is the second half on its own: it restarts the running server onto whatever `phux` is already installed. Run it after updating some other way, such as `brew upgrade`.
+`phux upgrade` does only the restart: it moves the running server onto whatever `phux` is already installed, again without stopping your panes. Run it after updating some other way, such as `brew upgrade`.
 
 If you installed with Homebrew, Nix, or `cargo install`, `phux update` changes nothing and prints the command for that package manager instead.
 
@@ -142,7 +142,7 @@ rm ~/.local/bin/phux ~/.local/bin/phux-mcp
 rm -rf ~/.config/phux ~/.local/state/phux ~/.local/share/phux
 ```
 
-Remove `Phux.app` from `/Applications` or `~/Applications` if you installed the desktop app. With Homebrew, run `brew uninstall phux` instead of the first `rm`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.
+If you installed the desktop app, also remove `Phux.app` from `/Applications` or `~/Applications` on macOS, or `~/.local/share/phux-desktop` on Linux. With Homebrew, run `brew uninstall phux` instead of the first `rm`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.
 
 ## Troubleshooting
 
