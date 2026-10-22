@@ -135,7 +135,7 @@ pub(crate) fn page() -> Page {
            stays stable -- which \
            also means its subjectAltName set is fixed at generation; \
           `phux doctor` reports whether it names the \
-           address phux advertises.\n\
+           address phux advertises, and (`remote-cert-chain`) whether an auto-provisioned leaf still fails to chain to the workload CA, which blocks phone QR enrollment.\n\
          - `remote-tokens` is the versioned verifier-only credential store \
            the server reads and `phux pair`, `phux pair rotate`, and `phux \
            pair revoke` update under the sibling \
