@@ -1,24 +1,32 @@
 import { spawn } from "node:child_process";
 export const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
-/** Execute an argv vector directly in a new POSIX process group; never invoke a shell. */
+/**
+ * Execute an argv vector directly, never through a shell: in a new POSIX
+ * process group, or in this one under {@link RunRequest.lifeline}.
+ */
 export const nodeProcessRunner = (request) => new Promise((resolve, reject) => {
     if (request.signal?.aborted) {
         resolve({ termination: "aborted", exitCode: null, stdout: "", stderr: "" });
         return;
     }
     validateNonNegativeFinite(request.timeoutMs, "timeoutMs");
+    if (request.lifeline === true && request.stdin !== undefined) {
+        throw new TypeError("lifeline and stdin are exclusive");
+    }
+    const ownGroup = request.lifeline !== true;
     const maxStdoutBytes = outputLimit(request.maxStdoutBytes, "maxStdoutBytes");
     const maxStderrBytes = outputLimit(request.maxStderrBytes, "maxStderrBytes");
     const child = spawn(request.executable, [...request.args], {
         cwd: request.cwd,
         env: request.env,
         shell: false,
-        detached: true,
-        stdio: [request.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+        detached: ownGroup,
+        stdio: [request.stdin === undefined && ownGroup ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    // The lifeline end stays open until the child exits; this process's own
+    // exit is what closes it otherwise.
+    child.stdin?.on("error", () => { });
     if (request.stdin !== undefined && child.stdin !== null) {
-        // A child that exits without reading must not fail the run with EPIPE.
-        child.stdin.on("error", () => { });
         child.stdin.end(request.stdin);
     }
     const { stdout, stderr } = child;
@@ -39,8 +47,8 @@ export const nodeProcessRunner = (request) => new Promise((resolve, reject) => {
             return;
         termination = reason;
         limitedStream = stream;
-        killProcessGroup(child, "SIGTERM");
-        forceKill = setTimeout(() => killProcessGroup(child, "SIGKILL"), 1_000);
+        terminate(child, ownGroup, "SIGTERM");
+        forceKill = setTimeout(() => terminate(child, ownGroup, "SIGKILL"), 1_000);
         forceKill.unref();
     };
     stdout.on("data", (chunk) => {
@@ -85,7 +93,8 @@ export const nodeProcessRunner = (request) => new Promise((resolve, reject) => {
     });
     child.once("close", (exitCode) => {
         cleanup();
-        if (forceKill !== undefined && !processGroupExists(child.pid))
+        child.stdin?.destroy();
+        if (forceKill !== undefined && !(ownGroup && processGroupExists(child.pid)))
             clearTimeout(forceKill);
         const base = {
             exitCode,
@@ -117,8 +126,9 @@ function validateNonNegativeFinite(value, name) {
         throw new RangeError(`${name} must be a non-negative finite number`);
     }
 }
-function killProcessGroup(child, signal) {
-    if (child.pid !== undefined) {
+/** Signal the child's whole group when it has one, else the child alone. */
+function terminate(child, ownGroup, signal) {
+    if (ownGroup && child.pid !== undefined) {
         try {
             process.kill(-child.pid, signal);
             return;

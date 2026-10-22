@@ -2,13 +2,13 @@
 #
 # This file used to carry phux's opinions: the which-key delay, the
 # split/palette/tab chords, the status lineup, the theme. All of that is
-# now the SHIPPED DEFAULT — `crates/phux-config/src/default.toml` plus
+# now the SHIPPED DEFAULT — `crates/phux-config/src/default/` plus
 # `crates/phux-tui/src/render/theme.rs` — so naked `phux` already
 # looks and behaves the way this distro used to make it behave. Nothing
 # was dropped; it moved one layer down, where everyone gets it.
 #
 # What is left here is the one thing an embedded default genuinely
-# cannot express: plugin wiring. `default.toml` ships inside the binary
+# cannot express: plugin wiring. The default config ships inside the binary
 # via `include_str!`, so it has no directory of its own for a relative
 # `manifest` path to resolve against. A layer file on disk does, which is
 # why the demo plugin set stays a distro concern.

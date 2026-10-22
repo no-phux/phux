@@ -67,6 +67,12 @@ For a CLI connected to a remote service without this plugin, load the companion
 locally through `cli.json` using the same package target. Do not also register a
 different local checkout when the connected service already supplies it.
 
+The companion also delivers this pane's mail. While it shows a session, it
+waits on `phux mail wait` and admits each message to that session as a
+synthetic `phux mail` message (`delivery: "queue"`, `resume: true`): queued
+behind a running turn, or starting one when the session is idle. Nothing is
+typed into the pane.
+
 The CLI companion does nothing outside a phux pane. The server plugin may
 still supply tools globally, but **do not assume its `PHUX_TERMINAL_ID` names
 the active TUI pane** when the service is shared. Server-side lifecycle is off

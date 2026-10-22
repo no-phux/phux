@@ -80,6 +80,9 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
     if let Some(command) = crate::wire::frame::org::decode_org_command(tag, dec)? {
         return Ok(command);
     }
+    if let Some(command) = super::service_http::decode_command(tag, dec)? {
+        return Ok(command);
+    }
     Err(DecodeError::unknown_enum("Command", tag))
 }
 

@@ -1,0 +1,172 @@
+[keybindings]
+# The prefix. Press it, then a key from the prefix table below.
+prefix = "C-a"
+
+# After the prefix, hesitate for which-key-delay-ms and a popup lists
+# every key you can press next, rebinds included. It never eats a key:
+# whatever you press runs as if the popup were not there, and Esc cancels
+# the prefix.
+which-key = true
+which-key-delay-ms = 400
+
+# Keys pressed after the prefix. Set a key to "none" to unbind it.
+# https://docs.phux.sh/reference/keys lists these grouped as the popup
+# shows them.
+[keybindings.prefix-table]
+# Split. " and % are tmux's keys; | and - draw the divider they make.
+'"' = { action = "split-pane", direction = "horizontal" }
+"%" = { action = "split-pane", direction = "vertical" }
+"|" = { action = "split-pane", direction = "vertical" }
+"-" = { action = "split-pane", direction = "horizontal" }
+
+# Close the focused pane; X closes the whole tab after asking. close-view
+# (no key; in the palette and context menu) hides a pane without ending
+# it, and reopen-views brings hidden panes back.
+"x" = "kill-pane"
+"X" = "kill-window"
+
+# Move between panes: h j k l like vim, o / ; in order, = back to the
+# last one.
+"h" = { action = "focus-direction", direction = "left" }
+"j" = { action = "focus-direction", direction = "down" }
+"k" = { action = "focus-direction", direction = "up" }
+"l" = { action = "focus-direction", direction = "right" }
+"o" = "next-pane"
+";" = "previous-pane"
+"=" = "last-pane"
+
+# Zoom the focused pane to fill the tab, and back.
+"z" = "toggle-zoom"
+
+# Show or hide the sidebar.
+"b" = "toggle-sidebar"
+
+# Copy mode: scroll back, search, select, and copy. Arrows move, Enter
+# copies, Esc leaves.
+"[" = "copy-mode"
+
+# Tabs. Actions keep tmux's word "window" for a tab. 0-9 jump to the tab
+# with that number in the status bar; < and > move the tab left or right.
+"c" = "new-window"
+"n" = "next-window"
+"p" = "previous-window"
+"Tab" = "next-window"
+"0" = { action = "select-window", index = 0 }
+"1" = { action = "select-window", index = 1 }
+"2" = { action = "select-window", index = 2 }
+"3" = { action = "select-window", index = 3 }
+"4" = { action = "select-window", index = 4 }
+"5" = { action = "select-window", index = 5 }
+"6" = { action = "select-window", index = 6 }
+"7" = { action = "select-window", index = 7 }
+"8" = { action = "select-window", index = 8 }
+"9" = { action = "select-window", index = 9 }
+"<" = { action = "move-window", delta = -1 }
+">" = { action = "move-window", delta = 1 }
+
+# Open a new tab in a directory you pick (G), or find a path and type it
+# into the pane (F).
+"G" = "go-to-directory"
+"F" = "find-path"
+
+# Rename the tab (,) or the session ($). Give a name to skip the prompt:
+#   "," = { action = "rename-window", name = "build" }
+"," = "rename-window"
+"$" = "rename-session"
+
+# The command palette: every action, searchable, with its key. Space is
+# the easy one; : and ? open it too.
+"Space" = "command-palette"
+":" = "command-palette"
+"?" = "command-palette"
+
+# Pick a tab from every session (w), or a session (s).
+"w" = "window-picker"
+"s" = "session-picker"
+
+# Agents. A opens every agent with its state and whether it needs you;
+# a steps the sidebar's agent filter (all, this session's, needs you);
+# q jumps to the next pane waiting for an answer and Q goes back.
+"A" = "agent-fleet"
+"a" = "agents-filter"
+"q" = "next-attention"
+"Q" = "return-from-attention"
+
+# Settings page.
+"S" = "settings"
+
+# Move every pane into the session for its repository (`phux organize`).
+# Nothing is closed, and organize-undo reverses it.
+"O" = "organize"
+
+# Write a bug report bundle (`phux report show` opens it).
+"B" = "report-bug"
+
+# rec-mark (no key) drops a marker while `phux rec` is recording:
+#   "M" = { action = "rec-mark", label = "intro" }
+
+# Sessions: C makes a new one, N and P cycle, ) goes back to the last.
+"C" = "new-session"
+"N" = "next-session"
+"P" = "previous-session"
+")" = "last-session"
+
+# Detach. The session keeps running; `phux` brings you back.
+"d" = "detach"
+
+# Take the keyboard from an agent driving the pane (W), give it back (g),
+# pause the pane's program (f) and resume it (u). Signals that end a
+# program are left to `phux signal`, so a stray key cannot kill one.
+"W" = "take-input"
+"g" = "give-input"
+"f" = { action = "signal-terminal", signal = "freeze" }
+"u" = { action = "signal-terminal", signal = "resume" }
+
+# Resize the focused pane by 5 cells. R enters resize mode, below, to
+# keep resizing without pressing the prefix each time.
+"H" = { action = "resize-pane", direction = "left",  amount = 5 }
+"J" = { action = "resize-pane", direction = "down",  amount = 5 }
+"K" = { action = "resize-pane", direction = "up",    amount = 5 }
+"L" = { action = "resize-pane", direction = "right", amount = 5 }
+"R" = { action = "enter-mode", name = "resize" }
+
+# reload-config (no key; in the palette) applies your config file without
+# detaching. Bind it if you edit the file often:
+#   "r" = "reload-config"
+
+[keybindings.global]
+# Keys that work without the prefix. None ship, so every key reaches the
+# program in the pane until you add one here:
+#   "M-Enter" = "toggle-zoom"
+
+# Key modes. A mode is a set of keys that work without the prefix while
+# the mode is on. enter-mode turns one on and the status bar shows its
+# name; exit-mode, or Esc unless the mode binds Esc, turns it off. Add
+# once = true to enter-mode to leave after one of the mode's keys:
+#   "r" = { action = "enter-mode", name = "resize", once = true }
+# Make your own with a [keybindings.modes.NAME] table; "none" unbinds a
+# key in a mode like anywhere else.
+#
+# Resize mode (prefix, then R): h j k l and the arrows resize the focused
+# pane by 1 cell, H J K L by 5. Enter or Esc leaves.
+[keybindings.modes.resize]
+"h" = { action = "resize-pane", direction = "left",  amount = 1 }
+"j" = { action = "resize-pane", direction = "down",  amount = 1 }
+"k" = { action = "resize-pane", direction = "up",    amount = 1 }
+"l" = { action = "resize-pane", direction = "right", amount = 1 }
+"Left" = { action = "resize-pane", direction = "left",  amount = 1 }
+"Down" = { action = "resize-pane", direction = "down",  amount = 1 }
+"Up" = { action = "resize-pane", direction = "up",    amount = 1 }
+"Right" = { action = "resize-pane", direction = "right", amount = 1 }
+"H" = { action = "resize-pane", direction = "left",  amount = 5 }
+"J" = { action = "resize-pane", direction = "down",  amount = 5 }
+"K" = { action = "resize-pane", direction = "up",    amount = 5 }
+"L" = { action = "resize-pane", direction = "right", amount = 5 }
+"Enter" = "exit-mode"
+
+# exclusive = true: keys the mode does not bind do nothing, so a stray
+# key cannot type into the pane while you resize. Without it they work
+# as they do outside the mode.
+[keybindings.mode-options.resize]
+exclusive = true
+

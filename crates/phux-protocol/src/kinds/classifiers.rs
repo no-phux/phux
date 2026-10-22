@@ -125,6 +125,9 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::PutFile { .. } => &C_PUT_FILE,
         Command::GetFile { .. } => &C_GET_FILE,
         Command::Checkout { .. } => &C_CHECKOUT,
+        Command::ServiceHttpOpen { .. }
+        | Command::ServiceHttpRead { .. }
+        | Command::ServiceHttpClose { .. } => &C_SERVICE_HTTP,
         Command::DetachClients { session: Some(_) } => &C_DETACH_CLIENTS_SESSION,
         Command::DetachClients { session: None } => &C_DETACH_CLIENTS_ALL,
         Command::Shutdown => &C_SHUTDOWN,

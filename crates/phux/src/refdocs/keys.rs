@@ -55,6 +55,48 @@ fn action_cell(action: &Action) -> String {
     }
 }
 
+/// The prefix-table key that enters `mode`, if one ships.
+fn mode_entry_key<'a>(kb: &'a phux_config::KeybindingsCfg, mode: &str) -> Option<&'a str> {
+    kb.prefix_table
+        .iter()
+        .find_map(|(key, action)| match action {
+            Action::Parameterized(p)
+                if p.action == "enter-mode"
+                    && p.args.get("name").and_then(toml::Value::as_str) == Some(mode) =>
+            {
+                Some(key.as_str())
+            }
+            _ => None,
+        })
+}
+
+/// One section per shipped key mode: how to enter it and its keys.
+fn push_modes(body: &mut String, kb: &phux_config::KeybindingsCfg) {
+    if kb.modes.is_empty() {
+        return;
+    }
+    body.push_str(
+        "\n## Key modes\n\nWhile a mode is on, its keys work without the prefix and \
+         the status bar shows its name. <kbd>Esc</kbd> leaves any mode that does not \
+         bind it. See [Key modes](../keys.md#key-modes).\n",
+    );
+    for (mode, bindings) in &kb.modes {
+        let _ = write!(body, "\n### {mode}\n\n");
+        if let Some(key) = mode_entry_key(kb, mode) {
+            let _ = write!(body, "Press {}, then {}. ", kbd(&kb.prefix), kbd(key));
+        }
+        if kb.mode_options.get(mode).is_some_and(|o| o.exclusive) {
+            body.push_str("Keys the mode does not bind do nothing while it is on.");
+        } else {
+            body.push_str("Keys the mode does not bind work as they do outside it.");
+        }
+        body.push_str("\n\n| Keys | Action |\n|---|---|\n");
+        for (key, action) in bindings {
+            let _ = writeln!(body, "| {} | {} |", kbd(key), action_cell(action));
+        }
+    }
+}
+
 /// Render `docs/reference/keys.md` from the shipped defaults.
 pub(crate) fn page() -> Page {
     #[allow(clippy::expect_used, reason = "the embedded defaults always parse")]
@@ -116,6 +158,8 @@ pub(crate) fn page() -> Page {
         }
     }
 
+    push_modes(&mut body, kb);
+
     Page {
         file: "keys.md",
         title: "Default key bindings",
@@ -148,6 +192,21 @@ mod tests {
         {
             assert!(page.body.contains(&format!("`{name}`")), "missing {name}");
         }
+    }
+
+    #[test]
+    fn the_shipped_resize_mode_has_its_own_section() {
+        let body = page().body;
+        let section = body.split("### resize").nth(1).expect("resize section");
+        assert!(
+            section.contains("Press <kbd>C-a</kbd>, then <kbd>R</kbd>."),
+            "{section}"
+        );
+        assert!(section.contains("do nothing while it is on"), "exclusive");
+        assert!(
+            section.contains("| <kbd>Enter</kbd> | `exit-mode` |"),
+            "{section}"
+        );
     }
 
     #[test]

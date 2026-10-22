@@ -116,6 +116,9 @@ pub(crate) const UNKNOWN_AGENT_KIND: &str = "unknown_agent_kind";
 /// The pane declares no `phux.agent/v1` record, so there is no agent
 /// lifecycle to wait on and no occupant to verify. Exit 2.
 pub(crate) const NO_AGENT_RECORD: &str = "no_agent_record";
+/// `phux agent set` / `clear` could not confirm the write: the read-back
+/// showed it did not land, or the server refused the read. Exit 1.
+pub(crate) const AGENT_RECORD_UNCONFIRMED: &str = "agent_record_unconfirmed";
 /// The agent went away mid-wait: the record was deleted, or its state
 /// withdrew to `unknown`. Neither a completion nor a timeout. Exit 1.
 pub(crate) const AGENT_DEPARTED: &str = "agent_departed";

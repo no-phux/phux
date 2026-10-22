@@ -6,7 +6,7 @@ This page walks through a first session: start phux, split and move between pane
 phux
 ```
 
-Press <kbd>C-a</kbd> <kbd>d</kbd> to detach. Run `phux` again to come back to exactly where you were.
+Press <kbd>C-a</kbd> <kbd>d</kbd> (<kbd>Ctrl</kbd>+<kbd>a</kbd>, then <kbd>d</kbd>) to detach. Run `phux` again to come back to exactly where you were.
 
 ## Start phux
 
@@ -43,6 +43,7 @@ A pane is one terminal. Split the one you're in:
 | <kbd>C-a</kbd> <kbd>"</kbd> or <kbd>C-a</kbd> <kbd>-</kbd>                         | split below                              |
 | <kbd>C-a</kbd> <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>                 | move to the pane left, down, up, right   |
 | <kbd>C-a</kbd> <kbd>H</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>                 | resize the pane left, down, up, right    |
+| <kbd>C-a</kbd> <kbd>R</kbd>                                                        | resize mode: <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> or the arrows resize one cell at a time; <kbd>Esc</kbd> leaves |
 | <kbd>C-a</kbd> <kbd>o</kbd>                                                        | next pane                                |
 | <kbd>C-a</kbd> <kbd>=</kbd>                                                        | the pane you were in before              |
 | <kbd>C-a</kbd> <kbd>z</kbd>                                                        | zoom the pane to fill the tab; again to unzoom |
@@ -52,12 +53,12 @@ A pane is one terminal. Split the one you're in:
 
 ## Tabs
 
-A tab holds a set of panes. The status bar along the bottom shows your tabs.
+A tab holds a set of panes. The status bar along the top shows your tabs.
 
 | Keys                                                       | Does                                       |
 | ---------------------------------------------------------- | ------------------------------------------ |
 | <kbd>C-a</kbd> <kbd>c</kbd>                                | new tab                                    |
-| <kbd>C-a</kbd> <kbd>n</kbd> (or <kbd>Tab</kbd>), <kbd>C-a</kbd> <kbd>p</kbd> | next, previous tab               |
+| <kbd>C-a</kbd> <kbd>n</kbd> or <kbd>C-a</kbd> <kbd>Tab</kbd>, <kbd>C-a</kbd> <kbd>p</kbd> | next, previous tab |
 | <kbd>C-a</kbd> <kbd>0</kbd>–<kbd>9</kbd>                   | go to tab 0–9                              |
 | <kbd>C-a</kbd> <kbd>w</kbd>                                | pick a tab from every session              |
 | <kbd>C-a</kbd> <kbd>,</kbd>                                | rename the tab                             |

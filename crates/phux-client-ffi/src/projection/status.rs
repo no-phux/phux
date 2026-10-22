@@ -64,6 +64,7 @@ pub fn negotiated_features(server: &ServerInfo) -> Vec<String> {
         [
             (ServerFeatureExt::PathQuery, "path-query"),
             (ServerFeatureExt::Checkout, "checkout"),
+            (ServerFeatureExt::HostServiceHttp, "service-http"),
         ]
         .into_iter()
         .filter(|(feature, _)| server.features_ext.contains(*feature))

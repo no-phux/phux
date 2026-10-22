@@ -1,4 +1,4 @@
-//! `LIST_DIRECTORY.host` through the hub (`docs/spec/L3.md` §4.1): a relayed
+//! `LIST_DIRECTORY.host` through the hub (`docs/protocol.md#commands-events-resources`): a relayed
 //! listing, an unknown host, a non-hub server, and an unreachable satellite.
 //! The relay's listing deadline is unit-tested on paused time in
 //! `hub::relay`.

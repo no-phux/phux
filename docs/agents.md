@@ -1,7 +1,7 @@
 # Coding agents
 
 phux tracks the coding agents running in its panes, so you can see which one
-needs you and answer it without hunting for its window. Agents can also use
+needs you and answer it without hunting for its tab. Agents can also use
 phux themselves: to run commands in other panes, read their output, and wait
 for things to happen.
 
@@ -10,7 +10,7 @@ phux agent list                                   # every pane's agent and state
 phux agent wait --any --until blocked --timeout 600  # until any agent needs you
 ```
 
-In the TUI, the sidebar lists agents with their state, <kbd>C-a</kbd>
+In the terminal UI, the sidebar lists agents with their state, <kbd>C-a</kbd>
 <kbd>A</kbd> opens the agents view, and <kbd>C-a</kbd> <kbd>q</kbd> jumps to
 the next pane whose agent is waiting for you (<kbd>C-a</kbd> <kbd>Q</kbd>
 jumps back).
@@ -172,7 +172,7 @@ Anyone who can name a pane can put text in them.
 ## Mail and path claims
 
 Agents can leave each other messages and mark which files they are working
-on. Both live in the local work store and survive restarts.
+on. Both are stored on this machine and survive server restarts.
 
 ```sh
 phux mail send @7 -m 'rebased onto main; rerun tests' -t fix-login
@@ -183,9 +183,33 @@ phux claim list
 
 An address is a pane (`@749`), a labelled pane (`pi@749`), or a plain name
 for something outside a pane. You speak as `--as`, else
-`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`. Sending mail stores it,
-then prompts each recipient pane's agent to read it. A pane with no agent
-isn't prompted.
+`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`. Addresses are panes on
+this machine; `host/@N` is refused.
+
+Sending mail only stores it. Nothing is ever typed into the recipient's
+pane: its harness takes the mail and puts it in the agent's conversation,
+once, framed as a message from another agent rather than from the user.
+
+| Harness | How mail arrives |
+| --- | --- |
+| pi, Oh My Pi | a `phux.mail` follow-up message; starts a turn when the agent is idle |
+| OpenCode | a queued synthetic message in the session the pane shows; resumes it when idle |
+| Claude Code (plugin) | hook context on session start, prompt submit and after each tool; a `block` at stop so the agent goes on and handles it |
+| Grok | hook context after each tool, and a `block` at stop |
+
+Claude Code and Grok only have hooks, so an agent idle at its prompt sees
+its mail at its next hook. Workers whose conversation an SDK controller owns
+(`PHUX_AGENT_REPORTING=0`) get no mail from their hooks either: the
+controller decides what enters that conversation.
+
+The harness side is three commands. `phux mail wait --json` holds until
+there is mail and takes it; with `--until-stdin-closes` it gives up, taking
+nothing, when the harness that started it exits, however abruptly.
+`phux mail hook-context --event EVENT` prints the hook reply. A harness that
+took mail but could not inject it returns it with `phux mail release ID...`,
+and mail whose output cannot be written is released by the command itself,
+as is a take whose reply the keeper could not send. Taken mail still shows
+as unread in `phux mail read`.
 
 `claim take` grants every path or none, and exits 1 naming the holders on a
 conflict. It prints a fence; `phux claim renew FENCE` and
@@ -219,8 +243,8 @@ after a rate limit.
 The usage plugin, part of the starter distribution, runs
 `phux agent usage --publish` when a client attaches or an agent changes
 state. That shares the numbers with every client allowed to see the whole
-server, including paired devices such as a phone. It shares an anonymous account fingerprint,
-never an email or a token.
+server, including paired devices such as a phone. It shares an anonymous
+account fingerprint, never an email or a token.
 
 ## Agents without an integration
 
@@ -269,7 +293,7 @@ panes by `@N`, never `.`. The integrations refuse to type into the pane their
 own agent runs in.
 
 **Take the wheel when you need it.** `phux take @7`, or <kbd>C-a</kbd>
-<kbd>W</kbd> in the TUI, gives you exclusive input to a pane until you
+<kbd>W</kbd> in the terminal UI, gives you exclusive input to a pane until you
 release it with `phux give @7` or <kbd>C-a</kbd> <kbd>g</kbd>, or detach.
 Agents and automation can't take a pane a person holds. `phux signal @7
 freeze` pauses an agent mid-step, and `resume` lets it continue.
@@ -281,7 +305,8 @@ without `--yes` when there is none.
 **An agent started with `phux agent start` gets a narrower key.** It can
 list, read, and type into panes in its own session, but not create, kill,
 signal, or reorganize anything, and never more than you can. The key ends
-when the session is deleted or the server restarts cold. **This is not a
+when the session is deleted or the server stops (an in-place
+`phux upgrade` keeps it). **This is not a
 sandbox.** Any program running as your user can still reach the server's
 main socket with full access.
 
@@ -297,10 +322,10 @@ phux deny ID
 Nothing on this machine's own socket is ever held. See
 [Remote machines](./remote.md#who-can-do-what) for keys and scopes.
 
-## JSON index
+## Commands agents use
 
-The commands an agent drives phux with. The [command
-line reference](./reference/cli.md) has their arguments, and the
+The commands an agent drives phux with. The [command line
+reference](./reference/cli.md) has their arguments, and the
 [parity reference](./reference/parity.md) names the MCP tool for each or
 says why it is command-line only.
 

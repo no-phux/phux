@@ -88,6 +88,13 @@ phux-perf.workspace = true
 # Typed checkout methods run the shared Git module on the checkout a
 # Terminal is in.
 phux-git.workspace = true
+# `SERVICE_HTTP_*`: one loopback HTTP/1.1 client connection per exchange to
+# a host service (OpenCode). Already locked through tonic (the optional
+# `tokio-console` feature); nothing new enters Cargo.lock.
+http = "1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
 # `FuturesUnordered` for concurrent per-pane attach snapshots.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # WebSocket transport; TLS is terminated by rustls below, not by tungstenite.
@@ -145,6 +152,9 @@ libghostty-vt.workspace = true
 
 
 [dev-dependencies]
+# The fake loopback service the `SERVICE_HTTP_*` tests answer from.
+hyper = { version = "1", default-features = false, features = ["client", "http1", "server"] }
+http-body-util = { version = "0.1", features = ["channel"] }
 # Instruction-count guard. Not a default feature: `cargo test` does not build benches.
 iai-callgrind.workspace = true
 # `test-util`: paused time for tick and deadline tests.

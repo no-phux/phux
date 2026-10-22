@@ -48,6 +48,7 @@ async fn receipt_refusal_precedes_operation_cache_admission() {
                 input_receipt_slots: &slots,
                 input_credits: &mut InputCredits::default(),
                 held_commands: &mut JoinSet::new(),
+                service_http: &crate::runtime::service_http::Exchanges::default(),
             }
             .submit_input(
                 &lane,

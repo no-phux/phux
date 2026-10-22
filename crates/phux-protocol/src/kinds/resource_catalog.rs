@@ -285,6 +285,33 @@ pub static KINDS: [KindSpec; 2] = [
                 })
             ),
             method!(
+                "SERVICE_HTTP_OPEN",
+                Carrier::Command(COMMAND_TAG_SERVICE_HTTP_OPEN),
+                [C_SERVICE_HTTP],
+                Some(FeatureGate::FeaturesExt {
+                    mask: ServerFeatureExt::HostServiceHttp.mask(),
+                    wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
+                })
+            ),
+            method!(
+                "SERVICE_HTTP_READ",
+                Carrier::Command(COMMAND_TAG_SERVICE_HTTP_READ),
+                [C_SERVICE_HTTP],
+                Some(FeatureGate::FeaturesExt {
+                    mask: ServerFeatureExt::HostServiceHttp.mask(),
+                    wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
+                })
+            ),
+            method!(
+                "SERVICE_HTTP_CLOSE",
+                Carrier::Command(COMMAND_TAG_SERVICE_HTTP_CLOSE),
+                [C_SERVICE_HTTP],
+                Some(FeatureGate::FeaturesExt {
+                    mask: ServerFeatureExt::HostServiceHttp.mask(),
+                    wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
+                })
+            ),
+            method!(
                 "TRANSCRIBE",
                 Carrier::Command(COMMAND_TAG_TRANSCRIBE),
                 [C_TRANSCRIBE],

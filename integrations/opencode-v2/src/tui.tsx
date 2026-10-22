@@ -5,6 +5,7 @@ import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid
 import { PhuxCli } from "../../runtime/src/adapter.js";
 import { ActivePane } from "./active-pane.js";
 import { OpenCodeLifecycle } from "./lifecycle.js";
+import { openCodeMail } from "./mail.js";
 import { parentPane } from "./parent.js";
 
 /** Pane identity belongs to the TUI process, never to the shared OpenCode service. */
@@ -21,6 +22,13 @@ export default Plugin.define({
       onError: (error) => console.error("phux OpenCode presence:", error),
     });
     const active = new ActivePane(lifecycle);
+    // Mail for this pane goes to the session it shows, never into its terminal.
+    const mail = openCodeMail({
+      sessions: ctx.client.session,
+      visibleSession: () => active.visible,
+      env: process.env,
+      onError: (error) => console.error("phux OpenCode mail:", error),
+    });
     const removeSlot = ctx.ui.slot({
       append: "app",
       render: () => {
@@ -29,6 +37,8 @@ export default Plugin.define({
           const sessionID = route.type === "session" ? route.sessionID : undefined;
           active.show(sessionID, sessionID !== undefined && ctx.data.session.status(sessionID) === "running"
             ? "working" : "idle");
+          if (sessionID === undefined) mail.stop();
+          else mail.start();
         });
         return null!;
       },
@@ -45,10 +55,15 @@ export default Plugin.define({
       if (status.type === "busy") active.status(sessionID, "working");
       if (status.type === "idle") active.status(sessionID, "idle");
     });
-    const stopIdle = ctx.data.on("session.idle", (event) => active.status(event.data.sessionID, "idle"));
+    const stopIdle = ctx.data.on("session.idle", (event) => {
+      active.status(event.data.sessionID, "idle");
+      // Re-arms a mail loop that stopped on repeated failures.
+      if (active.visible !== undefined) mail.start();
+    });
     const stopPermission = ctx.data.on("permission.asked", (event) => active.ask(event.data.sessionID));
 
     return async () => {
+      mail.stop();
       stopStatus();
       stopIdle();
       stopPermission();

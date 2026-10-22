@@ -52,8 +52,10 @@ fn event_doc(name: &str) -> &'static str {
              reaped before the detach ran."
         }
         AGENT_STATE_CHANGED => {
-            "The detector's published agent state for a pane actually \
-             changed. `from` is absent on a first sighting; \
+            "A pane's published agent state actually changed, whoever \
+             wrote it: the detector, an agent session's events, an OSC \
+             7501 program status, or `phux agent set` / `clear`. `from` \
+             is absent on a first sighting; \
              `agent-name` is absent for an anonymous agent; a withdrawn \
              record arrives as `to = \"unknown\"`."
         }

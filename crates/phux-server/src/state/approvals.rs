@@ -308,7 +308,7 @@ impl ServerState {
     }
 }
 
-/// The record `phux.approval/v1/<id>` holds (`docs/spec/L3.md` §3.10).
+/// The record `phux.approval/v1/<id>` holds (`docs/agents.md#safety`).
 fn approval_record(
     requester: &ActorRef,
     id: ApprovalId,

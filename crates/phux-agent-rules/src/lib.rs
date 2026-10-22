@@ -30,7 +30,7 @@ pub enum DetectedState {
 }
 
 impl DetectedState {
-    /// The kebab-case wire word (`docs/spec/L3.md` §3.7).
+    /// The kebab-case wire word (`docs/agents.md#agent-states`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

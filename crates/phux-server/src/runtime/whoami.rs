@@ -1,5 +1,5 @@
-//! The read-only `phux.whoami/v1` Global metadata key (`docs/spec/L3.md`
-//! §3.9, ADR-0106).
+//! The read-only `phux.whoami/v1` Global metadata key
+//! (`docs/remote.md#who-can-do-what`, ADR-0106).
 //!
 //! `GET_METADATA` on the key is answered from the asking connection's own
 //! identity, stamped by the accepting transport, rather than from the
@@ -57,7 +57,7 @@ pub(super) fn record_for(s: &ServerState, client_id: ClientId) -> Option<Vec<u8>
     serde_json::to_vec(&RecordWithGrant { record, grant }).ok()
 }
 
-/// The record plus `grant`, the additive field `docs/spec/L3.md` §3.9 adds
+/// The record plus `grant`, the additive field `docs/remote.md#who-can-do-what` adds
 /// in schema 1: what this connection may do, in the registry grammar.
 #[derive(serde::Serialize)]
 struct RecordWithGrant {

@@ -149,6 +149,7 @@ impl ControlPlane {
             Pending::Checkout(terminal_id) => {
                 self.resolve_checkout(request_id, terminal_id, result);
             }
+            Pending::ServiceHttp => self.resolve_service_http(request_id, result),
             pending @ (Pending::PutFile(_) | Pending::Transcribe(_)) => {
                 self.resolve_extension_result(&pending, request_id, result);
             }

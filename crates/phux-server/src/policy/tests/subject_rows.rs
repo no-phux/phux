@@ -409,6 +409,13 @@ fn rows(world: &mut World) -> Vec<Row> {
             }),
             "input",
         ),
+        on_global(
+            command(Command::ServiceHttpRead {
+                exchange: 1,
+                max_bytes: 1,
+            }),
+            "input",
+        ),
         on_terminal(
             command(Command::Checkout {
                 terminal_id: t.clone(),

@@ -159,6 +159,7 @@ test("selects and persists RPC targets through standard UI without invoking cust
     "session_start", "session_tree", "before_agent_start", "session_compact",
     "session_start", "agent_start", ...transcriptEvents, "tool_execution_start", "tool_execution_end",
     "ui_prompt_start", "project_trust", "agent_settled", "session_shutdown",
+    "session_start", "agent_settled", "session_shutdown",
   ]);
 
   let customCalls = 0;

@@ -29,6 +29,10 @@
       "types": "./dist/src/errors.d.ts",
       "import": "./dist/src/errors.js"
     },
+    "./mail": {
+      "types": "./dist/src/mail.d.ts",
+      "import": "./dist/src/mail.js"
+    },
     "./runner": {
       "types": "./dist/src/runner.d.ts",
       "import": "./dist/src/runner.js"

@@ -49,6 +49,7 @@ mod command_encode;
 mod event_decode;
 mod event_encode;
 mod result;
+mod service_http;
 
 use command_bodies::{
     checkout_decode_error, decode_acquire_input_command, decode_checkout_command,

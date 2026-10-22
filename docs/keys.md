@@ -49,6 +49,7 @@ Bindings live in two tables:
 | --- | --- |
 | `[keybindings.prefix-table]` | After the prefix. `"z"` here is <kbd>C-a</kbd> <kbd>z</kbd>. |
 | `[keybindings.global]` | On its own, with no prefix. phux ships none. |
+| `[keybindings.modes.<name>]` | On its own, while that [key mode](#key-modes) is on. |
 
 A binding's value is an action name, or an inline table with the action
 and its arguments:
@@ -69,7 +70,7 @@ action's `id`:
 
 ```toml
 [keybindings.prefix-table]
-"S" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
+"Y" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
 ```
 
 **A global binding takes the key away from every program.** A global
@@ -120,18 +121,19 @@ A key names the physical key you press, not the character it types:
 - `BackTab` is Shift+Tab.
 
 A binding can also be a **sequence**: several keys pressed one after
-another, separated by spaces. In the prefix table, `"g s"` is
-<kbd>C-a</kbd> <kbd>g</kbd> <kbd>s</kbd>:
+another, separated by spaces. In the prefix table, `"t s"` is
+<kbd>C-a</kbd> <kbd>t</kbd> <kbd>s</kbd>:
 
 ```toml
 [keybindings.prefix-table]
-"g s" = "session-picker"
-"g w" = "window-picker"
+"t s" = "session-picker"
+"t w" = "window-picker"
 ```
 
 A key either runs an action or starts a sequence; it can't do both,
-because phux could never tell which one you meant. Binding both `"g"` and
-`"g s"` is an error.
+because phux could never tell which one you meant. The first key of a
+sequence must be free, a shipped binding included: <kbd>g</kbd> already
+runs `give-input`, so `"g s"` is an error until you unbind `"g"`.
 
 Quote keys that TOML would read differently: `'"' = ...` binds the double
 quote, `"\\" = ...` the backslash.
@@ -173,6 +175,55 @@ types an `x`.
 
 **An unbound key stays unbound.** A plugin whose manifest `keys` names it
 doesn't get it, whatever spelling either of you uses.
+
+## Key modes
+
+A key mode is a set of keys that work without the prefix while the mode
+is on, so ordinary keys can do something else for a while. phux ships
+one: press <kbd>C-a</kbd> <kbd>R</kbd> for resize mode, then
+<kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> or the arrows resize
+the focused pane one cell at a time (<kbd>H</kbd> <kbd>J</kbd>
+<kbd>K</kbd> <kbd>L</kbd> by five). <kbd>Enter</kbd> or <kbd>Esc</kbd>
+leaves. While a mode is on, the right end of the status bar shows its
+name.
+
+A mode is a table under `[keybindings.modes]`, entered with `enter-mode`:
+
+```toml
+[keybindings.prefix-table]
+"v" = { action = "enter-mode", name = "views" }
+
+[keybindings.modes.views]
+"n" = "next-window"
+"p" = "previous-window"
+"z" = "toggle-zoom"
+"q" = "exit-mode"
+```
+
+- **Leaving.** `exit-mode` leaves the mode, and so does <kbd>Esc</kbd>
+  unless the mode binds <kbd>Esc</kbd> itself. Add `once = true` to
+  `enter-mode` to leave after the first of the mode's keys runs.
+- **Other keys.** A key the mode doesn't bind does what it does outside
+  the mode: the prefix and global keys still work, and anything else goes
+  to the program in the pane. Make the mode exclusive to ignore those
+  keys instead, so a stray key can't type into the pane. The shipped
+  resize mode is exclusive:
+
+  ```toml
+  [keybindings.mode-options.resize]
+  exclusive = true
+  ```
+
+- **One mode at a time.** Entering a mode from inside another switches to
+  it.
+- **Changing a mode.** Mode tables layer like the others: your keys add to
+  or replace the shipped ones, and `"none"` removes one from that mode
+  only. `[keybindings.modes.resize] "h" = "none"` leaves <kbd>h</kbd>
+  bound everywhere else.
+
+A mode name is lowercase letters, digits, `-`, and `_`. `phux config
+check` reports an `enter-mode` naming a mode no table defines, and
+options for a mode that doesn't exist.
 
 ## Changing the prefix
 
@@ -233,7 +284,8 @@ C-a |  split-pane  direction=vertical    defaults
 ```
 
 Give it an action name to see only that action's keys, or none to see
-everything. **SOURCE** is `defaults`, the name of the file that set the
+everything. A key mode's keys read `mode:<name> <key>`, such as
+`mode:resize h`. **SOURCE** is `defaults`, the name of the file that set the
 binding (`config.toml`, or a file you extend), or `plugin <id>`. The first
 line shows the prefix and where it came from.
 

@@ -288,8 +288,8 @@ pub(crate) fn page() -> Page {
         body,
         "\n## The annotated default config\n\n\
          The base layer embedded in the binary \
-         (`crates/phux-config/src/default.toml`), verbatim. `phux config \
-         init` writes a fully-commented projection of this file, and \
+         (the files under `crates/phux-config/src/default/`, joined in \
+         order), verbatim. `phux config init` writes a fully-commented projection of it, and \
          `phux config show --default` prints it.\n\n\
          ```toml\n{DEFAULT_CONFIG_TOML}```\n"
     );

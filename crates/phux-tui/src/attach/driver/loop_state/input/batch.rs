@@ -113,18 +113,17 @@ impl super::super::SessionLoop {
         self.settle_input_arrangement(conn, out, sidebar).await
     }
 
-    /// Tell the bar whether the resolver is waiting at the prefix; true when
-    /// that flipped since the last batch.
-    fn sync_prefix_chip(&mut self) -> bool {
-        let pending = self
-            .settings
-            .resolver
-            .as_ref()
-            .is_some_and(phux_config::keybind::Resolver::pending_at_prefix);
-        self.settings
-            .status_bar
-            .as_mut()
-            .is_some_and(|bar| bar.set_prefix_pending(pending))
+    /// Tell the bar whether the resolver is waiting at the prefix and which
+    /// key mode is active; true when either changed since the last batch.
+    fn sync_key_chip(&mut self) -> bool {
+        let resolver = self.settings.resolver.as_ref();
+        let pending = resolver.is_some_and(phux_config::keybind::Resolver::pending_at_prefix);
+        let mode = resolver.and_then(phux_config::keybind::Resolver::active_mode);
+        let Some(bar) = self.settings.status_bar.as_mut() else {
+            return false;
+        };
+        let prefix_changed = bar.set_prefix_pending(pending);
+        bar.set_key_mode(mode) | prefix_changed
     }
 
     /// A committed `switch-session` ends this loop before any repaint.
@@ -151,9 +150,9 @@ impl super::super::SessionLoop {
         prior: &PriorView,
         layout_changed: bool,
     ) -> Result<(), AttachError> {
-        // The prefix chip follows the resolver: a bar-only paint when nothing
-        // else in this batch repaints the row.
-        let chip_changed = self.sync_prefix_chip();
+        // The key chip follows the resolver (pending prefix, active key
+        // mode): a bar-only paint when nothing else repaints the row.
+        let chip_changed = self.sync_key_chip();
         if layout_changed {
             // ADR-0040: an input action may have split/closed panes;
             // keep the agent-metadata watches in step with the set.

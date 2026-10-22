@@ -118,6 +118,19 @@ fn patched(mut body: Vec<u8>, index: usize, value: u8) -> Vec<u8> {
     body
 }
 
+fn service_http_open() -> Command {
+    Command::ServiceHttpOpen {
+        request: Box::new(phux_protocol::service_http::ServiceHttpRequest {
+            host: None,
+            service: "opencode".to_owned(),
+            method: "GET".to_owned(),
+            target: "/".to_owned(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }),
+    }
+}
+
 /// `COMMAND` bodies carrying a newer value, with the field named.
 fn newer_commands() -> Vec<(&'static str, Vec<u8>)> {
     let last = |command: Command, value: u8| {
@@ -185,6 +198,10 @@ fn newer_commands() -> Vec<(&'static str, Vec<u8>)> {
                 1,
                 2,
             ),
+        ),
+        (
+            "ServiceHttpOpen.host",
+            patched(command_body(service_http_open()), 1, 2),
         ),
         (
             "PutFile.sha256",

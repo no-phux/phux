@@ -233,13 +233,14 @@ pub enum AgentSessionError {
     /// A record is not a valid `AgentEventsJsonlV1` record. Nothing written.
     #[error("record invalid: {0}")]
     RecordInvalid(String),
-    /// This client did not open the session, so it may not append.
-    #[error(
-        "this client is not the producer of {resource}; only the client that opened a session may append to it"
-    )]
+    /// This connection may not feed the session: it is not a local
+    /// (socket or localhost) connection, or the stream is SDK-owned.
+    #[error("this connection may not append to {resource}: {message}")]
     NotProducer {
         /// The session that was addressed.
         resource: ResourceId,
+        /// The server's diagnostic naming which rule refused the append.
+        message: String,
     },
     /// The append exceeded a ceiling: the per-call bound, or the session's
     /// retained ring. Nothing written.
@@ -453,6 +454,7 @@ fn map_refusal(resource: &ResourceId, code: ErrorCode, message: String) -> Agent
         },
         ErrorCode::NotProducer => AgentSessionError::NotProducer {
             resource: resource.clone(),
+            message,
         },
         ErrorCode::RecordInvalid => AgentSessionError::RecordInvalid(message),
         ErrorCode::Overflow => AgentSessionError::Overflow(message),

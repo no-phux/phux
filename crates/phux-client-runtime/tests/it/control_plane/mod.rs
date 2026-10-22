@@ -47,6 +47,7 @@ mod paste;
 mod path_query;
 mod recovery;
 mod roster;
+mod service_http;
 mod spawns;
 mod views;
 

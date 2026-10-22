@@ -2,7 +2,7 @@
 //! list the actions awaiting a decision, and decide one.
 //!
 //! The pending set is the server-owned `phux.approval/v1/<id>` records
-//! under `Global` (`docs/spec/L3.md` §3.10). A decision is a `SET_METADATA`
+//! under `Global` (`docs/agents.md#safety`). A decision is a `SET_METADATA`
 //! of `phux.approval.decide/v1/<id>` with `approve` or `deny`, which the
 //! server intercepts and never stores. `SET_METADATA` has no reply, so a
 //! decision is confirmed by reading its record back on the same connection:

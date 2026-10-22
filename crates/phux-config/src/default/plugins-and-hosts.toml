@@ -1,0 +1,153 @@
+# Plugin packages are declarative manifests. phux can inspect them with
+# `phux plugin list --json`, validate/link/toggle/unlink them with
+# `phux plugin`, project their agent-state declarations with
+# `phux config agents --json`, and execute action entries with
+# `phux config run PLUGIN ACTION [--json]`; `phux plugin log` lists
+# recent action and hook runs with their exit status and output tail.
+# The server runs enabled plugins' `[[events]]` hooks, and the TUI opens
+# their `[[panes]]` (every placement) and lays out their `[[sidebar]]`
+# sections; link handlers are still declarative only. The manifest path
+# may be absolute or relative to this config file.
+#
+# [[plugins]]
+# manifest = "/path/to/plugin/phux-plugin.toml"
+# enabled = true
+#
+# A minimal phux-plugin.toml:
+#   id = "example.agent-tools"
+#   name = "Agent Tools"
+#   version = "0.1.0"
+#   min_phux_version = "0.0.2"
+#
+#   [[actions]]
+#   id = "summarize"
+#   title = "Summarize pane"
+#   contexts = ["pane"]
+#   command = ["python3", "summarize.py"]
+#
+#   [[agents]]
+#   id = "codex"
+#   label = "Codex"
+#   state = "blocked"      # unknown | idle | working | blocked
+#   attention = "high"     # none | low | normal | high
+#   contexts = ["workspace", "pane"]
+#
+#   [[events]]
+#   id = "exit"
+#   title = "Pane exited"
+#   on = "pane-exit"          # a hook event name (docs.phux.sh/reference/hooks)
+#   command = ["sh", "-c", "printf exited"]
+#
+#   [[panes]]
+#   id = "board"
+#   title = "Agent Board"
+#   placement = "split"    # split | tab | zoomed | overlay (a floating box)
+#   command = ["agent-board"]
+#
+#   [[sidebar]]            # a fixed band between Agents and Sessions
+#   id = "exits"
+#   title = "Last exit"
+#   format = "{window}: exit {exit}"   # agent cwd exit index state title window
+#   rows = 3                           # 1-8; a pane rows when every token resolves
+#
+#   [[links]]
+#   id = "ticket"
+#   title = "Open ticket"
+#   patterns = ["https://linear.app/*"]
+#   command = ["agent-ticket", "{url}"]
+
+# Federation satellites are remote phux servers a hub can route to. The registry
+# lands before routing so operators can declare stable names and endpoints.
+# The hub authenticates to a satellite as an ordinary remote consumer:
+# run `phux pair` on the satellite host, save the printed token
+# into an owner-only file on the hub, and record that file's path plus the
+# printed certificate fingerprint here. The token itself never goes in this
+# file — only the path to it.
+#
+# [[satellites]]
+# name = "devbox"
+# endpoint = "quic://devbox.example:8788"
+# enabled = true
+# token-file = "/home/me/.local/state/phux/satellites/devbox.token"
+# cert-fingerprint = "AB:CD:..."
+
+# Outbound connectors let this server reach consumers through a self-hosted
+# relay without accepting inbound traffic. Each link is supervised
+# independently. The relay is blind: each consumer runs TLS to this server
+# inside the relayed stream, so the relay forwards only ciphertext.
+# Keep the enrollment token in an owner-only file, never inline.
+#
+# [[connector]]
+# relay = "relay.example:4433"
+# token-file = "/home/me/.local/state/phux/connectors/relay.token"
+# cert-fingerprint = "AB:CD:..."
+
+# Uplinks make this server a satellite of a hub that cannot dial it (a
+# sandbox behind NAT): the server dials the hub and serves the
+# hub's streams over that one connection, so it needs no listener. `phux
+# host join CODE` (the code comes from `phux host ticket NAME` on the hub)
+# enrolls a key it keeps and writes the entry; edit by hand only to disable
+# one. The key stays in an owner-only file, never inline.
+#
+# [[uplink]]
+# name = "sandbox"
+# hub = "hub.example:8788"
+# ca-fingerprint = "sha256:..."
+# client-cert = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.pem"
+# client-key = "/home/me/.local/state/phux/uplinks/uplink.sandbox.0123456789abcdef.key"
+
+# Remote phux servers this machine attaches TO: `phux attach
+# mini` resolves the endpoint, certificate pin, and token recorded here, so
+# you never retype them. `phux host add me@mini` writes an entry for you
+# over ssh; edit by hand only to relabel or retarget one. As with
+# satellites, the token itself never goes in this file — token-file points
+# at an owner-only file holding one hex token on one line. `session` picks
+# the session to attach on arrival; omit it and the remote server's own
+# last-attach memory decides, exactly as a local naked `phux` does. `ssh`
+# is the destination the entry was set up through, which an attach uses to
+# restart a stopped server there; `direct` is a paired `quic://` route kept
+# beside an `ssh://` endpoint until it answers, when the attach promotes it.
+#
+# [[remote]]
+# name = "mini"
+# endpoint = "quic://mini.example:8788"
+# token-file = "/home/me/.local/state/phux/remotes/mini.token"
+# cert-fingerprint = "AB:CD:..."
+# session = "main"
+# ssh = "me@mini"
+#
+# A server reached through a relay registers the relay as its
+# endpoint, the relay's pin as cert-fingerprint, and the relay route as
+# tls-server-name, the TLS server name every dial offers. `phux pair
+# --relay-route ROUTE` on the server prints a link that `phux attach
+# --remote NAME --code` registers this way.
+#
+# A routed entry also needs the server's certificate authority pinned for
+# that relay pin and route in `known-authorities` beside this file:
+# every dial runs end to end with the server inside the relayed stream, so the
+# relay sees only ciphertext. `phux attach --remote NAME --code LINK` and
+# `phux host add ... --ca-fingerprint` write that pin; a hand-written entry
+# without it is refused on every dial.
+#
+# [[remote]]
+# name = "studio"
+# endpoint = "quic://relay.example:4433"
+# token-file = "/home/me/.local/state/phux/remotes/studio.token"
+# cert-fingerprint = "AB:CD:..."
+# tls-server-name = "studio"
+
+# Projects: names `phux project open NAME` resolves. Each entry is
+# a checkout `path` (absolute or `~/`); phux never scans for repositories.
+# The checkout's own `.phux/project.toml` recipe runs only once its exact
+# bytes are approved (`phux project trust`). `recipe` points at a recipe
+# kept outside the repository instead, trusted because you wrote it here.
+#
+# [[projects]]
+# name = "phux"
+# path = "~/code/phux"
+#
+# [[projects]]
+# name = "site"
+# path = "~/code/site"
+# recipe = "~/.config/phux/recipes/site.toml"
+

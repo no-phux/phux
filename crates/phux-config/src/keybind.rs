@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use phux_protocol::input::key::{ModSet, PhysicalKey, PhysicalKey as K};
 
-use crate::schema::{Action, KeybindingsCfg};
+use crate::schema::Action;
 
 mod settle;
 pub use settle::{UNBIND_ACTION, binding_layer, settle_bindings};
@@ -57,6 +57,28 @@ pub enum KeybindError {
         name: String,
         /// The closest known action, when one is near.
         suggestion: Option<&'static str>,
+    },
+
+    /// A `[keybindings.modes.<name>]` table whose name is not lowercase
+    /// letters, digits, `-`, and `_`.
+    #[error("invalid key mode name `{0}`: use lowercase letters, digits, `-`, and `_`")]
+    BadModeName(String),
+
+    /// `enter-mode` without a string `name`.
+    #[error("enter-mode needs a mode: add name = \"<mode>\"")]
+    MissingModeName,
+
+    /// `enter-mode` names a mode no `[keybindings.modes.<name>]` table
+    /// defines, so the key would do nothing.
+    #[error(
+        "unknown key mode `{name}`{}",
+        suggestion.as_ref().map(|hit| format!(" (did you mean `{hit}`?)")).unwrap_or_default()
+    )]
+    UnknownMode {
+        /// The mode name as written.
+        name: String,
+        /// The closest defined mode, when one is near.
+        suggestion: Option<String>,
     },
 }
 
@@ -352,204 +374,10 @@ pub fn parse_chord_sequence(s: &str) -> Result<Vec<KeyChord>, KeybindError> {
     Ok(chords)
 }
 
-// ---------------------------------------------------------------------------
-// Resolver
-// ---------------------------------------------------------------------------
-
-/// One binding a lenient resolver build skipped, and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BindingDiagnostic {
-    /// The offending chord-sequence key, or the `prefix` string.
-    pub binding: String,
-    /// Why the binding was skipped.
-    pub error: KeybindError,
-}
-
-impl std::fmt::Display for BindingDiagnostic {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "keybinding \"{}\": {}", self.binding, self.error)
-    }
-}
-
-/// A resolver trie node: a leaf (action, no children) or an inner node
-/// (children, no action); insertion forbids mixed nodes.
-#[derive(Debug, Default, Clone)]
-struct TrieNode {
-    action: Option<ResolvedAction>,
-    children: BTreeMap<KeyChord, Self>,
-}
-
-impl TrieNode {
-    /// Insert a binding. Fails only on a node that already existed with
-    /// conflicting content, before creating any fresh node.
-    fn insert(
-        &mut self,
-        seq: &[KeyChord],
-        action: ResolvedAction,
-        full_text: &str,
-    ) -> Result<(), KeybindError> {
-        let ambiguous = || KeybindError::AmbiguousPrefix(full_text.to_owned());
-        let Some((first, rest)) = seq.split_first() else {
-            if self.action.is_some() || !self.children.is_empty() {
-                return Err(ambiguous());
-            }
-            self.action = Some(action);
-            return Ok(());
-        };
-        if self.action.is_some() {
-            return Err(ambiguous());
-        }
-        self.children
-            .entry(*first)
-            .or_default()
-            .insert(rest, action, full_text)
-    }
-
-    /// Parse and insert every binding of `table`, recording failures.
-    fn insert_table(
-        &mut self,
-        table: &BTreeMap<String, Action>,
-        diagnostics: &mut Vec<BindingDiagnostic>,
-    ) {
-        for (binding, action) in table {
-            let action = ResolvedAction::from(action);
-            let result = parse_chord_sequence(binding).and_then(|seq| {
-                known_action(&action.action)?;
-                self.insert(&seq, action, binding)
-            });
-            if let Err(error) = result {
-                diagnostics.push(BindingDiagnostic {
-                    binding: binding.clone(),
-                    error,
-                });
-            }
-        }
-    }
-}
-
-/// Stateful keybind matcher: feed chords one at a time via
-/// [`Resolver::feed`].
-#[derive(Debug, Clone)]
-pub struct Resolver {
-    /// The trie; the prefix chord's subtree holds the prefix table.
-    root: TrieNode,
-    prefix: KeyChord,
-    /// `None` at the root.
-    cursor: Option<TrieNode>,
-    /// Chords fed since the last reset (empty at the root).
-    pending_path: Vec<KeyChord>,
-}
-
-/// Outcome of feeding one chord into a [`Resolver`].
-#[derive(Debug, Clone, PartialEq)]
-pub enum Feed {
-    /// Nothing matched; the resolver is reset.
-    NoMatch,
-    /// The chord extended a partial sequence.
-    Partial,
-    /// The chord completed a binding; the resolver is reset.
-    Resolved(ResolvedAction),
-}
-
-impl Resolver {
-    /// Build a resolver, rejecting the table on its first problem.
-    ///
-    /// # Errors
-    ///
-    /// The first diagnostic [`Resolver::new_lenient`] reports.
-    pub fn new(cfg: &KeybindingsCfg) -> Result<Self, KeybindError> {
-        let (resolver, diagnostics) = Self::new_lenient(cfg);
-        match diagnostics.into_iter().next() {
-            None => Ok(resolver),
-            Some(diag) => Err(diag.error),
-        }
-    }
-
-    /// Build a resolver that degrades per binding, so one typo cannot
-    /// disable every binding (including `detach`). In diagnostic order:
-    ///
-    /// 1. An unparseable `prefix` is replaced by the shipped default.
-    /// 2. An unparseable binding is skipped.
-    /// 3. A global binding at exactly the prefix chord is dropped (it could
-    ///    never fire); the prefix table survives.
-    /// 4. A binding naming an unknown action is skipped.
-    /// 5. A binding ambiguous with an earlier one (in key order) is dropped.
-    #[must_use]
-    pub fn new_lenient(cfg: &KeybindingsCfg) -> (Self, Vec<BindingDiagnostic>) {
-        let mut diagnostics = Vec::new();
-        let prefix = parse_chord(&cfg.prefix).unwrap_or_else(|error| {
-            diagnostics.push(BindingDiagnostic {
-                binding: cfg.prefix.clone(),
-                error,
-            });
-            KeyChord {
-                modifiers: ModSet::CTRL,
-                key: PhysicalKey::A,
-            }
-        });
-
-        let mut root = TrieNode::default();
-        root.insert_table(&cfg.global, &mut diagnostics);
-        if !cfg.prefix_table.is_empty() {
-            let prefix_child = root.children.entry(prefix).or_default();
-            if prefix_child.action.take().is_some() {
-                diagnostics.push(BindingDiagnostic {
-                    binding: cfg.prefix.clone(),
-                    error: KeybindError::AmbiguousPrefix(cfg.prefix.clone()),
-                });
-            }
-            prefix_child.insert_table(&cfg.prefix_table, &mut diagnostics);
-        }
-
-        let resolver = Self {
-            root,
-            prefix,
-            cursor: None,
-            pending_path: Vec::new(),
-        };
-        (resolver, diagnostics)
-    }
-
-    /// Feed one chord. See [`Feed`] for outcome semantics.
-    pub fn feed(&mut self, chord: KeyChord) -> Feed {
-        let current = self.cursor.as_ref().unwrap_or(&self.root);
-        let Some(next) = current.children.get(&chord) else {
-            self.reset();
-            return Feed::NoMatch;
-        };
-        if let Some(action) = &next.action {
-            let resolved = action.clone();
-            self.reset();
-            return Feed::Resolved(resolved);
-        }
-        if next.children.is_empty() {
-            self.reset();
-            return Feed::NoMatch;
-        }
-        self.cursor = Some(next.clone());
-        self.pending_path.push(chord);
-        Feed::Partial
-    }
-
-    /// Clear any in-progress sequence and return to the root.
-    pub fn reset(&mut self) {
-        self.cursor = None;
-        self.pending_path.clear();
-    }
-
-    /// `true` while a partial sequence is in flight.
-    #[must_use]
-    pub const fn is_pending(&self) -> bool {
-        self.cursor.is_some()
-    }
-
-    /// `true` exactly when only the prefix chord has been pressed: the
-    /// state the which-key popup describes.
-    #[must_use]
-    pub fn pending_at_prefix(&self) -> bool {
-        self.pending_path.as_slice() == [self.prefix]
-    }
-}
+mod resolver;
+pub use resolver::{
+    BindingDiagnostic, ENTER_MODE_ACTION, EXIT_MODE_ACTION, Feed, Resolver, is_valid_mode_name,
+};
 
 #[cfg(test)]
 mod tests;

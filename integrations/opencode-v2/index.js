@@ -29,17 +29,21 @@ var nodeProcessRunner = (request) => new Promise((resolve, reject) => {
     return;
   }
   validateNonNegativeFinite(request.timeoutMs, "timeoutMs");
+  if (request.lifeline === true && request.stdin !== undefined) {
+    throw new TypeError("lifeline and stdin are exclusive");
+  }
+  const ownGroup = request.lifeline !== true;
   const maxStdoutBytes = outputLimit(request.maxStdoutBytes, "maxStdoutBytes");
   const maxStderrBytes = outputLimit(request.maxStderrBytes, "maxStderrBytes");
   const child = spawn(request.executable, [...request.args], {
     cwd: request.cwd,
     env: request.env,
     shell: false,
-    detached: true,
-    stdio: [request.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"]
+    detached: ownGroup,
+    stdio: [request.stdin === undefined && ownGroup ? "ignore" : "pipe", "pipe", "pipe"]
   });
+  child.stdin?.on("error", () => {});
   if (request.stdin !== undefined && child.stdin !== null) {
-    child.stdin.on("error", () => {});
     child.stdin.end(request.stdin);
   }
   const { stdout, stderr } = child;
@@ -60,8 +64,8 @@ var nodeProcessRunner = (request) => new Promise((resolve, reject) => {
       return;
     termination = reason;
     limitedStream = stream;
-    killProcessGroup(child, "SIGTERM");
-    forceKill = setTimeout(() => killProcessGroup(child, "SIGKILL"), 1000);
+    terminate(child, ownGroup, "SIGTERM");
+    forceKill = setTimeout(() => terminate(child, ownGroup, "SIGKILL"), 1000);
     forceKill.unref();
   };
   stdout.on("data", (chunk) => {
@@ -106,7 +110,8 @@ var nodeProcessRunner = (request) => new Promise((resolve, reject) => {
   });
   child.once("close", (exitCode) => {
     cleanup();
-    if (forceKill !== undefined && !processGroupExists(child.pid))
+    child.stdin?.destroy();
+    if (forceKill !== undefined && !(ownGroup && processGroupExists(child.pid)))
       clearTimeout(forceKill);
     const base = {
       exitCode,
@@ -137,8 +142,8 @@ function validateNonNegativeFinite(value, name) {
     throw new RangeError(`${name} must be a non-negative finite number`);
   }
 }
-function killProcessGroup(child, signal) {
-  if (child.pid !== undefined) {
+function terminate(child, ownGroup, signal) {
+  if (ownGroup && child.pid !== undefined) {
     try {
       process.kill(-child.pid, signal);
       return;

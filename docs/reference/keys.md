@@ -72,7 +72,32 @@ A capital letter means Shift: <kbd>X</kbd> is <kbd>Shift</kbd>+<kbd>x</kbd>. Whe
 | <kbd>B</kbd> | Report a bug | `report-bug` |
 | <kbd>a</kbd> | Cycle agents filter | `agents-filter` |
 | <kbd>O</kbd> | Organize everything | `organize` |
+| <kbd>R</kbd> | Resize mode | `enter-mode` |
 
 ## Without the prefix
 
 No global bindings ship, so every key without the prefix goes to the program in the pane. Add your own under `[keybindings.global]`.
+
+## Key modes
+
+While a mode is on, its keys work without the prefix and the status bar shows its name. <kbd>Esc</kbd> leaves any mode that does not bind it. See [Key modes](../keys.md#key-modes).
+
+### resize
+
+Press <kbd>C-a</kbd>, then <kbd>R</kbd>. Keys the mode does not bind do nothing while it is on.
+
+| Keys | Action |
+|---|---|
+| <kbd>Down</kbd> | `resize-pane` `amount=1 direction=down` |
+| <kbd>Enter</kbd> | `exit-mode` |
+| <kbd>H</kbd> | `resize-pane` `amount=5 direction=left` |
+| <kbd>J</kbd> | `resize-pane` `amount=5 direction=down` |
+| <kbd>K</kbd> | `resize-pane` `amount=5 direction=up` |
+| <kbd>L</kbd> | `resize-pane` `amount=5 direction=right` |
+| <kbd>Left</kbd> | `resize-pane` `amount=1 direction=left` |
+| <kbd>Right</kbd> | `resize-pane` `amount=1 direction=right` |
+| <kbd>Up</kbd> | `resize-pane` `amount=1 direction=up` |
+| <kbd>h</kbd> | `resize-pane` `amount=1 direction=left` |
+| <kbd>j</kbd> | `resize-pane` `amount=1 direction=down` |
+| <kbd>k</kbd> | `resize-pane` `amount=1 direction=up` |
+| <kbd>l</kbd> | `resize-pane` `amount=1 direction=right` |

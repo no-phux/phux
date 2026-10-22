@@ -162,7 +162,8 @@ run `phux attach` again.
 ### Narrow terminals
 
 The sidebar steps aside when the terminal is too narrow to afford it.
-Below its width plus 40 columns, phux gives the panes the whole width and
+Below its width plus `min-pane-cols` (40 columns by default; see
+[Breakpoints](#breakpoints)), phux gives the panes the whole width and
 <kbd>C-a</kbd> <kbd>b</kbd> rings the bell instead of toggling. On a
 terminal that narrow, <kbd>C-a</kbd> <kbd>A</kbd> (or the status bar's
 `agents` chip) opens the agents list full-screen.

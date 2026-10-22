@@ -57,6 +57,7 @@ mod hello_growth;
 mod host_inventory;
 mod layout_and_l3;
 mod resource_kinds;
+mod service_http;
 mod snapshots;
 mod strategies;
 

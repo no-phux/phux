@@ -24,5 +24,12 @@ text, tool input, or tool output. `PHUX_AGENT_TRANSCRIPT=0` turns transcript
 entries off. The plugin never declares a state: the server derives it from
 the stream, or from its own detector.
 
+Mail sent to Grok's pane reaches the model through a separate mail hook
+(`scripts/phux-mail.sh`) on the events Grok reads:
+`additionalContext` after a tool and a `block` decision at `Stop`, each
+message once. Grok idle at its prompt runs no hook, so its mail waits until
+the next one; nothing is typed into the pane. `PHUX_AGENT_REPORTING=0`
+silences it with the lifecycle hook.
+
 Hooks no-op unless `PHUX_TERMINAL_ID` is set, so Grok outside a phux pane
 stays quiet.

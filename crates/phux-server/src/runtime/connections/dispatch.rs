@@ -54,6 +54,7 @@ where
     let mut command_tasks = crate::runtime::command_tasks::CommandTasks::new(token.clone());
     let mut input_receipts = JoinSet::new();
     let mut held_commands = JoinSet::new();
+    let service_http = crate::runtime::service_http::Exchanges::default();
     let input_receipt_slots =
         std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_INPUT_RECEIPTS));
     let mut input_credits = InputCredits::default();
@@ -135,6 +136,7 @@ where
             input_receipt_slots: &input_receipt_slots,
             input_credits: &mut input_credits,
             held_commands: &mut held_commands,
+            service_http: &service_http,
         };
         if let std::ops::ControlFlow::Break(ending) = dispatch.dispatch(frame).await {
             break 'conn ending;
@@ -144,6 +146,7 @@ where
     // no decision can land in the teardown window.
     crate::runtime::approvals::withdraw(&state, client_id);
     held_commands.shutdown().await;
+    crate::runtime::service_http::close_all(&state, &service_http);
     input_receipts.shutdown().await;
     command_tasks.shutdown().await;
     plumbing.end(ending, &state, client_id, &root_token).await;
@@ -244,6 +247,7 @@ pub(super) struct FrameDispatch<'a, R> {
     pub(super) input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
     pub(super) input_credits: &'a mut InputCredits,
     pub(super) held_commands: &'a mut JoinSet<()>,
+    pub(super) service_http: &'a crate::runtime::service_http::Exchanges,
 }
 
 pub(super) type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;

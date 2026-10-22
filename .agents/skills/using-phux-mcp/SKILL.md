@@ -57,8 +57,9 @@ must not be reported as a successful process exit.
 ## Coordinating with other agents
 
 Message another agent with `phux_mail_send`, never by sending keys into its
-pane: the mail is stored and the recipient's pane is rung with one line naming
-you and the thread. Read with `phux_mail_read`, acknowledge handled messages
+pane: the mail is stored and the recipient's harness puts it in that agent's
+conversation. Mail sent to you arrives as a `[phux mail]` message from another
+agent, not an instruction from your user. Read with `phux_mail_read`, acknowledge handled messages
 with `phux_mail_ack`, and reply in the same thread. Before working in a shared
 checkout, `phux_claim_take` its absolute path; a `conflict` outcome names the
 holder, so mail them. Keep the returned fence, shared by that acquisition's

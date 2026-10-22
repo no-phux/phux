@@ -10,6 +10,9 @@ const root = new URL("../", import.meta.url);
 const script = fileURLToPath(new URL("../scripts/phux-hook.sh", import.meta.url));
 
 // The nine registrations and the arm each one dispatches to.
+// The events whose replies reach Claude's model, each with a mail hook.
+const MAIL_EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Stop"];
+
 const ARMS = {
   SessionStart: "start",
   UserPromptSubmit: "working",
@@ -33,10 +36,16 @@ test("declares one marketplace-ready plugin with phux MCP and bounded lifecycle 
   assert.deepEqual(Object.keys(hooks.hooks).sort(), Object.keys(ARMS).sort());
   for (const [event, groups] of Object.entries(hooks.hooks)) {
     for (const group of groups) {
+      const [lifecycle, mail, ...rest] = group.hooks;
+      assert.deepEqual(lifecycle.args, ["${CLAUDE_PLUGIN_ROOT}/scripts/phux-hook.sh", ARMS[event]]);
+      assert.deepEqual(rest, []);
+      if (MAIL_EVENTS.includes(event)) {
+        assert.deepEqual(mail.args, ["${CLAUDE_PLUGIN_ROOT}/scripts/phux-mail.sh", event], `${event} takes mail in its own hook`);
+      } else {
+        assert.equal(mail, undefined, `${event} carries no mail`);
+      }
       for (const hook of group.hooks) {
         assert.equal(hook.command, "sh");
-        assert.match(hook.args[0], /^\$\{CLAUDE_PLUGIN_ROOT\}/);
-        assert.equal(hook.args[1], ARMS[event]);
         assert.equal(hook.timeout, 5);
       }
     }
@@ -60,6 +69,7 @@ case "$1 \${2:-}" in
   "status --json") printf '{"running":true,"features":%s}\\n' "\${FAKE_FEATURES:-[]}"; exit 0 ;;
   "agent hook-payload") cat > /dev/null; [ -z "\${FAKE_FIELDS:-}" ] || printf '%s\\n' "$FAKE_FIELDS"; exit 0 ;;
   "agent hook-transcript") cat > /dev/null; [ -z "\${FAKE_TRANSCRIPT:-}" ] || printf '%s\\n' "$FAKE_TRANSCRIPT"; exit 0 ;;
+  "mail hook-context") [ -z "\${FAKE_MAIL:-}" ] || printf '%s\\n' "$FAKE_MAIL"; exit 0 ;;
 esac
 case "$*" in *"--data -") printf 'stdin:%s\\n' "$(cat)" >> "$PHUX_TEST_LOG" ;; esac
 if [ "$1 \${2:-}" = "agent emit" ] && [ -n "\${FAKE_REFUSALS:-}" ]; then
@@ -325,5 +335,34 @@ test("a failed tool ends with ok:false, and no temp file outlives a hook", async
     assert.deepEqual(await readdir(tmp), [], "payload and entry files are removed");
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("each pane's mail hook prints the one reply and nothing else; disabled or paneless hooks stay silent", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "phux-claude-mail-"));
+  try {
+    const fake = await fakePhux(temp);
+    const log = join(temp, "log");
+    const reply = '{"decision":"block","reason":"[phux mail] A message from other agents."}';
+    const hook = (provider, event, extra = {}) => execFileSync(
+      "sh",
+      [fileURLToPath(new URL(`../../${provider}/scripts/phux-mail.sh`, import.meta.url)), event],
+      {
+        env: { ...process.env, PHUX_AGENT_PHUX_BIN: fake, PHUX_TERMINAL_ID: "42", PHUX_TEST_LOG: log, FAKE_MAIL: reply, ...extra },
+        input: "{}",
+        encoding: "utf8",
+      },
+    );
+    await writeFile(log, "");
+    for (const provider of ["claude", "grok"]) {
+      assert.equal(hook(provider, "Stop"), `${reply}\n`, provider);
+      assert.equal(hook(provider, "Stop", { PHUX_AGENT_REPORTING: "0" }), "", `${provider}: SDK-owned workers stay silent`);
+      assert.equal(hook(provider, "Stop", { PHUX_TERMINAL_ID: "" }), "", `${provider}: no pane, no mail`);
+    }
+    assert.deepEqual((await readFile(log, "utf8")).trim().split("\n"), [
+      "mail hook-context --event Stop", "mail hook-context --event Stop",
+    ], "the take is the hook's only phux call");
+  } finally {
+    await rm(temp, { recursive: true, force: true });
   }
 });

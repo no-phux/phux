@@ -117,6 +117,7 @@ impl ControlPlane {
                 | Pending::PutFile(_)
                 | Pending::Transcribe(_)
                 | Pending::Checkout(_)
+                | Pending::ServiceHttp
                 | Pending::AgentSubscription(_)
                 | Pending::AgentRelease => {}
                 Pending::Extension => {

@@ -2,7 +2,7 @@
 //!
 //! Wire mirrors of `phux_core`'s session/window shapes (this crate cannot
 //! depend on `phux-core`): enough to render chrome. Layout is not here; it
-//! is L3 metadata (`docs/spec/L3.md` §3.2, ADR-0030).
+//! is L3 metadata (`docs/organization.md#records-handles-and-arrangements`, ADR-0030).
 //! Terminal contents flow through the bootstrap streams.
 
 use bytes::BytesMut;

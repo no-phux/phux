@@ -123,8 +123,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         };
         match outcome {
             // Still waiting on the next chord in a multi-chord
-            // sequence; absorb the byte and move on.
-            ChordOutcome::Partial => Ok(StageOutcome::CONSUMED),
+            // sequence, or an exclusive key mode ate the key: absorb it.
+            ChordOutcome::Partial | ChordOutcome::Swallowed => Ok(StageOutcome::CONSUMED),
             ChordOutcome::Resolved(resolved) => {
                 let layout_changed = self.run_resolved(&resolved).await?;
                 Ok(StageOutcome::consumed(layout_changed))

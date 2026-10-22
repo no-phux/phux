@@ -73,6 +73,8 @@ The **Palette** column is the command-palette section the action is offered unde
 | `settings` | phux |  | Settings: browse, search, and edit every option in place |
 | `report-bug` | phux | `note?` (optional free-text description) | Write a local bug report (session, logs, screen) and copy its path |
 | `rec-mark` | phux | `label?` (bare chord writes an empty marker) | Drop an asciicast marker into the recording in progress |
+| `enter-mode` | — | `name` (a `[keybindings.modes.<name>]` table); `once?` (`true` leaves after one of the mode's keys) | Turn on a key mode: its keys work without the prefix until exit-mode or Esc |
+| `exit-mode` | — |  | Leave the active key mode |
 
 Why the dash rows have no palette entry:
 
@@ -88,3 +90,5 @@ Why the dash rows have no palette entry:
 - `plugin-action` — its palette rows are built dynamically from enabled plugins' manifests, one per manifest action, carrying `plugin`/`id` args a static row could not supply.
 - `plugin-pane` — same shape as `plugin-action`: dynamic rows from enabled plugins' manifest `[[panes]]`, carrying `plugin`/`pane` args.
 - `focus-pane` — parameterized by coordinates only the agent-fleet dashboard's rows can supply (the `select-window` precedent).
+- `enter-mode` — parameterized by `name`, a mode the config defines; reached from its binding (the shipped resize mode is the prefix then `R`).
+- `exit-mode` — only meaningful inside a key mode, where its own key (or Esc) reaches it.

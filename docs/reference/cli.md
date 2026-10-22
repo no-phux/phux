@@ -213,12 +213,19 @@ Global flags:
 ```text
 Clear a pane's declared agent identity.
 
-Usage: phux agent clear [TARGET]
+Deletes the agent record, then reads it back. Exits 1
+(`agent_record_unconfirmed`) when a record is still there or the server refused
+the read.
+
+Usage: phux agent clear [--json] [TARGET]
 
 Arguments:
   [TARGET]  Target selector (resolves to one pane). Omit for the focused pane.
 
 Flags:
+      --json           Print the confirmed `{schema_version, action, terminal,
+                       record}` document; failures are one JSON error line on
+                       stderr.
   -h, --help           Print help
 
 Global flags:
@@ -235,8 +242,10 @@ The record is one `AgentEventsJsonlV1` line: `--type` from the closed set
 `stop`, `session_end`, `state`, `provider_raw`) and `--data`, a JSON object. The
 server stamps `seq` and `ts_ms` and derives the agent's lifecycle state from the
 stream (`prompt` / `tool_start` -> working, `ask` -> blocked, `stop` -> done,
-`session_end` -> retract). Only the client that opened the session may append;
-nothing is written on a refusal. Prints nothing on success.
+`session_end` -> retract). Any local connection (this machine's socket or
+localhost) may append, not only the one that opened the session; a remote peer
+is refused with `not_producer`. Nothing is written on a refusal. Prints nothing
+on success.
 
 Usage: phux agent emit <FLAGS> <TARGET>
 
@@ -564,9 +573,9 @@ Spawns an `AgentSession` resource whose parent is the Terminal TARGET resolves
 to: the server-side, producer-fed event log the agent's harness appends to with
 `phux agent emit`, and the thing `%name`, `phux agent log`, and the sidebar
 read. Closing the pane closes the session; closing the session never touches the
-pane. The caller becomes the session's producer — only the client that opened a
-session may append to it. The server does not deduplicate: a pane that already
-has a live session gets a second one.
+pane. Any local connection (this machine's socket or localhost) may append to
+it, not only the one that opened it; a remote peer never may. The server does
+not deduplicate: a pane that already has a live session gets a second one.
 
 Refused with `unsupported_server` on a server that does not advertise
 `RESOURCE_KINDS` (see `phux status --json`'s `features`).
@@ -593,6 +602,10 @@ Global flags:
 ```text
 Declare the agent identity and state associated with a pane.
 
+Writes the whole agent record (last writer wins), then reads it back. Exits 1
+(`agent_record_unconfirmed`) when the read-back shows the write did not land or
+the server refused the read; prints the confirmed record on success.
+
 Usage: phux agent set <FLAGS> [TARGET]
 
 Arguments:
@@ -609,6 +622,9 @@ Flags:
                                state).
                                [possible values: none, low, normal, high]
       --session <SESSION>      Free-form association label (fleet/job name).
+      --json                   Print the confirmed `{schema_version, action,
+                               terminal, record}` document; failures are one
+                               JSON error line on stderr.
   -h, --help                   Print help
 
 Global flags:
@@ -2312,11 +2328,12 @@ Global flags:
 ```text
 Send, read and acknowledge mail between agents
 
-Mail lives in the work store beside `phux mission` tasks and survives restarts.
-An agent is addressed by its pane, `@749`, optionally labelled, `pi@749`;
-anything outside a pane uses a name. `send` stores the message, then rings each
-recipient pane with one acknowledged single-line prompt naming the sender and
-the thread, so an idle agent wakes and reads; a pane with no agent is not rung.
+Mail lives in this host's work store beside `phux mission` tasks and survives
+restarts. An agent is addressed by its pane here, `@749`, optionally labelled,
+`pi@749`; anything outside a pane uses a name. `send` stores the message and
+nothing more: nothing is typed into a recipient's terminal. The recipient's
+harness integration takes it (`wait`, `hook-context`) and puts it in the agent's
+conversation; an agent idle under a hook-only harness sees it at its next hook.
 You speak as `--as`, else `$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`.
 
 `--json` prints a document whose `schema` is `phux.coord/v1`. Exit status: 0
@@ -2326,10 +2343,14 @@ refused.
 Usage: phux mail <SUBCOMMAND>
 
 Commands:
-  ack   Acknowledge a message, so its sender knows it was handled
-  read  Read your unread mail and mark it read
-  send  Send a message and ring each recipient's pane
-  help  Print this message or the help of the given subcommand(s)
+  ack           Acknowledge a message, so its sender knows it was handled
+  hook-context  Take unread mail and print it as a Claude Code or Grok hook
+                reply
+  read          Read your unread mail and mark it read
+  release       Return taken mail so the next wait takes it again
+  send          Store a message for each recipient
+  wait          Wait for unread mail and take it for your agent's conversation
+  help          Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -2359,6 +2380,29 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux mail hook-context`
+
+```text
+Take unread mail and print it as a Claude Code or Grok hook reply
+
+For hook-only harnesses. Prints nothing when there is no mail. Otherwise takes
+up to 4 messages, like `wait --timeout 0`, and prints one hook JSON object:
+`additionalContext` for a context event, or a `block` decision whose reason is
+the mail for `stop`, so the agent keeps going and handles it.
+
+Usage: phux mail hook-context <--event <EVENT>> [--as <ADDRESS>]
+
+Flags:
+      --event <EVENT>  The hook event the reply answers.
+                       [possible values: session-start, user-prompt-submit,
+                       post-tool-use, post-tool-use-failure, stop]
+      --as <ADDRESS>   Speak as this address instead of this pane.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux mail read`
 
 ```text
@@ -2380,10 +2424,34 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux mail release`
+
+```text
+Return taken mail so the next wait takes it again
+
+For harness integrations whose injection failed after `wait` took the mail. Ids
+this address did not take are ignored.
+
+Usage: phux mail release [--as <ADDRESS>] [--json] <ID>…
+
+Arguments:
+  <ID>…  Message ids, as `wait` returned them.
+
+Flags:
+      --as <ADDRESS>   Speak as this address instead of this pane.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux mail send`
 
 ```text
-Send a message and ring each recipient's pane
+Store a message for each recipient
 
 Usage: phux mail send <FLAGS> <TO>…
 
@@ -2394,7 +2462,6 @@ Flags:
   -m, --message <TEXT>  The message. `-` reads it from stdin.
   -t, --thread <SLUG>   Thread slug, such as the branch or task the message is
                         about.
-      --no-ring         Store the message without prompting any pane.
       --as <ADDRESS>    Speak as this address instead of this pane.
       --json            Emit stable, versioned JSON on stdout instead of the
                         human view. On failure, stdout stays empty and stderr
@@ -2403,6 +2470,37 @@ Flags:
 
 Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux mail wait`
+
+```text
+Wait for unread mail and take it for your agent's conversation
+
+For harness integrations. Returns as soon as there is mail neither read nor
+taken before, or at the deadline with none. What it returns is taken: no later
+`wait` or `hook-context` for this address returns it again, while `read` still
+shows it unread. `text` is the mail framed for the agent, or null when there is
+none.
+
+Usage: phux mail wait [FLAGS]
+
+Flags:
+      --timeout <SECS>      Seconds to wait when there is no mail; 0 answers at
+                            once. Default 300, at most 3600.
+      --limit <N>           At most this many messages, oldest first. Default
+                            and most 16.
+      --until-stdin-closes  Give up, taking nothing, once stdin closes. A
+                            harness holds stdin open for its whole life, so a
+                            wait never outlives it.
+      --as <ADDRESS>        Speak as this address instead of this pane.
+      --json                Emit stable, versioned JSON on stdout instead of the
+                            human view. On failure, stdout stays empty and
+                            stderr carries one JSON error object.
+  -h, --help                Print help
+
+Global flags:
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mcp`

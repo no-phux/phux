@@ -139,4 +139,26 @@ pub(super) const HIDDEN_ROWS: &[ActionSpec] = &[
         },
         run: run::focus_pane,
     },
+    ActionSpec {
+        name: "enter-mode",
+        description: "Turn on a key mode: its keys work without the prefix until \
+                      exit-mode or Esc",
+        params: "`name` (a `[keybindings.modes.<name>]` table); `once?` (`true` \
+                 leaves after one of the mode's keys)",
+        palette: Palette::Hidden {
+            reason: "parameterized by `name`, a mode the config defines; reached \
+                     from its binding (the shipped resize mode is the prefix then `R`)",
+        },
+        run: run::enter_mode,
+    },
+    ActionSpec {
+        name: "exit-mode",
+        description: "Leave the active key mode",
+        params: "",
+        palette: Palette::Hidden {
+            reason: "only meaningful inside a key mode, where its own key (or Esc) \
+                     reaches it",
+        },
+        run: run::exit_mode,
+    },
 ];

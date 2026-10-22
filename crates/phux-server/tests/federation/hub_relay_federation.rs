@@ -45,6 +45,7 @@ mod path_query;
 mod retain_on_exit;
 mod reverse_enrollment;
 mod satellite_spawn;
+mod service_http;
 
 /// Per-step hang guard (the hub link dials with backoff).
 const STEP_DEADLINE: Duration = Duration::from_secs(15);

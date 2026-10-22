@@ -109,3 +109,29 @@ fn a_named_path_that_does_not_exist_cannot_pass() {
         );
     }
 }
+
+/// Key modes end to end: an `enter-mode` naming no mode, a typo inside a
+/// mode, and options for a mode no table defines each get a located
+/// finding; the shipped resize mode itself checks clean.
+#[test]
+fn key_mode_mistakes_are_located() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (code, stdout) = run_check(
+        &tmp,
+        "[keybindings.prefix-table]\nr = { action = \"enter-mode\", name = \"resise\" }\n\
+         [keybindings.modes.resize]\nx = \"kill-pain\"\n\
+         [keybindings.mode-options.nope]\nexclusive = true\n",
+        false,
+    );
+    assert_eq!(code, 1, "findings must exit 1; stdout:\n{stdout}");
+    for needle in [
+        "keybindings.prefix-table.r",
+        "did you mean `resize`?",
+        "keybindings.modes.resize.x",
+        "keybindings.mode-options.nope",
+    ] {
+        assert!(stdout.contains(needle), "missing {needle}:\n{stdout}");
+    }
+    let (code, stdout) = run_check(&tmp, "", false);
+    assert_eq!(code, 0, "the shipped modes check clean:\n{stdout}");
+}

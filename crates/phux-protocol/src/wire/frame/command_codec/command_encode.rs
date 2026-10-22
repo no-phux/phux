@@ -235,6 +235,12 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             encode_terminal_id(terminal_id, enc);
             enc.write_bytes(&crate::checkout::encode_request(request));
         }
+        Command::ServiceHttpOpen { request } => super::service_http::encode_open(request, enc),
+        Command::ServiceHttpRead {
+            exchange,
+            max_bytes,
+        } => super::service_http::encode_read(*exchange, *max_bytes, enc),
+        Command::ServiceHttpClose { exchange } => super::service_http::encode_close(*exchange, enc),
         Command::ReportAsked {
             terminal_id,
             id,

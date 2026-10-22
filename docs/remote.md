@@ -112,15 +112,17 @@ phux attach --ssh me@box
 ```
 
 SSH logs you in (password and 2FA prompts work), starts the server on the
-remote machine if needed, and opens a QUIC listener for this attach alone.
+remote machine if needed, and opens a QUIC (UDP) listener for this attach
+alone.
 Then SSH exits and the session runs directly over QUIC, so it survives
 network changes and draws locally. The listener and its token live only in
 memory and go away shortly after you detach.
 
 The remote server's policy must allow the listener, and UDP must reach it.
-If it can't, phux says why and falls back to `ssh -t box phux attach`: a
-remote TUI carried over SSH. An SSH login failure, or a remote machine
-without phux, is an error, not a fallback.
+If it can't, phux says why and falls back to `ssh -t box phux attach`: the
+terminal UI runs on the remote machine and SSH carries its screen. An SSH
+login failure, or a remote machine without phux, is an error, not a
+fallback.
 
 `--udp-ports 60000-61000` keeps the listener in a range one firewall rule
 can cover.
@@ -227,11 +229,11 @@ and whether the advertised address is reachable.
 
 **`no answer within 5s; is UDP filtered?`** `phux host add` couldn't reach
 UDP 8788, so it registered an `ssh://` route instead. Attaching over it
-tries direct QUIC and falls back to a remote TUI over SSH. Open the port, or
-use a relay.
+tries direct QUIC and falls back to `ssh -t` running the terminal UI
+there. Open the port, or use a relay.
 
-**The token was revoked or the server's certificate authority changed.** The error names
-the machine and says to run `phux host add NAME` again.
+**The token was revoked or the server's certificate authority changed.**
+The error names the machine and says to run `phux host add NAME` again.
 
 **`incompatible protocol`.** The two machines run releases too far apart. The
 error names both versions. `ssh HOST phux update` updates the remote binary,

@@ -34,3 +34,4 @@ include!("tests_events/pane_mouse.rs");
 include!("tests_events/input_delivery_prediction.rs");
 include!("tests_events/floating.rs");
 include!("tests_events/layout_read.rs");
+include!("tests_events/key_modes.rs");

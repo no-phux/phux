@@ -143,7 +143,7 @@ PhuxClientResult phux_client_arrangement_group_get(const PhuxClient *client, siz
 PhuxClientResult phux_client_arrangement_node_get(const PhuxClient *client, size_t index, PhuxArrangementNode *out_node);
 PhuxClientResult phux_client_catalog_terminal_get(const PhuxClient *client, size_t index, PhuxCatalogTerminal *out_terminal);
 
-/* Named projections (ADR-0129, docs/spec/L3.md section 3.5). Additive to ABI
+/* Named projections (ADR-0129, docs/protocol.md#commands-events-resources). Additive to ABI
  * version 2. A projection is not a resource: it is the L3 metadata key
  * <prefix>.layout/v1/<session-id> (canonical decimal session id, nonempty
  * prefix that does not itself contain .layout/v1/). Scope is Group 1. Values

@@ -46,7 +46,7 @@ Every page in the phux docs, grouped by what you're trying to do.
 
 Generated from the `phux` binary, so they match the code these docs describe.
 
-- [Reference index](./reference/README.md): what each generated page covers.
+- [All reference pages](./reference/README.md): what each generated page covers.
 - [CLI](./reference/cli.md): the `--help` text of every command.
 - [Configuration settings](./reference/config.md): every key in the config file, with its default.
 - [Default key bindings](./reference/keys.md): every key phux binds out of the box.
@@ -65,6 +65,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Organization](./organization.md): how the server owns sessions and their contents.
 - [Substrate](./substrate.md): how people, hosts, and agents fit together.
 - [Protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
+- [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
 - [Compatibility](./compatibility.md): what an older or newer peer sees.
 - [Embedding](./embedding.md): put a phux terminal in your own app.
 - [Development](./development.md): set up, build, and run the checks.
