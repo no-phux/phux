@@ -185,7 +185,7 @@ The canonical server terminal answers each child query once. Replica
 emulator replies are not another source of PTY input. `INPUT_TERMINAL_REPLY`
 remains for compatibility but the server [discards it](../crates/phux-server/src/runtime/commands/terminal_input.rs).
 New clients suppress replica replies; never resend them as paste or raw input.
-The [engine regression tests](../crates/phux-client-core/src/engine/ghostty.rs)
+The [engine regression tests](../crates/phux-client-core/src/engine/ghostty/tests/synthesized.rs)
 exercise this single-reply boundary.
 
 ### Receipts, retries, and backpressure
