@@ -130,8 +130,10 @@ fn limits_findings(
     }
 }
 
-/// Chords must parse and action names must exist. Parameterized-action
-/// arguments are validated by the dispatcher, not here.
+/// Chords must parse and action names must exist, in every binding table
+/// (key modes included); `enter-mode` must name a defined mode, and mode
+/// options must belong to one. Parameterized-action arguments are
+/// otherwise validated by the dispatcher, not here.
 fn keybinding_findings(
     kb: &KeybindingsCfg,
     provenance: &ConfigProvenance,
@@ -147,9 +149,9 @@ fn keybinding_findings(
         );
     }
 
-    for (table, bindings) in [("global", &kb.global), ("prefix-table", &kb.prefix_table)] {
+    for (table, bindings) in binding_tables(kb) {
         for (binding, action) in bindings {
-            let path = binding_path(table, binding);
+            let path = binding_path(&table, binding);
             if let Err(error) = parse_chord_sequence(binding) {
                 push_semantic(
                     findings,
@@ -170,19 +172,55 @@ fn keybinding_findings(
         }
     }
 
-    // Only ambiguity: per-binding syntax errors were reported above.
+    for name in kb
+        .mode_options
+        .keys()
+        .filter(|n| !kb.modes.contains_key(*n))
+    {
+        push_semantic(
+            findings,
+            provenance,
+            crate::layer::child_path("keybindings.mode-options", name),
+            Fault::UnknownName,
+            format!(
+                "options for key mode `{name}`, which no [keybindings.modes.{name}] table defines"
+            ),
+        );
+    }
+
+    // From the resolver: ambiguity and key-mode problems. Per-binding syntax
+    // and action-name errors were reported above.
     let (_, diagnostics) = Resolver::new_lenient(kb);
     for diagnostic in diagnostics {
-        if matches!(diagnostic.error, KeybindError::AmbiguousPrefix(_)) {
-            push_semantic(
-                findings,
-                provenance,
-                ambiguous_binding_path(kb, &diagnostic.binding),
-                Fault::BadChord,
-                diagnostic.error.to_string(),
-            );
-        }
+        let fault = match diagnostic.error {
+            KeybindError::AmbiguousPrefix(_) => Fault::BadChord,
+            KeybindError::BadModeName(_) | KeybindError::MissingModeName => Fault::BadValue,
+            KeybindError::UnknownMode { .. } => Fault::UnknownName,
+            _ => continue,
+        };
+        push_semantic(
+            findings,
+            provenance,
+            diagnostic_path(kb, &diagnostic.binding),
+            fault,
+            diagnostic.error.to_string(),
+        );
     }
+}
+
+/// Every binding table under `[keybindings]` by its path below it:
+/// `global`, `prefix-table`, then `modes.<name>` per key mode.
+fn binding_tables(kb: &KeybindingsCfg) -> Vec<(String, &BTreeMap<String, crate::Action>)> {
+    let mut tables = vec![
+        ("global".to_owned(), &kb.global),
+        ("prefix-table".to_owned(), &kb.prefix_table),
+    ];
+    tables.extend(
+        kb.modes
+            .iter()
+            .map(|(name, table)| (crate::layer::child_path("modes", name), table)),
+    );
+    tables
 }
 
 /// Hooks fail open three ways: an unknown event never fires (one finding for
@@ -299,10 +337,20 @@ fn binding_path(table: &str, binding: &str) -> String {
     crate::layer::child_path(&format!("keybindings.{table}"), binding)
 }
 
-/// Locate an ambiguous-prefix diagnostic's binding. The prefix-conflict case
-/// reports the global binding that can never fire, so `global` is checked
-/// first; a match in neither table is the prefix itself.
-fn ambiguous_binding_path(kb: &KeybindingsCfg, binding: &str) -> String {
+/// Locate a resolver diagnostic's binding. A key mode's reads
+/// `mode:<name> <key>` (`mode:<name>` for the mode itself). The
+/// prefix-conflict case reports the global binding that can never fire, so
+/// `global` is checked first; a match in neither table is the prefix itself.
+fn diagnostic_path(kb: &KeybindingsCfg, binding: &str) -> String {
+    if let Some(rest) = binding.strip_prefix("mode:") {
+        let modes = "keybindings.modes";
+        return match rest.split_once(' ') {
+            Some((mode, key)) => {
+                crate::layer::child_path(&crate::layer::child_path(modes, mode), key)
+            }
+            None => crate::layer::child_path(modes, rest),
+        };
+    }
     if kb.global.contains_key(binding) {
         binding_path("global", binding)
     } else if kb.prefix_table.contains_key(binding) {

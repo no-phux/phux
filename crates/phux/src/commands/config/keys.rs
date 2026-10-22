@@ -10,7 +10,9 @@ use phux_tui::attach::plugin_actions;
 
 /// One effective binding, as printed.
 struct Row {
-    table: &'static str,
+    /// The table below `[keybindings]`: `global`, `prefix-table`, or
+    /// `modes.<name>`.
+    table: String,
     keys: String,
     action: String,
     args: BTreeMap<String, toml::Value>,
@@ -68,18 +70,26 @@ pub(super) fn run_config_keys(filter: Option<&str>, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Global bindings first, then the prefix table, each in key order.
+/// Global bindings first, then the prefix table, then each key mode, each
+/// in key order. A mode's keys read `mode:<name> <key>`.
 fn rows(keybindings: &KeybindingsCfg, provenance: &ConfigProvenance) -> Vec<Row> {
-    let tables = [
-        ("global", &keybindings.global, None),
+    let mut tables = vec![
+        ("global".to_owned(), &keybindings.global, None),
         (
-            "prefix-table",
+            "prefix-table".to_owned(),
             &keybindings.prefix_table,
-            Some(&keybindings.prefix),
+            Some(keybindings.prefix.clone()),
         ),
     ];
+    tables.extend(keybindings.modes.iter().map(|(mode, bindings)| {
+        (
+            format!("modes.{mode}"),
+            bindings,
+            Some(format!("mode:{mode}")),
+        )
+    }));
     let mut rows = Vec::new();
-    for (table, bindings, prefix) in tables {
+    for (table, bindings, lead) in tables {
         let table_path = format!("keybindings.{table}");
         for (binding, action) in bindings {
             let (action, args) = match action {
@@ -92,8 +102,10 @@ fn rows(keybindings: &KeybindingsCfg, provenance: &ConfigProvenance) -> Vec<Row>
                 .flatten()
                 .map(|(plugin, _)| plugin);
             rows.push(Row {
-                table,
-                keys: prefix.map_or_else(|| binding.clone(), |p| format!("{p} {binding}")),
+                table: table.clone(),
+                keys: lead
+                    .as_ref()
+                    .map_or_else(|| binding.clone(), |lead| format!("{lead} {binding}")),
                 source: binding_source(provenance, &table_path, binding, plugin),
                 action,
                 args,
@@ -235,11 +247,33 @@ mod tests {
         );
         let global = rows.iter().find(|r| r.keys == "M-Enter").expect("global");
         assert_eq!(
-            (global.table, global.source.as_str()),
+            (global.table.as_str(), global.source.as_str()),
             ("global", "config.toml")
         );
         assert!(rows.iter().any(|r| r.keys == "C-b z"), "prefix applies");
         assert!(!rows.iter().any(|r| r.keys == "C-b x"), "x unbound");
+    }
+
+    #[test]
+    fn mode_bindings_read_mode_name_then_key_and_none_unbinds_one() {
+        let rows = rows_for("[keybindings.modes.resize]\nh = \"none\"\nx = \"exit-mode\"\n");
+        let j = rows
+            .iter()
+            .find(|r| r.keys == "mode:resize j")
+            .expect("shipped j");
+        assert_eq!(
+            (j.table.as_str(), j.action.as_str(), j.source.as_str()),
+            ("modes.resize", "resize-pane", "defaults")
+        );
+        assert_eq!(render_args(&j.args), "amount=1 direction=down");
+        let x = rows
+            .iter()
+            .find(|r| r.keys == "mode:resize x")
+            .expect("yours");
+        assert_eq!(x.source, "config.toml");
+        assert!(!rows.iter().any(|r| r.keys == "mode:resize h"), "h unbound");
+        let enter = rows.iter().find(|r| r.keys == "C-a R").expect("prefix R");
+        assert_eq!(render_args(&enter.args), "name=resize");
     }
 
     /// Rows after merging one plugin action that claims `keys`, as

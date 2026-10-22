@@ -17,6 +17,7 @@ use super::ctx::DispatchCtx;
 use super::effects::ActionEffects;
 use super::pickers::switch_window;
 
+mod modes;
 mod panes;
 mod plugins;
 mod sessions;
@@ -24,6 +25,7 @@ mod spawn;
 mod views;
 mod windows;
 
+pub(in crate::attach) use modes::{enter_mode, exit_mode};
 pub(in crate::attach) use panes::{
     focus_direction, give_input, kill_focused_pane, last_pane, move_pane, next_pane, previous_pane,
     resize_pane, set_pane, signal_terminal, split_pane, take_input, toggle_sidebar, toggle_zoom,

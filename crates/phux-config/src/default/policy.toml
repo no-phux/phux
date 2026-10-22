@@ -1,0 +1,19 @@
+# Authorization posture. Read once
+# at server start; a change needs a restart.
+#
+# Unset is `local`, except that a configured remote listener, relay
+# connector, or workload authority location (`PHUX_WORKLOAD_CA`, ...)
+# refuses to start the server and names `paired` as the remedy: nothing
+# ever grants a remote connection the owner's authority.
+# The overlay listener is auto-bound only under `paired`.
+#
+# `local`: the owner's Unix socket only. A configured remote listener
+# (`--listen`, `--quic`, `--webtransport`, their environment variables,
+# or a `[[connector]]`) refuses to start the server.
+#
+# `paired`: the owner's Unix socket keeps full authority; every TLS
+# connection must present a workload certificate enrolled with
+# `phux workload add-key` and holds only its registry ceiling.
+#
+# [policy]
+# mode = "paired"

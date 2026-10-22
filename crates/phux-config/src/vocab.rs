@@ -68,6 +68,8 @@ pub const ACTION_NAMES: &[&str] = &[
     "settings",
     "report-bug",
     "rec-mark",
+    "enter-mode",
+    "exit-mode",
 ];
 
 /// Hook point: pane creation (`docs/consumers/tui.md` §9).
