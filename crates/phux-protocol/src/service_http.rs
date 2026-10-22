@@ -13,9 +13,11 @@
 
 use crate::wire::frame::MAX_FILE_UPLOAD_CHUNK;
 
-/// Largest request body one `SERVICE_HTTP_OPEN` carries, and the most bytes
-/// one `SERVICE_HTTP_READ` may ask for.
+/// Largest request body one `SERVICE_HTTP_OPEN` carries.
 pub const MAX_SERVICE_HTTP_BODY_BYTES: usize = MAX_FILE_UPLOAD_CHUNK;
+/// The most bytes one `SERVICE_HTTP_READ` may ask for, and so the largest
+/// `SERVICE_HTTP_CHUNK`.
+pub const MAX_SERVICE_HTTP_READ_BYTES: usize = 1024 * 1024;
 /// Most headers one request or response head carries.
 pub const MAX_SERVICE_HTTP_HEADERS: usize = 128;
 /// Most bytes of one head: host, service, method, target, and every header
@@ -88,13 +90,13 @@ pub fn head_fits(head: &ServiceHttpHead) -> bool {
 /// Whether a chunk fits the wire bounds a decoder enforces.
 #[must_use]
 pub const fn chunk_fits(chunk: &ServiceHttpChunk) -> bool {
-    chunk.bytes.len() <= MAX_SERVICE_HTTP_BODY_BYTES
+    chunk.bytes.len() <= MAX_SERVICE_HTTP_READ_BYTES
 }
 
 /// Whether a `SERVICE_HTTP_READ` asks for no more than one chunk may carry.
 #[must_use]
 pub fn read_fits(max_bytes: u32) -> bool {
-    usize::try_from(max_bytes).is_ok_and(|max| max <= MAX_SERVICE_HTTP_BODY_BYTES)
+    usize::try_from(max_bytes).is_ok_and(|max| max <= MAX_SERVICE_HTTP_READ_BYTES)
 }
 
 fn parts_fit(fields: &[&str], headers: &[ServiceHttpHeader]) -> bool {

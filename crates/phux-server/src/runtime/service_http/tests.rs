@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 
@@ -6,9 +6,10 @@ use phux_protocol::service_http::{ServiceHttpChunk, ServiceHttpHead, ServiceHttp
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
 
 use super::exchanges::{Exchanges, MAX_EXCHANGES};
-use super::opencode::{OpenCode, parse_origin};
+use super::exchanges::{IDLE_REAP, MAX_RETAINED_BODY_BYTES, UNREAD_REAP};
+use super::opencode::{OpenCode, parse_status};
 use super::upstream::Prepared;
-use super::{Target, open, open_target, read};
+use super::{Target, open, open_local, open_target, read};
 use crate::state::SharedState;
 
 mod fake;
@@ -43,7 +44,7 @@ async fn open_ok(
     provider: &'static OpenCode,
     request: ServiceHttpRequest,
 ) -> ServiceHttpHead {
-    let reservation = exchanges.reserve().unwrap();
+    let reservation = exchanges.reserve(0).unwrap();
     match open(&SharedState::new(), reservation, local(provider, request)).await {
         CommandResult::OkWith(CommandValue::ServiceHttpHead(head)) => head,
         other => panic!("open failed: {other:?}"),
@@ -93,10 +94,15 @@ fn only_a_single_loopback_origin_line_is_an_origin() {
         "http://[::1]:8080",
         " http://127.0.0.1:1 \n",
     ] {
-        assert!(parse_origin(good.as_bytes()).is_some(), "{good:?}");
+        assert!(parse_status(good.as_bytes()).unwrap().is_some(), "{good:?}");
+    }
+    for stopped in ["stopped\n", "", "not running"] {
+        assert!(
+            parse_status(stopped.as_bytes()).unwrap().is_none(),
+            "{stopped:?}"
+        );
     }
     for bad in [
-        "stopped\n",
         "https://127.0.0.1:49374",
         "http://10.0.0.1:49374",
         "http://127.0.0.2:49374",
@@ -104,9 +110,13 @@ fn only_a_single_loopback_origin_line_is_an_origin() {
         "http://127.0.0.1:0",
         "http://127.0.0.1:49374/",
         "http://127.0.0.1:49374\nhttp://127.0.0.1:49375",
-        "",
     ] {
-        assert!(parse_origin(bad.as_bytes()).is_none(), "{bad:?}");
+        let refusal = parse_status(bad.as_bytes()).unwrap_err();
+        assert_eq!(refusal.code, ErrorCode::Unavailable, "{bad:?}");
+        assert!(
+            refusal.message.starts_with("non-loopback origin refused"),
+            "{bad:?}"
+        );
     }
 }
 
@@ -132,6 +142,11 @@ fn requests_are_validated_before_anything_is_reserved() {
     let mut unknown = get("/");
     unknown.service = "nginx".to_owned();
     assert_eq!(open_target(unknown).unwrap_err().code, ErrorCode::NotFound);
+    for pairing in ["/api/pair", "/api/pair?x=1", "/auth/connect/abc", "/auth"] {
+        let refusal = open_target(get(pairing)).unwrap_err();
+        assert_eq!(refusal.code, ErrorCode::InvalidCommand, "{pairing}");
+    }
+    assert!(open_target(get("/api/pairing-notes")).is_ok());
 }
 
 #[tokio::test]
@@ -234,12 +249,69 @@ async fn a_401_mints_a_new_token_once_and_resends() {
     assert_eq!(head.status, 200);
     assert_eq!(fake.pairs(), 2);
 
-    // A token the service keeps refusing is relayed, not retried forever.
+    // Within the cooldown a refused token is relayed, not re-minted.
     fake.seen.lock().unwrap().revoked.insert("tok-2".to_owned());
-    fake.seen.lock().unwrap().revoked.insert("tok-3".to_owned());
     let head = open_ok(&exchanges, provider, get("/echo")).await;
     assert_eq!(head.status, 401);
-    assert_eq!(fake.pairs(), 3);
+    assert_eq!(fake.pairs(), 2);
+}
+
+#[tokio::test]
+async fn a_401_without_the_services_basic_challenge_mints_nothing() {
+    let fake = Fake::stopped().await;
+    let exchanges = Exchanges::default();
+    let head = open_ok(&exchanges, fake.provider(), get("/denied")).await;
+    assert_eq!(head.status, 401);
+    assert_eq!(fake.pairs(), 1, "only the first mint");
+}
+
+#[tokio::test]
+async fn one_deadline_bounds_the_whole_open() {
+    let fake = Fake::stopped().await;
+    let prepared = Prepared::new("GET", "/hang", &[], Vec::new()).unwrap();
+    let refusal = open_local(fake.provider(), &prepared, Duration::from_millis(300))
+        .await
+        .unwrap_err();
+    assert_eq!(refusal.code, ErrorCode::Unavailable);
+    assert!(
+        refusal.message.contains("did not answer within"),
+        "{refusal:?}"
+    );
+}
+
+#[tokio::test]
+async fn unread_and_idle_exchanges_are_reaped() {
+    let fake = Fake::stopped().await;
+    let provider = fake.provider();
+    let exchanges = Exchanges::default();
+    let unread = open_ok(&exchanges, provider, get("/sse")).await;
+    let read = open_ok(&exchanges, provider, get("/chunked")).await;
+    let first = read_chunk(&exchanges, read.exchange, 1).await;
+    assert!(!first.end);
+    let now = Instant::now();
+    assert!(exchanges.reap(now).is_empty(), "nothing is abandoned yet");
+
+    assert_eq!(exchanges.reap(now + UNREAD_REAP).len(), 1);
+    assert_eq!(
+        exchanges.lease(unread.exchange).unwrap_err().code,
+        ErrorCode::NotFound,
+        "an exchange nobody read is closed after the unread window"
+    );
+    assert_eq!(exchanges.len(), 1, "a read exchange survives it");
+    assert_eq!(exchanges.reap(now + IDLE_REAP).len(), 1);
+    assert_eq!(exchanges.len(), 0);
+}
+
+#[test]
+fn opening_bodies_share_a_byte_budget() {
+    let exchanges = Exchanges::default();
+    let held = exchanges.reserve(MAX_RETAINED_BODY_BYTES).unwrap();
+    assert_eq!(
+        exchanges.reserve(1).unwrap_err().code,
+        ErrorCode::ResourceExhausted
+    );
+    drop(held);
+    assert!(exchanges.reserve(1).is_ok());
 }
 
 #[tokio::test]
@@ -261,10 +333,10 @@ async fn a_moved_service_is_rediscovered_after_a_connect_failure() {
 async fn exchanges_are_capped_and_close_is_idempotent() {
     let exchanges = Exchanges::default();
     let reservations: Vec<_> = (0..MAX_EXCHANGES)
-        .map(|_| exchanges.reserve().unwrap())
+        .map(|_| exchanges.reserve(0).unwrap())
         .collect();
     assert_eq!(
-        exchanges.reserve().unwrap_err().code,
+        exchanges.reserve(0).unwrap_err().code,
         ErrorCode::ResourceExhausted
     );
     let opening = reservations[0].exchange();
@@ -342,13 +414,13 @@ async fn an_unavailable_service_says_why() {
         } => message,
         other => panic!("expected UNAVAILABLE, got {other:?}"),
     };
-    let reservation = exchanges.reserve().unwrap();
+    let reservation = exchanges.reserve(0).unwrap();
     let result = open(&SharedState::new(), reservation, local(missing, get("/"))).await;
     assert!(message(result).contains("could not run"));
 
     let fake = Fake::stopped().await;
     fake.break_start();
-    let reservation = exchanges.reserve().unwrap();
+    let reservation = exchanges.reserve(0).unwrap();
     let result = open(
         &SharedState::new(),
         reservation,
@@ -357,4 +429,30 @@ async fn an_unavailable_service_says_why() {
     .await;
     assert!(message(result).contains("service start"));
     assert_eq!(exchanges.len(), 0, "a failed open frees its slot");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_reaper_closes_abandoned_exchanges_and_then_stops() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let exchanges = Exchanges::default();
+            let reservation = exchanges.reserve(0).unwrap();
+            let remote = super::exchanges::Upstream::Remote {
+                host: phux_protocol::ids::SatelliteHost::new("ghost"),
+                exchange: 7,
+            };
+            reservation.fulfill(remote).unwrap();
+            assert!(exchanges.claim_reaper());
+            assert!(!exchanges.claim_reaper(), "one reaper per connection");
+            super::spawn_reaper(
+                SharedState::new(),
+                tokio_util::sync::CancellationToken::new(),
+                exchanges.clone(),
+            );
+
+            tokio::time::sleep(UNREAD_REAP + super::REAP_INTERVAL * 2).await;
+            assert_eq!(exchanges.len(), 0, "the unread exchange was reaped");
+            assert!(exchanges.claim_reaper(), "an empty table's reaper ended");
+        })
+        .await;
 }

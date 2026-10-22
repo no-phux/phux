@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::FutureExt as _;
@@ -26,9 +26,6 @@ use tracing::debug;
 
 use super::Refusal;
 use super::opencode::{Credentials, OpenCode};
-
-/// How long an open waits for the response head.
-const HEAD_DEADLINE: Duration = Duration::from_secs(25);
 
 const HOP_BY_HOP: [&str; 7] = [
     "connection",
@@ -53,8 +50,6 @@ const SERVER_OWNED: [&str; 5] = [
 pub(super) enum SendError {
     #[error("connect: {0}")]
     Connect(std::io::Error),
-    #[error("no response head within {}s", HEAD_DEADLINE.as_secs())]
-    Timeout,
     #[error(transparent)]
     Http(#[from] hyper::Error),
 }
@@ -100,6 +95,16 @@ impl Prepared {
             headers: request_headers(headers)?,
             body: Bytes::from(body),
         })
+    }
+
+    /// The body bytes this request retains for a retry.
+    pub(super) const fn body_len(&self) -> usize {
+        self.body.len()
+    }
+
+    /// The target's path, without its query.
+    pub(super) fn path(&self) -> &str {
+        self.target.path()
     }
 
     fn request(&self, credentials: &Credentials) -> Request<Full<Bytes>> {
@@ -193,20 +198,59 @@ fn server_owned(name: &HeaderName) -> bool {
     SERVER_OWNED.contains(&name.as_str())
 }
 
-/// Send `prepared` to `provider`, rediscovering a moved origin and minting a
-/// new token once on `401`. The request body is retained, so both retries
-/// resend it whole.
+/// Send `prepared` to `provider` and wait for the response head, all within
+/// `deadline`: discovery, minting, connecting, and both retries (a moved
+/// origin is rediscovered; a Basic `401` re-mints the token, at most once per
+/// cooldown). The request body is retained, so a retry resends it whole.
 pub(super) async fn open(
+    provider: &OpenCode,
+    prepared: &Prepared,
+    deadline: Duration,
+) -> Result<Response<Incoming>, Refusal> {
+    tokio::time::timeout(deadline, open_unbounded(provider, prepared))
+        .await
+        .map_err(|_| {
+            Refusal::unavailable(format!(
+                "OpenCode did not answer within {}s; long-running endpoints must be \
+                 used asynchronously",
+                deadline.as_secs()
+            ))
+        })?
+}
+
+async fn open_unbounded(
     provider: &OpenCode,
     prepared: &Prepared,
 ) -> Result<Response<Incoming>, Refusal> {
     let (credentials, response) = send_rediscovering(provider, prepared).await?;
-    if response.status() != StatusCode::UNAUTHORIZED {
+    if !basic_challenge(&response) {
+        return Ok(response);
+    }
+    if !provider
+        .forget_token(&credentials.token, Instant::now())
+        .await
+    {
         return Ok(response);
     }
     drop(response);
-    provider.forget_token(&credentials.token).await;
     Ok(send_rediscovering(provider, prepared).await?.1)
+}
+
+/// A `401` whose `WWW-Authenticate` is the service's own Basic challenge,
+/// that is, a refused token rather than a refusal of the request itself.
+fn basic_challenge(response: &Response<Incoming>) -> bool {
+    let challenged = response
+        .headers()
+        .get_all(header::WWW_AUTHENTICATE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| {
+            value
+                .trim_start()
+                .get(..5)
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("basic"))
+        });
+    response.status() == StatusCode::UNAUTHORIZED && challenged
 }
 
 async fn send_rediscovering(
@@ -228,16 +272,15 @@ async fn send_once(
     credentials: &Credentials,
     prepared: &Prepared,
 ) -> Result<Response<Incoming>, SendError> {
-    let request = prepared.request(credentials);
-    tokio::time::timeout(HEAD_DEADLINE, send(credentials.origin.addr(), request))
-        .await
-        .map_err(|_| SendError::Timeout)?
+    send(credentials.origin.addr(), prepared.request(credentials)).await
 }
 
 fn failed(err: SendError) -> Refusal {
     match err {
         SendError::Http(err) => Refusal::internal(format!("OpenCode's HTTP reply failed: {err}")),
-        other => Refusal::unavailable(format!("OpenCode did not answer: {other}")),
+        SendError::Connect(err) => {
+            Refusal::unavailable(format!("OpenCode is not accepting connections: {err}"))
+        }
     }
 }
 

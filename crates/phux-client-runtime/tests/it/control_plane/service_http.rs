@@ -142,6 +142,11 @@ fn malformed_requests_send_nothing() {
         plane.service_http_read(1, 0),
         Err(ServiceHttpError::Invalid(_))
     ));
+    let over = u32::try_from(phux_protocol::service_http::MAX_SERVICE_HTTP_READ_BYTES + 1).unwrap();
+    assert!(matches!(
+        plane.service_http_read(1, over),
+        Err(ServiceHttpError::Invalid(_))
+    ));
     assert!(plane.take_outbound().is_empty());
 }
 
@@ -163,4 +168,51 @@ fn calls_are_bounded_and_a_disconnect_resolves_them() {
         plane.service_http_read(1, 1).unwrap_err(),
         ServiceHttpError::NotConnected
     );
+}
+
+#[test]
+fn a_dropped_open_closes_the_exchange_it_was_answered_with() {
+    let mut plane = plane_with_service_http();
+    drop(plane.service_http_open(info()).unwrap());
+    let (request_id, _) = sent_request_id(&mut plane);
+    let head = ServiceHttpHead {
+        exchange: 42,
+        status: 200,
+        headers: Vec::new(),
+    };
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::ServiceHttpHead(head)),
+        })
+        .unwrap();
+    let (close_id, command) = sent_request_id(&mut plane);
+    assert!(matches!(
+        command,
+        Command::ServiceHttpClose { exchange: 42 }
+    ));
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id: close_id,
+            result: CommandResult::Ok,
+        })
+        .unwrap();
+    assert!(
+        plane.take_outbound().is_empty(),
+        "the close's answer resolves nothing"
+    );
+
+    // A dropped read needs no cleanup: the caller still owns the exchange.
+    drop(plane.service_http_read(42, 1).unwrap());
+    let (request_id, _) = sent_request_id(&mut plane);
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::ServiceHttpChunk(ServiceHttpChunk {
+                bytes: b"x".to_vec(),
+                end: false,
+            })),
+        })
+        .unwrap();
+    assert!(plane.take_outbound().is_empty());
 }

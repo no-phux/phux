@@ -3,7 +3,7 @@
 use super::{BytesMut, Command, CommandResult, CommandValue, DecodeError, FrameKind};
 use phux_protocol::service_http::{
     MAX_SERVICE_HTTP_BODY_BYTES, MAX_SERVICE_HTTP_HEAD_BYTES, MAX_SERVICE_HTTP_HEADERS,
-    ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest,
+    MAX_SERVICE_HTTP_READ_BYTES, ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest,
 };
 
 fn request() -> ServiceHttpRequest {
@@ -57,7 +57,7 @@ fn service_http_commands_and_replies_round_trip() {
             request_id: 6,
             command: Command::ServiceHttpRead {
                 exchange: u64::MAX,
-                max_bytes: u32::try_from(MAX_SERVICE_HTTP_BODY_BYTES).unwrap(),
+                max_bytes: u32::try_from(MAX_SERVICE_HTTP_READ_BYTES).unwrap(),
             },
         },
         FrameKind::Command {
@@ -95,11 +95,11 @@ fn service_http_decoders_refuse_what_exceeds_the_bounds() {
         request_id: 1,
         command: Command::ServiceHttpRead {
             exchange: 1,
-            max_bytes: u32::try_from(MAX_SERVICE_HTTP_BODY_BYTES + 1).unwrap(),
+            max_bytes: u32::try_from(MAX_SERVICE_HTTP_READ_BYTES + 1).unwrap(),
         },
     };
     let over_chunk = reply(CommandValue::ServiceHttpChunk(ServiceHttpChunk {
-        bytes: vec![0; MAX_SERVICE_HTTP_BODY_BYTES + 1],
+        bytes: vec![0; MAX_SERVICE_HTTP_READ_BYTES + 1],
         end: true,
     }));
     for frame in [

@@ -2,17 +2,21 @@
 //! on loopback with a session token this server mints for itself.
 //!
 //! Only two CLI outputs are read, both typed contracts: `opencode service
-//! status` prints exactly the service origin (anything else means it is not
-//! running), and `opencode api server.pair` prints the pairing JSON. The
-//! code is exchanged at `GET {origin}/auth/connect/{code}` for a session
-//! token used as the Basic password of user `opencode`. Origin and token are
-//! cached for the process; a connect failure rediscovers the origin and a
-//! `401` re-mints the token (see `super::upstream`).
+//! status` prints exactly the service origin (a line without `://`, such as
+//! `stopped`, means it is not running; any origin but loopback is refused),
+//! and `opencode api server.pair` prints the pairing JSON. The code is
+//! exchanged at `GET {origin}/auth/connect/{code}` for a session token used
+//! as the Basic password of user `opencode`. Origin and token are cached for
+//! the process behind one mutex, which also serializes discovery: concurrent
+//! opens wait for one `service start` rather than each running it. A connect
+//! failure rediscovers the origin, and a Basic `401` re-mints the token at
+//! most once per [`REMINT_COOLDOWN`] (see `super::upstream`). Clients never
+//! reach the pairing endpoints themselves ([`OpenCode::proxies`]).
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use http::header::{self, HeaderValue};
@@ -33,6 +37,11 @@ const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 const MAX_CLI_OUTPUT: u64 = 64 * 1024;
 /// Most bytes of the `/auth/connect` reply read.
 const MAX_CONNECT_REPLY: usize = 64 * 1024;
+/// A rejected token is re-minted at most this often; a `401` inside the
+/// window is relayed as is.
+pub(super) const REMINT_COOLDOWN: Duration = Duration::from_secs(30);
+/// Longest a stray status line is quoted back in a refusal.
+const MAX_QUOTED_STATUS: usize = 128;
 
 /// The service's loopback address, as `service status` printed it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +101,8 @@ fn header_value(value: &str) -> Result<HeaderValue, Refusal> {
 struct Cache {
     origin: Option<Origin>,
     token: Option<Token>,
+    /// When a rejected token was last dropped for a new one.
+    reminted_at: Option<Instant>,
 }
 
 /// The `OpenCode` provider. One per process: its cache is the host's service.
@@ -111,6 +122,7 @@ impl OpenCode {
             cache: Mutex::const_new(Cache {
                 origin: None,
                 token: None,
+                reminted_at: None,
             }),
         }
     }
@@ -151,13 +163,34 @@ impl OpenCode {
         }
     }
 
-    /// Drop `stale` so the next [`Self::credentials`] mints a new token; a
-    /// newer token another caller minted is kept.
-    pub(super) async fn forget_token(&self, stale: &Token) {
+    /// After `stale` was refused: whether to resend. A newer token another
+    /// caller minted is resent as is; otherwise `stale` is dropped so the
+    /// next [`Self::credentials`] mints anew, unless a re-mint happened
+    /// within [`REMINT_COOLDOWN`].
+    pub(super) async fn forget_token(&self, stale: &Token, now: Instant) -> bool {
         let mut cache = self.cache.lock().await;
-        if cache.token.as_ref() == Some(stale) {
-            cache.token = None;
+        if cache.token.as_ref() != Some(stale) {
+            return true;
         }
+        let cooling = cache
+            .reminted_at
+            .is_some_and(|at| now.saturating_duration_since(at) < REMINT_COOLDOWN);
+        if cooling {
+            return false;
+        }
+        cache.token = None;
+        cache.reminted_at = Some(now);
+        true
+    }
+
+    /// Whether a client may reach `path`: never the pairing endpoints, which
+    /// mint credentials only this server should hold.
+    pub(super) fn proxies(path: &str) -> bool {
+        let pairing = path == "/api/pair"
+            || path.starts_with("/api/pair/")
+            || path == "/auth"
+            || path.starts_with("/auth/");
+        !pairing
     }
 
     fn executable(&self) -> Result<PathBuf, Refusal> {
@@ -181,23 +214,38 @@ async fn discover(executable: &Path) -> Result<Origin, Refusal> {
     run_quiet(executable, &["service", "start"], START_DEADLINE).await?;
     status(executable).await?.ok_or_else(|| {
         Refusal::unavailable(
-            "OpenCode service did not start: `opencode service status` reports no \
-             loopback origin after `opencode service start`",
+            "OpenCode service did not start: `opencode service status` reports it \
+             stopped after `opencode service start`",
         )
     })
 }
 
+/// The running service's origin, or `None` when it is stopped.
 async fn status(executable: &Path) -> Result<Option<Origin>, Refusal> {
     let stdout = run_output(executable, &["service", "status"], STATUS_DEADLINE).await?;
-    Ok(parse_origin(&stdout))
+    parse_status(&stdout)
 }
 
-/// `http://127.0.0.1:PORT` or `http://[::1]:PORT` on one line; anything
-/// else (`stopped`, a remote URL, extra lines) is no usable origin.
-pub(super) fn parse_origin(stdout: &[u8]) -> Option<Origin> {
-    let line = std::str::from_utf8(stdout).ok()?.trim();
-    let authority = line.strip_prefix("http://")?;
-    let addr: SocketAddr = authority.parse().ok()?;
+/// One `http://127.0.0.1:PORT` or `http://[::1]:PORT` line is the origin; a
+/// line naming no origin (no `://`, e.g. `stopped`) means stopped; any other
+/// origin, including a remote or second one, is refused rather than started
+/// over.
+pub(super) fn parse_status(stdout: &[u8]) -> Result<Option<Origin>, Refusal> {
+    let line = String::from_utf8_lossy(stdout);
+    let line = line.trim();
+    if !line.contains("://") {
+        return Ok(None);
+    }
+    loopback_origin(line).map(Some).ok_or_else(|| {
+        let quoted: String = line.chars().take(MAX_QUOTED_STATUS).collect();
+        Refusal::unavailable(format!(
+            "non-loopback origin refused: `opencode service status` printed {quoted:?}"
+        ))
+    })
+}
+
+fn loopback_origin(line: &str) -> Option<Origin> {
+    let addr: SocketAddr = line.strip_prefix("http://")?.parse().ok()?;
     let loopback = matches!(
         addr.ip(),
         IpAddr::V4(Ipv4Addr::LOCALHOST) | IpAddr::V6(Ipv6Addr::LOCALHOST)

@@ -7,7 +7,7 @@
 
 use phux_client_runtime::control::ServiceHttpError;
 use phux_protocol::service_http::{
-    MAX_SERVICE_HTTP_BODY_BYTES, ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest,
+    MAX_SERVICE_HTTP_READ_BYTES, ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest,
 };
 use phux_protocol::wire::frame::ErrorCode;
 
@@ -158,7 +158,7 @@ impl From<ServiceHttpChunk> for WireServiceHttpChunk {
 /// The most bytes one `service_http_read` may ask for.
 #[uniffi::export]
 pub fn service_http_max_read_bytes() -> u32 {
-    u32::try_from(MAX_SERVICE_HTTP_BODY_BYTES).unwrap_or(u32::MAX)
+    u32::try_from(MAX_SERVICE_HTTP_READ_BYTES).unwrap_or(u32::MAX)
 }
 
 #[uniffi::export]

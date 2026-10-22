@@ -96,7 +96,7 @@ impl ControlPlane {
         if max_bytes == 0 || !read_fits(max_bytes) {
             return Err(ServiceHttpError::Invalid(format!(
                 "a read asks for 1..={} bytes",
-                phux_protocol::service_http::MAX_SERVICE_HTTP_BODY_BYTES
+                phux_protocol::service_http::MAX_SERVICE_HTTP_READ_BYTES
             )));
         }
         let command = Command::ServiceHttpRead {
@@ -148,11 +148,27 @@ impl ControlPlane {
         Ok(())
     }
 
+    /// Hand `result` to its call. A caller that stopped waiting for an open
+    /// (a cancelled task, `URLProtocol.stopLoading`) never learns the
+    /// exchange, so the runtime closes it for them.
     pub(super) fn resolve_service_http(&mut self, request_id: u32, result: CommandResult) {
-        if let Some(answer) = self.extensions.service_http.remove(&request_id) {
-            // A caller that stopped waiting dropped its receiver.
-            let _ = answer.send(result);
+        let Some(answer) = self.extensions.service_http.remove(&request_id) else {
+            return;
+        };
+        if let Err(CommandResult::OkWith(CommandValue::ServiceHttpHead(head))) = answer.send(result)
+        {
+            self.close_abandoned_exchange(head.exchange);
         }
+    }
+
+    /// Close an exchange nobody holds; its answer resolves nothing.
+    fn close_abandoned_exchange(&mut self, exchange: u64) {
+        let request_id = self.next_request_id();
+        self.pending.insert(request_id, Pending::ServiceHttp);
+        self.queue_frame(&FrameKind::Command {
+            request_id,
+            command: Command::ServiceHttpClose { exchange },
+        });
     }
 
     /// Resolve every outstanding call as [`ServiceHttpError::Disconnected`].

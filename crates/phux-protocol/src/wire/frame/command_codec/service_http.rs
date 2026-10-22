@@ -2,8 +2,8 @@
 //! byte-bounded records (`crate::service_http`).
 
 use crate::service_http::{
-    MAX_SERVICE_HTTP_BODY_BYTES, ServiceHttpChunk, ServiceHttpHead, ServiceHttpRequest, chunk_fits,
-    head_fits, read_fits, request_fits,
+    MAX_SERVICE_HTTP_BODY_BYTES, MAX_SERVICE_HTTP_READ_BYTES, ServiceHttpChunk, ServiceHttpHead,
+    ServiceHttpRequest, head_fits, read_fits, request_fits,
 };
 use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
@@ -69,7 +69,7 @@ fn decode_open(dec: &mut Decoder<'_>) -> Result<ServiceHttpRequest, DecodeError>
         method: dec.read_str()?.to_owned(),
         target: dec.read_str()?.to_owned(),
         headers: decode_env(dec)?,
-        body: read_body(dec)?,
+        body: read_bounded(dec, MAX_SERVICE_HTTP_BODY_BYTES)?,
     };
     bounded(request_fits(&request))?;
     Ok(request)
@@ -100,17 +100,16 @@ pub(super) fn encode_chunk(chunk: &ServiceHttpChunk, enc: &mut Encoder<'_>) {
 
 pub(super) fn decode_chunk(dec: &mut Decoder<'_>) -> Result<ServiceHttpChunk, DecodeError> {
     let chunk = ServiceHttpChunk {
-        bytes: read_body(dec)?,
+        bytes: read_bounded(dec, MAX_SERVICE_HTTP_READ_BYTES)?,
         end: dec.read_bool("ServiceHttpChunk.end")?,
     };
-    debug_assert!(chunk_fits(&chunk));
     Ok(chunk)
 }
 
-/// A body or chunk, refused before it is copied when over the bound.
-fn read_body(dec: &mut Decoder<'_>) -> Result<Vec<u8>, DecodeError> {
+/// A body or chunk, refused before it is copied when over `max`.
+fn read_bounded(dec: &mut Decoder<'_>, max: usize) -> Result<Vec<u8>, DecodeError> {
     let bytes = dec.read_bytes()?;
-    bounded(bytes.len() <= MAX_SERVICE_HTTP_BODY_BYTES)?;
+    bounded(bytes.len() <= max)?;
     Ok(bytes.to_vec())
 }
 

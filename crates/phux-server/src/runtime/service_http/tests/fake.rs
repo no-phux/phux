@@ -139,7 +139,16 @@ async fn accept(listener: TcpListener, seen: Arc<Mutex<Seen>>, closed: Arc<Notif
         tokio::spawn(async move {
             let service = hyper::service::service_fn({
                 let seen = seen.clone();
-                move |request| std::future::ready(Ok::<_, Infallible>(route(&request, &seen)))
+                move |request| {
+                    let response = route(&request, &seen);
+                    async move {
+                        match response {
+                            Some(response) => Ok::<_, Infallible>(response),
+                            // `/hang`: the head never arrives.
+                            None => std::future::pending().await,
+                        }
+                    }
+                }
             });
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), service)
@@ -150,21 +159,27 @@ async fn accept(listener: TcpListener, seen: Arc<Mutex<Seen>>, closed: Arc<Notif
     }
 }
 
-fn route(request: &Request<Incoming>, seen: &Mutex<Seen>) -> Response<Body> {
+fn route(request: &Request<Incoming>, seen: &Mutex<Seen>) -> Option<Response<Body>> {
     let path = request.uri().path();
     if let Some(code) = path.strip_prefix("/auth/connect/") {
         let token = code.replace("code-", "tok-");
-        return text(StatusCode::OK, format!(r#"{{"token":"{token}"}}"#));
+        return Some(text(StatusCode::OK, format!(r#"{{"token":"{token}"}}"#)));
     }
     if !authorized(request, seen) {
-        return text(StatusCode::UNAUTHORIZED, "unauthorized".to_owned());
+        let mut refused = text(StatusCode::UNAUTHORIZED, "unauthorized".to_owned());
+        let challenge = "Basic realm=\"Secure Area\"".parse().unwrap();
+        refused.headers_mut().insert("www-authenticate", challenge);
+        return Some(refused);
     }
-    match path {
+    Some(match path {
         "/echo" => echo(request),
         "/chunked" => chunked(),
         "/sse" => sse(seen),
+        // The request's own refusal, not the token's.
+        "/denied" => text(StatusCode::UNAUTHORIZED, "not yours".to_owned()),
+        "/hang" => return None,
         _ => text(StatusCode::NOT_FOUND, "no route".to_owned()),
-    }
+    })
 }
 
 fn authorized(request: &Request<Incoming>, seen: &Mutex<Seen>) -> bool {

@@ -403,7 +403,7 @@ pub enum Command {
         /// The exchange [`CommandValue::ServiceHttpHead`] named.
         exchange: u64,
         /// Most bytes to return, at most
-        /// [`MAX_SERVICE_HTTP_BODY_BYTES`](crate::service_http::MAX_SERVICE_HTTP_BODY_BYTES).
+        /// [`MAX_SERVICE_HTTP_READ_BYTES`](crate::service_http::MAX_SERVICE_HTTP_READ_BYTES).
         max_bytes: u32,
     },
     /// End an exchange and release its upstream connection. Idempotent.

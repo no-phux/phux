@@ -25,7 +25,7 @@ mod opencode;
 mod tests;
 mod upstream;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::service_http::{
@@ -38,11 +38,20 @@ use exchanges::{Lease, Reservation, Upstream};
 use opencode::OpenCode;
 use upstream::{BodyReader, Prepared};
 
+use tokio_util::sync::CancellationToken;
+
 use super::commands::CommandContext;
 use crate::state::{Outbound, SharedState};
 
 /// How long one read waits for body bytes before answering with none.
 const READ_IDLE: Duration = Duration::from_secs(20);
+/// The whole of one local open, discovery and retries included. Below the
+/// hub's relay deadline, so a hub hears every satellite's answer.
+const OPEN_DEADLINE: Duration = Duration::from_secs(25);
+/// How often a connection with exchanges checks for abandoned ones.
+const REAP_INTERVAL: Duration = Duration::from_secs(15);
+
+const _: () = assert!(OPEN_DEADLINE.as_secs() < crate::hub::relay::RELAY_COMMAND_TIMEOUT.as_secs());
 
 static OPENCODE: OpenCode = OpenCode::installed();
 
@@ -139,8 +148,11 @@ fn admit(
     command: Command,
 ) -> Option<CommandResult> {
     let admitted = match command {
-        Command::ServiceHttpOpen { request } => admit_open(&ctx.state, exchanges, *request)
-            .map(|(reservation, target)| spawn_open(ctx, request_id, reservation, target)),
+        Command::ServiceHttpOpen { request } => {
+            admit_open(exchanges, *request).map(|(reservation, target)| {
+                spawn_open(ctx, exchanges, request_id, reservation, target);
+            })
+        }
         Command::ServiceHttpRead {
             exchange,
             max_bytes,
@@ -168,16 +180,18 @@ enum Target {
     },
 }
 
-/// Validate a local request (a satellite validates its own), close idle
-/// exchanges, and reserve a slot.
+/// Validate a local request (a satellite validates its own) and reserve a
+/// slot that retains its body.
 fn admit_open(
-    state: &SharedState,
     exchanges: &Exchanges,
     request: ServiceHttpRequest,
 ) -> Result<(Reservation, Target), Refusal> {
     let target = open_target(request)?;
-    release_all(state, exchanges.reap_idle(Instant::now()));
-    Ok((exchanges.reserve()?, target))
+    let retained = match &target {
+        Target::Local { prepared, .. } => prepared.body_len(),
+        Target::Satellite { request, .. } => request.body.len(),
+    };
+    Ok((exchanges.reserve(retained)?, target))
 }
 
 fn open_target(mut request: ServiceHttpRequest) -> Result<Target, Refusal> {
@@ -199,6 +213,12 @@ fn open_target(mut request: ServiceHttpRequest) -> Result<Target, Refusal> {
         &request.headers,
         request.body,
     )?;
+    if !OpenCode::proxies(prepared.path()) {
+        return Err(Refusal::invalid(format!(
+            "{:?} is OpenCode's pairing endpoint, which this server keeps to itself",
+            prepared.path()
+        )));
+    }
     Ok(Target::Local { provider, prepared })
 }
 
@@ -211,8 +231,18 @@ fn admit_read(exchanges: &Exchanges, exchange: u64, max_bytes: u32) -> Result<Le
     exchanges.lease(exchange)
 }
 
-/// Run an open; the connection's cancellation drops it and its slot.
-fn spawn_open(ctx: CommandContext, request_id: u32, reservation: Reservation, target: Target) {
+/// Run an open; the connection's cancellation drops it and its slot. The
+/// first open starts the connection's reaper.
+fn spawn_open(
+    ctx: CommandContext,
+    exchanges: &Exchanges,
+    request_id: u32,
+    reservation: Reservation,
+    target: Target,
+) {
+    if exchanges.claim_reaper() {
+        spawn_reaper(ctx.state.clone(), ctx.token.clone(), exchanges.clone());
+    }
     tokio::task::spawn_local(async move {
         let token = ctx.token.clone();
         let result = tokio::select! {
@@ -221,6 +251,29 @@ fn spawn_open(ctx: CommandContext, request_id: u32, reservation: Reservation, ta
             opened = open(&ctx.state, reservation, target) => opened,
         };
         send_result(&ctx.out_tx, request_id, result).await;
+    });
+}
+
+/// Close abandoned exchanges every [`REAP_INTERVAL`] until the connection
+/// ends or holds none; the next open starts another reaper.
+fn spawn_reaper(state: SharedState, token: CancellationToken, exchanges: Exchanges) {
+    tokio::task::spawn_local(async move {
+        loop {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => break,
+                () = tokio::time::sleep(REAP_INTERVAL) => {}
+            }
+            // Tokio's clock, so a paused test clock drives it too.
+            release_all(
+                &state,
+                exchanges.reap(tokio::time::Instant::now().into_std()),
+            );
+            if exchanges.is_empty() {
+                break;
+            }
+        }
+        exchanges.release_reaper();
     });
 }
 
@@ -235,7 +288,9 @@ fn spawn_read(ctx: CommandContext, request_id: u32, lease: Lease, max_bytes: u32
 
 async fn open(state: &SharedState, reservation: Reservation, target: Target) -> CommandResult {
     let opened = match target {
-        Target::Local { provider, prepared } => open_local(provider, &prepared).await,
+        Target::Local { provider, prepared } => {
+            open_local(provider, &prepared, OPEN_DEADLINE).await
+        }
         Target::Satellite { host, request } => open_remote(state, host, request).await,
     };
     match opened {
@@ -254,8 +309,11 @@ async fn open(state: &SharedState, reservation: Reservation, target: Target) -> 
 async fn open_local(
     provider: &OpenCode,
     prepared: &Prepared,
+    deadline: Duration,
 ) -> Result<(ServiceHttpHead, Upstream), Refusal> {
-    let (parts, body) = upstream::open(provider, prepared).await?.into_parts();
+    let (parts, body) = upstream::open(provider, prepared, deadline)
+        .await?
+        .into_parts();
     let head = ServiceHttpHead {
         exchange: 0,
         status: parts.status.as_u16(),
