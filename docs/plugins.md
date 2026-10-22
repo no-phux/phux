@@ -141,11 +141,18 @@ from a shell:
 phux config run example.pane-tools summarize
 ```
 
-To give a plugin action a key, set `keys` in its manifest. A binding in
-your own `[keybindings]` can't name a plugin action, because the
-`plugin-action` action takes an argument called `action`, which a binding
-table already uses for the action's name. To change a plugin's key, edit
-`keys` in its manifest; binding the same key yourself takes it back.
+To give a plugin action a key, set `keys` in its manifest, or bind it in
+your own `[keybindings]` with the `plugin-action` action, naming the
+plugin and the action's `id`:
+
+```toml
+[keybindings.prefix-table]
+"S" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
+```
+
+Your bindings win over a manifest's `keys`. Binding the same key yourself
+takes it back, and a key you set to `"none"` stays unbound even when a
+plugin's `keys` names it.
 
 `phux config run` prints the action's output and exits with its exit
 code. `--timeout SECS` gives up after that long, and `--json` prints the

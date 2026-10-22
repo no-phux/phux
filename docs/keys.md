@@ -64,6 +64,14 @@ Some actions require arguments and some take optional ones. `resize-pane`
 needs a `direction` and an `amount`; `rename-window` opens a prompt when
 you leave out `name` and renames straight away when you give one.
 
+A plugin's action is `plugin-action` with the plugin's id and the
+action's `id`:
+
+```toml
+[keybindings.prefix-table]
+"S" = { action = "plugin-action", plugin = "example.pane-tools", id = "summarize" }
+```
+
 **A global binding takes the key away from every program.** A global
 <kbd>M-Enter</kbd> never reaches your editor or shell again. Pick global
 keys that your programs don't use.
@@ -162,6 +170,9 @@ Set a key to `"none"` to remove its binding, a shipped default included:
 goes straight to the program in the pane. An unbound prefix-table key
 goes to the program after the prefix, so <kbd>C-a</kbd> <kbd>x</kbd> now
 types an `x`.
+
+**An unbound key stays unbound.** A plugin whose manifest `keys` names it
+doesn't get it, whatever spelling either of you uses.
 
 ## Changing the prefix
 
@@ -263,5 +274,6 @@ bad binding and keeps your current bindings, so fix the finding and reload
 again.
 
 If a key seems to do nothing, run `phux config keys` and look for it. A
-plugin key loses to yours when both bind the same key, and a binding you
-removed with `"none"` is absent from the table.
+plugin key loses to yours when both bind the same key, and a key you
+removed with `"none"` is absent from the table, even when a plugin's
+`keys` names it.
