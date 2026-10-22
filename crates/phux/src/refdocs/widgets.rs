@@ -94,7 +94,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "widgets.md",
-        title: "phux status-bar widgets reference",
+        title: "Status bar widgets",
         summary: "Every registered status-bar widget kind with its options \
                   and defaults.",
         lede: "Status-bar widget kinds, their options and defaults, and the shared `style` and visibility settings.",

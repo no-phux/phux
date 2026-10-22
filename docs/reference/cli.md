@@ -1,4 +1,4 @@
-# phux CLI reference
+# Command line
 
 The `--help` text of every `phux` command.
 
@@ -1275,6 +1275,7 @@ Commands:
            running.
   check    Validate the config and report every problem, with full key paths.
   init     Write a commented starter config to the canonical path.
+  keys     List every key binding in effect and where it came from.
   path     Print the resolved config path. Pure path math — prints the path
            whether or not the file exists.
   plugins  List plugin manifests declared by `[[plugins]]`.
@@ -1363,6 +1364,29 @@ Flags:
 
 Global flags:
       --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config keys`
+
+```text
+List every key binding in effect and where it came from.
+
+Shows the shipped defaults, your config and its `extends` layers, and enabled
+plugins' keys merged exactly as the terminal UI merges them. Prefix-table keys
+are printed after the prefix (`C-a z`). Bindings the UI would skip (a key that
+does not parse, an unknown action, a conflict) are listed as warnings on stderr.
+
+Usage: phux config keys [--json] [ACTION]
+
+Arguments:
+  [ACTION]  Only show bindings for this action, such as `split-pane`.
+
+Flags:
+      --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config path`

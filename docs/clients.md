@@ -1,86 +1,86 @@
 # Clients
 
-Everything talks to the same server over the same protocol, so any client
-can show any session, and several can show one at once.
+A client is a program that shows sessions from a phux server: the terminal
+UI, the desktop app, or something you build. Every client talks to the same
+server the same way, so any client can show any session, and several can
+show one session at once.
+
+```sh
+phux attach work        # the terminal UI, in this terminal
+```
 
 ## Terminal UI
 
 `phux` and `phux attach` run the terminal UI in whatever terminal you are
-in. It is the reference client and the one everything else is measured
-against. It renders pane contents with libghostty, the same emulator the
-server uses, so what you see is what the server has.
+in. It ships in every release, and every other client is measured against
+it. It draws panes with libghostty, the same terminal emulator the server
+uses, so what you see is what the server has.
 
-Shipped in every release. [Getting started](./getting-started.md) is about
-this client. `Ctrl-A S` opens settings (edits the config file; see
-[apply boundaries](./config.md#when-a-change-takes-effect)).
-[Recording](./reference/cli.md#phux-rec) observes output without becoming a
-process backup; [playback](./reference/cli.md#phux-play) creates a new pane,
-never overwrites the target.
+[Getting started](./getting-started.md) covers this client.
+<kbd>C-a</kbd> <kbd>S</kbd> opens settings, which edit your config file;
+[when a change takes effect](./config.md#when-a-change-takes-effect)
+explains when you see it.
+
+`phux rec` records a pane to a cast, GIF, or APNG. A recording only watches
+output; it is not a backup of the process. `phux play` plays one back in a
+new pane and never overwrites an existing one.
 
 ## Desktop
 
-Phux Desktop is a native app (Rust, GPUI) for Apple silicon macOS 27+ and
-Linux x86_64/arm64 with Vulkan. Install it with:
+Phux Desktop is a native app for macOS 27 or later on Apple silicon, and for
+Linux on x86_64 or arm64 with Vulkan. Install it with:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-It shows every session on this machine and on each host you have
-registered with `phux host add`, grouped by machine or by repository. One
-window shows one session; the sidebar switches. Agents that need attention
-are marked where they are. `⌘P` opens a palette over sessions, actions, and
-settings. Updates are checked from the app and installed on restart.
+It shows every session on this machine and on each machine you added with
+`phux host add`, grouped by machine or by repository. One window shows one
+session, and the sidebar switches between them. Agents that need you are
+marked where they are. <kbd>⌘P</kbd> opens a palette of sessions, actions,
+and settings. The app checks for updates and installs them on restart.
 
-Each window keeps one live runtime per host. Navigation promotes its inventory
-connection; leaving retains its last workspace and terminal replicas. Hidden
-hosts drain model updates without retaining GPUI terminal entities or painting
-terminal output. Returning to the same session reuses its runtime views;
-selecting another session uses the live socket. Disconnect, forgetting a host,
-and window close release retained connections.
+Each window keeps one live connection per machine, so switching back to a
+session you just left is instant. Machines you aren't looking at keep their
+data current without drawing anything. Disconnecting, forgetting a machine,
+or closing the window closes its connections.
 
-It uses the installed `phux` CLI to start or reach the server, so install
-the CLI first (the desktop installer does this if you have not). It never
-creates sessions on its own and never stops the server; quitting the app
-detaches.
+The app starts or reaches the server through the installed `phux` command,
+so install the CLI first; the desktop installer does it if you haven't. The
+app never creates sessions on its own and never stops the server. Quitting
+it detaches.
 
-For task details, see [Quick Capture](./desktop-capture.md), the
-[Changes panel](./desktop-changes.md), and
-[agent pane presentation](./desktop-panes.md).
+- [Quick Capture](./desktop-capture.md) turns a thought into a new agent
+  terminal.
+- The [Changes panel](./desktop-changes.md) reviews and stages Git changes
+  beside your panes.
+- [Agent panes](./desktop-panes.md) explains how panes an agent drives look.
 
-Released through the same validated release train as the CLI, with an
-independent version and release PR. The macOS build is
-ad-hoc signed, not notarized. Expect rough edges; the terminal UI is ahead
-of it. [`clients/desktop`](../clients/desktop) has the details.
+The desktop app has its own version and release notes. The macOS build is
+signed ad hoc, not notarized. Expect rough edges: the terminal UI is ahead
+of it.
 
 ## Browser
 
-[`clients/phux-web`](../clients/phux-web) renders a session on a canvas,
-with libghostty compiled to WebAssembly, over WebTransport or WebSocket.
-It is a working client but not a shipped one: nothing serves it, and the
-server's browser-facing listeners are off by default. Use it as the
-starting point for embedding a terminal in a web page. Paired WebSocket
-requires an enrolled client certificate installed in the browser. Browser
-WebTransport cannot perform the required inner mTLS session and is refused
-under paired policy; see the [admission test](../crates/phux-server/src/transport/webtransport.rs).
-A bearer alone does not make either transport authorized.
+A browser client exists in the phux repository. It draws a session on a
+canvas with libghostty compiled to WebAssembly, over WebTransport or
+WebSocket. It works, but it isn't shipped: nothing serves it, and the
+server's browser listeners are off by default. Use it as a starting point
+for putting a terminal in a web page.
+
+**A browser needs a client certificate to connect to a paired server.**
+Over WebSocket, install an enrolled client certificate in the browser.
+WebTransport from a browser can't present one, so a paired server refuses
+it. A token alone never gets a browser in.
 
 ## Phones
 
-iOS and Android apps are in progress in a separate repository, built on the
-[`phux-client-ffi`](../crates/phux-client-ffi) bindings. They are not
-available yet. `phux pair --qr` already prints the pairing code they will
-scan. A binding watches any Global metadata key with
-`RemoteClient::watch_global_metadata` and drains values with
-`take_global_metadata`; the phone reads [plan usage](./agents.md#plan-usage)
-this way.
+iOS and Android apps are in progress and not available yet. `phux pair --qr`
+already prints the pairing code they will scan; see
+[pairing with a link](./remote.md#pairing-with-a-link).
 
 ## Your own
 
-[Embed a terminal](./embedding.md) with `phux-gpui`, the runtime's shared
-`DrawList`, or the C ABI. `Terminal::new` does not own its runtime `ViewId`: a
-host closing one view on a shared client must call `Client::destroy_view`.
-
-[Protocol](./protocol.md) describes the wire. The Rust crates
-`phux-client-core` and `phux-client-runtime` do the client side for native
-code, and `phux-client-ffi` exposes them to C, Swift, and Kotlin.
+To put a phux terminal in your own app, see
+[Embed a terminal](./embedding.md). [Protocol](./protocol.md) describes what
+clients send and receive.

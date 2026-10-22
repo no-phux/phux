@@ -1,4 +1,4 @@
-# phux hooks reference
+# Hook events
 
 Hook events the server fires, the context a `when` clause can match, and the environment a hook process gets.
 

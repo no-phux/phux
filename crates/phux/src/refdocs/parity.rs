@@ -60,7 +60,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "parity.md",
-        title: "phux CLI/MCP parity reference",
+        title: "CLI and MCP parity",
         summary: "Every MCP tool, the CLI verb it mirrors, how it runs, and its annotations.",
         lede: "Each MCP tool, the `phux` command it mirrors, and its read-only and destructive hints.",
         body,

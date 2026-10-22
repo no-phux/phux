@@ -35,7 +35,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "exit-codes.md",
-        title: "phux exit codes reference",
+        title: "Exit codes",
         summary: "Every exit code the binary uses and what each one means.",
         lede: "Exit statuses, for scripts. `phux help exit-codes` prints the same table.",
         body,

@@ -1,30 +1,28 @@
----
-audience: humans, consumers, agents
-stability: evolving
-last-reviewed: 2026-10-18
----
+# Changes panel
 
-# Desktop Changes panel
+The Changes panel in the desktop app reviews the Git changes in the focused
+pane's checkout, beside your panes. Use it to read what an agent changed,
+stage or commit it, and send the agent line comments, without leaving the
+app.
 
-**TL;DR.** The desktop's Changes panel is a review surface for the focused
-pane's Git checkout, beside the panes. It shows changed files as a tree and
-every diff in one scroll, with changed words highlighted, syntax colours,
-folded context and a side-by-side layout. You can stage whole files or just
-selected lines, resolve conflicts, mark files viewed, and send line comments
-to the agent's terminal. It follows focus and runs your own `git` on folders
-on this machine.
+Press <kbd>Cmd</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd> to open it.
 
-See the [desktop overview](./clients.md#desktop) for installation and sessions.
-The [implementation guarantees](#implementation-guarantees) below explain the
-Git and UI seams.
+It shows changed files as a tree and every diff in one scroll, with changed
+words highlighted, syntax colors, folded context, and a side-by-side layout.
+You can stage whole files or selected lines, resolve conflicts, mark files
+viewed, and commit. It follows focus and runs your own `git` on folders on
+this machine. See the [desktop overview](./clients.md#desktop) for the rest
+of the app.
 
 ## Open it
 
-**Toggle Changes** opens and closes the panel. Reach it with `Cmd-Alt-G`
-(Super on Linux), the branch button in the titlebar, the sidebar view menu, or
-the command palette. Drag its left edge to resize it; the panes keep 320 points
-after accounting for the sidebar when the window has room. Narrow windows
-retain a compact panel and move crowded bottom tabs to the titlebar.
+**Toggle Changes** opens and closes the panel. Reach it with
+<kbd>Cmd</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd> (<kbd>Super</kbd> instead of
+<kbd>Cmd</kbd> on Linux), the branch button in the titlebar, the sidebar view
+menu, or the command palette. Drag its left edge to resize it. When the
+window has room, the panes keep at least 320 points beside the sidebar. In a
+narrow window the panel stays compact and crowded bottom tabs move to the
+titlebar.
 
 ## What it shows
 
@@ -51,7 +49,7 @@ the index with `HEAD`. Clicking a file switches to its comparison and scrolls
 to it. Within a diff:
 
 - Words that changed inside a line are emphasized over the line's tint.
-- Syntax is coloured for common languages, such as Rust, TypeScript, Python,
+- Syntax is colored for common languages, such as Rust, TypeScript, Python,
   Go, Swift and Markdown.
 - Unchanged runs fold to three lines of context, with controls to expand them.
 - The layout button cycles **Automatic**, **Side by Side** and **Unified**.
@@ -85,53 +83,22 @@ submitted: press **Enter** in that terminal to send the review.
   **Shift+Enter** adds a line. Commit is enabled only with something staged, no
   conflicts, and a message.
 
-Hooks, config, signing, and ignore rules apply as in the terminal. A refused
-commit posts git's own message and keeps your text.
+The panel runs your own `git`, so hooks, config, signing, credential helpers,
+and ignore rules apply as they do in the terminal. A refused commit shows
+git's own message and keeps your text.
 
 ## Limits
 
 - Remote windows and terminals on another machine say why nothing is shown:
   their folders are not on this machine.
-- Reads never take the index lock, so an open panel's poll every few seconds
-  does not contend with an agent's `git`. When the agent changes the shown
+- Reads never take the index lock, so the panel checking every few seconds
+  doesn't get in the way of an agent's `git`. When the agent changes the shown
   comparison, the diff reloads and returns to the file you last opened.
 - Very large comparisons are fetched with less surrounding context. New files
   over 1 MiB, binary files, and more than 200 new files are not previewed.
-- Non-UTF-8 diffs must be reviewed and staged in the terminal; patch bytes are
-  never replaced for display and then written to the index. Line actions move
-  content only, not executable-bit changes. Renames and copies require the
-  whole-file action or the terminal rather than line staging.
+- Diffs that aren't UTF-8 must be reviewed and staged in the terminal. The
+  panel never stages text it changed for display.
+- Line staging moves content only, not executable-bit changes. Stage renames
+  and copies as whole files, or in the terminal.
 - Notes and viewed marks last until the window closes or follows another checkout.
 - The panel does not discard changes, push, pull, or switch branches.
-
-## Implementation guarantees
-
-The shared `crates/phux-git` crate owns Git operations without a GPUI
-dependency; the desktop re-exports it as `git`, and the server's
-[checkout methods](./protocol.md#checkout-methods) run the same code. It invokes the user's `git`, parses porcelain-v2 branch/status
-records and raw comparison patches, and applies stage, unstage, commit and
-conflict resolution. Line staging cuts the selected file's patch section and
-uses `git apply --cached --recount` (reversed for unstaging), preserving its
-original hunk headers. Read-side
-commands set `GIT_OPTIONAL_LOCKS=0`; commands never prompt on the UI thread
-(`GIT_TERMINAL_PROMPT=0`). Hooks, configuration, signing, credential helpers,
-and ignore rules therefore follow the terminal rather than a second Git
-implementation.
-
-`clients/desktop/native/src/app/changes.rs` binds the panel to the focused
-placement's reported `cwd`. Remote windows and satellite terminals are
-refused, not interpreted as local paths. Calls run through `smol::unblock`;
-a generation counter rejects results after the panel moves to another folder.
-One background read takes status, both comparisons and conflicted file text,
-then parses Kit `DiffFile`s off the UI thread. Per-file patch sections drive
-line staging, viewed fingerprints and change detection. Kit's `DiffState`
-replaces files only when the shown comparison changes, preserving folds and
-scroll position on unchanged polls.
-Closing the panel fences outstanding reads and releases parsed comparisons and
-the Kit diff entity. Notes, drafts, viewed marks and compact conflict choices
-survive; choices are restored only after a successful checkout read and only
-when the conflicted file's fingerprint still matches. Freed malloc pages may
-remain resident for reuse, so releasing the preview need not immediately lower
-the macOS physical footprint.
-`app/view/changes.rs` is cached chrome, so terminal frames do not rebuild the
-file list or diff.

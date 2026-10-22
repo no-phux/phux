@@ -1,175 +1,280 @@
-# Configuration
+# Configuration file
 
-phux reads one file, `~/.config/phux/config.toml` (or
-`$XDG_CONFIG_HOME/phux/config.toml`). It is optional. Whatever you put in it
-overrides the built-in defaults key by key, so keep it to the settings you
-actually change.
+phux reads one TOML file, `config.toml`, for your key bindings, theme,
+status bar, sidebar, hooks, plugins, and the defaults new panes start
+with. It's a sparse overlay: any key you set replaces the shipped value,
+and everything you leave out keeps the default.
+
+You don't need one. phux ships with a full set of defaults, so start
+without a file and write one when there is something you want to change.
+
+## File location
+
+The file is `$XDG_CONFIG_HOME/phux/config.toml` when that variable is set,
+and `~/.config/phux/config.toml` when it isn't. `phux config path` prints
+the path phux resolved, whether or not the file exists:
 
 ```sh
-phux config path            # where the file is
-phux config init            # write a starter file with every setting commented out
-phux config show --default  # print the built-in defaults
-phux config show            # print what is in effect
-phux config check           # validate the file
-phux config reload          # apply the reloadable subset below
+$ phux config path
+/Users/you/.config/phux/config.toml
 ```
 
-The file is not watched; apply changes according to their owner below.
-Every section and setting is listed in the [config reference](./reference/config.md).
+There is no flag or variable that points phux at a different file. To try
+a configuration in isolation, set `XDG_CONFIG_HOME` to another directory
+for that shell.
 
-## When a change takes effect
+The server and every client read the file on the machine they run on. A
+client attached to a remote server uses its own machine's key bindings and
+theme; the server's `[defaults]` and hooks come from the server's machine.
 
-| Owner | Apply boundary |
-| --- | --- |
-| TUI keybindings, theme, chrome/status, plugin UI rows, which-key, clipboard-write, notifications | Explicit config reload. Failure leaves the previous settings intact. |
-| TUI sidebar geometry/hosts settings, mouse capture and predictive echo | Next attach; detach and invoke attach again, not just reconnect/reload and not a server restart. |
-| Server policy mode, listeners, hooks and server-owned defaults | Read at server start/handoff; client reload does not replace them. |
-| Hub satellites and reverse uplinks | The config-reload doorbell reconciles changed links. |
-| Workload registry and bearer stores | Their own admission/revocation reload path, not a universal config reload. |
+## Quick example
 
-Use `phux config show --layers` and `phux config check` to diagnose the file.
-Runtime toggles do not silently write it back. The TUI settings page edits
-validated keys in the file; it is not a second source of authority. Do not
-restart live workloads to test a client-only knob. Server changes use the
-planned in-place handoff, not a cold stop/start; confirm the new settings
-and [remote authority](./remote.md#connection-authority) afterwards.
-The [TUI settings/tests](../crates/phux-tui/src/settings.rs),
-[reload adoption](../crates/phux-tui/src/attach/driver/config_ui.rs),
-[server startup](../crates/phux-server/src/runtime/server/serve.rs) and
-[link doorbell](../crates/phux-server/src/runtime/connections/metadata_mutation.rs) define the boundaries.
-
-## Keys
+This file changes the prefix to <kbd>C-b</kbd>, binds <kbd>C-b</kbd>
+<kbd>r</kbd> to reload the configuration, and moves the status bar to the
+bottom:
 
 ```toml
 [keybindings]
 prefix = "C-b"
 
 [keybindings.prefix-table]
-"v" = { action = "split-pane", direction = "vertical" }
 "r" = "reload-config"
 
-[keybindings.global]
-"M-Enter" = "toggle-zoom"
+[status]
+position = "bottom"
 ```
 
-`prefix-table` bindings fire after the prefix; `global` bindings fire
-without it. Chords are written `C-x` (Ctrl), `M-x` (Alt), `S-x` (Shift), and
-combinations like `C-M-x`; named keys include `Enter`, `Tab`, `Space`,
-`Escape`, the arrows, and `F1` to `F24`. A binding that does not parse is
-skipped with a warning; the rest still load.
-
-Every action you can bind, with its parameters, is in
-[actions](./reference/actions.md). The command palette (`Ctrl-A Space`)
-shows the same list with the current keys.
-
-## Themes
-
-A theme is a `colors.toml` in the Omarchy format, so Omarchy themes work
-as they are.
+Apply it to every attached client:
 
 ```sh
-phux theme list
-phux theme install https://example.com/my-theme.git
-phux theme set tokyo-night
+$ phux config reload
+config OK; reload signalled to attached clients and a running hub
 ```
 
-Individual colors can be overridden in `[theme]`; `phux config init` writes
-the full list of color slots, commented out.
+Press <kbd>C-b</kbd> <kbd>r</kbd> after your next edit and the same reload
+runs from inside phux. The [config reference](./reference/config.md) lists
+every section and setting with its default.
+
+## Applying changes
+
+phux never watches the file. Changes apply when you ask, and different
+settings are read at different moments.
+
+`phux config reload` validates the file first. If anything is wrong it
+signals nothing and tells you why:
+
+```text
+$ phux config reload
+phux: error: config invalid, not signalling reload: keybinding "q": unknown action `kill-pain` (did you mean `kill-pane`?)
+  hint: run `phux config check` to list every problem
+```
+
+A client whose own re-read fails keeps its previous settings and shows the
+error as a toast. A reload is never half-applied.
+
+### When a change takes effect
+
+| Settings | Take effect |
+| --- | --- |
+| Key bindings, which-key, theme, status bar, `[chrome]`, `[notifications]`, `clipboard-write`, plugin actions, panes and sidebar sections | On `phux config reload` (or the `reload-config` action). |
+| `[sidebar]`, `mouse`, `[experimental] predictive-echo` | The next time you attach. Detach and run `phux attach` again. |
+| The rest of `[defaults]` (shell, `TERM`, scrollback, session names, ...), `[[hooks]]`, plugin event hooks, `[policy]`, `[voice]`, `[limits]` | When the server starts. |
+| `[[satellites]]`, `[[uplink]]` | On `phux config reload`, by the server. |
+
+The server reads its settings once, at start. `phux upgrade` restarts the
+server in place without closing any pane, so it is the way to apply them
+to a running server. The server refuses to start on a file that does not
+load, so run `phux config check` first.
+
+The Settings page shows each setting's own timing in its detail panel.
+
+## Validation
+
+`phux config check` reads the file without applying it and reports every
+problem in one pass, each with its full key path:
+
+```sh
+$ phux config check
+/Users/you/.config/phux/config.toml: ok
+```
+
+With no file it says so and exits 0, since the defaults apply. Give it a
+path to check a draft before you move it into place:
+`phux config check ~/dotfiles/phux.toml`.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | No problems. |
+| 1 | It found problems, listed one per line. |
+| 2 | The check could not run: a file you named is missing or unreadable, or the TOML does not parse. |
+
+`--json` prints the same findings as a stable JSON document, so the check
+can gate a dotfiles CI run.
+
+### Findings
+
+Each line is the key path, the kind of problem, and the detail:
+
+```text
+$ phux config check
+sidebar.enabledd: unknown key: unknown field `enabledd`, expected one of `enabled`, `width`, `position`, `agents-share`, `hosts`, `hosts-provider`, `hosts-refresh-secs`
+keybindings.prefix-table.q: unknown name: unknown action `kill-pain` (did you mean `kill-pane`?)
+status.right[0]: bad value: widget time: unknown option `formt` (did you mean `format`?)
+3 problems
+```
+
+| Kind | What it means |
+| --- | --- |
+| `unknown key` | The section has no such setting, usually a typo. |
+| `bad value` | The setting exists, but the value has the wrong type, is out of range, or a widget option is wrong. |
+| `bad chord` | A key that does not parse, or two bindings that collide. See [Key bindings](./keys.md#debugging). |
+| `unknown name` | An action, hook event, `when` key, or widget kind phux doesn't know. |
+| `dead action` | A hook whose action can never run. See [Hooks](./hooks.md#debugging). |
+
+When a problem comes from a file you extend rather than your own, the line
+after it names that file (`  from /path/to/layer.toml`).
+
+**Check the file before you attach.** A file that does not load at all,
+because of a TOML syntax error or an unknown key, still lets you attach,
+but phux shows the error on the status bar and runs with no key bindings
+until you fix it and run `phux config reload`. A server won't start on such
+a file. A file that loads but has one bad key binding loses only that
+binding; the rest still work.
+
+## Starter file
+
+`phux config init` writes a commented copy of every shipped setting to
+your config path. Every line is commented out, so the file changes nothing
+until you uncomment a line:
+
+```sh
+$ phux config init
+wrote /Users/you/.config/phux/config.toml
+```
+
+It refuses to overwrite an existing file unless you pass `--force`.
+`phux config show --default` prints the same defaults without writing
+anything, and `phux config show` prints the merged result in effect.
+
+`phux config init --distro starter` writes the same file plus an `extends`
+line that layers the starter distribution under it. The starter turns on
+the example plugins (workspace autosave, agent helpers, plan usage). It is
+found in a phux source checkout, or in the directory `PHUX_DISTROS_DIR`
+names.
+
+## Layers
+
+A file can build on others with `extends`. Your file applies last, so it
+wins every key it sets:
+
+```toml
+extends = ["work.toml"]
+
+[keybindings]
+prefix = "C-b"
+```
+
+The layers apply in this order: the shipped defaults, each extended file
+in the order listed, then the file that extends them. An extended file can
+extend others in turn.
+
+- An absolute path is used as written.
+- A relative path, or any name ending in `.toml`, is relative to the file
+  that names it.
+- A bare name like `work` means `layers/work.toml` beside that file.
+
+Tables merge key by key. An array replaces the one beneath it, unless you
+spell its key with `-append`, which adds to the inherited array instead:
+
+```toml
+[status]
+right-append = [{ kind = "cwd" }]
+```
+
+That keeps the shipped right side of the status bar and adds the working
+directory after it. You can't set `right` and `right-append` in the same
+table.
+
+`phux config show --layers` shows which layer set each key in effect:
+
+```text
+$ phux config show --layers
+layers (merge order; later layers win):
+  [1] defaults (embedded)
+  [2] /Users/you/.config/phux/work.toml
+  [3] /Users/you/.config/phux/config.toml (user)
+
+keys:
+  ...
+  keybindings.prefix  <- [3] user
+  ...
+  status.position     <- [2] work.toml
+  ...
+```
+
+## Settings page
+
+Press <kbd>C-a</kbd> <kbd>S</kbd> to open the Settings page. It lists
+every setting with its value in effect, its default, the layer that set
+it, and when a change applies. Edits go straight into your
+`config.toml` and then reload, like `reload-config`.
+
+- Type to filter across sections. <kbd>Tab</kbd> steps between sections.
+- <kbd>Enter</kbd> or <kbd>Space</kbd> toggles, cycles, or edits the row;
+  <kbd>Left</kbd> and <kbd>Right</kbd> step a value.
+- <kbd>Delete</kbd> or <kbd>C-r</kbd> removes your override so the default
+  shows through. <kbd>C-z</kbd> undoes.
+
+Each edit changes one line and keeps your comments. An edit that would
+make the file invalid is refused before it is written. A setting that
+comes from a file you extend can't be reset here; the page names that
+file so you can edit it.
 
 ## Predictive echo
 
-The TUI's predictive echo defaults on for remote non-loopback connections,
-off for local/loopback ones. Set an explicit override for sensitive displays:
+Predictive echo shows your typing in a pane before the server echoes it
+back, which hides latency on a slow link. It is on when you attach to
+another machine and off for a server on this one. Set it explicitly to
+override that:
 
 ```toml
 [experimental]
 predictive-echo = false
 ```
 
-After setting this false, **detach this TUI and invoke `phux attach` again
-before typing secrets**. Config reload and automatic reconnect retain the
-previous attach's prediction setting; neither disables an existing overlay.
+**Turn it off before you type secrets on a shared screen.** Prediction
+does not know when a program has turned echo off, so characters you type
+at a password prompt can appear briefly on your screen until the server's
+reply corrects them, or for up to about five seconds. It only changes what
+your own client draws: nothing extra is sent, and other clients and
+recordings never see it.
 
-Prediction changes only this client's display, never wire input, other
-clients or recordings. It does **not** know the child's no-echo/password
-mode: characters typed at a password prompt can briefly appear locally
-until contradicted or the adaptive one-to-five-second display lifetime
-expires. Disable it if that shoulder-surfing risk is unacceptable. Do not
-assume server ECHO awareness or an initial confirmation gate on the primary
-screen. [Dial defaults/tests](../crates/phux/src/commands/attach.rs) and the
-[prediction state machine](../crates/phux-client-core/src/predict/state.rs)
-own the behavior.
+The setting is read when you attach. After changing it, detach and run
+`phux attach` again; neither `phux config reload` nor an automatic
+reconnect turns off prediction in a session that already has it.
 
-## Status bar and sidebar
+## Debugging
 
-`[status]` sets what the bar shows, as lists of widgets for the left,
-center, and right. `[sidebar]` controls the sidebar (`Ctrl-A b`). The widget
-kinds and their options are in [widgets](./reference/widgets.md).
+- `phux config check` lists every problem in the file, with key paths.
+- `phux config show` prints the merged settings in effect;
+  `--layers` names the file that set each key, and `--default` prints the
+  shipped defaults.
+- `phux config keys` lists every key binding and where it came from.
+- `phux config path` prints the file phux reads.
 
-## Hooks
+If a setting seems to have no effect, check the table under
+[When a change takes effect](#when-a-change-takes-effect): a `[sidebar]`
+change needs a new attach, and a `[defaults]` change needs the server to
+restart.
 
-A hook runs a command when the server sees an event:
+## More
 
-```toml
-[[hooks.pane-exit]]
-when   = { exit-code = "*" }
-action = { kind = "run", command = "notify-send 'pane exited'" }
-```
-
-Events, the fields a `when` clause can match, and the environment the
-command gets are in [hooks](./reference/hooks.md).
-
-## Plugins
-
-A plugin is a directory with a manifest that can add actions, status
-widgets, sidebar sections, themes, hooks, and agent launch commands. phux
-never loads code into the server; a plugin's actions run as separate
-processes. This is not sandboxing: package build steps at install/update
-execute as the invoking user. Inspect and trust the package before installing.
-
-```sh
-phux plugin install https://github.com/someone/phux-plugin
-phux plugin list
-phux plugin disable NAME
-```
-
-[`examples/plugins`](../examples/plugins) has working plugins to copy.
-[`usage`](../examples/plugins/usage) is the pattern for publishing a host
-fact to every client: its hooks run a command that writes a Global metadata
-key ([plan usage](./agents.md#plan-usage)).
-
-## Projects
-
-A repository can carry `.phux/project.toml`, describing the tabs and panes
-to open for it. phux runs it only after you approve its exact contents.
-
-```sh
-phux project init       # write .phux/project.toml for this repository
-phux project trust      # approve it
-phux project open       # open the project's session, or attach if it exists
-```
-
-Edit the file and you have to `phux project trust` it again.
-
-Sessions created inside a git checkout group by repository in the sidebar,
-the session picker, and `phux ls`, across machines. To put any other
-session in a project, link it by name; the link is stored on the server
-that owns the session, so every client sees it:
-
-```sh
-phux project link notes phux     # group session "notes" with the phux sessions
-phux project unlink notes        # back to its repository, or ungrouped
-```
-
-A link outranks the repository, and a link named like a repository joins
-that repository's group.
-
-## Layers
-
-A config file can declare `extends = ["path/to/other.toml"]` to build on
-other files. The layers apply in order: built-in defaults, then each
-extended file, then yours. A key named `x-append` holding an array appends
-to `x` instead of replacing it. `phux config show --layers` shows where each
-value came from. `phux config init --distro starter` writes a config that
-extends [`distros/starter`](../distros/starter), which enables the example
-plugins.
+- [Key bindings](./keys.md): change the prefix, rebind and unbind keys.
+- [Themes](./themes.md): install and pick colour themes, or recolour one
+  part of the chrome.
+- [Status bar and sidebar](./status-bar.md): what the bar and sidebar
+  show, and agent notifications.
+- [Hooks](./hooks.md): run a command when something happens.
+- [Plugins](./plugins.md): add actions, panes, widgets, and themes.
+- [Projects](./projects.md): open a repository's session from a recipe.
+- [Config reference](./reference/config.md): every section and setting.

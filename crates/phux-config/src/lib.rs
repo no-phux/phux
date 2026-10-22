@@ -119,8 +119,12 @@ pub fn parse_with_defaults_bounded(
     path: &Path,
     max_read_bytes: usize,
 ) -> Result<Config, ConfigError> {
-    let (merged, _) =
-        layer::merged_with_budget(DEFAULT_CONFIG_TOML, user_input, path, Some(max_read_bytes))?;
+    let (merged, _) = settled(layer::merged_with_budget(
+        DEFAULT_CONFIG_TOML,
+        user_input,
+        path,
+        Some(max_read_bytes),
+    )?);
     deserialize_merged(merged, user_input, path)
 }
 
@@ -147,8 +151,11 @@ pub fn merged_config_table(user_input: &str, path: &Path) -> Result<toml::Table,
 }
 
 /// Merge [`DEFAULT_CONFIG_TOML`], the `extends` layers and `user_input`, and
-/// record which layer set each leaf. `path` anchors relative `extends`
-/// entries; with no `extends`, no I/O occurs.
+/// record which layer set each leaf.
+///
+/// Binding tables are settled: the newest spelling of a key wins and
+/// `"none"` unbinds it. `path` anchors relative `extends` entries; with no
+/// `extends`, no I/O occurs.
 ///
 /// # Errors
 ///
@@ -157,7 +164,15 @@ pub fn merged_config_with_provenance(
     user_input: &str,
     path: &Path,
 ) -> Result<(toml::Table, ConfigProvenance), ConfigError> {
-    layer::merged_with_budget(DEFAULT_CONFIG_TOML, user_input, path, None)
+    layer::merged_with_budget(DEFAULT_CONFIG_TOML, user_input, path, None).map(settled)
+}
+
+/// Apply [`keybind::settle_bindings`] to a freshly merged stack.
+fn settled(
+    (mut merged, mut provenance): (toml::Table, ConfigProvenance),
+) -> (toml::Table, ConfigProvenance) {
+    keybind::settle_bindings(&mut merged, &mut provenance);
+    (merged, provenance)
 }
 
 #[cfg(test)]

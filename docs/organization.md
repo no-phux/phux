@@ -3,7 +3,7 @@
 The server owns session membership and shared arrangements. Clients project
 that organization into tabs and panes; they do not independently decide where
 a resource belongs. Start with [concepts](./concepts.md) for user vocabulary,
-[protocol](./protocol.md) for commands, and [troubleshooting](./troubleshooting.md#cold-restart-and-downgrade)
+[protocol](./protocol.md) for commands, and [troubleshooting](./troubleshooting.md#downgrading)
 for recovery operations.
 
 ## Records, handles, and arrangements
@@ -57,7 +57,7 @@ recorded process without its owning engine becomes **Lost**; a process no
 longer matching becomes Completed with an Unobserved outcome. Lost means
 uncertainty, not an inactive pane: removal/relaunch is refused while it may
 still run. The current CLI cannot resolve every Lost activation; follow
-[the recovery limitation and escalation path](./troubleshooting.md#cold-restart-and-downgrade),
+[the recovery limitation and escalation path](./troubleshooting.md#downgrading),
 not an assumed PID-kill or relaunch sequence.
 
 `ExitPolicy::Remove` removes a normally exited resource (and an empty
@@ -77,7 +77,7 @@ never open SQLite directly.
 Operation ids deduplicate work/mail mutations and expected revisions refuse
 stale edits. Mail/path claims are advisory host-local coordination, not
 filesystem enforcement or an authenticated execution identity; see
-[claims and acquisition fences](./agents.md#mail-and-path-claims-schema-phuxcoordv1).
+[claims and acquisition fences](./agents.md#mail-and-path-claims).
 
 The shipping [`mission start`](./reference/cli.md#phux-mission-start) creates
 a task worktree, brief, session and configured harness worker, with a bounded

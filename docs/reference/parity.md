@@ -1,4 +1,4 @@
-# phux CLI/MCP parity reference
+# CLI and MCP parity
 
 Each MCP tool, the `phux` command it mirrors, and its read-only and destructive hints.
 

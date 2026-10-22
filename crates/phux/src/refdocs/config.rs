@@ -296,7 +296,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "config.md",
-        title: "phux config reference",
+        title: "Config settings",
         summary: "Every `config.toml` section, the scalar defaults, and \
                   the annotated default config.",
         lede: "Every `config.toml` section and setting, with the shipped defaults.",

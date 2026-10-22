@@ -56,7 +56,7 @@ pub(crate) fn page() -> Page {
 
     Page {
         file: "actions.md",
-        title: "phux actions reference",
+        title: "Actions",
         summary: "Every dispatcher action with its parameters, description, \
                   and palette placement.",
         lede: "Every action a key binding, palette row, context menu, or hook can dispatch, with its parameters.",

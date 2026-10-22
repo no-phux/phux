@@ -1,4 +1,4 @@
-# phux kind catalog reference
+# Resource kinds
 
 Resource kinds, their methods and events, and the authorization verb each wire method needs.
 

@@ -1,4 +1,4 @@
-# phux actions reference
+# Actions
 
 Every action a key binding, palette row, context menu, or hook can dispatch, with its parameters.
 
