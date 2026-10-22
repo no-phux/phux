@@ -284,3 +284,41 @@ fn spec_table_roundtrips_through_the_constructors() {
         );
     }
 }
+
+/// A record write owes `agent-state-changed` only when the effective state
+/// moves; a non-record reads as `unknown`, and two non-records owe nothing.
+#[test]
+fn agent_record_transition_fires_only_on_effective_edges() {
+    let pane = phux_protocol::ids::ResourceId::local(4);
+    let working: &[u8] = br#"{"name":"rev","kind":"claude","state":"working"}"#;
+    let blocked: &[u8] = br#"{"name":"rev","state":"blocked"}"#;
+    let edge = |before, after| {
+        HookEvent::agent_record_transition(&pane, before, after).map(|event| {
+            (
+                event.context.get("from").cloned(),
+                event.context["to"].clone(),
+            )
+        })
+    };
+
+    let first = HookEvent::agent_record_transition(&pane, None, Some(working)).expect("edge");
+    assert_eq!(first.name, AGENT_STATE_CHANGED);
+    assert_eq!(first.context["agent-kind"], "claude");
+    assert_eq!(first.context["agent-name"], "rev");
+    assert_eq!(first.context["terminal-id"], "4");
+    assert_eq!(
+        edge(None, Some(working)),
+        Some((None, "working".to_owned()))
+    );
+    assert_eq!(edge(Some(working), Some(working)), None);
+    assert_eq!(
+        edge(Some(working), Some(blocked)),
+        Some((Some("working".to_owned()), "blocked".to_owned()))
+    );
+    assert_eq!(
+        edge(Some(blocked), None),
+        Some((Some("blocked".to_owned()), AGENT_STATE_UNKNOWN.to_owned()))
+    );
+    assert_eq!(edge(Some(b"not json"), None), None);
+    assert_eq!(edge(None, None), None);
+}

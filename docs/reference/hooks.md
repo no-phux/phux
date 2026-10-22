@@ -36,7 +36,7 @@ The table lists every event phux fires; all but `worktree-created` come from the
 |  | `session` | `PHUX_SESSION` |  |
 | `client-detached` | `client-id` | `PHUX_CLIENT_ID` | An attached client detached for any reason (explicit detach or transport drop). `session` is absent if the session was reaped before the detach ran. |
 |  | `session`? | `PHUX_SESSION` |  |
-| `agent-state-changed` | `agent-kind` | `PHUX_AGENT_KIND` | The detector's published agent state for a pane actually changed. `from` is absent on a first sighting; `agent-name` is absent for an anonymous agent; a withdrawn record arrives as `to = "unknown"`. |
+| `agent-state-changed` | `agent-kind` | `PHUX_AGENT_KIND` | A pane's published agent state actually changed, whoever wrote it: the detector, an agent session's events, an OSC 7501 program status, or `phux agent set` / `clear`. `from` is absent on a first sighting; `agent-name` is absent for an anonymous agent; a withdrawn record arrives as `to = "unknown"`. |
 |  | `agent-name`? | `PHUX_AGENT_NAME` |  |
 |  | `from`? | `PHUX_FROM` |  |
 |  | `terminal-id` | `PHUX_TERMINAL_ID` |  |

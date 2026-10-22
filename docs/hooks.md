@@ -79,7 +79,7 @@ particular firing makes the clause fail, except for `"*"`.
 | `focus-changed` | A client focuses a pane | `client-id`, `terminal-id` |
 | `client-attached` | A client finishes attaching | `client-id`, `session` |
 | `client-detached` | A client detaches or drops | `client-id`, `session` |
-| `agent-state-changed` | An agent's state changes | `agent-kind`, `agent-name`, `from`, `to`, `terminal-id` |
+| `agent-state-changed` | An agent's state changes, from any source (detection, agent events, OSC 7501, `phux agent set` / `clear`) | `agent-kind`, `agent-name`, `from`, `to`, `terminal-id` |
 | `worktree-created` | `phux worktree new` creates a checkout, before its session starts | `branch`, `repo`, `session`, `worktree` |
 
 `worktree-created` is the one event the CLI fires rather than the server:

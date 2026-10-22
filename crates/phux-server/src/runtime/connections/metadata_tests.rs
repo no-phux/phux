@@ -312,3 +312,92 @@ async fn pending_session_create_token_cannot_be_reused_by_another_connection() {
         })
         .await;
 }
+
+/// phux-jqlh0.9: an explicit `phux.agent/v1` write (`phux agent set` /
+/// `clear`) fires `agent-state-changed` on each effective edge, and only
+/// then.
+#[test]
+fn explicit_agent_record_writes_fire_agent_state_changed_on_real_edges() {
+    let state = SharedState::new();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    state.with_mut(|s| {
+        s.set_hook_dispatcher(crate::hooks::HookDispatcher::from_sender(tx));
+    });
+    let (_session, pane) = state.with_mut(|s| s.seed_session("hook-test"));
+    let scope = Scope::Resource(state.with_mut(|s| s.intern_terminal_wire(pane)));
+    let mut next = || rx.try_recv().ok();
+    let edge = |event: &crate::hooks::HookEvent| {
+        (
+            event.context.get("from").cloned(),
+            event.context.get("to").cloned(),
+        )
+    };
+
+    set(
+        &state,
+        &scope,
+        AGENT_KEY,
+        br#"{"name":"rev","state":"working"}"#,
+    );
+    let first = next().expect("first declaration is an edge");
+    assert_eq!(first.name, crate::hooks::AGENT_STATE_CHANGED);
+    assert_eq!(edge(&first), (None, Some("working".to_owned())));
+    assert_eq!(
+        first.context.get("agent-name").map(String::as_str),
+        Some("rev")
+    );
+
+    set(
+        &state,
+        &scope,
+        AGENT_KEY,
+        br#"{"name":"rev2","state":"working"}"#,
+    );
+    assert!(next().is_none(), "a rename is not a state edge");
+
+    set(
+        &state,
+        &scope,
+        AGENT_KEY,
+        br#"{"name":"rev","state":"blocked"}"#,
+    );
+    let blocked = next().expect("working -> blocked");
+    assert_eq!(
+        edge(&blocked),
+        (Some("working".to_owned()), Some("blocked".to_owned()))
+    );
+
+    handle_delete_metadata(&state, ClientId(1), 2, &scope, AGENT_KEY);
+    let cleared = next().expect("clear withdraws the state");
+    assert_eq!(
+        edge(&cleared),
+        (Some("blocked".to_owned()), Some("unknown".to_owned()))
+    );
+    handle_delete_metadata(&state, ClientId(1), 3, &scope, AGENT_KEY);
+    assert!(next().is_none(), "deleting nothing is not an edge");
+}
+
+/// The agent record is untrusted input capped at 4096 bytes: a larger write
+/// is ignored whole and leaves the stored record alone.
+#[test]
+fn an_agent_record_over_its_byte_limit_is_refused() {
+    use phux_client_core::agent_record::MAX_AGENT_RECORD_BYTES;
+
+    let state = SharedState::new();
+    let (_session, pane) = state.with_mut(|s| s.seed_session("record-cap"));
+    let scope = Scope::Resource(state.with_mut(|s| s.intern_terminal_wire(pane)));
+    let record_of = |len: usize| {
+        let frame = br#"{"name":"a","session":""}"#.len();
+        format!(r#"{{"name":"a","session":"{}"}}"#, "x".repeat(len - frame)).into_bytes()
+    };
+    let at = record_of(MAX_AGENT_RECORD_BYTES);
+    set(&state, &scope, AGENT_KEY, &at);
+    assert_eq!(get(&state, &scope, AGENT_KEY), Some(at.clone()));
+    set(
+        &state,
+        &scope,
+        AGENT_KEY,
+        &record_of(MAX_AGENT_RECORD_BYTES + 1),
+    );
+    assert_eq!(get(&state, &scope, AGENT_KEY), Some(at));
+}
