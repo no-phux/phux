@@ -198,6 +198,7 @@ Start narrow, then widen with the blast radius:
 
 ```sh
 just check --dry-run              # lanes selected against origin/main
+just check --preflight            # committed branch vs fetched origin/main; no builds
 just check                        # run those lanes: the PR bar
 just crate-check phux-server      # scoped fmt, clippy, rustdoc, tests
 just test                         # cargo nextest run --workspace
@@ -208,6 +209,16 @@ every change; Rust lint, unit, e2e, browser, desktop and integration lanes
 run when their inputs change. There is no run-everything recipe. `rust
 icount` and `native setup` are CI-only; stress and real-GPU desktop
 qualification are local. A scoped pass is not a full CI pass.
+
+Fetch `origin` before the preflight when other agents are landing changes.
+`just check` checks committed mergeability first and reports conflicting paths
+without changing the checkout or index. Merge `origin/main` into your feature
+worktree and resolve those paths before spending time on builds. A stale branch
+that merges cleanly can proceed; a base update alone does not require a rebase.
+Uncommitted edits count for lane routing but are not part of the merge simulation.
+During a merge, resolve and stage all conflicted paths, then `just check` can
+validate the working tree before you commit. The committed merge simulation is
+deferred until the merge commit exists; `--preflight` reports that explicitly.
 
 Scoped gates for other surfaces: `just integration-check <pkg>`,
 `just desktop-check`, `just tools-check` (the Bun package under `tools/`,
