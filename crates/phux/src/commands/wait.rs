@@ -252,7 +252,8 @@ mod tests {
     fn a_valid_regex_parses_and_reaches_the_command() {
         let cmd =
             parse_wait(["phux", "wait", "--regex", r"^test result: ok\.", "build"].as_slice());
-        let crate::commands::Command::Wait { regex, until, .. } = cmd else {
+        let crate::commands::Command::Wait(crate::commands::WaitArgs { regex, until, .. }) = cmd
+        else {
             panic!("expected the wait variant");
         };
         assert_eq!(
@@ -273,7 +274,7 @@ mod tests {
     #[test]
     fn bare_tail_matches_the_documented_constant() {
         let cmd = parse_wait(["phux", "wait", "--tail"].as_slice());
-        let crate::commands::Command::Wait { tail, .. } = cmd else {
+        let crate::commands::Command::Wait(crate::commands::WaitArgs { tail, .. }) = cmd else {
             panic!("expected the wait variant");
         };
         assert_eq!(tail, Some(BARE_TAIL_ROWS));
@@ -287,7 +288,8 @@ mod tests {
         crate::parse_cli(["phux", "wait", "--tail", "build"])
             .expect_err("`--tail build` reads `build` as N");
         let cmd = parse_wait(["phux", "wait", "--tail", "80", "build"].as_slice());
-        let crate::commands::Command::Wait { tail, session, .. } = cmd else {
+        let crate::commands::Command::Wait(crate::commands::WaitArgs { tail, session, .. }) = cmd
+        else {
             panic!("expected the wait variant");
         };
         assert_eq!(tail, Some(80));
@@ -297,7 +299,7 @@ mod tests {
     #[test]
     fn tail_zero_means_all_retained_history() {
         let cmd = parse_wait(["phux", "wait", "--tail", "0", "build"].as_slice());
-        let crate::commands::Command::Wait { tail, .. } = cmd else {
+        let crate::commands::Command::Wait(crate::commands::WaitArgs { tail, .. }) = cmd else {
             panic!("expected the wait variant");
         };
         assert_eq!(tail, Some(phux_core::screen::ROW_WINDOW_ALL));

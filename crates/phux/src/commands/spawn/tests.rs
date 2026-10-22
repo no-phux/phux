@@ -251,12 +251,12 @@ fn retain_and_key_flags_parse_before_the_command() {
         "true",
     ])
     .expect("parses");
-    let Some(crate::commands::Command::Spawn {
+    let Some(crate::commands::Command::Spawn(crate::commands::SpawnArgs {
         retain,
         idempotency_key,
         command,
         ..
-    }) = cli.command
+    })) = cli.command
     else {
         panic!("expected Spawn");
     };
@@ -268,7 +268,9 @@ fn retain_and_key_flags_parse_before_the_command() {
     assert_eq!(command, vec!["true".to_owned()]);
 
     let bare = crate::parse_cli(["phux", "spawn", "--retain", "--", "true"]).expect("parses");
-    let Some(crate::commands::Command::Spawn { retain, .. }) = bare.command else {
+    let Some(crate::commands::Command::Spawn(crate::commands::SpawnArgs { retain, .. })) =
+        bare.command
+    else {
         panic!("expected Spawn");
     };
     assert_eq!(retain, Some(0), "bare --retain asks for the server default");

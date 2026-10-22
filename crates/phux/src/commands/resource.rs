@@ -344,7 +344,9 @@ mod tests {
 
     fn parse(argv: &[&str]) -> ResourceAction {
         let cli = crate::parse_cli(argv).expect("invocation should parse");
-        let Some(crate::commands::Command::Resource { action }) = cli.command else {
+        let Some(crate::commands::Command::Resource(crate::commands::ResourceArgs { action })) =
+            cli.command
+        else {
             panic!("expected the resource noun");
         };
         action
