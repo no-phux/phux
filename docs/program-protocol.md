@@ -87,7 +87,8 @@ value    := [A-Za-z0-9_.,+/=-]*
   or value is removed. Keys are case-sensitive: `State=idle` is an unknown
   key, and `state=IDLE` is an unknown state.
 - A malformed pair (no `=`, or a byte outside the value set) is skipped,
-  and the rest of the report still applies.
+  and the rest of the report still applies. An `id` pair is the exception:
+  a malformed `id` discards the report (see [Records and ids](#records-and-ids)).
 - Unknown keys are ignored. If a key repeats, the last value wins.
 - `title` and `msg` are standard base64 of UTF-8 text. Padding is optional.
   The decoded text MUST NOT contain a control character (`U+0000` to
@@ -113,14 +114,13 @@ segment := [A-Za-z0-9_.+-]{1,32}
 - **Each report replaces its record completely.** A key missing from the
   report is missing from the record afterwards, so a program that wants
   `app` or `title` on a record sends them in every report.
-- An `id` made of value-set bytes that breaks the grammar (`id=`, `id=/a`,
-  `id=a//b`, `id=a,b`, a segment over 32 bytes, more than 8 segments)
-  discards the report.
-- **An `id` containing a byte outside the value set is skipped as a
-  malformed pair**, so the report addresses the root record. With
-  `state=clear` that removes every record. This differs from the
-  specification, which ignores such a report. Programs MUST send ids that
-  match the grammar.
+- An `id` that breaks the grammar discards the report, whether it is made
+  of value-set bytes (`id=`, `id=/a`, `id=a//b`, `id=a,b`, a segment over
+  32 bytes, more than 8 segments) or contains a byte outside the value set
+  (`id=a@b`, `id=my task`). It is never skipped as a malformed pair, so a
+  report meant for one record cannot fall back to the root record, and a
+  `state=clear` with a bad id cannot remove every record. One bad `id`
+  pair discards the report even when another `id` pair is valid.
 - `/` makes `build/test` a child of `build`, and `build` a child of the
   root. A parent does not have to exist. The relationship is used for
   clearing and for `app` inheritance, and for nothing else.
