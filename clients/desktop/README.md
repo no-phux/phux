@@ -75,9 +75,12 @@ clipboard image saves it to a temporary file and pastes that path, which
 agents read as an attachment.
 
 **Settings > Updates** checks the desktop and phux releases at launch and
-every few hours. One **Update phux & Desktop** click downloads and verifies the
-desktop, updates the CLI and hands the live server off, then restarts into the
-new desktop; sessions keep running. **Update phux with Desktop** (on by
+every few hours. A top-right update card offers **Download Desktop**, shows
+download progress and verification, then offers **Restart now**. It also updates
+the local CLI and hands its live server off when you choose **Restart & update
+server**; sessions keep running, and Desktop
+never restarts until you choose to. Dismiss the card to keep working and reopen
+it from the titlebar. **Update phux with Desktop** (on by
 default) turns the phux half off. Linux desktop updates rerun the installer.
 
 Logs: `~/Library/Logs/phux-desktop.log` on macOS,
@@ -101,7 +104,7 @@ See [Performance monitor](PERFORMANCE.md).
 
 ### Updates
 
-See [Updates](USAGE.md#updates).
+See [Desktop updates](UPDATES.md).
 
 ### Coming from Ghostty
 

@@ -31,9 +31,7 @@ impl Updater {
                 .manage_runtime
                 .then_some(("Checking…", Tone::Quiet)),
             (Work::Downloading, true) => Some(("Downloading…", Tone::Ready)),
-            (Work::Downloading, false) => {
-                (self.chained && self.phux_due()).then_some(("Up next", Tone::Quiet))
-            }
+            (Work::Downloading, false) => self.phux_due().then_some(("On restart", Tone::Quiet)),
             (Work::Installing, true) => self
                 .staged
                 .is_some()
@@ -92,7 +90,14 @@ impl Updater {
         } else if self.pending_handoff {
             ("Handoff pending", Tone::Ready)
         } else if self.runtime_available() {
-            ("Update ready", Tone::Ready)
+            (
+                if self.staged.is_some() {
+                    "On restart"
+                } else {
+                    "Update ready"
+                },
+                Tone::Ready,
+            )
         } else if self
             .runtime
             .as_ref()
@@ -115,25 +120,30 @@ impl Updater {
         if self.development {
             return ("Self-update is off for this build".to_owned(), Tone::Quiet);
         }
-        let headline = match self.action() {
-            _ if self.update_failed() => ("The update did not finish", Tone::Bad),
-            _ if self.failed() => ("Could not check for updates", Tone::Bad),
-            Some(UpdateAction::Both) => ("Desktop and phux updates are ready", Tone::Ready),
-            Some(UpdateAction::Desktop { staged: true }) => {
-                ("Desktop is downloaded and verified", Tone::Ready)
+        if self.update_failed() {
+            return ("The update did not finish".to_owned(), Tone::Bad);
+        }
+        if self.failed() {
+            return ("Could not check for updates".to_owned(), Tone::Bad);
+        }
+        if self.pending_handoff {
+            return ("Server handoff needs another try".to_owned(), Tone::Ready);
+        }
+        let headline = self.resting_summary();
+        (headline.0.to_owned(), headline.1)
+    }
+
+    fn resting_summary(&self) -> (&'static str, Tone) {
+        match self.action() {
+            Some(UpdateAction::Both) if self.staged.is_some() => {
+                ("Ready when you are", Tone::Ready)
             }
-            Some(UpdateAction::Desktop { staged: false }) => {
-                ("A Desktop update is ready", Tone::Ready)
-            }
-            Some(UpdateAction::Phux { retry: true }) => (
-                "phux is installed; the server handoff is pending",
-                Tone::Ready,
-            ),
-            Some(UpdateAction::Phux { retry: false }) => ("A phux update is ready", Tone::Ready),
+            Some(action) => (ready_headline(action), Tone::Ready),
+            None if self.completed => ("Local server updated", Tone::Good),
+            None if self.runtime_attention() => ("A server update is available", Tone::Ready),
             None if self.target.is_some() => ("Everything is up to date", Tone::Good),
             None => ("Not checked yet", Tone::Quiet),
-        };
-        (headline.0.to_owned(), headline.1)
+        }
     }
 
     /// What one click does, said once under the headline.
@@ -147,32 +157,93 @@ impl Updater {
                     .to_owned(),
             );
         }
-        let text = match self.action() {
-            _ if self.update_failed() => "Whatever was already in place keeps running.",
-            _ if self.failed() => "Nothing was installed. The details are below.",
-            Some(UpdateAction::Both) if self.staged.is_some() => {
-                "Desktop is downloaded. Updates phux and hands its server off, then restarts. Sessions keep running."
+        if self.update_failed() {
+            return Some("Whatever was already in place keeps running.".to_owned());
+        }
+        if self.failed() {
+            return Some("Nothing was installed. The details are below.".to_owned());
+        }
+        if let Some(action) = self.action() {
+            return Some(self.action_detail(action).to_owned());
+        }
+        if self.completed {
+            return Some("Your sessions keep running. No Desktop restart is needed.".to_owned());
+        }
+        if self.runtime_attention() {
+            return Some(
+                "phux is managed outside Desktop. Use its package manager to update.".to_owned(),
+            );
+        }
+        self.target.as_ref()?;
+        Some(
+            if self.prefs.automatic {
+                "Checked at launch and every six hours."
+            } else {
+                "Automatic checks are off."
             }
-            Some(UpdateAction::Both) => {
-                "Downloads Desktop, updates phux and hands its server off, then restarts. Sessions keep running."
+            .to_owned(),
+        )
+    }
+
+    fn action_detail(&self, action: UpdateAction) -> &'static str {
+        match action {
+            UpdateAction::Both if self.staged.is_some() => {
+                "Desktop is verified. Restart updates the local server first, then reopens Desktop. Sessions keep running."
             }
-            Some(UpdateAction::Desktop { staged: true }) => {
+            UpdateAction::Both => {
+                "Downloads and verifies Desktop. The local server updates when you choose to restart. Sessions keep running."
+            }
+            UpdateAction::Desktop { staged: true } => {
                 "Restart now, or it installs the next time you quit. Sessions keep running."
             }
-            Some(UpdateAction::Desktop { staged: false }) => {
-                "Downloads and verifies the signed bundle, then restarts. Sessions keep running."
+            UpdateAction::Desktop { staged: false } => {
+                "Downloads and verifies the signed bundle. Restart when you’re ready; sessions keep running."
             }
-            Some(UpdateAction::Phux { retry: true }) => {
+            UpdateAction::Phux { retry: true } => {
                 "The new phux is in place. Retry hands the live server off without downloading again."
             }
-            Some(UpdateAction::Phux { retry: false }) => {
+            UpdateAction::Phux { retry: false } => {
                 "Installs the verified release and hands the live server off. No session closes."
             }
-            None if self.target.is_none() => return None,
-            None if self.prefs.automatic => "Checked at launch and every six hours.",
-            None => "Automatic checks are off.",
-        };
-        Some(text.to_owned())
+        }
+    }
+
+    /// No nagging when current or in development; a completed handoff stays dismissible.
+    pub(super) fn has_card(&self) -> bool {
+        if self.development {
+            return false;
+        }
+        self.desktop_due()
+            || self.runtime_attention()
+            || self.failed()
+            || self.completed
+            || (self.busy && self.work != Work::Checking)
+    }
+
+    fn runtime_attention(&self) -> bool {
+        self.prefs.manage_runtime
+            && (self.pending_handoff
+                || self
+                    .runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.available))
+    }
+
+    pub(super) fn action_label(&self) -> Option<&'static str> {
+        let action = self.action()?;
+        if cfg!(target_os = "linux") && action.desktop() {
+            return Some("Installation instructions");
+        }
+        if self.pending_handoff {
+            if self.staged.is_some() {
+                return Some("Retry & restart");
+            }
+            return Some("Retry server handoff");
+        }
+        if action == UpdateAction::Both && self.staged.is_some() {
+            return Some("Restart & update server");
+        }
+        Some(action.label())
     }
 
     /// A check failed for either product.
@@ -227,5 +298,15 @@ impl Updater {
             ));
         }
         notices
+    }
+}
+
+fn ready_headline(action: UpdateAction) -> &'static str {
+    match action {
+        UpdateAction::Both => "Desktop and server updates are ready",
+        UpdateAction::Desktop { staged: true } => "Ready when you are",
+        UpdateAction::Desktop { staged: false } => "A Desktop update is ready",
+        UpdateAction::Phux { retry: true } => "Server handoff needs another try",
+        UpdateAction::Phux { retry: false } => "A server update is ready",
     }
 }

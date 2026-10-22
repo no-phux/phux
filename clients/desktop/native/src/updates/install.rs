@@ -3,6 +3,13 @@
 
 use super::*;
 
+/// Archive transfer progress is not verification or staging completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StageProgress {
+    Downloading(u8),
+    Verifying,
+}
+
 /// Beside the installed app, so the post-exit swap is a same-volume rename.
 const STAGING_DIR: &str = ".phux-desktop-update";
 /// The installer's lock; every publisher of `Phux.app` takes the same inode.
@@ -37,15 +44,20 @@ pub(super) fn stage_command(bundle: &Path, target: &Release) -> anyhow::Result<C
 
 /// Download, verify and unpack `target` into the staging directory with the
 /// shipped installer. Nothing outside the staging directory changes.
-pub fn stage(bundle: &Path, target: &Release) -> anyhow::Result<PathBuf> {
+pub fn stage(
+    bundle: &Path,
+    target: &Release,
+    progress: std::sync::mpsc::Sender<StageProgress>,
+) -> anyhow::Result<PathBuf> {
     if cfg!(target_os = "linux") {
         bail!("{}", linux_install_remedy(target.channel, Some(bundle)));
     }
-    stage_with(
+    stage_with_progress(
         bundle,
         target,
         |target| check_signed(target, RELEASE_KEYS, fetch),
         |_| {},
+        Some(progress),
     )
 }
 
@@ -117,23 +129,39 @@ pub(super) fn check_signed(
 /// [`stage`], with `signed` deciding whether the target's digest is trusted
 /// and `configure` adjusting the installer's command (tests point its
 /// downloads at a fixture).
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn stage_with(
     bundle: &Path,
     target: &Release,
     signed: impl FnOnce(&Release) -> anyhow::Result<()>,
     configure: impl FnOnce(&mut Command),
 ) -> anyhow::Result<PathBuf> {
+    stage_with_progress(bundle, target, signed, configure, None)
+}
+
+pub(super) fn stage_with_progress(
+    bundle: &Path,
+    target: &Release,
+    signed: impl FnOnce(&Release) -> anyhow::Result<()>,
+    configure: impl FnOnce(&mut Command),
+    progress: Option<std::sync::mpsc::Sender<StageProgress>>,
+) -> anyhow::Result<PathBuf> {
     if !release::is_lower_hex(&target.sha256, 64) {
         bail!("No verified digest for the Desktop update");
     }
     signed(target)?;
     let mut command = stage_command(bundle, target)?;
+    command.env(
+        "PHUX_DESKTOP_PROGRESS",
+        if progress.is_some() { "1" } else { "0" },
+    );
     configure(&mut command);
-    let text = run_bounded(
+    let text = run_bounded_with_progress(
         &mut command,
         Some(include_bytes!("../../../../../scripts/install.sh")),
         STAGE_TIMEOUT,
         "Desktop update download timed out after 15 minutes. Nothing was installed.",
+        progress,
     )?;
     let staged = staged_path(&text, &staging_dir(bundle)?)?;
     verify_staged_release(&staged, target)?;

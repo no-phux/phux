@@ -6,7 +6,7 @@ mod macos;
 const STABLE: &str = include_str!("../../../../../scripts/fixtures/release-manifest/stable.json");
 const NEXT: &str = include_str!("../../../../../scripts/fixtures/release-manifest/next.json");
 
-fn scratch(name: &str) -> PathBuf {
+pub(super) fn scratch(name: &str) -> PathBuf {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -121,7 +121,7 @@ fn linux_manual_update_requires_release_signatures() {
 fn linux_never_runs_the_macos_swap_or_staging_installer() {
     let path = Path::new("/does-not-exist/phux-desktop");
     assert!(
-        stage(path, &Release::default())
+        stage(path, &Release::default(), std::sync::mpsc::channel().0)
             .unwrap_err()
             .to_string()
             .contains("PHUX_REQUIRE_SIGNATURE=1")

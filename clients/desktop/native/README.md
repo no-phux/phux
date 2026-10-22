@@ -164,3 +164,7 @@ HOME=$tmp XDG_CONFIG_HOME=$tmp/config XDG_STATE_HOME=$tmp/state \
 ```
 
 It refuses a `HOME` outside the temporary directory and any named server.
+Each update state also saves a `*-corner.png` with Settings closed, covering
+availability, measured downloads, verification, server installation, handoff
+recovery, and the explicit restart action. These are native scene captures,
+not compositor-presentation evidence.

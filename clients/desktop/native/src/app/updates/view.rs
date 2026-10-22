@@ -71,19 +71,19 @@ impl Overview {
             state: updater.runtime_status(),
         };
         Self {
-            headline: updater.summary(),
+            headline: (updater.card_headline(), updater.summary().1),
             detail: updater.summary_detail(),
             busy: updater.busy,
             moves,
             development: updater.development,
-            action: updater.action().map(super::UpdateAction::label),
+            action: updater.action_label(),
             products: [desktop, runtime],
             notices: updater.notices(),
         }
     }
 }
 
-fn tone_color(look: &Look, tone: Tone) -> Hsla {
+pub(super) fn tone_color(look: &Look, tone: Tone) -> Hsla {
     let theme = &look.chrome.theme;
     match tone {
         Tone::Quiet => from_hex(&look.chrome.muted),
@@ -210,7 +210,7 @@ fn product_row(look: &Look, mono: &SharedString, product: &Product) -> impl Into
 }
 
 /// A notice under the grid: danger-edged for a failure, quiet otherwise.
-fn notice(look: &Look, text: String, failed: bool) -> impl IntoElement {
+pub(super) fn notice(look: &Look, text: String, failed: bool) -> impl IntoElement {
     let edge = if failed {
         from_hex(&look.chrome.theme.danger)
     } else {

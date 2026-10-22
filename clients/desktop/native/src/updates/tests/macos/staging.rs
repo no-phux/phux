@@ -20,8 +20,10 @@ impl Network {
         // Serves the archive whatever the URL, then exits with `status`.
         std::fs::write(
                 bin.join("curl"),
-                "#!/bin/sh\n\
-                 while [ \"$#\" -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift ;; esac; shift; done\n\
+                 "#!/bin/sh\n\
+                 meter=0\n\
+                 while [ \"$#\" -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift ;; --progress-bar) meter=1 ;; esac; shift; done\n\
+                 if [ \"$meter\" = 1 ]; then printf '\\r### 25.9%%\\r######## 100.0%%\\r' >&2; fi\n\
                  cp \"$FIXTURE/asset.zip\" \"$out\"\n\
                  exit \"$(cat \"$FIXTURE/status\" 2>/dev/null || echo 0)\"\n",
             )
@@ -107,12 +109,30 @@ impl Network {
         signed: impl FnOnce(&Release) -> anyhow::Result<()>,
     ) -> anyhow::Result<PathBuf> {
         stage_with(&self.bundle, target, signed, |command| {
-            let bin = self.root.join("bin");
-            command.env("FIXTURE", &self.root).env(
-                "PATH",
-                format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display()),
-            );
+            self.configure(command);
         })
+    }
+
+    fn stage_reporting(
+        &self,
+        target: &Release,
+        progress: std::sync::mpsc::Sender<StageProgress>,
+    ) -> anyhow::Result<PathBuf> {
+        crate::updates::install::stage_with_progress(
+            &self.bundle,
+            target,
+            |_| Ok(()),
+            |command| self.configure(command),
+            Some(progress),
+        )
+    }
+
+    fn configure(&self, command: &mut Command) {
+        let bin = self.root.join("bin");
+        command.env("FIXTURE", &self.root).env(
+            "PATH",
+            format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display()),
+        );
     }
 
     /// Staging `target` fails with `message`, leaves the installed app
@@ -216,6 +236,46 @@ fn a_checked_release_stages_beside_the_installed_app() {
         "old"
     );
     std::fs::remove_dir_all(network.root).unwrap();
+}
+
+#[test]
+fn archive_progress_precedes_verification_and_successful_staging() {
+    let network = Network::new("stage-progress");
+    let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let staged = network.stage_reporting(&target, tx).unwrap();
+    assert_eq!(installed_release(&staged).unwrap().version, "1.2.3");
+    assert_eq!(
+        rx.try_iter().collect::<Vec<_>>(),
+        [
+            StageProgress::Downloading(25),
+            StageProgress::Downloading(100),
+            StageProgress::Verifying,
+        ]
+    );
+    std::fs::remove_dir_all(network.root).unwrap();
+}
+
+#[test]
+fn a_full_download_does_not_bypass_checksum_verification() {
+    let network = Network::new("stage-progress-bad-digest");
+    network.publish("dev.phux.desktop", |_| {});
+    let target = network.checked(&"0".repeat(64));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let error = network.stage_reporting(&target, tx).unwrap_err();
+    assert_eq!(rx.try_iter().last(), Some(StageProgress::Verifying));
+    network.assert_left_alone(&error, "checksum mismatch");
+}
+
+#[test]
+fn a_failed_archive_transfer_never_enters_verification() {
+    let network = Network::new("stage-progress-interrupted");
+    let target = network.checked(&network.publish("dev.phux.desktop", |_| {}));
+    std::fs::write(network.root.join("status"), "18").unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let error = network.stage_reporting(&target, tx).unwrap_err();
+    assert_eq!(rx.try_iter().last(), Some(StageProgress::Downloading(100)));
+    network.assert_left_alone(&error, "could not download");
 }
 
 #[test]
