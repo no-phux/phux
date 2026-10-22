@@ -98,8 +98,7 @@ pub(super) fn server_health_checks(
         checks.push(Check::warn(
             "server-health",
             format!("the running server is {theirs}; this binary is {ours}"),
-            "run `phux upgrade` to hand the server over in place (panes survive), \
-             or attach with `phux`, which now does it automatically",
+            version_skew_hint(theirs, ours),
         ));
     }
 
@@ -111,6 +110,22 @@ pub(super) fn server_health_checks(
     }
 
     checks
+}
+
+/// Choose the remedy by release ordering. Checkout builds that cannot be
+/// ordered retain auto-attach's replaced-binary hand-over policy.
+fn version_skew_hint(theirs: &str, ours: &str) -> &'static str {
+    use phux_client_runtime::release::Version;
+
+    match (Version::parse(theirs), Version::parse(ours)) {
+        (Some(theirs), Some(ours)) if theirs > ours => {
+            "run `phux update` to update this binary; leave the newer server running"
+        }
+        _ => {
+            "run `phux upgrade` to hand the server over in place (panes survive), \
+             or attach with `phux`, which now does it automatically"
+        }
+    }
 }
 
 /// Whether `unit`'s restart behavior is dangerous: not failure-only, or not

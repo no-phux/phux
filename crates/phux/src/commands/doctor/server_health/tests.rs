@@ -32,6 +32,36 @@ fn every_applicable_server_health_condition_is_reported() {
     assert!(checks[2].detail.contains("0.14.0"), "{}", checks[2].detail);
 }
 
+/// Version remedies follow release ordering, never lexical ordering, and never
+/// tell an older client to replace a newer server. Unordered checkout builds
+/// keep the same hand-over policy as auto-attach.
+#[test]
+fn version_skew_hint_updates_the_older_side() {
+    for (theirs, ours, remedy, forbidden) in [
+        ("0.13.0", "0.14.0", "phux upgrade", "phux update"),
+        ("0.14.0", "0.13.0", "phux update", "phux upgrade"),
+        ("0.9.0", "0.10.0", "phux upgrade", "phux update"),
+        ("0.10.0", "0.9.0", "phux update", "phux upgrade"),
+        ("1.0.0", "0.99.0", "phux update", "phux upgrade"),
+        ("0.43.0-dev", "0.43.0", "phux upgrade", "phux update"),
+        ("0.43.0", "next", "phux upgrade", "phux update"),
+    ] {
+        let checks = server_health_checks(None, None, None, Some((theirs, ours)), || {
+            panic!("version skew must not report a clean host")
+        });
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].status, Status::Warn);
+        assert!(checks[0].detail.contains(theirs), "{checks:?}");
+        assert!(checks[0].detail.contains(ours), "{checks:?}");
+        let hint = checks[0]
+            .hint
+            .as_deref()
+            .expect("version skew needs a remedy");
+        assert!(hint.contains(remedy), "{theirs} vs {ours}: {hint}");
+        assert!(!hint.contains(forbidden), "{theirs} vs {ours}: {hint}");
+    }
+}
+
 /// A clean host gets exactly one pass line.
 #[test]
 fn server_health_passes_when_nothing_applies() {
