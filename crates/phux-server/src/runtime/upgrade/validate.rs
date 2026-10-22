@@ -265,7 +265,7 @@ fn killed_by_signature_race(output: &std::process::Output) -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn killed_by_signature_race(_output: &std::process::Output) -> bool {
+const fn killed_by_signature_race(_output: &std::process::Output) -> bool {
     false
 }
 
