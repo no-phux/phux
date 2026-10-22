@@ -33,6 +33,28 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.44.0](https://github.com/no-phux/phux/compare/desktop-v0.43.0...desktop-v0.44.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** make wire protocol 1.0 the compatibility baseline ([#1706](https://github.com/no-phux/phux/issues/1706))
+
+### Features
+
+* **desktop:** stack zoomed panes, map split tabs, rework the pane capsule ([#1699](https://github.com/no-phux/phux/issues/1699)) ([88e016c](https://github.com/no-phux/phux/commit/88e016c771c2482a4f020190bd9866f02a7b1f9c))
+* **desktop:** update phux and desktop in one click, and tighten settings layout ([#1700](https://github.com/no-phux/phux/issues/1700)) ([52589ac](https://github.com/no-phux/phux/commit/52589ac8eac0229ab5bbd07181a8c3ec4de253ac))
+* **native:** onboard OpenCode on the connected host ([#1704](https://github.com/no-phux/phux/issues/1704)) ([53d15e4](https://github.com/no-phux/phux/commit/53d15e48b837359b904868347831a90f4940a322))
+* **protocol:** make wire protocol 1.0 the compatibility baseline ([#1706](https://github.com/no-phux/phux/issues/1706)) ([3565741](https://github.com/no-phux/phux/commit/3565741fa3f078a44cfd1a77e17c3e5d47e17a91))
+
+
+### Bug Fixes
+
+* **agents:** a malformed program-status id discards the report ([#1725](https://github.com/no-phux/phux/issues/1725)) ([906e28d](https://github.com/no-phux/phux/commit/906e28d539535b046a3174715dec7aeea46dc36c))
+* **desktop:** deliver programs' OSC 52 copies from the focused terminal ([#1712](https://github.com/no-phux/phux/issues/1712)) ([b2dafac](https://github.com/no-phux/phux/commit/b2dafac299f9ffc8261f14b121fcf93fe8f28599))
+* **desktop:** let cmd-w close a fresh split again ([#1696](https://github.com/no-phux/phux/issues/1696)) ([69d7904](https://github.com/no-phux/phux/commit/69d7904c900978bd70efffdd15826d152a25fbac))
+* **desktop:** remove killed sessions from the session list ([#1702](https://github.com/no-phux/phux/issues/1702)) ([c27a797](https://github.com/no-phux/phux/commit/c27a79777a14eb73b6911979731663f961f5a396))
+
 ## [0.43.0](https://github.com/no-phux/phux/compare/desktop-v0.42.0...desktop-v0.43.0) (2026-10-20)
 
 
