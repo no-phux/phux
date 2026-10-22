@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.8.0](https://github.com/no-phux/phux/compare/pi-extension-v0.7.1...pi-extension-v0.8.0) (2026-10-22)
+
+
+### Features
+
+* **agents:** mail reaches the agent's conversation, never its terminal ([#1721](https://github.com/no-phux/phux/issues/1721)) ([b25f28e](https://github.com/no-phux/phux/commit/b25f28e02324636311892f2a16efffd4230ddd0f))
+
 ## [0.7.1](https://github.com/no-phux/phux/compare/pi-extension-v0.7.0...pi-extension-v0.7.1) (2026-10-19)
 
 
