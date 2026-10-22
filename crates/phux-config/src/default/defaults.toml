@@ -1,0 +1,103 @@
+# phux default configuration.
+#
+# These are the settings phux ships with. Your ~/.config/phux/config.toml
+# is layered on top: any key you set there replaces the one below, and
+# everything you leave out keeps its default. Keep your file to the
+# settings you actually change.
+#
+#   phux config check   validate your file
+#   phux config show    print the merged result
+#   phux config keys    list every key binding and where it came from
+#
+# Key syntax:
+#   C-a     Ctrl+a
+#   M-a     Alt+a (also A-a)
+#   S-a     Shift+a; a bare capital "A" means the same
+#   Tab     a named key: Tab, BackTab, Enter, Esc, Space, Backspace,
+#           Delete, Insert, Up, Down, Left, Right, Home, End, PageUp,
+#           PageDown, F1 to F24 (case-sensitive)
+#   |       punctuation is the key you press, so "|" is Shift+\ on a
+#           US layout; on other layouts write S- explicitly
+#
+# Every setting is listed at https://docs.phux.sh/reference/config.
+
+[defaults]
+# shell: the program a new pane runs. Unset uses $SHELL, then /bin/sh.
+
+# TERM for programs in new panes. xterm-256color works everywhere: 256
+# colours and the standard xterm keys. Set "ghostty" for its extended
+# terminfo and the kitty keyboard protocol once the programs you use
+# handle it (htop is the usual holdout).
+term = "xterm-256color"
+
+# Scrollback per pane. Whichever limit is reached first trims the oldest
+# lines, and on anything wider than a narrow pane the byte limit is the
+# one that binds, so history-bytes decides how deep a pane goes:
+#
+#   history-bytes      rows kept at 80 cols   at 200 cols
+#   2 MiB              ~2669                  ~1030
+#   10 MiB (default)   ~14400                 ~5790
+#   32 MiB             ~47500                 ~19031
+#
+# The cost is memory, and only once a pane has printed that much: an idle
+# pane holds nothing, a flooded one about this many bytes. Multiply by
+# your busy panes before raising it. 67108864 (64 MiB) is the maximum.
+history-limit = 50000
+history-bytes = 10485760
+
+# How much of each agent's event log phux keeps (`phux agent log`). The
+# oldest records drop first. 67108864 (64 MiB) is the maximum.
+agent-log-bytes = 4194304
+
+# How many recent events the server keeps for a watcher (`phux watch`,
+# `phux wait`) that reconnects, so it can catch up on what it missed.
+# Whichever limit is reached first drops the oldest. 1048576 events and
+# 67108864 bytes are the maximums.
+event-journal-entries = 4096
+event-journal-bytes = 1048576
+
+# Keep a pane inspectable after its program exits: its exit status, last
+# screen, and scrollback stay until they expire or are closed. Off by
+# default; `phux run` and `phux spawn` can ask for it per pane. A kept
+# pane holds its scrollback in memory. 4096 is the maximum count.
+retain-on-exit = false
+retain-on-exit-secs = 600
+retain-on-exit-max-secs = 86400
+retain-on-exit-max = 256
+
+# Mouse support: click a pane to focus it, drag a divider to resize.
+# false leaves the mouse to your terminal's own selection.
+mouse = true
+
+# What happens when a program copies to the clipboard (OSC 52): "allow"
+# copies, "ask" asks first, "deny" ignores it. Only the focused pane can
+# copy, and programs can never read your clipboard.
+clipboard-write = "allow"
+
+# Where a new pane starts:
+#   "inherit-focused"     the focused pane's directory (like tmux)
+#   "home"                always $HOME
+#   "session-root"        the directory the session was created in
+#   "last-cwd-per-window" the last directory used in that tab
+# Following the focused pane needs your shell to report its directory
+# (OSC 7); most do.
+cwd-inheritance = "inherit-focused"
+
+# spawn-on-attach: the command a plain `phux` runs when it creates its
+# first session, through `$SHELL -c`. `phux new` ignores it. Unset runs
+# the shell.
+# spawn-on-attach = "htop"
+
+# Names for sessions phux creates for you. ${cwd-basename} is the
+# directory you ran phux from, so a row of project checkouts reads as
+# their names in the session picker; ${random-name} is a word pair such as
+# drifting-cedar. Set "default" for one fixed name.
+session-name-template = "${cwd-basename}"
+
+# When two clients view one pane at different sizes, which size wins:
+#   "smallest" the smallest view; bigger ones get blank margins (like tmux)
+#   "largest"  the largest view; smaller ones are cropped
+#   "latest"   whichever client resized last
+#   "manual"   keep the current size
+window-size = "smallest"
+

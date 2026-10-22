@@ -43,6 +43,7 @@ A pane is one terminal. Split the one you're in:
 | <kbd>C-a</kbd> <kbd>"</kbd> or <kbd>C-a</kbd> <kbd>-</kbd>                         | split below                              |
 | <kbd>C-a</kbd> <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>                 | move to the pane left, down, up, right   |
 | <kbd>C-a</kbd> <kbd>H</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>                 | resize the pane left, down, up, right    |
+| <kbd>C-a</kbd> <kbd>R</kbd>                                                        | resize mode: <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> or the arrows resize one cell at a time; <kbd>Esc</kbd> leaves |
 | <kbd>C-a</kbd> <kbd>o</kbd>                                                        | next pane                                |
 | <kbd>C-a</kbd> <kbd>=</kbd>                                                        | the pane you were in before              |
 | <kbd>C-a</kbd> <kbd>z</kbd>                                                        | zoom the pane to fill the tab; again to unzoom |

@@ -265,6 +265,9 @@ pub(super) fn action_label(action: &Action) -> String {
     if let ("signal-terminal", Some(signal)) = (name, arg("signal")) {
         return sentence_case(&format!("{signal} pane"));
     }
+    if let ("enter-mode", Some(mode)) = (name, arg("name")) {
+        return sentence_case(&format!("{mode} mode"));
+    }
     let mut label = name.replace('-', " ").replace("window", "tab");
     for value in args.values() {
         label.push(' ');

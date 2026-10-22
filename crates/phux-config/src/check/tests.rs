@@ -27,6 +27,10 @@ fn valid_configs_check_clean() {
         format!("[limits]\nmetadata-value-bytes = {floor}\n"),
         "[[hooks.after-new-pane]]\nwhen = { session-startswith = \"work\" }\naction = \"noop\"\n".to_owned(),
         "[keybindings]\nprefix = \"C-b\"\n\n[keybindings.global]\n\"M-Enter\" = \"detach\"\n\n[keybindings.prefix-table]\nw = \"window-picker\"\n".to_owned(),
+        // A user key mode, entered once from the prefix table.
+        "[keybindings.modes.pick]\ny = \"copy-mode\"\nq = \"exit-mode\"\n\n\
+         [keybindings.mode-options.pick]\nexclusive = false\n\n\
+         [keybindings.prefix-table]\nr = { action = \"enter-mode\", name = \"pick\", once = true }\n".to_owned(),
         // Parameterized-action arguments are the dispatcher's business.
         "[keybindings.prefix-table]\nR = { action = \"resize-pane\", direction = \"left\", amount = 3, made-up-arg = true }\n".to_owned(),
         "[[hooks.pane-exit]]\nwhen = { exit-code = 0 }\naction = \"noop\"\n\n\
@@ -111,6 +115,51 @@ fn each_mistake_is_located_classified_and_explained() {
             "keybindings.prefix-table.\"y x\"",
             Fault::BadChord,
             &["ambiguous prefix"],
+        ),
+        // Key modes: an enter-mode naming no mode, or no mode at all; a bad
+        // binding inside a mode; options for a mode that does not exist; a
+        // mode name the resolver refuses; ambiguity inside a mode.
+        (
+            "[keybindings.prefix-table]\nr = { action = \"enter-mode\", name = \"resise\" }\n",
+            "keybindings.prefix-table.r",
+            Fault::UnknownName,
+            &["unknown key mode `resise` (did you mean `resize`?)"],
+        ),
+        (
+            "[keybindings.prefix-table]\nr = \"enter-mode\"\n",
+            "keybindings.prefix-table.r",
+            Fault::BadValue,
+            &["enter-mode needs a mode"],
+        ),
+        (
+            "[keybindings.modes.resize]\nx = \"kill-pain\"\n",
+            "keybindings.modes.resize.x",
+            Fault::UnknownName,
+            &["`kill-pane`"],
+        ),
+        (
+            "[keybindings.mode-options.nope]\nexclusive = true\n",
+            "keybindings.mode-options.nope",
+            Fault::UnknownName,
+            &["[keybindings.modes.nope]"],
+        ),
+        (
+            "[keybindings.mode-options.resize]\nexclusiv = true\n",
+            "keybindings.mode-options.resize.exclusiv",
+            Fault::UnknownKey,
+            &["exclusive"],
+        ),
+        (
+            "[keybindings.modes.Big]\nx = \"detach\"\n",
+            "keybindings.modes.Big",
+            Fault::BadValue,
+            &["invalid key mode name `Big`"],
+        ),
+        (
+            "[keybindings.modes.resize]\n\"g\" = \"detach\"\n\"g x\" = \"detach\"\n",
+            "keybindings.modes.resize.\"g x\"",
+            Fault::BadChord,
+            &["ambiguous prefix", "mode:resize g x"],
         ),
         (
             "[[hooks.pane-exited]]\naction = \"noop\"\n",

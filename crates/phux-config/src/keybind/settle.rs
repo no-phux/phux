@@ -1,5 +1,5 @@
-//! Settling the merged `[keybindings]` tables across config layers: the
-//! newest spelling of a key wins, and `"none"` unbinds it.
+//! Settling the merged `[keybindings]` tables (key modes included) across
+//! config layers: the newest spelling of a key wins, and `"none"` unbinds it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,6 +14,9 @@ const PREFIX_TABLE: &str = "prefix-table";
 
 /// Binding tables under `[keybindings]`, as they are spelled in TOML.
 const BINDING_TABLES: [&str; 2] = ["global", PREFIX_TABLE];
+
+/// The table of key-mode binding tables (`[keybindings.modes.<name>]`).
+const MODES: &str = "modes";
 
 /// Settle the merged binding tables, returning the prefix-table keys that
 /// `"none"` unbound as chord sequences ([`KeybindingsCfg::unbound`]).
@@ -37,23 +40,43 @@ pub fn settle_bindings(
         let Some(toml::Value::Table(table)) = keybindings.get_mut(name) else {
             continue;
         };
-        let table_path = format!("keybindings.{name}");
-        let shadowed = shadowed_spellings(table, &table_path, provenance);
-        // A `"none"` another layer's spelling replaced unbinds nothing.
-        let unbound: Vec<String> = table
-            .iter()
-            .filter(|(binding, value)| is_unbind(value) && !shadowed.contains(binding))
-            .map(|(binding, _)| binding.clone())
-            .collect();
+        let unbound = settle_table(table, &format!("keybindings.{name}"), provenance);
         if name == PREFIX_TABLE {
             let sequences = unbound.iter().map(|b| parse_chord_sequence(b));
             unbound_prefix_keys.extend(sequences.filter_map(Result::ok));
         }
-        for binding in shadowed.into_iter().chain(unbound) {
-            remove_binding(table, &table_path, &binding, provenance);
+    }
+    // Each key mode's table settles on its own: a mode's `"none"` unbinds
+    // the key in that mode only.
+    if let Some(toml::Value::Table(modes)) = keybindings.get_mut(MODES) {
+        for (mode, table) in modes.iter_mut() {
+            if let toml::Value::Table(table) = table {
+                let table_path = crate::layer::child_path(&format!("keybindings.{MODES}"), mode);
+                settle_table(table, &table_path, provenance);
+            }
         }
     }
     unbound_prefix_keys
+}
+
+/// Settle one binding table: drop spellings a later layer replaced, then
+/// every `"none"`. Returns the bindings `"none"` removed.
+fn settle_table(
+    table: &mut toml::Table,
+    table_path: &str,
+    provenance: &mut crate::ConfigProvenance,
+) -> Vec<String> {
+    let shadowed = shadowed_spellings(table, table_path, provenance);
+    // A `"none"` another layer's spelling replaced unbinds nothing.
+    let unbound: Vec<String> = table
+        .iter()
+        .filter(|(binding, value)| is_unbind(value) && !shadowed.contains(binding))
+        .map(|(binding, _)| binding.clone())
+        .collect();
+    for binding in shadowed.iter().chain(&unbound) {
+        remove_binding(table, table_path, binding, provenance);
+    }
+    unbound
 }
 
 /// Drop `binding` from `table` and every provenance entry under it.

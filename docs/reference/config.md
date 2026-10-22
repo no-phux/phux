@@ -87,7 +87,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 
 ## The annotated default config
 
-The base layer embedded in the binary (`crates/phux-config/src/default.toml`), verbatim. `phux config init` writes a fully-commented projection of this file, and `phux config show --default` prints it.
+The base layer embedded in the binary (the files under `crates/phux-config/src/default/`, joined in order), verbatim. `phux config init` writes a fully-commented projection of it, and `phux config show --default` prints it.
 
 ```toml
 # phux default configuration.
@@ -317,20 +317,53 @@ which-key-delay-ms = 400
 "f" = { action = "signal-terminal", signal = "freeze" }
 "u" = { action = "signal-terminal", signal = "resume" }
 
-# Resize the focused pane by 5 cells.
+# Resize the focused pane by 5 cells. R enters resize mode, below, to
+# keep resizing without pressing the prefix each time.
 "H" = { action = "resize-pane", direction = "left",  amount = 5 }
 "J" = { action = "resize-pane", direction = "down",  amount = 5 }
 "K" = { action = "resize-pane", direction = "up",    amount = 5 }
 "L" = { action = "resize-pane", direction = "right", amount = 5 }
+"R" = { action = "enter-mode", name = "resize" }
 
 # reload-config (no key; in the palette) applies your config file without
 # detaching. Bind it if you edit the file often:
-#   "R" = "reload-config"
+#   "r" = "reload-config"
 
 [keybindings.global]
 # Keys that work without the prefix. None ship, so every key reaches the
 # program in the pane until you add one here:
 #   "M-Enter" = "toggle-zoom"
+
+# Key modes. A mode is a set of keys that work without the prefix while
+# the mode is on. enter-mode turns one on and the status bar shows its
+# name; exit-mode, or Esc unless the mode binds Esc, turns it off. Add
+# once = true to enter-mode to leave after one of the mode's keys:
+#   "r" = { action = "enter-mode", name = "resize", once = true }
+# Make your own with a [keybindings.modes.NAME] table; "none" unbinds a
+# key in a mode like anywhere else.
+#
+# Resize mode (prefix, then R): h j k l and the arrows resize the focused
+# pane by 1 cell, H J K L by 5. Enter or Esc leaves.
+[keybindings.modes.resize]
+"h" = { action = "resize-pane", direction = "left",  amount = 1 }
+"j" = { action = "resize-pane", direction = "down",  amount = 1 }
+"k" = { action = "resize-pane", direction = "up",    amount = 1 }
+"l" = { action = "resize-pane", direction = "right", amount = 1 }
+"Left" = { action = "resize-pane", direction = "left",  amount = 1 }
+"Down" = { action = "resize-pane", direction = "down",  amount = 1 }
+"Up" = { action = "resize-pane", direction = "up",    amount = 1 }
+"Right" = { action = "resize-pane", direction = "right", amount = 1 }
+"H" = { action = "resize-pane", direction = "left",  amount = 5 }
+"J" = { action = "resize-pane", direction = "down",  amount = 5 }
+"K" = { action = "resize-pane", direction = "up",    amount = 5 }
+"L" = { action = "resize-pane", direction = "right", amount = 5 }
+"Enter" = "exit-mode"
+
+# exclusive = true: keys the mode does not bind do nothing, so a stray
+# key cannot type into the pane while you resize. Without it they work
+# as they do outside the mode.
+[keybindings.mode-options.resize]
+exclusive = true
 
 # Plugin packages are declarative manifests. phux can inspect them with
 # `phux plugin list --json`, validate/link/toggle/unlink them with

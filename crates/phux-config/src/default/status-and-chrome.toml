@@ -1,0 +1,204 @@
+[status]
+# Left: the window/tab bar. The `windows` widget renders one tab per
+# window from `format` (`{index}` and `{name}`); a window running an agent
+# shows that agent's state glyph before its name. Every part is
+# restylable — `active`/`inactive`/`index` take a style table (fg/bg color
+# strings + bold/dim/italic/underline/reverse), and `separator`/`format`
+# tune the layout, e.g.:
+#   { kind = "windows", active = { fg = "black", bg = "green", bold = true }, inactive = { fg = "gray" }, separator = " | " }
+# Right: session name + clock (the leading space in the time format keeps
+# them apart).
+#
+# The shipped lineup: padded window tabs left, empty center, session name
+# + clock right. Destinations live on the prefix, the command palette
+# (`prefix Space` / `:`), and the context menu — not as a permanent hint
+# strip. `help-hints` remains available if you want the teaching bar back:
+#   center = [{ kind = "help-hints" }]
+# The tab `format` carries a leading
+# and trailing space with a one-cell separator, so the active tab's fill
+# reads as a padded chip rather than a highlight hugging the glyphs — and
+# because every cell of a segment (padding included) is a click target,
+# the padding also widens the mouse target by two columns per tab.
+#
+# The bar sits on the theme's `surface`, the same bed as the sidebar, so
+# the two read as one frame around the panes. The active tab is the
+# theme's `accent` + bold on its `selection_bg` (the sidebar's selected-row
+# colour), a chip with one cell of padding either side. Inactive tabs are
+# `dim` text with no fill, so the strip is not a row of slabs. The
+# `{index}` selector recedes a step further, to `border`. Session name and
+# clock recede to the same dim, and the clock keeps one cell of gutter from
+# the edge, matching the sidebar's. The tabs ride the theme's slots, named
+# `theme.<slot>`, so a `[theme]` name, file, or override recolours the bar
+# with the rest of the chrome; any widget colour may name a slot this way
+# (the `[theme]` block below lists the slots).
+#
+# A `button` runs one argument-free action on click. The `+` that follows
+# the tabs opens a new tab, where a browser puts it; `+ session` in the
+# top-right corner prompts for a new session's name. Both use the inactive tabs' ink,
+# so they read as part of the strip rather than as alerts.
+left = [
+  { kind = "windows", format = " {index} {name} ", separator = " ", active = { fg = "theme.accent", bg = "theme.selection_bg", bold = true }, inactive = { fg = "theme.dim" }, index = { fg = "theme.border" } },
+  { kind = "button", label = "+", action = "new-window", style = { fg = "theme.dim", bold = true } },
+]
+center = []
+# The right slot changes shape with the terminal, via the universal
+# `min-cols` / `max-cols` options every widget accepts (they gate on the
+# width of the whole bar, not on the widget's own share).
+#
+# Wide enough for ambient context (>64 columns): session name and clock.
+# Narrower than that, those columns are worth more as an affordance: the
+# sidebar is hidden, the tab strip has collapsed to the active tab, and
+# nothing on screen says other work exists. So the clock and the session
+# name step aside for an `agents` chip (the `switch` widget) — click it (or
+# press prefix-A) for every agent, which on a small terminal opens
+# full-screen.
+right = [
+  { kind = "session-name", min-cols = 65, style = { fg = "theme.dim" } },
+  { kind = "time", format = " %a %H:%M ", min-cols = 65, style = { fg = "theme.dim" } },
+  { kind = "button", label = "+ session", action = "new-session", min-cols = 65, style = { fg = "theme.dim" } },
+  { kind = "switch", max-cols = 64, chip = { fg = "theme.accent", bold = true } },
+]
+# Which outer-terminal row the bar reserves: "top" (default) or "bottom".
+# position = "top"
+
+# Colours for phux's own chrome. Every slot below shows its shipped
+# value, commented out, so you can see the whole palette at once and
+# override one slot without hunting for its name. Values accept named colors ("cyan"), hex
+# ("#7aa2f7") and ANSI indices ("12").
+#
+# Two keys select a whole palette underneath the slots: `name` is an
+# installed theme (`phux theme list`, `phux theme install URL`) and
+# `file` is any Omarchy-schema colors.toml, e.g. Omarchy's own current
+# theme. Slots set here still override the selected theme.
+#
+# [theme]
+# name            = "tokyo-night"
+# file            = "~/.local/state/omarchy/current/theme/colors.toml"
+# accent          = "#bef264"  # modal titles, query caret, active focus
+# title           = "#bef264"  # section/window titles (tracks accent)
+# chord           = "#86efac"  # keybinding chords in help + which-key
+# action          = "reset"    # action labels — inherit your terminal fg
+# dim             = "#9aa4b2"  # the recessive register: hints, sub-lines
+# border          = "#7c8696"  # rules and modal borders
+# section_header  = "#9aa4b2"  # headings inside help / pickers
+# error           = "#f87171"  # error and alarm text
+# text            = "#f4f7fb"  # body copy ON a filled panel (see surface)
+# surface         = "#171b23"  # sidebar + modal fill; "reset" = transparent
+# shadow          = "reset"    # floating-modal drop shadow; reset = off
+# selection_fg    = "#f4f7fb"  # selected list row / copy-mode strip fg
+# selection_bg    = "#293628"  # selected list row / copy-mode strip bg
+# attention       = "#fde047"  # "needs you": asked-marker, blocked agents
+# sidebar_section = "#9aa4b2"  # the sidebar's section headers
+# agent_idle      = "#9aa4b2"  # agent lifecycle: nothing needs you
+# agent_working   = "#86efac"  # agent lifecycle: live progress
+# agent_blocked   = "#fde047"  # agent lifecycle: waiting on a human
+# agent_done      = "#bef264"  # agent lifecycle: finished
+# divider         = "#7c8696"  # pane rules off the focused frame
+# divider_focus   = "#bef264"  # the focused pane's own rules (also bold)
+# pane_title      = "#9aa4b2"  # an unfocused pane's label on its top rule
+# pane_title_focus = "#bef264" # the focused pane's label (also bold)
+#
+# Every slot above that paints text or a rule clears 4.5:1 (WCAG AA)
+# against `surface`, in three ordered rungs: rules, recessive text,
+# then lime focus plus BOLD. Retinting one slot is fine; dropping a
+# rung below the floor makes chrome that some people cannot see at all.
+
+# The sidebar (prefix-b toggles it), ON by default.
+#
+#   Agents      every agent, in stable order, under a chip row that
+#               filters it in one click: `all`, `this` (this session's),
+#               or `need` (blocked or asking, or finished and not yet
+#               looked at); an `@` chip steps through the machines when
+#               agents run on more than one. `prefix a` steps the same
+#               filter, and the choice is kept across attaches.
+#   Sessions    session names, with the current session's tabs nested
+#               below and a host line per machine when there is more
+#               than one.
+#
+# Clicking an agent row navigates to its tab, switching sessions if needed.
+# Session names and host rows switch to that session with its host qualifier.
+# The Agents and Sessions headings open their full management views. Agents
+# overflow opens the agents dashboard; Sessions overflow opens the picker.
+# The footer keeps a single New tab row; Commands and Settings live on
+# the palette and the context menu.
+#
+# Width 20 (the default) fits a badge, a name, and a right-hand tag and
+# leaves the terminal its columns. A positive width reserves exactly that
+# many columns; 0 adapts to one quarter of the viewport, bounded to 28–40
+# columns, for longer names on a wide terminal. It docks on the `position` edge ("left" or "right")
+# and the panes tile into the remaining area. `prefix-b` turns it off, and
+# that choice now sticks across session switches for the life of the
+# attach.
+#
+# The strip yields on a terminal too narrow to afford it: below
+# resolved width + 40 columns it is not reserved at all and the panes get the
+# whole viewport back, because a strip that leaves 30 columns of actual
+# work is costing you the very panes it exists to help you move between.
+# At those widths `prefix-b` rings the bell instead of toggling nothing,
+# and the agents dashboard (`prefix A`, or the status bar's `agents` chip)
+# is the navigation surface — it opens full-screen there.
+#
+# Agents on top and Sessions below share the body at a fixed line:
+# `agents-share` is the Agents panel's percent of the body, half (50) by
+# default, whatever the agent population. Gaining or resolving an agent never
+# moves Sessions; an empty Agents panel keeps its header and a quiet
+# placeholder. Set `agents-share = 0` to drop the panel and give Sessions the
+# whole strip.
+#
+# [sidebar]
+# enabled = true
+# width = 20
+# position = "left"
+# agents-share = 50
+
+# Responsive-chrome breakpoints. The chrome adapts to small terminals
+# around three thresholds; these move them without moving the behaviour.
+# Shipped values shown, each derived from content rather than from a
+# round number.
+#
+# `compact-cols` / `compact-rows`: at or below these a viewport is
+# column- or row-starved, and overlays go full-bleed on that axis
+# instead of floating. The axes are judged independently, because a
+# short wide terminal and a narrow tall one want opposite things. Raise
+# them for full-bleed pickers on a roomier terminal; lower them to keep
+# floating modals on a small one.
+#
+# `min-pane-cols`: the narrowest pane area worth tiling into. The
+# `[sidebar]` strip is not reserved below `[sidebar] width` + this, so
+# lowering it keeps the strip on a narrower terminal.
+#
+# All three are plain counts with no reserved values: 0 disables a
+# threshold, a very large value pins the opposite, and both are
+# legitimate configurations rather than errors.
+#
+# [chrome]
+# compact-cols = 64
+# compact-rows = 18
+# min-pane-cols = 40
+
+# Agent notifications. The TUI
+# posts one when an agent becomes blocked or asks for you, and when an
+# agent that was working finishes. "Finished" fires once per run: looking
+# at the pane before the notification goes out cancels it, and an agent
+# in the pane you are looking at stays quiet while the terminal window
+# has focus (suppress-focused). Bursts inside a second coalesce into one.
+#
+# `mode`: "terminal" writes an OSC notification to the outer terminal,
+# so it reaches your desktop over SSH too; "system" uses the desktop
+# notifier of the machine the TUI runs on (osascript on macOS,
+# notify-send elsewhere); "bell" rings the terminal bell; "off".
+#
+# `terminal-protocol`: "auto" picks OSC 99 for kitty, OSC 777 for
+# Ghostty, WezTerm, and foot, and OSC 9 otherwise. Over SSH the
+# environment may not name your terminal, so pin "osc9", "osc777", or
+# "osc99" if auto guesses wrong. Inside tmux the sequence is wrapped for
+# passthrough (tmux needs `set -g allow-passthrough on`).
+#
+# [notifications]
+# mode = "terminal"
+# terminal-protocol = "auto"
+# blocked = true
+# done = true
+# suppress-focused = true
+# sound = false
+

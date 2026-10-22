@@ -68,7 +68,8 @@ pub use widget::{
 use std::path::Path;
 
 /// The shipped default config, embedded at compile time. The loader layers
-/// the user's file over it; [`parse_str`] alone does not.
+/// the user's file over it; [`parse_str`] alone does not. It is one TOML
+/// document kept in `default/` as sections, joined in order.
 ///
 /// ```
 /// let cfg = phux_config::parse_str(
@@ -77,7 +78,13 @@ use std::path::Path;
 /// ).expect("embedded defaults must parse");
 /// assert_eq!(cfg.keybindings.prefix, "C-a");
 /// ```
-pub const DEFAULT_CONFIG_TOML: &str = include_str!("default.toml");
+pub const DEFAULT_CONFIG_TOML: &str = concat!(
+    include_str!("default/defaults.toml"),
+    include_str!("default/keybindings.toml"),
+    include_str!("default/plugins-and-hosts.toml"),
+    include_str!("default/status-and-chrome.toml"),
+    include_str!("default/policy.toml"),
+);
 
 /// Parse one TOML config string, without the shipped defaults. `path` is
 /// used only for error reporting.
