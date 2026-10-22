@@ -30,8 +30,9 @@ and so on), an optional name, and a state:
 
 phux uses the best evidence it has. In order, that is what the agent
 declares through its integration or `phux agent set`, the events its
-integration reports, its hooks, the program in the foreground, and finally
-the screen matched against built-in rules. When the agent exits or another
+integration reports, the program's own [OSC 7501 status
+reports](./program-protocol.md), its hooks, the program in the foreground,
+and finally the screen matched against built-in rules. When the agent exits or another
 program takes over the pane, the state goes back to `unknown`.
 
 Screen rules ship for Claude Code, Codex, OpenCode, pi, Oh My Pi, Grok, Amp,
@@ -223,7 +224,19 @@ never an email or a token.
 
 ## Agents without an integration
 
-A tool not listed above can report its own state through an agent session:
+Any program can report its state by writing an escape sequence to its
+terminal, with no integration and no socket:
+
+```sh
+printf '\033]7501;state=blocked:kind=permission:app=mytool\033\\'
+```
+
+The [program protocol](./program-protocol.md) specifies it, and
+[program sequences](./program-sequences.md) covers the `phux-ask` question
+title and the other sequences phux reads.
+
+A tool phux's agent rules recognize can also report through an agent
+session:
 
 ```sh
 phux agent session open --provider mytool @7
@@ -240,7 +253,9 @@ can report events, never a remote one.
 
 Without a session, `phux agent set --name NAME --kind KIND @7` tells phux who
 is in the pane, and `phux agent report-state @7 working` reports state from
-a hook.
+a hook. Events and hook reports reach the pane's state only for a program
+phux recognizes; any other program can declare its state with
+`phux agent set --state`.
 
 ## Agents phux runs for you
 
