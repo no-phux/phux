@@ -71,40 +71,11 @@ starts the server passes its environment on.
 
 ### Updates
 
-**Settings > Updates** checks the channel's release manifest
-([release contract](../../docs/releasing.md)) and the phux CLI's own release
-at launch and every six hours without blocking terminal input. Turn
-**Check automatically** off or use **Check now** at any time. The page shows
-both products, installed and incoming versions side by side, and one button
-that moves whatever is due. The titlebar shows the same button.
+The corner update card and **Settings > Updates** manage Desktop and the local
+server. See [Desktop updates](UPDATES.md) for downloads, progress, explicit
+restart, server handoff, release channels, and recovery.
 
-**Update phux & Desktop** does it in one click: it downloads the desktop
-bundle and verifies its checksum and signature beside `Phux.app`, updates phux
-with the installed CLI's checksum-verified updater and hands the live server
-off, then quits, swaps the staged bundle in after the app has exited, and
-reopens it on the server it was built for. Sessions keep running throughout.
-When only one product is due the button reads **Update Desktop** or
-**Update phux**; an update phux alone needs no restart. If the swap fails, the
-previous app is moved back. A downloaded bundle that has not been swapped in
-yet offers **Restart to update**, and quitting normally also installs it. The
-helper logs to `~/Library/Logs/Phux/update.log`. Quitting the desktop detaches;
-it does not stop your server-owned terminals.
-
-**Update phux with Desktop** is on by default. The handoff never silently
-closes agent sessions; a refused handoff keeps the downloaded desktop, says
-why, and offers **Retry server handoff** without downloading phux again.
-Homebrew, Cargo and Nix installations show their native update command instead
-of replacing package-managed files. Turning it off leaves the CLI and running
-server untouched, and the page warns when a desktop update changes the wire
-protocol phux speaks. Only this Mac's phux is updated, not remote hosts.
-
-Choose **Stable** (the latest published release) or **Next** (verified main
-builds) for each product under **Release channels**. You can switch back to
-Stable even from a newer Next build.
-
-Update preferences live in `$XDG_CONFIG_HOME/phux-desktop/updates.json` (default
-`~/.config/phux-desktop/updates.json`). Bare development executables and launches
-with explicit CLI/socket/profile overrides cannot install updates.
+### Workspace
 
 The window is a sidebar (every visible session, its terminal count and
 independently expandable contents), workspace tabs and split panes. Exceptions

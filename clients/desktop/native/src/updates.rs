@@ -15,6 +15,7 @@ use phux_client_runtime::release::{self, Build, MANIFEST_CURL_ARGS, Product, Ver
 use serde_json::{Value, json};
 
 mod install;
+mod progress;
 mod runtime;
 
 pub use install::*;
@@ -279,6 +280,16 @@ fn run_bounded(
     timeout: Duration,
     timed_out: &str,
 ) -> anyhow::Result<String> {
+    run_bounded_with_progress(command, input, timeout, timed_out, None)
+}
+
+fn run_bounded_with_progress(
+    command: &mut Command,
+    input: Option<&'static [u8]>,
+    timeout: Duration,
+    timed_out: &str,
+    progress: Option<std::sync::mpsc::Sender<StageProgress>>,
+) -> anyhow::Result<String> {
     use std::os::unix::process::CommandExt;
     command
         .process_group(0)
@@ -298,9 +309,13 @@ fn run_bounded(
             let _ = stdin.write_all(bytes);
         });
     }
+    // Drain stderr while the command runs: curl redraws its meter with CR,
+    // not newline, and progress must not wait for the installer to exit.
+    let stderr = child.stderr.take().context("No updater stderr")?;
+    let stderr = std::thread::spawn(move || progress::read_stderr(stderr, progress));
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        let _ = tx.send(collect_output(child, stderr));
     });
     match rx.recv_timeout(timeout) {
         Ok(result) => decode_output(result?),
@@ -314,6 +329,17 @@ fn run_bounded(
             bail!("{timed_out}")
         }
     }
+}
+
+fn collect_output(
+    child: std::process::Child,
+    stderr: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+) -> std::io::Result<std::process::Output> {
+    let mut result = child.wait_with_output()?;
+    result.stderr = stderr
+        .join()
+        .map_err(|_| std::io::Error::other("Updater stderr reader panicked"))??;
+    Ok(result)
 }
 
 fn failure_message(bytes: &[u8]) -> String {

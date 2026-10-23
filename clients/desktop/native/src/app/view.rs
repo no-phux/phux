@@ -192,7 +192,13 @@ fn chrome_slot(
 }
 
 fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
-    overlays::layer(desk, window, cx)
+    let look = desk.look();
+    div()
+        .size_full()
+        .relative()
+        .children(super::updates::card(desk, &look, window, cx))
+        .child(overlays::layer(desk, window, cx))
+        .into_any_element()
 }
 
 pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> impl IntoElement {

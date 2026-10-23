@@ -12,7 +12,6 @@ use gpui::{
     AnimationExt, AnyElement, Context, FontWeight, IntoElement, MouseButton, Window, div, px,
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::Button;
 use gpui_kit::component::{Icon, Sizable};
 
 use crate::settings::TabPosition;
@@ -243,7 +242,7 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                     cx.listener(|desk, _, window, cx| desk.execute("plain-terminal", window, cx)),
                 )),
         )
-        .children(update_button(desk, cx))
+        .children(super::super::updates::trigger(desk, look, cx))
 }
 
 /// Snap every agent pane to its conversation or back to its terminal; lit
@@ -348,18 +347,6 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
             gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
         })
         .into_any_element()
-}
-
-fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> Option<AnyElement> {
-    let entity = desk.updates.clone();
-    let action = entity.read(cx).action()?;
-    Some(
-        Button::new("desktop-update-ready")
-            .label(action.label())
-            .small()
-            .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.act(cx)))
-            .into_any_element(),
-    )
 }
 
 /// The titlebar's way into the notification list, with the unread count.
