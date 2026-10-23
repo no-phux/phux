@@ -37,10 +37,6 @@ pub(crate) enum AskedSource {
     /// A live `AgentSession` child's `ask` (or permission/elicitation
     /// notification) record (ADR-0103 §5): top of the ladder, like
     /// [`crate::agent_state::EvidenceSource::Stream`].
-    #[allow(
-        dead_code,
-        reason = "the AgentSession stream producer lands with the engine; the rung is defined here so the ladder is complete and ordered when it does"
-    )]
     Stream,
 }
 
