@@ -14,7 +14,7 @@ use phux_protocol::service_http::{
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use tokio::sync::oneshot;
 
-use super::{ControlPlane, Pending, ServerFeatureExt};
+use super::{ControlPlane, Pending};
 
 /// Most service requests one client has unanswered at once.
 pub const MAX_SERVICE_HTTP_IN_FLIGHT: usize = 64;
@@ -135,10 +135,7 @@ impl ControlPlane {
         if !self.handshake_ready {
             return Err(ServiceHttpError::NotConnected);
         }
-        let advertised = self
-            .server
-            .as_ref()
-            .is_some_and(|server| server.has_ext(ServerFeatureExt::HostServiceHttp));
+        let advertised = self.method_advertised("SERVICE_HTTP_OPEN");
         if !advertised {
             return Err(ServiceHttpError::Unsupported);
         }

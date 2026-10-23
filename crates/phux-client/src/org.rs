@@ -104,6 +104,28 @@ impl OrgError {
         }
     }
 
+    /// Recovery facts preserved from this typed failure. Unknown identities stay absent.
+    #[must_use]
+    pub fn recovery(&self) -> crate::recovery::Recovery {
+        use crate::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
+        let operation = match self {
+            Self::OutcomeUnknown { operation } => operation.map(OperationId::to_hex),
+            _ => None,
+        };
+        let certainty = match self {
+            Self::Unsupported | Self::Refused(_) | Self::NotFound(_) | Self::Ambiguous { .. } => {
+                EffectCertainty::NotApplied
+            }
+            _ => EffectCertainty::Unknown,
+        };
+        Recovery::new(
+            ScopeKind::OrganizationAuthority,
+            operation,
+            certainty,
+            NextAction::Reconcile,
+        )
+    }
+
     /// A stable lowercase code for `--json` output.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -143,8 +165,8 @@ fn require(conn: &Connection) -> Result<(), OrgError> {
 /// # Errors
 ///
 /// [`OrgError::Unsupported`] with nothing sent; [`OrgError::OutcomeUnknown`]
-/// when the connection drops before the reply; [`OrgError::Attach`] for any
-/// other transport failure.
+/// after any transport/decode failure following a possible mutating send.
+/// Read-only requests retain their ordinary transport errors.
 pub async fn request(
     conn: &mut Connection,
     request_id: u32,
@@ -152,14 +174,16 @@ pub async fn request(
 ) -> Result<(OrgOutcome, Degradation), OrgError> {
     require(conn)?;
     let operation = command.idempotency_key().copied();
+    let receipt_operation = operation.filter(|_| command.is_organization());
     match conn.request(request_id, command).await {
         Ok(reply) => {
             let (result, interleaved) = reply.into_parts();
             Ok((
-                OrgOutcome::from_result(&result),
+                checked_outcome(&result, receipt_operation)?,
                 Degradation::from_interleaved(&interleaved),
             ))
         }
+        Err(_) if operation.is_some() => Err(OrgError::OutcomeUnknown { operation }),
         Err(AttachError::Disconnected) => Err(OrgError::OutcomeUnknown { operation }),
         Err(err) => Err(OrgError::Attach(err)),
     }
@@ -176,8 +200,17 @@ pub async fn commit(
     request_id: u32,
     command: Command,
 ) -> Result<Committed, OrgError> {
+    let operation = command.idempotency_key().copied();
     match request(conn, request_id, command).await?.0 {
-        OrgOutcome::Committed(committed) => Ok(*committed),
+        OrgOutcome::Committed(committed) => {
+            if operation.is_some_and(|operation| operation != committed.operation) {
+                return Err(OrgError::OutcomeUnknown { operation });
+            }
+            Ok(*committed)
+        }
+        OrgOutcome::Unknown { .. } | OrgOutcome::Accepted => {
+            Err(OrgError::OutcomeUnknown { operation })
+        }
         other => Err(outcome_error(other)),
     }
 }
@@ -199,6 +232,26 @@ pub async fn accept(
     }
 }
 
+/// Keep ambiguous or foreign acknowledgements uncertain for every mutation caller,
+/// including session creation paths that inspect the raw organization outcome.
+fn checked_outcome(
+    result: &phux_protocol::wire::frame::CommandResult,
+    operation: Option<OperationId>,
+) -> Result<OrgOutcome, OrgError> {
+    let outcome = OrgOutcome::from_result(result);
+    match &outcome {
+        OrgOutcome::Committed(receipt)
+            if operation.is_some_and(|expected| expected != receipt.operation) =>
+        {
+            Err(OrgError::OutcomeUnknown { operation })
+        }
+        OrgOutcome::Unknown { .. } | OrgOutcome::Value(_) if operation.is_some() => {
+            Err(OrgError::OutcomeUnknown { operation })
+        }
+        _ => Ok(outcome),
+    }
+}
+
 fn outcome_error(outcome: OrgOutcome) -> OrgError {
     match outcome {
         OrgOutcome::Refused(refusal) => OrgError::Refused(refusal),
@@ -213,3 +266,11 @@ fn outcome_error(outcome: OrgOutcome) -> OrgError {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "recovery regression assertions"
+)]
+mod recovery_tests;

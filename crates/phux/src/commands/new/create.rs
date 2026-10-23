@@ -161,7 +161,15 @@ pub(super) fn report_create_session_error(
             json,
             format!("failed to serialize the create request: {err}"),
         ),
-        CreateSessionError::Org(err) => report_create_failed(json, err),
+        CreateSessionError::Org(err) => {
+            use crate::commands::json_err::{CliError, codes, emit};
+            let error = CliError::new(
+                codes::SESSION_CREATE_FAILED,
+                format!("create-session failed: {err}"),
+                "inspect authoritative state with phux ls; keep the original operation identity and do not blindly retry an uncertain creation",
+            ).with_cause_code(err.code()).with_recovery(err.recovery());
+            emit(json, &error, 1)
+        }
         CreateSessionError::Layout(err) => crate::commands::json_err::emit(
             json,
             &crate::commands::json_err::CliError::new(

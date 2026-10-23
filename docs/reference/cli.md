@@ -2459,17 +2459,20 @@ Arguments:
   <TO>…  Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name.
 
 Flags:
-  -m, --message <TEXT>  The message. `-` reads it from stdin.
-  -t, --thread <SLUG>   Thread slug, such as the branch or task the message is
-                        about.
-      --as <ADDRESS>    Speak as this address instead of this pane.
-      --json            Emit stable, versioned JSON on stdout instead of the
-                        human view. On failure, stdout stays empty and stderr
-                        carries one JSON error object.
-  -h, --help            Print help
+  -m, --message <TEXT>      The message. `-` reads it from stdin.
+  -t, --thread <SLUG>       Thread slug, such as the branch or task the message
+                            is about.
+      --operation-id <KEY>  Durable retry identity: nonzero 32-hex. Reuse only
+                            with identical sender, recipients, thread and body
+                            in the same work store.
+      --as <ADDRESS>        Speak as this address instead of this pane.
+      --json                Emit stable, versioned JSON on stdout instead of the
+                            human view. On failure, stdout stays empty and
+                            stderr carries one JSON error object.
+  -h, --help                Print help
 
 Global flags:
-      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mail wait`

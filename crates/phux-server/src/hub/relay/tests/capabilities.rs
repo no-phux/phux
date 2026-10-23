@@ -2,6 +2,74 @@
 
 use super::*;
 
+#[test]
+fn ordinary_hub_admission_requires_each_commands_own_extended_bit() {
+    use phux_protocol::checkout::CheckoutRequest;
+    use phux_protocol::service_http::ServiceHttpRequest;
+    let commands = [
+        (
+            Command::GetFile {
+                host: None,
+                path: "/tmp/file".into(),
+                offset: 0,
+                max_bytes: 1,
+            },
+            ServerFeatureExt::FileDownload,
+        ),
+        (
+            Command::Checkout {
+                terminal_id: ResourceId::local(1),
+                request: CheckoutRequest::Status,
+            },
+            ServerFeatureExt::Checkout,
+        ),
+        (
+            Command::ServiceHttpOpen {
+                request: Box::new(ServiceHttpRequest {
+                    host: None,
+                    service: "test".into(),
+                    method: "GET".into(),
+                    target: "/".into(),
+                    headers: vec![],
+                    body: vec![],
+                }),
+            },
+            ServerFeatureExt::HostServiceHttp,
+        ),
+        (
+            Command::ServiceHttpRead {
+                exchange: 1,
+                max_bytes: 1,
+            },
+            ServerFeatureExt::HostServiceHttp,
+        ),
+        (
+            Command::ServiceHttpClose { exchange: 1 },
+            ServerFeatureExt::HostServiceHttp,
+        ),
+    ];
+    for ext in std::iter::once(ServerFeatureExtSet::new()).chain(
+        ServerFeatureExt::ALL
+            .iter()
+            .map(|&feature| ServerFeatureExtSet::with(&[feature])),
+    ) {
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::with(ServerFeature::ALL),
+        );
+        session.set_satellite_features_ext(ext);
+        for (command, needed) in &commands {
+            assert_eq!(
+                session.command_rejection(command).is_none(),
+                ext.contains(*needed),
+                "{command:?} with {ext:?}"
+            );
+        }
+    }
+}
+
 /// ADR-0124: `retain_secs` crosses only with `RETAIN_ON_EXIT`; the hub
 /// refuses otherwise. A spawn without it still relays.
 #[test]

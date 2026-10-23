@@ -49,11 +49,16 @@ fn mail_send_schema() -> Value {
          OpenCode, at the agent's next hook for Claude Code and Grok. Address agents by pane \
          (`@749`) or labelled pane (`pi@749`); find them with phux_agent_list. You speak as \
          your own pane. Reply in the same `thread`. Result: `{schema: \"phux.coord/v1\", mail: \
-         {id, thread, from, to, body, created_at}}`.",
+         {id, thread, from, to, body, created_at}, operation_id, scope, replayed}`. \
+         Supply operation_id for durable identical retries in this work store. It is separate \
+         from idempotency_key, which owns only this adapter invocation. After an uncertain \
+         result, a new adapter key may observe an explicit replay with the same mail \
+         operation_id and identical sender/recipients/thread/body; never silently mint a new durable id.",
         json!({
             "to": { "type": "array", "minItems": 1, "maxItems": 32, "items": address(), "description": "Recipients." },
             "thread": thread(),
             "message": { "type": "string", "minLength": 1, "maxLength": 65536 },
+            "operation_id": { "type": "string", "minLength": 32, "maxLength": 32, "pattern": "^[0-9a-fA-F]{32}$", "not": { "const": "00000000000000000000000000000000" }, "description": "Durable mail operation identity in this work store; reuse only with identical semantic arguments. If omitted, generated once and returned on success or uncertain failure. Not the MCP adapter idempotency_key." },
             "as": address(),
         }),
         &["to", "thread", "message"],

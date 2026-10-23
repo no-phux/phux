@@ -5,11 +5,17 @@ use super::RelayRequest;
 use super::{
     ClientId, Command, CommandResult, DirectoryListingResult, ErrorCode, FrameKind, Outbound,
     PathQueryResult, PendingListing, PendingPathQuery, ProxySubscriber, ProxySubscription,
-    Registration, RelaySession, ResourceId, SatelliteSpawn, ServerFeature, ServerFeatureExt,
-    SnapshotGate, SpawnError, listing_refusal, oneshot, path_refusal,
+    Registration, RelaySession, ResourceId, SatelliteSpawn, ServerFeature, SnapshotGate,
+    SpawnError, listing_refusal, oneshot, path_refusal,
 };
 
 impl RelaySession {
+    fn method_advertised(&self, name: &str) -> bool {
+        phux_protocol::kinds::method_named(name).is_some_and(|method| {
+            method.advertised(self.satellite_features, self.satellite_features_ext)
+        })
+    }
+
     /// Refuse a spawn with fields the satellite would silently skip.
     pub(super) fn spawn_capability_rejection(&self, spawn: &SatelliteSpawn) -> Option<SpawnError> {
         let resource = spawn.resource.as_ref()?;
@@ -45,42 +51,27 @@ impl RelaySession {
                 message,
             });
         }
-        if let Command::GetFile { .. } = command
-            && !self
-                .satellite_features_ext
-                .contains(ServerFeatureExt::FileDownload)
+        // Only these existing ordinary admission checks are catalog-driven.
+        // Payload-sensitive and keyed-operation checks remain explicit below.
+        let name = match command {
+            Command::GetFile { .. } => Some("GET_FILE"),
+            Command::Checkout { .. } => Some("CHECKOUT"),
+            Command::ServiceHttpOpen { .. } => Some("SERVICE_HTTP_OPEN"),
+            Command::ServiceHttpRead { .. } => Some("SERVICE_HTTP_READ"),
+            Command::ServiceHttpClose { .. } => Some("SERVICE_HTTP_CLOSE"),
+            _ => None,
+        };
+        if let Some(name) = name
+            && !self.method_advertised(name)
         {
             return Some(CommandResult::Error {
                 code: ErrorCode::UnsupportedSatelliteRoute,
                 message: format!(
-                    "satellite {} lacks FILE_DOWNLOAD; nothing was forwarded",
-                    self.host
-                ),
-            });
-        }
-        if let Command::Checkout { .. } = command
-            && !self
-                .satellite_features_ext
-                .contains(ServerFeatureExt::Checkout)
-        {
-            return Some(CommandResult::Error {
-                code: ErrorCode::UnsupportedSatelliteRoute,
-                message: format!(
-                    "satellite {} lacks CHECKOUT; nothing was forwarded",
-                    self.host
-                ),
-            });
-        }
-        if crate::runtime::service_http::is_service_http(command)
-            && !self
-                .satellite_features_ext
-                .contains(ServerFeatureExt::HostServiceHttp)
-        {
-            return Some(CommandResult::Error {
-                code: ErrorCode::UnsupportedSatelliteRoute,
-                message: format!(
-                    "satellite {} lacks HOST_SERVICE_HTTP; nothing was forwarded",
-                    self.host
+                    "satellite {} lacks {}; nothing was forwarded",
+                    self.host,
+                    phux_protocol::kinds::method_named(name)
+                        .and_then(|method| method.gate)
+                        .map_or(name, phux_protocol::kinds::FeatureGate::wire_name),
                 ),
             });
         }
@@ -172,10 +163,7 @@ impl RelaySession {
         path: String,
         reply: oneshot::Sender<DirectoryListingResult>,
     ) -> Option<Vec<u8>> {
-        if !self
-            .satellite_features
-            .contains(ServerFeature::ListDirectory)
-        {
+        if !self.method_advertised("LIST_DIRECTORY") {
             let _ = reply.send(Err(listing_refusal(
                 &path,
                 format!("satellite {} does not answer LIST_DIRECTORY", self.host),
@@ -200,10 +188,7 @@ impl RelaySession {
         recursive: bool,
         reply: oneshot::Sender<PathQueryResult>,
     ) -> Option<Vec<u8>> {
-        if !self
-            .satellite_features_ext
-            .contains(ServerFeatureExt::PathQuery)
-        {
+        if !self.method_advertised("PATH_QUERY") {
             let _ = reply.send(Err(path_refusal(
                 &root,
                 format!("satellite {} does not answer PATH_QUERY", self.host),

@@ -60,6 +60,101 @@ fn calls(root: &std::path::Path, calls: &[(&str, Value)]) -> Vec<Value> {
 }
 
 #[test]
+fn mail_unknown_reply_keeps_durable_identity_across_cached_failure_and_adapter_restart() {
+    use std::os::unix::net::UnixListener;
+    let root = tempfile::Builder::new()
+        .prefix("phux-mcp-retry-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let expected = phux_work::Endpoint::new(
+        &root.path().join(format!("state/phux-{PROFILE}")),
+        &root.path().join(format!("run/phux-{PROFILE}")),
+    );
+    let actual = phux_work::Endpoint {
+        store: expected.store.clone(),
+        socket: root.path().join("actual.sock"),
+    };
+    let serving = actual.clone();
+    let keeper =
+        std::thread::spawn(move || phux_work::run_keeper(&serving, Duration::from_secs(5)));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while UnixStream::connect(&actual.socket).is_err() {
+        assert!(Instant::now() < deadline, "keeper never bound");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::fs::create_dir_all(expected.socket.parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(&expected.socket).unwrap();
+    let proxy = std::thread::spawn(move || {
+        for index in 0..3 {
+            let (mut caller, _) = listener.accept().unwrap();
+            caller
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(&caller).read_line(&mut line).unwrap();
+            let mut backend = UnixStream::connect(&actual.socket).unwrap();
+            backend
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            backend.write_all(line.as_bytes()).unwrap();
+            let mut reply = String::new();
+            BufReader::new(&backend).read_line(&mut reply).unwrap();
+            assert!(!reply.is_empty());
+            if index != 0 {
+                caller.write_all(reply.as_bytes()).unwrap();
+            }
+            // The first committed reply is deliberately discarded.
+        }
+    });
+    let key = "12345678123456781234567812345678";
+    let first_alias = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let second_alias = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let send = |alias| json!({"to":["@730"], "thread":"retry", "message":"once", "operation_id":key, "idempotency_key":alias});
+    let failed = calls(
+        root.path(),
+        &[
+            ("phux_mail_send", send(first_alias)),
+            ("phux_mail_send", send(first_alias)),
+            (
+                "phux_operation_status",
+                json!({"idempotency_key":first_alias}),
+            ),
+        ],
+    );
+    assert_eq!(failed[0]["error"]["recovery"]["operation_id"], key);
+    assert_eq!(
+        failed[0]["error"]["recovery"]["scope"]["kind"],
+        "work_store"
+    );
+    assert_eq!(
+        failed[0]["error"]["recovery"]["effect_certainty"],
+        "unknown"
+    );
+    assert_eq!(
+        failed[0], failed[1],
+        "same adapter alias returns the cached failure"
+    );
+    assert_eq!(failed[2]["adapter_receipt_id"], first_alias);
+    assert_eq!(failed[2]["scope"]["kind"], "mcp_adapter");
+    assert_eq!(failed[2]["state"], "failed");
+    let recovered = calls(
+        root.path(),
+        &[
+            ("phux_mail_send", send(second_alias)),
+            (
+                "phux_mail_read",
+                json!({"as":"@730", "all":true, "peek":true}),
+            ),
+        ],
+    );
+    assert_eq!(recovered[0]["operation_id"], key);
+    assert_eq!(recovered[0]["replayed"], true);
+    assert_eq!(recovered[1]["mail"].as_array().unwrap().len(), 1);
+    proxy.join().unwrap();
+    keeper.join().unwrap().unwrap();
+}
+
+#[test]
 fn mail_and_claims_reach_the_store_without_the_cli() {
     let root = tempfile::Builder::new()
         .prefix("phux-mcp-coord-")

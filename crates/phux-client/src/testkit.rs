@@ -145,6 +145,8 @@ pub struct ScriptSpec {
     /// The organization every organization command is answered from; see
     /// [`ScriptSpec::organization`].
     organization: Option<OrgFixture>,
+    /// Fault-injected payload for mutating organization replies; ordering stays fixed.
+    mutation_reply: Option<CommandResult>,
 }
 
 impl fmt::Debug for ScriptSpec {

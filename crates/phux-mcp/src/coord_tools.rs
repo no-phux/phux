@@ -7,6 +7,7 @@
 //! CLI verb it mirrors. The adapter runs in the agent's pane, so it speaks as
 //! that pane unless `as` says otherwise ([`phux_work::caller_address`]).
 
+use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
 use std::path::Path;
 
 use phux_work::{
@@ -97,10 +98,19 @@ impl Operation {
     }
 
     fn run(self, client: &Client) -> Result<Value, ToolError> {
+        let operation = match &self {
+            Self::Send(request) => Some(request.operation_id),
+            _ => None,
+        };
         let document = match self {
-            Self::Send(request) => client
-                .send_mail(request)
-                .map(|sent| json!({"schema": SCHEMA, "mail": sent.mail})),
+            Self::Send(request) => {
+                let operation_id = request.operation_id.to_hex();
+                client.send_mail(request).map(|sent| {
+                    json!({"schema": SCHEMA, "mail": sent.mail,
+                    "operation_id": operation_id, "scope": phux_client::recovery::Scope { kind: phux_client::recovery::ScopeKind::WorkStore, id: None },
+                    "replayed": sent.idempotent_replay})
+                })
+            }
             Self::Read(request) => {
                 let reader = request.reader.clone();
                 client
@@ -132,7 +142,26 @@ impl Operation {
                 .claims(filter)
                 .map(|claims| json!({"schema": SCHEMA, "claims": claims})),
         };
-        document.map_err(|err| failure(&err))
+        document.map_err(|err| {
+            let error = failure(&err);
+            let Some(operation) = operation else {
+                return error;
+            };
+            let certainty = if err.write_outcome_unknown() {
+                EffectCertainty::Unknown
+            } else {
+                EffectCertainty::NotApplied
+            };
+            let recovery = Recovery::new(
+                ScopeKind::WorkStore,
+                Some(operation.to_hex()),
+                certainty,
+                NextAction::Reconcile,
+            );
+            let mut document = error.document();
+            document["error"]["recovery"] = json!(recovery);
+            ToolError::with_document(error.to_string(), document)
+        })
     }
 }
 
@@ -154,7 +183,7 @@ fn failure(err: &phux_work::Error) -> ToolError {
         Error::OperationConflict { .. } => (
             "mission_operation_conflict",
             1,
-            "use a new operation id; this id already names a different write",
+            "inspect the original operation; use a new id only for a deliberately different write",
         ),
         Error::UnsupportedSchema { .. } => (
             "mission_unsupported_schema",
@@ -162,7 +191,11 @@ fn failure(err: &phux_work::Error) -> ToolError {
             "this binary reads mission schema version 2 only",
         ),
         Error::Busy => ("mission_busy", 1, retry),
-        Error::Keeper(_) => ("mission_store", 1, retry),
+        Error::Keeper(_) => (
+            "mission_store",
+            1,
+            "the write may have committed; reconcile before retrying. For mail, keep operation_id and identical arguments in the same work store; never blindly use a fresh durable id. Check keeper.log beside the work store",
+        ),
         Error::InvalidAlias(_)
         | Error::InvalidOperationId(_)
         | Error::InvalidRepo(_)
@@ -237,14 +270,16 @@ fn fence(args: &Value) -> Result<u64, ToolError> {
 fn mail_send(args: &Value) -> Result<Operation, ToolError> {
     strict_object(
         args,
-        &["to", "thread", "message", "as"],
+        &["to", "thread", "message", "as", "operation_id"],
         &["to", "thread", "message"],
     )?;
     let to = strings(args, "to")?;
     if to.is_empty() {
         return Err(ToolError::new("`to` names at least one recipient"));
     }
-    let operation_id = OperationId::generate().map_err(|err| failure(&err))?;
+    let operation_id = string(args, "operation_id")?
+        .map_or_else(OperationId::generate, OperationId::parse)
+        .map_err(|err| failure(&err))?;
     Ok(Operation::Send(SendMail {
         thread: string(args, "thread")?.unwrap_or_default().to_owned(),
         from: me(args)?,
@@ -429,6 +464,35 @@ mod tests {
             (usage["error"]["code"].as_str(), usage["exit_code"].as_u64()),
             (Some("usage_error"), Some(2))
         );
+    }
+
+    #[test]
+    fn mail_durable_identity_is_independent_of_adapter_identity() {
+        let key = "12345678123456781234567812345678";
+        let Operation::Send(request) = parse(
+            "phux_mail_send",
+            &json!({"to":["b"], "thread":"t", "message":"m", "operation_id":key}),
+        )
+        .unwrap() else {
+            unreachable!("mail");
+        };
+        assert_eq!(request.operation_id.to_hex(), key);
+        for bad in ["", "bad", "00000000000000000000000000000000"] {
+            assert!(
+                parse(
+                    "phux_mail_send",
+                    &json!({"to":["b"], "thread":"t", "message":"m", "operation_id":bad})
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn uncertain_keeper_failure_does_not_recommend_blind_retry() {
+        let doc = failure(&phux_work::Error::Keeper("reply lost".into())).document();
+        assert!(doc["remedy"].as_str().unwrap().contains("reconcile"));
+        assert!(doc["remedy"].as_str().unwrap().contains("operation_id"));
     }
 
     #[test]

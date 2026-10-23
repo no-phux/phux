@@ -25,7 +25,11 @@ Addressed to the server or the connection rather than to one resource.
 | `VIEWPORT_RESIZE` | frame `0x20` | BIND | yes | none | shipped |
 | `COMMAND` | frame `0x31` | nested | yes | none | shipped |
 | `LIST_DIRECTORY` | frame `0x55` | INVENTORY | no | `list_directory` | shipped |
-| `PATH_QUERY` | frame `0x56` | INVENTORY | no | none | shipped |
+| `PATH_QUERY` | frame `0x56` | INVENTORY | no | `path_query` (features_ext) | shipped |
+| `GET_FILE` | command `0x3b` | INPUT | yes | `file_download` (features_ext) | shipped |
+| `SERVICE_HTTP_OPEN` | command `0x3d` | INPUT | yes | `host_service_http` (features_ext) | shipped |
+| `SERVICE_HTTP_READ` | command `0x3e` | INPUT | yes | `host_service_http` (features_ext) | shipped |
+| `SERVICE_HTTP_CLOSE` | command `0x3f` | INPUT | yes | `host_service_http` (features_ext) | shipped |
 | `UPGRADE` | command `0x0e` | SIGNAL | yes | none | shipped |
 | `SHUTDOWN` | command `0x16` | SIGNAL (owner socket only) | yes | `shutdown` | shipped |
 | `OPEN_LISTENER` | command `0x1c` | SIGNAL (owner socket only) | yes | `open_listener` | shipped |
@@ -134,11 +138,7 @@ The kind's facet.
 | `ROUTE_INPUT` | command `0x08` | INPUT | yes | none | shipped |
 | `APPLY_INPUT` | command `0x14` | INPUT | yes | `acknowledged_input` | shipped |
 | `PUT_FILE` | command `0x15` | INPUT | yes | `file_upload` | shipped |
-| `GET_FILE` | command `0x3b` | INPUT | yes | `file_download` (features_ext) | shipped |
 | `CHECKOUT` | command `0x3c` | INPUT | yes | `checkout` (features_ext) | shipped |
-| `SERVICE_HTTP_OPEN` | command `0x3d` | INPUT | yes | `host_service_http` (features_ext) | shipped |
-| `SERVICE_HTTP_READ` | command `0x3e` | INPUT | yes | `host_service_http` (features_ext) | shipped |
-| `SERVICE_HTTP_CLOSE` | command `0x3f` | INPUT | yes | `host_service_http` (features_ext) | shipped |
 | `TRANSCRIBE` | command `0x19` | INPUT | yes | `transcribe` | shipped |
 | `GET_TERMINAL_STATE` | command `0x0c` | INVENTORY | no | none | shipped |
 | `ACQUIRE_INPUT` | command `0x0f` | BIND | yes | none | shipped |
