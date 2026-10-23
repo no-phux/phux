@@ -266,6 +266,14 @@ async function chrome(
   console.log(requireBrowserTests(readFileSync(logPath, "utf8"), required));
 }
 
+/**
+ * Warnings, plus the stale-output resync target. That line is `debug!` only
+ * (`fell behind; skipping to a fresh checkpoint`). `phux=info` would also
+ * match every `phux_server` info span, so this stays narrow. An inherited
+ * `RUST_LOG` is left alone.
+ */
+const DEMO_SERVER_LOG = "phux_server::runtime::attach::output_pump_resync=debug,warn";
+
 /** The demo server in its own group, ready on its bound port for `body`. */
 function demoServer(
   env: Env,
@@ -275,7 +283,8 @@ function demoServer(
 ): Promise<void> {
   const logPath = join(paths.logs, log);
   const binary = join(paths.target, "debug/examples/ws_demo_server");
-  return owned([binary], { cwd: ROOT, env, logPath }, async (server) =>
+  const serverEnv = { ...env, RUST_LOG: env["RUST_LOG"] ?? DEMO_SERVER_LOG };
+  return owned([binary], { cwd: ROOT, env: serverEnv, logPath }, async (server) =>
     body(server, await boundPort(server, logPath)),
   );
 }
