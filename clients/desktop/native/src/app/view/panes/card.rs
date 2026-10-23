@@ -26,6 +26,27 @@ use super::depth::{depth_inset, pane_shadows, veils};
 /// How far down a pane the pointer reveals its controls.
 const CONTROLS_EDGE: f32 = 36.;
 
+/// A terminal that has not bound a view yet. A saved id that this server
+/// does not have says so. A spawn waiting for its replica stays blank.
+fn pending_terminal(missing: bool, look: &Look) -> AnyElement {
+    if !missing {
+        return div().size_full().into_any_element();
+    }
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(from_hex(&look.chrome.muted))
+        .child(
+            div()
+                .w_full()
+                .text_center()
+                .child("Saved terminal is not on this server"),
+        )
+        .into_any_element()
+}
+
 /// A terminal pane's body: its cached view, or a placeholder while the
 /// terminal is missing or not ready.
 fn terminal_body(
@@ -40,29 +61,14 @@ fn terminal_body(
     // The terminal holds the keyboard only while no modal or find field does.
     let settings = desk.terminal_settings(placement, focused && !desk.text_field_has_keys());
     let client = desk.client();
-    let (Some(terminal), Some(view), Some(settings), Some(client)) = (
-        placement.terminal_id.clone(),
-        placement.view_id,
-        settings,
-        client,
-    ) else {
-        return div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(from_hex(&look.chrome.muted))
-            .child(
-                div()
-                    .w_full()
-                    .text_center()
-                    .child(if placement.terminal_id.is_none() {
-                        "Saved terminal is not on this server"
-                    } else {
-                        "Waiting for terminal"
-                    }),
-            )
-            .into_any_element();
+    let Some(terminal) = placement.terminal_id.clone() else {
+        return pending_terminal(true, look);
+    };
+    let Some(view) = placement.view_id else {
+        return pending_terminal(false, look);
+    };
+    let (Some(settings), Some(client)) = (settings, client) else {
+        return pending_terminal(false, look);
     };
     let remote = desk.remote.clone();
     let entity = desk.panes_mut().entity_for(

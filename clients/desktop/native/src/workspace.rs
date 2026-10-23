@@ -220,20 +220,14 @@ impl Workspace {
         }
     }
 
-    /// Place ready terminals and finish a pending restore. Call after [`Self::handle`].
+    /// Place answered spawns and finish a pending restore. Call after [`Self::handle`].
     pub fn settle(&mut self, connection: &Connection) {
         self.sync_server(connection);
         if connection.status != Status::Attached || !connection.session_validated() {
             return;
         }
         self.rearm_views(connection);
-        let ready: Vec<(String, Destination)> = self
-            .awaiting
-            .extract_if(|label, _| parse_terminal(label).is_some_and(|id| connection.ready(&id)))
-            .collect();
-        for (label, destination) in ready {
-            self.place_ready(connection, &label, destination);
-        }
+        self.land_answered(connection);
         if !self.restored {
             self.finish_restore(connection);
         }
@@ -243,9 +237,21 @@ impl Workspace {
         }
     }
 
-    /// Place one terminal the server reports ready at its recorded
-    /// destination. A tab spawn whose terminal is already shown is revealed
-    /// instead of landing twice; a split always lands in its own tab.
+    /// Put every answered spawn on screen. The view binds later, in
+    /// [`Self::resolve_restored`], once the terminal accepts input.
+    fn land_answered(&mut self, connection: &Connection) {
+        let landed: Vec<(String, Destination)> = self
+            .awaiting
+            .extract_if(|label, _| parse_terminal(label).is_some())
+            .collect();
+        for (label, destination) in landed {
+            self.place_ready(connection, &label, destination);
+        }
+    }
+
+    /// Place one answered terminal at its recorded destination. A tab spawn
+    /// whose terminal is already shown is revealed instead of landing twice;
+    /// a split always lands in its own tab.
     fn place_ready(&mut self, connection: &Connection, label: &str, destination: Destination) {
         self.awaiting.remove(label);
         if destination == Destination::QuietTab {
