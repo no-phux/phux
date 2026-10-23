@@ -17,6 +17,8 @@ gpui_kit::assets::icon_assets!(
         Terminal,
         Download,
         Server,
+        // Dismiss the corner update card.
+        X,
         Clock,
         FolderPlus,
         Layers,
@@ -90,6 +92,7 @@ mod tests {
             IconName::LaptopMinimal,
             IconName::PanelsTopLeft,
             IconName::Server,
+            IconName::X,
             IconName::Clock,
             IconName::FolderPlus,
             IconName::Layers,

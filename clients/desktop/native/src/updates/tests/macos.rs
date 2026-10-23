@@ -61,7 +61,7 @@ fn stage_passes_the_checked_release_and_its_digest() {
             .windows(2)
             .any(|pair| pair == ["--revision", &"b".repeat(40)])
     );
-    assert!(stage(bundle, &Release::default()).is_err());
+    assert!(stage(bundle, &Release::default(), std::sync::mpsc::channel().0).is_err());
 }
 
 /// Network: stages a published release into a scratch "Applications".
@@ -77,12 +77,17 @@ fn stages_a_published_release() {
         sha256: sha256.into(),
         ..Release::default()
     };
-    let staged = stage(&apps.join("Phux.app"), &target).unwrap();
+    let staged = stage(
+        &apps.join("Phux.app"),
+        &target,
+        std::sync::mpsc::channel().0,
+    )
+    .unwrap();
     assert_eq!(staged, apps.join(".phux-desktop-update/Phux.app"));
     assert_eq!(installed_release(&staged).unwrap().version, version);
     let mut wrong = target.clone();
     wrong.sha256 = "0".repeat(64);
-    assert!(stage(&apps.join("Phux.app"), &wrong).is_err());
+    assert!(stage(&apps.join("Phux.app"), &wrong, std::sync::mpsc::channel().0).is_err());
     assert!(!apps.join("Phux.app").exists(), "staging never installs");
     std::fs::remove_dir_all(apps).unwrap();
 }

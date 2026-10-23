@@ -38,6 +38,32 @@ fn runtime(available: bool) -> RuntimeRelease {
     }
 }
 
+fn available(updater: &mut crate::app::updates::Updater) {
+    updater.development = false;
+    updater.current = Some(release("0.42.1"));
+    updater.target = Some(release("0.43.0"));
+    updater.prefs.manage_runtime = true;
+    updater.runtime = Some(runtime(true));
+    updater.message = "An update is ready".into();
+}
+
+fn ready(updater: &mut crate::app::updates::Updater) {
+    available(updater);
+    updater.staged = Some(Staged {
+        app: "/Applications/.phux-desktop-update/Phux.app".into(),
+        release: release("0.43.0"),
+    });
+    updater.runtime = Some(runtime(false));
+}
+
+fn downloading(updater: &mut crate::app::updates::Updater) {
+    available(updater);
+    updater.busy = true;
+    updater.work = crate::app::updates::Work::Downloading;
+    updater.progress = Some(crate::updates::StageProgress::Downloading(63));
+    updater.message = "Downloading and verifying desktop update…".into();
+}
+
 const SCENARIOS: &[Scenario] = &[
     ("index", None, |_| {}),
     ("appearance", Some(Page::Appearance), |_| {}),
@@ -56,34 +82,29 @@ const SCENARIOS: &[Scenario] = &[
         updater.runtime = Some(runtime(false));
         updater.message = "You’re up to date".into();
     }),
-    ("updates-available", Some(Page::Updates), |updater| {
-        updater.development = false;
-        updater.current = Some(release("0.42.1"));
-        updater.target = Some(release("0.43.0"));
-        updater.prefs.manage_runtime = true;
-        updater.runtime = Some(runtime(true));
-        updater.message = "An update is ready".into();
-    }),
-    ("updates-staged", Some(Page::Updates), |updater| {
-        updater.development = false;
-        updater.current = Some(release("0.42.1"));
-        updater.target = Some(release("0.43.0"));
-        updater.staged = Some(Staged {
-            app: "/Applications/.phux-desktop-update/Phux.app".into(),
-            release: release("0.43.0"),
-        });
-        updater.prefs.manage_runtime = true;
+    ("updates-available", Some(Page::Updates), available),
+    ("updates-staged", Some(Page::Updates), ready),
+    ("updates-combined-staged", Some(Page::Updates), |updater| {
+        ready(updater);
         updater.runtime = Some(runtime(true));
     }),
-    ("updates-busy", Some(Page::Updates), |updater| {
-        updater.development = false;
-        updater.current = Some(release("0.42.1"));
-        updater.target = Some(release("0.43.0"));
-        updater.prefs.manage_runtime = true;
+    ("updates-busy", Some(Page::Updates), downloading),
+    ("updates-verifying", Some(Page::Updates), |updater| {
+        downloading(updater);
+        updater.progress = Some(crate::updates::StageProgress::Verifying);
+    }),
+    ("updates-installing", Some(Page::Updates), |updater| {
+        ready(updater);
         updater.runtime = Some(runtime(true));
         updater.busy = true;
-        updater.work = crate::app::updates::Work::Downloading;
-        updater.message = "Downloading and verifying desktop update…".into();
+        updater.work = crate::app::updates::Work::Installing;
+        updater.message = "Updating phux and handing the live server off…".into();
+    }),
+    ("updates-handoff", Some(Page::Updates), |updater| {
+        ready(updater);
+        updater.pending_handoff = true;
+        updater.message =
+            "Handoff: The server handoff was refused. Your sessions are still running.".into();
     }),
     ("updates-phux", Some(Page::Updates), |updater| {
         updater.development = false;
@@ -159,6 +180,24 @@ pub(crate) fn capture(
                         .expect("write settings PNG");
                 })
                 .expect("capture window");
+            if name.starts_with("updates-") {
+                settings
+                    .update(cx, |_, window, _| window.remove_window())
+                    .expect("close settings");
+                cx.background_executor()
+                    .timer(Duration::from_millis(700))
+                    .await;
+                cx.update_window(*root, |_, window, cx| window.draw(cx).clear(cx))
+                    .expect("draw corner card");
+                root.update(cx, |_, window, _| {
+                    window
+                        .render_to_image()
+                        .expect("corner card capture")
+                        .save(directory.join(format!("{name}-corner.png")))
+                        .expect("write corner card PNG");
+                })
+                .expect("capture corner card");
+            }
         }
         cx.update(|cx| cx.quit());
     })

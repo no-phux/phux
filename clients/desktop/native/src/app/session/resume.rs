@@ -64,6 +64,12 @@ impl SavedWindow {
 }
 
 impl Desktop {
+    /// Keep a restart snapshot out of the user's state directory.
+    #[cfg(test)]
+    pub(in crate::app) fn set_socket_for_test(&mut self, socket: std::path::PathBuf) {
+        self.socket = socket;
+    }
+
     fn restart_store(&self) -> FileLayoutStore {
         FileLayoutStore::new(
             persist::layout_paths(&self.socket.display().to_string(), "")

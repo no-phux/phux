@@ -1,10 +1,16 @@
 //! One process-wide updater; window subscriptions repaint on its activity.
 
+mod progress;
+mod restart;
 mod status;
 #[cfg(test)]
 mod tests;
+mod toast;
 mod view;
 
+#[cfg(test)]
+use progress::drain_progress;
+pub(crate) use toast::{card, trigger};
 pub(crate) use view::page;
 
 use std::path::PathBuf;
@@ -33,10 +39,14 @@ pub(crate) struct Updater {
     relaunch: bool,
     /// The post-exit helper was already handed the staged bundle.
     handed_off: bool,
-    /// The running update goes on to phux and the restart once the desktop is staged.
-    chained: bool,
     /// What `busy` is doing.
     pub work: Work,
+    /// Transfer measurements from the installer, never a simulated percentage.
+    pub progress: Option<updates::StageProgress>,
+    pub card_expanded: bool,
+    /// Keep a successful server-only update visible until dismissed.
+    pub completed: bool,
+    _progress: Option<Task<()>>,
     _automatic: Option<Task<()>>,
     _quit: Option<Subscription>,
 }
@@ -58,27 +68,26 @@ pub(crate) enum Work {
     Installing,
 }
 
-/// The one update button, in the titlebar and on the Updates page. A click
-/// carries every pending product: the desktop downloads and verifies, phux
-/// updates and hands the server off, then the desktop restarts into its update.
+/// The one update action, in the corner card and on the Updates page. A click
+/// prepares every pending product. Restarting Desktop is a separate click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UpdateAction {
-    /// Only the desktop moves: download if needed, then restart.
+    /// Only Desktop moves: download, or explicitly restart an already staged build.
     Desktop { staged: bool },
     /// Only phux moves; the desktop is current, so nothing restarts.
     Phux { retry: bool },
-    /// Both move together: desktop staged, phux handed off, then restart.
+    /// Prepare both: Desktop staged and phux handed off; restart stays a separate action.
     Both,
 }
 
 impl UpdateAction {
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::Desktop { staged: false } => "Update Desktop",
-            Self::Desktop { staged: true } => "Restart to update",
-            Self::Phux { retry: false } => "Update phux",
+            Self::Desktop { staged: false } => "Download update",
+            Self::Desktop { staged: true } => "Restart now",
+            Self::Phux { retry: false } => "Update server",
             Self::Phux { retry: true } => "Retry server handoff",
-            Self::Both => "Update phux & Desktop",
+            Self::Both => "Download Desktop",
         }
     }
 
@@ -148,39 +157,13 @@ impl Updater {
             staged: None,
             relaunch: false,
             handed_off: false,
-            chained: false,
             work: Work::Checking,
+            progress: None,
+            card_expanded: true,
+            completed: false,
+            _progress: None,
             _automatic: None,
             _quit: None,
-        }
-    }
-
-    /// Quitting with a staged update installs it once this process has exited.
-    pub fn watch_quit(&mut self, cx: &mut Context<Self>) {
-        self._quit = Some(cx.on_app_quit(|updater, cx| {
-            if updater.staged.is_some()
-                && !updater.relaunch
-                && !updater.development
-                && let Err(error) = updater.save_restart(cx)
-            {
-                log::error!("Could not save desktop restart: {error:#}");
-                return std::future::ready(());
-            }
-            updater.apply_staged();
-            std::future::ready(())
-        }));
-    }
-
-    fn apply_staged(&mut self) {
-        if self.handed_off || self.development {
-            return;
-        }
-        let (Some(bundle), Some(staged)) = (self.bundle.as_deref(), self.staged.as_ref()) else {
-            return;
-        };
-        match updates::apply_on_exit(bundle, &staged.app, self.relaunch) {
-            Ok(()) => self.handed_off = true,
-            Err(error) => log::error!("Could not hand off the desktop update: {error:#}"),
         }
     }
 
@@ -238,6 +221,7 @@ impl Updater {
     }
 
     fn adopt_preferences(&mut self, prefs: Preferences) {
+        self.completed = false;
         if prefs.desktop != self.prefs.desktop {
             self.target = None;
             self.staged = None;
@@ -254,6 +238,7 @@ impl Updater {
             return;
         }
         self.busy = true;
+        self.completed = false;
         self.work = Work::Checking;
         self.message = "Checking releases…".into();
         let prefs = self.prefs.clone();
@@ -281,8 +266,11 @@ impl Updater {
         runtime: Option<anyhow::Result<RuntimeRelease>>,
     ) {
         self.busy = false;
+        self.card_expanded = true;
         self.target = None;
-        self.runtime = None;
+        // A failed recheck must not erase a staged Desktop's known server
+        // prerequisite and accidentally turn a combined restart into Desktop-only.
+        let staged_runtime = self.runtime.take().filter(|_| self.staged.is_some());
         let mut failures = Vec::new();
         match desktop {
             Ok(target) => self.target = Some(target),
@@ -290,7 +278,10 @@ impl Updater {
         }
         match runtime {
             Some(Ok(runtime)) => self.runtime = Some(runtime),
-            Some(Err(error)) => failures.push(format!("phux: {error:#}")),
+            Some(Err(error)) => {
+                self.runtime = staged_runtime;
+                failures.push(format!("phux: {error:#}"));
+            }
             None => {}
         }
         if !failures.is_empty() {
@@ -353,6 +344,8 @@ impl Updater {
         let Some(action) = self.action() else {
             return;
         };
+        self.card_expanded = true;
+        self.completed = false;
         if action.desktop() && cfg!(target_os = "linux") {
             self.message =
                 updates::linux_install_remedy(self.prefs.desktop, self.bundle.as_deref());
@@ -360,22 +353,10 @@ impl Updater {
             return;
         }
         if action.desktop() && self.staged.is_none() {
-            self.chained = true;
             self.download_desktop(cx);
             return;
         }
         self.finish_update(cx);
-    }
-
-    /// Everything after the desktop is staged: phux first, so the new desktop
-    /// restarts onto the server it speaks to, then the restart itself.
-    fn finish_update(&mut self, cx: &mut Context<Self>) {
-        self.chained = false;
-        if self.phux_due() {
-            self.run_runtime(cx, true);
-        } else {
-            self.restart_to_update(cx);
-        }
     }
 
     /// The release a staged or checked update would bring in.
@@ -406,7 +387,10 @@ impl Updater {
         };
         self.busy = true;
         self.work = Work::Downloading;
+        self.progress = None;
         self.message = "Downloading and verifying desktop update…".into();
+        let (progress, receiver) = std::sync::mpsc::channel();
+        self.watch_progress(receiver, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = smol::unblock(move || {
@@ -417,7 +401,7 @@ impl Updater {
                 } else {
                     target
                 };
-                let app = updates::stage(&bundle, &target)?;
+                let app = updates::stage(&bundle, &target, progress)?;
                 anyhow::Ok(Staged {
                     app,
                     release: target,
@@ -425,119 +409,28 @@ impl Updater {
             })
             .await;
             let _ = this.update(cx, |updater, cx| {
-                if updater.record_stage(result) {
-                    updater.finish_update(cx);
-                }
+                updater.record_stage(result);
                 cx.notify();
             });
         })
         .detach();
     }
 
-    /// Record a finished download; true when the click goes on to phux and the restart.
-    fn record_stage(&mut self, result: anyhow::Result<Staged>) -> bool {
+    /// A verified download waits for a separate restart click. The local server
+    /// stays on this Desktop's protocol until that click, too.
+    fn record_stage(&mut self, result: anyhow::Result<Staged>) {
         self.busy = false;
-        let chained = std::mem::take(&mut self.chained);
+        self.progress = None;
+        self._progress = None;
         match result {
             Ok(staged) => {
                 self.message = format!("Desktop {} is ready to install", staged.release.version);
                 self.staged = Some(staged);
-                chained
             }
             Err(error) => {
                 self.message = format!("Desktop: Update failed: {error:#}");
-                false
             }
         }
-    }
-
-    fn restart_to_update(&mut self, cx: &mut Context<Self>) {
-        if self.staged.is_none() || self.development {
-            return;
-        }
-        // The click may still hold its Desk. Snapshot only after that lease
-        // ends, before quit observers can release any window's terminal views.
-        self.busy = true;
-        let updater = cx.entity().downgrade();
-        cx.defer(move |cx| {
-            let _ = updater.update(cx, |updater, cx| {
-                updater.busy = false;
-                if let Err(error) = updater.save_restart(cx) {
-                    updater.message = format!("Could not save desktop restart: {error:#}");
-                    cx.notify();
-                    return;
-                }
-                updater.relaunch = true;
-                cx.quit();
-            });
-        });
-    }
-
-    fn save_restart(&self, cx: &mut gpui::App) -> anyhow::Result<()> {
-        self.desktop
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No desktop to restore"))?
-            .update(cx, |desktop, cx| desktop.save_restart(cx))?
-    }
-
-    fn run_runtime(&mut self, cx: &mut Context<Self>, then_restart: bool) {
-        if self.busy || self.development || !self.phux_due() {
-            return;
-        }
-        let phux = self.phux.clone();
-        let socket = self.socket.clone();
-        let channel = self.prefs.runtime;
-        let retry = self.pending_handoff;
-        let restart = then_restart && self.staged.is_some();
-        self.busy = true;
-        self.work = Work::Installing;
-        self.message = "Updating phux and handing the live server off…".into();
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = smol::unblock(move || {
-                if retry {
-                    updates::runtime_retry(&phux, &socket)
-                } else {
-                    updates::runtime_install(&phux, &socket, channel)
-                }
-            })
-            .await;
-            let _ = this.update(cx, |updater, cx| {
-                // The staged desktop needs the server phux just handed off to.
-                if updater.record_runtime(result) && restart {
-                    updater.restart_to_update(cx);
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Record a finished phux update; true once the live server was handed off.
-    fn record_runtime(&mut self, result: anyhow::Result<updates::RuntimeInstalled>) -> bool {
-        self.busy = false;
-        let result = match result {
-            Ok(result) => result,
-            Err(error) => {
-                self.message = format!("phux: Update failed: {error:#}");
-                return false;
-            }
-        };
-        self.pending_handoff = result.retry_handoff;
-        // What was the target is installed now, unless only the handoff ran.
-        self.runtime = self.runtime.take().map(|runtime| RuntimeRelease {
-            current: runtime.target.clone(),
-            available: false,
-            protocol_current: runtime.protocol_target.clone().or(runtime.protocol_current),
-            ..runtime
-        });
-        if result.reconnect {
-            self.runtime_generation += 1;
-            self.message = "phux is updated and the server was handed off".into();
-        } else {
-            self.message = format!("{HANDOFF_NOTE} {}", result.message);
-        }
-        result.reconnect
     }
 
     pub fn runtime_available(&self) -> bool {
