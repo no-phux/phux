@@ -173,6 +173,7 @@ fn path_picker() -> crate::connection::path::PickerState {
 }
 
 mod capture;
+mod machines;
 mod modals;
 mod navigation;
 mod search;

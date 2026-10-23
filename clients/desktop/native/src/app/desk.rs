@@ -47,6 +47,7 @@ mod commands;
 mod input;
 mod labels;
 mod lifecycle;
+mod machines;
 mod prefs;
 mod request;
 pub use request::{OpenRequest, WindowRole};
@@ -58,6 +59,7 @@ mod tests;
 mod work;
 
 pub(crate) use labels::*;
+pub(crate) use machines::{AddMachine, TailnetView};
 
 const SEARCH_BYTES: usize = 8 * 1024 * 1024;
 const UPLOAD_MOVED: &str = "The terminal changed before the upload started. Nothing was pasted.";
@@ -251,8 +253,8 @@ pub struct Desk {
     pub(crate) hosts: Vec<host::RemoteHost>,
     pub(crate) fleet: super::fleet::Fleet,
     pub(crate) fleet_view: super::fleet::dashboard::State,
-    /// A host enrollment in flight, by the target it was given.
-    pub(crate) host_adding: Option<String>,
+    /// The Add Machine dialog: the tailnet and a setup in flight.
+    pub(crate) add_machine: AddMachine,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
     /// The glass menu showing, by the trigger that opened it.
