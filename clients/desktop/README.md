@@ -77,7 +77,10 @@ agents read as an attachment.
 **Settings > Updates** checks the desktop and phux releases at launch and
 every few hours. One **Update phux & Desktop** click downloads and verifies the
 desktop, updates the CLI and hands the live server off, then restarts into the
-new desktop; sessions keep running. **Update phux with Desktop** (on by
+new desktop; sessions keep running. The update reopens your windows on the
+same hosts and sessions, with their tabs, splits and focused panes, and brings
+the foreground window back to the front. Explicit launch targets take priority
+over this one-time restoration. **Update phux with Desktop** (on by
 default) turns the phux half off. Linux desktop updates rerun the installer.
 
 Logs: `~/Library/Logs/phux-desktop.log` on macOS,

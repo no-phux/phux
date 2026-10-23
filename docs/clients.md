@@ -39,6 +39,8 @@ It shows every session on this machine and on each machine you added with
 session, and the sidebar switches between them. Agents that need you are
 marked where they are. <kbd>⌘P</kbd> opens a palette of sessions, actions,
 and settings. The app checks for updates and installs them on restart.
+An update reopens the same windows, hosts, sessions, tabs and focused panes,
+bringing the foreground window back to the front.
 
 Each window keeps one live connection per machine, so switching back to a
 session you just left is instant. Machines you aren't looking at keep their
