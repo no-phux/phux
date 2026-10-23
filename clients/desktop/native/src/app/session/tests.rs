@@ -271,8 +271,9 @@ fn main_menu_drops_from_the_titlebar_with_or_without_a_sidebar(cx: &mut TestAppC
         menu_cx.run_until_parked();
         assert_eq!(
             desk.read_with(menu_cx, |desk, _| desk.modal.clone()),
-            crate::app::Modal::Settings
+            crate::app::Modal::None
         );
+        assert!(desk.read_with(menu_cx, |desk, cx| desk.desktop.read(cx).settings.is_some()));
         assert!(
             desk.read_with(menu_cx, |desk, _| desk.menu_window())
                 .is_none(),

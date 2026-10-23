@@ -12,6 +12,9 @@ mod layout;
 mod palette;
 #[cfg(feature = "ui-fixtures")]
 pub(super) mod preview;
+pub(crate) mod window;
+#[cfg(test)]
+pub(super) mod window_tests;
 
 pub(crate) use palette::{editor, entries};
 
@@ -23,20 +26,18 @@ pub(super) use connections::machine_action;
 use catalog::Item as SettingItem;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, SharedString, Subscription, WeakEntity, Window,
-    div, px,
+    App, ClickEvent, Context, Entity, SharedString, Subscription, WeakEntity, Window, div, px,
 };
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::group_box::GroupBoxVariant;
 use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::setting::{NumberFieldOptions, SettingField, Settings};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::{ActiveTheme, IconName, IndexPath, Sizable};
+use gpui_kit::component::{ActiveTheme, IndexPath};
 
 use crate::settings::theme;
 use crate::settings::{self, DisplayPrefs};
 
-use super::desk::{Desk, Modal};
+use super::desk::Desk;
 use super::skin::Look;
 
 type FontSelect = SelectState<SearchableVec<FontChoice>>;
@@ -252,64 +253,68 @@ fn font_items(fonts: &[SharedString]) -> SearchableVec<FontChoice> {
 /// Build the controls once, then bring every value in line with the current prefs.
 pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     if desk.settings_controls.is_none() {
-        let fonts = font_families(desk, cx);
-        let mut subs = Vec::new();
-        let mut sliders = Vec::new();
-        for knob in [
-            Knob::LINE_HEIGHT,
-            Knob::CELL_WIDTH,
-            Knob::UNFOCUSED,
-            Knob::GLASS,
-        ] {
-            let (min, max, step) = knob.range;
-            let value = knob.shown(&desk.prefs);
-            let slider = cx.new(|_| {
-                SliderState::new()
-                    .min(min)
-                    .max(max)
-                    .step(step)
-                    .default_value(value)
-            });
-            // Dragging applies live; the release saves once.
-            subs.push(cx.subscribe_in(
-                &slider,
-                window,
-                move |desk, _, event: &SliderEvent, _, cx| {
-                    let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
-                    let value = value.start();
-                    desk.apply_prefs(|prefs| knob.store(prefs, value), cx);
-                    if matches!(event, SliderEvent::Release(_)) {
-                        desk.persist();
-                    }
-                },
-            ));
-            sliders.push((knob, slider));
-        }
-        let selected = fonts
-            .iter()
-            .position(|family| family.as_ref() == desk.prefs.font_family)
-            .map(|row| IndexPath::default().row(row));
-        let font = cx
-            .new(|cx| SelectState::new(font_items(&fonts), selected, window, cx).searchable(true));
-        subs.push(cx.subscribe_in(
-            &font,
-            window,
-            |desk, _, event: &SelectEvent<SearchableVec<FontChoice>>, _, cx| {
-                let SelectEvent::Confirm(Some(family)) = event else {
-                    return;
-                };
-                let family = family.to_string();
-                desk.update_prefs(|prefs| prefs.font_family = family, cx);
-            },
-        ));
-        desk.settings_controls = Some(SettingsControls {
-            sliders,
-            font,
-            fonts,
-            _subs: subs,
-        });
+        desk.settings_controls = Some(build_controls(desk, window, cx));
     }
     sync_controls(desk, window, cx);
+}
+
+fn build_controls(desk: &Desk, window: &mut Window, cx: &mut Context<Desk>) -> SettingsControls {
+    let fonts = font_families(desk, cx);
+    let mut subs = Vec::new();
+    let mut sliders = Vec::new();
+    for knob in [
+        Knob::LINE_HEIGHT,
+        Knob::CELL_WIDTH,
+        Knob::UNFOCUSED,
+        Knob::GLASS,
+    ] {
+        let (min, max, step) = knob.range;
+        let value = knob.shown(&desk.prefs);
+        let slider = cx.new(|_| {
+            SliderState::new()
+                .min(min)
+                .max(max)
+                .step(step)
+                .default_value(value)
+        });
+        // Dragging applies live; the release saves once.
+        subs.push(cx.subscribe_in(
+            &slider,
+            window,
+            move |desk, _, event: &SliderEvent, _, cx| {
+                let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
+                let value = value.start();
+                desk.apply_prefs(|prefs| knob.store(prefs, value), cx);
+                if matches!(event, SliderEvent::Release(_)) {
+                    desk.persist();
+                }
+            },
+        ));
+        sliders.push((knob, slider));
+    }
+    let selected = fonts
+        .iter()
+        .position(|family| family.as_ref() == desk.prefs.font_family)
+        .map(|row| IndexPath::default().row(row));
+    let font =
+        cx.new(|cx| SelectState::new(font_items(&fonts), selected, window, cx).searchable(true));
+    subs.push(cx.subscribe_in(
+        &font,
+        window,
+        |desk, _, event: &SelectEvent<SearchableVec<FontChoice>>, _, cx| {
+            let SelectEvent::Confirm(Some(family)) = event else {
+                return;
+            };
+            let family = family.to_string();
+            desk.update_prefs(|prefs| prefs.font_family = family, cx);
+        },
+    ));
+    SettingsControls {
+        sliders,
+        font,
+        fonts,
+        _subs: subs,
+    }
 }
 
 /// Chords, resets and imports move the visible controls without rebuilding them.
@@ -317,113 +322,53 @@ fn sync_controls(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
     let Some(controls) = desk.settings_controls.as_mut() else {
         return;
     };
-    for (knob, slider) in &controls.sliders {
-        let wanted = knob.shown(&desk.prefs);
-        if (slider.read(cx).value().start() - wanted).abs() > knob.range.2 / 2. {
-            slider.update(cx, |slider, cx| slider.set_value(wanted, window, cx));
+    controls.sync(&desk.prefs, window, cx);
+}
+
+impl SettingsControls {
+    fn sync(&mut self, prefs: &DisplayPrefs, window: &mut Window, cx: &mut App) {
+        let controls = self;
+        for (knob, slider) in &controls.sliders {
+            let wanted = knob.shown(prefs);
+            if (slider.read(cx).value().start() - wanted).abs() > knob.range.2 / 2. {
+                slider.update(cx, |slider, cx| slider.set_value(wanted, window, cx));
+            }
         }
-    }
-    if controls
-        .font
-        .read(cx)
-        .selected_value()
-        .is_some_and(|family| family.as_ref() == desk.prefs.font_family)
-    {
-        return;
-    }
-    let current: SharedString = desk.prefs.font_family.clone().into();
-    if !controls.fonts.contains(&current) {
-        controls.fonts.push(current.clone());
-        let items = font_items(&controls.fonts);
-        controls
+        if controls
             .font
-            .update(cx, |state, cx| state.set_items(items, window, cx));
+            .read(cx)
+            .selected_value()
+            .is_some_and(|family| family.as_ref() == prefs.font_family)
+        {
+            return;
+        }
+        let current: SharedString = prefs.font_family.clone().into();
+        if !controls.fonts.contains(&current) {
+            controls.fonts.push(current.clone());
+            let items = font_items(&controls.fonts);
+            controls
+                .font
+                .update(cx, |state, cx| state.set_items(items, window, cx));
+        }
+        controls.font.update(cx, |state, cx| {
+            state.set_selected_value(&current, window, cx)
+        });
     }
-    controls.font.update(cx, |state, cx| {
-        state.set_selected_value(&current, window, cx)
-    });
 }
 
-pub(crate) fn panel(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
-    sync_controls(desk, window, cx);
-    let page = desk.settings_page.unwrap_or(Page::Appearance);
-    let content = content(desk, page, &cx.weak_entity(), cx);
-    let back = cx.listener(|desk, _, window, cx| desk.open_modal(Modal::Settings, window, cx));
-    let settings = native_settings(
-        SharedString::from(format!("phux-settings-{page:?}")),
-        titled(content.inner, page.title(), back),
-    );
-    let viewport = window.viewport_size();
-    let gutter = super::overlays::SHEET_GUTTER;
-    let height = (viewport.height.as_f32() - 2. * gutter).clamp(0., 600.);
-    let look = desk.look();
-    super::overlays::card(
-        &look,
-        (viewport.width.as_f32() - 2. * gutter).clamp(0., 720.),
-    )
-    .id("settings-panel")
-    .debug_selector(|| "settings-panel".into())
-    .h(px(height))
-    .overflow_hidden()
-    .flex()
-    .flex_col()
-    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-    .child(super::overlays::launcher::hub_header(
-        desk,
-        &look.chrome,
-        cx,
-    ))
-    .child(div().flex_1().min_h_0().child(settings))
-    .into_any_element()
-}
-
-/// One header row: back to every setting, then the page title, on the
-/// groups' text column. Kit keeps the row's reset-all button at its end.
-fn titled(
-    page: gpui_kit::component::setting::SettingPage,
-    title: &'static str,
-    back: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> gpui_kit::component::setting::SettingPage {
-    let back = std::rc::Rc::new(back);
-    // Kit always paints its title first; leave it empty and draw ours,
-    // pulled back over Kit's title gap.
-    page.title("")
-        .header_style(
-            &gpui::StyleRefinement::default()
-                .px(px(catalog::GUTTER - 6.))
-                .py(px(10.)),
-        )
-        .title_suffix(move |_, _| {
-            let back = back.clone();
-            div()
-                .ml(px(-4.))
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(
-                    Button::new("settings-back")
-                        .icon(IconName::ChevronLeft)
-                        .small()
-                        .ghost()
-                        .tooltip("All settings")
-                        .on_click(move |event, window, cx| back(event, window, cx)),
-                )
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(title),
-                )
-        })
-}
-
-fn content(desk: &Desk, page: Page, handle: &WeakEntity<Desk>, cx: &App) -> catalog::Content {
+fn content(
+    desk: &Desk,
+    page: Page,
+    handle: &WeakEntity<Desk>,
+    controls: Option<&SettingsControls>,
+    cx: &App,
+) -> catalog::Content {
     let look = desk.look();
     match page {
-        Page::Appearance => appearance::appearance_page(desk, handle, cx),
-        Page::Layout => layout::window_page(desk, handle),
+        Page::Appearance => appearance::appearance_page(desk, handle, controls, cx),
+        Page::Layout => layout::window_page(desk, handle, controls),
         Page::Keyboard => input::keyboard_page(desk, handle),
-        Page::Spacing => layout::advanced_page(desk, handle),
+        Page::Spacing => layout::advanced_page(desk, handle, controls),
         Page::Ghostty => input::ghostty_page(desk, handle),
         Page::Updates => {
             let moves = desk.prefs.animations && !cx.reduce_motion();

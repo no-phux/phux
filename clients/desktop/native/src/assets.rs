@@ -12,6 +12,10 @@ gpui_kit::assets::icon_assets!(
         PanelsTopLeft,
         // Settings > Layout: tab placement.
         PanelTop,
+        // Settings categories.
+        Keyboard,
+        Terminal,
+        Download,
         Server,
         Clock,
         FolderPlus,
@@ -79,6 +83,9 @@ mod tests {
     fn menu_and_component_icons_are_embedded() {
         for icon in [
             IconName::SquareTerminal,
+            IconName::Keyboard,
+            IconName::Terminal,
+            IconName::Download,
             IconName::AppWindow,
             IconName::LaptopMinimal,
             IconName::PanelsTopLeft,

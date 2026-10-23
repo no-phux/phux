@@ -4,8 +4,7 @@ use super::*;
 
 impl Desk {
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if id == "agent-fleet" && !self.prefs.agent_fleet {
-            self.show_settings_page(super::super::settings_panel::Page::Layout, window, cx);
+        if self.settings_command(id, window, cx) {
             return;
         }
         if self.text_field_has_keys() && settings::yields_to_text_field(id) {
@@ -31,6 +30,18 @@ impl Desk {
         if !self.run_organization(id, window, cx) {
             self.run_catalog(id, window, cx);
         }
+    }
+
+    /// Settings entry points open a utility window, never a workspace modal.
+    fn settings_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match id {
+            "settings" => self.open_settings(None, window, cx),
+            "agent-fleet" if !self.prefs.agent_fleet => {
+                self.show_settings_page(super::super::settings_panel::Page::Layout, window, cx)
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn run_bound_action(&mut self, action: settings::BoundAction, cx: &mut Context<Self>) {

@@ -40,7 +40,11 @@ fn line_height_description(desk: &Desk) -> String {
     ])
 }
 
-pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
+pub(super) fn window_page(
+    desk: &Desk,
+    handle: &WeakEntity<Desk>,
+    controls: Option<&super::SettingsControls>,
+) -> SettingPage {
     let sidebar_chord = desk
         .shown_chord("sidebar")
         .map(|chord| format!("Toggle it with {chord}."))
@@ -100,6 +104,7 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
                         "Tab placement",
                         resets(tab_position, handle, |prefs| &mut prefs.tab_position),
                     )
+                    .wide()
                     .description("Keep tabs above or below your work, or at the side: the sidebar’s tab area, or a rail in plain terminal mode."),
                 )
                 .item(
@@ -109,6 +114,7 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
                             &mut prefs.sidebar_grouping
                         }),
                     )
+                    .wide()
                     .description("The same sessions, under projects, machines, or one list."),
                 )
                 .item(toggle(
@@ -133,7 +139,7 @@ pub(super) fn window_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage
                     ),
                 )
                 .items(slider_item(
-                    desk,
+                    controls,
                     handle,
                     Knob::GLASS,
                     "Terminal background opacity. Applies when Blur behind window is on.",
@@ -182,17 +188,21 @@ fn sidebar_hosts(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
         }))
 }
 
-pub(super) fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
+pub(super) fn advanced_page(
+    desk: &Desk,
+    handle: &WeakEntity<Desk>,
+    controls: Option<&super::SettingsControls>,
+) -> SettingPage {
     let spacing = SettingGroup::new()
         .title("Cells & padding")
         .items(slider_item(
-            desk,
+            controls,
             handle,
             Knob::LINE_HEIGHT,
             line_height_description(desk),
         ))
         .items(slider_item(
-            desk,
+            controls,
             handle,
             Knob::CELL_WIDTH,
             sourced(
@@ -230,7 +240,7 @@ pub(super) fn advanced_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPa
         .icon(IconName::Frame)
         .group(spacing)
         .group(SettingGroup::new().title("Pane dimming").items(slider_item(
-            desk,
+            controls,
             handle,
             Knob::UNFOCUSED,
             sourced(

@@ -96,7 +96,6 @@ pub enum Modal {
     Commands,
     Capture,
     Goto,
-    Settings,
     Notifications,
     AgentFleet,
     NativeLaunch,
@@ -234,7 +233,6 @@ pub struct Desk {
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
     pub(crate) settings_controls: Option<SettingsControls>,
-    pub(crate) settings_page: Option<super::settings_panel::Page>,
     pub(crate) native_launch: super::native_launch::State,
     pub(crate) capture: super::capture::State,
     /// The Changes panel beside the panes.
@@ -499,7 +497,6 @@ fn listed_modal(id: &str) -> Option<Modal> {
         "capture" => Modal::Capture,
         "goto" => Modal::Goto,
         "windows" => Modal::Windows,
-        "settings" => Modal::Settings,
         "notifications" => Modal::Notifications,
         "agent-fleet" => Modal::AgentFleet,
         _ => return None,

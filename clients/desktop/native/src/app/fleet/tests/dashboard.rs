@@ -91,12 +91,11 @@ fn fleet_is_opt_in_and_the_empty_view_dismisses_with_escape(cx: &mut TestAppCont
     });
     draw(cx);
     assert!(!shown(cx, "agent-fleet-panel"));
-    desk.read_with(cx, |desk, _| {
-        assert_eq!(
-            desk.settings_page,
-            Some(super::super::super::settings_panel::Page::Layout)
-        )
-    });
+    let (_, settings) = super::super::super::settings_panel::window_tests::opened(&desk, cx);
+    assert_eq!(
+        settings.read_with(cx, |settings, _| settings.page),
+        super::super::super::settings_panel::Page::Layout
+    );
     desk.update_in(cx, |desk, window, cx| {
         desk.close_modal(window, cx);
         desk.update_prefs(|prefs| prefs.agent_fleet = true, cx);

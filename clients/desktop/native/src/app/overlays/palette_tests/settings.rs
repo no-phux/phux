@@ -1,4 +1,4 @@
-//! Direct, live settings through the same palette opened by Cmd-P and Cmd-comma.
+//! Direct, live settings remain available in the Cmd-P palette.
 
 use super::*;
 
@@ -15,14 +15,14 @@ fn switch_results_toggle_both_ways_keep_search_and_save(cx: &mut TestAppContext)
     let cx = &mut VisualTestContext::from_window(handle, cx);
     desk.update(cx, |desk, _| desk.persist_writes = true);
     let before = desk.read_with(cx, |desk, _| desk.prefs.notifications);
-    keys(cx, "cmd-,");
+    keys(cx, "cmd-p");
     type_text(cx, "Agent notifications");
     keys(cx, "enter");
     assert_eq!(
         desk.read_with(cx, |desk, _| desk.prefs.notifications),
         !before
     );
-    assert_eq!(modal(&desk, cx), Modal::Settings);
+    assert_eq!(modal(&desk, cx), Modal::Goto);
     assert_eq!(query(&desk, cx), "Agent notifications");
     keys(cx, "enter");
     assert_eq!(
@@ -57,7 +57,6 @@ fn command_p_edits_the_exact_choice_and_back_restores_query(cx: &mut TestAppCont
     keys(cx, "enter");
     assert!(cx.debug_bounds("palette-setting-editor").is_some());
     assert_eq!(modal(&desk, cx), Modal::Goto);
-    assert_eq!(desk.read_with(cx, |desk, _| desk.settings_page), None);
     for (selector, position) in [
         ("tab-position-bottom", crate::settings::TabPosition::Bottom),
         ("tab-position-top", crate::settings::TabPosition::Top),
@@ -89,7 +88,8 @@ fn command_p_edits_the_exact_choice_and_back_restores_query(cx: &mut TestAppCont
 fn settings_catalog_covers_controls_without_shortcut_or_status_dead_ends(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
-    keys(cx, "cmd-,");
+    keys(cx, "cmd-p");
+    type_text(cx, "font");
     let handle = desk.downgrade();
     desk.read_with(cx, |desk, cx| {
         let entries = crate::app::settings_panel::entries(desk, &handle, cx);
@@ -169,7 +169,7 @@ fn numeric_setting_is_keyboard_editable(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
     let before = desk.read_with(cx, |desk, _| desk.prefs.font_size);
-    keys(cx, "cmd-,");
+    keys(cx, "cmd-p");
     type_text(cx, "Font size");
     keys(cx, "enter tab up");
     assert_eq!(

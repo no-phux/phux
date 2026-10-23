@@ -54,7 +54,12 @@ fn theme_source(desk: &Desk) -> String {
     notes([source.label().as_str(), applies.label()])
 }
 
-pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingPage {
+pub(super) fn appearance_page(
+    desk: &Desk,
+    handle: &WeakEntity<Desk>,
+    controls: Option<&super::SettingsControls>,
+    cx: &App,
+) -> SettingPage {
     let mut themes = theme::themes();
     if let Some(extra) = settings::ghostty_theme(desk.ghostty()) {
         themes.insert(0, extra);
@@ -94,10 +99,11 @@ pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) 
             )
         }),
     )
+    .wide()
     .description(theme_source(desk))
     .keywords(["theme", "colors", "dark", "light"]);
     let mut font_group = SettingGroup::new().title("Font & theme");
-    if let Some(controls) = desk.settings_controls.as_ref() {
+    if let Some(controls) = controls {
         let font = controls.font.clone();
         let picker = SettingField::render(move |_, _, _| {
             Select::new(&font)
@@ -127,6 +133,7 @@ pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) 
             "Font family",
             resets(picker, handle, |prefs| &mut prefs.font_family),
         )
+        .wide()
         .keywords(["font", "typeface", "monospace", "nerd", "glyphs"]);
         font_group = font_group.item(font_status(item, desk, cx));
     }

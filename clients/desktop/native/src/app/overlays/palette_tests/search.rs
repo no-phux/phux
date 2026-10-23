@@ -12,7 +12,6 @@ fn allocation_settings_are_discoverable_without_a_development_launch(cx: &mut Te
         cx.debug_bounds("palette-setting:Developer:Profiling:Count Rust allocations")
             .is_some()
     );
-    assert_eq!(desk.read_with(cx, |desk, _| desk.settings_page), None);
     assert_eq!(modal(&desk, cx), Modal::Goto);
 }
 
@@ -48,13 +47,12 @@ fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn work_search_discovers_a_preference_and_settings_keep_one_native_hub(cx: &mut TestAppContext) {
+fn work_search_discovers_a_preference_without_opening_settings(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
     keys(cx, "cmd-p");
     type_text(cx, "line height");
     keys(cx, "enter");
-    assert_eq!(desk.read_with(cx, |desk, _| desk.settings_page), None);
     assert!(cx.debug_bounds("palette-setting-editor").is_some());
     assert_eq!(
         desk.read_with(cx, |desk, _| desk
@@ -68,15 +66,7 @@ fn work_search_discovers_a_preference_and_settings_keep_one_native_hub(cx: &mut 
     assert_eq!(modal(&desk, cx), Modal::Commands);
     keys(cx, "escape");
     assert_desk_focus(&desk, cx);
-    keys(cx, "cmd-,");
-    type_text(cx, "Hosts & connections");
-    keys(cx, "enter");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
-        Some(crate::app::settings_panel::Page::Connections)
-    );
-    keys(cx, "escape");
-    assert_desk_focus(&desk, cx);
+    assert!(desk.read_with(cx, |desk, cx| desk.desktop.read(cx).settings.is_none()));
 }
 
 #[gpui::test]
@@ -90,9 +80,8 @@ fn palette_query_ranks_a_title_before_incidental_metadata_and_dispatches_it(
     assert_eq!(query(&desk, cx), "settings");
     assert_eq!(selected_command(&desk, cx), Some("settings"));
     keys(cx, "enter");
-    assert_eq!(modal(&desk, cx), Modal::Settings);
-    keys(cx, "escape");
-    assert_desk_focus(&desk, cx);
+    assert_eq!(modal(&desk, cx), Modal::None);
+    assert!(desk.read_with(cx, |desk, cx| desk.desktop.read(cx).settings.is_some()));
 }
 
 #[gpui::test]
@@ -107,7 +96,8 @@ fn palette_mode_controls_row_click_and_backdrop_keep_native_focus(cx: &mut TestA
     click(cx, "palette-mode-commands");
     assert_eq!(modal(&desk, cx), Modal::Commands);
     click(cx, "palette-result-settings");
-    assert_eq!(modal(&desk, cx), Modal::Settings);
+    assert_eq!(modal(&desk, cx), Modal::None);
+    assert!(desk.read_with(cx, |desk, cx| desk.desktop.read(cx).settings.is_some()));
     keys(cx, "escape cmd-shift-p");
     cx.simulate_click(
         gpui::point(gpui::px(8.), gpui::px(8.)),

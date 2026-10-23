@@ -32,15 +32,6 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
                 state.focus(window, cx);
             });
         }
-        Modal::Settings => {
-            desk.settings_page = None;
-            desk.palette_view = PaletteView::default();
-            let state = palette_state(desk, window, cx);
-            state.update(cx, |state, cx| {
-                state.set_query("", window, cx);
-                state.focus(window, cx);
-            });
-        }
         Modal::Rename { tab_id } => {
             let current = desk
                 .link
