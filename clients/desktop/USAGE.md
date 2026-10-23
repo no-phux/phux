@@ -114,24 +114,9 @@ Changes panel and a session's rows slide open and shut unless **Animations** is
 off or the system reduces motion. Command-key chords belong to the app;
 everything else reaches the terminal.
 
-Choose **Top**, **Bottom** or **Sidebar** in **Settings > Interface > Tab placement**,
-or **View** in the main menu. The choice is saved with your display
-preferences. Side tabs live in a fixed-height, separately scrollable area at the
-foot of the sidebar. Switching sessions never inserts tabs into the session tree;
-hiding the sidebar returns them to the titlebar,
-and Quick Terminal keeps compact titlebar tabs. Bottom tabs sit below your work,
-including in Plain Terminal mode. Plain Terminal has no sidebar, so side tabs
-stand in a rail of their own beside your work; a plain terminal still hides a
-lone tab, and its tabs keep the desk's shape.
-If side panels leave too little room for usable bottom tabs, they temporarily
-return to the titlebar; widening the window restores your Bottom preference.
-Selecting, closing,
-double-clicking to rename, right-clicking for tab actions, and dragging to
-reorder work in every layout. The command palette also offers **Tabs on Top**,
-**Tabs on Bottom**, **Tabs in Sidebar**, and the three **Group Sessions** views.
-
-Click the selected tab or use **Peek Tabs** (⇧⌘\\) for
-[live tab miniatures](TAB_PEEK.md), without resizing your terminals.
+Tabs can sit on the top, bottom or sidebar. Hover for pane context, or click
+the selected tab for live miniatures without resizing your terminals. See
+[Tabs and previews](TAB_PEEK.md) for placement, controls and shortcuts.
 
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
