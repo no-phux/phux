@@ -174,3 +174,31 @@ impl Connection {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_fence_snapshot_ignores_unknown_and_closed_terminals() {
+        let mut connection = Connection::from_client(
+            Runtime::embedded(ControlOptions::default()),
+            "test".to_owned(),
+        );
+        let known = ResourceId::local(7);
+        let unknown = ResourceId::local(8);
+        connection.known.insert(known.clone());
+        assert!(!connection.fenced(&known));
+        assert!(
+            connection
+                .fenced_placements([&known, &unknown].into_iter())
+                .is_empty()
+        );
+        connection.closed = true;
+        assert!(
+            connection
+                .fenced_placements([&known].into_iter())
+                .is_empty()
+        );
+    }
+}

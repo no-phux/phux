@@ -81,11 +81,10 @@ impl Desk {
     /// terminal output and input receipts change it in paint-only batches.
     pub(super) fn read_runtime_chrome(&self) -> RuntimeChrome {
         let fenced = self.link.as_ref().map_or_else(Vec::new, |link| {
-            self.placements()
-                .filter_map(|placement| placement.terminal_id.as_ref())
-                .filter(|id| link.connection.fenced(id))
-                .cloned()
-                .collect()
+            link.connection.fenced_placements(
+                self.placements()
+                    .filter_map(|placement| placement.terminal_id.as_ref()),
+            )
         });
         RuntimeChrome {
             scrolled_back: self.scrolled_back(),
