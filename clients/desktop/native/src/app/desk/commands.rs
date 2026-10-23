@@ -145,6 +145,7 @@ impl Desk {
             }
             "add-host" => self.modal = Modal::AddHost,
             "copy-diagnostics" => self.copy_diagnostics(cx),
+            "developer-mode" => self.toggle_developer_mode(cx),
             "perf-hud" => self.toggle_hud(cx),
             "perf-trace" => self.capture_trace(cx),
             // Opening/closing windows must wait until this desk's window lease ends.

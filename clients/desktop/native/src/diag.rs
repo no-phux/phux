@@ -123,7 +123,9 @@ pub fn log_dir() -> Option<PathBuf> {
     log_path().and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
-fn log_path() -> Option<PathBuf> {
+/// The desktop log: `PHUX_DESKTOP_LOG`, else the platform's log directory.
+#[must_use]
+pub fn log_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PHUX_DESKTOP_LOG") {
         return Some(PathBuf::from(path));
     }

@@ -1,7 +1,7 @@
 # Performance monitor
 
 Open the command palette and search **Performance Monitor**, **CPU**, **memory**,
-or **telemetry** to opt in. This is a utility, not a separate Developer menu.
+or **telemetry** to opt in, or use **Settings > Developer > Performance Monitor**.
 It opens a native window and starts sampling immediately; neither the desktop
 nor the server needs a restart. Reopening the command raises the same window.
 
@@ -45,10 +45,10 @@ Footprint, RSS and tracked Rust heap overlap: do not add them or subtract heap
 from RSS to infer GPU memory. Native AppKit, Metal, window surfaces and
 allocator-retained pages are outside the Rust allocation counter. The Memory
 tab explains the measurements and gives the process-specific `vmmap -summary`
-command for native attribution. Rust counting requires an isolated development
-launch with `PHUX_DEV=1`, **Settings > Performance > Count Rust allocations**,
+command for native attribution. Rust counting requires Developer mode
+([dev mode](USAGE.md#dev-mode)), **Settings > Developer > Count Rust allocations**,
 or **Count allocations** directly in the monitor's Memory tab.
-The setting applies immediately across desktop windows without a restart and
+That switch applies immediately across desktop windows without a restart and
 lasts only for this run. It does not enable a dev socket or change the server.
 Turn it off after profiling to remove counting overhead. Opening the monitor
 never enables counting automatically.

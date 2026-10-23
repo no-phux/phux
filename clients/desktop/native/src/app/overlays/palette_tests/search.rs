@@ -9,11 +9,24 @@ fn allocation_settings_are_discoverable_without_a_development_launch(cx: &mut Te
     keys(cx, "cmd-p");
     type_text(cx, "allocation");
     assert!(
-        cx.debug_bounds("palette-setting:Performance:Desktop profiling:Count Rust allocations")
+        cx.debug_bounds("palette-setting:Developer:Profiling:Count Rust allocations")
             .is_some()
     );
     assert_eq!(desk.read_with(cx, |desk, _| desk.settings_page), None);
     assert_eq!(modal(&desk, cx), Modal::Goto);
+}
+
+#[gpui::test]
+fn developer_mode_is_one_search_away(cx: &mut TestAppContext) {
+    let (handle, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-p");
+    type_text(cx, "developer mode");
+    // Only discovered here: switching it would save to the real config.
+    assert!(
+        cx.debug_bounds("palette-setting:Developer::Developer mode")
+            .is_some()
+    );
 }
 
 #[gpui::test]

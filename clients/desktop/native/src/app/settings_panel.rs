@@ -5,11 +5,11 @@
 mod appearance;
 pub(super) mod catalog;
 mod connections;
+mod developer;
 mod input;
 mod items;
 mod layout;
 mod palette;
-mod performance;
 #[cfg(feature = "ui-fixtures")]
 pub(super) mod preview;
 
@@ -51,7 +51,7 @@ pub(crate) enum Page {
     Ghostty,
     Updates,
     Connections,
-    Performance,
+    Developer,
 }
 
 impl Page {
@@ -63,7 +63,7 @@ impl Page {
         Self::Ghostty,
         Self::Updates,
         Self::Connections,
-        Self::Performance,
+        Self::Developer,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -74,7 +74,7 @@ impl Page {
             Self::Ghostty => "Ghostty integration",
             Self::Updates => "Updates",
             Self::Connections => "Hosts & connections",
-            Self::Performance => "Performance",
+            Self::Developer => "Developer",
         }
     }
     pub fn description(self) -> &'static str {
@@ -86,7 +86,7 @@ impl Page {
             Self::Ghostty => "Import or reload your Ghostty preferences",
             Self::Updates => "Version, downloads and updates",
             Self::Connections => "Your machines, connection status and recovery",
-            Self::Performance => "Live Rust allocation counting and diagnostic controls",
+            Self::Developer => "Developer mode, profiling, traces, logs and diagnostics",
         }
     }
 
@@ -110,8 +110,8 @@ impl Page {
             Self::Connections => {
                 "hosts machines remote ssh local add remove retry reconnect status endpoint"
             }
-            Self::Performance => {
-                "performance heap rust allocation allocations counting counters profiling diagnostics"
+            Self::Developer => {
+                "developer dev mode debug debugging telemetry socket performance hud heap rust allocation allocations counting counters profiling trace perfetto log logs diagnostics"
             }
         }
     }
@@ -430,7 +430,7 @@ fn content(desk: &Desk, page: Page, handle: &WeakEntity<Desk>, cx: &App) -> cata
             super::updates::page(&desk.updates, &look, &desk.prefs.font_family, moves, cx)
         }
         Page::Connections => connections::connection_page(desk, handle),
-        Page::Performance => performance::page(handle),
+        Page::Developer => developer::page(handle),
     }
 }
 
