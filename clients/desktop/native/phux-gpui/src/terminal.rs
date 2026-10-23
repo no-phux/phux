@@ -28,8 +28,8 @@ use phux_protocol::ResourceId;
 
 pub use actions::HostAction;
 pub use paint::{GlyphObservation as PaintedGlyph, Observation as PaintedFrame};
-pub use settings::Settings;
 pub use preview::Preview;
+pub use settings::Settings;
 
 /// Shell-facing signals that are not input. Pointer delivery stays native.
 #[derive(Clone, Debug, PartialEq, Eq)]

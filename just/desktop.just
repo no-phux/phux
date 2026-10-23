@@ -37,7 +37,7 @@ desktop-perf-headless profile="test": desktop-source
 [group('desktop')]
 [doc('Format check and clippy -D warnings for the native desktop crate')]
 desktop-lint: worktree-claim desktop-source
-    cargo fmt --manifest-path clients/desktop/native/Cargo.toml -- --check
+    cargo fmt --manifest-path clients/desktop/native/Cargo.toml --all -- --check
     cargo clippy --locked --manifest-path clients/desktop/native/Cargo.toml --all-targets -- -D warnings
     # phux-gpui alone resolves without the desktop's `patched-gpui`, so its
     # published-gpui-fast branches (src/platform.rs) compile and lint too.

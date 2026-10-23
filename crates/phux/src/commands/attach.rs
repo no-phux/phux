@@ -930,7 +930,7 @@ pub(crate) fn run_attach_remote_outcome(
             super::ssh_bootstrap::SshAttach {
                 destination: host,
                 session,
-                remote_phux: "phux".to_owned(),
+                remote_phux: entry.remote_phux().to_owned(),
                 udp_ports: None,
                 identity: credentials.identity,
                 rec,

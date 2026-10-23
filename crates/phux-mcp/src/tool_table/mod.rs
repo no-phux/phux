@@ -10,11 +10,20 @@
     reason = "compiled into three crates via #[path]; each uses a different subset"
 )]
 
-use phux_protocol::ids::ResourceId;
-use phux_protocol::kinds::{self, Verb, Verbs};
+mod cli_only;
+mod hints;
+
+#[allow(
+    unused_imports,
+    reason = "each of the three crates compiling this table reads a different subset"
+)]
+pub(crate) use {
+    cli_only::CLI_ONLY,
+    hints::{DESTRUCTIVE_SOURCE, Hints, UNMAPPED, hints, hints_for},
+};
+
 use phux_protocol::wire::frame::{
-    APPROVAL_DECIDE_KEY_PREFIX, Command, FrameKind, RESOURCE_TAGS_KEY, SESSION_CREATE_KEY,
-    SESSION_NAME_KEY, Scope, WHOAMI_KEY,
+    APPROVAL_DECIDE_KEY_PREFIX, SESSION_CREATE_KEY, SESSION_NAME_KEY, WHOAMI_KEY,
 };
 
 /// Which CLI verb a tool mirrors, if any.
@@ -71,14 +80,14 @@ const RESOLVE: &str = "GET_STATE";
 ///
 /// Named apart from `SET_METADATA` because that method's rows include the
 /// config-reload doorbell, which needs `SIGNAL`; an ordinary write's hints
-/// come from the row the classifier gives one ([`kinds::frame_rule`]).
+/// come from the row the classifier gives one ([`phux_protocol::kinds::frame_rule`]).
 pub(crate) const METADATA_WRITE: &str = "SET_METADATA (ordinary key)";
 
 /// A `GET_PERF` that resets nothing: the report read alone.
 ///
 /// Named apart from `GET_PERF` because that method's rows include
 /// `{ reset: true }`, which needs `BIND`; a plain read's hints come from the
-/// row the classifier gives one ([`kinds::command_rule`]).
+/// row the classifier gives one ([`phux_protocol::kinds::command_rule`]).
 pub(crate) const PERF_READ: &str = "GET_PERF (no reset)";
 
 /// Why an agent read stays on the CLI: the detector projection.
@@ -467,166 +476,7 @@ pub(crate) const TOOLS: &[Row] = &[
     ),
 ];
 
-/// CLI verbs on the `docs/agents.md#commands-agents-use` list that have
-/// no MCP tool, each with its reason. The parity gate requires
-/// every agent-facing verb there to have a tool or a row here.
-pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
-    (
-        "logs",
-        "local operator log inventory and tailing, not a model-facing server action",
-    ),
-    (
-        "update",
-        "replaces the operator's installed binaries; installation management stays outside MCP",
-    ),
-    (
-        "channel",
-        "changes the operator's installed release channel; installation management stays outside MCP",
-    ),
-    (
-        "config agents",
-        "local config inventory of declared agent integrations; `phux_agent_list` covers the live agents",
-    ),
-    // Host enrollment and renewal remain CLI-only operator workflows.
-    (
-        "host add",
-        "operator host-registry enrollment, not an agent action",
-    ),
-    (
-        "host ls",
-        "operator inventory of the host registry, not an agent action",
-    ),
-    (
-        "host discover",
-        "operator tailnet inventory for enrollment, not an agent action",
-    ),
-    (
-        "host renew",
-        "operator host-registry certificate renewal, not an agent action",
-    ),
-    (
-        "host upgrade",
-        "operator host-registry transport upgrade, not an agent action",
-    ),
-    (
-        "pair",
-        "mints a pairing secret; credential handling stays outside the model-facing set",
-    ),
-    ("mcp", "launches this adapter itself"),
-    (
-        "deny",
-        "`phux_approve` decides both ways: `decision: deny` is `phux deny`",
-    ),
-    ("resize", "not exposed over MCP yet; a known parity gap"),
-    (
-        "restore",
-        "an operator's after-restart sweep; an agent relaunches the one pane it means with \
-         `phux_relaunch`",
-    ),
-    (
-        "rec",
-        "not exposed over MCP yet; a recording is written to a file on the adapter's host",
-    ),
-    (
-        "play",
-        "not exposed over MCP yet; playback replays a file from the adapter's host",
-    ),
-    (
-        "rec mark",
-        "not exposed over MCP yet; it marks recordings written on the adapter's host",
-    ),
-];
-
 /// The row for `tool`.
 pub(crate) fn row(tool: &str) -> Option<&'static Row> {
     TOOLS.iter().find(|row| row.name == tool)
-}
-
-/// The two hints one tool carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Hints {
-    /// No method the tool can send changes server state.
-    pub(crate) read_only: bool,
-    /// Some method can end a process, eject a client, or type into a PTY.
-    pub(crate) destructive: bool,
-}
-
-/// What an unmapped tool is annotated as: the most conservative claim.
-pub(crate) const UNMAPPED: Hints = Hints {
-    read_only: false,
-    destructive: true,
-};
-
-/// Where the `destructive` column comes from.
-pub(crate) const DESTRUCTIVE_SOURCE: &str = "the kind table's `MethodSpec.dangerous` flag, \
-     or a method that needs `INPUT`";
-
-/// Whether a method is destructive: the kind table marks it `dangerous`
-/// (it can end a process, eject a client, stop the server, or release a
-/// held action; ADR-0128), or it types into a live PTY (`INPUT`). `CREATE`
-/// and `BIND` add resources and rewrite bindings: mutating, not destructive.
-const fn dangerous(verbs: Verbs, marked: bool) -> bool {
-    marked || verbs.contains(Verb::Input)
-}
-
-/// The hints `touches` implies, or `None` when it names a method the
-/// catalog does not have.
-pub(crate) fn hints(touches: Touches) -> Option<Hints> {
-    match touches {
-        Touches::LocalExec => Some(UNMAPPED),
-        Touches::LocalRead => Some(Hints {
-            read_only: true,
-            destructive: false,
-        }),
-        Touches::LocalWrite => Some(Hints {
-            read_only: false,
-            destructive: false,
-        }),
-        Touches::Wire(names) => wire_hints(names),
-    }
-}
-
-fn wire_hints(names: &[&str]) -> Option<Hints> {
-    let mut hints = Hints {
-        read_only: true,
-        destructive: false,
-    };
-    for name in names {
-        let (verbs, mutating, marked) = method_facts(name)?;
-        hints.read_only &= !mutating;
-        hints.destructive |= dangerous(verbs, marked);
-    }
-    Some(hints)
-}
-
-/// The verbs `name` can need, whether it can change state
-/// ([`kinds::MethodSpec::mutating`]'s conservative rule), and whether the
-/// kind table marks it dangerous.
-fn method_facts(name: &str) -> Option<(Verbs, bool, bool)> {
-    if name == METADATA_WRITE {
-        let verbs = kinds::frame_rule(&ordinary_metadata_write()).verb_set();
-        // A row that admits no verb is a denial: conservatively a write.
-        return Some((verbs, verbs.is_empty() || verbs.mutates(), false));
-    }
-    if name == PERF_READ {
-        let verbs = kinds::command_rule(&Command::GetPerf { reset: false }).verb_set();
-        return Some((verbs, verbs.is_empty() || verbs.mutates(), false));
-    }
-    let method = kinds::method_named(name)?;
-    Some((method.verbs(), method.mutating(), method.dangerous))
-}
-
-/// A representative ordinary write: a Terminal's tags.
-fn ordinary_metadata_write() -> FrameKind {
-    FrameKind::SetMetadata {
-        request_id: 0,
-        scope: Scope::Resource(ResourceId::local(1)),
-        key: RESOURCE_TAGS_KEY.to_owned(),
-        value: Vec::new(),
-    }
-}
-
-/// The hints for `tool`, or `None` with no row or an unknown method.
-pub(crate) fn hints_for(tool: &str) -> Option<Hints> {
-    row(tool).and_then(|row| hints(row.touches))
 }

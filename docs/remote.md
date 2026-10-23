@@ -46,6 +46,9 @@ with some Homebrew or Nix installs, say where it is:
 phux host add me@mini --remote-phux /opt/homebrew/bin/phux
 ```
 
+The machine's entry remembers that path, and where `--install` put phux, so
+later attaches, server restarts, and `phux host renew` run the same one.
+
 | Option | Does |
 | --- | --- |
 | `--name NAME` | Saves the machine under another name. |
