@@ -16,6 +16,7 @@ and lock so the GPUI dependency graph never enters the other phux crates.
 | `app/view` | chrome composed from `ui`: titlebar, the one navigator, tabs (one renderer, two placements), panes, status |
 | `app/menus` | every glass menu's contents (main, view, session, tab, pane), built from the desk |
 | `app/overlays/launcher` | native command/navigation presentation over Kit's query and selection state |
+| `app/settings_panel` | shared preference controls and search catalog; `window` owns the separate settings window, sidebar, search and window-local control state |
 | `workspace` | tabs, split trees, focus, size ownership, restore, layout persistence |
 | `settings` | display preferences, Ghostty config, themes, key chords |
 | `connection` | one runtime `Client` per host in a window and its sole event/path-answer drain |

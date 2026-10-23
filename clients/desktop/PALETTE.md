@@ -1,7 +1,7 @@
 ---
 audience: humans
 stability: evolving
-last-reviewed: 2026-10-19
+last-reviewed: 2026-10-23
 ---
 
 # Command palette
@@ -16,7 +16,9 @@ project, each marked with its machine, then **Machines…** and **Add
 Machine…**. A machine saved by address shows the name the system resolver
 gives it, so a tailnet IP reads as its MagicDNS name. Session, tab and pane
 actions (the **…** on a row, or a right-click) use the same glass menu.
-**⌘P**, **⇧⌘P**, and **⌘,** open the same searchable panel: **Work**, **Actions**, and **Settings**. Work lists sessions
+**⌘P** and **⇧⌘P** open the searchable palette in **Work** or **Actions**.
+**⌘,** opens a separate Settings window; the palette's gear button does the same.
+Work lists sessions
 across hosts plus the active session's terminals and tabs; a typed search also
 finds actions and settings. The work, terminal and tab this window shows
 read **Current**, so the one in use stays distinguishable from similar names
@@ -25,7 +27,7 @@ finds individual controls: **Return** or a click flips a switch in place, showin
 its current **On/Off** value. Other results open that exact control in the palette
 (font, theme, placement, spacing, update channel, and more), with **Back to results**
 preserving your search. Changes apply and save immediately; sliders save on release.
-Category results still open full pages, with **All settings** to go back. Actions start with five everyday commands; **All commands** expands the list.
+Category results open that page in the Settings window. Actions start with five everyday commands; **All commands** expands the list.
 Rows show the name and the selected command's shortcut. Typing searches the
 complete catalog, including descriptions and settings. **Filter** narrows Work
 by agent state; **Details** reveals the selected destination's metadata on demand. A leading `>` in

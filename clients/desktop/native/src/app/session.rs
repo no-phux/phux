@@ -118,6 +118,10 @@ pub struct Desktop {
     windows: Vec<Opened>,
     quick: Option<Opened>,
     performance: Option<AnyWindowHandle>,
+    pub(crate) settings: Option<(
+        AnyWindowHandle,
+        Entity<super::settings_panel::window::SettingsWindow>,
+    )>,
     /// The keymap last installed as GPUI bindings, so an unchanged keymap is not rebound.
     keymap: Option<Vec<(String, String)>>,
     /// GPUI strokes bound to [`Run`]; a stroke a later keymap drops is masked with `NoAction`.
@@ -167,6 +171,7 @@ impl Desktop {
             windows: Vec::new(),
             quick: None,
             performance: None,
+            settings: None,
             keymap: None,
             bound: Vec::new(),
             hotkey_chords: Vec::new(),

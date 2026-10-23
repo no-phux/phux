@@ -3,6 +3,34 @@
 use super::*;
 
 impl Desktop {
+    pub(crate) fn open_settings(
+        &mut self,
+        desk: Entity<Desk>,
+        owner: AnyWindowHandle,
+        page: Option<super::super::settings_panel::Page>,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        if let Some((handle, settings)) = &self.settings {
+            if settings.read(cx).owner == owner
+                && handle
+                    .update(cx, |_, window, cx| {
+                        settings.update(cx, |settings, cx| settings.reveal(page, window, cx));
+                        if crate::diag::may_activate() {
+                            window.activate_window();
+                        }
+                    })
+                    .is_ok()
+            {
+                return Ok(());
+            }
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        self.settings = Some(super::super::settings_panel::window::open(
+            desk, owner, page, cx,
+        )?);
+        Ok(())
+    }
+
     /// Update reuse metadata without reading the desk while it is leased.
     pub(crate) fn sync_window_session(
         &mut self,
@@ -187,12 +215,30 @@ impl Desktop {
         }
     }
 
-    pub(super) fn window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
+    /// Utility windows never count as workspace windows or trigger detach/quit.
+    fn utility_window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) -> bool {
+        if let Some((handle, settings)) = &self.settings {
+            if handle.window_id() == id {
+                self.settings = None;
+                return true;
+            }
+            if settings.read(cx).owner.window_id() == id {
+                let (handle, _) = self.settings.take().expect("settings owner");
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+        }
         if self
             .performance
             .is_some_and(|handle| handle.window_id() == id)
         {
             self.performance = None;
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
+        if self.utility_window_closed(id, cx) {
             return;
         }
         // A staged update installs on quit. Keep the final Desk alive until

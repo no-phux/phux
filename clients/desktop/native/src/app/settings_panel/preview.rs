@@ -127,7 +127,7 @@ pub(crate) fn capture(
                     });
                     match page {
                         Some(page) => desk.show_settings_page(*page, window, cx),
-                        None => desk.open_modal(crate::app::desk::Modal::Settings, window, cx),
+                        None => desk.execute("settings", window, cx),
                     }
                 });
                 window.refresh();
@@ -136,16 +136,29 @@ pub(crate) fn capture(
             cx.background_executor()
                 .timer(Duration::from_millis(700))
                 .await;
-            cx.update_window(*root, |_, window, cx| window.draw(cx).clear(cx))
+            let settings = root
+                .update(cx, |root, _, cx| {
+                    let desk = root.view().clone().downcast::<Desk>().expect("desk");
+                    desk.read(cx)
+                        .desktop
+                        .read(cx)
+                        .settings
+                        .as_ref()
+                        .expect("settings window")
+                        .0
+                })
+                .expect("settings handle");
+            cx.update_window(settings, |_, window, cx| window.draw(cx).clear(cx))
                 .expect("draw settings scene");
-            root.update(cx, |_, window, _| {
-                window
-                    .render_to_image()
-                    .expect("settings scene capture")
-                    .save(directory.join(format!("{name}.png")))
-                    .expect("write settings PNG");
-            })
-            .expect("capture window");
+            settings
+                .update(cx, |_, window, _| {
+                    window
+                        .render_to_image()
+                        .expect("settings scene capture")
+                        .save(directory.join(format!("{name}.png")))
+                        .expect("write settings PNG");
+                })
+                .expect("capture window");
         }
         cx.update(|cx| cx.quit());
     })

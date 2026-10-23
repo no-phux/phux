@@ -28,10 +28,6 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         | Modal::Windows
         | Modal::MoveResources => launcher::palette(desk, colors, window, cx),
         Modal::Path => path_panel(desk, colors, &look, cx),
-        Modal::Settings if desk.settings_page.is_some() => {
-            crate::app::settings_panel::panel(desk, window, cx)
-        }
-        Modal::Settings => launcher::palette(desk, colors, window, cx),
         Modal::Notifications => {
             let panel = notifications_panel(desk, colors, &look, window, cx);
             return match desk.anchors.get("notifications") {

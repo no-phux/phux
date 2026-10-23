@@ -357,16 +357,13 @@ fn unified_settings_changes_tab_placement_without_changing_work(cx: &mut TestApp
         ("tab-position-bottom", TabPosition::Bottom),
         ("tab-position-top", TabPosition::Top),
     ] {
-        cx.update(|window, cx| desk.update(cx, |desk, cx| desk.execute("settings", window, cx)));
+        cx.update(|window, cx| desk.update(cx, |desk, cx| desk.execute("goto", window, cx)));
         draw(cx);
-        cx.simulate_input("layout");
+        cx.simulate_input("Tab placement");
         draw(cx);
         cx.simulate_keystrokes("enter");
         draw(cx);
-        assert_eq!(
-            desk.read_with(cx, |desk, _| desk.settings_page),
-            Some(crate::app::settings_panel::Page::Layout)
-        );
+        assert!(cx.debug_bounds("palette-setting-editor").is_some());
         let choice = cx
             .debug_bounds(selector)
             .expect("tab placement in focused settings page");

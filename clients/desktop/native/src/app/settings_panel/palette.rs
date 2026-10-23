@@ -18,7 +18,7 @@ pub(crate) fn entries(
     Page::ALL
         .into_iter()
         .flat_map(|page| {
-            content(desk, page, handle, cx)
+            content(desk, page, handle, desk.settings_controls.as_ref(), cx)
                 .entries
                 .into_iter()
                 .filter(|(_, item)| item.actionable)

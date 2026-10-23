@@ -11,8 +11,7 @@ fn surface(modal: &Modal) -> &'static str {
         | Modal::Goto
         | Modal::WindowSession
         | Modal::Windows
-        | Modal::MoveResources
-        | Modal::Settings => "palette-panel",
+        | Modal::MoveResources => "palette-panel",
         _ => "modal-sheet",
     }
 }
@@ -69,43 +68,19 @@ fn every_modal_shares_one_placement_and_dismissal(cx: &mut TestAppContext) {
                 text: "one\ntwo".into(),
             },
         },
-    ]
-    .into_iter()
-    .map(|modal| (modal, None))
-    .chain([
-        // The settings form inside the palette, and the settings page, which
-        // is the one card not built on `sheet`.
-        (Modal::Settings, None),
-        (
-            Modal::Settings,
-            Some(crate::app::settings_panel::Page::Appearance),
-        ),
-    ]);
+    ];
     let viewport = cx.update(|window, _| window.viewport_size());
-    for (modal, page) in modals {
+    for modal in modals {
         let modal = &modal;
-        let selector = if page.is_some() {
-            "settings-panel"
-        } else {
-            surface(modal)
-        };
+        let selector = surface(modal);
         let open = |cx: &mut VisualTestContext| {
             open(&desk, modal, cx);
-            if let Some(page) = page {
-                // Choose the page the way the settings palette does.
-                cx.update(|window, cx| {
-                    desk.update(cx, |desk, cx| {
-                        desk.pick(super::super::Target::Setting(page), window, cx)
-                    })
-                });
-                render(cx);
-            }
         };
         // Every dimmed modal is centered in both axes; the inbox is anchored.
         open(cx);
         let card = cx
             .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("{modal:?} {page:?} renders its card"));
+            .unwrap_or_else(|| panic!("{modal:?} renders its card"));
         if *modal == Modal::Notifications {
             // The inbox drops from the bell instead, right edges aligned.
             let bell = cx.debug_bounds("notifications").expect("the bell");
@@ -277,12 +252,20 @@ fn machines_are_reachable_from_the_palette_and_the_main_menu(cx: &mut TestAppCon
     type_text(cx, "machines…");
     assert_eq!(selected_command(&desk, cx), Some("machines"));
     keys(cx, "enter");
-    assert_eq!(modal(&desk, cx), Modal::Settings);
+    assert_eq!(modal(&desk, cx), Modal::None);
     assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
+        Some(
+            crate::app::settings_panel::window_tests::opened(&desk, cx)
+                .1
+                .read_with(cx, |settings, _| settings.page)
+        ),
         connections
     );
-    keys(cx, "escape");
+    let settings = crate::app::settings_panel::window_tests::opened(&desk, cx).0;
+    settings
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    render(cx);
     assert_eq!(modal(&desk, cx), Modal::None);
 
     // The main menu's header leads to every machine, then to their settings.
@@ -298,9 +281,13 @@ fn machines_are_reachable_from_the_palette_and_the_main_menu(cx: &mut TestAppCon
         menu_cx.simulate_click(row.center(), gpui::Modifiers::none());
         menu_cx.run_until_parked();
     }
-    assert_eq!(modal(&desk, menu_cx), Modal::Settings);
+    assert_eq!(modal(&desk, menu_cx), Modal::None);
     assert_eq!(
-        desk.read_with(menu_cx, |desk, _| desk.settings_page),
+        Some(
+            crate::app::settings_panel::window_tests::opened(&desk, menu_cx)
+                .1
+                .read_with(menu_cx, |settings, _| settings.page)
+        ),
         connections
     );
 }

@@ -31,8 +31,9 @@ in place without touching the processes. Connections stay open across host
 switches, retaining the last session on each host while only the selected
 session is drawn. Agents that need you are marked
 on the tab or terminal they are in, and the bell opens an inbox of agent
-alerts and held approvals. `⌘P` opens one palette over sessions, actions,
-and settings; `>` switches it to commands.
+alerts and held approvals. `⌘P` searches work, commands, and individual settings;
+`>` switches it to commands. `⌘,` opens a separate Settings window with a
+searchable category sidebar and automatically saved controls.
 
 Closing a pane or tab ends its processes and removes their views for every
 client. Typing `exit` removes the pane too. Closing a window or moving a pane
