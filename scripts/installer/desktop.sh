@@ -168,6 +168,7 @@ linux_desktop_member() {
     phux-desktop/share/phux-desktop/LICENSE | phux-desktop/share/phux-desktop/NOTICE | \
     phux-desktop/share/phux-desktop/THIRD-PARTY-NOTICES.txt | \
     phux-desktop/share/phux-desktop/PaperMono-OFL.txt | phux-desktop/share/phux-desktop/JetBrainsMono-OFL.txt | \
+    phux-desktop/share/phux-desktop/Inter-OFL.txt | \
     phux-desktop/share/applications | phux-desktop/share/applications/dev.phux.desktop.desktop | \
     phux-desktop/share/icons | phux-desktop/share/icons/hicolor | \
     phux-desktop/share/icons/hicolor/scalable | phux-desktop/share/icons/hicolor/scalable/apps | \

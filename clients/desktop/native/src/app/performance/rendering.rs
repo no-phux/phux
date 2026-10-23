@@ -220,13 +220,17 @@ impl PerformanceMonitor {
             .flex()
             .items_center()
             .gap_2()
-            .child(
+            .child(toolbar_slot(
+                "performance-pause",
+                76.,
                 Button::new("performance-pause")
                     .small()
                     .label(if self.paused { "Resume" } else { "Pause" })
                     .on_click(cx.listener(|monitor, _, _, cx| monitor.toggle_pause(cx))),
-            )
-            .child(
+            ))
+            .child(toolbar_slot(
+                "performance-hud",
+                94.,
                 Button::new("performance-hud")
                     .small()
                     .ghost()
@@ -236,8 +240,10 @@ impl PerformanceMonitor {
                         "Show HUD"
                     })
                     .on_click(cx.listener(|monitor, _, _, cx| monitor.toggle_hud(cx))),
-            )
-            .child(
+            ))
+            .child(toolbar_slot(
+                "performance-trace",
+                100.,
                 Button::new("performance-trace")
                     .small()
                     .ghost()
@@ -248,14 +254,16 @@ impl PerformanceMonitor {
                         "5 s Trace"
                     })
                     .on_click(cx.listener(|monitor, _, _, cx| monitor.capture_trace(cx))),
-            )
-            .child(
+            ))
+            .child(toolbar_slot(
+                "performance-copy",
+                94.,
                 Button::new("performance-copy")
                     .small()
                     .ghost()
                     .label("Copy JSON")
                     .on_click(cx.listener(|monitor, _, _, cx| monitor.copy_json(cx))),
-            )
+            ))
     }
 
     fn status_line(&self, cx: &App) -> impl IntoElement {
@@ -272,6 +280,15 @@ impl PerformanceMonitor {
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .child(status)
     }
+}
+
+/// Reserve the longest label so state changes never move neighboring actions.
+fn toolbar_slot(selector: &'static str, width: f32, button: Button) -> impl IntoElement {
+    div()
+        .debug_selector(move || selector.into())
+        .w(px(width))
+        .flex_shrink_0()
+        .child(button.w_full())
 }
 
 impl gpui::Render for PerformanceMonitor {
@@ -300,6 +317,7 @@ impl gpui::Render for PerformanceMonitor {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .text_left()
+            .line_height(gpui::relative(crate::app::ui::typography::LEADING))
             .child(TitleBar::new().child(
                 div().text_sm().child("phux Performance Monitor"),
             ))
@@ -320,11 +338,13 @@ impl gpui::Render for PerformanceMonitor {
                             .gap_3()
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w_0()
                                     .flex()
                                     .flex_col()
                                     .gap_1()
                                     .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Performance"))
-                                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!(
+                                    .child(div().truncate().text_sm().text_color(cx.theme().muted_foreground).child(format!(
                                         "PID {} · {status}", self.latest.report.pid,
                                     ))),
                             )

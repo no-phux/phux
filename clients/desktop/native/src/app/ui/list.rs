@@ -87,7 +87,7 @@ pub(crate) fn row_label(
         .flex_1()
         .min_w_0()
         .truncate()
-        .text_sm()
+        .text_size(px(13.))
         .font_weight(weight)
         .text_color(color)
         .child(text.into())
@@ -100,7 +100,7 @@ pub(crate) fn row_detail(text: impl Into<SharedString>, look: &Look) -> gpui::Di
         .max_w(px(96.))
         .truncate()
         .text_xs()
-        .text_color(from_hex(&look.chrome.faint))
+        .text_color(from_hex(&look.chrome.muted))
         .child(text.into())
 }
 

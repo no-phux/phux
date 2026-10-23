@@ -201,7 +201,12 @@ pub(super) fn path_panel(
                         .truncate()
                         .child(status)
                 }))
-                .child(div().ml_auto().flex_shrink_0().child("Tab: open terminal"))
+                .child(
+                    div()
+                        .ml_auto()
+                        .min_w_0()
+                        .child("↵ Insert path · Tab / → Browse"),
+                )
         })
         .on_query(move |query, window, cx| {
             let _ = desk_handle.update(cx, |desk, cx| desk.palette_query(query, window, cx));

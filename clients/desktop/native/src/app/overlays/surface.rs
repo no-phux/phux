@@ -35,7 +35,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
                 None => backdrop(colors, window, cx, panel),
             };
         }
-        Modal::NativeLaunch => crate::app::native_launch::panel(desk, &look, cx),
+        Modal::NativeLaunch => crate::app::native_launch::panel(desk, &look, window, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, &look, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
         Modal::Project { name, current, .. } => {

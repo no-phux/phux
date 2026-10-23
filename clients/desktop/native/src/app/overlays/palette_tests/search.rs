@@ -38,10 +38,11 @@ fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext)
         .debug_bounds("palette-result-find")
         .expect("last essential action");
     let panel = cx.debug_bounds("palette-panel").unwrap();
-    // The row's 6pt kit padding, the list's 4pt inset, the card's 1pt border.
-    assert_eq!(
-        panel.bottom() - last.bottom(),
-        gpui::px(11.),
+    // Kit's row padding and list inset follow rem; allow pixel snapping across
+    // five rows, not a fixed 16pt document-font assumption.
+    let inset = cx.update(|window, _| window.rem_size() * 0.625 + gpui::px(1.));
+    assert!(
+        ((panel.bottom() - last.bottom()) - inset).abs() <= gpui::px(2.),
         "the panel ends the list's inset below its last row"
     );
 }

@@ -49,11 +49,6 @@ pub(in crate::app) fn panel(
     let destination = destination(desk).unwrap_or_else(|error| error);
     let viewport = window.viewport_size();
     let height = (viewport.height.as_f32() - 2. * SHEET_GUTTER).max(0.);
-    let stay = if cfg!(target_os = "macos") {
-        "⌘Enter"
-    } else {
-        "Ctrl+Enter"
-    };
     sheet(look, 600.)
         .id("capture-panel")
         .debug_selector(|| "capture-panel".into())
@@ -63,48 +58,47 @@ pub(in crate::app) fn panel(
         // let an unhandled submit fall through to native newline insertion.
         .on_action(|_: &gpui_kit::base::input::Enter, _, _| {})
         .text_left()
-        .p(px(16.))
+        .p(px(10.))
         .flex()
         .flex_col()
-        .gap(px(12.))
-        .child(
-            div().flex().items_center().justify_between()
-                .child(div().flex().items_center().gap(px(8.))
-                    .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child("New thought"))
-                    .child(div().text_size(px(11.)).text_color(muted).child("OpenCode")))
-                .child(Button::new("capture-close").icon(IconName::Close).ghost().xsmall()
-                    .accessibility_label("Dismiss capture; keep draft")
-                    .tooltip("Esc · keep draft")
-                    .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)))),
-        )
+        .gap(px(8.))
         .child(
             InputGroup::new("capture-composer")
                 .aria_label("Capture a thought")
                 .rounded(corner(look, 10.))
                 .invalid(desk.capture.error.is_some())
-                .input(Textarea::new(input).aria_label("Thought").text_size(px(15.)).p(px(12.)))
+                .input(Textarea::new(input).aria_label("Thought").text_size(px(15.)).line_height(gpui::relative(1.45)).p(px(12.)))
                 .addon(InputGroupAddon::new("capture-toolbar")
                     .align(InputGroupAddonAlignment::BlockEnd)
                     .justify_between().gap(px(12.))
                     .child(div().id("capture-destination").flex_1().min_w_0().truncate()
-                        .text_size(px(11.)).font_weight(FontWeight::NORMAL)
-                        .child(destination))
+                         .text_size(px(12.)).font_weight(FontWeight::NORMAL)
+                         .text_color(muted)
+                         .child(format!("OpenCode · {destination}")))
+                    .child(Button::new("capture-close").icon(IconName::Close).ghost().xsmall()
+                        .accessibility_label("Dismiss capture; keep draft")
+                        .tooltip("Esc · keep draft")
+                        .on_click(cx.listener(|desk, _, window, cx| desk.close_modal(window, cx))))
                     .child(Button::new("capture-send").label(if pending { "Sending…" } else { "Send" })
-                        .icon(IconName::ArrowUp).primary().small()
+                         .icon(IconName::ArrowUp).primary().small()
                         .disabled(pending || desk.capture.draft.trim().is_empty())
-                        .accessibility_label("Send thought and follow agent")
+                         .accessibility_label("Send thought and follow agent")
+                         .tooltip(capture_help())
                         .on_click(cx.listener(|desk, _, window, cx| desk.submit_capture(true, window, cx))))),
         )
-        .child(div().flex().flex_wrap().gap_x(px(16.)).gap_y(px(4.))
-            .text_size(px(11.)).text_color(muted)
-            .child("Enter send & follow")
-            .child("Shift+Enter new line")
-            .child(format!("{stay} send & stay")))
         .children(desk.capture.error.clone().map(|error| {
             div().id("capture-error").role(gpui::Role::Alert)
                 .text_size(px(12.)).text_color(from_hex(&look.chrome.theme.danger)).child(error)
         }))
         .into_any_element()
+}
+
+fn capture_help() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "OpenCode · Enter sends and follows. ⌘Enter sends and stays. Shift+Enter adds a line."
+    } else {
+        "OpenCode · Enter sends and follows. Ctrl+Enter sends and stays. Shift+Enter adds a line."
+    }
 }
 
 #[cfg(test)]

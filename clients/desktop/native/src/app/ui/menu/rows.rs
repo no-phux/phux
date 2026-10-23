@@ -3,12 +3,7 @@
 use super::*;
 
 impl GlassMenu {
-    pub(super) fn header(
-        &self,
-        ink: Hsla,
-        washes: Washes,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    pub(super) fn header(&self, washes: Washes, cx: &mut Context<Self>) -> Option<AnyElement> {
         let first = self.first();
         let heading = self.page().heading.clone().unwrap_or_default();
         if first && self.page().heading.is_none() {
@@ -52,7 +47,7 @@ impl GlassMenu {
                     // theirs.
                     div()
                         .size_full()
-                        .rounded(px(self.skin.shape.kit_radius_lg))
+                        .rounded(px(super::super::list::row_radius(&self.skin)))
                         .pl(px(if icon.is_some() {
                             PAD + (ICON_COLUMN - DISC) / 2.
                         } else {
@@ -61,7 +56,7 @@ impl GlassMenu {
                         .pr(px(PAD))
                         .flex()
                         .items_center()
-                        .gap(px(10.))
+                        .gap(px(8.))
                         .when(selected, |el| el.bg(washes.quiet))
                         .when(acts, |el| {
                             el.group_hover("glass-menu-header", move |style| style.bg(washes.quiet))
@@ -94,7 +89,7 @@ impl GlassMenu {
                                 .children(heading.detail.map(|detail| {
                                     div()
                                         .text_size(px(11.))
-                                        .text_color(ink.opacity(SECONDARY))
+                                        .text_color(cx.theme().muted_foreground)
                                         .truncate()
                                         .child(detail)
                                 })),
@@ -103,7 +98,7 @@ impl GlassMenu {
                             el.child(
                                 Icon::new(IconName::ChevronRight)
                                     .size(px(13.))
-                                    .text_color(ink.opacity(MUTED))
+                                    .text_color(cx.theme().muted_foreground)
                                     .mr(px(-CHEVRON_BEARING)),
                             )
                         }),
@@ -121,7 +116,7 @@ impl GlassMenu {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let choice = item.choice.clone();
-        let row_radius = px(self.skin.shape.kit_radius_lg);
+        let row_radius = px(super::super::list::row_radius(&self.skin));
         let selector = item.selector.clone();
         let tone = if item.danger { cx.theme().danger } else { ink };
         div()
@@ -143,7 +138,7 @@ impl GlassMenu {
             .px(px(PAD))
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(px(8.))
             .cursor_pointer()
             .text_color(tone)
             .on_mouse_move(
@@ -156,6 +151,17 @@ impl GlassMenu {
                 cx.listener(move |menu, _, window, cx| menu.choose(choice.clone(), window, cx)),
             )
             .active(move |style| style.bg(washes.press).rounded(row_radius))
+            .when(item.gap, |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .top(px(-GAP / 2.))
+                        .left(px(PAD))
+                        .right(px(PAD))
+                        .h(px(1.))
+                        .bg(cx.theme().border),
+                )
+            })
             .child(
                 div()
                     .w(px(ICON_COLUMN))
@@ -179,21 +185,22 @@ impl GlassMenu {
                     .children(item.detail.clone().map(|detail| {
                         div()
                             .text_size(px(11.))
-                            .text_color(ink.opacity(MUTED))
+                            .text_color(cx.theme().muted_foreground)
                             .truncate()
                             .child(detail)
                     })),
             )
             .children(item.chord.clone().map(|chord| {
                 div()
-                    .text_color(ink.opacity(HINT))
+                    .flex_shrink_0()
+                    .text_color(cx.theme().muted_foreground)
                     .child(Kbd::new(chord).appearance(false))
             }))
             .when(matches!(item.choice, Choice::Page(_)), |el| {
                 el.child(
                     Icon::new(IconName::ChevronRight)
                         .size(px(13.))
-                        .text_color(ink.opacity(HINT))
+                        .text_color(cx.theme().muted_foreground)
                         .mr(px(-CHEVRON_BEARING)),
                 )
             })

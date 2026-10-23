@@ -37,6 +37,10 @@ name = "performance_monitor"
 required-features = ["ui-fixtures"]
 
 [[example]]
+name = "design_preview"
+required-features = ["ui-fixtures"]
+
+[[example]]
 name = "settings_preview"
 required-features = ["ui-fixtures"]
 

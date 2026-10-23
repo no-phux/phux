@@ -2,6 +2,28 @@
 use super::*;
 
 #[test]
+fn pane_glass_is_independent_and_preserves_the_saved_strength_across_styles() {
+    assert!(
+        parse_display(&json!({})).pane_glass,
+        "old layouts keep their appearance"
+    );
+    for value in [json!(null), json!("false"), json!(0)] {
+        assert!(parse_display(&json!({"paneGlass": value})).pane_glass);
+    }
+    for skin_id in ["glass", "classic"] {
+        let prefs = DisplayPrefs {
+            skin_id: skin_id.into(),
+            pane_glass: false,
+            terminal_opacity: 0.65,
+            ..default_display()
+        };
+        assert_eq!(parse_display(&display_value(&prefs)), prefs);
+        assert_eq!(prefs.painted_terminal_opacity(), 1.);
+        assert_eq!(prefs.terminal_opacity, 0.65);
+    }
+}
+
+#[test]
 fn agent_fleet_is_opt_in_and_round_trips_without_coercion() {
     for value in [
         json!({}),

@@ -13,6 +13,12 @@ stand in a rail of their own beside your work; a plain terminal still hides a
 lone tab, and its tabs keep the desk's shape.
 If side panels leave too little room for usable bottom tabs, they temporarily
 return to the titlebar; widening the window restores your Bottom preference.
+With side or bottom tabs and the sidebar visible, the sidebar owns the window
+header: your panes extend up to the top gutter instead of keeping an empty
+tab strip. Changes, agent views, notifications, appearance and update controls
+sit above the sidebar's search field. Hiding the sidebar brings them back into
+a compact header, with no extra gap above the panes. Window dragging still
+works in the header and, in the full-height layout, the top sheet gutter.
 Selecting, closing,
 double-clicking to rename, right-clicking for tab actions, and dragging to
 reorder work in every layout. The command palette also offers **Tabs on Top**,

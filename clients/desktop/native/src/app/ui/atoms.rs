@@ -38,16 +38,6 @@ pub(crate) fn pill(text: &str, background: &str, color: &str, look: &Look) -> gp
         .child(text.to_owned())
 }
 
-/// A small label in the accent: a one-word state on a row.
-pub(crate) fn badge(text: &str, look: &Look) -> gpui::Div {
-    pill(
-        text,
-        &look.chrome.accent_wash,
-        &look.chrome.theme.accent,
-        look,
-    )
-}
-
 /// A raised notice over the panes: the card surface on a near-opaque
 /// backing, with the kit's large lift when the skin casts shadows.
 pub(crate) fn notice_card(look: &Look, opacity: f32) -> gpui::Div {

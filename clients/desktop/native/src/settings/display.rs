@@ -134,6 +134,9 @@ pub struct DisplayPrefs {
     /// Terminal background opacity over the blur. A solid window paints
     /// opaque regardless.
     pub terminal_opacity: f64,
+    /// Translucent pane backgrounds in Glass style; preserves the chosen
+    /// opacity when temporarily switched off. Classic and Plain stay solid.
+    pub pane_glass: bool,
     /// Blurred translucent window or solid opaque one.
     pub window_background: WindowBackground,
     /// Whether Ghostty keybinds override the built-in chords.
@@ -175,6 +178,7 @@ pub fn default_display() -> DisplayPrefs {
         padding_y: 6.0,
         unfocused_opacity: 1.0,
         terminal_opacity: 0.92,
+        pane_glass: true,
         window_background: WindowBackground::Blur,
         ghostty_keys: true,
         cursor_laser: true,
@@ -206,6 +210,9 @@ impl DisplayPrefs {
     /// Terminal background opacity as painted: opaque on a solid window.
     #[must_use]
     pub fn painted_terminal_opacity(&self) -> f64 {
+        if !self.pane_glass {
+            return 1.0;
+        }
         match self.window_background {
             WindowBackground::Blur => self.terminal_opacity,
             WindowBackground::Solid => 1.0,
@@ -326,6 +333,7 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         padding_y: number("paddingY", fallback.padding_y),
         unfocused_opacity: number("unfocusedOpacity", fallback.unfocused_opacity),
         terminal_opacity: number("terminalOpacity", fallback.terminal_opacity),
+        pane_glass: flag("paneGlass", fallback.pane_glass),
         window_background: WindowBackground::parse(
             object.get("windowBackground").and_then(Value::as_str),
         ),
@@ -361,6 +369,7 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "paddingY": display.padding_y,
         "unfocusedOpacity": display.unfocused_opacity,
         "terminalOpacity": display.terminal_opacity,
+        "paneGlass": display.pane_glass,
         "windowBackground": display.window_background.as_str(),
         "ghosttyKeys": display.ghostty_keys,
         "cursorLaser": display.cursor_laser,

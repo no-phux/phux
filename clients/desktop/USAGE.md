@@ -155,7 +155,7 @@ Support copy), the first launch adopts it: font family and size,
 `adjust-cell-width/height` percentages, colours including the 16-colour
 palette and a named `theme`, window padding, `unfocused-split-opacity`,
 `split-divider-color`, and `macos-option-as-alt`. Settings also exposes
-**Terminal glass**, which lowers the default terminal background opacity over
+**Appearance > Glassy panes** and **Pane opacity**, which lower the default terminal background opacity over
 the native blurred window background. Your `keybind` lines replace
 the built-in chords where an equivalent command exists, including non-Command
 chords such as `ctrl+tab`, `shift+enter` or a bare `f12`. Besides splits, tabs,
@@ -250,6 +250,10 @@ to macOS Notification Center too, where a click brings the pane forward; this
 needs the installed `Phux.app`, not a bare debug executable. Confirmations
 and other routine results go only to the list. An agent's entry lasts only
 while the agent stays in the state it announced.
+Use **Show details** on a notification to read its complete message without
+leaving the list. Clicking a general error opens its full explanation there;
+clicking an agent alert still takes you to its terminal. Approval decisions
+remain explicit, with their controls below the message.
 
 Agent badges and agent notifications retire when a terminal closes or its
 connection is replaced, including reconnects to the same daemon. Native events

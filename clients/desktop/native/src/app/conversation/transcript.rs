@@ -1,7 +1,7 @@
 //! Transcript rows and the labels screen readers announce for them.
 //!
-//! Your prompts sit in accent bubbles at the trailing edge; the agent's
-//! prose reads full width under its harness mark; thinking and tool calls
+//! Your prompts sit in quiet bubbles at the trailing edge; the agent's
+//! prose owns the reading column; thinking and tool calls
 //! fold to one line and open on demand.
 
 use gpui::{ClickEvent, relative};
@@ -11,7 +11,6 @@ use gpui_kit::component::shimmer::ShimmerText;
 use gpui_kit::component::spinner::Spinner;
 
 use super::super::pane_identity::Harness;
-use super::super::ui::status::harness_mark;
 use super::*;
 
 pub(super) const OMITTED_NOTICE: &str =
@@ -56,7 +55,7 @@ pub(super) fn conversation_list(
         .aria_label("Conversation")
         .flex()
         .flex_col()
-        .gap(px(14.))
+        .gap(px(6.))
         .children(rows)
 }
 
@@ -219,11 +218,13 @@ pub(super) fn transcript_row(
     style: &Style<'_>,
     toggle: Toggle,
 ) -> gpui::Stateful<gpui::Div> {
+    let selector = format!("conversation-entry-{}", entry.id);
     let row = div()
         .id(SharedString::from(format!(
             "conversation-entry-{}",
             entry.id
         )))
+        .debug_selector(move || selector.clone())
         .role(gpui::Role::ListItem)
         .aria_label(entry_label(entry))
         .w_full()
@@ -232,24 +233,25 @@ pub(super) fn transcript_row(
     match (&entry.tool, entry.role) {
         (Some(tool), _) => row.child(tool_card(entry, tool, open, style, toggle)),
         (None, TranscriptRole::User) => row.items_end().child(user_bubble(entry, style)),
-        (None, TranscriptRole::Assistant) => row.gap(px(6.)).child(reply(entry, lead, style)),
+        (None, TranscriptRole::Assistant) => row.py(px(6.)).child(reply(entry, lead, style)),
         (None, TranscriptRole::Thinking) => row.child(thinking(entry, open, style, toggle)),
         (None, TranscriptRole::Tool | TranscriptRole::System) => row.child(activity(entry, style)),
     }
 }
 
 fn user_bubble(entry: &TranscriptEntry, style: &Style<'_>) -> gpui::Div {
-    let accent = from_hex(&style.colors.theme.accent);
     div()
         .max_w(relative(0.86))
         .px(px(12.))
         .py(px(8.))
-        .rounded(corner(style.look, 14.))
-        .bg(from_hex(&style.colors.accent_wash))
-        .border_1()
-        .border_color(accent.opacity(0.22))
+        .rounded(corner(style.look, 10.))
+        .bg(style.look.ink.opacity(0.055))
         .text_color(style.look.ink)
-        .child(entry_body(entry))
+        .child(
+            entry_body(entry)
+                .text_size(px(15.))
+                .line_height(relative(1.45)),
+        )
         .children(
             entry
                 .truncated
@@ -262,20 +264,13 @@ fn reply(entry: &TranscriptEntry, lead: bool, style: &Style<'_>) -> gpui::Div {
         .flex()
         .flex_col()
         .gap(px(6.))
-        .when(lead, |reply| {
-            reply.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(style.muted())
-                    .child(harness_mark(style.harness, None, 13., style.look))
-                    .child(style.provider.to_owned()),
-            )
-        })
-        .child(entry_body(entry).text_color(style.look.ink))
+        .when(lead, |reply| reply.pt(px(2.)))
+        .child(
+            entry_body(entry)
+                .text_size(px(15.))
+                .line_height(relative(1.45))
+                .text_color(style.look.ink),
+        )
         .when(!entry.is_final || entry.truncated, |reply| {
             reply.child(
                 div()
@@ -346,7 +341,7 @@ fn thinking(entry: &TranscriptEntry, open: bool, style: &Style<'_>, toggle: Togg
     .flex()
     .items_center()
     .gap(px(6.))
-    .text_xs()
+    .text_size(px(12.))
     .text_color(style.muted())
     .hover(|header| header.text_color(style.look.ink))
     .child(
@@ -393,7 +388,7 @@ fn tool_card(
         ToolStatus::Ok => (
             Icon::new(IconName::CircleCheck)
                 .size(px(13.))
-                .text_color(from_hex(&style.colors.theme.success))
+                .text_color(style.muted())
                 .into_any_element(),
             style.look.border,
         ),
@@ -421,7 +416,7 @@ fn tool_card(
     .gap(px(8.))
     .min_w_0()
     .px(px(10.))
-    .py(px(6.))
+    .py(px(4.))
     .when(can_fold, |header| {
         header.hover(|header| header.bg(ink.opacity(0.04)))
     })
@@ -433,7 +428,7 @@ fn tool_card(
     .child(
         div()
             .flex_shrink_0()
-            .text_sm()
+            .text_size(px(12.))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(ink)
             .child(tool.name.clone()),
@@ -457,9 +452,11 @@ fn tool_card(
     div()
         .w_full()
         .rounded(corner(style.look, 8.))
-        .border_1()
+        .when(tool.status == ToolStatus::Error, |card| card.border_1())
         .border_color(edge)
-        .bg(ink.opacity(0.02))
+        .when(open || tool.status == ToolStatus::Error, |card| {
+            card.bg(ink.opacity(0.02))
+        })
         .overflow_hidden()
         .child(
             gpui_kit::component::collapsible::Collapsible::new()
@@ -475,7 +472,6 @@ fn activity(entry: &TranscriptEntry, style: &Style<'_>) -> gpui::Div {
     div()
         .flex()
         .items_center()
-        .justify_center()
         .gap(px(6.))
         .text_color(if notification {
             from_hex(&style.colors.theme.warning)

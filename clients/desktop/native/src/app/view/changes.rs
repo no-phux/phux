@@ -122,7 +122,7 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
     div()
         .size_full()
         .relative()
-        .pt(px(gutter))
+        .pt(px(super::panes::top_inset(desk, &look)))
         .pr(px(gutter))
         // Its foot is the window's, whatever sits under the panes.
         .pb(px(gutter))

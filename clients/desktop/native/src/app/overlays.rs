@@ -45,6 +45,8 @@ use ranking::{goto_candidates, search_revision};
 #[cfg(test)]
 pub(super) mod palette_tests;
 #[cfg(test)]
+mod polish_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod window_tests;

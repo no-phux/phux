@@ -199,7 +199,7 @@ pub(crate) fn notification_text(
             entry
                 .body
                 .clone()
-                .map(|body| muted(look, body).line_clamp(lines)),
+                .map(|body| muted(look, body).when(lines > 0, |body| body.line_clamp(lines))),
         )
 }
 

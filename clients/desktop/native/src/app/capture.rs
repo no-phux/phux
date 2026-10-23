@@ -174,7 +174,7 @@ impl Desk {
             None => {
                 let input = cx.new(|cx| {
                     TextareaState::new(window, cx)
-                        .placeholder("What needs changing?")
+                        .placeholder("What needs doing?")
                         .default_value(self.capture.draft.clone())
                         .auto_grow(3, 8)
                         .submit_on_enter(true)

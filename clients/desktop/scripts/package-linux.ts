@@ -77,6 +77,7 @@ export function createLinuxBundle(options: LinuxBundleOptions): string {
   for (const name of ["PaperMono-OFL.txt", "JetBrainsMono-OFL.txt"]) {
     cpSync(join(desktopRoot, "native/phux-gpui/assets/fonts", name), join(share, name));
   }
+  cpSync(join(desktopRoot, "native/assets/fonts/Inter-OFL.txt"), join(share, "Inter-OFL.txt"));
   mkdirSync(join(bundle, "share/applications"), { recursive: true });
   mkdirSync(join(bundle, "share/icons/hicolor/scalable/apps"), { recursive: true });
   cpSync(

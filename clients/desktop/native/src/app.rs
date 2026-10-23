@@ -98,12 +98,14 @@ pub(crate) fn open_with_restore(
 /// Open the real menu material in a standalone native fixture.
 #[cfg(feature = "ui-fixtures")]
 pub fn open_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
+    ui::typography::install(cx);
     ui::menu::preview(cx)
 }
 
 /// Preview or capture the real monitor without a daemon or production state.
 #[cfg(feature = "ui-fixtures")]
 pub fn preview_performance_monitor(capture: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
+    ui::typography::install(cx);
     performance::preview(capture, cx)
 }
 
@@ -127,6 +129,16 @@ pub fn capture_fleet_fixture(
 ) -> anyhow::Result<()> {
     let root = open(options, cx)?;
     fleet::dashboard::preview::capture(root, directory, cx)
+}
+
+/// Capture the real desktop layouts with an embedded, server-free runtime.
+#[cfg(feature = "ui-fixtures")]
+pub fn capture_design_fixture(
+    options: AppOptions,
+    directory: PathBuf,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    view::preview::open(options, directory, cx)
 }
 
 /// Measure native menu creation without opening visible windows.

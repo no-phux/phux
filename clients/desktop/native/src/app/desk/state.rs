@@ -265,17 +265,21 @@ impl Desk {
 
     /// Reveal a notification's terminal, if it has one, and mark it read.
     pub fn open_notification(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let terminal = self.feed.get(id).and_then(|entry| entry.terminal.clone());
-        let approval = self
-            .feed
-            .get(id)
-            .is_some_and(|entry| entry.kind == Kind::Approval);
+        let Some(entry) = self.feed.get(id) else {
+            return;
+        };
+        let terminal = entry.terminal.clone();
+        let approval = entry.kind == Kind::Approval;
         self.feed.read(id);
         // An approval is decided in the Inbox; opening one shows it there.
-        if approval {
+        if approval || terminal.is_none() {
+            if !approval {
+                self.feed.show_details(id);
+            }
             if self.modal != Modal::Notifications {
                 self.execute("notifications", window, cx);
             }
+            cx.notify();
             return;
         }
         if self.modal == Modal::Notifications {
