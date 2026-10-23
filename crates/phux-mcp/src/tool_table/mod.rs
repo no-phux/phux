@@ -80,14 +80,14 @@ const RESOLVE: &str = "GET_STATE";
 ///
 /// Named apart from `SET_METADATA` because that method's rows include the
 /// config-reload doorbell, which needs `SIGNAL`; an ordinary write's hints
-/// come from the row the classifier gives one ([`kinds::frame_rule`]).
+/// come from the row the classifier gives one ([`phux_protocol::kinds::frame_rule`]).
 pub(crate) const METADATA_WRITE: &str = "SET_METADATA (ordinary key)";
 
 /// A `GET_PERF` that resets nothing: the report read alone.
 ///
 /// Named apart from `GET_PERF` because that method's rows include
 /// `{ reset: true }`, which needs `BIND`; a plain read's hints come from the
-/// row the classifier gives one ([`kinds::command_rule`]).
+/// row the classifier gives one ([`phux_protocol::kinds::command_rule`]).
 pub(crate) const PERF_READ: &str = "GET_PERF (no reset)";
 
 /// Why an agent read stays on the CLI: the detector projection.
