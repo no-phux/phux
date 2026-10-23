@@ -376,6 +376,7 @@ impl Workspace {
         self.unresolved.clear();
         self.attaching.clear();
         self.closed_terminals.clear();
+        self.considered.clear();
         self.owners.clear();
         self.active_id.clear();
     }

@@ -5,6 +5,7 @@
 pub mod layout;
 pub mod persist;
 
+mod adopt;
 mod operations;
 mod restore;
 
@@ -39,6 +40,8 @@ pub struct WorkspaceOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Destination {
     Tab,
+    /// A tab of its own that leaves the active tab where it is.
+    QuietTab,
     Background,
     Split {
         tab_id: String,
@@ -79,6 +82,8 @@ pub struct Workspace {
     unresolved: HashSet<String>,
     attaching: HashSet<String>,
     closed_terminals: HashSet<String>,
+    /// Home-session terminals already offered a tab, adopted or not.
+    considered: HashSet<String>,
     notices: Vec<Notice>,
     noticed_create: HashSet<String>,
 }
@@ -233,6 +238,9 @@ impl Workspace {
             self.finish_restore(connection);
         }
         self.resolve_restored(connection);
+        if self.restored {
+            self.adopt_session_terminals(connection);
+        }
     }
 
     /// Place one terminal the server reports ready at its recorded
@@ -240,6 +248,15 @@ impl Workspace {
     /// instead of landing twice; a split always lands in its own tab.
     fn place_ready(&mut self, connection: &Connection, label: &str, destination: Destination) {
         self.awaiting.remove(label);
+        if destination == Destination::QuietTab {
+            if !self
+                .all_placements()
+                .any(|placement| placement.terminal_label == label)
+            {
+                self.land(connection, label, destination);
+            }
+            return;
+        }
         let revealed = self.reveal(label);
         if !revealed || matches!(destination, Destination::Split { .. }) {
             self.land(connection, label, destination);
@@ -357,7 +374,9 @@ impl Workspace {
         };
         match (terminal, error) {
             (Some(terminal), None) => {
-                if destination != Destination::Background {
+                if destination == Destination::Background {
+                    self.considered.insert(terminal_label(terminal));
+                } else {
                     self.awaiting.insert(terminal_label(terminal), destination);
                 }
             }
@@ -418,7 +437,9 @@ impl Workspace {
             root: leaf(placement),
             zoomed_id: None,
         });
-        self.active_id = id;
+        if destination != Destination::QuietTab || self.active_id.is_empty() {
+            self.active_id = id;
+        }
     }
 
     fn place(&mut self, connection: &Connection, label: &str, id: Option<String>) -> Placement {
@@ -534,5 +555,7 @@ mod close_tests;
 #[cfg(test)]
 pub(crate) mod view_tests;
 
+#[cfg(test)]
+mod adopt_tests;
 #[cfg(test)]
 mod home_tests;

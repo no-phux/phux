@@ -161,7 +161,10 @@ machine with its state, opens, retries, disconnects, adds or forgets machines, a
 refreshes inventory.
 Catalog discovery never attaches terminal streams or starts work; selecting an
 empty session keeps it empty. Tabs and splits still belong to the selected
-session, not to a new cross-server Workspace record.
+session, not to a new cross-server Workspace record. Every terminal in the
+selected session gets a tab without a click: one started elsewhere (an agent,
+`phux spawn`) joins the tab list behind the current tab. A terminal moved to
+another window, or a capture started in the background, stays out.
 
 | Keys             | Action                                                                      |
 | ---------------- | --------------------------------------------------------------------------- |
