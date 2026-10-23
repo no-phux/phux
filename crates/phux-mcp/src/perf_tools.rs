@@ -97,7 +97,8 @@ fn perf_schema() -> Value {
          HEAP: `alloc` {allocs, alloc_bytes, frees, live_bytes, peak_bytes} appears only when \
          heap accounting is on — a process started with PHUX_DEV=1, or after the operator ran \
          `phux perf alloc on`; its absence is not an error. \
-         `source: desktop` reads a phux desktop running in dev mode (started with PHUX_DEV=1) \
+         `source: desktop` reads a phux desktop running in dev mode (started with PHUX_DEV=1, \
+         or with Developer mode on in its Settings) \
          and returns `{report, frames}`: `report` is the desktop's own report in the same shape \
          (`desktop.*` metrics), and `frames` is {fps, frames, build_p50_us, build_p99_us, \
          build_max_us, over_budget, janks, worst_gap_us} over the recent frame window. With no \
@@ -117,7 +118,8 @@ fn trace_schema() -> Value {
         "Record a Perfetto trace for `seconds` and return where it was written: the same \
          document as `phux perf trace --json`. The call blocks for the whole recording. \
          `source: server` (default) traces the server and returns `{path, events, dropped, \
-         duration_ms}`; `source: desktop` traces a dev-mode desktop (started with PHUX_DEV=1) \
+         duration_ms}`; `source: desktop` traces a dev-mode desktop (started with PHUX_DEV=1, \
+         or with Developer mode on in its Settings) \
          and the server onto ONE merged timeline and returns `{ok, path, desktop, server, \
          server_error, events, dropped, duration_ms}` — a non-null `server_error` means the \
          server did not take part and the file holds only the desktop. `dropped` > 0 means the \

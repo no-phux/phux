@@ -16,8 +16,9 @@
 //!   back from ACP to a PTY.
 //! - [`perf`] / [`diag`]: always-on host metrics, the log, `perf.jsonl`, and
 //!   drawable-presented evidence for qualification runs.
-//! - [`devtools`]: dev mode (`PHUX_DEV=1`): the frame ring, heap accounting,
-//!   the HUD, Perfetto traces and the dev socket agents query.
+//! - [`devtools`]: Developer mode (the setting, `PHUX_DEV=1` or `--dev`):
+//!   the frame ring, heap accounting, the HUD, Perfetto traces and the dev
+//!   socket agents query.
 
 pub use phux_gpui::{attach, fonts, input, perf, terminal};
 

@@ -29,8 +29,9 @@ pub struct Options {
     pub quick: bool,
     /// Open the native performance monitor at launch; it can also be opened live.
     pub dev_telemetry: bool,
-    /// Dev mode ([`crate::devtools`]): heap accounting, the HUD and the dev
-    /// socket. `PHUX_DEV=1` does the same.
+    /// Developer mode for this run ([`crate::devtools`]): heap accounting,
+    /// the HUD and the dev socket, whatever the saved setting says.
+    /// `PHUX_DEV=1` does the same.
     pub dev: bool,
     /// Directory for presentation evidence and `perf.jsonl`.
     pub evidence: Option<PathBuf>,
@@ -250,7 +251,11 @@ pub fn main() -> ExitCode {
             phux: app_options.phux.clone(),
             socket: app_options.socket.clone(),
         });
-    crate::devtools::init(crate::devtools::requested(options.dev), cli);
+    crate::devtools::init(
+        crate::devtools::requested(options.dev),
+        crate::devtools::prefs::load(),
+        cli,
+    );
     let evidence = options.evidence.clone().map(|dir| diag::EvidenceOptions {
         dir,
         exit_after: options.smoke,

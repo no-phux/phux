@@ -86,7 +86,9 @@ default) turns the phux half off. Linux desktop updates rerun the installer.
 Logs: `~/Library/Logs/phux-desktop.log` on macOS,
 `$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, redacted and rotated.
 **Copy Diagnostics** in the palette copies versions, server id, host, and
-recent errors, without terminal content.
+recent errors, without terminal content. **Settings > Developer** gathers
+these with Developer mode, profiling and traces
+([dev mode](USAGE.md#dev-mode)).
 
 ## Using it
 

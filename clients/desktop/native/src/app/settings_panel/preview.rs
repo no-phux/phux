@@ -46,7 +46,7 @@ const SCENARIOS: &[Scenario] = &[
     ("spacing", Some(Page::Spacing), |_| {}),
     ("ghostty", Some(Page::Ghostty), |_| {}),
     ("connections", Some(Page::Connections), |_| {}),
-    ("performance", Some(Page::Performance), |_| {}),
+    ("developer", Some(Page::Developer), |_| {}),
     ("updates-development", Some(Page::Updates), |_| {}),
     ("updates-current", Some(Page::Updates), |updater| {
         updater.development = false;
