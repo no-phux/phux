@@ -95,6 +95,7 @@ impl Desk {
             layout_migration_pending: false,
             last_saved: saved,
             panes: Panes::default(),
+            tab_peek: Default::default(),
             agent_seen: HashMap::new(),
             agent_epoch: None,
             commands: Default::default(),

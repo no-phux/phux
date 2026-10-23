@@ -199,6 +199,7 @@ pub struct Desk {
     layout_migration_pending: bool,
     last_saved: Option<persist::SavedLayout>,
     panes: Panes,
+    pub(crate) tab_peek: super::tab_peek::TabPeek,
     agent_seen: HashMap<ResourceId, super::notifications::AgentAttention>,
     agent_epoch: Option<u64>,
     /// Shell commands in flight, for the finished-in-the-background alert.

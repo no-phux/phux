@@ -338,6 +338,8 @@ pub(super) fn headless_perf_window(bench: fn(&str, usize, bool, &mut dyn FnMut(u
     // Output repainted the terminal alone; the desk chrome was retained.
     retained_matches_scratch(&mut cx, window, "window_stream");
 
+    tab_peek_pixels(&mut cx, window, &desk, &client);
+
     let after = cx.capture_screenshot(window).expect("final window pixels");
     if let Some(dir) = std::env::var_os("PHUX_DESKTOP_UI_EVIDENCE") {
         let dir = std::path::PathBuf::from(dir);
@@ -381,4 +383,76 @@ pub(super) fn headless_perf_window(bench: fn(&str, usize, bool, &mut dyn FnMut(u
     drop(cx);
     drop(client);
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// Real Metal shelf pixels must change for output on an inactive tab, while
+/// retained and scratch draws agree. This exercises the production wake task.
+fn tab_peek_pixels(
+    cx: &mut HeadlessAppContext,
+    window: gpui::AnyWindowHandle,
+    desk: &Entity<Desk>,
+    client: &Client,
+) {
+    cx.update(|cx| {
+        desk.update(cx, |desk, cx| {
+            let link = desk.link.as_mut().unwrap();
+            for index in 1..TERMINALS_PER_SESSION {
+                let pane = link.connection.pane(&resource(0, index)).unwrap().clone();
+                link.workspace.open(&link.connection, &pane);
+            }
+            cx.notify();
+        })
+    });
+    settle(cx, window);
+    let execute = |cx: &mut HeadlessAppContext, command| {
+        cx.update_window(window, |_, window, cx| {
+            desk.update(cx, |desk, cx| desk.execute(command, window, cx))
+        })
+        .unwrap();
+        settle(cx, window);
+    };
+    execute(cx, "tab-peek");
+    let before = cx.capture_screenshot(window).expect("peek before output");
+    client
+        .feed(FrameKind::ResourceOutput {
+            terminal_id: resource(0, 1),
+            stream_id: StreamId::new(2).unwrap(),
+            bootstrap_id: BootstrapId::new(2).unwrap(),
+            seq: 1,
+            bytes: b"\x1b[2J\x1b[H\x1b[42mBACKGROUND TAB IS LIVE\x1b[0m"
+                .to_vec()
+                .into(),
+        })
+        .unwrap();
+    client.wake();
+    settle(cx, window);
+    let after = cx.capture_screenshot(window).expect("peek after output");
+    // The full terminal starts below 216 points. Only the miniatures occupy
+    // this band; a main-terminal repaint cannot make this assertion pass.
+    let scale = before.width() as f32
+        / cx.update_window(window, |_, window, _| window.viewport_size().width.as_f32())
+            .unwrap();
+    let band = |image: &image::RgbaImage| {
+        image::imageops::crop_imm(
+            image,
+            0,
+            (90. * scale) as u32,
+            image.width(),
+            (100. * scale) as u32,
+        )
+        .to_image()
+    };
+    assert_ne!(
+        band(&before),
+        band(&after),
+        "inactive output must repaint its live miniature"
+    );
+    retained_matches_scratch(cx, window, "tab_peek_live");
+    if let Some(dir) = std::env::var_os("PHUX_DESKTOP_UI_EVIDENCE") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        before.save(dir.join("tab-peek-before.png")).unwrap();
+        after.save(dir.join("tab-peek-live.png")).unwrap();
+    }
+    execute(cx, "tab-peek");
 }

@@ -318,7 +318,7 @@ impl Desk {
     ) -> Option<TerminalSettings> {
         placement.terminal_id.as_ref()?;
         let mut settings = self.paint().terminal.clone();
-        settings.focused = focused;
+        settings.focused = focused && !self.tab_peek.open;
         settings.size_owner = self
             .link
             .as_ref()

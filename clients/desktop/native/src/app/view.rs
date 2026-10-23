@@ -24,6 +24,7 @@ mod changes;
 mod navigator;
 mod panes;
 mod status;
+mod tab_peek;
 mod tabs;
 mod titlebar;
 
@@ -198,6 +199,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
     let _frame = crate::devtools::frames::FrameTimer::start();
     let tab_position = desk.tab_position();
     desk.set_viewport(window.viewport_size());
+    desk.settle_tab_peek();
     if desk.tab_position() != tab_position {
         // Cached chrome must follow a responsive placement change on resize.
         cx.notify();
