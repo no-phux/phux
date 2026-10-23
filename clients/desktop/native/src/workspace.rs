@@ -51,6 +51,13 @@ enum Destination {
     },
 }
 
+/// Ownership of a navigation-only pending open, including any quiet open it replaced.
+/// Consuming this intent restores the previous destination without cancelling a spawn.
+pub(crate) struct PendingOpen {
+    label: String,
+    previous: Option<Destination>,
+}
+
 /// A message for the window's notification feed. Workspace command errors reach the feed only through here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {

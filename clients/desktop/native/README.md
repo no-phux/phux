@@ -168,3 +168,19 @@ HOME=$tmp XDG_CONFIG_HOME=$tmp/config XDG_STATE_HOME=$tmp/state \
 ```
 
 It refuses a `HOME` outside the temporary directory and any named server.
+
+Capture the actual fleet composition with representative local/remote agents
+in dark, light, narrow, and empty layouts, without a daemon or credentials:
+
+```sh
+cargo build --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --features ui-fixtures --example agent_fleet
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/phux-fleet.XXXXXX")
+mkdir -p "$tmp/config"
+env -u PHUX_SOCKET -u PHUX_PROFILE HOME="$tmp" \
+  XDG_CONFIG_HOME="$tmp/config" XDG_STATE_HOME="$tmp/state" \
+  clients/desktop/native/target/debug/examples/agent_fleet "$tmp/images"
+```
+
+These PNGs are native scene captures for design review, not compositor
+presentation evidence. Fixture inventory is excluded from shipping builds.

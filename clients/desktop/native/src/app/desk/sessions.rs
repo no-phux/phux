@@ -445,6 +445,9 @@ impl Desk {
     }
 
     pub fn reveal_terminal(&mut self, terminal: &ResourceId) {
+        // Fleet settlement opens through its owned workspace intent. Any
+        // other reveal is a newer explicit choice, even of the same terminal.
+        self.cancel_fleet_navigation();
         let label = self
             .placement_of(terminal)
             .map(|placement| placement.terminal_label.clone());
@@ -458,6 +461,7 @@ impl Desk {
     }
 
     pub fn select_tab(&mut self, id: &str) {
+        self.cancel_fleet_navigation();
         if self.active_tab_id().as_deref() != Some(id) {
             self.tab_peek.close();
         }
@@ -465,6 +469,7 @@ impl Desk {
     }
 
     pub fn close_tab(&mut self, id: &str) {
+        self.cancel_fleet_navigation();
         self.workspace_call(|link| link.workspace.terminate_tab(&link.connection, id));
     }
 
@@ -475,6 +480,7 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_fleet_navigation();
         self.workspace_call(|link| link.workspace.focus_placement(tab_id, placement_id));
         self.after_command(window, cx);
     }
