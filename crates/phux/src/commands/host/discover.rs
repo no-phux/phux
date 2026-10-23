@@ -218,6 +218,7 @@ mod tests {
             session: None,
             ssh: ssh.map(str::to_owned),
             direct: None,
+            remote_phux: None,
             client_cert: None,
             client_key: None,
         }

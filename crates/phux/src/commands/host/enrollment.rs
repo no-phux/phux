@@ -110,6 +110,7 @@ pub(super) fn register_enrollment(
         pairing: Some(&outcome.report),
         direct: outcome.direct.as_deref(),
         identity: outcome.identity.as_ref(),
+        remote_phux: Some(req.remote_phux),
     };
     let registered = finish_enroll(role, name, &route, session, Some(req.ssh_host));
     let recorded = registered
@@ -145,6 +146,9 @@ pub(super) struct Route<'a> {
     pub(super) direct: Option<&'a str>,
     /// The workload client identity to record (remotes only).
     pub(super) identity: Option<&'a ClientIdentityFiles>,
+    /// The `phux` enrollment ran there, recorded for later ssh commands
+    /// (remotes only; plain `phux` is not recorded).
+    pub(super) remote_phux: Option<&'a str>,
 }
 
 impl<'a> Route<'a> {
@@ -155,6 +159,7 @@ impl<'a> Route<'a> {
             pairing: None,
             direct: None,
             identity: None,
+            remote_phux: None,
         }
     }
 }
@@ -216,7 +221,11 @@ pub(super) fn finish_enroll_in(
                 cert_fingerprint,
                 session,
             )
-            .and_then(|new| new.with_ssh(ssh).with_direct(direct))
+            .and_then(|new| {
+                new.with_ssh(ssh)
+                    .with_remote_phux(route.remote_phux)
+                    .with_direct(direct)
+            })
             .and_then(|new| new.with_client_identity(identity))
             .map_err(reject_enrollment)?;
             write_pairing_token(token_file.as_deref(), pairing)?;

@@ -538,6 +538,7 @@ mod tests {
             session: None,
             ssh: None,
             direct: None,
+            remote_phux: None,
             client_cert: None,
             client_key: None,
         }

@@ -29,6 +29,14 @@ pub(super) fn run_renew(name: &str, remote_phux: &str, json: bool) -> ExitCode {
         Err((err, code)) => return json_err::emit(json, &err, code),
     };
     let ssh_host = plan.entry.ssh_destination();
+    // `--remote-phux` left at its default defers to the one the entry
+    // recorded at enrollment.
+    let remote_phux = if remote_phux == "phux" {
+        plan.entry.remote_phux().to_owned()
+    } else {
+        remote_phux.to_owned()
+    };
+    let remote_phux = remote_phux.as_str();
     let far = FarHost {
         ssh_host: &ssh_host,
         remote_phux,

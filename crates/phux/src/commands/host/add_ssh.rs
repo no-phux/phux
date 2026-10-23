@@ -73,7 +73,7 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
 
     // An answering entry is left alone above; only a host being set up
     // gets phux installed or updated.
-    let remote_phux = match provisioned_phux(&ssh_host, opts, &mut narrate) {
+    let remote_phux = match provisioned_phux(&name, &ssh_host, opts, &mut narrate) {
         Ok(phux) => phux,
         Err(err) => return json_err::emit(json, &err, 1),
     };
@@ -135,17 +135,24 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     }
 }
 
-/// The `phux` to enroll with: under `--install`, the one put on (or
-/// updated on) the host first.
+/// The `phux` to enroll with: `--remote-phux`, else the one the entry
+/// recorded, else `phux`; under `--install`, the one put on (or updated on)
+/// the host first.
 fn provisioned_phux(
+    name: &str,
     ssh_host: &str,
     opts: &AddOpts,
     narrate: &mut dyn FnMut(&EnrollEvent),
 ) -> Result<String, CliError> {
+    let remote_phux = if opts.remote_phux == "phux" && opts.role == HostRole::Remote {
+        remote::find(name).map_or_else(|| "phux".to_owned(), |entry| entry.remote_phux().to_owned())
+    } else {
+        opts.remote_phux.clone()
+    };
     if !opts.install {
-        return Ok(opts.remote_phux.clone());
+        return Ok(remote_phux);
     }
-    enroll::provision_remote_phux(ssh_host, &opts.remote_phux, &mut |event| narrate(&event))
+    enroll::provision_remote_phux(ssh_host, &remote_phux, &mut |event| narrate(&event))
         .map_err(|failure| add_failure_error(ssh_host, opts.role, &failure))
 }
 
@@ -180,10 +187,14 @@ pub(super) fn already_current(
 pub(super) fn run_add_ssh_only(name: &str, ssh_host: &str, opts: &AddOpts) -> ExitCode {
     let json = opts.json.json;
     let endpoint = format!("ssh://{ssh_host}");
+    let route = Route {
+        remote_phux: Some(&opts.remote_phux),
+        ..Route::bare(&endpoint)
+    };
     let registered = finish_enroll(
         opts.role,
         name,
-        &Route::bare(&endpoint),
+        &route,
         opts.session.as_deref(),
         Some(ssh_host),
     );

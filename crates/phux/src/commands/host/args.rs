@@ -46,7 +46,9 @@ pub(crate) struct AddOpts {
     pub(crate) ssh_only: bool,
 
     /// The `phux` to run on the host, for when a non-interactive ssh
-    /// shell's `PATH` does not find it (a Homebrew or Nix install).
+    /// shell's `PATH` does not find it (a Homebrew or Nix install). It is
+    /// recorded in the entry, so later attaches and renewals use it too;
+    /// omitted, a re-add keeps the one recorded.
     #[usage(long, value_name = "PATH", default = "phux")]
     pub(crate) remote_phux: String,
 
@@ -223,7 +225,8 @@ pub(crate) enum HostAction {
         name: String,
 
         /// The `phux` to run on the host, for when a non-interactive ssh
-        /// shell's `PATH` does not find it.
+        /// shell's `PATH` does not find it. Omitted: the one the entry
+        /// recorded when it was added.
         #[usage(long, value_name = "PATH", default = "phux")]
         remote_phux: String,
 
