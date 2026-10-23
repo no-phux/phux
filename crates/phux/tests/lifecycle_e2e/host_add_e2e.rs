@@ -46,13 +46,41 @@ struct FarHost {
 
 impl FarHost {
     fn start() -> Self {
+        Self::start_with(true)
+    }
+
+    /// A far host with no `phux` on its `PATH`, where the official
+    /// installer (a stub served by a fake `curl`) links this build into
+    /// `~/.local/bin`, as the real one installs a release there.
+    fn start_without_phux() -> Self {
+        Self::start_with(false)
+    }
+
+    fn start_with(phux_on_path: bool) -> Self {
         let dir = TempDir::new().expect("tempdir");
         let root = dir.path();
         for sub in ["config/phux", "state", "run", "bin"] {
             std::fs::create_dir_all(root.join(sub)).expect("scratch dirs");
         }
-        std::os::unix::fs::symlink(crate::runner::phux_bin(), root.join("bin/phux"))
-            .expect("phux on the fake PATH");
+        if phux_on_path {
+            std::os::unix::fs::symlink(crate::runner::phux_bin(), root.join("bin/phux"))
+                .expect("phux on the fake PATH");
+        } else {
+            let installer = format!(
+                "mkdir -p \"$HOME/.local/bin\"\n\
+                 ln -sf {phux} \"$HOME/.local/bin/phux\"\n\
+                 echo \"installed phux with: $*\"\n",
+                phux = shell_quote(crate::runner::phux_bin()),
+            );
+            let curl = format!(
+                "#!/bin/sh\n\
+                 printf '%s\\n' \"$*\" >> {log}\n\
+                 while [ \"$1\" != -o ]; do shift; done\n\
+                 cat > \"$2\" <<'INSTALLER'\n{installer}INSTALLER\n",
+                log = shell_quote(&root.join("curl-calls").display().to_string()),
+            );
+            write_executable(&root.join("bin/curl"), &curl);
+        }
         // A remote listener runs only under `paired` (ADR-0179); `host add`
         // enrolls the certificate the direct route then presents.
         paired::write_paired_policy(&root.join("config/phux/config.toml"));
@@ -89,28 +117,30 @@ impl FarHost {
                     );
                     exports
                 });
+        // Like ssh, the remote command is the arguments joined into one line
+        // for the far shell, so quoting survives the way it does for real.
+        let path = if phux_on_path {
+            "$PATH"
+        } else {
+            "/usr/bin:/bin"
+        };
         let script = format!(
             "#!/bin/sh\n\
              printf '%s\\n' \"$*\" >> {calls}\n\
              if [ \"$1\" = \"-G\" ]; then echo 'user me'; echo 'hostname 127.0.0.1'; exit 0; fi\n\
              {env_exports}\
-             export PATH={bin}:$PATH\n\
+             export PATH={bin}:{path}\n\
              export PHUX_QUIC_ADDR=127.0.0.1:{port}\n\
-             shift 3\n\
+             while [ \"$1\" = -o ]; do shift 2; done\n\
+             shift\n\
              case \"$*\" in\n\
-               \"phux service install\"*) exec phux server --ensure ;;\n\
-               *) exec \"$@\" ;;\n\
+               *\"phux service install\"*) exec \"$1\" server --ensure ;;\n\
+               *) exec /bin/sh -c \"$*\" ;;\n\
              esac\n",
             calls = shell_quote(&root.join("ssh-calls").display().to_string()),
             bin = shell_quote(&root.join("bin").display().to_string()),
         );
-        let ssh = root.join("fake-ssh");
-        std::fs::write(&ssh, script).expect("write fake ssh");
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod fake ssh");
-        }
+        write_executable(&root.join("fake-ssh"), &script);
 
         host
     }
@@ -295,6 +325,12 @@ fn hermetic_env(dir: &Path) -> Vec<(&'static str, PathBuf)> {
     ]
 }
 
+fn write_executable(path: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::write(path, script).expect("write script");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod script");
+}
+
 fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
@@ -403,4 +439,78 @@ fn host_add_registers_a_direct_route_and_attach_restarts_a_stopped_server() {
         1,
         "pairing happened exactly once, at the add; calls={calls:?}"
     );
+}
+
+/// `--install` on a machine without phux: the official installer runs over
+/// ssh (on this build's channel), the enrollment then drives the binary it
+/// installed by its absolute path, and `--accept-new-host-key` reaches
+/// every ssh run. Without `--install` the same host is refused with a
+/// remedy that offers it.
+#[test]
+#[ignore = "spawns a real server; runs in the e2e lane"]
+fn host_add_install_puts_phux_on_a_host_without_it() {
+    let host = FarHost::start_without_phux();
+    let port = host.port.to_string();
+
+    let out = host.phux(&["host", "add", "me@box", "--quic-port", &port, "--json"]);
+    assert!(!out.status.success(), "no phux there, no --install");
+    let err = stderr(&out);
+    assert!(
+        err.contains("\"code\":\"registry\"") && err.contains("phux host add me@box --install"),
+        "the refusal offers --install: {err}"
+    );
+
+    let out = host.phux(&[
+        "host",
+        "add",
+        "me@box",
+        "--quic-port",
+        &port,
+        "--install",
+        "--accept-new-host-key",
+    ]);
+    let (stdout, err) = (String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert!(
+        out.status.success(),
+        "host add --install: stdout={stdout} stderr={err}"
+    );
+    let installed = host.dir.path().join(".local/bin/phux");
+    assert!(
+        installed.exists(),
+        "the installer linked phux into ~/.local/bin"
+    );
+    assert!(
+        err.contains("box: phux is not installed there; installing the latest")
+            && err.contains(&format!("at {}", installed.display()))
+            && err.contains("box: paired"),
+        "stderr={err}"
+    );
+    assert!(
+        stdout.contains(&format!("Registered box -> quic://127.0.0.1:{port}")),
+        "stdout={stdout}\nstderr={err}"
+    );
+    let calls = host.ssh_calls();
+    assert!(
+        calls.contains(&format!("{} pair --json", installed.display()))
+            && calls.contains(&format!("{} service install", installed.display())),
+        "enrollment drives the installed binary by its path: {calls}"
+    );
+    assert!(
+        calls.contains("-o BatchMode=yes -o StrictHostKeyChecking=accept-new me@box sh -c ")
+            && calls.matches("-o BatchMode=yes me@box").count() == 1,
+        "every remote command after the refused first add trusts a first-seen host key: {calls}"
+    );
+    let curl = std::fs::read_to_string(host.dir.path().join("curl-calls")).unwrap_or_default();
+    assert!(curl.contains("https://phux.sh/install"), "curl={curl}");
+
+    // Set up again from scratch: the phux installed before is found where
+    // the installer put it, not installed a second time.
+    let out = host.phux(&["host", "rm", "box"]);
+    assert!(out.status.success(), "host rm: {}", stderr(&out));
+    let out = host.phux(&["host", "add", "me@box", "--quic-port", &port, "--install"]);
+    let err = stderr(&out);
+    assert!(out.status.success(), "second host add --install: {err}");
+    assert!(!err.contains("installing the latest"), "stderr={err}");
+    let curl = std::fs::read_to_string(host.dir.path().join("curl-calls")).unwrap_or_default();
+    assert_eq!(curl.lines().count(), 1, "installed once: {curl}");
 }

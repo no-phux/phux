@@ -35,7 +35,9 @@ curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
 It shows every session on this machine and on each machine you added with
-`phux host add`, grouped by machine or by repository. One window shows one
+`phux host add` or the app's **Add Machine…**, grouped by machine or by
+repository. Add Machine lists the machines on your Tailscale network and
+installs phux on the one you pick ([Remote machines](./remote.md#machines-on-your-tailnet)). One window shows one
 session, and the sidebar switches between them. Agents that need you are
 marked where they are. <kbd>⌘P</kbd> opens a palette of sessions, actions,
 and settings. The app checks for updates and installs them on restart.

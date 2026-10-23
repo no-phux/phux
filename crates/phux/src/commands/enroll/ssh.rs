@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// ssh's exit status when ssh itself failed (resolution, connection,
 /// authentication), as opposed to the remote command.
@@ -79,15 +80,26 @@ pub(crate) fn ssh_run_with_stdin(
     Ok(SshOutput::from(output))
 }
 
+/// Whether ssh may record the host key of a host it has never seen
+/// (`StrictHostKeyChecking=accept-new`); a changed key is still refused.
+static ACCEPT_NEW_HOST_KEYS: AtomicBool = AtomicBool::new(false);
+
+/// Let every later ssh run in this process trust a first-seen host key:
+/// `phux host add --accept-new-host-key`, for a machine whose address
+/// something else already vouches for (a tailnet peer).
+pub(crate) fn accept_new_host_keys() {
+    ACCEPT_NEW_HOST_KEYS.store(true, Ordering::Relaxed);
+}
+
 /// `ssh -o BatchMode=yes HOST ARGV...`, so a missing key errors instead of
 /// prompting.
 pub(super) fn ssh_command(program: &OsString, ssh_host: &str, argv: &[&str]) -> Command {
     let mut command = Command::new(program);
-    command
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg(ssh_host)
-        .args(argv);
+    command.arg("-o").arg("BatchMode=yes");
+    if ACCEPT_NEW_HOST_KEYS.load(Ordering::Relaxed) {
+        command.arg("-o").arg("StrictHostKeyChecking=accept-new");
+    }
+    command.arg(ssh_host).args(argv);
     command
 }
 

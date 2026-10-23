@@ -127,7 +127,7 @@ impl Desk {
             hosts: Vec::new(),
             fleet: Default::default(),
             fleet_view: Default::default(),
-            host_adding: None,
+            add_machine: AddMachine::default(),
             drag_region: None,
             menu: None,
             menu_closed: None,

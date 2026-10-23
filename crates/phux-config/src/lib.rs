@@ -23,6 +23,7 @@ pub mod scaffold;
 mod schema;
 pub mod session_name;
 pub mod settings;
+pub mod tailnet;
 pub mod theme;
 pub mod theme_slots;
 pub mod toml_registry;
