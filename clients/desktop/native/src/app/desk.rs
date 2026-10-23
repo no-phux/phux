@@ -48,6 +48,8 @@ mod input;
 mod labels;
 mod lifecycle;
 mod prefs;
+mod request;
+pub use request::{OpenRequest, WindowRole};
 mod search;
 mod sessions;
 mod state;
@@ -77,34 +79,6 @@ fn agent_attention(info: &AgentInfo) -> super::notifications::AgentAttention {
         state: info.state,
         attention: info.attention,
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WindowRole {
-    #[default]
-    Main,
-    Fresh,
-    Quick,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct OpenRequest {
-    pub role: WindowRole,
-    pub session: String,
-    pub home_key: Option<SessionKey>,
-    /// Spawn a new terminal when nothing is restored, instead of showing the home pane.
-    pub fresh: bool,
-    pub initial_terminal: Option<ResourceId>,
-    pub layout_path: PathBuf,
-    pub legacy_layout: Option<PathBuf>,
-    /// Default stores adopt the session key after the first topology; explicit
-    /// layout paths and fresh windows keep their caller-selected store.
-    pub stable_layout: bool,
-    pub startup_error: Option<String>,
-    /// The main window's display, which a quick window borrows.
-    pub main_display: Option<DisplayPrefs>,
-    /// A host from the remote registry. Absent is the local server.
-    pub remote: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

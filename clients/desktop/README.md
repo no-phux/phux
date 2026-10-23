@@ -80,13 +80,18 @@ download progress and verification, then offers **Restart now**. It also updates
 the local CLI and hands its live server off when you choose **Restart & update
 server**; sessions keep running, and Desktop
 never restarts until you choose to. Dismiss the card to keep working and reopen
-it from the titlebar. **Update phux with Desktop** (on by
+it from the titlebar. The update reopens your windows on the same hosts and
+sessions, with their tabs, splits and focused panes, and brings the foreground
+window back to the front. Explicit launch targets take priority over this
+one-time restoration. **Update phux with Desktop** (on by
 default) turns the phux half off. Linux desktop updates rerun the installer.
 
 Logs: `~/Library/Logs/phux-desktop.log` on macOS,
 `$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, redacted and rotated.
 **Copy Diagnostics** in the palette copies versions, server id, host, and
-recent errors, without terminal content.
+recent errors, without terminal content. **Settings > Developer** gathers
+these with Developer mode, profiling and traces
+([dev mode](USAGE.md#dev-mode)).
 
 ## Using it
 

@@ -94,8 +94,9 @@ fn find_with_override(
         Refusal::new(
             "no_desktop",
             format!("no phux desktop in dev mode is serving {}", dir.display()),
-            "start the desktop with PHUX_DEV=1 (or `phux-desktop --dev`) against this socket, \
-             or point PHUX_DESKTOP_DEV_SOCKET at its dev socket",
+            "turn on Settings > Developer > Developer mode in the desktop, or start it with \
+             PHUX_DEV=1 (or `phux-desktop --dev`) against this socket, or point \
+             PHUX_DESKTOP_DEV_SOCKET at its dev socket",
             1,
         )
     })

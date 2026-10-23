@@ -30,7 +30,7 @@ Every environment variable the `phux` binary reads, from the canonical in-code t
 | `PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE` | Idle limit in seconds (1..=86400) for an auto-spawned server, as if started with `phux server --exit-after-idle`. Unset means no limit. For test harnesses and CI jobs that cannot guarantee their own cleanup runs. |
 | `PHUX_ALLOW_NESTED` | Set (non-empty) to let `phux`, `phux attach`, and `phux new` attach from inside one of the same server's panes, which they otherwise refuse (exit 2). |
 | `PHUX_LOG` | Write logs to this file (the server tees to it; the client writes only here). |
-| `PHUX_DEV` | Set to `1`, `true`, `yes`, or `on` to enable dev telemetry: server heap accounting; in the desktop, also the HUD and owner-only dev socket. Off by default. |
+| `PHUX_DEV` | Set to `1`, `true`, `yes`, or `on` to enable dev telemetry: server heap accounting; in the desktop, also the HUD and owner-only dev socket, whatever its saved Developer mode setting says. Off by default. |
 | `PHUX_DESKTOP_DEV_SOCKET` | Override the dev-mode desktop socket used by `phux perf --desktop` and the desktop. Its parent must be owner-only and owned by this user; default: beside the server socket. |
 | `PHUX_LOG_FORMAT` | `text` (default) or `json`: the log line format. |
 | `RUST_LOG` | tracing level filter, e.g. `phux=debug`. |

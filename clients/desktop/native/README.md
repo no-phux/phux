@@ -65,7 +65,10 @@ resolution failure still opens the window, with the reason shown.
 
 ## Observing it
 
-- **Dev mode:** `PHUX_DEV=1` or `--dev` ([`devtools`](src/devtools.rs)).
+- **Dev mode:** **Settings > Developer > Developer mode**, saved by
+  `devtools::prefs`, or `PHUX_DEV=1` / `--dev` for one run
+  ([`devtools`](src/devtools.rs)); it applies live through
+  `devtools::set_dev_mode`.
   `devtools::frames` keeps the last 1200 desk renders (build time and gap)
   for FPS, jank and the HUD ([`app/hud.rs`](src/app/hud.rs)). The binary
   installs `phux_perf::alloc::Counting`, which dev mode enables.
@@ -87,7 +90,7 @@ resolution failure still opens the window, with the reason shown.
   **Memory** explains RSS versus physical footprint versus net Rust allocations
   since dev counting was enabled; native graphics allocations are not Rust heap.
   **Copy JSON** includes `physical_footprint_bytes` separately (null off macOS).
-  **Settings > Performance > Count Rust allocations** enables or disables the
+  **Settings > Developer > Count Rust allocations** enables or disables the
   desktop's counter live, across windows, for this run only. It does not enable
   the dev socket, change the server or require a restart.
   Memory also offers inline counting, baseline comparisons, native malloc

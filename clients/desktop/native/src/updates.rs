@@ -88,12 +88,18 @@ impl Preferences {
 }
 
 fn config_path() -> PathBuf {
+    config_dir().join("updates.json")
+}
+
+/// The desktop's app-wide configuration directory: `phux-desktop` under
+/// `XDG_CONFIG_HOME`, else `~/.config`.
+pub(crate) fn config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
         });
-    base.join("phux-desktop/updates.json")
+    base.join("phux-desktop")
 }
 
 #[cfg(target_os = "macos")]

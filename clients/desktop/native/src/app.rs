@@ -79,8 +79,19 @@ pub struct AppOptions {
 /// and drains on that edge. Terminal entities are kept per placement until the
 /// view id changes.
 pub fn open(options: AppOptions, cx: &mut App) -> anyhow::Result<WindowHandle<Root>> {
+    open_with_restore(options, false, cx)
+}
+
+/// The installed entry point opts into a pending update's one-time handoff.
+pub(crate) fn open_with_restore(
+    options: AppOptions,
+    restore: bool,
+    cx: &mut App,
+) -> anyhow::Result<WindowHandle<Root>> {
     let desktop = Desktop::install(cx);
-    desktop.update(cx, |desktop, cx| desktop.launch(options, cx))
+    desktop.update(cx, |desktop, cx| {
+        desktop.launch_with_restore(options, restore, cx)
+    })
 }
 
 /// Open the real menu material in a standalone native fixture.

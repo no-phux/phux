@@ -1,6 +1,7 @@
 //! One process-wide updater; window subscriptions repaint on its activity.
 
 mod progress;
+mod restart;
 mod status;
 #[cfg(test)]
 mod tests;
@@ -19,6 +20,7 @@ use crate::updates::{self, Preferences, Release, RuntimeRelease};
 use gpui::{Context, Subscription, Task};
 
 pub(crate) struct Updater {
+    pub(super) desktop: Option<gpui::WeakEntity<super::session::Desktop>>,
     pub prefs: Preferences,
     pub busy: bool,
     pub message: String,
@@ -135,6 +137,7 @@ impl Updater {
             .as_deref()
             .and_then(|bundle| updates::installed_release(bundle).ok());
         Self {
+            desktop: None,
             prefs: Preferences::load(
                 current
                     .as_ref()
@@ -161,28 +164,6 @@ impl Updater {
             _progress: None,
             _automatic: None,
             _quit: None,
-        }
-    }
-
-    /// Quitting with a staged update installs it after exit, unless its managed
-    /// server still needs updating. Combined updates use the explicit restart.
-    pub fn watch_quit(&mut self, cx: &mut Context<Self>) {
-        self._quit = Some(cx.on_app_quit(|updater, _| {
-            updater.apply_staged();
-            async {}
-        }));
-    }
-
-    fn apply_staged(&mut self) {
-        if self.handed_off || self.development || self.phux_due() {
-            return;
-        }
-        let (Some(bundle), Some(staged)) = (self.bundle.as_deref(), self.staged.as_ref()) else {
-            return;
-        };
-        match updates::apply_on_exit(bundle, &staged.app, self.relaunch) {
-            Ok(()) => self.handed_off = true,
-            Err(error) => log::error!("Could not hand off the desktop update: {error:#}"),
         }
     }
 
@@ -378,15 +359,6 @@ impl Updater {
         self.finish_update(cx);
     }
 
-    /// A second click either finishes the server update or explicitly restarts.
-    fn finish_update(&mut self, cx: &mut Context<Self>) {
-        if self.phux_due() {
-            self.run_runtime(cx, self.staged.is_some());
-        } else {
-            self.restart_to_update(cx);
-        }
-    }
-
     /// The release a staged or checked update would bring in.
     fn incoming(&self) -> Option<&Release> {
         self.staged
@@ -459,73 +431,6 @@ impl Updater {
                 self.message = format!("Desktop: Update failed: {error:#}");
             }
         }
-    }
-
-    fn restart_to_update(&mut self, cx: &mut Context<Self>) {
-        if self.staged.is_none() || self.development {
-            return;
-        }
-        self.relaunch = true;
-        cx.quit();
-    }
-
-    fn run_runtime(&mut self, cx: &mut Context<Self>, restart_after: bool) {
-        if self.busy || self.development || !self.phux_due() {
-            return;
-        }
-        let phux = self.phux.clone();
-        let socket = self.socket.clone();
-        let channel = self.prefs.runtime;
-        let retry = self.pending_handoff;
-        self.busy = true;
-        self.work = Work::Installing;
-        self.message = "Updating phux and handing the live server off…".into();
-        cx.notify();
-        let installed = cx.background_executor().spawn(async move {
-            if retry {
-                updates::runtime_retry(&phux, &socket)
-            } else {
-                updates::runtime_install(&phux, &socket, channel)
-            }
-        });
-        cx.spawn(async move |this, cx| {
-            let result = installed.await;
-            let _ = this.update(cx, |updater, cx| {
-                if updater.record_runtime(result) && restart_after {
-                    updater.restart_to_update(cx);
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Record a finished phux update; true once the live server was handed off.
-    fn record_runtime(&mut self, result: anyhow::Result<updates::RuntimeInstalled>) -> bool {
-        self.busy = false;
-        let result = match result {
-            Ok(result) => result,
-            Err(error) => {
-                self.message = format!("phux: Update failed: {error:#}");
-                return false;
-            }
-        };
-        self.pending_handoff = result.retry_handoff;
-        // What was the target is installed now, unless only the handoff ran.
-        self.runtime = self.runtime.take().map(|runtime| RuntimeRelease {
-            current: runtime.target.clone(),
-            available: false,
-            protocol_current: runtime.protocol_target.clone().or(runtime.protocol_current),
-            ..runtime
-        });
-        if result.reconnect {
-            self.completed = true;
-            self.runtime_generation += 1;
-            self.message = "phux is updated and the server was handed off".into();
-        } else {
-            self.message = format!("{HANDOFF_NOTE} {}", result.message);
-        }
-        result.reconnect
     }
 
     pub fn runtime_available(&self) -> bool {

@@ -29,8 +29,9 @@ pub struct Options {
     pub quick: bool,
     /// Open the native performance monitor at launch; it can also be opened live.
     pub dev_telemetry: bool,
-    /// Dev mode ([`crate::devtools`]): heap accounting, the HUD and the dev
-    /// socket. `PHUX_DEV=1` does the same.
+    /// Developer mode for this run ([`crate::devtools`]): heap accounting,
+    /// the HUD and the dev socket, whatever the saved setting says.
+    /// `PHUX_DEV=1` does the same.
     pub dev: bool,
     /// Directory for presentation evidence and `perf.jsonl`.
     pub evidence: Option<PathBuf>,
@@ -42,6 +43,22 @@ const USAGE: &str = "usage: phux-desktop [--socket PATH] [--session NAME] [--phu
 [--layout PATH] [--fresh] [--terminal ID] [--quick] [--dev] [--dev-telemetry] [--evidence DIR] [--smoke]";
 
 impl Options {
+    /// Explicit targets and qualification runs never consume an update's location.
+    fn restores_update(&self) -> bool {
+        self.session.is_none()
+            && self.socket.is_none()
+            && self.phux.is_none()
+            && self.layout.is_none()
+            && self.terminal.is_none()
+            && self.evidence.is_none()
+            && !self.fresh
+            && !self.quick
+            && !self.dev
+            && ["PHUX_SESSION", "PHUX_SOCKET", "PHUX_BIN", "PHUX_PROFILE"]
+                .iter()
+                .all(|key| std::env::var_os(key).is_none())
+    }
+
     /// Parse `args` (without the program name).
     pub fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Self> {
         let mut options = Self::default();
@@ -215,6 +232,7 @@ pub fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let restore = options.restores_update();
     let app_options = AppOptions {
         socket: resolved.socket,
         session: resolved.session,
@@ -233,7 +251,11 @@ pub fn main() -> ExitCode {
             phux: app_options.phux.clone(),
             socket: app_options.socket.clone(),
         });
-    crate::devtools::init(crate::devtools::requested(options.dev), cli);
+    crate::devtools::init(
+        crate::devtools::requested(options.dev),
+        crate::devtools::prefs::load(),
+        cli,
+    );
     let evidence = options.evidence.clone().map(|dir| diag::EvidenceOptions {
         dir,
         exit_after: options.smoke,
@@ -245,7 +267,7 @@ pub fn main() -> ExitCode {
             gpui_kit::init(cx);
             diag::install(evidence, cx);
             crate::devtools::install(cx);
-            if let Err(error) = app::open(app_options, cx) {
+            if let Err(error) = app::open_with_restore(app_options, restore, cx) {
                 let line = format!("could not open the desktop window: {error:#}");
                 log::error!("{line}");
                 eprintln!("{}", diag::redact(&line));
@@ -268,6 +290,23 @@ mod tests {
 
     fn parse(args: &[&str]) -> anyhow::Result<Options> {
         Options::parse(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn explicit_launch_targets_do_not_consume_an_update_restart() {
+        for args in [
+            vec!["--session", "Chat"],
+            vec!["--socket", "/isolated.sock"],
+            vec!["--phux", "/isolated/phux"],
+            vec!["--layout", "/isolated/layout.json"],
+            vec!["--terminal", "local:3"],
+            vec!["--evidence", "/isolated/evidence"],
+            vec!["--fresh"],
+            vec!["--quick"],
+            vec!["--dev"],
+        ] {
+            assert!(!parse(&args).unwrap().restores_update(), "{args:?}");
+        }
     }
 
     #[test]

@@ -26,7 +26,10 @@ of unknown size use an indeterminate indicator, never a made-up percentage.
 Animations stop with reduced motion or **Animations** off. For a desktop-only
 update, **Restart now** quits, swaps the staged bundle in after the app has
 exited, and reopens it. Downloading never automatically restarts Desktop.
-Sessions keep running throughout.
+Sessions keep running throughout. Either restart reopens your windows on the
+same hosts and sessions, with their tabs, splits and focused panes, and brings
+the foreground window back to the front. Explicit launch targets take priority
+over this one-time restoration.
 
 When only one product is due the button reads **Download update** or
 **Update server**; a server-only update needs no desktop restart. If the swap

@@ -142,8 +142,9 @@ phux perf trace --seconds 5     # the server
 phux perf trace --desktop       # the desktop app and the server, on one timeline
 ```
 
-Start either process with `PHUX_DEV=1` to add memory figures. A desktop app
-started that way also shows a frame-rate overlay, and `phux perf --desktop`
+Start either process with `PHUX_DEV=1` to add memory figures, or turn on
+**Settings > Developer > Developer mode** in the desktop app. A desktop app in
+Developer mode also shows a frame-rate overlay, and `phux perf --desktop`
 reads it. Agents get the same numbers from the `phux_perf` and
 `phux_perf_trace` MCP tools.
 
