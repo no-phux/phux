@@ -39,8 +39,8 @@ impl ServerCli {
             .spawn()?;
         // Drain both pipes while waiting, so a large report cannot fill a
         // pipe and deadlock the wait.
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
+        let stdout = drain(child.stdout.take(), STDOUT_CAP);
+        let stderr = drain(child.stderr.take(), STDERR_CAP);
         let deadline = Instant::now() + timeout;
         let status = loop {
             if let Some(status) = child.try_wait()? {
@@ -57,13 +57,24 @@ impl ServerCli {
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        let stdout = stdout.join().unwrap_or_default();
+        let (stdout, stdout_truncated) = stdout.join().unwrap_or_default();
+        let (stderr, stderr_truncated) = stderr.join().unwrap_or_default();
         if !status.success() {
-            let stderr = stderr.join().unwrap_or_default();
             anyhow::bail!(
-                "`phux {}` failed: {}",
+                "`phux {}` failed: {}{}",
                 args.join(" "),
-                String::from_utf8_lossy(&stderr).trim()
+                String::from_utf8_lossy(&stderr).trim(),
+                if stderr_truncated {
+                    " [stderr truncated]"
+                } else {
+                    ""
+                }
+            );
+        }
+        if stdout_truncated {
+            anyhow::bail!(
+                "`phux {}` output exceeds {STDOUT_CAP} bytes",
+                args.join(" ")
             );
         }
         Ok(stdout)
@@ -101,14 +112,30 @@ impl ServerCli {
 /// How long one `phux perf --json` may take.
 pub const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Read a child's pipe to the end on its own thread.
-fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+// Keep reading after the cap: stopping would block the child on a full pipe.
+const STDOUT_CAP: usize = 1024 * 1024;
+const STDERR_CAP: usize = 64 * 1024;
+
+/// Read a child's pipe to the end on its own thread, retaining at most `cap` bytes.
+fn drain(
+    pipe: Option<impl Read + Send + 'static>,
+    cap: usize,
+) -> std::thread::JoinHandle<(Vec<u8>, bool)> {
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
+        let mut truncated = false;
         if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
+            let mut chunk = [0; 8192];
+            while let Ok(n) = pipe.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                let keep = n.min(cap.saturating_sub(bytes.len()));
+                bytes.extend_from_slice(&chunk[..keep]);
+                truncated |= keep < n;
+            }
         }
-        bytes
+        (bytes, truncated)
     })
 }
 
@@ -280,6 +307,20 @@ mod tests {
             rss_bytes: None,
             alloc: None,
         }
+    }
+
+    #[test]
+    fn cli_pipe_capture_drains_but_never_retains_more_than_its_cap() {
+        let oversized = std::io::Cursor::new(vec![b'x'; STDOUT_CAP * 4]);
+        let (bytes, truncated) = drain(Some(oversized), STDOUT_CAP).join().unwrap();
+        assert_eq!(bytes.len(), STDOUT_CAP);
+        assert!(bytes.iter().all(|byte| *byte == b'x'));
+        assert!(truncated);
+
+        let exact = std::io::Cursor::new(vec![b'y'; STDERR_CAP]);
+        let (bytes, truncated) = drain(Some(exact), STDERR_CAP).join().unwrap();
+        assert_eq!(bytes.len(), STDERR_CAP);
+        assert!(!truncated);
     }
 
     #[test]
