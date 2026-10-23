@@ -179,6 +179,22 @@ keeper/store, distinct from the organization database. The org's home
 keeper is the [substrate decision](./substrate.md). A multi-host
 coordinator and autonomous Lead are not shipping contracts.
 
+### Cache-friendly agent context
+
+Stable instructions and tool definitions must not carry live fleet values.
+Fleet observations belong in bounded, attributed, persistent tail messages so
+an unchanged prefix can remain reusable; pi's shared awareness stream emits a
+checkpoint, then only changes, with fresh checkpoints after compaction or tree
+movement. Provider caching itself remains the harness/provider's concern.
+
+OpenCode V2 currently defaults automatic fleet awareness off. Its opt-in path
+places full checkpoints in the per-request system context, not that persistent
+tail; do not assume it preserves the conversation prefix when fleet state
+changes (or even stays unchanged, since checkpoint sequence numbers advance).
+The [bootload-cache research](./research/context-bootload-cache.md)
+records this difference from historical ADR-0067, measurements, and the cache
+ownership recommendation. No keeper bootload service exists today.
+
 ## Where to look
 
 | To change       | Start at                                                                                                                                                                                                     |
