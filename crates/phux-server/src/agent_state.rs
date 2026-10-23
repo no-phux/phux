@@ -37,15 +37,15 @@ use crate::agent_detect::record::AgentRecordJson;
 /// authority (ADR-0103 §5): closeness to the agent's own knowledge, not
 /// freshness. A declaration ([`AgentRecordArbiter`]) outranks all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "the Stream producer lands with the AgentSession engine; the ladder is defined and pinned by tests here so the screen detector's side of the precedence is already correct when it does"
-)]
 pub(crate) enum EvidenceSource {
     /// Derived from the grid by the rules (ADR-0046): the weakest source.
     Screen,
     /// The PTY's foreground process group: identity and departure, positive
     /// evidence rather than inference.
+    #[allow(
+        dead_code,
+        reason = "no producer publishes process evidence; the ladder tests pin its rank"
+    )]
     Process,
     /// `REPORT_AGENT_STATE` from an integration (ADR-0085): the agent
     /// speaking, but lossy and edge-triggered.
@@ -55,10 +55,6 @@ pub(crate) enum EvidenceSource {
     Stream,
 }
 
-#[allow(
-    dead_code,
-    reason = "read by the ladder's own tests and by the AgentSession engine, which lands with that engine"
-)]
 impl EvidenceSource {
     /// Rank within the ladder: higher wins. Separate from the ask ladder
     /// ([`crate::agent_asked::AskedSource::priority`]).
