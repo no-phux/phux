@@ -197,6 +197,8 @@ fn retained_matches_scratch(
 
 fn settle(cx: &mut HeadlessAppContext, window: gpui::AnyWindowHandle) {
     for _ in 0..3 {
+        cx.background_executor()
+            .advance_clock(std::time::Duration::from_millis(1));
         cx.run_until_parked();
         cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
             .expect("settle draw");
@@ -331,6 +333,8 @@ pub(super) fn headless_perf_window(bench: fn(&str, usize, bool, &mut dyn FnMut(u
             .expect("stream output");
         client.wake();
         // The window's wake task drains the batch and notifies the pane.
+        cx.background_executor()
+            .advance_clock(std::time::Duration::from_millis(1));
         cx.run_until_parked();
         draw(&mut cx);
     });

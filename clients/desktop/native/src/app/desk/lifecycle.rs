@@ -288,15 +288,12 @@ impl Desk {
 
     pub(super) fn arm_wake(&mut self, connection: &Connection, cx: &mut Context<Self>) {
         let rx = connection.activity();
+        let timer = cx.background_executor().clone();
         self._wake = Some(cx.spawn(async move |this, cx| {
-            loop {
-                if rx.recv().await.is_err() {
-                    break;
-                }
-                if this.update(cx, |desk, cx| desk.on_activity(cx)).is_err() {
-                    break;
-                }
-            }
+            super::wake::pump(rx, timer, || {
+                this.update(cx, |desk, cx| desk.on_activity(cx)).is_ok()
+            })
+            .await;
         }));
     }
 

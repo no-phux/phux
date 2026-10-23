@@ -36,8 +36,12 @@ pub static PREPARE_REUSED: Counter = Counter::new();
 /// Prepares that kept the shaped rows of the previous scene and reshaped
 /// only the rows whose cells or solid cursor changed.
 pub static PREPARE_PATCHED: Counter = Counter::new();
-/// Lines shaped by prepares that built a scene (runs and lone cells).
+/// Line layouts prepared (runs and lone cells), including cached ASCII assembly.
 pub static SHAPED: Counter = Counter::new();
+/// Calls into the platform text shaper, including ASCII table warmup.
+pub static PLATFORM_SHAPED: Counter = Counter::new();
+/// Printable-ASCII layouts assembled from validated bundled-font tables.
+pub static ASCII_LINES: Counter = Counter::new();
 /// Microseconds to submit one terminal element's quads and glyphs.
 pub static PAINT: Histogram = Histogram::new();
 /// Microseconds to hand a painted frame's geometry to its input handler.
@@ -60,6 +64,8 @@ pub static TABLE: &[Metric] = &[
     Metric::counter("desktop.prepare_reused", Unit::Count, &PREPARE_REUSED),
     Metric::counter("desktop.prepare_patched", Unit::Count, &PREPARE_PATCHED),
     Metric::counter("desktop.shaped", Unit::Count, &SHAPED),
+    Metric::counter("desktop.platform_shaped", Unit::Count, &PLATFORM_SHAPED),
+    Metric::counter("desktop.ascii_lines", Unit::Count, &ASCII_LINES),
     Metric::histogram("desktop.paint", Unit::Micros, &PAINT),
     Metric::histogram("desktop.present", Unit::Micros, &PRESENT),
 ];
