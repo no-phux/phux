@@ -5,6 +5,22 @@
 /// every agent-facing verb there to have a tool or a row here.
 pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
     (
+        "config distro list",
+        "local distro package inventory; no server action",
+    ),
+    (
+        "config distro current",
+        "local configured selection; no server action",
+    ),
+    (
+        "config distro use",
+        "operator config-file selection; reload is explicitly separate",
+    ),
+    (
+        "config distro off",
+        "operator config-file selection; reload is explicitly separate",
+    ),
+    (
         "logs",
         "local operator log inventory and tailing, not a model-facing server action",
     ),
