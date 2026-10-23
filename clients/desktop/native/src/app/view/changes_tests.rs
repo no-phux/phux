@@ -304,6 +304,68 @@ fn the_changes_panel_keeps_the_window_foot_in_every_placement(cx: &mut TestAppCo
     }
 }
 
+#[gpui::test]
+fn every_diff_toolbar_action_fits_the_inner_narrow_column(cx: &mut TestAppContext) {
+    use crate::app::changes::review::Comment;
+    use gpui_kit::component::diff::{DiffLineRange, DiffSide};
+
+    let _dial = DeterministicDial::arm();
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(700.), px(800.)));
+    run(&desk, "changes", cx);
+    desk.update(cx, |desk, cx| {
+        desk.changes.width = 360.;
+        desk.show_checkout(checkout(), CHANGES, STAGED, cx);
+        desk.changes.comments.push(Comment {
+            id: 1,
+            source: Source::Changes,
+            range: DiffLineRange::new("src/app/view.rs", DiffSide::Modified, 2, 2),
+            body: "Keep all review controls reachable".into(),
+        });
+        cx.notify();
+    });
+    for source in [Source::Changes, Source::Staged] {
+        desk.update(cx, |desk, cx| {
+            desk.set_change_source(source, cx);
+            let (state, _) = desk.changes.diff.as_ref().unwrap();
+            let path = state.read(cx).files()[0].path().clone();
+            state.update(cx, |state, cx| {
+                state.set_selected_lines(
+                    Some(DiffLineRange::new(path, DiffSide::Modified, 2, 2)),
+                    cx,
+                );
+            });
+            cx.notify();
+        });
+        draw(cx);
+        let column = cx.debug_bounds("changes-diff-column").unwrap();
+        let toolbar = cx.debug_bounds("changes-diff-toolbar").unwrap();
+        assert!(
+            column.size.width <= px(200.),
+            "exercise the inner ~190px column"
+        );
+        for selector in [
+            "changes-source-changes",
+            "changes-source-staged",
+            "changes-stage-lines",
+            "changes-previous",
+            "changes-next",
+            "changes-send-review",
+        ] {
+            let action = cx.debug_bounds(selector).expect(selector);
+            assert!(
+                action.left() >= toolbar.left() + px(8.)
+                    && action.right() <= toolbar.right() - px(8.)
+                    && action.top() >= toolbar.top()
+                    && action.bottom() <= toolbar.bottom(),
+                "{source:?} {selector} fits the inner toolbar: {action:?} in {toolbar:?}"
+            );
+        }
+        assert!(toolbar.right() <= column.right());
+    }
+}
+
 /// The workspace keeps its foot under the cards.
 fn cards_bottom(desk: &Entity<Desk>, cx: &mut VisualTestContext) -> gpui::Pixels {
     let body = cx.debug_bounds("workspace-body").unwrap();

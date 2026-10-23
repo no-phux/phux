@@ -22,7 +22,7 @@ use gpui_kit::component::{Disableable, Icon, Sizable};
 use std::rc::Rc;
 use std::time::Duration;
 
-/// The product grid's fixed columns, so names, versions and states align.
+/// Fixed labels align on wide rows; versions and status wrap below on narrow ones.
 const NAME_COLUMN: f32 = 148.;
 const CHANNEL_COLUMN: f32 = 64.;
 const STATE_COLUMN: f32 = 112.;
@@ -132,10 +132,12 @@ fn product_row(look: &Look, mono: &SharedString, product: &Product) -> impl Into
     let muted = from_hex(&look.chrome.muted);
     let (state, tone) = &product.state;
     let color = tone_color(look, *tone);
+    let name = product.name;
     let versions = div()
         .flex_1()
-        .min_w_0()
+        .min_w(px(120.))
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(8.))
         .font_family(mono.clone())
@@ -143,6 +145,7 @@ fn product_row(look: &Look, mono: &SharedString, product: &Product) -> impl Into
         .text_size(px(12.5))
         .child(
             div()
+                .debug_selector(move || format!("updates-installed-{name}"))
                 .text_color(if product.incoming.is_some() {
                     muted
                 } else {
@@ -159,18 +162,22 @@ fn product_row(look: &Look, mono: &SharedString, product: &Product) -> impl Into
                 )
                 .child(
                     div()
+                        .debug_selector(move || format!("updates-incoming-{name}"))
                         .text_color(look.ink)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child(incoming),
                 )
         });
     div()
-        .h(px(40.))
+        .min_h(px(40.))
+        .py(px(10.))
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(12.))
         .child(
             div()
+                .debug_selector(move || format!("updates-name-{name}"))
                 .w(px(NAME_COLUMN))
                 .flex_shrink_0()
                 .text_sm()
@@ -180,31 +187,40 @@ fn product_row(look: &Look, mono: &SharedString, product: &Product) -> impl Into
         .child(versions)
         .child(
             div()
-                .w(px(CHANNEL_COLUMN))
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(muted)
-                .children(product.channel.map(updates::channel_label)),
-        )
-        .child(
-            div()
-                .w(px(STATE_COLUMN))
+                .debug_selector(move || format!("updates-status-{name}"))
+                .ml_auto()
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .justify_end()
-                .gap(px(6.))
-                .child(div().size(px(6.)).rounded_full().bg(color))
+                .gap(px(12.))
                 .child(
                     div()
+                        .w(px(CHANNEL_COLUMN))
+                        .flex_shrink_0()
                         .text_xs()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(if matches!(tone, Tone::Quiet) {
-                            muted
-                        } else {
-                            color
-                        })
-                        .child(state.clone()),
+                        .text_color(muted)
+                        .children(product.channel.map(updates::channel_label)),
+                )
+                .child(
+                    div()
+                        .w(px(STATE_COLUMN))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(6.))
+                        .child(div().size(px(6.)).rounded_full().bg(color))
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(if matches!(tone, Tone::Quiet) {
+                                    muted
+                                } else {
+                                    color
+                                })
+                                .child(state.clone()),
+                        ),
                 ),
         )
 }
@@ -276,6 +292,7 @@ fn render_overview(
     });
     let summary = div()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(14.))
         .child(glyph(look, overview))
@@ -303,6 +320,7 @@ fn render_overview(
         )
         .child(
             div()
+                .debug_selector(|| "updates-actions".into())
                 .flex_shrink_0()
                 .flex()
                 .items_center()

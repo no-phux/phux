@@ -130,6 +130,66 @@ fn settings_wide_controls_fit_and_palette_shortcut_returns_to_workspace(cx: &mut
 }
 
 #[gpui::test]
+fn updates_product_details_fit_inside_the_grid_at_every_settings_width(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    let updater = desk.read_with(workspace, |desk, _| desk.updates.clone());
+    updater.update(workspace, |updater, cx| {
+        updater.prefs = crate::updates::Preferences::default();
+        updater.development = false;
+        updater.current = Some(crate::updates::Release {
+            version: "0.50.0".into(),
+            ..Default::default()
+        });
+        updater.target = Some(crate::updates::Release {
+            version: "0.51.0".into(),
+            ..Default::default()
+        });
+        updater.runtime = Some(crate::updates::RuntimeRelease {
+            current: "0.50.0".into(),
+            target: "0.51.0-next.12345".into(),
+            available: true,
+            mutable: true,
+            native_command: None,
+            protocol_current: None,
+            protocol_target: None,
+        });
+        cx.notify();
+    });
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    draw(settings);
+    let category = settings.debug_bounds("settings-category-Updates").unwrap();
+    settings.simulate_click(category.center(), gpui::Modifiers::none());
+    for width in [700., 860., 1100.] {
+        settings.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+        draw(settings);
+        let overview = settings.debug_bounds("updates-overview").unwrap();
+        // Inspect the actual name, version and status cells, not just the card.
+        for selector in [
+            "updates-name-Phux Desktop",
+            "updates-installed-Phux Desktop",
+            "updates-incoming-Phux Desktop",
+            "updates-status-Phux Desktop",
+            "updates-name-phux CLI & server",
+            "updates-installed-phux CLI & server",
+            "updates-incoming-phux CLI & server",
+            "updates-status-phux CLI & server",
+            "updates-actions",
+        ] {
+            let cell = settings.debug_bounds(selector).expect(selector);
+            assert!(
+                cell.left() >= overview.left() + gpui::px(18.)
+                    && cell.right() <= overview.right() - gpui::px(18.),
+                "{selector} fits inside the card at {width}: {cell:?} in {overview:?}"
+            );
+        }
+    }
+}
+
+#[gpui::test]
 fn closing_the_owner_closes_its_settings_without_leaking_a_desk(cx: &mut TestAppContext) {
     let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
     let workspace = &mut VisualTestContext::from_window(owner, cx);

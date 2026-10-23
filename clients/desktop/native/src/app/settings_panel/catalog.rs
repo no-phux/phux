@@ -110,6 +110,16 @@ impl Item {
         self
     }
 
+    /// Pages and exact palette editors share the same narrow-control layout.
+    pub fn responsive_control(&self, stacked: bool) -> kit::SettingItem {
+        let control = self.control.clone();
+        if stacked && self.wide {
+            control.layout(gpui::Axis::Vertical)
+        } else {
+            control
+        }
+    }
+
     pub fn keywords<I, S>(mut self, keywords: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -193,14 +203,7 @@ impl Group {
             self.items
                 .iter()
                 .filter(|item| self.matches(item, page, query))
-                .map(|item| {
-                    let control = item.control.clone();
-                    if stacked && item.wide {
-                        control.layout(gpui::Axis::Vertical)
-                    } else {
-                        control
-                    }
-                }),
+                .map(|item| item.responsive_control(stacked)),
         )
     }
 

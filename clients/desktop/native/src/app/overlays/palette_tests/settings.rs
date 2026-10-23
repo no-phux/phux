@@ -165,6 +165,40 @@ fn palette_and_exact_editor_stay_centered_after_filtering_and_resize(cx: &mut Te
 }
 
 #[gpui::test]
+fn wide_palette_controls_fit_inside_the_exact_editor_at_narrow_widths(cx: &mut TestAppContext) {
+    let (handle, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    for width in [360., 480., 760., 1200.] {
+        cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.)));
+        for (query, selectors) in [
+            ("Theme", vec!["settings-theme"]),
+            (
+                "Tab placement",
+                vec![
+                    "tab-position-top",
+                    "tab-position-bottom",
+                    "tab-position-side",
+                ],
+            ),
+        ] {
+            keys(cx, "cmd-p");
+            type_text(cx, query);
+            keys(cx, "enter");
+            let editor = cx.debug_bounds("palette-setting-editor").unwrap();
+            for selector in selectors {
+                let control = cx.debug_bounds(selector).expect(selector);
+                assert!(
+                    control.left() >= editor.left() + gpui::px(16.)
+                        && control.right() <= editor.right() - gpui::px(16.),
+                    "{query} control {selector} fits at {width}: {control:?} in {editor:?}"
+                );
+            }
+            keys(cx, "escape");
+        }
+    }
+}
+
+#[gpui::test]
 fn numeric_setting_is_keyboard_editable(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
