@@ -415,11 +415,27 @@ fn mail_durable_ids_replay_across_cli_invocations_and_conflicts_keep_recovery() 
     assert_eq!(conflict["error"]["code"], "mission_operation_conflict");
     assert_eq!(conflict["error"]["recovery"]["operation_id"], key);
     assert_eq!(conflict["error"]["recovery"]["scope"]["kind"], "work_store");
-    let human = store.run("@749", &["mail", "send", "@730", "-t", "retry", "-m", "changed", "--operation-id", key]);
+    let human = store.run(
+        "@749",
+        &[
+            "mail",
+            "send",
+            "@730",
+            "-t",
+            "retry",
+            "-m",
+            "changed",
+            "--operation-id",
+            key,
+        ],
+    );
     assert_eq!(human.status.code(), Some(1));
     assert!(human.stdout.is_empty());
     let diagnostic = String::from_utf8_lossy(&human.stderr);
-    assert!(diagnostic.contains("work-store operation id:"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("work-store operation id:"),
+        "{diagnostic}"
+    );
     assert!(diagnostic.contains(key), "{diagnostic}");
     let invalid = store.json(
         "@749",
