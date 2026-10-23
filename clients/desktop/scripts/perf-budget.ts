@@ -41,10 +41,21 @@ function counters(
 
 export const BUDGETS: Record<string, PhaseBudget> = {
   cached: { counters: counters(128, 128, 0, 0, 0, 0), tickMeanMaxUs: 20_000 },
-  sparse: { counters: counters(128, 0, 128, 128, 128, 1), tickMeanMaxUs: 60_000 },
+  sparse: {
+    counters: { ...counters(128, 0, 128, 128, 128, 1), "scene.platform_shapes": 0 },
+    tickMeanMaxUs: 60_000,
+  },
+  ascii_redraw: {
+    counters: {
+      ...counters(128, 0, 128, 3072, 128, 0),
+      "scene.platform_shapes": 0,
+      "scene.ascii_lines": 3072,
+    },
+    tickMeanMaxUs: 60_000,
+  },
   scroll: { counters: counters(128, 0, 128, 128, 128, 0), tickMeanMaxUs: 60_000 },
   wide_cached: { counters: counters(64, 64, 0, 0, 0, 0), tickMeanMaxUs: 60_000 },
-  wide_redraw: { counters: counters(64, 0, 0, 3840, 64, 1), tickMeanMaxUs: 600_000 },
+  wide_redraw: { counters: counters(64, 0, 64, 3840, 64, 1), tickMeanMaxUs: 600_000 },
   wide_scroll: { counters: counters(64, 0, 64, 64, 64, 0), tickMeanMaxUs: 200_000 },
   // Three-eighths-row wheel steps through history: a step within a row reuses
   // the scene, and a row crossing shapes only the row that entered (the row

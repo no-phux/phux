@@ -182,6 +182,9 @@ pub(super) struct Fonts {
     /// The resolved `run` faces. A run glyph from any other font is a
     /// fallback that may overhang its cell, so it is shaped and clipped alone.
     run_ids: std::cell::OnceCell<[gpui::FontId; 4]>,
+    /// An alphabet plus a grid-width position ruler per face. Retained only while font size,
+    /// face and cell geometry paint alike; a settings change rebuilds them.
+    pub(super) ascii: [std::cell::OnceCell<Option<ShapedLine>>; 4],
 }
 
 impl Fonts {
@@ -204,6 +207,7 @@ impl Fonts {
             cell: faces,
             run,
             run_ids: std::cell::OnceCell::new(),
+            ascii: std::array::from_fn(|_| std::cell::OnceCell::new()),
         }
     }
 

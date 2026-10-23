@@ -123,12 +123,12 @@ impl Builder {
     /// not shape that way (a ligature survived, or a glyph fell back to
     /// another font or to emoji) is split: its ASCII stretches are shaped as
     /// runs again and every other cell alone.
-    fn shape_run(&mut self, run: PendingRun, window: &gpui::Window) {
+    fn shape_run(&mut self, mut run: PendingRun, window: &gpui::Window) {
         if run.text.is_empty() {
             return;
         }
         let geometry = self.scene.geometry;
-        let text = SharedString::from(run.text);
+        let text = SharedString::from(std::mem::take(&mut run.text));
         let runs: Vec<gpui::TextRun> = run
             .spans
             .iter()
@@ -140,12 +140,26 @@ impl Builder {
             })
             .collect();
         crate::perf::SHAPED.incr();
-        let line = window.text_system().shape_line(
-            text.clone(),
-            px(self.scene.settings.font_size),
-            &runs,
-            Some(geometry.cell_width),
-        );
+        let font_size = px(self.scene.settings.font_size);
+        let line = self
+            .fonts
+            .ascii_line(
+                &text,
+                &run.spans,
+                font_size,
+                geometry.cell_width,
+                self.scene.frame.cols,
+                window,
+            )
+            .unwrap_or_else(|| {
+                crate::perf::PLATFORM_SHAPED.incr();
+                window.text_system().shape_line(
+                    text.clone(),
+                    font_size,
+                    &runs,
+                    Some(geometry.cell_width),
+                )
+            });
         if glyphs_match_cells(&line, &text, &self.fonts.run_ids(window)) {
             let mut end = 0;
             let colors: Vec<_> = runs
@@ -168,6 +182,10 @@ impl Builder {
             });
             return;
         }
+        self.shape_fallback(run, &text, window);
+    }
+
+    fn shape_fallback(&mut self, run: PendingRun, text: &str, window: &gpui::Window) {
         let mut spans = run.spans.iter();
         let mut span_end = 0;
         let mut style = None;
@@ -201,12 +219,14 @@ impl Builder {
                 .push(ch, style);
                 continue;
             }
-            if let Some(part) = part.take() {
-                self.shape_run(part, window);
-            }
+            self.flush_ascii_part(&mut part, window);
             self.shape_cell((run.row, col, 1), ch.to_string(), style, false, window);
         }
-        if let Some(part) = part {
+        self.flush_ascii_part(&mut part, window);
+    }
+
+    fn flush_ascii_part(&mut self, part: &mut Option<PendingRun>, window: &gpui::Window) {
+        if let Some(part) = part.take() {
             self.shape_run(part, window);
         }
     }
@@ -228,6 +248,7 @@ impl Builder {
         let bounds = self.scene.geometry.cell_bounds(row, col, width);
         let len = text.len();
         crate::perf::SHAPED.incr();
+        crate::perf::PLATFORM_SHAPED.incr();
         let line = window.text_system().shape_line(
             text.into(),
             px(self.scene.settings.font_size),
@@ -296,7 +317,7 @@ impl Builder {
 
 /// True when each character of `text` became one non-emoji glyph from one
 /// of `fonts`, in order.
-fn glyphs_match_cells(line: &ShapedLine, text: &str, fonts: &[gpui::FontId]) -> bool {
+pub(super) fn glyphs_match_cells(line: &ShapedLine, text: &str, fonts: &[gpui::FontId]) -> bool {
     let mut cells = text.char_indices();
     for run in &line.runs {
         if !fonts.contains(&run.font_id) {

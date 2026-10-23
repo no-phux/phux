@@ -19,6 +19,7 @@ use phux_client_runtime::draw::{self, BlockRegion, Theme, block_regions, cursor_
 use phux_client_runtime::publication::{Cell, CellMetadata, CursorStyle, GridDamage, GridFrame};
 
 mod appearance;
+mod ascii;
 mod builder;
 mod damage;
 mod decorations;
