@@ -83,17 +83,23 @@ def home_lease(home):
         except BlockingIOError:
             raise ValueError(f"a lead already owns {home}; use another --home for another crew") from None
         try:
-            yield
+            yield stream.fileno()
         finally:
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def run_agent(argv, home):
+def run_agent(argv, home, lease_fd):
     env = dict(os.environ, PHUX_CREW_HOME=str(home), PHUX_CREW_BUNDLE=str(ROOT))
-    child = subprocess.Popen(argv, cwd=home, env=env)
+    # Retain the lease in the direct child too: a launcher crash must not
+    # immediately admit another lead while its agent still owns the home.
+    child = subprocess.Popen(argv, cwd=home, env=env, pass_fds=(lease_fd,))
     previous = {}
 
     def forward(signum, _frame):
+        # The terminal already sends Ctrl-C to the entire foreground group,
+        # including this child. Forwarding again turns one cancel into two.
+        if signum == signal.SIGINT and foreground_terminal():
+            return
         # Only the exact process this launcher started. Never signal by name,
         # port or process group, which may also contain the person's terminal.
         if child.poll() is None:
@@ -112,6 +118,13 @@ def run_agent(argv, home):
             signal.signal(signum, handler)
 
 
+def foreground_terminal():
+    try:
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (OSError, ValueError):
+        return False
+
+
 def start(args):
     home = home_path(args.home)
     extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
@@ -121,10 +134,12 @@ def start(args):
         return 0
     if not shutil.which(argv[0]):
         raise ValueError(f"{argv[0]} is not on PATH; install/sign in to it, or choose --agent")
-    with home_lease(home):
+    if any((directory / ".git").exists() for directory in (home, *home.parents)):
+        raise ValueError(f"Crew home {home} is inside a git checkout; choose a coordinator home outside projects")
+    with home_lease(home) as lease_fd:
         prepare_home(home)
         print(f"Crew / {args.agent}\nHome: {home}\nPolicy: {home / 'POLICY.md'}", flush=True)
-        return run_agent(argv, home)
+        return run_agent(argv, home, lease_fd)
 
 
 def doctor(args):

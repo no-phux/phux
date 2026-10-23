@@ -6,6 +6,8 @@ import io
 import json
 import os
 from pathlib import Path
+import pty
+import signal
 import subprocess
 import sys
 import tempfile
@@ -147,6 +149,93 @@ class CrewTests(unittest.TestCase):
             args = crew.parser().parse_args(["start", "--print"])
             with self.assertRaisesRegex(ValueError, "unknown agent"):
                 crew.start(args)
+
+    def test_start_refuses_a_home_inside_a_project_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / ".git").mkdir()
+            home = repo / "nested-home"
+            args = crew.parser().parse_args(["start", "--home", str(home)])
+            with patch.object(crew.shutil, "which", return_value="/fake/opencode"):
+                with self.assertRaisesRegex(ValueError, "inside a git checkout"):
+                    crew.start(args)
+            self.assertFalse(home.exists())
+
+    def test_terminal_ctrl_c_reaches_agent_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ready, count = root / "ready", root / "count"
+            binary = root / "opencode"
+            binary.write_text(
+                f"#!{sys.executable}\nimport signal,sys\nfrom pathlib import Path\n"
+                f"count = Path({str(count)!r})\n"
+                "def interrupt(*_):\n count.write_text(count.read_text()+'x')\n"
+                "count.write_text('')\n"
+                "signal.signal(signal.SIGINT, interrupt)\n"
+                "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+                f"Path({str(ready)!r}).write_text('ready')\n"
+                "while True: signal.pause()\n"
+            )
+            binary.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"])
+            pid, terminal = pty.fork()
+            if pid == 0:
+                os.execve(sys.executable,
+                          [sys.executable, str(ROOT / "crew.py"), "start", "--home", str(root / "home"), "--agent", "opencode"], env)
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists())
+                os.write(terminal, b"\x03")
+                deadline = time.monotonic() + 5
+                while not count.read_text() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                time.sleep(0.1)  # A second forwarded interrupt must not follow.
+                self.assertEqual(count.read_text(), "x")
+            finally:
+                os.kill(pid, signal.SIGTERM)
+                os.waitpid(pid, 0)
+                os.close(terminal)
+
+    def test_direct_agent_retains_lease_after_launcher_crash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = (root / "home").resolve()
+            ready = root / "agent-pid"
+            binary = root / "opencode"
+            binary.write_text(
+                f"#!{sys.executable}\nimport os,signal\nfrom pathlib import Path\n"
+                f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+                "signal.pause()\n"
+            )
+            binary.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"])
+            process = subprocess.Popen(
+                [sys.executable, str(ROOT / "crew.py"), "start", "--home", str(home), "--agent", "opencode"],
+                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            child_pid = None
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "fake direct agent started")
+                child_pid = int(ready.read_text())
+                process.kill()
+                process.wait(timeout=5)
+                with self.assertRaisesRegex(ValueError, "already owns"):
+                    with crew.home_lease(home):
+                        self.fail("orphaned agent lost its lease")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                if child_pid is not None:
+                    try:
+                        os.kill(child_pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
 
     def test_phux_is_an_executable_not_shell_and_preserves_socket(self):
         with patch.dict(os.environ, {"PHUX": "/build with spaces/phux", "PHUX_SOCKET": "/isolated/server.sock"}):

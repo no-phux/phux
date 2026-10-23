@@ -68,8 +68,9 @@ phux launch crew -- --agent claude -- --model sonnet
 python3 distros/crew/crew.py start --agent codex --print
 ```
 
-Only one live lead may hold a home. Its OS lock disappears when the launcher
-exits; a stale file is not a stale lock. Another home gives you another lead,
+Only one launcher may hold a home. Its OS lock is also inherited by the direct
+agent process, so killing the launcher alone does not release a lock the agent
+still holds; a stale file is not a stale lock. Another home gives you another lead,
 but native missions/mail remain in the selected phux profile's shared store.
 This is coordination, **not a security sandbox**. The lead and workers run
 as you. Never put a home inside a project or use a checkout as a home.

@@ -14,6 +14,7 @@ Record the objective in the project's tracker if it requires one. A brief:
 
 ```text
 Role: builder (or reviewer)
+Lead home: absolute coordinator home (ownership on restart)
 Repository: absolute path
 Outcome: observable requested behavior
 Scope: files/contracts owned; non-goals
