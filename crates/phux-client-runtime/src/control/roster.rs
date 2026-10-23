@@ -78,14 +78,6 @@ impl RosterKey {
     }
 }
 
-/// The level a `phux.agent.asked/v1` value states: the server writes `1`
-/// while a question is pending and deletes the key when none is. Any other
-/// present value still reads as asked, so an unexpected byte can never
-/// retract a question.
-const fn asked_level(value: Option<&Vec<u8>>) -> bool {
-    value.is_some()
-}
-
 impl ControlPlane {
     /// One read in flight, plus one dirty bit, regardless of gap burst size.
     pub(super) fn recover_roster(&mut self) {
@@ -251,7 +243,10 @@ impl ControlPlane {
         let event = match key {
             RosterKey::Agent => Event::AgentMetadata { terminal_id, value },
             RosterKey::Asked => {
-                let asked = asked_level(value.as_ref());
+                // The server writes `1` while a question is pending and deletes
+                // the key when none is. Any present value reads as asked, so an
+                // unexpected byte can never retract a question.
+                let asked = value.is_some();
                 if !asked {
                     self.live_asks.remove(&terminal_id);
                 }
