@@ -1,0 +1,12 @@
+schema_version = 1
+id = "crew"
+display_name = "Crew lead"
+kind = "terminal-agent"
+description = "Your chosen harness in an isolated Crew coordinator home."
+
+# No provider-native session identity or fixed agent kind: --agent chooses
+# the actual harness, whose installed integration reports its own lifecycle.
+[launch]
+command = ["python3", "${PHUX_PLUGIN_ROOT}/crew.py", "start"]
+required_executables = ["python3"]
+working_directory = "workspace"

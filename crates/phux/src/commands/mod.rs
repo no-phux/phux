@@ -148,6 +148,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             _ => None,
         },
         Command::Config(ConfigArgs { action }) => match action {
+            config_action::ConfigAction::Distro { .. } => Some("config distro"),
             config_action::ConfigAction::Init { .. } => Some("config init"),
             config_action::ConfigAction::Path => Some("config path"),
             config_action::ConfigAction::Check { .. } => Some("config check"),

@@ -1290,6 +1290,10 @@ Commands:
   agents   List configured agents, merged with live pane state when a server is
            running.
   check    Validate the config and report every problem, with full key paths.
+  distro   Discover or switch distro layers without overwriting personal config.
+           Changes are local only; run `phux config reload` afterwards for
+           running clients. Server startup settings apply on the next server
+           start.
   init     Write a commented starter config to the canonical path.
   keys     List every key binding in effect and where it came from.
   path     Print the resolved config path. Pure path math — prints the path
@@ -1348,6 +1352,94 @@ Arguments:
 
 Flags:
       --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro`
+
+```text
+Discover or switch distro layers without overwriting personal config. Changes
+are local only; run `phux config reload` afterwards for running clients. Server
+startup settings apply on the next server start.
+
+Usage: phux config distro <SUBCOMMAND>
+
+Commands:
+  current  Show the selected managed distro, not arbitrary user extends layers.
+  list     List bundled names in search precedence, sorted by name.
+  off      Remove only the managed distro entry, leaving personal config intact.
+  use      Validate and select a bundled name or a layer file/directory path.
+           Preserves comments, user overrides, and other extends entries.
+  help     Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro current`
+
+```text
+Show the selected managed distro, not arbitrary user extends layers.
+
+Usage: phux config distro current [--json]
+
+Flags:
+      --json           Emit a stable JSON document.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro list`
+
+```text
+List bundled names in search precedence, sorted by name.
+
+Usage: phux config distro list [--json]
+
+Flags:
+      --json           Emit a stable JSON document.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro off`
+
+```text
+Remove only the managed distro entry, leaving personal config intact.
+
+Usage: phux config distro off [--json]
+
+Flags:
+      --json           Emit a stable JSON document.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro use`
+
+```text
+Validate and select a bundled name or a layer file/directory path. Preserves
+comments, user overrides, and other extends entries.
+
+Usage: phux config distro use [--json] <NAME_OR_PATH>
+
+Arguments:
+  <NAME_OR_PATH>
+
+Flags:
+      --json           Emit a stable JSON document.
   -h, --help           Print help
 
 Global flags:

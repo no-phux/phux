@@ -26,12 +26,16 @@ const DOC_INPUTS: Record<string, Surface[]> = {
 
 /** Shipped agent skills are product inputs, not documentation. */
 const PRODUCT_PROSE = [
+  "distros/crew/**",
   ".agents/skills/{using-phux,using-phux-mcp}/**",
   "integrations/*/skills/**",
   "integrations/muse/SKILL.md",
 ];
 
 const ROUTES: Record<string, Surface[]> = {
+  // Distro layers and manifests are exercised by native config tests; Crew's
+  // credential-free launcher tests also run in guards.
+  "distros/**": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
   // its shared actions: a change to how lanes run reruns every lane.
   ".github/workflows/*.{yml,yaml}": [],
