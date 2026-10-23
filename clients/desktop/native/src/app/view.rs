@@ -28,6 +28,9 @@ mod tab_peek;
 mod tabs;
 mod titlebar;
 
+#[cfg(feature = "ui-fixtures")]
+pub(super) mod preview;
+
 #[cfg(test)]
 mod changes_tests;
 #[cfg(test)]
@@ -39,7 +42,7 @@ use gpui::prelude::*;
 use gpui::{
     AnimationExt, AnyElement, BoxShadow, Context, CursorStyle, DispatchPhase, Entity, IntoElement,
     MouseMoveEvent, MouseUpEvent, ParentElement, StyleRefinement, Styled, WeakEntity, Window,
-    canvas, div, linear_color_stop, linear_gradient, px,
+    canvas, div, linear_color_stop, linear_gradient, px, relative,
 };
 use phux_protocol::ids::ResourceKey;
 
@@ -92,6 +95,29 @@ fn tabs_at(desk: &Desk, skin: &Skin, position: TabPosition) -> bool {
         .as_ref()
         .map_or(0, |link| link.workspace.tabs.len());
     desk.tab_position() == position && tabs_shown(skin, count)
+}
+
+/// Off-top tabs let the sidebar own the window header. The workspace then
+/// reaches the top of the sheet instead of preserving an empty tab strip.
+fn integrated_titlebar(desk: &Desk, skin: &Skin) -> bool {
+    desk.sidebar_shown() && skin.chrome.sidebar > 0. && desk.tab_position() != TabPosition::Top
+}
+
+fn titlebar_height(desk: &Desk, skin: &Skin) -> f32 {
+    if !quick(desk) && desk.prefs.tab_position != TabPosition::Top {
+        skin.chrome.titlebar.min(38.)
+    } else {
+        skin.chrome.titlebar
+    }
+}
+
+/// The workspace's offset from the window top, also used by floating cards.
+pub(crate) fn content_top(desk: &Desk, skin: &Skin) -> f32 {
+    if integrated_titlebar(desk, skin) {
+        0.
+    } else {
+        titlebar_height(desk, skin)
+    }
 }
 
 /// How see-through the skin's pane cards are, 0 (solid) to 1. Gloss
@@ -235,20 +261,6 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         desk.drop_target = None;
     }
     observe_motion(desk, window);
-    // The sidebar slides shut as the skin withdraws it, whatever the prefs say.
-    let presence = skin.chrome.sidebar.clamp(0., 1.);
-    let wanted = navigator::wanted(desk);
-    let sidebar =
-        presence > 0. && !quick(desk) && (wanted || desk.disclosing(desk::SIDEBAR_DISCLOSURE));
-    let sidebar_width = desk.prefs.sidebar_width as f32 * presence;
-    let sidebar_reveal = reveal(
-        "sidebar-reveal",
-        sidebar_width,
-        desk.disclosing(desk::SIDEBAR_DISCLOSURE).then_some(wanted),
-    );
-    let rail = desk.tab_rail() && tabs_at(desk, &skin, TabPosition::Side);
-    let changes_open = desk.changes.open && !quick(desk);
-    let changes = changes_open || (!quick(desk) && desk.disclosing(desk::CHANGES_DISCLOSURE));
     let sheen_height = skin.material.sheen_height;
     let sheen = sheen_height > 0.
         && look.sheen.a > 0.
@@ -279,6 +291,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
             )
         })
         .text_color(look.ink)
+        .line_height(relative(super::ui::typography::LEADING))
         .on_action(cx.listener(|desk, action: &Run, window, cx| {
             desk.execute(&action.id, window, cx);
         }))
@@ -288,60 +301,16 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         .on_key_down(cx.listener(|desk, event: &gpui::KeyDownEvent, window, cx| {
             desk.on_key(event, window, cx);
         }))
-        .child(chrome_slot(
-            &mut desk.chrome.titlebar,
-            titlebar::build,
-            StyleRefinement::default()
-                .w_full()
-                .h(px(skin.chrome.titlebar)),
-            cx,
-        ))
-        .child(
-            div()
-                .flex_grow(1.)
-                .flex()
-                .min_h(px(0.))
-                .when(sidebar, |row| {
-                    let style = StyleRefinement::default().w(px(sidebar_width)).h_full();
-                    let style = if presence < 1. {
-                        style.overflow_hidden().opacity(presence)
-                    } else {
-                        style
-                    };
-                    // Held by its trailing edge, it slides out to the left.
-                    let slot = chrome_slot(&mut desk.chrome.sidebar, navigator::build, style, cx);
-                    row.child(sidebar_reveal(div().justify_end().child(slot)))
-                })
-                .when(rail, |row| {
-                    row.child(chrome_slot(
-                        &mut desk.chrome.tab_rail,
-                        tabs::build_rail,
-                        StyleRefinement::default().w(px(tabs::RAIL_WIDTH)).h_full(),
-                        cx,
-                    ))
-                })
-                .child(panes::main_column(desk, &look, window, cx))
-                .when(changes, |row| {
-                    let width = changes::width(desk, window.viewport_size().width.as_f32());
-                    let reveal = reveal(
-                        "changes-reveal",
-                        width,
-                        desk.disclosing(desk::CHANGES_DISCLOSURE)
-                            .then_some(changes_open),
-                    );
-                    // Held by its leading edge, it slides in from the right.
-                    let slot = chrome_slot(
-                        &mut desk.chrome.changes,
-                        changes::build,
-                        StyleRefinement::default()
-                            .w(px(width))
-                            .flex_shrink_0()
-                            .h_full(),
-                        cx,
-                    );
-                    row.child(reveal(div().child(slot)))
-                }),
-        )
+        .when(!integrated_titlebar(desk, &skin), |sheet| {
+            let height = titlebar_height(desk, &skin);
+            sheet.child(chrome_slot(
+                &mut desk.chrome.titlebar,
+                titlebar::build,
+                StyleRefinement::default().w_full().h(px(height)),
+                cx,
+            ))
+        })
+        .child(workspace_row(desk, &look, window, cx))
         .child(chrome_slot(
             &mut desk.chrome.overlays,
             build_overlays,
@@ -350,6 +319,72 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         ))
         .children(super::hud::element(desk.prefs.font_family.clone().into()))
         .children(cursor.map(|cursor| drag_capture(cursor, cx)))
+}
+
+fn workspace_row(
+    desk: &mut Desk,
+    look: &Look,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
+    let skin = &look.skin;
+    let presence = skin.chrome.sidebar.clamp(0., 1.);
+    let wanted = navigator::wanted(desk);
+    let sidebar =
+        presence > 0. && !quick(desk) && (wanted || desk.disclosing(desk::SIDEBAR_DISCLOSURE));
+    let sidebar_width = desk.prefs.sidebar_width as f32 * presence;
+    let sidebar_reveal = reveal(
+        "sidebar-reveal",
+        sidebar_width,
+        desk.disclosing(desk::SIDEBAR_DISCLOSURE).then_some(wanted),
+    );
+    div()
+        .flex_1()
+        .flex()
+        .min_h_0()
+        .when(sidebar, |row| {
+            let style = StyleRefinement::default().w(px(sidebar_width)).h_full();
+            let style = if presence < 1. {
+                style.overflow_hidden().opacity(presence)
+            } else {
+                style
+            };
+            let slot = chrome_slot(&mut desk.chrome.sidebar, navigator::build, style, cx);
+            row.child(sidebar_reveal(div().justify_end().child(slot)))
+        })
+        .when(
+            desk.tab_rail() && tabs_at(desk, skin, TabPosition::Side),
+            |row| {
+                row.child(chrome_slot(
+                    &mut desk.chrome.tab_rail,
+                    tabs::build_rail,
+                    StyleRefinement::default().w(px(tabs::RAIL_WIDTH)).h_full(),
+                    cx,
+                ))
+            },
+        )
+        .child(panes::main_column(desk, look, window, cx))
+        .children(changes_slot(desk, window, cx))
+}
+
+fn changes_slot(desk: &mut Desk, window: &Window, cx: &mut Context<Desk>) -> Option<AnyElement> {
+    if quick(desk) || !(desk.changes.open || desk.disclosing(desk::CHANGES_DISCLOSURE)) {
+        return None;
+    }
+    let width = changes::width(desk, window.viewport_size().width.as_f32());
+    let reveal = reveal(
+        "changes-reveal",
+        width,
+        desk.disclosing(desk::CHANGES_DISCLOSURE)
+            .then_some(desk.changes.open),
+    );
+    let slot = chrome_slot(
+        &mut desk.chrome.changes,
+        changes::build,
+        StyleRefinement::default().w(px(width)).h_full(),
+        cx,
+    );
+    Some(reveal(div().child(slot)))
 }
 
 /// A side panel's slot, `width` wide at rest. While the panel opens or

@@ -254,6 +254,10 @@ pub(super) fn pane_view(
     let exit_id = id.clone();
     let card = div()
         .id(SharedString::from(format!("pane-card-{id}")))
+        .debug_selector({
+            let id = id.clone();
+            move || format!("pane-card-{id}")
+        })
         .size_full()
         .relative()
         .flex()

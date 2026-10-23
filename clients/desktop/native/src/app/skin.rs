@@ -56,7 +56,8 @@ impl Look {
         let light = theme.appearance == "light";
         let ink = from_hex(&theme.foreground);
         let solid = f64::from(m.card_solid);
-        let card_alpha = prefs.terminal_opacity + (1. - prefs.terminal_opacity) * solid;
+        let opacity = prefs.painted_terminal_opacity();
+        let card_alpha = opacity + (1. - opacity) * solid;
         let raised = from_hex(&colors.raised);
         let wash = |amount: f32| with_alpha(&theme.foreground, f64::from(amount));
         let washes = m.washes;
@@ -70,7 +71,12 @@ impl Look {
             skin: *skin,
             light,
             ink,
-            sheet: from_hex(&theme.background).opacity(tone(m.sheet_alpha, light)),
+            sheet: from_hex(if skin.id == "classic" {
+                &theme.surface
+            } else {
+                &theme.background
+            })
+            .opacity(tone(m.sheet_alpha, light)),
             sheen: ink.opacity(tone(m.sheen, light)),
             card: from_hex(&with_alpha(&theme.background, card_alpha)),
             raised: raised.opacity(m.raised),
@@ -288,6 +294,34 @@ mod tests {
         assert_eq!(
             background_appearance(TERMINAL.material.backdrop),
             WindowBackgroundAppearance::Opaque
+        );
+    }
+
+    #[test]
+    fn classic_keeps_full_navigation_solid_while_glass_panes_are_optional() {
+        use crate::settings::skin::CLASSIC;
+        let colors = palette(&theme_by_id(default_theme_id(), &[]));
+        let mut prefs = DisplayPrefs {
+            terminal_opacity: 0.65,
+            ..default_display()
+        };
+        let glass = Look::of(&GLASS, &colors, &prefs);
+        assert!(glass.card.a < 0.7);
+        prefs.pane_glass = false;
+        assert_eq!(Look::of(&GLASS, &colors, &prefs).card.a, 1.);
+        prefs.pane_glass = true;
+        let classic = Look::of(&CLASSIC, &colors, &prefs);
+        assert_eq!(classic.card.a, 1.);
+        assert_eq!(classic.sheet.a, 1.);
+        assert_ne!(
+            classic.sheet, classic.card,
+            "solid split gutters remain visible without shadows"
+        );
+        assert_eq!(classic.skin.chrome.sidebar, 1.);
+        assert!(classic.pane_shadow.is_empty());
+        assert_eq!(
+            prefs.terminal_opacity, 0.65,
+            "changing style never loses glass strength"
         );
     }
 

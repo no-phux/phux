@@ -150,6 +150,7 @@ impl Desk {
     }
 
     pub(super) fn note_event(&mut self, event: &Event) {
+        self.note_fleet_event(event);
         self.note_terminal_event(event);
         self.note_command_event(event);
         if let Event::OrganizationOperation { operation, outcome } = event {

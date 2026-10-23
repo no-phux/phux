@@ -47,6 +47,10 @@ through the CLI. To hand the manual to your agent:
 Run `phux skill` and follow it to work with my phux terminals.
 ```
 
+Want one lead to coordinate a visible fleet? [Crew](./distros/crew/README.md)
+is the bundled agent distro, with isolated homes, native missions and safe
+[distro switching](./docs/distros.md).
+
 ## Status
 
 The CLI and terminal UI are the parts in daily use. The desktop app is

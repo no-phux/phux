@@ -332,10 +332,10 @@ impl Desk {
         self.locations.insert(previous, self.store.clone());
         self.persist();
         self.abandon_organize();
+        self.cancel_fleet_navigation();
         self.park_link(cx);
         self.pending_project_terminal = None;
         self.connect_error = None;
-        self.fleet_view.pending = None;
         self.goto_search = Default::default();
         self.remote = name.clone();
         self.session = session.clone();

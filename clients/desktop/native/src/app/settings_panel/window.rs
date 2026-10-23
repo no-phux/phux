@@ -4,12 +4,12 @@
 use gpui::prelude::*;
 use gpui::{
     AnyWindowHandle, App, Context, Entity, FocusHandle, KeyBinding, Subscription, Window,
-    WindowBounds, WindowOptions, div, px, size,
+    WindowBounds, WindowOptions, div, px, relative, size,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::group_box::GroupBoxVariant;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, IconName, Sizable, TitleBar};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, TitleBar};
 
 use super::{Page, SettingsControls, build_controls, content, native_settings};
 use crate::app::actions::Run;
@@ -149,7 +149,7 @@ impl SettingsWindow {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .gap(px(14.))
+            .gap(px(10.))
             .p(px(12.))
             .bg(cx.theme().sidebar)
             .border_r_1()
@@ -163,18 +163,38 @@ impl SettingsWindow {
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
+                    .gap(px(2.))
                     .children(pages.iter().copied().map(|page| {
                         let selector = format!("settings-category-{page:?}");
                         div().debug_selector(move || selector.clone()).child(
                             Button::new(gpui::SharedString::from(format!(
                                 "settings-category-{page:?}"
                             )))
-                            .label(page.sidebar_title())
-                            .icon(page.icon())
+                            .accessibility_label(page.sidebar_title())
                             .ghost()
+                            .small()
+                            .h(px(28.))
                             .w_full()
-                            .justify_start()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(Icon::new(page.icon()).size(px(14.)).flex_shrink_0())
+                                    .child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("settings-category-label-{page:?}")
+                                            })
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(px(13.))
+                                            .child(page.sidebar_title()),
+                                    ),
+                            )
                             .toggled(self.page == page)
                             .when(self.page == page, |button| {
                                 button
@@ -249,7 +269,8 @@ impl gpui::Render for SettingsWindow {
                         .filtered(
                             page,
                             &query,
-                            window.viewport_size().width.as_f32() - SIDEBAR < 720.,
+                            window.viewport_size().width.as_f32() - SIDEBAR
+                                < super::catalog::STACK_CONTROLS_BELOW,
                         )
                         .title(page.title())
                         .description(page.description()),
@@ -298,6 +319,7 @@ impl gpui::Render for SettingsWindow {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .text_left()
+            .line_height(relative(crate::app::ui::typography::LEADING))
             .child(
                 TitleBar::new().child(
                     div()

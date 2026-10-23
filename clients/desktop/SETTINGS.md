@@ -26,6 +26,13 @@ See [desktop usage](USAGE.md) for navigation and [updates](USAGE.md#updates).
 
 ## Appearance
 
-Settings uses theme-aware grouped controls; dialogs, notifications, find controls,
-and dropdowns keep the workspace's glass treatment. **Appearance > Font family**
-previews each face in the searchable dropdown, with bundled fonts pinned first.
+**Interface style** offers **Classic** (solid, quiet surfaces with full navigation)
+and **Glass** (native translucent material). **Glassy panes** independently lets
+the desktop show through pane backgrounds; **Pane opacity** controls how much.
+Turning glassy panes off remembers the chosen opacity. Classic, Plain terminal,
+and **Blur behind window** off keep panes solid. Plain terminal remains a separate
+minimal-chrome mode, not the Classic style.
+
+Chrome uses bundled Inter with compact leading and consistent label columns.
+**Font family** and **Font size** still change only terminal text; the searchable
+font dropdown previews each face, with bundled terminal fonts pinned first.

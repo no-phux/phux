@@ -192,7 +192,7 @@ impl Knob {
         pref: |prefs| &mut prefs.unfocused_opacity,
     };
     const GLASS: Self = Self {
-        title: "Background opacity",
+        title: "Pane opacity",
         range: (55., 100., 5.),
         percent: true,
         pref: |prefs| &mut prefs.terminal_opacity,

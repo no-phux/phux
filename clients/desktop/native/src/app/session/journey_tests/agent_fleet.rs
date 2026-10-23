@@ -15,8 +15,21 @@ fn live_fleet_observes_state_without_views_and_opens_the_exact_remote_agent(
     drop(listener);
     let local = Server::new();
     let remote = Server::with_listener(Some(port));
-    let created: serde_json::Value = serde_json::from_slice(&remote.output(
+    let home: serde_json::Value = serde_json::from_slice(&remote.output(
         &["new", "--json", "-s", "fleet-agent", "--", "/bin/cat"],
+        b"",
+    ))
+    .unwrap();
+    let home_selector = format!("@{}", home["terminal_id"].as_u64().unwrap());
+    let created: serde_json::Value = serde_json::from_slice(&remote.output(
+        &[
+            "spawn",
+            "--target",
+            &home_selector,
+            "--json",
+            "--",
+            "/bin/cat",
+        ],
         b"",
     ))
     .unwrap();

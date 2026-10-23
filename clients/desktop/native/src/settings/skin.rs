@@ -292,7 +292,7 @@ blended! {
 /// The default: a sheet of glass with floating, rounded pane cards.
 pub const GLASS: Skin = Skin {
     id: "glass",
-    name: "Liquid Glass",
+    name: "Glass",
     material: Material {
         backdrop: Backdrop::Glass,
         sheet_alpha: [0.58, 0.44],
@@ -325,7 +325,7 @@ pub const GLASS: Skin = Skin {
     shape: Shape {
         radius: 12.,
         card_radius: 14.,
-        popover_radius: 26.,
+        popover_radius: 12.,
         tab_radius: 10.,
         kit_radius: 8.,
         kit_radius_lg: 14.,
@@ -348,6 +348,42 @@ pub const GLASS: Skin = Skin {
         cursor_effects: true,
         shift_ms: 420,
     },
+};
+
+/// The same complete interface in solid, quiet native surfaces. Plain
+/// terminal remains a separate focus mode, not a replacement for this style.
+pub const CLASSIC: Skin = Skin {
+    id: "classic",
+    name: "Classic",
+    material: Material {
+        backdrop: Backdrop::Opaque,
+        sheet_alpha: [1., 1.],
+        sheen: [0., 0.],
+        sheen_height: 0.,
+        card_solid: 1.,
+        raised: 1.,
+        capsule: 1.,
+        pane_shadow: Shadow::NONE,
+        tab_shadow: Shadow::NONE,
+        depth: Depth::FLAT,
+        ..GLASS.material
+    },
+    shape: Shape {
+        radius: 6.,
+        card_radius: 8.,
+        popover_radius: 8.,
+        tab_radius: 6.,
+        kit_radius: 6.,
+        kit_radius_lg: 8.,
+        gutter: 8.,
+        gap: 8.,
+        divider: 0.,
+    },
+    chrome: Chrome {
+        sheen: false,
+        ..GLASS.chrome
+    },
+    motion: GLASS.motion,
 };
 
 /// A plain terminal: opaque square panes under a slim strip, wearing the
@@ -406,7 +442,7 @@ pub const TERMINAL: Skin = Skin {
     },
 };
 
-static SKINS: [Skin; 2] = [GLASS, TERMINAL];
+static SKINS: [Skin; 3] = [GLASS, CLASSIC, TERMINAL];
 
 /// Every shipped skin, default first.
 #[must_use]

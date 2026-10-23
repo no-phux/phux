@@ -1,7 +1,7 @@
 //! Agent inventory and exact, revalidated navigation. No terminal views while browsing.
 
 use gpui::{Context, Window};
-use phux_client_runtime::control::Status;
+use phux_client_runtime::control::{Event, Status};
 use phux_protocol::ResourceId;
 
 use super::{Destination, available};
@@ -81,6 +81,28 @@ fn agents_on(connection: &Connection, host: Option<String>) -> Vec<Agent> {
 }
 
 impl Desk {
+    /// A later choice also withdraws this click's unplaced workspace open.
+    pub(crate) fn cancel_fleet_navigation(&mut self) {
+        self.fleet_view.pending = None;
+        if let Some(intent) = self.fleet_view.pending_open.take()
+            && let Some(link) = self.link.as_mut()
+        {
+            link.workspace.cancel_pending_open(intent);
+        }
+    }
+
+    /// Refusal ends this click. Workspace retains the original error notice.
+    pub(crate) fn note_fleet_event(&mut self, event: &Event) {
+        let Some(target) = self.fleet_view.pending.as_ref() else {
+            return;
+        };
+        if matches!(event, Event::TerminalAttached { terminal_id, error: Some(_), .. }
+            if terminal_id == &target.terminal)
+        {
+            self.cancel_fleet_navigation();
+        }
+    }
+
     pub(crate) fn agent_catalog(&self) -> Vec<Agent> {
         let active = self
             .link
@@ -135,11 +157,36 @@ impl Desk {
             cx.notify();
             return;
         }
+        self.cancel_fleet_navigation();
         self.close_modal(window, cx);
         self.navigate_work(target.destination.clone(), cx);
         self.fleet_view.pending = Some(target);
+        self.fleet_view.pending_open = None;
         self.settle_fleet_terminal();
         self.after_command(window, cx);
+    }
+
+    fn reveal_fleet_terminal(&mut self, terminal: &ResourceId) {
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        if let Some(pane) = link.connection.pane(terminal).cloned()
+            && let Some(intent) = link.workspace.open_for_navigation(&link.connection, &pane)
+        {
+            self.fleet_view.pending_open = Some(intent);
+        }
+        // Restore can still place a default pane after the selected one.
+        if self.fleet_restore_finished(terminal) {
+            self.cancel_fleet_navigation();
+        }
+    }
+
+    fn fleet_restore_finished(&self, terminal: &ResourceId) -> bool {
+        self.link.as_ref().is_some_and(|link| {
+            link.workspace.restored()
+                && link.workspace.pending() == 0
+                && link.workspace.views_of(terminal) > 0
+        })
     }
 
     /// Wait for the chosen session to attach. A restarted server must never
@@ -158,10 +205,11 @@ impl Desk {
         let valid = link.connection.status == Status::Attached
             && self.work_is_active(&target.destination)
             && target.listed_on(&link.connection);
-        let target = self.fleet_view.pending.take().unwrap();
+        let terminal = target.terminal.clone();
         if valid {
-            self.reveal_terminal(&target.terminal);
+            self.reveal_fleet_terminal(&terminal);
         } else {
+            self.cancel_fleet_navigation();
             self.post(
                 Kind::Refusal,
                 "Agent destination changed",

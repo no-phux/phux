@@ -228,6 +228,9 @@ async fn scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it()
         "marker scrolled away: {}",
         screen(&client)
     );
+    // The burst is still echoing. Scroll only after `cat` has printed a
+    // sentinel, or a stale snapshot lands mid-gesture and freezes input.
+    drain_echo(&client, &surface).await;
 
     let init = WheelEventInit::new();
     init.set_delta_y(-4_000.0);
@@ -495,6 +498,63 @@ async fn wait_rows(client: &phux_web::client::Client, needle: &str, count: usize
         sleep(POLL).await;
     }
     false
+}
+
+/// The 80×24 grid `run` requested, once an attach-time reflow has landed.
+///
+/// A previous test's geometry can still be in flight. Its snapshot replaces
+/// the replica, so a marker is printed only after the grid is that size and
+/// the screen has stopped changing.
+async fn settled_80x24(client: &phux_web::client::Client) {
+    let mut sized = false;
+    for _ in 0..POLLS {
+        let rows = client.rows_text();
+        if rows.len() == 24 && rows.iter().all(|row| row.chars().count() == 80) {
+            sized = true;
+            break;
+        }
+        sleep(POLL).await;
+    }
+    assert!(
+        sized,
+        "the pane is 80x24 before the marker is printed: {}",
+        screen(client)
+    );
+    settle(client).await;
+}
+
+/// Finish the shared `cat` pane's echo of a burst of Enters before scrolling.
+///
+/// A live chunk older than the server's stale-output budget (250ms) makes the
+/// pump skip that client to a fresh snapshot. A debug CI build falls that far
+/// behind while `cat` is still echoing, and the snapshot replaces a scrolled
+/// replica with the live screen: a hold copies blank cells, and until the
+/// snapshot lands the replica is frozen so a keydown is not handled. The
+/// sentinel is committed once the replica accepts it (a frozen one drops the
+/// key), and it is on screen twice (the tty echo and `cat`) before the view
+/// is allowed to go still.
+async fn drain_echo(client: &phux_web::client::Client, surface: &Element) {
+    let sentinel = format!("PHUX_DRAIN_{}", js_sys::Date::now() as u64);
+    let mut submitted = false;
+    for _ in 0..POLLS {
+        type_text(surface, &sentinel);
+        if keydown(surface, "Enter", "Enter", false) {
+            submitted = true;
+            break;
+        }
+        sleep(POLL).await;
+    }
+    assert!(
+        submitted,
+        "drain sentinel is terminal input: {}",
+        screen(client)
+    );
+    assert!(
+        wait_rows(client, &sentinel, 2).await,
+        "echo drained ({sentinel}): {}",
+        screen(client)
+    );
+    settle(client).await;
 }
 
 /// Row index of the first row equal (trimmed) to `text`.
@@ -1183,7 +1243,9 @@ async fn mouse_positions_land_on_their_cells_after_another_client_reports_other_
         screen(&client)
     );
     program_prints(&client, &surface, &["[?1000;1006l"], "CELLS_OFF", &[]).await;
-    other.close().unwrap();
+    // `close()` only starts the handshake. The close event is the server
+    // tearing the connection down, which is what queues this client's detach.
+    await_socket_close(other).await;
     client.close();
 }
 
@@ -1242,20 +1304,24 @@ async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
         "none",
         "the browser neither pans nor zooms over the terminal"
     );
+    settled_80x24(&client).await;
     let surface = input_surface(&canvas);
-    let marker = "PHUX_TOUCH_OK";
+    // This run's own line. The pane is shared, so a previous copy of a fixed
+    // marker can be the row a later scroll finds.
+    let marker = format!("PHUX_TOUCH_{}", js_sys::Date::now() as u64);
     fresh_line(&surface);
-    type_text(&surface, marker);
+    type_text(&surface, &marker);
     assert!(keydown(&surface, "Enter", "Enter", false));
-    assert!(wait_rows(&client, marker, 2).await, "{}", screen(&client));
+    assert!(wait_rows(&client, &marker, 2).await, "{}", screen(&client));
     for _ in 0..40 {
         assert!(keydown(&surface, "Enter", "Enter", false));
     }
     assert!(
-        wait_until(&client, false, marker).await,
+        wait_until(&client, false, &marker).await,
         "marker scrolled away: {}",
         screen(&client)
     );
+    drain_echo(&client, &surface).await;
 
     // A finger dragged down pulls history into view, as on any phone.
     let row_px = metrics::measured(&canvas).cell_h;
@@ -1266,7 +1332,7 @@ async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
             finger(&canvas, "pointermove", (10, 2), f64::from(step) * row_px);
         }
         finger(&canvas, "pointerup", (10, 6), 0.0);
-        if client.rows_text().iter().any(|row| row.contains(marker)) {
+        if client.rows_text().iter().any(|row| row.contains(&marker)) {
             reached = true;
             break;
         }
@@ -1284,8 +1350,8 @@ async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
 
     // Hold, then drag across the marker: the cells are selected.
     let rows = client.rows_text();
-    let row = rows.iter().position(|r| r.contains(marker)).unwrap();
-    let col = rows[row].find(marker).unwrap();
+    let row = rows.iter().position(|r| r.contains(&marker)).unwrap();
+    let col = rows[row].find(&marker).unwrap();
     let (row, first, last) = (row as u16, col as u16, (col + marker.len() - 1) as u16);
     finger(&canvas, "pointerdown", (first, row), 0.0);
     sleep(Duration::from_millis(450)).await;
@@ -1294,7 +1360,7 @@ async fn a_finger_scrolls_scrollback_a_hold_selects_and_a_tap_opens_a_link() {
     finger(&canvas, "pointerup", (last, row), 0.0);
     assert_eq!(
         copy_event(&surface),
-        (true, marker.to_owned()),
+        (true, marker.clone()),
         "the hold-drag selected the marker"
     );
     // A tap clears it, as a click does.
@@ -1348,22 +1414,8 @@ async fn a_hold_still_selects_scrollback_when_another_cell_size_detaches() {
     let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
         .await
         .expect("connect to live phux server");
-    let mut sized = false;
-    for _ in 0..POLLS {
-        let rows = client.rows_text();
-        if rows.len() == 24 && rows.iter().all(|row| row.chars().count() == 80) {
-            sized = true;
-            break;
-        }
-        sleep(POLL).await;
-    }
-    assert!(
-        sized,
-        "the pane is 80x24, the grid the other client will report: {}",
-        screen(&client)
-    );
-    // Let an attach-time reflow from a previous geometry land before the marker.
-    settle(&client).await;
+    // The other client reports this same grid; a reflow has to land first.
+    settled_80x24(&client).await;
 
     let surface = input_surface(&canvas);
     let marker = format!("PHUX_HOLD_{}", js_sys::Date::now() as u64);
@@ -1387,6 +1439,7 @@ async fn a_hold_still_selects_scrollback_when_another_cell_size_detaches() {
         "marker scrolled away: {}",
         screen(&client)
     );
+    drain_echo(&client, &surface).await;
 
     let row_px = metrics::measured(&canvas).cell_h;
     let mut reached = false;

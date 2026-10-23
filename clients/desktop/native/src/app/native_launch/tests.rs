@@ -323,6 +323,14 @@ fn picker_keeps_opencode_start_and_signin_inside_the_native_panel(cx: &mut TestA
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
+    let setup = cx
+        .debug_bounds("native-setup-toggle")
+        .expect("discoverable setup disclosure");
+    cx.simulate_click(setup.center(), gpui::Modifiers::none());
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
     let panel = cx.debug_bounds("native-launch-panel").unwrap();
     let viewport = cx.update(|window, _| window.viewport_size());
     assert!(

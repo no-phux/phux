@@ -46,9 +46,8 @@ pub(super) fn patch(
             return finish_patch(previous, frame, settings, &scrolled, window);
         }
     }
-    if rebuilt.len() == usize::from(frame.rows) {
-        return None;
-    }
+    // Even a full redraw keeps its font tables. Rebuilding Fonts here would
+    // reshape the printable-ASCII alphabet on every animation frame.
     drop_fringe(&mut previous);
     let rebuilt = with_fringe_row(rebuilt, &frame);
     finish_patch(previous, frame, settings, &rebuilt, window)

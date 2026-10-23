@@ -46,6 +46,10 @@ if (import.meta.main) {
   for (const name of ["LICENSE", "NOTICE"]) {
     cpSync(join(repo, name), join(contents, "Resources", name));
   }
+  cpSync(
+    join(root, "native/assets/fonts/Inter-OFL.txt"),
+    join(contents, "Resources/fonts/Inter-OFL.txt"),
+  );
   writeFileSync(join(contents, "Resources/THIRD-PARTY-NOTICES.txt"), thirdPartyNotices());
   renderIcon(join(contents, "Resources/AppIcon.icns"));
   const version = packageVersion(readFileSync(join(root, "package.json"), "utf8"));

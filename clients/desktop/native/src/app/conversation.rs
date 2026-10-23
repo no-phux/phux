@@ -21,6 +21,10 @@ use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::native_agent::{NativeDisposition, NativeIntent, NativeView};
 use std::collections::HashMap;
 
+#[cfg(test)]
+mod polish_tests;
+#[cfg(any(test, feature = "ui-fixtures"))]
+pub(crate) mod preview;
 mod questions;
 mod receipts;
 mod render;
@@ -357,7 +361,7 @@ impl Desk {
         let visible = self.conversation_visible(placement);
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("Message this terminal's agent")
+                .placeholder("Reply to agent…")
                 .auto_grow(2, 6)
                 .submit_on_enter(true)
         });

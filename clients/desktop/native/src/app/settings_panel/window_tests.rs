@@ -4,6 +4,78 @@ use super::{Page, window::SettingsWindow};
 use crate::app::desk::Desk;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
+#[gpui::test]
+fn appearance_pickers_fit_the_page_at_narrow_medium_and_wide_widths(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    for width in [700., 804., 860., 924., 1100.] {
+        settings.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+        draw(settings);
+        let sidebar = settings.debug_bounds("settings-sidebar").unwrap();
+        for selector in ["settings-font", "settings-theme"] {
+            let picker = settings.debug_bounds(selector).unwrap();
+            assert!(
+                picker.left() >= sidebar.right() + gpui::px(20.)
+                    && picker.right() <= gpui::px(width - 20.),
+                "{selector} stays inside the page gutter at {width}: {picker:?}"
+            );
+            assert_eq!(
+                picker.size.width,
+                gpui::px(260.),
+                "{selector} owns its input's full width at {width}"
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn category_labels_share_one_column_instead_of_centering_each_buttons_contents(
+    cx: &mut TestAppContext,
+) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    draw(settings);
+    let baseline = settings
+        .debug_bounds("settings-category-label-Appearance")
+        .unwrap();
+    for selector in [
+        "settings-category-label-Layout",
+        "settings-category-label-Keyboard",
+        "settings-category-label-Spacing",
+        "settings-category-label-Ghostty",
+        "settings-category-label-Updates",
+        "settings-category-label-Connections",
+        "settings-category-label-Developer",
+    ] {
+        let label = settings.debug_bounds(selector).unwrap();
+        assert_eq!(
+            label.left(),
+            baseline.left(),
+            "every category starts on one text column"
+        );
+        assert_eq!(label.size.height, baseline.size.height);
+    }
+    settings.update(|_, cx| {
+        use gpui_kit::component::ActiveTheme as _;
+        assert_eq!(
+            cx.theme().font_family.as_ref(),
+            crate::app::ui::typography::FAMILY
+        );
+        assert_eq!(
+            cx.theme().font_size,
+            gpui::px(crate::app::ui::typography::BASE)
+        );
+    });
+}
+
 pub(in crate::app) fn opened(
     desk: &Entity<Desk>,
     cx: &gpui::TestAppContext,
@@ -127,6 +199,66 @@ fn settings_wide_controls_fit_and_palette_shortcut_returns_to_workspace(cx: &mut
     let workspace = &mut VisualTestContext::from_window(owner, settings);
     draw(workspace);
     assert!(workspace.debug_bounds("palette-panel").is_some());
+}
+
+#[gpui::test]
+fn updates_product_details_fit_inside_the_grid_at_every_settings_width(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    let updater = desk.read_with(workspace, |desk, _| desk.updates.clone());
+    updater.update(workspace, |updater, cx| {
+        updater.prefs = crate::updates::Preferences::default();
+        updater.development = false;
+        updater.current = Some(crate::updates::Release {
+            version: "0.50.0".into(),
+            ..Default::default()
+        });
+        updater.target = Some(crate::updates::Release {
+            version: "0.51.0".into(),
+            ..Default::default()
+        });
+        updater.runtime = Some(crate::updates::RuntimeRelease {
+            current: "0.50.0".into(),
+            target: "0.51.0-next.12345".into(),
+            available: true,
+            mutable: true,
+            native_command: None,
+            protocol_current: None,
+            protocol_target: None,
+        });
+        cx.notify();
+    });
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    draw(settings);
+    let category = settings.debug_bounds("settings-category-Updates").unwrap();
+    settings.simulate_click(category.center(), gpui::Modifiers::none());
+    for width in [700., 860., 1100.] {
+        settings.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+        draw(settings);
+        let overview = settings.debug_bounds("updates-overview").unwrap();
+        // Inspect the actual name, version and status cells, not just the card.
+        for selector in [
+            "updates-name-Phux Desktop",
+            "updates-installed-Phux Desktop",
+            "updates-incoming-Phux Desktop",
+            "updates-status-Phux Desktop",
+            "updates-name-phux CLI & server",
+            "updates-installed-phux CLI & server",
+            "updates-incoming-phux CLI & server",
+            "updates-status-phux CLI & server",
+            "updates-actions",
+        ] {
+            let cell = settings.debug_bounds(selector).expect(selector);
+            assert!(
+                cell.left() >= overview.left() + gpui::px(18.)
+                    && cell.right() <= overview.right() - gpui::px(18.),
+                "{selector} fits inside the card at {width}: {cell:?} in {overview:?}"
+            );
+        }
+    }
 }
 
 #[gpui::test]

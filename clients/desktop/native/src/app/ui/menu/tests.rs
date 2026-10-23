@@ -2,6 +2,55 @@ use super::*;
 use crate::settings::skin::GLASS;
 use std::cell::Cell;
 
+#[gpui::test]
+fn compact_menu_last_action_is_clickable_in_its_first_reduced_motion_frame(
+    cx: &mut gpui::TestAppContext,
+) {
+    let chosen = Rc::new(Cell::new(false));
+    let parent = cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+        cx.open_window(WindowOptions::default(), |window, cx| {
+            fixture(sample(GLASS, 0), 700., window, cx)
+        })
+        .unwrap()
+    });
+    let owner = parent.entity(cx).unwrap();
+    let picked = chosen.clone();
+    let child = parent
+        .update(cx, |_, window, cx| {
+            let mut spec = sample(GLASS, 0);
+            spec.root = MenuPage::new(vec![
+                MenuItem::action("First", |_, _| {}),
+                MenuItem::action("Middle", |_, _| {}).gap(),
+                MenuItem::action("Last", move |_, _| picked.set(true)).selector("last"),
+            ]);
+            open(
+                spec,
+                Anchor::At(point(px(20.), px(20.))),
+                &owner,
+                |menu| menu.skin,
+                window,
+                cx,
+            )
+            .unwrap()
+        })
+        .unwrap();
+    let cx = &mut gpui::VisualTestContext::from_window(child.into(), cx);
+    let last = cx.debug_bounds("glass-menu-last").unwrap();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    assert!(
+        last.bottom() <= viewport.height - px(INSET),
+        "compact last rows must not be clipped by the entry animation's old height"
+    );
+    cx.simulate_click(last.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        chosen.get(),
+        "the actual pointer click executes the last action"
+    );
+}
+
 #[test]
 fn interrupted_surface_motion_settles_and_stops() {
     for fps in [30, 60, 120] {
@@ -39,7 +88,7 @@ fn glass_washes_keep_the_shipped_menu_ink() {
     ] {
         assert!((wash.a - alpha).abs() < 1e-6, "{} != {alpha}", wash.a);
     }
-    assert_eq!(GLASS.shape.popover_radius, 26.);
+    assert_eq!(GLASS.shape.popover_radius, 12.);
     assert_eq!(GLASS.motion.menu_enter(), Duration::from_millis(150));
     assert_eq!(GLASS.motion.menu_exit(), Duration::from_millis(100));
     assert_eq!(spring(&GLASS), SpringConfig::new(950., 48., 1.));

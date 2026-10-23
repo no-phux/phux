@@ -249,8 +249,10 @@ fn click_on(cx: &mut gpui::VisualTestContext, selector: &str) {
     draw(cx);
 }
 
+mod bootstrap;
 mod catalog;
 mod dashboard;
 mod disclosure;
 mod machines;
+mod navigation;
 mod sidebar;

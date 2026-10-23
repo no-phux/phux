@@ -1,4 +1,5 @@
 mod config_json;
+mod distro;
 mod keys;
 mod live_feed;
 mod show;
@@ -23,6 +24,7 @@ use live_feed::{
 /// reload doorbell.
 pub(crate) fn run_config(action: &ConfigAction, socket: Option<std::path::PathBuf>) -> ExitCode {
     match action {
+        ConfigAction::Distro { action } => distro::run(action),
         ConfigAction::Path => {
             outln!("{}", config_loader::config_path().display());
             ExitCode::SUCCESS

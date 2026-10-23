@@ -134,7 +134,7 @@ impl Connection {
         true
     }
 
-    fn from_client(client: Client, session: String) -> Self {
+    pub(crate) fn from_client(client: Client, session: String) -> Self {
         let (tx, wake_rx) = async_channel::bounded(1);
         client.set_listener(Arc::new(ActivityListener { tx }));
         let status = client.status();

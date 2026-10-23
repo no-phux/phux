@@ -57,6 +57,10 @@ every section and setting with its default.
 
 ## Applying changes
 
+For curated defaults and agent workflows, use [distributions](./distros.md).
+`phux config distro use crew` switches the managed distro without replacing
+your personal overrides; `phux config distro off` removes it again.
+
 phux never watches the file. Changes apply when you ask, and different
 settings are read at different moments.
 

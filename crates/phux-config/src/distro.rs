@@ -1,4 +1,4 @@
-//! Starter-distribution resolution for `phux config init --distro <spec>`.
+//! Distro discovery, resolution, and comment-preserving local selection.
 //!
 //! A distro is an ordinary config layer (ADR-0039) the scaffold `extends`.
 //! `<spec>` is a path (a separator or `.toml`; a directory means
@@ -9,6 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
+mod switching;
+pub use switching::{current_distro, switch_distro};
+
 /// Environment variable naming the preferred bundled-distro directory.
 pub const DISTROS_DIR_ENV: &str = "PHUX_DISTROS_DIR";
 
@@ -16,6 +19,11 @@ pub const DISTROS_DIR_ENV: &str = "PHUX_DISTROS_DIR";
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DistroError {
+    /// A bare name is not a safe package identifier.
+    #[error(
+        "invalid distro name `{0}`; use ASCII letters, digits, `_` or `-`, or an explicit path"
+    )]
+    InvalidName(String),
     /// The resolved path could not be canonicalized.
     #[error("distro layer {}: {source}", path.display())]
     Unreadable {
@@ -84,11 +92,12 @@ pub fn resolve_distro_in(spec: &str, dirs: &[PathBuf]) -> Result<PathBuf, Distro
         return canonicalize(&file);
     }
 
+    validate_name(spec)?;
     let mut candidates = Vec::new();
     for name in bundled_lookup_names(spec) {
         for dir in dirs {
             let candidate = dir.join(name).join(format!("{name}.toml"));
-            if candidate.is_file() {
+            if candidate_exists(&candidate)? {
                 return canonicalize(&candidate);
             }
             candidates.push(candidate);
@@ -98,6 +107,93 @@ pub fn resolve_distro_in(spec: &str, dirs: &[PathBuf]) -> Result<PathBuf, Distro
         name: spec.to_owned(),
         candidates,
     })
+}
+
+/// One discoverable distro. The first search-directory hit wins per name.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Distro {
+    /// Safe bundled name accepted by [`resolve_distro_in`].
+    pub name: String,
+    /// Absolute layer path (the layer is validated when selected).
+    pub path: PathBuf,
+}
+
+/// Discover bundled distros, sorted by name and deduplicated in search order.
+///
+/// # Errors
+/// Unreadable search directories or layer paths; missing directories are ignored.
+pub fn list_distros_in(dirs: &[PathBuf]) -> Result<Vec<Distro>, DistroError> {
+    let mut found = std::collections::BTreeMap::new();
+    for dir in dirs {
+        for name in package_names(dir)? {
+            if found.contains_key(&name) {
+                continue;
+            }
+            let path = resolve_distro_in(&name, std::slice::from_ref(dir))?;
+            found.insert(name.clone(), Distro { name, path });
+        }
+    }
+    Ok(found.into_values().collect())
+}
+
+fn package_names(dir: &Path) -> Result<Vec<String>, DistroError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(DistroError::Unreadable {
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| DistroError::Unreadable {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if validate_name(&name).is_ok()
+            && candidate_exists(&entry.path().join(format!("{name}.toml")))?
+        {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn validate_name(name: &str) -> Result<(), DistroError> {
+    let safe = !name.is_empty()
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'));
+    if safe {
+        Ok(())
+    } else {
+        Err(DistroError::InvalidName(name.to_owned()))
+    }
+}
+
+fn candidate_exists(path: &Path) -> Result<bool, DistroError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(source) => Err(DistroError::Unreadable {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 /// Renamed bundled distros; the requested name is still tried first.
@@ -152,6 +248,16 @@ fn spec_is_path(spec: &str) -> bool {
 
 fn canonicalize(path: &Path) -> Result<PathBuf, DistroError> {
     path.canonicalize()
+        .and_then(|resolved| {
+            if resolved.is_file() {
+                Ok(resolved)
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "not a layer file",
+                ))
+            }
+        })
         .map_err(|source| DistroError::Unreadable {
             path: path.to_path_buf(),
             source,
