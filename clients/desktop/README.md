@@ -47,6 +47,7 @@ first, then ends all its processes and deletes the session.
 | ⌥⌘ arrows, ⌘[ ⌘] | focus a direction, cycle panes                           |
 | ⇧⌘↩              | zoom                                                     |
 | ⌘1-⌘9, ⇧⌘[ ⇧⌘]   | select a tab                                             |
+| ⇧⌘\\             | peek live tab miniatures without resizing terminals      |
 | ⌘F, ⌘G, ⇧⌘G, ⌘E  | find, next, previous, find selection                     |
 | ⌘↑ ⌘↓            | previous / next shell prompt (needs OSC 133 marks)       |
 | ⇧⌘A              | jump to the agent that most needs you                    |

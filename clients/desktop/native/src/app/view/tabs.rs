@@ -283,11 +283,13 @@ fn tab_press(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) {
+    desk.tab_peek.click = None;
     if event.modifiers.platform
         && let Some(key) = key
     {
         desk.toggle_resource_selection(key, cx);
     } else {
+        let peek = desk.active_tab_id().as_deref() == Some(id) && !event.modifiers.modified();
         desk.select_tab(id);
         desk.begin_tab_drag(
             id.to_owned(),
@@ -295,6 +297,7 @@ fn tab_press(
             event.position.y.as_f32(),
             cx,
         );
+        desk.tab_peek.click = peek.then(|| id.to_owned());
     }
     desk.after_command(window, cx);
 }
@@ -367,6 +370,60 @@ fn rename_requested(event: &ClickEvent) -> bool {
     }
 }
 
+fn tab_click(
+    desk: &mut Desk,
+    id: &str,
+    event: &ClickEvent,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) {
+    let peek = desk.tab_peek.click.take().as_deref() == Some(id);
+    if rename_requested(event) {
+        desk.tab_peek.close();
+        desk.open_modal(
+            Modal::Rename {
+                tab_id: id.to_owned(),
+            },
+            window,
+            cx,
+        );
+    } else if peek && event.click_count() == 1 {
+        desk.toggle_tab_peek(window, cx);
+    }
+}
+
+fn tab_label(desk: &Desk, tab: &DeskTab, selected: bool, look: &Look) -> gpui::Div {
+    let id = tab.id.clone();
+    div()
+        .debug_selector(move || format!("tab-label-{id}"))
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .text_sm()
+        .when(selected, |label| label.font_weight(FontWeight::MEDIUM))
+        .text_color(if selected {
+            look.ink
+        } else {
+            from_hex(&look.chrome.subtext)
+        })
+        .child(desk::tab_title(desk, tab))
+}
+
+fn tab_actions(
+    desk: &Desk,
+    tab: &DeskTab,
+    side: bool,
+    selected: bool,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    if side {
+        tab_more(desk, &tab.id, selected, cx).into_any_element()
+    } else {
+        tab_close(&tab.id, selected, look, cx).into_any_element()
+    }
+}
+
 fn tab_button(
     desk: &Desk,
     tab: &DeskTab,
@@ -376,8 +433,7 @@ fn tab_button(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let height = tab_height(look.skin.chrome.titlebar);
-    let id = &tab.id;
-    let tab_selector = SharedString::from(format!("tab-{id}"));
+    let tab_selector = SharedString::from(format!("tab-{}", tab.id));
     let selected = tab.id == active;
     let key = tab_resource_key(desk, tab);
     let organizing = key.is_some_and(|key| desk.organization.selected.contains(&key));
@@ -467,30 +523,9 @@ fn tab_button(
                     .children(top_lead(attention, agent, harness, selected, look)),
             )
         })
-        .child(
-            div()
-                .debug_selector({
-                    let id = id.clone();
-                    move || format!("tab-label-{id}")
-                })
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_sm()
-                .when(selected, |label| label.font_weight(FontWeight::MEDIUM))
-                .text_color(if selected {
-                    look.ink
-                } else {
-                    from_hex(&look.chrome.subtext)
-                })
-                .child(desk::tab_title(desk, tab)),
-        )
+        .child(tab_label(desk, tab, selected, look))
         .children(map)
-        .child(if side {
-            tab_more(desk, &tab.id, selected, cx).into_any_element()
-        } else {
-            tab_close(&tab.id, selected, look, cx).into_any_element()
-        })
+        .child(tab_actions(desk, tab, side, selected, look, cx))
         .children(
             attention
                 .filter(|_| !side)
@@ -516,14 +551,6 @@ fn tab_button(
             }),
         )
         .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
-            if rename_requested(event) {
-                desk.open_modal(
-                    Modal::Rename {
-                        tab_id: rename_id.clone(),
-                    },
-                    window,
-                    cx,
-                );
-            }
+            tab_click(desk, &rename_id, event, window, cx);
         }))
 }

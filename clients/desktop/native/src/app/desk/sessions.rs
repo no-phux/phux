@@ -458,6 +458,9 @@ impl Desk {
     }
 
     pub fn select_tab(&mut self, id: &str) {
+        if self.active_tab_id().as_deref() != Some(id) {
+            self.tab_peek.close();
+        }
         self.workspace_call(|link| link.workspace.select_tab(id));
     }
 
@@ -479,7 +482,14 @@ impl Desk {
     /// Give the keyboard to whatever owns it: the open modal's control, the
     /// focused pane's find field, its terminal, or the window itself.
     pub(super) fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.modal, Modal::None) || self.changes.has_keys(window, cx) {
+        if !matches!(self.modal, Modal::None) {
+            return;
+        }
+        if self.tab_peek.open {
+            window.focus(&self.focus, cx);
+            return;
+        }
+        if self.changes.has_keys(window, cx) {
             return;
         }
         if self.text_field_has_keys()

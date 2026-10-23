@@ -190,5 +190,6 @@ mod chrome;
 mod closing;
 mod geometry;
 mod panes;
+mod peek;
 mod placement;
 mod selection;

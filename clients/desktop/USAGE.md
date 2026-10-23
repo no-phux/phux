@@ -125,6 +125,9 @@ double-clicking to rename, right-clicking for tab actions, and dragging to
 reorder work in every layout. The command palette also offers **Tabs on Top**,
 **Tabs on Bottom**, **Tabs in Sidebar**, and the three **Group Sessions** views.
 
+Click the selected tab or use **Peek Tabs** (⇧⌘\\) for
+[live tab miniatures](TAB_PEEK.md), without resizing your terminals.
+
 Settings, dialogs, notifications, find controls, and dropdowns use the same
 theme-aware glass treatment. **Settings > Appearance > Font family** previews
 each face in the searchable dropdown, with bundled fonts pinned first.

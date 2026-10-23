@@ -30,6 +30,7 @@ mod performance;
 mod session;
 mod settings_panel;
 mod skin;
+mod tab_peek;
 mod typed;
 mod ui;
 mod updates;
