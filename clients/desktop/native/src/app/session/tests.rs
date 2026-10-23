@@ -459,9 +459,6 @@ fn the_inbox_shows_a_pending_approval_and_clears_it_after_a_decision(cx: &mut Te
             value: None,
         },
     );
-    // Runtime wakes are paced between drains; let the foreground pump resume.
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(1));
     cx.run_until_parked();
 
     desk.read_with(cx, |desk, _| {

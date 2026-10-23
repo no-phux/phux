@@ -52,7 +52,10 @@ gpui_kit::assets::icon_assets!(
         MessagesSquare,
         // The terminal's right-click menu.
         ClipboardPaste,
-        ScanText
+        ScanText,
+        // Fleet close and exact-agent navigation.
+        X,
+        ArrowUpRight
     ]
 );
 
@@ -135,6 +138,8 @@ mod tests {
             IconName::Plus,
             IconName::ArrowRight,
             IconName::RefreshCw,
+            IconName::X,
+            IconName::ArrowUpRight,
         ] {
             assert!(Assets.load(&icon.path()).unwrap().is_some(), "{icon:?}");
         }

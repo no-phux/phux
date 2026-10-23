@@ -4,6 +4,8 @@ use super::*;
 
 impl Desk {
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A later user command supersedes a fleet choice still restoring.
+        self.cancel_fleet_navigation();
         if self.settings_command(id, window, cx) {
             return;
         }

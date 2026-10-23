@@ -1,7 +1,7 @@
 ---
 audience: humans
 stability: experimental
-last-reviewed: 2026-10-19
+last-reviewed: 2026-10-23
 ---
 
 # Agent fleet
@@ -18,10 +18,21 @@ that exact agent in this window. **Escape**, the close button, or clicking
 outside returns to your work. Refresh retries unavailable machines; offline
 agents are not presented as live.
 
-Tiles cascade into place with colored state emblems. These are not CPU or
-throughput charts. The entry animation finishes in about half a second and
-does not keep an idle fleet repainting. **Appearance > Animations** and system
-**Reduce Motion** disable it. Browsing never acquires terminal views, changes
+The overview counts live agents, working agents, and those that need you.
+Each card puts the harness mark and agent name first, then the terminal's real
+title and exact session, machine, and terminal. Colored status pills distinguish
+working, ready, review-ready, and blocked agents; urgent attention reads
+**Needs you**. Status changes do not reshuffle the cards. Light themes use
+contrasting label ink, and narrow windows become a scrollable single column.
+There are no fabricated CPU, activity, or throughput charts.
+
+Cards enter with a short, bounded cascade. It finishes in about half a second
+and does not keep an idle fleet repainting. **Appearance > Animations** and
+system **Reduce Motion** disable it. A selected agent stays selected through
+cold session restore, regardless of bootstrap order. Later navigation cancels
+its pending focus change without removing a preexisting open or quiet session
+tab. An attach refusal is reported once and never automatically retried.
+Browsing never acquires terminal views, changes
 PTY sizes, sends agent input, or acknowledges attention. Turning the experiment
 off removes its titlebar and palette entry; terminals keep running.
 

@@ -172,3 +172,21 @@ Each update state also saves a `*-corner.png` with Settings closed, covering
 availability, measured downloads, verification, server installation, handoff
 recovery, and the explicit restart action. These are native scene captures,
 not compositor-presentation evidence.
+||||||| parent of 1d40d3341 (feat(desktop): redesign the agent fleet mission control)
+
+
+Capture the actual fleet composition with representative local/remote agents
+in dark, light, narrow, and empty layouts, without a daemon or credentials:
+
+```sh
+cargo build --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --features ui-fixtures --example agent_fleet
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/phux-fleet.XXXXXX")
+mkdir -p "$tmp/config"
+env -u PHUX_SOCKET -u PHUX_PROFILE HOME="$tmp" \
+  XDG_CONFIG_HOME="$tmp/config" XDG_STATE_HOME="$tmp/state" \
+  clients/desktop/native/target/debug/examples/agent_fleet "$tmp/images"
+```
+
+These PNGs are native scene captures for design review, not compositor
+presentation evidence. Fixture inventory is excluded from shipping builds.

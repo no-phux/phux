@@ -56,7 +56,6 @@ mod sessions;
 mod state;
 #[cfg(test)]
 mod tests;
-mod wake;
 mod work;
 
 pub(crate) use labels::*;
