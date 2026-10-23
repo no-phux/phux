@@ -1,11 +1,12 @@
 //! Field value helpers: keys, integers, bounded strings, and the small positional values organization fields carry.
 
 use super::{
-    ActivationId, DecodeError, Decoder, Encoder, FILTER_ALL, FILTER_INTAKE, FILTER_SESSION,
-    FILTER_WORKSPACE, LaunchSpec, LiveTarget, MAX_LAUNCH_LIST, MAX_LAUNCH_RESTORE_BYTES, MoveItem,
-    OUTCOME_EXITED, OUTCOME_SIGNALED, OUTCOME_UNOBSERVED, OperationId, OrgFilter, Outcome,
-    RecordRevision, ResourceKey, Revision, SessionKey, WorkspaceKey, decode_server_instance,
-    decode_terminal_id, encode_server_instance, encode_terminal_id, field, utf8_value,
+    ActivationId, DecodeError, Decoder, Encoder, FILTER_ALL, FILTER_INTAKE, FILTER_RESOURCE,
+    FILTER_SESSION, FILTER_WORKSPACE, LaunchSpec, LiveTarget, MAX_LAUNCH_LIST,
+    MAX_LAUNCH_RESTORE_BYTES, MoveItem, OUTCOME_EXITED, OUTCOME_SIGNALED, OUTCOME_UNOBSERVED,
+    OperationId, OrgFilter, Outcome, RecordRevision, ResourceKey, Revision, SessionKey,
+    WorkspaceKey, decode_server_instance, decode_terminal_id, encode_server_instance,
+    encode_terminal_id, field, utf8_value,
 };
 
 pub(super) fn write_key(enc: &mut Encoder<'_>, field_id: u32, key: &[u8; 16]) {
@@ -165,6 +166,12 @@ pub(super) fn encode_filter(filter: OrgFilter, enc: &mut Encoder<'_>) {
             }
         }
         OrgFilter::Intake => enc.write_u8(FILTER_INTAKE),
+        OrgFilter::Resource(key) => {
+            enc.write_u8(FILTER_RESOURCE);
+            for byte in key.as_bytes() {
+                enc.write_u8(*byte);
+            }
+        }
     }
 }
 
@@ -175,6 +182,7 @@ pub(super) fn decode_filter(value: &[u8]) -> Result<OrgFilter, DecodeError> {
         FILTER_SESSION => read_key(rest, SessionKey::new).map(OrgFilter::Session),
         FILTER_WORKSPACE => read_key(rest, WorkspaceKey::new).map(OrgFilter::Workspace),
         FILTER_INTAKE => Ok(OrgFilter::Intake),
+        FILTER_RESOURCE => read_key(rest, ResourceKey::new).map(OrgFilter::Resource),
         other => Err(DecodeError::unknown_enum("OrgFilter", other)),
     }
 }

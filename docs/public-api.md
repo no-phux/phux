@@ -9,6 +9,7 @@ an implemented vertical slice, not a replacement for every existing verb.
 | Describe this server | `phux terminal describe` | `phux_api_describe` | `phux_client::terminal::describe` |
 | Create, place and start | `phux terminal create --request-json JSON` | `phux_terminal_create` | `phux_client::terminal::create` |
 | Recover a receipt, without effects | `phux terminal operation --session KEY --idempotency-key HEX32` | `phux_terminal_operation` | `phux_client::terminal::operation` |
+| Reconcile a retained resource | `phux resource show --json ^FULL_RESOURCE_KEY` | `phux_resource_show` with `target: "^FULL_RESOURCE_KEY"` | `phux_client::resource::show::show_key` |
 
 All three CLI commands emit versioned JSON. Errors are JSON on stderr with a
 stable code; creation errors preserve the retry key and distinguish not sent,
@@ -69,7 +70,14 @@ A successful receipt contains:
 - `placement.arrangement` and `placement.entry`: stable identities of the
   committed presentation, which later edits may move or remove;
 - `execution`: the original activation's current state and incarnation,
-  when still recorded; `failed` is not a successful process exit;
+  when still recorded; `failed` is not a successful process exit. Optional
+  `diagnostic` retains the failed launch stage and platform `errno`, never argv,
+  paths or environment. A missing executable/interpreter is `failed`, not an
+  executed program exiting 127; a real exit 127 remains `completed/exited(127)`;
+- `execution.persistence_pending`: executor evidence awaits a refused store
+  write; the displayed state is the **last committed** state, not proof the
+  process is still starting/running. The server retries the fenced report,
+  never the launch, and clears this flag after persistence recovers;
 - `terminal_id`: a current local handle only when the original execution
   still has its engine; never persist it as a durable address;
 - `idempotency_key`, `replayed`, and `schema_version` (`1`).
@@ -122,6 +130,30 @@ This does not distinguish never received from received then evicted. Reconcile
 records and external effects; never blindly replay with either the old key or
 a fresh one. There is no exactly-once guarantee beyond retained receipts.
 
+Save `resource` alongside the retry key. The normal reconciliation read is:
+
+```sh
+phux resource show --json "^$resource"
+```
+
+This exact full-key selector returns a **schema 2 durable resource document**:
+`authority`, `resource`, current `session`, `name`, `kind`, latest `execution`
+and nullable `terminal_id`. It needs `INVENTORY` on the resource under its
+**current** membership. It works after exit, engine retirement, receipt eviction
+and restart; it does not fetch a giant inventory or parse human text. Existing
+live-handle/other-selector inspection keeps its schema 1 engine document.
+`phux ls --json` remains a live-engine inventory; retained record counts can
+therefore exceed its engine rows. Removed and out-of-scope records both return
+explicit `no_such_target`, not an invented exit result.
+
+A resource key follows moves and relaunches: schema 2 observes its **latest**
+activation, not the historical activation of a creation operation. Compare the
+saved activation and instance before attributing a result to that operation.
+A session-scoped grant loses the read after a move outside that session; a
+resource-key grant follows the resource. The original operation lookup remains
+fenced to its creation activation and destination session, and never adopts a
+replacement. Receipt expiry does not remove the resource's retained result.
+
 The MCP adapter also has its separate in-memory mutation ledger. It forwards
 the creation key to the server, but its pending operation receipt and
 `phux_operation_status` do not become durable. `phux_terminal_operation`
@@ -133,7 +165,16 @@ queries the server, not that adapter ledger.
 workflows, complete nested input/output schemas, completion meanings and
 retry retention. It does not enumerate new server methods from an old
 client's compiled catalog. These schemas derive from the same public DTOs
-used by CLI, MCP and Rust callers. `phux --capabilities --json` continues to
+used by CLI, MCP and Rust callers. Representable list bounds, identities,
+absolute/NUL-free cwd, environment restrictions and placement numeric bounds
+are included. `semantic_validation` names checks requiring host facts, current
+membership/authority or UTF-8 byte counts (JSON Schema counts characters).
+`error_schema` and `error_outcomes` derive from the emitted structured error
+DTO and its code/outcome vocabulary. `not_sent` means this invocation sent no
+mutation; `refused` means the server refused it; `committed` requires receipt
+reconciliation; `unknown` never establishes that the original mutation failed.
+A missing receipt read is always `unknown`, even when that read itself was
+refused or could not connect. MCP wraps this document in its tool-error carrier. `phux --capabilities --json` continues to
 describe the installed binary; it is not connected-server discovery.
 
 Supported is not authorized. Every invocation still crosses authenticated
@@ -156,8 +197,25 @@ new complete-intention calls never silently downgrade to spawn-plus-rollback.
 Old clients keep their existing wire requests and ignore new receipt fields.
 The durable-result policy is persisted on the resource, not inferred from an
 engine-local flag or a receipt that may expire, so it survives hot handoff and
-cold restart. Persisted organization command, record and receipt additions are optional serde fields,
+cold restart. Optional diagnostic/evidence fields extend organization records
+and receipts; older peers skip their TLVs and new readers accept old records
+without diagnostics. Exact durable-key inspection requires the additive
+`DURABLE_RESOURCE_INSPECTION` feature; older servers are refused before sending
+that filter, not silently queried through live handles. Persisted organization command, record and receipt additions are optional serde fields,
 so old organization records remain readable; no new database table is needed.
+Pending lifecycle reports are bounded in memory to a start and an end per
+extant activation, ordered and fenced by resource, activation and instance.
+Removal/relaunch discards stale evidence. Hot handoff refuses while reports
+cannot be flushed. Orderly shutdown makes a final persistence attempt but must
+still permit exit when the store is unavailable. Any exit with **undurable**
+evidence, including a hard crash, can lose it; startup then reconciles only the
+committed evidence (possibly Unobserved/Lost).
+This is not a durable effect scheduler or an exactly-once process guarantee.
+The launcher uses a private close-on-exec status channel with a two-second
+deadline; on uncertainty it terminates/reaps only its own child and does not
+retry execution. Platforms without the compiled launcher fail closed rather
+than using a spawn path that cannot distinguish requested-exec failure.
+
 Recorded launch directories are now honored literally by the organization
 executor: if one disappears before a create/restore/relaunch, that activation
 fails instead of executing in an unrelated fallback directory. Legacy raw

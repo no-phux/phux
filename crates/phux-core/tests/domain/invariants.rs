@@ -385,6 +385,7 @@ impl World {
                     Op::ActivationEnded {
                         resource: r,
                         activation: self.activation(r),
+                        diagnostic: None,
                         state: if *failed {
                             ExecState::Failed
                         } else {

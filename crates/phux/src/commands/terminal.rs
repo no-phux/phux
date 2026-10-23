@@ -44,7 +44,16 @@ pub(crate) fn run(action: &TerminalAction, socket: Option<PathBuf>) -> ExitCode 
                 Err(error) => {
                     eprintln!(
                         "{}",
-                        serde_json::json!({"schema_version":1,"error":{"code":"invalid_argument","outcome":"not_sent","message":error.to_string()}})
+                        serde_json::to_value(phux_protocol::api::ErrorDocument {
+                            schema_version: 1,
+                            error: phux_protocol::api::OperationError {
+                                code: phux_protocol::api::ErrorCode::InvalidArgument,
+                                outcome: phux_protocol::api::OperationOutcome::NotSent,
+                                message: error.to_string(),
+                                idempotency_key: None,
+                            },
+                        })
+                        .unwrap_or_default()
                     );
                     return ExitCode::from(2);
                 }

@@ -196,6 +196,14 @@ The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration
 and startup errors live in `config`.
 
+Terminal workflow code is split at ownership seams: `runtime/commands/`
+separates dispatch, pane construction, attachment generations, inventory,
+input and satellite forwarding; `runtime/organization/` separates pure command
+translation, execution effects, receipt projection and filtered record reads.
+`state/org/lifecycle.rs` owns bounded retries of executor evidence, not effects.
+The core apply module separates transaction assembly, session edits, placement
+and execution transitions. Public entry points and wire identities are unchanged.
+
 The server's `runtime/connections` handles connected peers: `lifecycle` owns
 accept and teardown, `hello` authenticates and negotiates, `dispatch` and
 `frames` route admitted requests, the metadata modules apply L3 operations,

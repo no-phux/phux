@@ -139,8 +139,7 @@ pub const fn exec_state(s: phux_core::ExecState) -> frame::ExecState {
     }
 }
 
-/// An outcome on the wire. An observed exit with neither a status nor a
-/// signal reads as a zero status.
+/// An outcome on the wire. Absent exit evidence never implies success.
 #[must_use]
 pub const fn outcome(o: phux_core::Outcome) -> frame::Outcome {
     match o {
@@ -148,8 +147,37 @@ pub const fn outcome(o: phux_core::Outcome) -> frame::Outcome {
         phux_core::Outcome::Exit(exit) => match (exit.status, exit.signal) {
             (_, Some(signal)) => frame::Outcome::Signaled(signal),
             (Some(status), None) => frame::Outcome::Exited(status),
-            (None, None) => frame::Outcome::Exited(0),
+            (None, None) => frame::Outcome::Unobserved,
         },
+    }
+}
+
+/// One truthful execution projection for inventory and creation receipts.
+#[must_use]
+pub fn activation(a: &phux_core::Activation, pending: bool) -> frame::ActivationInfo {
+    frame::ActivationInfo::new(
+        activation_id(a.id),
+        wire::ServerInstance::new(*a.instance.as_bytes()),
+        exec_state(a.state),
+    )
+    .with_outcome(a.outcome.map(outcome))
+    .with_evidence(a.diagnostic.map(launch_diagnostic), pending)
+}
+
+const fn launch_diagnostic(d: phux_core::LaunchDiagnostic) -> phux_protocol::api::LaunchDiagnostic {
+    use phux_core::LaunchStage as C;
+    use phux_protocol::api::LaunchStage as W;
+    let stage = match d.stage {
+        C::Pty => W::Pty,
+        C::Spawn => W::Spawn,
+        C::Cwd => W::Cwd,
+        C::Exec => W::Exec,
+        C::Handshake => W::Handshake,
+        C::Engine => W::Engine,
+    };
+    phux_protocol::api::LaunchDiagnostic {
+        stage,
+        errno: d.errno,
     }
 }
 
@@ -411,235 +439,8 @@ pub fn core_groups(doc: &frame::ArrangementDoc) -> Option<Vec<phux_core::Group>>
         .collect()
 }
 
-/// A core actor as the event stamp's `ActorRef`, with its principal.
-#[must_use]
-pub fn actor_ref(actor: &phux_core::Actor, client: Option<wire::ClientId>) -> frame::ActorRef {
-    frame::ActorRef::new(client.unwrap_or(wire::ClientId::new(0)))
-        .with_client_name(actor.client.clone())
-        .with_principal(principal_id(&actor.principal))
-        .with_on_behalf_of(actor.on_behalf_of.as_ref().and_then(principal_id))
-}
-
-/// A principal's stable wire id: the first 16 bytes of the SHA-256 of its
-/// label (`owner`, `system`, or the credential name).
-#[must_use]
-pub fn principal_id(principal: &phux_core::PrincipalId) -> Option<wire::PrincipalId> {
-    match principal {
-        phux_core::PrincipalId::Owner => digest_id(b"owner"),
-        phux_core::PrincipalId::System => digest_id(b"system"),
-        phux_core::PrincipalId::Credential(name) => digest_id(name.as_bytes()),
-    }
-}
-
-fn digest_id(label: &[u8]) -> Option<wire::PrincipalId> {
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(label);
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    wire::PrincipalId::new(bytes)
-}
-
-/// A core organization event as the journal's `AgentEvent`; `None` when a
-/// key cannot be carried.
-#[must_use]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one arm per event, mirrored field for field"
-)]
-pub fn event(e: &phux_core::Event, org: &phux_core::Org) -> Option<frame::AgentEvent> {
-    use phux_core::Event as E;
-    Some(match e {
-        E::SessionCreated {
-            key,
-            name,
-            revision: r,
-        } => frame::AgentEvent::SessionCreated {
-            session: session_key(*key)?,
-            name: name.clone(),
-            lifetime: org
-                .session(key)
-                .map_or(frame::SessionLifetime::Persistent, |s| lifetime(s.lifetime)),
-            revision: revision(*r),
-        },
-        E::SessionRenamed {
-            key,
-            name,
-            revision: r,
-        } => frame::AgentEvent::SessionRenamed {
-            session: session_key(*key)?,
-            name: name.clone(),
-            revision: revision(*r),
-        },
-        E::SessionProjectSet {
-            key,
-            project,
-            revision: r,
-        } => frame::AgentEvent::SessionProjectSet {
-            session: session_key(*key)?,
-            project: project.clone(),
-            revision: revision(*r),
-        },
-        E::SessionLifetimeChanged {
-            key,
-            lifetime: l,
-            revision: r,
-        } => frame::AgentEvent::SessionLifetimeChanged {
-            session: session_key(*key)?,
-            lifetime: lifetime(*l),
-            revision: revision(*r),
-        },
-        E::SessionDeleted {
-            key,
-            name,
-            revision: r,
-        } => frame::AgentEvent::SessionDeleted {
-            session: session_key(*key)?,
-            name: name.clone(),
-            revision: revision(*r),
-        },
-        E::SessionIntakeChanged {
-            session,
-            awaiting_organization,
-            revision: r,
-        } => frame::AgentEvent::IntakeChanged {
-            session: session_key(*session)?,
-            awaiting_organization: *awaiting_organization,
-            revision: revision(*r),
-        },
-        E::MembershipChanged {
-            resource,
-            from,
-            to,
-            from_revision,
-            to_revision,
-            ..
-        } => frame::AgentEvent::MembershipChanged {
-            resource: resource_key(*resource)?,
-            from: session_key(*from)?,
-            to: session_key(*to)?,
-            // A source the move deleted reports revision 0.
-            from_revision: revision(from_revision.unwrap_or_default()),
-            to_revision: revision(*to_revision),
-        },
-        E::ResourceCreated { key, session, kind } => frame::AgentEvent::ResourceCreated {
-            resource: resource_key(*key)?,
-            session: session_key(*session)?,
-            kind: crate::resource::wire_kind(*kind),
-        },
-        E::ResourceRenamed {
-            key,
-            name,
-            revision: r,
-        } => frame::AgentEvent::ResourceRenamed {
-            resource: resource_key(*key)?,
-            name: name.clone(),
-            revision: revision(*r),
-        },
-        E::ResourceRemoved { key, session, kind } => frame::AgentEvent::ResourceRemoved {
-            resource: resource_key(*key)?,
-            session: session_key(*session)?,
-            kind: crate::resource::wire_kind(*kind),
-        },
-        E::ActivationChanged {
-            resource,
-            activation,
-            state,
-            outcome: o,
-        } => frame::AgentEvent::ActivationChanged {
-            resource: resource_key(*resource)?,
-            activation: activation_id(*activation),
-            state: exec_state(*state),
-            outcome: o.map(outcome),
-        },
-        E::ArrangementChanged {
-            key,
-            owner: o,
-            revision: r,
-        } => frame::AgentEvent::ArrangementChanged {
-            arrangement: arrangement_key(*key)?,
-            owner: owner(*o)?,
-            revision: r.map(revision),
-        },
-    })
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    /// ADR-0168: the `project.*` attribute pairs become one typed identity
-    /// on the record and come back out as the same pairs; unknown names drop.
-    #[test]
-    fn repository_attrs_round_trip_through_the_typed_record() {
-        let identity = phux_core::project_identity::SessionProject {
-            id: "github.com/no-phux/phux".to_owned(),
-            name: "phux".to_owned(),
-            checkout: "/w/phux-feat".to_owned(),
-            branch: Some("feat".to_owned()),
-            linked_worktree: true,
-            host: Some("mini".to_owned()),
-        };
-        let mut pairs = vec![("project".to_owned(), "label".to_owned())];
-        pairs.extend(identity.to_attrs());
-        pairs.push(("mission.task".to_owned(), "abc".to_owned()));
-        pairs.push(("unknown".to_owned(), "x".to_owned()));
-        let core = core_attrs(&pairs);
-        assert_eq!(core.repository.as_deref(), Some(&identity));
-        assert_eq!(core.project.as_deref(), Some("label"));
-        assert_eq!(core.mission_task.as_deref(), Some("abc"));
-        let back = attrs(&core);
-        assert!(!back.iter().any(|(name, _)| name == "unknown"));
-        assert!(
-            back.iter()
-                .any(|(name, value)| name == "mission.task" && value == "abc")
-        );
-        assert_eq!(core_attrs(&back), core);
-    }
-
-    #[test]
-    fn keys_and_refusals_round_trip() {
-        let core = phux_core::SessionKey::from_bytes([3; 16]);
-        let wire = session_key(core).expect("non-zero");
-        assert_eq!(core_session_key(&wire), core);
-        assert_eq!(
-            refusal(&phux_core::Refusal::InvalidArgument {
-                field: "name",
-                reason: "empty".to_owned()
-            }),
-            frame::Refusal::InvalidArgument {
-                field: "name".to_owned(),
-                reason: "empty".to_owned()
-            }
-        );
-        assert_eq!(
-            outcome(phux_core::Outcome::Exit(phux_core::ExitOutcome::signaled(
-                9
-            ))),
-            frame::Outcome::Signaled(9)
-        );
-    }
-
-    #[test]
-    fn documents_round_trip() {
-        let groups = vec![phux_core::Group {
-            id: [1; 16],
-            name: Some("main".to_owned()),
-            tree: phux_core::LayoutNode::Split {
-                dir: phux_core::SplitDir::Vertical,
-                ratio: 0.5,
-                left: Box::new(phux_core::LayoutNode::Leaf(phux_core::EntryRef::member(
-                    [2; 16],
-                    phux_core::ResourceKey::from_bytes([4; 16]),
-                ))),
-                right: Box::new(phux_core::LayoutNode::Leaf(phux_core::EntryRef {
-                    entry: [3; 16],
-                    target: phux_core::EntryTarget::Satellite {
-                        host: "far".to_owned(),
-                        id: 9,
-                    },
-                })),
-            },
-        }];
-        assert_eq!(core_groups(&document(&groups)), Some(groups));
-    }
-}
+mod events;
+pub use events::*;
