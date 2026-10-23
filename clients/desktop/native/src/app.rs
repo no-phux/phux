@@ -118,6 +118,17 @@ pub fn capture_settings_fixture(
     settings_panel::preview::capture(root, directory, cx)
 }
 
+/// Capture the real fleet composition with isolated, representative inventory.
+#[cfg(feature = "ui-fixtures")]
+pub fn capture_fleet_fixture(
+    options: AppOptions,
+    directory: PathBuf,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let root = open(options, cx)?;
+    fleet::dashboard::preview::capture(root, directory, cx)
+}
+
 /// Measure native menu creation without opening visible windows.
 #[cfg(feature = "ui-fixtures")]
 pub fn benchmark_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
