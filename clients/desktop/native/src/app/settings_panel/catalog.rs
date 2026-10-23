@@ -163,7 +163,9 @@ pub(crate) struct Group {
 /// Pages inset their groups this far past Kit's list padding, so every
 /// heading, label and control shares the page header's text column.
 pub(crate) const GUTTER: f32 = 20.;
-pub(crate) const STACK_CONTROLS_BELOW: f32 = 600.;
+// Kit reserves up to three fifths of a horizontal row for its label. Keep
+// room for a 260pt picker, the row gap and both group/page insets as well.
+pub(crate) const STACK_CONTROLS_BELOW: f32 = 720.;
 const KIT_LIST_PADDING: f32 = crate::app::ui::typography::BASE;
 
 impl Group {

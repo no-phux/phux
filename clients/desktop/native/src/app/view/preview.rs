@@ -64,7 +64,10 @@ fn connection() -> Connection {
         )])
         .with_resources(
             (1..=3)
-                .map(|id| ResourceInfo::new(ResourceId::local(id), WindowId::new(1), 120, 40))
+                .map(|id| {
+                    ResourceInfo::new(ResourceId::local(id), WindowId::new(1), 120, 40)
+                        .with_cwd(Some("/workspace/phux".into()))
+                })
                 .collect(),
         );
     client
@@ -122,6 +125,7 @@ fn arrange(desk: &mut Desk, cx: &mut gpui::Context<Desk>) {
     let mut workspace = Workspace::new(SESSION.into(), WorkspaceOptions::default());
     workspace.restore(None);
     workspace.settle(&connection);
+    crate::app::conversation::preview::seed(&mut connection, ResourceId::local(1));
     for (tab, title) in workspace.tabs.iter_mut().zip(TITLES) {
         tab.title = Some(title.into());
     }
@@ -157,6 +161,12 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                 ("changes", "changes", 1280., true),
                 ("settings-appearance", "settings", 1280., true),
                 ("settings-interface", "settings-interface", 1280., true),
+                ("conversation", "tabs-side", 1280., true),
+                ("conversation-narrow", "tabs-side", 760., false),
+                ("conversation-working", "tabs-side", 1280., true),
+                ("conversation-needs-you", "tabs-side", 1280., true),
+                ("conversation-disconnected", "tabs-side", 1280., true),
+                ("capture", "capture", 1280., true),
             ] {
                 root.update(cx, |root, window, cx| {
                     let desk = root.view().clone().downcast::<Desk>().unwrap();
@@ -164,6 +174,7 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                         desk.close_menu(cx);
                         desk.modal = crate::app::Modal::None;
                         desk.changes.open = false;
+                        crate::app::conversation::preview::scene(desk, name);
                         desk.update_prefs(
                             |prefs| scene_preferences(prefs, name, theme, sidebar),
                             cx,
@@ -177,6 +188,11 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                         } else if command != "main-menu" {
                             desk.execute(command, window, cx);
                         }
+                        // Placement commands can reveal navigation themselves.
+                        // Apply the scenario's collapse choice after dispatch.
+                        desk.update_prefs(|prefs| prefs.sidebar_visible = sidebar, cx);
+                        desk.chrome_hover = None;
+                        desk.controls_hover = None;
                     });
                     window.resize(size(px(width), px(800.)));
                     window.refresh();
@@ -226,6 +242,18 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                 } else {
                     root.into()
                 };
+                root.update(cx, |root, _, cx| {
+                    root.view()
+                        .clone()
+                        .downcast::<Desk>()
+                        .unwrap()
+                        .update(cx, |desk, cx| {
+                            desk.chrome_hover = None;
+                            desk.controls_hover = None;
+                            cx.notify();
+                        });
+                })
+                .expect("capture the resting composition, not the host pointer hover");
                 cx.update_window(target, |_, window, cx| window.draw(cx).clear(cx))
                     .expect("draw scene");
                 cx.update_window(target, |_, window, _| {
@@ -255,6 +283,7 @@ fn scene_preferences(
 ) {
     prefs.theme_id = theme.into();
     prefs.sidebar_visible = sidebar;
+    prefs.native_agents = name.starts_with("conversation");
     prefs.skin_id = if name.starts_with("classic") {
         "classic"
     } else {

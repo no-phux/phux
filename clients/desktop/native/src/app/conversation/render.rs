@@ -11,11 +11,12 @@ use super::transcript::{Style, Toggle, foldable, opens_by_default};
 use super::*;
 use crate::connection::AgentState;
 
+mod composer;
 mod header;
 use header::header;
 
 /// Prose reads best in a column; a wide pane centers it.
-const READING_WIDTH: f32 = 820.;
+const READING_WIDTH: f32 = 720.;
 
 /// The swatch state a conversation's lifecycle wears.
 fn swatch_state(status: AgentSessionStatus) -> AgentState {
@@ -77,16 +78,23 @@ pub(crate) fn render(
     let native = conversation.native.is_some();
     let live = !conversation.closed && conversation.state.status != AgentSessionStatus::Ended;
     let swatch = swatch_state(conversation.state.status);
-    let native_identity = conversation.native.as_ref().map(|view| {
-        format!(
-            "{} · AgentSession {} · provider session {}",
-            view.backend,
-            conversation.resource,
-            view.provider_session_id
-                .as_deref()
-                .unwrap_or("not yet reported by ACP agent"),
-        )
-    });
+    let control_identity = conversation
+        .native
+        .as_ref()
+        .map(|view| {
+            format!(
+                "Native ACP controls · {} · AgentSession {} · provider session {}",
+                view.backend,
+                conversation.resource,
+                view.provider_session_id
+                    .as_deref()
+                    .unwrap_or("not yet reported by ACP agent"),
+            )
+        })
+        .unwrap_or_else(|| {
+            "Attached TUI · terminal-backed controls. Open Terminal for permissions and approvals."
+                .into()
+        });
     let style = Style {
         colors,
         look: &look,
@@ -106,11 +114,11 @@ pub(crate) fn render(
     let question_rows = questions::render(
         face,
         conversation.native.as_ref().filter(|_| live),
-        !conversation.closed
-            && desk.link.as_ref().is_some_and(|link| {
-                link.connection.status == Status::Attached
-                    && conversation.epoch == link.connection.connection_epoch()
-            }),
+        questions_connected(
+            desk.link.as_ref().map(|link| &link.connection),
+            conversation.epoch,
+            conversation.closed,
+        ),
         placement,
         &look,
         cx,
@@ -121,58 +129,39 @@ pub(crate) fn render(
     let working = turn_running(conversation.closed, disconnected, conversation.state.status);
     let following = face.follow;
     let muted = from_hex(&colors.muted);
-    let hint = composer_hint(native, blocked, writable);
-    let header = header(placement, &style, swatch, state, native, cx)
+    let hint = composer_hint(native, blocked, writable, pending);
+    let header = header(placement, &style, swatch, state, cx)
         .id(SharedString::from(format!(
             "conversation-header-{placement}"
         )))
-        .when_some(native_identity, |header, identity| {
-            header.tooltip(move |window, cx| {
-                gpui_kit::component::tooltip::Tooltip::new(identity.clone()).build(window, cx)
-            })
+        .role(gpui::Role::Group)
+        .aria_label(format!(
+            "{provider} · {} · {state}",
+            if native {
+                "Native ACP controls"
+            } else {
+                "Attached TUI controls"
+            }
+        ))
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(control_identity.clone()).build(window, cx)
         });
     let activity = turn_activity(placement, &provider, working, live && blocked, colors);
     let column = |body: gpui::Div| body.w_full().max_w(px(READING_WIDTH)).mx_auto();
-    let composer = div()
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .p(px(8.))
-        .rounded(corner(&look, 12.))
-        .border_1()
-        .border_color(look.border)
-        .bg(look.ink.opacity(0.035))
-        .child(
-            Textarea::new(&input)
-                .appearance(false)
-                .aria_label("Message")
-                .w_full()
-                .disabled(!editable),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(160.))
-                        .debug_selector(|| "conversation-composer-hint".into())
-                        .text_xs()
-                        .line_height(px(16.))
-                        .text_color(muted)
-                        .child(hint),
-                )
-                .children(composer_actions(
-                    placement, pending, writable, empty, stopping, cx,
-                )),
-        );
+    let composer = composer::view(
+        placement,
+        &input,
+        editable,
+        hint,
+        &look,
+        composer::actions(placement, pending, writable, empty, stopping, cx),
+    );
     let transcript = div()
         .flex()
         .flex_col()
-        .gap(px(14.))
+        .min_h_full()
+        .justify_end()
+        .gap(px(8.))
         .pt(px(4.))
         .pb(px(16.))
         .when(omitted, |list| {
@@ -183,21 +172,22 @@ pub(crate) fn render(
                     .child(OMITTED_NOTICE),
             )
         })
-        .when(!has_rows, |list| {
-            list.child(waiting(harness, &provider, &look, colors))
-        })
+        .when(!has_rows, |list| list.child(waiting(colors)))
         .when(has_rows, |list| list.child(conversation_list(rows)))
         .children(question_rows)
         .children(activity);
     div()
+        .id(SharedString::from(format!("conversation-face-{placement}")))
+        .debug_selector(|| "conversation-face".into())
         .size_full()
         .flex()
         .flex_col()
-        .gap(px(10.))
+        .gap(px(6.))
+        .text_size(px(15.))
+        .line_height(gpui::relative(1.45))
         .text_color(from_hex(&colors.theme.foreground))
         .on_mouse_down(gpui::MouseButton::Left, focus_on_click(placement, cx))
         .child(column(div().child(header)))
-        .child(div().h(px(1.)).flex_shrink_0().bg(look.divider))
         .child(scrolling_transcript(
             placement,
             column(transcript),
@@ -220,7 +210,15 @@ pub(crate) fn render(
                 .child(div().flex_1().min_w_0().child(error))
         }))
         .children(notice.map(|notice| column(div()).text_xs().text_color(muted).child(notice)))
-        .child(column(composer))
+        .child(
+            column(div())
+                .id(SharedString::from(format!("conversation-composer-host-{placement}")))
+                .debug_selector(|| "conversation-composer".into())
+                // Consume only this editor's submitted Enter, not actions in
+                // provider questions or other controls in the conversation.
+                .on_action(|_: &gpui_kit::base::input::Enter, _, _| {})
+                .child(composer),
+        )
         .into_any_element()
 }
 
@@ -230,42 +228,16 @@ fn can_compose(native: bool, live: bool, pending: bool, writable: bool) -> bool 
     if native { live } else { !pending && writable }
 }
 
-fn turn_running(closed: bool, disconnected: bool, status: AgentSessionStatus) -> bool {
-    !closed && !disconnected && status == AgentSessionStatus::Working
+/// Provider questions stay disabled across a disconnected or replaced stream.
+fn questions_connected(connection: Option<&Connection>, epoch: u64, closed: bool) -> bool {
+    !closed
+        && connection.is_some_and(|connection| {
+            connection.status == Status::Attached && epoch == connection.connection_epoch()
+        })
 }
 
-fn composer_actions(
-    placement: &str,
-    pending: bool,
-    writable: bool,
-    empty: bool,
-    stopping: bool,
-    cx: &mut Context<Desk>,
-) -> [AnyElement; 2] {
-    let stop_id = placement.to_owned();
-    let send_id = placement.to_owned();
-    [
-        Button::new(SharedString::from(format!("conversation-stop-{placement}")))
-            .label("Stop · Esc")
-            .icon(IconName::Square)
-            .accessibility_label("Stop agent")
-            .ghost()
-            .small()
-            .w(px(96.))
-            .disabled(!stopping)
-            .on_click(cx.listener(move |desk, _, _, cx| desk.stop_conversation(&stop_id, cx)))
-            .into_any_element(),
-        Button::new(SharedString::from(format!("conversation-send-{placement}")))
-            .label(if pending { "Sending…" } else { "Send" })
-            .icon(IconName::ArrowUp)
-            .loading(pending)
-            .primary()
-            .small()
-            .w(px(96.))
-            .disabled(!writable || empty)
-            .on_click(cx.listener(move |desk, _, _, cx| desk.send_conversation(&send_id, cx)))
-            .into_any_element(),
-    ]
+fn turn_running(closed: bool, disconnected: bool, status: AgentSessionStatus) -> bool {
+    !closed && !disconnected && status == AgentSessionStatus::Working
 }
 
 fn focus_on_click(
@@ -364,7 +336,7 @@ fn state_label(closed: bool, disconnected: bool, status: AgentSessionStatus) -> 
         return "closed · read-only";
     }
     if disconnected {
-        return "ACP disconnected · read-only";
+        return "Disconnected · read-only";
     }
     match status {
         AgentSessionStatus::Working => "working",
@@ -376,15 +348,20 @@ fn state_label(closed: bool, disconnected: bool, status: AgentSessionStatus) -> 
     }
 }
 
-fn composer_hint(native: bool, blocked: bool, writable: bool) -> &'static str {
+pub(super) fn composer_hint(
+    native: bool,
+    blocked: bool,
+    writable: bool,
+    pending: bool,
+) -> Option<&'static str> {
     if native && blocked {
-        "Respond to the provider request above · first response across viewers wins"
+        Some("Answer the request above to continue")
     } else if blocked {
-        "Attached TUI needs you · Open Terminal to answer approvals or permissions"
-    } else if writable {
-        "Enter sends · Shift+Enter adds a line"
+        Some("Open Terminal to answer the request")
+    } else if writable || pending {
+        None
     } else {
-        "Read-only until this exact terminal and agent session are writable"
+        Some("Read-only")
     }
 }
 
@@ -480,30 +457,19 @@ fn fold_toggle(placement: &str, entry: &str, open: bool, cx: &mut Context<Desk>)
     }))
 }
 
-/// The empty transcript: the harness that will speak here, and why it is quiet.
-fn waiting(harness: Harness, provider: &str, look: &Look, colors: &Palette) -> gpui::Div {
-    div()
+/// The empty transcript stays quiet; sharing diagnostics remain discoverable.
+fn waiting(colors: &Palette) -> gpui::Stateful<gpui::Div> {
+    readable("conversation-waiting", WAITING_NOTICE)
         .flex()
         .flex_col()
         .items_center()
-        .gap(px(10.))
-        .py(px(48.))
-        .child(harness_mark(harness, None, 28., look))
-        .child(
-            div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(look.ink)
-                .child(format!("{provider} is connected")),
-        )
-        .child(
-            readable("conversation-waiting", WAITING_NOTICE)
-                .max_w(px(420.))
-                .text_center()
-                .text_xs()
-                .text_color(from_hex(&colors.muted))
-                .child(WAITING_NOTICE),
-        )
+        .py(px(24.))
+        .text_size(px(14.))
+        .text_color(from_hex(&colors.muted))
+        .tooltip(|window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(WAITING_NOTICE).build(window, cx)
+        })
+        .child("No messages yet")
 }
 
 /// The transcript's viewport. `jump` floats over its bottom edge instead of

@@ -80,26 +80,29 @@ pub(super) fn appearance_page(
                 .map(|theme| (theme.id.clone(), theme.name.clone()))
                 .collect();
             let writer = theme_handle.clone();
-            div().debug_selector(|| "settings-theme".into()).child(
-                Button::new("settings-theme")
-                    .label(label)
-                    .outline()
-                    .small()
-                    .w(px(260.))
-                    .dropdown_caret(true)
-                    .dropdown_menu(move |menu, _, _| {
-                        choices.iter().fold(menu, |menu, (id, name)| {
-                            let id = id.clone();
-                            menu.item(
-                                PopupMenuItem::new(name.clone())
-                                    .checked(id == selected)
-                                    .on_click(click_sets(&writer, move |prefs| {
-                                        prefs.theme_id.clone_from(&id)
-                                    })),
-                            )
-                        })
-                    }),
-            )
+            div()
+                .debug_selector(|| "settings-theme".into())
+                .w(px(260.))
+                .child(
+                    Button::new("settings-theme")
+                        .label(label)
+                        .outline()
+                        .small()
+                        .w_full()
+                        .dropdown_caret(true)
+                        .dropdown_menu(move |menu, _, _| {
+                            choices.iter().fold(menu, |menu, (id, name)| {
+                                let id = id.clone();
+                                menu.item(
+                                    PopupMenuItem::new(name.clone())
+                                        .checked(id == selected)
+                                        .on_click(click_sets(&writer, move |prefs| {
+                                            prefs.theme_id.clone_from(&id)
+                                        })),
+                                )
+                            })
+                        }),
+                )
         }),
     )
     .wide()
@@ -109,29 +112,37 @@ pub(super) fn appearance_page(
     if let Some(controls) = controls {
         let font = controls.font.clone();
         let picker = SettingField::render(move |_, _, _| {
-            Select::new(&font)
-                .small()
-                .id("font-family")
-                .accessibility_label("Terminal font family")
+            // Select's root fills its parent; its Styled width applies only
+            // to the inner input. Give the field real intrinsic dimensions.
+            div()
+                .debug_selector(|| "settings-font".into())
                 .w(px(260.))
-                .rounded(px(10.))
-                .menu_width(px(340.))
-                .menu_max_h(px(360.))
-                .search_placeholder("Find a font family…")
-                .empty(|_, cx| {
-                    div()
-                        .p(px(20.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .child(div().text_sm().child("No matching fonts"))
-                        .child(
+                .h(gpui::rems(1.5))
+                .child(
+                    Select::new(&font)
+                        .small()
+                        .id("font-family")
+                        .accessibility_label("Terminal font family")
+                        .w_full()
+                        .rounded(px(10.))
+                        .menu_width(px(340.))
+                        .menu_max_h(px(360.))
+                        .search_placeholder("Find a font family…")
+                        .empty(|_, cx| {
                             div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("Try another family name."),
-                        )
-                })
+                                .p(px(20.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(div().text_sm().child("No matching fonts"))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Try another family name."),
+                                )
+                        }),
+                )
         });
         let item = SettingItem::new(
             "Font family",

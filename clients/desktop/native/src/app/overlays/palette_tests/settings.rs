@@ -224,6 +224,7 @@ fn wide_palette_controls_fit_inside_the_exact_editor_at_narrow_widths(cx: &mut T
         cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.)));
         for (query, selectors) in [
             ("Theme", vec!["settings-theme"]),
+            ("Font family", vec!["settings-font"]),
             (
                 "Tab placement",
                 vec![

@@ -5,6 +5,34 @@ use crate::app::desk::Desk;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
 #[gpui::test]
+fn appearance_pickers_fit_the_page_at_narrow_medium_and_wide_widths(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    for width in [700., 804., 860., 924., 1100.] {
+        settings.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+        draw(settings);
+        let sidebar = settings.debug_bounds("settings-sidebar").unwrap();
+        for selector in ["settings-font", "settings-theme"] {
+            let picker = settings.debug_bounds(selector).unwrap();
+            assert!(
+                picker.left() >= sidebar.right() + gpui::px(20.)
+                    && picker.right() <= gpui::px(width - 20.),
+                "{selector} stays inside the page gutter at {width}: {picker:?}"
+            );
+            assert_eq!(
+                picker.size.width,
+                gpui::px(260.),
+                "{selector} owns its input's full width at {width}"
+            );
+        }
+    }
+}
+
+#[gpui::test]
 fn category_labels_share_one_column_instead_of_centering_each_buttons_contents(
     cx: &mut TestAppContext,
 ) {

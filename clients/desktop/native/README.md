@@ -202,6 +202,7 @@ env -i PATH=/usr/bin:/bin TMPDIR="${TMPDIR:-/tmp}" HOME="$tmp" \
 
 The embedded runtime supplies synthetic terminal output. Captures cover top,
 bottom and side tabs, a collapsed sidebar, narrow layouts, menus, Work,
-Actions, notifications and Changes in dark and light appearances. These are
+Actions, notifications, Changes, capture and the actual agent conversation
+(ready, working, permission, disconnected and narrow) in dark and light appearances. These are
 native scene captures, not proof of compositor presentation. The preview
 refuses a non-temporary HOME or a named server and never runs terminal input.

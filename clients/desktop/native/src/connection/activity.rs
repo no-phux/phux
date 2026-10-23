@@ -2,7 +2,7 @@
 use super::*;
 
 impl Connection {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "ui-fixtures"))]
     pub(crate) fn publish_test_conversation(
         &mut self,
         publication: &AgentPublication,
