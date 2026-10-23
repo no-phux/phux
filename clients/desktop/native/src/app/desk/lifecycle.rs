@@ -118,7 +118,6 @@ impl Desk {
             find_input: None,
             conversation_faces: HashMap::new(),
             settings_controls: None,
-            settings_page: None,
             native_launch: Default::default(),
             open_fresh: request.fresh && !resuming,
             pending_project_terminal: None,

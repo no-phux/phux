@@ -84,6 +84,7 @@ fn machine_item(
                             "Reconnect" => desk.reconnect(cx),
                             "Retry" => desk.retry_fleet(cx),
                             _ => {
+                                window.activate_window();
                                 desk.close_modal(window, cx);
                                 desk.open_machine(open.clone(), cx);
                                 desk.after_command(window, cx);
@@ -105,6 +106,7 @@ fn machine_item(
                         "Forget…",
                         &handle,
                         move |desk, window, cx| {
+                            window.activate_window();
                             let name = name.clone();
                             desk.open_modal(Modal::RemoveHost { name }, window, cx);
                         },
@@ -129,10 +131,13 @@ fn hosts_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
                 .flex()
                 .gap(px(8.))
                 .child(
-                    action_button("settings-add-host", "Add machine…")
-                        .on_click(click_runs(&buttons, |desk, window, cx| {
+                    action_button("settings-add-host", "Add machine…").on_click(click_runs(
+                        &buttons,
+                        |desk, window, cx| {
+                            window.activate_window();
                             desk.open_modal(Modal::AddHost, window, cx)
-                        })),
+                        },
+                    )),
                 )
                 .child(
                     action_button("settings-refresh-hosts", "Refresh all")

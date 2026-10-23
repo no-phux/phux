@@ -149,13 +149,12 @@ fn resolved_socket(path: &Path) -> PathBuf {
 #[must_use]
 pub fn spawn_lock_path(socket: &Path) -> PathBuf {
     let lock_name = match socket.file_name() {
-        Some(name) if name == "phux.sock" => OsString::from("spawn.lock"),
-        Some(name) => {
+        Some(name) if name != "phux.sock" => {
             let mut lock_name = name.to_os_string();
             lock_name.push(".spawn.lock");
             lock_name
         }
-        None => OsString::from("spawn.lock"),
+        _ => OsString::from("spawn.lock"),
     };
     socket
         .parent()

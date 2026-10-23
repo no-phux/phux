@@ -119,19 +119,42 @@ impl Desk {
         });
     }
 
-    /// Open Settings directly on `page`, replacing any open modal.
+    /// Open the separate Settings window directly on `page`.
     pub(crate) fn show_settings_page(
         &mut self,
         page: crate::app::settings_panel::Page,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.modal = Modal::Settings;
-        self.settings_page = Some(page);
-        self.mark_prepared();
-        crate::app::settings_panel::prepare(self, window, cx);
-        window.focus(&self.focus, cx);
-        cx.notify();
+        self.open_settings(Some(page), window, cx);
+    }
+
+    pub(crate) fn open_settings(
+        &mut self,
+        page: Option<crate::app::settings_panel::Page>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_modal(window, cx);
+        let owner = window.window_handle();
+        let desk = cx.entity();
+        let report = desk.downgrade();
+        let desktop = self.desktop.clone();
+        cx.defer(move |cx| {
+            desktop.update(cx, |desktop, cx| {
+                if let Err(error) = desktop.open_settings(desk, owner, page, cx) {
+                    log::error!("Could not open Settings: {error:#}");
+                    let _ = report.update(cx, |desk, cx| {
+                        desk.post(
+                            crate::app::notifications::Kind::Error,
+                            "Could not open Settings",
+                            Some(format!("{error:#}")),
+                        );
+                        cx.notify();
+                    });
+                }
+            });
+        });
     }
 
     /// Run a confirmed palette row. Commands already ran through their [`Run`] action.

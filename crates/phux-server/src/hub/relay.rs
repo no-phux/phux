@@ -266,10 +266,6 @@ pub(crate) enum RelayRequest {
     },
     /// A satellite-local path query; the session strips the hub host field
     /// and correlates `PATH_RESULTS` through a link-side request id.
-    #[allow(
-        dead_code,
-        reason = "consumer dispatch is implemented on the sibling branch"
-    )]
     PathQuery {
         root: String,
         query: String,

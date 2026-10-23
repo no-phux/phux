@@ -14,15 +14,11 @@ fn flag_exists_on_any_verb(cmd: &usage::Command<'_>, long: &str) -> bool {
             .any(|sub| flag_exists_on_any_verb(sub, long))
 }
 
-fn token_str(token: &[u8]) -> String {
-    String::from_utf8_lossy(token).into_owned()
-}
-
 fn misplaced_scoped_flag(err: &usage::Error<'_, '_>) -> Option<String> {
     let usage::Error::UnknownFlag { token } = err else {
         return None;
     };
-    let flag = token_str(token);
+    let flag = String::from_utf8_lossy(token).into_owned();
     let long = flag.strip_prefix("--")?;
     flag_exists_on_any_verb(Cli::command(), long).then_some(flag)
 }

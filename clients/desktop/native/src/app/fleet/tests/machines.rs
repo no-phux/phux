@@ -198,6 +198,9 @@ fn settings_rows_offer_each_machines_action_and_sidebar_rows_retry(cx: &mut Test
         desk.execute("machines", window, cx);
     });
     draw(cx);
+    let (settings, _) = super::super::super::settings_panel::window_tests::opened(&desk, cx);
+    let cx = &mut gpui::VisualTestContext::from_window(settings, cx);
+    draw(cx);
     // This Mac is this window and connected: nothing to open or reconnect.
     for action in ["Open", "Retry", "Reconnect", "Disconnect"] {
         assert!(!shown(cx, &format!("settings-machine-{action}-local")));

@@ -1,21 +1,26 @@
 ---
 audience: humans
 stability: evolving
-last-reviewed: 2026-10-22
+last-reviewed: 2026-10-23
 ---
 
 # Desktop usage
 
-**TL;DR.** Use the command palette to find work, actions, and settings.
+**TL;DR.** **⌘P** finds work and commands. **⌘,** opens Settings.
 For installation and development, see the [desktop README](README.md).
 
 ## Using it
 
 ### Command palette
 
-Use **⌘P** for work, **⇧⌘P** for actions, and **⌘,** for settings in one
-centered panel. Search, toggle switches, and edit values directly;
+Use **⌘P** for work and **⇧⌘P** for actions in a centered palette.
+Search, toggle switches, and edit values directly;
 [the command palette guide](PALETTE.md) covers controls and navigation.
+
+### Settings
+
+**⌘,** opens a separate, searchable Settings window. Changes save automatically.
+See [Settings](SETTINGS.md) for categories, shortcuts, and preference scope.
 
 ### Fullscreen
 
@@ -113,10 +118,6 @@ Tabs can sit on the top, bottom or sidebar. Hover for pane context, or click
 the selected tab for live miniatures without resizing your terminals. See
 [Tabs and previews](TAB_PEEK.md) for placement, controls and shortcuts.
 
-Settings, dialogs, notifications, find controls, and dropdowns use the same
-theme-aware glass treatment. **Settings > Appearance > Font family** previews
-each face in the searchable dropdown, with bundled fonts pinned first.
-
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
 Click a session's name to select it; only its caret expands or collapses its
@@ -128,7 +129,7 @@ work. A machine's name appears on a session only when the same session name
 runs on another machine, and terminals sharing a label show their id (`@3`). Switching restores tabs and splits, not the destination's old window
 display settings: the current filter, grouping, sidebar width and tab placement
 stay put. Selection never opens or folds a session or changes the host filter.
-**Settings > Layout & notifications > Sidebar machines**, or **Sidebar view >
+**Settings > Interface > Sidebar machines**, or **Sidebar view >
 Visible machines**, controls which machines appear. All are shown by default;
 exclusions are saved, do not disconnect hosts, and do not limit Work search.
 The sidebar's **All machines / Machines · filtered** control opens that menu;
@@ -139,13 +140,16 @@ on that session's own server. Projects meet by name across machines: link a
 session on the mini and one on this Mac to the same name, or to a
 repository's name, and they are listed together in the sidebar's project
 grouping and in **Switch Session**. **Unlink** returns it to its repository.
-**Settings > Hosts & connections** (also **Machines…** from the main menu's
+**Settings > Machines** (also **Machines…** from the main menu's
 **Switch Session** page, the File menu and the palette) lists This Mac and every saved
 machine with its state, opens, retries, disconnects, adds or forgets machines, and
 refreshes inventory.
 Catalog discovery never attaches terminal streams or starts work; selecting an
 empty session keeps it empty. Tabs and splits still belong to the selected
-session, not to a new cross-server Workspace record.
+session, not to a new cross-server Workspace record. Every terminal in the
+selected session gets a tab without a click: one started elsewhere (an agent,
+`phux spawn`) joins the tab list behind the current tab. A terminal moved to
+another window, or a capture started in the background, stays out.
 
 | Keys             | Action                                                                      |
 | ---------------- | --------------------------------------------------------------------------- |

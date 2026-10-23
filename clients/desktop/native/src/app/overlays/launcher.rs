@@ -98,10 +98,6 @@ pub(super) fn results(
             "Find a window or tab…",
             rank_sections(window_sections(desk, cx.entity_id(), cx), query),
         ),
-        Modal::Settings => (
-            "Find a setting…",
-            rank_sections(settings_sections(desk, &cx.weak_entity(), cx), query),
-        ),
         Modal::WindowSession => (
             "Open session…",
             rank_sections(session_sections(desk), query),
@@ -247,14 +243,14 @@ pub(super) fn palette(
 
 /// Only modes that search preferences need the shared slider and font state.
 fn prepare_settings(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
-    if !matches!(desk.modal, Modal::Settings | Modal::Commands | Modal::Goto) {
+    if !matches!(desk.modal, Modal::Commands | Modal::Goto) {
         return;
     }
     let searching = desk
         .palette_state
         .as_ref()
         .is_some_and(|state| !state.read(cx).query(cx).trim().is_empty());
-    if desk.modal == Modal::Settings || searching {
+    if searching {
         crate::app::settings_panel::prepare(desk, window, cx);
     }
 }
