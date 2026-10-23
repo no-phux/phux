@@ -189,6 +189,7 @@ fn selectable_work(desk: &mut Desk, cx: &mut gpui::Context<Desk>) {
 mod chrome;
 mod closing;
 mod geometry;
+mod hover;
 mod panes;
 mod peek;
 mod placement;
