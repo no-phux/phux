@@ -161,6 +161,12 @@ pi --mode json --print --approve --no-mcp \
   --session-dir "$SCRATCH/pi-sessions" "$PROMPT"
 ```
 
+The pi invocation inherited `defaultProvider: "openai-codex"`,
+`defaultModel: "gpt-6.1-sol"` and `defaultThinkingLevel: "high"` from global
+settings. For reproduction, pin them with
+`--model openai-codex/gpt-6.1-sol --thinking high`. Thinking level is a latency
+confounder; this single run does not isolate its causal contribution.
+
 `--approve` trusts project-local pi resources for this invocation, without
 changing the user's trust configuration. Use the normal credential store, no
 `--continue`, and no existing session id. Keep package caches intact if comparing

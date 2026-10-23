@@ -82,7 +82,7 @@ Unix-socket keeper: one writer lock, one request per connection, requests served
 serially, mail waits parked. The socket is derived from the store path and is
 mode 0600. [wire.rs](../../crates/phux-work/src/wire.rs) is a private equal-build
 exchange with a semantic epoch and a 1 MiB line cap, **not** the terminal wire
-or a generic prompt store. Its request enum has missions, runs, signals, mail
+or a generic prompt store. Its request enum has objectives, runs, signals, mail
 and claims; no bootload operation.
 
 [store.rs](../../crates/phux-work/src/store.rs) and
