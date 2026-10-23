@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -101,6 +102,45 @@ class CrewTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not on PATH"):
                     crew.start(args)
             self.assertFalse(home.exists())
+
+    def test_running_lead_holds_lease_and_forwards_termination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = (root / "home").resolve()
+            ready = root / "ready"
+            binary = root / "opencode"
+            binary.write_text(
+                f"#!{sys.executable}\nimport signal,sys\nfrom pathlib import Path\n"
+                "signal.signal(signal.SIGTERM, lambda *_: sys.exit(42))\n"
+                f"Path({str(ready)!r}).write_text('ready')\n"
+                "signal.pause()\n"
+            )
+            binary.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"])
+            process = subprocess.Popen(
+                [sys.executable, str(ROOT / "crew.py"), "start", "--home", str(home), "--agent", "opencode"],
+                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "fake agent started")
+                with self.assertRaisesRegex(ValueError, "already owns"):
+                    with crew.home_lease(home):
+                        self.fail("second lead admitted")
+                process.terminate()
+                self.assertEqual(process.wait(timeout=5), 42)
+                with crew.home_lease(home):
+                    pass
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
 
     def test_invalid_agent_environment_has_readable_error(self):
         with patch.dict(os.environ, {"PHUX_CREW_AGENT": "invalid"}):

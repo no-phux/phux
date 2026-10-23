@@ -39,6 +39,8 @@ Choose **ship** for implementation, **scout** for investigation. Each brief
 must name the repository, outcome, scope/non-goals, acceptance checks,
 publication authority, role and report destination. Keep related work together;
 split independent scopes. Never turn a small fix into a framework project.
+Use absolute paths in worker briefs; the lead's `PHUX_CREW_HOME` and
+`PHUX_CREW_BUNDLE` environment are not promised inside a mission worker.
 
 Before any write in a project, read its instructions. Use its existing tracker
 (Beads, Linear, etc.) when required. Native phux missions track execution;
