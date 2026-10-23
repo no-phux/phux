@@ -55,6 +55,9 @@ pub(crate) const REGISTRY: &str = "registry";
 /// registered nor pairable, an unusable registry entry, or an `ssh://`
 /// entry, which carries an interactive attach only.
 pub(crate) const REMOTE_UNRESOLVED: &str = "remote_unresolved";
+/// The local Tailscale client could not be signed in or reconnected
+/// (`phux host discover --login`).
+pub(crate) const TAILNET: &str = "tailnet";
 /// A git workspace/worktree operation failed (not a repository, git
 /// itself failed, or its output did not parse).
 pub(crate) const WORKSPACE: &str = "workspace";

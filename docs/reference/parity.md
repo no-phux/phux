@@ -114,6 +114,7 @@ Agent-facing verbs that have no MCP tool yet:
 - `phux config agents`: local config inventory of declared agent integrations; `phux_agent_list` covers the live agents.
 - `phux host add`: operator host-registry enrollment, not an agent action.
 - `phux host ls`: operator inventory of the host registry, not an agent action.
+- `phux host discover`: operator view of the local Tailscale network for enrollment, not an agent action.
 - `phux host renew`: operator host-registry certificate renewal, not an agent action.
 - `phux host upgrade`: operator host-registry transport upgrade, not an agent action.
 - `phux pair`: mints a pairing secret; credential handling stays outside the model-facing set.

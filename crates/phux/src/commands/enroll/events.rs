@@ -58,6 +58,16 @@ pub(crate) enum ServicePolicy {
 /// [`EnrollEvent::describe`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EnrollEvent {
+    /// `--install`: phux is missing there; the official installer is running.
+    PhuxInstalling { channel: String },
+    /// The installer put phux at `path`.
+    PhuxInstalled { version: String, path: String },
+    /// `--install`: the host's phux is older than this one; updating it.
+    PhuxUpdating { from: String, to: String },
+    /// The host's phux was updated.
+    PhuxUpdated { version: String },
+    /// The update was refused or failed; enrollment goes on with the old one.
+    PhuxNotUpdated { reason: String },
     /// `phux --version` answered on the host.
     PhuxFound { version: String },
     /// The service question is settled one way or another.
@@ -137,6 +147,7 @@ impl EnrollEvent {
         match self {
             Self::ServerReady(supervision) => supervision.severity(),
             Self::ServerStartFailed { .. }
+            | Self::PhuxNotUpdated { .. }
             | Self::DirectUnreachable { .. }
             | Self::CertificateNotEnrolled { .. }
             | Self::CertificateRenewalDue { .. }
@@ -144,12 +155,17 @@ impl EnrollEvent {
             | Self::CertificateNotHeld { .. }
             | Self::PreviousCertificateUnidentified { .. } => Severity::Warn,
             Self::Paired
+            | Self::PhuxInstalled { .. }
+            | Self::PhuxUpdated { .. }
             | Self::CredentialReused
             | Self::CredentialReplaced
             | Self::DirectReachable { .. }
             | Self::CertificateEnrolled { .. }
             | Self::CertificateRevoked { .. } => Severity::Ok,
-            Self::PhuxFound { .. } | Self::Probing { .. } => Severity::Info,
+            Self::PhuxFound { .. }
+            | Self::PhuxInstalling { .. }
+            | Self::PhuxUpdating { .. }
+            | Self::Probing { .. } => Severity::Info,
         }
     }
 
@@ -172,6 +188,17 @@ impl EnrollEvent {
     /// host name or `phux:` as their contract wants.
     pub(crate) fn describe(&self) -> String {
         match self {
+            Self::PhuxInstalling { channel } => format!(
+                "phux is not installed there; installing the latest {channel} release with https://phux.sh/install"
+            ),
+            Self::PhuxInstalled { version, path } => format!("installed {version} at {path}"),
+            Self::PhuxUpdating { from, to } => {
+                format!("{from} there is older than {to} here; updating it with `phux update`")
+            }
+            Self::PhuxUpdated { version } => format!("updated to {version}"),
+            Self::PhuxNotUpdated { reason } => {
+                format!("could not update phux there ({reason}); enrolling with the installed one")
+            }
             Self::PhuxFound { version } => format!("{version} found over ssh"),
             Self::ServerReady(supervision) => supervision.describe(),
             Self::ServerStartFailed { error } => format!(
@@ -229,6 +256,9 @@ pub(crate) enum EnrollFailure {
     /// `phux` is not on the remote `PATH` (exit 127, or `phux --version`
     /// failed some other way).
     MissingPhux(String),
+    /// `--install`: the official installer failed on the host, or left no
+    /// working `phux`.
+    InstallFailed(String),
     /// Pairing failed: `phux pair --json` did not run, or its output did
     /// not parse.
     Pair(String),
@@ -238,7 +268,10 @@ impl EnrollFailure {
     /// The failure's own words, for callers that print them inline.
     pub(crate) fn detail(&self) -> &str {
         match self {
-            Self::SshUnreachable(detail) | Self::MissingPhux(detail) | Self::Pair(detail) => detail,
+            Self::SshUnreachable(detail)
+            | Self::MissingPhux(detail)
+            | Self::InstallFailed(detail)
+            | Self::Pair(detail) => detail,
         }
     }
 }

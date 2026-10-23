@@ -331,8 +331,8 @@ says why it is command-line only.
 
 `agent answer`, `agent prompt`, `agent send-keys`, `agent wait`,
 `approvals`, `ask`, `channel`, `config agents`, `config run`, `host add`,
-`host ls`, `host renew`, `host upgrade`, `kill`, `launch`, `logs`, `ls`,
-`mcp`, `new`, `organize`, `play`, `rec mark`, `relaunch`, `resize`,
+`host discover`, `host ls`, `host renew`, `host upgrade`, `kill`, `launch`,
+`logs`, `ls`, `mcp`, `new`, `organize`, `play`, `rec mark`, `relaunch`, `resize`,
 `resource methods`, `resource show`, `resource wait`, `restore`, `rm`,
 `run`, `signal`, `snapshot`, `spawn`, `status`, `update`, `wait`, `watch`,
 `whoami`, `mail send`, `mail read`, `mail ack`, `claim take`, `claim renew`,

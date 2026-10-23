@@ -44,6 +44,10 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         return run_add_ssh_only(&name, &ssh_host, opts);
     }
 
+    if opts.accept_new_host_key {
+        enroll::accept_new_host_keys();
+    }
+
     let mut warnings = Vec::new();
     let mut narrate = |event: &EnrollEvent| {
         if event.is_warning() {
@@ -67,13 +71,20 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         );
     }
 
+    // An answering entry is left alone above; only a host being set up
+    // gets phux installed or updated.
+    let remote_phux = match provisioned_phux(&ssh_host, opts, &mut narrate) {
+        Ok(phux) => phux,
+        Err(err) => return json_err::emit(json, &err, 1),
+    };
+
     // Prefer credentials already on file for this name when re-enrolling so
     // a stopped server does not mint another live bearer into remote-tokens.
     let previous = previous_enrollment(&name, opts.role);
     let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
     let req = EnrollRequest {
         ssh_host: &ssh_host,
-        remote_phux: &opts.remote_phux,
+        remote_phux: &remote_phux,
         endpoint_override: opts.endpoint_override.as_deref(),
         quic_port,
         service: if opts.no_service {
@@ -122,6 +133,20 @@ pub(super) fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         }
         Err(err) => json_err::emit(json, &err, 1),
     }
+}
+
+/// The `phux` to enroll with: under `--install`, the one put on (or
+/// updated on) the host first.
+fn provisioned_phux(
+    ssh_host: &str,
+    opts: &AddOpts,
+    narrate: &mut dyn FnMut(&EnrollEvent),
+) -> Result<String, CliError> {
+    if !opts.install {
+        return Ok(opts.remote_phux.clone());
+    }
+    enroll::provision_remote_phux(ssh_host, &opts.remote_phux, &mut |event| narrate(&event))
+        .map_err(|failure| add_failure_error(ssh_host, opts.role, &failure))
 }
 
 /// A registered remote whose saved route answers and whose workload client

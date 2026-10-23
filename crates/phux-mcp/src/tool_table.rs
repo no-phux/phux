@@ -497,6 +497,10 @@ pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
         "operator inventory of the host registry, not an agent action",
     ),
     (
+        "host discover",
+        "operator tailnet inventory for enrollment, not an agent action",
+    ),
+    (
         "host renew",
         "operator host-registry certificate renewal, not an agent action",
     ),

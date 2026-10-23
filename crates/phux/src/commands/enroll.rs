@@ -26,6 +26,7 @@ mod events;
 mod flow;
 mod identity;
 mod pair;
+mod provision;
 mod server;
 mod ssh;
 #[cfg(test)]
@@ -44,8 +45,11 @@ pub(crate) use pair::{
     PairReport, default_quic_port, probe, probe_deadline, probe_within, satellite_token_path,
     token_path, write_token,
 };
+pub(crate) use provision::provision_remote_phux;
 pub(crate) use server::ensure_remote_server;
-pub(crate) use ssh::{authority, ssh_hostname, ssh_program};
+pub(crate) use ssh::{
+    accept_new_host_keys, authority, destination_host, ssh_hostname, ssh_program,
+};
 pub(crate) use workload::{
     Settlement, TicketPins, enroll_client_certificate, enroll_with_ticket, settle_identity,
 };
