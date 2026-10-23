@@ -172,26 +172,6 @@ fn json_output_requested() -> bool {
     })
 }
 
-/// Print `old`'s deprecation note (its [`deprecations::DEPRECATED`] row) on
-/// stderr, once, unless the caller asked for `--json`: stdout then carries
-/// only the document, and stderr only the one-line error contract.
-#[allow(
-    dead_code,
-    reason = "called by the dispatch arm of the next hidden alias added to DEPRECATED"
-)]
-fn warn_deprecated(old: &str, json: bool) {
-    if json {
-        return;
-    }
-    if let Some(row) = deprecations::DEPRECATED.iter().find(|row| row.old == old) {
-        // The reference table stores the complete plain warning for docs/tests.
-        warn!(
-            "{}",
-            row.note.strip_prefix("phux: warn: ").unwrap_or(row.note)
-        );
-    }
-}
-
 /// Endpoints answered straight from argv, before clap parses anything.
 ///
 /// Returns `Some(code)` when this invocation is one of them and no further
