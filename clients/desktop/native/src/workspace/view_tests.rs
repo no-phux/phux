@@ -6,122 +6,19 @@
 
 use super::*;
 use crate::connection::DeterministicDial;
-use phux_client_runtime::control::ControlPlane;
 use phux_client_runtime::engine::Scroll;
 use phux_protocol::{
-    PROTOCOL_VERSION,
-    caps::{
-        BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
-        ServerFeatureSet,
-    },
-    ids::{BootstrapId, ClientId, SessionId, StreamId, WindowId},
-    wire::{
-        frame::{Command, FrameKind},
-        info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo},
-    },
+    caps::BootstrapStreamProfile,
+    ids::{BootstrapId, StreamId},
+    wire::frame::{Command, FrameKind},
 };
 
 use std::sync::Arc;
 
-const SESSION: &str = "views";
+mod fixture;
 
-fn terminal() -> ResourceId {
-    ResourceId::local(7)
-}
-
-fn stream() -> StreamId {
-    StreamId::new(1).unwrap()
-}
-
-fn bootstrap() -> BootstrapId {
-    BootstrapId::new(1).unwrap()
-}
-
-/// A connection attached to one 20x4 terminal with two lines of history.
-pub(crate) fn attached() -> Connection {
-    let mut connection = Connection::connect("/views.sock".into(), SESSION.into()).unwrap();
-    let client = Arc::clone(&connection.client);
-    client.with_control(ControlPlane::connection_opened);
-    let _ = client.take_outbound();
-    client
-        .feed(FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new()
-                .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
-            server_id: vec![1; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
-            bootstrap_limits: BootstrapLimits::default(),
-        })
-        .unwrap();
-    let attach_id = client
-        .take_outbound()
-        .iter()
-        .find_map(|bytes| match FrameKind::decode(bytes).unwrap().0 {
-            FrameKind::Attach { attach_id, .. } => Some(attach_id),
-            _ => None,
-        })
-        .expect("attach request");
-    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal())
-        .with_sessions(vec![SessionInfo::new(SessionId::new(1), SESSION)])
-        .with_windows(vec![WindowInfo::new(
-            WindowId::new(1),
-            SessionId::new(1),
-            "shell",
-        )])
-        .with_resources(vec![ResourceInfo::new(terminal(), WindowId::new(1), 20, 4)]);
-    for frame in [
-        FrameKind::Attached {
-            attach_id,
-            snapshot,
-            initial_client_id: ClientId::new(1),
-        },
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal(),
-            stream_id: stream(),
-            bootstrap_id: bootstrap(),
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapChunk {
-            terminal_id: terminal(),
-            stream_id: stream(),
-            bootstrap_id: bootstrap(),
-            chunk_seq: 0,
-            payload: b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive"
-                .to_vec()
-                .into(),
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: terminal(),
-            stream_id: stream(),
-            bootstrap_id: bootstrap(),
-            history_cursor: None,
-        },
-        FrameKind::AttachReady { attach_id },
-    ] {
-        client.feed(frame).unwrap();
-    }
-    connection.drain();
-    let _ = client.take_outbound();
-    assert_eq!(connection.status, Status::Attached);
-    assert!(connection.ready(&terminal()), "fixture terminal is ready");
-    connection
-}
-
-/// A workspace showing the session's home terminal in one placement.
-pub(crate) fn opened(connection: &mut Connection) -> Workspace {
-    let mut workspace = Workspace::new(SESSION.into(), WorkspaceOptions::default());
-    workspace.restore(None);
-    let events = connection.drain();
-    workspace.handle(&events, connection);
-    workspace.settle(connection);
-    assert_eq!(leaves(&workspace).len(), 1, "home terminal opened");
-    workspace
-}
+use fixture::{SESSION, bootstrap, stream, terminal};
+pub(crate) use fixture::{attached, attached_with, opened};
 
 fn output(connection: &mut Connection, seq: u64, bytes: &[u8]) {
     connection

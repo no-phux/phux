@@ -1,4 +1,4 @@
-//! Rows under a session: a terminal no tab holds, and a record that is not a terminal.
+//! Rows under a session: its terminals, and a record that is not a terminal.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -71,8 +71,8 @@ pub(super) fn record_row(
         .into_any_element()
 }
 
-/// A terminal of this session that no tab here holds. Clicking opens it in
-/// a tab; Command-click selects it for organization.
+/// A terminal of this session. Clicking shows its tab, opening one if none
+/// holds it; Command-click selects it for organization.
 pub(super) fn pane_row(
     desk: &Desk,
     pane: &PaneDescriptor,
