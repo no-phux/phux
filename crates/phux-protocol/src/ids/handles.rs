@@ -109,6 +109,19 @@ impl core::fmt::Debug for InputOperationId {
 pub struct IdempotencyKey([u8; 16]);
 
 impl IdempotencyKey {
+    /// Canonical lowercase text for explicit receipts and recovery documents.
+    /// Ordinary debug formatting remains redacted.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        use core::fmt::Write as _;
+        let mut text = String::with_capacity(32);
+        for byte in self.0 {
+            // Formatting a primitive into a String cannot fail.
+            let _ = write!(text, "{byte:02x}");
+        }
+        text
+    }
+
     /// Construct a non-zero key.
     #[must_use]
     pub const fn new(bytes: [u8; 16]) -> Option<Self> {

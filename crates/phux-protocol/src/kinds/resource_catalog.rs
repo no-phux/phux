@@ -267,48 +267,12 @@ pub static KINDS: [KindSpec; 2] = [
                 Some(FeatureGate::Features(ServerFeature::FileUpload))
             ),
             method!(
-                "GET_FILE",
-                Carrier::Command(COMMAND_TAG_GET_FILE),
-                [C_GET_FILE],
-                Some(FeatureGate::FeaturesExt {
-                    mask: ServerFeatureExt::FileDownload.mask(),
-                    wire_name: ServerFeatureExt::FileDownload.wire_name(),
-                })
-            ),
-            method!(
                 "CHECKOUT",
                 Carrier::Command(COMMAND_TAG_CHECKOUT),
                 [C_CHECKOUT],
                 Some(FeatureGate::FeaturesExt {
                     mask: ServerFeatureExt::Checkout.mask(),
                     wire_name: ServerFeatureExt::Checkout.wire_name(),
-                })
-            ),
-            method!(
-                "SERVICE_HTTP_OPEN",
-                Carrier::Command(COMMAND_TAG_SERVICE_HTTP_OPEN),
-                [C_SERVICE_HTTP],
-                Some(FeatureGate::FeaturesExt {
-                    mask: ServerFeatureExt::HostServiceHttp.mask(),
-                    wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
-                })
-            ),
-            method!(
-                "SERVICE_HTTP_READ",
-                Carrier::Command(COMMAND_TAG_SERVICE_HTTP_READ),
-                [C_SERVICE_HTTP],
-                Some(FeatureGate::FeaturesExt {
-                    mask: ServerFeatureExt::HostServiceHttp.mask(),
-                    wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
-                })
-            ),
-            method!(
-                "SERVICE_HTTP_CLOSE",
-                Carrier::Command(COMMAND_TAG_SERVICE_HTTP_CLOSE),
-                [C_SERVICE_HTTP],
-                Some(FeatureGate::FeaturesExt {
-                    mask: ServerFeatureExt::HostServiceHttp.mask(),
-                    wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
                 })
             ),
             method!(

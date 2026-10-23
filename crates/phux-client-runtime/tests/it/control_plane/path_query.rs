@@ -3,6 +3,66 @@
 use super::*;
 
 #[test]
+fn ordinary_runtime_admission_matches_catalog_for_each_extended_bit() {
+    use phux_protocol::checkout::CheckoutRequest;
+    use phux_protocol::kinds::method_named;
+
+    for ext in std::iter::once(ServerFeatureExtSet::new()).chain(
+        ServerFeatureExt::ALL
+            .iter()
+            .map(|&feature| ServerFeatureExtSet::with(&[feature])),
+    ) {
+        let mut plane = ControlPlane::new(ControlOptions::default());
+        plane.connection_opened();
+        let _ = plane.take_outbound();
+        let mut hello = hello_ok_with(ServerFeature::ALL);
+        if let FrameKind::HelloOk { server_caps, .. } = &mut hello {
+            *server_caps = server_caps.with_features_ext(ext);
+        }
+        plane.feed(hello).unwrap();
+        let _ = plane.take_outbound();
+        let advertised = |name| {
+            method_named(name)
+                .unwrap()
+                .advertised(ServerFeatureSet::with(ServerFeature::ALL), ext)
+        };
+
+        assert_eq!(
+            plane.path_query("/tmp".into(), String::new(), false, None) != 0,
+            advertised("PATH_QUERY")
+        );
+        assert_eq!(
+            plane.take_outbound().len(),
+            usize::from(advertised("PATH_QUERY"))
+        );
+        assert_eq!(
+            plane.checkout(terminal(), CheckoutRequest::Status) != 0,
+            advertised("CHECKOUT")
+        );
+        assert_eq!(
+            plane.take_outbound().len(),
+            usize::from(advertised("CHECKOUT"))
+        );
+        assert_eq!(
+            plane.service_http_read(1, 1).is_ok(),
+            advertised("SERVICE_HTTP_READ")
+        );
+        assert_eq!(
+            plane.take_outbound().len(),
+            usize::from(advertised("SERVICE_HTTP_READ"))
+        );
+        assert_eq!(
+            plane.service_http_close(1).is_ok(),
+            advertised("SERVICE_HTTP_CLOSE")
+        );
+        assert_eq!(
+            plane.take_outbound().len(),
+            usize::from(advertised("SERVICE_HTTP_CLOSE"))
+        );
+    }
+}
+
+#[test]
 fn path_query_requires_extended_capability_and_correlates_typed_results() {
     let mut plane = ControlPlane::new(ControlOptions::default());
     plane.connection_opened();

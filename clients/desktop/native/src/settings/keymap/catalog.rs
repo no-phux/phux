@@ -41,6 +41,7 @@ const CATALOG: &str = "\
     pane-prev | Previous Pane | Panes | cmd+[ | Focus the previous pane in the active tab. |
     tab-next | Next Tab | Tabs | cmd+shift+] | Switch to the next tab. |
     tab-prev | Previous Tab | Tabs | cmd+shift+[ | Switch to the previous tab. |
+    tab-peek | Peek Tabs | Tabs | cmd+shift+\\ | Show live terminal miniatures without resizing your work. Escape closes; arrows browse; Enter opens. | preview thumbnails overview
     tab-move-left | Move Tab Left | Tabs |  | Move the active tab earlier in the tab bar. | reorder
     tab-move-right | Move Tab Right | Tabs |  | Move the active tab later in the tab bar. | reorder
     rename | Rename Tab… | Tabs |  | Set a custom name for the active tab. |
@@ -105,6 +106,7 @@ const CATALOG: &str = "\
     performance-monitor | Performance Monitor | Utilities |  | Inspect desktop CPU, memory and render timings. | telemetry cpu memory rss
     copy-diagnostics | Copy Diagnostics | Utilities |  | Copy app, runtime, server and connection identity with recent errors. No terminal content. | support debug report version log
     performance-monitor-stop | Stop Performance Monitoring | Utilities |  | Close the performance window and stop its sampler. | telemetry cpu memory rss
+    developer-mode | Toggle Developer Mode | Utilities |  | Turn Developer mode on or off and save it: the performance HUD, allocation counting and the dev socket. | dev debug developer telemetry socket profiling diagnostics
     perf-hud | Toggle Performance HUD | Utilities |  | Show frame rate, frame build time, CPU, memory, heap and the server's load over the window. | fps hud overlay telemetry frames jank heap
     perf-trace | Capture Performance Trace | Utilities |  | Record five seconds of desktop and server spans to a Perfetto file and copy its path. | trace perfetto profile timeline spans flamegraph
     tab-1 | Go to Tab | Tabs | cmd+1 | Switch to the tab at this position. |

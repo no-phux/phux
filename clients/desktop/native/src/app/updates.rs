@@ -14,6 +14,7 @@ use crate::updates::{self, Preferences, Release, RuntimeRelease};
 use gpui::{Context, Subscription, Task};
 
 pub(crate) struct Updater {
+    pub(super) desktop: Option<gpui::WeakEntity<super::session::Desktop>>,
     pub prefs: Preferences,
     pub busy: bool,
     pub message: String,
@@ -127,6 +128,7 @@ impl Updater {
             .as_deref()
             .and_then(|bundle| updates::installed_release(bundle).ok());
         Self {
+            desktop: None,
             prefs: Preferences::load(
                 current
                     .as_ref()
@@ -155,9 +157,17 @@ impl Updater {
 
     /// Quitting with a staged update installs it once this process has exited.
     pub fn watch_quit(&mut self, cx: &mut Context<Self>) {
-        self._quit = Some(cx.on_app_quit(|updater, _| {
+        self._quit = Some(cx.on_app_quit(|updater, cx| {
+            if updater.staged.is_some()
+                && !updater.relaunch
+                && !updater.development
+                && let Err(error) = updater.save_restart(cx)
+            {
+                log::error!("Could not save desktop restart: {error:#}");
+                return std::future::ready(());
+            }
             updater.apply_staged();
-            async {}
+            std::future::ready(())
         }));
     }
 
@@ -445,8 +455,29 @@ impl Updater {
         if self.staged.is_none() || self.development {
             return;
         }
-        self.relaunch = true;
-        cx.quit();
+        // The click may still hold its Desk. Snapshot only after that lease
+        // ends, before quit observers can release any window's terminal views.
+        self.busy = true;
+        let updater = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = updater.update(cx, |updater, cx| {
+                updater.busy = false;
+                if let Err(error) = updater.save_restart(cx) {
+                    updater.message = format!("Could not save desktop restart: {error:#}");
+                    cx.notify();
+                    return;
+                }
+                updater.relaunch = true;
+                cx.quit();
+            });
+        });
+    }
+
+    fn save_restart(&self, cx: &mut gpui::App) -> anyhow::Result<()> {
+        self.desktop
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No desktop to restore"))?
+            .update(cx, |desktop, cx| desktop.save_restart(cx))?
     }
 
     fn run_runtime(&mut self, cx: &mut Context<Self>, then_restart: bool) {
@@ -474,8 +505,7 @@ impl Updater {
             let _ = this.update(cx, |updater, cx| {
                 // The staged desktop needs the server phux just handed off to.
                 if updater.record_runtime(result) && restart {
-                    updater.relaunch = true;
-                    cx.quit();
+                    updater.restart_to_update(cx);
                 }
                 cx.notify();
             });

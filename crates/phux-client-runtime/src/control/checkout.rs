@@ -7,7 +7,7 @@ use phux_protocol::checkout::{
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 
-use super::{ControlPlane, Pending, ServerFeatureExt};
+use super::{ControlPlane, Pending};
 
 /// Maximum outstanding plus undrained checkout answers on one client. Drain
 /// answers before issuing more; zero from `checkout` means nothing was sent.
@@ -90,10 +90,7 @@ impl ControlPlane {
             .filter(|pending| matches!(pending, Pending::Checkout(_)))
             .count();
         self.handshake_ready
-            && self
-                .server
-                .as_ref()
-                .is_some_and(|server| server.has_ext(ServerFeatureExt::Checkout))
+            && self.method_advertised("CHECKOUT")
             && in_flight + self.extensions.checkout_answers.len() < MAX_CHECKOUT_ANSWERS
     }
 

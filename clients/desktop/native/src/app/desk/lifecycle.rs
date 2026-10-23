@@ -21,7 +21,8 @@ impl Desk {
             FileLayoutStore::new(request.layout_path.clone(), request.legacy_layout.clone());
         let loaded = persist::load_layout(&store.read());
         let blocked = loaded.blocked;
-        let saved = loaded.initial;
+        let resuming = request.resume_layout.is_some();
+        let saved = request.resume_layout.clone().or(loaded.initial);
         let text = settings::read_ghostty_sources();
         let ghostty = settings::parse_ghostty_sources(text.as_deref().unwrap_or_default());
         let mut prefs = saved
@@ -62,7 +63,7 @@ impl Desk {
             remote: request.remote.clone(),
             session: request.session.clone(),
             home_key: request.home_key,
-            expected_authority: None,
+            expected_authority: request.authority,
             phux,
             focus,
             prefs,
@@ -88,10 +89,13 @@ impl Desk {
             saves,
             _save_errors: save_errors,
             stable_layout: request.stable_layout,
-            layout_key: None,
+            // The handoff already names this store and session. Adopting it
+            // again would replace the restart snapshot with older disk state.
+            layout_key: request.home_key.filter(|_| resuming),
             layout_migration_pending: false,
             last_saved: saved,
             panes: Panes::default(),
+            tab_peek: Default::default(),
             agent_seen: HashMap::new(),
             agent_epoch: None,
             commands: Default::default(),
@@ -116,14 +120,14 @@ impl Desk {
             settings_controls: None,
             settings_page: None,
             native_launch: Default::default(),
-            open_fresh: request.fresh,
+            open_fresh: request.fresh && !resuming,
             pending_project_terminal: None,
             expanded: Default::default(),
             disclosures: HashMap::new(),
             hosts: Vec::new(),
             fleet: Default::default(),
             fleet_view: Default::default(),
-            host_adding: None,
+            add_machine: AddMachine::default(),
             drag_region: None,
             menu: None,
             menu_closed: None,
@@ -223,7 +227,7 @@ impl Desk {
                     workspace.preserve_empty();
                 }
                 // A secondary window shows new terminals; every other window restores its own layout.
-                if self.role != WindowRole::Fresh {
+                if self.role != WindowRole::Fresh || !self.open_fresh {
                     workspace.restore(self.last_saved.clone());
                 }
                 self.arm_wake(&connection, cx);
@@ -295,6 +299,43 @@ impl Desk {
                 }
             }
         }));
+    }
+
+    /// Snapshot before quitting releases views; no live handles or credentials are saved.
+    pub(in crate::app) fn restart_request(&self) -> OpenRequest {
+        OpenRequest {
+            role: self.role,
+            session: self.session.clone(),
+            home_key: self.link_home_key().or(self.home_key),
+            authority: self
+                .link
+                .as_ref()
+                .and_then(|link| {
+                    link.connection
+                        .with_organization(|replica| replica.authority())
+                })
+                .or(self.expected_authority),
+            remote: self.remote.clone(),
+            layout_path: self.store.path.clone(),
+            legacy_layout: self.store.legacy.clone(),
+            stable_layout: self.stable_layout,
+            resume_layout: self
+                .link
+                .as_ref()
+                .filter(|link| link.workspace.restored())
+                .and_then(|link| {
+                    // A disconnected window still owns its last presentation.
+                    // Keep its incarnation binding; normal restore revalidates it.
+                    Some(persist::save_layout(
+                        link.workspace.server_id()?,
+                        &link.workspace.tabs,
+                        &self.prefs,
+                        Some(&link.workspace.active_id),
+                    ))
+                })
+                .or_else(|| self.last_saved.clone()),
+            ..OpenRequest::default()
+        }
     }
 
     /// Save, then release every view and the connection. Runs once per window.

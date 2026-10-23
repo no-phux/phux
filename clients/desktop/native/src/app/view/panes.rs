@@ -42,7 +42,7 @@ pub(super) fn main_column(
         .min_h(px(0.))
         .flex()
         .flex_col()
-        .child(workspace_body(desk, look, window, cx))
+        .child(workspace_viewport(desk, look, window, cx))
         .when(
             super::tabs_at(desk, &look.skin, TabPosition::Bottom),
             |column| {
@@ -56,6 +56,45 @@ pub(super) fn main_column(
                 ))
             },
         )
+}
+
+fn workspace_viewport(
+    desk: &mut Desk,
+    look: &Look,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
+    let open = desk.tab_peek.open;
+    let available = window.viewport_size().height.as_f32() - look.skin.chrome.titlebar;
+    let height = super::tab_peek::height(available);
+    let shelf = open.then(|| super::tab_peek::shelf(desk, look, height, cx));
+    let moves = super::chrome_moves(desk, cx);
+    // A relative offset changes paint/hit bounds, not layout allocation. The
+    // terminal keeps its entire height while the viewport clips its bottom.
+    div()
+        .debug_selector(|| "workspace-viewport".into())
+        .flex_1()
+        .min_h_0()
+        .relative()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .size_full()
+                .flex_shrink_0()
+                .relative()
+                .flex()
+                .flex_col()
+                .child(workspace_body(desk, look, window, cx))
+                .when(open, |body| body.child(super::tab_peek::dismiss(cx)))
+                .with_spring(
+                    "tab-peek-offset",
+                    super::chrome_spring(moves, if open { height } else { 0. }),
+                    |body, offset| body.top(px(offset)),
+                ),
+        )
+        .children(shelf)
 }
 
 /// The space the workspace keeps under its cards: none over the bottom tab

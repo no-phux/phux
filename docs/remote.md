@@ -17,15 +17,19 @@ present credentials from pairing.
 
 ## Adding a machine
 
-Install phux on the remote machine, then run this on your own:
+Run this on your own machine:
 
 ```sh
-phux host add me@mini
+phux host add me@mini --install
 ```
 
 Over `ssh me@mini`, this:
 
-1. Checks that `phux` is on the remote `PATH`.
+1. Checks that `phux` is on the remote `PATH`. With `--install`, it installs
+   phux there with the [install script](./install.md#install-script) when
+   it's missing, or runs `phux update` there when it's older than yours,
+   both on your release channel. Without `--install`, a missing phux is an
+   error.
 2. Installs a service there, so the server survives logouts and reboots.
 3. Sets the remote server's `[policy] mode` to `"paired"` and opens a QUIC
    listener on UDP port 8788.
@@ -45,11 +49,43 @@ phux host add me@mini --remote-phux /opt/homebrew/bin/phux
 | Option | Does |
 | --- | --- |
 | `--name NAME` | Saves the machine under another name. |
+| `--install` | Installs phux on the machine, or updates an older one, before setting it up. |
+| `--accept-new-host-key` | Trusts the SSH host key of a machine you have never connected to; a changed key is still refused. |
 | `--quic-port PORT` | Uses another UDP port than 8788. |
 | `--endpoint HOST:PORT` | Registers this address instead of the ones found on the host. |
 | `--no-service` | Starts the server without a service, so it won't come back after a reboot. |
 | `--ssh-only` | Registers an `ssh://` entry without contacting the host. |
 | `--session NAME` | Attaches to this session on arrival. |
+
+## Machines on your tailnet
+
+With [Tailscale](https://tailscale.com), phux lists the machines on your
+tailnet so you don't have to type their names:
+
+```sh
+phux host discover            # every Mac and Linux machine on the tailnet
+phux host discover --login    # sign in to Tailscale, or reconnect it, first
+```
+
+It reads the Tailscale client on this machine and shows each machine's
+`MagicDNS` name, whether it's online, and whether you already added it. Add
+one by that name:
+
+```sh
+phux host add mini.tail1234.ts.net --name mini --install --accept-new-host-key
+```
+
+`--accept-new-host-key` is safe here because the tailnet already vouches for
+the address. Machines that run Tailscale SSH need no SSH key.
+
+`--login` opens the Tailscale app if it isn't running, reconnects a client
+that's signed in but disconnected, or starts a sign-in and prints its link.
+It doesn't wait for the browser: run `phux host discover` again afterwards.
+
+The desktop app does all of this from **Add Machine…** (in the File menu,
+the palette, and Settings > Hosts & connections): it lists your tailnet's
+machines, signs you in to Tailscale in the browser, and shows each setup
+step as it happens.
 
 ## Using a machine
 
@@ -226,6 +262,15 @@ sides.
 
 `phux doctor` on the server machine checks the listener, the certificate,
 and whether the advertised address is reachable.
+
+**`could not install phux`.** The install script failed on the machine.
+Release builds exist for Apple silicon macOS and glibc Linux on x86_64 and
+arm64. Run the script there yourself to see all of its output.
+
+**`Host key verification failed`.** SSH has never connected to that machine.
+Connect once with `ssh` to check and save its key, or pass
+`--accept-new-host-key` when something else, such as a tailnet, vouches for
+the address.
 
 **`no answer within 5s; is UDP filtered?`** `phux host add` couldn't reach
 UDP 8788, so it registered an `ssh://` route instead. Attaching over it

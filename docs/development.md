@@ -316,8 +316,10 @@ grants. An abandoned server capture stops and saves after ten minutes;
 the server retains the newest 20 trace files. Exports use exclusive,
 owner-readable files so simultaneous captures cannot overwrite each other.
 
-`PHUX_DEV=1` is the one dev-mode switch for every phux process
-(`phux_perf::dev`). In the desktop it also turns on the performance HUD and
+`PHUX_DEV=1` is the dev-mode switch every phux process reads
+(`phux_perf::dev`). The desktop also has a saved **Developer mode** setting
+(**Settings > Developer**) that does the same without a restart. In the
+desktop, Developer mode also turns on the performance HUD and
 a dev socket, `desktop-<pid>.dev.sock` beside the server socket, that
 answers line JSON (`clients/desktop/native/src/devtools/socket.rs`).
 `phux perf --desktop [--watch S] [--json]` reads it, `phux perf trace

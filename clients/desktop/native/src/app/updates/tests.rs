@@ -327,6 +327,28 @@ fn development_builds_never_stage_or_swap(cx: &mut gpui::TestAppContext) {
     });
 }
 
+#[gpui::test]
+fn failed_restart_snapshot_keeps_the_app_open_and_the_update_staged(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    let updater = cx.new(|_| installed("0.2.0"));
+    updater.update(cx, |updater, cx| {
+        updater.prefs.manage_runtime = false;
+        updater.staged = Some(staged("0.3.0", "0.9"));
+        updater.restart_to_update(cx);
+    });
+    cx.run_until_parked();
+    updater.read_with(cx, |updater, _| {
+        assert!(!updater.relaunch);
+        assert!(!updater.busy);
+        assert!(updater.staged.is_some());
+        assert!(
+            updater
+                .message
+                .starts_with("Could not save desktop restart:")
+        );
+    });
+}
+
 #[cfg(target_os = "linux")]
 #[gpui::test]
 fn linux_install_action_is_manual_and_never_stages(cx: &mut gpui::TestAppContext) {

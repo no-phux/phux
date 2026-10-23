@@ -126,6 +126,8 @@ local Git work off the UI thread and rejects results for a stale folder.
 
 A click, a selection, a hover or a scroll never resizes or moves other UI
 unless the resize is the point, such as dragging the sidebar edge or a split.
+Tab peeking deliberately translates the workspace under its live thumbnail shelf;
+it retains the full layout allocation and clips the bottom, never resizing a PTY.
 Chrome keeps the size its style names. Something that appears on interaction
 either has space held for it or floats over the content:
 

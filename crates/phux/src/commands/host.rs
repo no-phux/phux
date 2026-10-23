@@ -57,6 +57,7 @@ use usage::ValueEnum;
 mod add;
 mod add_ssh;
 mod args;
+mod discover;
 mod enrollment;
 mod hub;
 mod list;
@@ -69,6 +70,7 @@ mod tests_add;
 
 use add::run_add;
 pub(crate) use args::HostAction;
+use discover::run_discover;
 pub(crate) use enrollment::{PreviousEnrollment, enroll_remote_over_ssh};
 use list::run_list;
 use manage::{run_attach, run_enabled, run_remove, run_rename, run_show};
@@ -118,6 +120,7 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             opts,
         } => run_add(target, endpoint.as_deref(), opts),
         HostAction::List { role, json } => run_list(*role, json.json),
+        HostAction::Discover { login, json } => run_discover(*login, json.json),
         HostAction::Remove { name, role, json } => run_remove(name, *role, json.json),
         HostAction::Show { name, role, json } => run_show(name, *role, json.json),
         HostAction::Rename {

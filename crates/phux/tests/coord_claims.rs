@@ -372,6 +372,91 @@ fn send_mail(cli: &CliStore, to: &str, body: &str) -> Value {
 }
 
 #[test]
+fn mail_durable_ids_replay_across_cli_invocations_and_conflicts_keep_recovery() {
+    let store = CliStore::new();
+    let key = "12345678123456781234567812345678";
+    let args = [
+        "mail",
+        "send",
+        "@730",
+        "-t",
+        "retry",
+        "-m",
+        "once",
+        "--operation-id",
+        key,
+        "--json",
+    ];
+    let first = store.json("@749", &args, 0);
+    let replay = store.json("@749", &args, 0);
+    assert_eq!(first["operation_id"], key);
+    assert_eq!(first["scope"]["kind"], "work_store");
+    assert_eq!(first["replayed"], false);
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(first["mail"]["id"], replay["mail"]["id"]);
+    let read = store.json("@730", &["mail", "read", "--all", "--peek", "--json"], 0);
+    assert_eq!(read["mail"].as_array().unwrap().len(), 1);
+    let conflict = store.json(
+        "@749",
+        &[
+            "mail",
+            "send",
+            "@730",
+            "-t",
+            "retry",
+            "-m",
+            "changed",
+            "--operation-id",
+            key,
+            "--json",
+        ],
+        1,
+    );
+    assert_eq!(conflict["error"]["code"], "mission_operation_conflict");
+    assert_eq!(conflict["error"]["recovery"]["operation_id"], key);
+    assert_eq!(conflict["error"]["recovery"]["scope"]["kind"], "work_store");
+    let human = store.run(
+        "@749",
+        &[
+            "mail",
+            "send",
+            "@730",
+            "-t",
+            "retry",
+            "-m",
+            "changed",
+            "--operation-id",
+            key,
+        ],
+    );
+    assert_eq!(human.status.code(), Some(1));
+    assert!(human.stdout.is_empty());
+    let diagnostic = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        diagnostic.contains("work-store operation id:"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains(key), "{diagnostic}");
+    let invalid = store.json(
+        "@749",
+        &[
+            "mail",
+            "send",
+            "@730",
+            "-t",
+            "retry",
+            "-m",
+            "bad",
+            "--operation-id",
+            "bad",
+            "--json",
+        ],
+        2,
+    );
+    assert_eq!(invalid["error"]["code"], "usage_error");
+}
+
+#[test]
 fn mail_is_stored_and_taken_once_for_the_agent_without_a_bell() {
     let cli = CliStore::new();
     let sent = send_mail(&cli, "opencode@730", "rebased");

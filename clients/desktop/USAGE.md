@@ -1,7 +1,7 @@
 ---
 audience: humans
 stability: evolving
-last-reviewed: 2026-10-18
+last-reviewed: 2026-10-22
 ---
 
 # Desktop usage
@@ -35,14 +35,19 @@ native memory accounting, allocation controls, metric filtering and traces.
 
 ### Dev mode
 
-Launch with `PHUX_DEV=1` (or `phux-desktop --dev`) for everything at once:
+**Settings > Developer** is where to debug the desktop. **Developer mode**
+there (or **Toggle Developer Mode**) turns the HUD, heap accounting and dev
+socket on or off live in every window, saved in
+`$XDG_CONFIG_HOME/phux-desktop/developer.json`. `PHUX_DEV=1` or `--dev` forces
+it on for one run. The page also shows the socket path, profiling switches,
+trace capture, **Copy diagnostics**, and the log and traces folders.
 
 - **HUD.** The top-right corner of each window shows frame rate, frame build
   time (p50, p99, max), jank (dropped frames while something animates or
   streams), CPU, memory, live and peak heap, allocations per second, and the
   server's CPU and memory, over a sparkline of the last 120 frame builds. The
   sparkline turns amber past an 8.3 ms build and red past 16.7 ms.
-  **Toggle Performance HUD** in the palette shows it without dev mode. The HUD
+  **Toggle Performance HUD** in the palette shows it without Developer mode. The HUD
   repaints twice a second, so a quiet window reads about 2 fps.
 - **Heap accounting.** Every report gains live and peak heap and allocation
   counts.
@@ -54,7 +59,7 @@ Launch with `PHUX_DEV=1` (or `phux-desktop --dev`) for everything at once:
   one line of JSON per request (`perf`, `frames`, `server`, `trace`, `hud`,
   `alloc`, `reset`, `help`). `phux perf --desktop`, `phux perf trace
   --desktop` and `phux perf hud on|off` use it, as do agents. It is created
-  `0600` and carries no terminal content.
+  `0600` and carries no terminal content. Turning Developer mode off closes it.
 
 Start the server with `PHUX_DEV=1` too for its heap figures. A desktop that
 starts the server passes its environment on.
@@ -119,6 +124,9 @@ Selecting, closing,
 double-clicking to rename, right-clicking for tab actions, and dragging to
 reorder work in every layout. The command palette also offers **Tabs on Top**,
 **Tabs on Bottom**, **Tabs in Sidebar**, and the three **Group Sessions** views.
+
+Click the selected tab or use **Peek Tabs** (⇧⌘\\) for
+[live tab miniatures](TAB_PEEK.md), without resizing your terminals.
 
 Settings, dialogs, notifications, find controls, and dropdowns use the same
 theme-aware glass treatment. **Settings > Appearance > Font family** previews

@@ -118,3 +118,49 @@ pub enum PromptError {
     #[error(transparent)]
     Transport(#[from] AttachError),
 }
+
+impl PromptError {
+    /// Structured input recovery without parsing the diagnostic or guessing an incarnation.
+    /// An acknowledged input effect still does not establish agent-task success.
+    #[must_use]
+    pub fn recovery(&self) -> crate::recovery::Recovery {
+        use crate::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
+        let (operation, certainty, action) = match self {
+            Self::DeliveryUnknown { operation_id, .. } => (
+                Some(operation_id.clone()),
+                EffectCertainty::Unknown,
+                NextAction::Reconcile,
+            ),
+            Self::LaneBusy { operation_id, .. } | Self::NotWritten { operation_id, .. } => (
+                Some(operation_id.clone()),
+                EffectCertainty::NotApplied,
+                NextAction::RetryNewOperation,
+            ),
+            Self::OccupantChanged {
+                operation_id,
+                delivery,
+                ..
+            }
+            | Self::Departed {
+                operation_id,
+                delivery,
+                ..
+            } => {
+                let certainty = match delivery {
+                    Delivery::Acked => EffectCertainty::Applied,
+                    Delivery::Refused => EffectCertainty::NotApplied,
+                    Delivery::Unknown => EffectCertainty::Unknown,
+                };
+                (Some(operation_id.clone()), certainty, NextAction::Reconcile)
+            }
+            Self::Refused(_) => (None, EffectCertainty::NotApplied, NextAction::Reconcile),
+            _ => (None, EffectCertainty::Unknown, NextAction::Reconcile),
+        };
+        Recovery::new(
+            ScopeKind::InputServerIncarnation,
+            operation,
+            certainty,
+            action,
+        )
+    }
+}

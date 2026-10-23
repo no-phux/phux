@@ -19,20 +19,29 @@ impl Desk {
                 return;
             }
         }
+        if id == "tab-peek" {
+            self.toggle_tab_peek(window, cx);
+            return;
+        }
+        self.dismiss_tab_peek(window, cx);
         if let Some(classified) = settings::classify_command(id) {
-            use settings::BoundAction::*;
-            match classified {
-                Ignore => {}
-                Send(text) => self.send_text(&text),
-                WriteFile { region, mode } => self.write_file(&region, &mode, cx),
-                FontSize(size) => self.update_prefs(|prefs| prefs.font_size = size, cx),
-                ScrollLines(rows) => self.scroll(Scroll::Delta(rows as i64), cx),
-                PromptJump(prompts) => self.scroll(Scroll::Prompt(prompts as i64), cx),
-            }
+            self.run_bound_action(classified, cx);
             return;
         }
         if !self.run_organization(id, window, cx) {
             self.run_catalog(id, window, cx);
+        }
+    }
+
+    fn run_bound_action(&mut self, action: settings::BoundAction, cx: &mut Context<Self>) {
+        use settings::BoundAction::*;
+        match action {
+            Ignore => {}
+            Send(text) => self.send_text(&text),
+            WriteFile { region, mode } => self.write_file(&region, &mode, cx),
+            FontSize(size) => self.update_prefs(|prefs| prefs.font_size = size, cx),
+            ScrollLines(rows) => self.scroll(Scroll::Delta(rows as i64), cx),
+            PromptJump(prompts) => self.scroll(Scroll::Prompt(prompts as i64), cx),
         }
     }
 
@@ -145,6 +154,7 @@ impl Desk {
             }
             "add-host" => self.modal = Modal::AddHost,
             "copy-diagnostics" => self.copy_diagnostics(cx),
+            "developer-mode" => self.toggle_developer_mode(cx),
             "perf-hud" => self.toggle_hud(cx),
             "perf-trace" => self.capture_trace(cx),
             // Opening/closing windows must wait until this desk's window lease ends.
@@ -208,6 +218,7 @@ impl Desk {
     /// Every command and pointer action ends here: modal controls take the
     /// keyboard, or the terminal gets it back, and a changed layout is saved.
     pub(crate) fn after_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settle_tab_peek();
         self.take_notices();
         self.retain_panes();
         if self.modal != self.prepared {
@@ -226,6 +237,10 @@ impl Desk {
     /// Keys the window owns outside its key bindings. Escape closes the modal,
     /// else the find bar that holds the keys, and otherwise reaches the terminal.
     pub fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab_peek_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         if self.modal == Modal::AgentFleet && self.fleet_key(event, window, cx) {
             cx.stop_propagation();
             return;

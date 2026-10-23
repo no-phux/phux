@@ -1670,23 +1670,24 @@ directions; this verb absorbs the split into a flag.
 Usage: phux host <SUBCOMMAND>
 
 Commands:
-  add      Add a machine so `phux attach NAME` reaches it.
-  attach   Attach to a registered remote host (same as `phux attach NAME`).
-  disable  Disable a satellite without forgetting it; a running hub drops its
-           link.
-  enable   Enable a satellite; a running local hub dials it now.
-  join     Join a hub as a satellite with the code `phux host ticket` printed.
-  ls       List registered machines from both registries. [aliases: list]
-  rename   Rename a registered machine without changing its route or
-           credentials.
-  renew    Renew a remote's workload client certificate over ssh.
-  rm       Remove a registered machine. Its token file is left in place.
-           [aliases: remove]
-  show     Show a registered machine, including its route and credential
-           references.
-  ticket   Mint a one-time code a machine this hub cannot reach joins with.
-  upgrade  Move registered remotes from `wss://` (or ssh) onto QUIC.
-  help     Print this message or the help of the given subcommand(s)
+  add       Add a machine so `phux attach NAME` reaches it.
+  attach    Attach to a registered remote host (same as `phux attach NAME`).
+  disable   Disable a satellite without forgetting it; a running hub drops its
+            link.
+  discover  List the machines on this computer's Tailscale network.
+  enable    Enable a satellite; a running local hub dials it now.
+  join      Join a hub as a satellite with the code `phux host ticket` printed.
+  ls        List registered machines from both registries. [aliases: list]
+  rename    Rename a registered machine without changing its route or
+            credentials.
+  renew     Renew a remote's workload client certificate over ssh.
+  rm        Remove a registered machine. Its token file is left in place.
+            [aliases: remove]
+  show      Show a registered machine, including its route and credential
+            references.
+  ticket    Mint a one-time code a machine this hub cannot reach joins with.
+  upgrade   Move registered remotes from `wss://` (or ssh) onto QUIC.
+  help      Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -1744,6 +1745,19 @@ Flags:
                                  non-interactive ssh shell's `PATH` does not
                                  find it (a Homebrew or Nix install).
                                  (default: phux)
+      --install                  Install phux on the host with the official
+                                 installer when it is missing, or update it with
+                                 its own `phux update` when it is older than
+                                 this one, on this machine's release channel.
+                                 The installer puts it in the host's
+                                 `~/.local/bin`; an update keeps the host's
+                                 panes.
+      --accept-new-host-key      Let ssh record the host key of a machine it has
+                                 never connected to
+                                 (`StrictHostKeyChecking=accept-new`) instead of
+                                 refusing it; a key that changed is still
+                                 refused. For a host whose address something
+                                 else vouches for, such as a Tailscale peer.
       --token-file <PATH>        Manual form only: absolute path to a file
                                  holding the pairing token minted by `phux pair`
                                  on the other machine.
@@ -1809,6 +1823,33 @@ Arguments:
   <NAME>  Registered satellite name.
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host discover`
+
+```text
+List the machines on this computer's Tailscale network.
+
+Reads the local Tailscale client (`tailscale status --json`): whether it is
+signed in and connected, every other machine on the tailnet, which run an OS
+phux ships for, and which are already registered. Set one up with `phux host add
+DNS_NAME --name NAME --install`. Nothing is registered or contacted. `--login`
+first brings the client up: it opens the macOS app, reconnects a stopped client,
+or starts a browser sign-in and prints its link (`tailscale.auth_url` under
+`--json`), returning once the link is known while the sign-in finishes in the
+browser.
+
+Usage: phux host discover [--login] [--json]
+
+Flags:
+      --login          Sign in to Tailscale, or reconnect it, before listing.
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
@@ -2459,17 +2500,20 @@ Arguments:
   <TO>…  Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name.
 
 Flags:
-  -m, --message <TEXT>  The message. `-` reads it from stdin.
-  -t, --thread <SLUG>   Thread slug, such as the branch or task the message is
-                        about.
-      --as <ADDRESS>    Speak as this address instead of this pane.
-      --json            Emit stable, versioned JSON on stdout instead of the
-                        human view. On failure, stdout stays empty and stderr
-                        carries one JSON error object.
-  -h, --help            Print help
+  -m, --message <TEXT>      The message. `-` reads it from stdin.
+  -t, --thread <SLUG>       Thread slug, such as the branch or task the message
+                            is about.
+      --operation-id <KEY>  Durable retry identity: nonzero 32-hex. Reuse only
+                            with identical sender, recipients, thread and body
+                            in the same work store.
+      --as <ADDRESS>        Speak as this address instead of this pane.
+      --json                Emit stable, versioned JSON on stdout instead of the
+                            human view. On failure, stdout stays empty and
+                            stderr carries one JSON error object.
+  -h, --help                Print help
 
 Global flags:
-      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mail wait`
@@ -3177,10 +3221,11 @@ Does not start a server.
 `phux perf trace` records a span trace of the server for Perfetto; `phux perf
 alloc on|off` switches its heap accounting.
 
-`--desktop` reads a phux desktop running in dev mode (`PHUX_DEV=1`) instead: its
-frame rate, frame build times, jank, CPU, memory, heap and every desktop
-histogram. `phux perf trace --desktop` records the desktop and the server onto
-one timeline; `phux perf hud on|off` shows the desktop's in-window HUD.
+`--desktop` reads a phux desktop running in dev mode (`PHUX_DEV=1`, or Developer
+mode in its Settings) instead: its frame rate, frame build times, jank, CPU,
+memory, heap and every desktop histogram. `phux perf trace --desktop` records
+the desktop and the server onto one timeline; `phux perf hud on|off` shows the
+desktop's in-window HUD.
 
 Usage: phux perf [FLAGS] [SUBCOMMAND]
 

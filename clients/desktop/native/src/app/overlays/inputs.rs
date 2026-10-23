@@ -111,6 +111,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
                 cx,
             );
             target.update(cx, |input, cx| input.focus(window, cx));
+            desk.prepare_add_machine(cx);
         }
         Modal::KillSession { .. }
         | Modal::NativeLaunch
@@ -191,7 +192,7 @@ pub(super) fn input_with(
 }
 
 impl Desk {
-    pub(super) fn input_entity(&self, slot: InputSlot) -> Option<Entity<InputState>> {
+    pub(crate) fn input_entity(&self, slot: InputSlot) -> Option<Entity<InputState>> {
         self.modal_inputs
             .iter()
             .find(|(owned, _, _)| *owned == slot)

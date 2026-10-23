@@ -195,6 +195,15 @@ impl Desktop {
             self.performance = None;
             return;
         }
+        // A staged update installs on quit. Keep the final Desk alive until
+        // the updater's quit observer snapshots it, before Desk releases views.
+        if self.opened().count() == 1
+            && self.updates.read(cx).staged.is_some()
+            && self.opened().any(|opened| opened.handle.window_id() == id)
+        {
+            cx.quit();
+            return;
+        }
         let closed = if let Some(index) = self
             .windows
             .iter()

@@ -205,7 +205,11 @@ async fn create_by_record(
         }
         crate::org::OrgOutcome::Refused(refusal) => Ok(CreateOutcome::Refused(refusal)),
         crate::org::OrgOutcome::Error { message, .. } => Ok(CreateOutcome::ReadRefused(message)),
-        _ => Ok(CreateOutcome::NotRegistered),
+        _ => Err(CreateSessionError::Org(
+            crate::org::OrgError::OutcomeUnknown {
+                operation: Some(operation),
+            },
+        )),
     }
 }
 

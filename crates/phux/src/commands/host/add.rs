@@ -128,6 +128,10 @@ pub(super) fn ssh_form_flag_given(opts: &AddOpts) -> Option<&'static str> {
         Some("--no-service")
     } else if opts.remote_phux != "phux" {
         Some("--remote-phux")
+    } else if opts.install {
+        Some("--install")
+    } else if opts.accept_new_host_key {
+        Some("--accept-new-host-key")
     } else if opts.quic_port != enroll::default_quic_port() {
         Some("--quic-port")
     } else {
@@ -286,22 +290,47 @@ pub(super) fn add_failure_error(
     // asked for, or following it would register into the wrong registry.
     let role_flag = role.flag();
     match failure {
-        EnrollFailure::SshUnreachable(detail) => CliError::new(
-            codes::REGISTRY,
-            format!("cannot reach {ssh_host} over ssh: {detail}"),
-            format!(
+        EnrollFailure::SshUnreachable(detail) => {
+            let check = format!(
                 "check that `ssh {ssh_host}` works from this machine, then rerun \
                  `phux host add {ssh_host}{role_flag}`; or register it without contacting it: \
                  `phux host add {ssh_host}{role_flag} --ssh-only`"
-            ),
-        ),
+            );
+            // Nothing listening on the ssh port is the usual first-time
+            // blocker on a Mac or a fresh tailnet machine.
+            let remedy = if detail.contains("Connection refused") {
+                format!(
+                    "nothing accepts ssh there: on a Mac turn on Remote Login (System Settings > \
+                     General > Sharing), on Linux start sshd, or on a tailnet run \
+                     `tailscale set --ssh` there; {check}"
+                )
+            } else {
+                check
+            };
+            CliError::new(
+                codes::REGISTRY,
+                format!("cannot reach {ssh_host} over ssh: {detail}"),
+                remedy,
+            )
+        }
         EnrollFailure::MissingPhux(detail) => CliError::new(
             codes::REGISTRY,
             format!("{ssh_host} has no phux on the PATH its ssh shell sees: {detail}"),
             format!(
-                "install it there: `ssh {ssh_host} 'curl -fsSL https://phux.sh/install | sh'`; \
+                "let `phux host add {ssh_host}{role_flag} --install` install it, or install it there \
+                 yourself: `ssh {ssh_host} 'curl -fsSL https://phux.sh/install | sh'`; \
                  or, if it is installed where a non-interactive shell does not look, name it: \
                  `phux host add {ssh_host}{role_flag} --remote-phux ~/.local/bin/phux`"
+            ),
+        ),
+        EnrollFailure::InstallFailed(detail) => CliError::new(
+            codes::REGISTRY,
+            format!("could not install phux on {ssh_host}: {detail}"),
+            format!(
+                "run the installer there to see all of its output: \
+                 `ssh {ssh_host} 'curl -fsSL https://phux.sh/install | sh'` \
+                 (releases exist for Apple silicon macOS and glibc Linux on x86_64 and arm64), \
+                 then rerun `phux host add {ssh_host}{role_flag}`"
             ),
         ),
         EnrollFailure::Pair(detail) => CliError::new(

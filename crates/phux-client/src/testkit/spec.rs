@@ -11,6 +11,14 @@ use super::ScriptedServer;
 use super::{EndOfScript, FIXTURE_BOOTSTRAP_ID, FIXTURE_STREAM_ID, OrgFixture, ScriptSpec};
 
 impl ScriptSpec {
+    /// Inject one reply payload for every mutating organization request.
+    /// Frame ordering and correlation stay those of the reference server.
+    #[must_use]
+    pub fn mutation_reply(mut self, reply: CommandResult) -> Self {
+        self.mutation_reply = Some(reply);
+        self
+    }
+
     /// An empty script: handshake answered, every command acked `Ok`.
     #[must_use]
     pub fn new() -> Self {

@@ -139,10 +139,22 @@ fn set_metadata_reply(
     Vec::new()
 }
 
+/// Fault injection changes the payload, never command correlation or ordering.
+fn injected_mutation_reply(command: &Command, spec: &ScriptSpec) -> Option<CommandResult> {
+    if !command.is_organization() || command.idempotency_key().is_none() {
+        return None;
+    }
+    spec.mutation_reply.clone()
+}
+
 /// The reply sequence for one `COMMAND`, pre-ack pushes first.
 fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> Vec<FrameKind> {
     // Every command ack is preceded by whatever was queued.
     let mut out = std::mem::take(&mut spec.pre_ack);
+    if let Some(result) = injected_mutation_reply(command, spec) {
+        out.push(FrameKind::CommandResult { request_id, result });
+        return out;
+    }
     match command {
         Command::AttachResource { .. } => {
             assert!(

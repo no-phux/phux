@@ -19,6 +19,8 @@ pub(super) fn opts() -> AddOpts {
         no_service: false,
         ssh_only: false,
         remote_phux: "phux".to_owned(),
+        install: false,
+        accept_new_host_key: false,
         token_file: None,
         cert_fingerprint: None,
         tls_server_name: None,
@@ -140,6 +142,26 @@ fn add_mode_refuses_flags_from_the_other_form() {
         "got {}",
         err.remedy
     );
+    for (flag, opts) in [
+        (
+            "--install",
+            AddOpts {
+                install: true,
+                ..opts()
+            },
+        ),
+        (
+            "--accept-new-host-key",
+            AddOpts {
+                accept_new_host_key: true,
+                ..opts()
+            },
+        ),
+    ] {
+        let err = AddMode::classify("quic://mini:8788", None, &opts)
+            .expect_err("an ssh-form flag on the manual form");
+        assert!(err.message.contains(flag), "{flag}: {}", err.message);
+    }
 
     let credentials = AddOpts {
         cert_fingerprint: Some("ab".repeat(32)),
@@ -193,12 +215,50 @@ fn add_failures_carry_pasteable_remedies() {
     let err = add_failure_error(
         "mini",
         HostRole::Remote,
+        &EnrollFailure::SshUnreachable(
+            "ssh: connect to host mini port 22: Connection refused".to_owned(),
+        ),
+    );
+    assert!(
+        err.remedy.contains("Remote Login") && err.remedy.contains("tailscale set --ssh"),
+        "a refused port 22 says how to turn ssh on: {}",
+        err.remedy
+    );
+
+    let err = add_failure_error(
+        "mini",
+        HostRole::Remote,
         &EnrollFailure::MissingPhux("`phux` was not found on mini".to_owned()),
     );
     assert!(err.message.contains("no phux"), "got {}", err.message);
     assert!(
         err.remedy.contains("https://phux.sh/install") && err.remedy.contains("--remote-phux"),
         "the remedy names the install one-liner and the PATH escape: {}",
+        err.remedy
+    );
+
+    assert!(
+        err.remedy.contains("`phux host add mini --install`"),
+        "the remedy offers to install it: {}",
+        err.remedy
+    );
+
+    let err = add_failure_error(
+        "mini",
+        HostRole::Remote,
+        &EnrollFailure::InstallFailed("the phux installer failed: unsupported platform".to_owned()),
+    );
+    assert!(
+        err.message.contains("could not install phux on mini")
+            && err.message.contains("unsupported platform"),
+        "got {}",
+        err.message
+    );
+    assert!(
+        err.remedy
+            .contains("ssh mini 'curl -fsSL https://phux.sh/install | sh'")
+            && !err.remedy.contains("--install"),
+        "a failed install is not answered with another --install: {}",
         err.remedy
     );
 

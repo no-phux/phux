@@ -12,6 +12,10 @@ use super::HostRole;
 /// The flags `phux host add` takes, shared with its hidden `enroll`
 /// spelling.
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a usage flag struct; each bool is one independent CLI switch"
+)]
 pub(crate) struct AddOpts {
     /// Which registry the machine lands in: a server you attach to
     /// (`remote`, the default) or a peer this hub dials for its users.
@@ -45,6 +49,20 @@ pub(crate) struct AddOpts {
     /// shell's `PATH` does not find it (a Homebrew or Nix install).
     #[usage(long, value_name = "PATH", default = "phux")]
     pub(crate) remote_phux: String,
+
+    /// Install phux on the host with the official installer when it is
+    /// missing, or update it with its own `phux update` when it is older
+    /// than this one, on this machine's release channel. The installer puts
+    /// it in the host's `~/.local/bin`; an update keeps the host's panes.
+    #[usage(long, conflicts("--ssh-only", "--remote-phux"))]
+    pub(crate) install: bool,
+
+    /// Let ssh record the host key of a machine it has never connected to
+    /// (`StrictHostKeyChecking=accept-new`) instead of refusing it; a key
+    /// that changed is still refused. For a host whose address something
+    /// else vouches for, such as a Tailscale peer.
+    #[usage(long, conflicts("--ssh-only"))]
+    pub(crate) accept_new_host_key: bool,
 
     /// Manual form only: absolute path to a file holding the pairing token
     /// minted by `phux pair` on the other machine.
@@ -128,6 +146,25 @@ pub(crate) enum HostAction {
         /// Show only this registry.
         #[usage(long, value_enum)]
         role: Option<HostRole>,
+
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+
+    /// List the machines on this computer's Tailscale network.
+    ///
+    /// Reads the local Tailscale client (`tailscale status --json`): whether
+    /// it is signed in and connected, every other machine on the tailnet,
+    /// which run an OS phux ships for, and which are already registered. Set
+    /// one up with `phux host add DNS_NAME --name NAME --install`. Nothing is
+    /// registered or contacted. `--login` first brings the client up: it opens
+    /// the macOS app, reconnects a stopped client, or starts a browser sign-in
+    /// and prints its link (`tailscale.auth_url` under `--json`), returning
+    /// once the link is known while the sign-in finishes in the browser.
+    Discover {
+        /// Sign in to Tailscale, or reconnect it, before listing.
+        #[usage(long)]
+        login: bool,
 
         #[usage(flatten)]
         json: JsonOpt,

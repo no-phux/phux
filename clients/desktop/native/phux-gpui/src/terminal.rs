@@ -10,6 +10,7 @@ pub mod geometry;
 mod input_host;
 mod laser;
 mod paint;
+mod preview;
 pub mod settings;
 
 use std::rc::Rc;
@@ -28,6 +29,7 @@ use phux_protocol::ResourceId;
 pub use actions::HostAction;
 pub use paint::{GlyphObservation as PaintedGlyph, Observation as PaintedFrame};
 pub use settings::Settings;
+pub use preview::Preview;
 
 /// Shell-facing signals that are not input. Pointer delivery stays native.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -47,7 +47,10 @@ mod commands;
 mod input;
 mod labels;
 mod lifecycle;
+mod machines;
 mod prefs;
+mod request;
+pub use request::{OpenRequest, WindowRole};
 mod search;
 mod sessions;
 mod state;
@@ -56,6 +59,7 @@ mod tests;
 mod work;
 
 pub(crate) use labels::*;
+pub(crate) use machines::{AddMachine, TailnetView};
 
 const SEARCH_BYTES: usize = 8 * 1024 * 1024;
 const UPLOAD_MOVED: &str = "The terminal changed before the upload started. Nothing was pasted.";
@@ -77,34 +81,6 @@ fn agent_attention(info: &AgentInfo) -> super::notifications::AgentAttention {
         state: info.state,
         attention: info.attention,
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WindowRole {
-    #[default]
-    Main,
-    Fresh,
-    Quick,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct OpenRequest {
-    pub role: WindowRole,
-    pub session: String,
-    pub home_key: Option<SessionKey>,
-    /// Spawn a new terminal when nothing is restored, instead of showing the home pane.
-    pub fresh: bool,
-    pub initial_terminal: Option<ResourceId>,
-    pub layout_path: PathBuf,
-    pub legacy_layout: Option<PathBuf>,
-    /// Default stores adopt the session key after the first topology; explicit
-    /// layout paths and fresh windows keep their caller-selected store.
-    pub stable_layout: bool,
-    pub startup_error: Option<String>,
-    /// The main window's display, which a quick window borrows.
-    pub main_display: Option<DisplayPrefs>,
-    /// A host from the remote registry. Absent is the local server.
-    pub remote: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -225,6 +201,7 @@ pub struct Desk {
     layout_migration_pending: bool,
     last_saved: Option<persist::SavedLayout>,
     panes: Panes,
+    pub(crate) tab_peek: super::tab_peek::TabPeek,
     agent_seen: HashMap<ResourceId, super::notifications::AgentAttention>,
     agent_epoch: Option<u64>,
     /// Shell commands in flight, for the finished-in-the-background alert.
@@ -276,8 +253,8 @@ pub struct Desk {
     pub(crate) hosts: Vec<host::RemoteHost>,
     pub(crate) fleet: super::fleet::Fleet,
     pub(crate) fleet_view: super::fleet::dashboard::State,
-    /// A host enrollment in flight, by the target it was given.
-    pub(crate) host_adding: Option<String>,
+    /// The Add Machine dialog: the tailnet and a setup in flight.
+    pub(crate) add_machine: AddMachine,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
     /// The glass menu showing, by the trigger that opened it.

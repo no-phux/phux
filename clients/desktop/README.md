@@ -24,7 +24,9 @@ in, or the most recent session. It never creates a session on its own.
 
 The sidebar lists every session on this machine and on each host
 registered with `phux host add`, grouped by repository, by machine, or
-flat. One window shows one session; selecting another restores its layout
+flat. **Add Machine…** lists the Mac and Linux machines on your Tailscale
+network (signing you in to Tailscale first if needed), installs or updates
+phux on the one you pick over ssh, and shows each setup step. One window shows one session; selecting another restores its layout
 in place without touching the processes. Connections stay open across host
 switches, retaining the last session on each host while only the selected
 session is drawn. Agents that need you are marked
@@ -47,6 +49,7 @@ first, then ends all its processes and deletes the session.
 | ⌥⌘ arrows, ⌘[ ⌘] | focus a direction, cycle panes                           |
 | ⇧⌘↩              | zoom                                                     |
 | ⌘1-⌘9, ⇧⌘[ ⇧⌘]   | select a tab                                             |
+| ⇧⌘\\             | peek live tab miniatures without resizing terminals      |
 | ⌘F, ⌘G, ⇧⌘G, ⌘E  | find, next, previous, find selection                     |
 | ⌘↑ ⌘↓            | previous / next shell prompt (needs OSC 133 marks)       |
 | ⇧⌘A              | jump to the agent that most needs you                    |
@@ -77,13 +80,18 @@ agents read as an attachment.
 **Settings > Updates** checks the desktop and phux releases at launch and
 every few hours. One **Update phux & Desktop** click downloads and verifies the
 desktop, updates the CLI and hands the live server off, then restarts into the
-new desktop; sessions keep running. **Update phux with Desktop** (on by
+new desktop; sessions keep running. The update reopens your windows on the
+same hosts and sessions, with their tabs, splits and focused panes, and brings
+the foreground window back to the front. Explicit launch targets take priority
+over this one-time restoration. **Update phux with Desktop** (on by
 default) turns the phux half off. Linux desktop updates rerun the installer.
 
 Logs: `~/Library/Logs/phux-desktop.log` on macOS,
 `$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, redacted and rotated.
 **Copy Diagnostics** in the palette copies versions, server id, host, and
-recent errors, without terminal content.
+recent errors, without terminal content. **Settings > Developer** gathers
+these with Developer mode, profiling and traces
+([dev mode](USAGE.md#dev-mode)).
 
 ## Using it
 
