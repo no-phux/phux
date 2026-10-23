@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::{args, project_error, run_output};
+use super::{args, error_code, project_error, run_output};
 
 /// A machine on this computer's tailnet, from `phux host discover --json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,10 +93,11 @@ fn parse_tailnet(output: &[u8]) -> Result<Tailnet, String> {
     })
 }
 
-/// The CLI's JSON error reads as its message and remedy; an older CLI
-/// without `host discover` is told to update.
+/// The CLI's JSON error reads as its message and remedy. A usage error
+/// means the CLI does not know the invocation this app builds: one older
+/// than `host discover`, told to update.
 fn cli_error(error: &str) -> String {
-    if error.contains("discover") && (error.contains("unrecognized") || error.contains("unknown")) {
+    if error_code(error).as_deref() == Some("usage_error") {
         return "Finding machines on your tailnet needs a newer phux CLI. Update it from Settings > Updates.".into();
     }
     project_error(error.to_owned())
@@ -151,5 +152,13 @@ mod tests {
         assert!(parse_tailnet(b"{}").is_err());
         assert!(cli_error(r#"{"error":{"code":"usage_error","message":"unrecognized subcommand 'discover'"},"exit_code":2}"#)
             .contains("newer phux CLI"));
+        assert!(cli_error(r#"{"error":{"code":"usage_error","message":"unexpected argument '--login' found"},"exit_code":2}"#)
+            .contains("newer phux CLI"));
+        assert_eq!(
+            cli_error(
+                r#"{"error":{"code":"tailnet","message":"`tailscale login` failed: denied"},"remedy":"sign in from the app","exit_code":1}"#
+            ),
+            "`tailscale login` failed: denied\nsign in from the app"
+        );
     }
 }
