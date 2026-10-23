@@ -7,49 +7,10 @@
 //! and sub-records stay positional inside a field's value.
 
 /// `HELLO` body fields (`docs/spec/proto.md` §6.1).
-pub mod hello {
-    /// Free-form client identifier string.
-    pub const CLIENT_NAME: u32 = 1;
-    /// Protocol major version (`u16`).
-    pub const PROTOCOL_MAJOR: u32 = 2;
-    /// Protocol minor version (`u16`).
-    pub const PROTOCOL_MINOR: u32 = 3;
-    /// Protocol patch version (`u16`).
-    pub const PROTOCOL_PATCH: u32 = 4;
-    /// `ClientCapabilities` blob (positional sub-record).
-    pub const CLIENT_CAPS: u32 = 5;
-    /// Frame compressions the client accepts (`u8` bitset); absent = none.
-    /// Top-level because the `CLIENT_CAPS` byte order is fixed (§6.2).
-    pub const COMPRESSION: u32 = 6;
-    // Ids 7 and 8 are retired-unshipped (ADR-0116) and stay reserved.
-    /// Positional `SshOrigin` stamped by `phux stdio-bridge`
-    /// (`docs/spec/L3.md` §3.9); honored only from a same-uid Unix peer.
-    pub const SSH_ORIGIN: u32 = 9;
-    /// Client can demultiplex QUIC stream-per-Terminal; absent = false.
-    pub const QUIC_STREAMS: u32 = 10;
-}
+pub mod hello;
 
 /// `HELLO_OK` body fields (`docs/spec/proto.md` §6.1).
-pub mod hello_ok {
-    /// Selected protocol major version (`u16`).
-    pub const PROTOCOL_MAJOR: u32 = 1;
-    /// Selected protocol minor version (`u16`).
-    pub const PROTOCOL_MINOR: u32 = 2;
-    /// Selected protocol patch version (`u16`).
-    pub const PROTOCOL_PATCH: u32 = 3;
-    /// `ServerCapabilities` blob (positional sub-record).
-    pub const SERVER_CAPS: u32 = 4;
-    /// Opaque server identity bytes.
-    pub const SERVER_ID: u32 = 5;
-    /// Selected explicit `BootstrapProfile` sub-record.
-    pub const SELECTED_PROFILE: u32 = 6;
-    /// Negotiated maximum `BOOTSTRAP_CHUNK.payload` bytes (`u32`).
-    pub const MAX_CHUNK_BYTES: u32 = 7;
-    /// Negotiated maximum `HISTORY_PAGE.payload` bytes (`u32`).
-    pub const MAX_HISTORY_PAGE_BYTES: u32 = 8;
-    /// Selected frame compression (`u8` tag); absent or `0` = none.
-    pub const COMPRESSION: u32 = 9;
-}
+pub mod hello_ok;
 
 /// `PING` / `PONG` body fields (`docs/spec/proto.md` §7.4).
 pub mod ping {
@@ -72,20 +33,7 @@ pub mod terminal_output {
 }
 
 /// `ATTACH` body fields (`docs/spec/proto.md` §7.1 / §13).
-pub mod attach {
-    /// `AttachTarget` tagged union (positional).
-    pub const TARGET: u32 = 1;
-    /// `ViewportInfo` (positional sub-record).
-    pub const VIEWPORT: u32 = 2;
-    /// `request_scrollback: bool`.
-    pub const REQUEST_SCROLLBACK: u32 = 3;
-    /// `scrollback_limit_lines: u32`.
-    pub const SCROLLBACK_LIMIT_LINES: u32 = 4;
-    /// Client-chosen attach correlation id (`u32`).
-    pub const ATTACH_ID: u32 = 5;
-    /// `role_policy: u8` (ADR-0127); absent = `{ PRIMARY, NEVER }`.
-    pub const ROLE_POLICY: u32 = 6;
-}
+pub mod attach;
 
 /// `INPUT_KEY` body fields (`docs/spec/input.md` §2).
 pub mod input_key {
@@ -146,14 +94,7 @@ pub mod viewport_resize {
 }
 
 /// `ATTACHED` body fields (`docs/spec/L1.md` §8).
-pub mod attached {
-    /// Full `SessionSnapshot` (positional sub-record).
-    pub const SNAPSHOT: u32 = 1;
-    /// Server-allocated `ClientId` for this attachment (`u32`).
-    pub const INITIAL_CLIENT_ID: u32 = 2;
-    /// Client-chosen attach correlation id (`u32`).
-    pub const ATTACH_ID: u32 = 3;
-}
+pub mod attached;
 
 /// `ATTACH_READY` body fields (`docs/spec/L1.md` §8).
 pub mod attach_ready {
@@ -162,56 +103,13 @@ pub mod attach_ready {
 }
 
 /// `HISTORY_REQUEST` body fields (`docs/spec/L1.md` §4.5).
-pub mod history_request {
-    /// Target `ResourceId`.
-    pub const TERMINAL_ID: u32 = 1;
-    /// Logical `StreamId`.
-    pub const STREAM_ID: u32 = 2;
-    /// Replica `BootstrapId`.
-    pub const BOOTSTRAP_ID: u32 = 3;
-    /// Opaque current cursor.
-    pub const CURSOR: u32 = 4;
-    /// Requested maximum page bytes (`u32`); zero is retryably rejected.
-    pub const MAX_BYTES: u32 = 5;
-    /// Requested maximum page rows (`u32`); zero is retryably rejected.
-    pub const MAX_ROWS: u32 = 6;
-}
+pub mod history_request;
 
 /// `BOOTSTRAP_BEGIN` body fields (`docs/spec/L1.md` §4.3).
-pub mod bootstrap_begin {
-    /// Target `ResourceId`.
-    pub const TERMINAL_ID: u32 = 1;
-    /// Logical `StreamId`.
-    pub const STREAM_ID: u32 = 2;
-    /// Replica `BootstrapId`.
-    pub const BOOTSTRAP_ID: u32 = 3;
-    /// Concrete bootstrap codec.
-    pub const CODEC: u32 = 4;
-    /// Authoritative columns (`u16`).
-    pub const COLS: u32 = 5;
-    /// Authoritative rows (`u16`).
-    pub const ROWS: u32 = 6;
-    /// Live emitter (`OutputMode`).
-    pub const OUTPUT_MODE: u32 = 7;
-    /// Actor cut sequence (`u64`).
-    pub const BASE_SEQ: u32 = 8;
-    /// Last agent record committed by the consumer (`u64`); agent/raw only.
-    pub const RESUME_AFTER_SEQ: u32 = 9;
-}
+pub mod bootstrap_begin;
 
 /// `BOOTSTRAP_CHUNK` body fields (`docs/spec/L1.md` §4.3).
-pub mod bootstrap_chunk {
-    /// Target `ResourceId`.
-    pub const TERMINAL_ID: u32 = 1;
-    /// Logical `StreamId`.
-    pub const STREAM_ID: u32 = 2;
-    /// Replica `BootstrapId`.
-    pub const BOOTSTRAP_ID: u32 = 3;
-    /// Zero-based contiguous chunk sequence (`u32`).
-    pub const CHUNK_SEQ: u32 = 4;
-    /// Opaque checkpoint bytes.
-    pub const PAYLOAD: u32 = 5;
-}
+pub mod bootstrap_chunk;
 
 /// `FRAME_COMPRESSED` body fields (`docs/spec/proto.md` §6.4).
 pub mod frame_compressed {
@@ -224,82 +122,19 @@ pub mod frame_compressed {
 }
 
 /// `BOOTSTRAP_READY` body fields (`docs/spec/L1.md` §4.3).
-pub mod bootstrap_ready {
-    /// Target `ResourceId`.
-    pub const TERMINAL_ID: u32 = 1;
-    /// Logical `StreamId`.
-    pub const STREAM_ID: u32 = 2;
-    /// Replica `BootstrapId`.
-    pub const BOOTSTRAP_ID: u32 = 3;
-    /// Optional opaque history cursor.
-    pub const HISTORY_CURSOR: u32 = 4;
-}
+pub mod bootstrap_ready;
 
 /// `HISTORY_PAGE` body fields (`docs/spec/L1.md` §4.5).
-pub mod history_page {
-    /// Target `ResourceId`.
-    pub const TERMINAL_ID: u32 = 1;
-    /// Logical `StreamId`.
-    pub const STREAM_ID: u32 = 2;
-    /// Replica `BootstrapId`.
-    pub const BOOTSTRAP_ID: u32 = 3;
-    /// Opaque cursor consumed by this page.
-    pub const CURSOR: u32 = 4;
-    /// Optional cursor for the next older page.
-    pub const NEXT_CURSOR: u32 = 5;
-    /// Opaque selected-codec page bytes.
-    pub const PAYLOAD: u32 = 6;
-    /// Non-zero page sequence within one generation-bound cursor lineage.
-    pub const PAGE_SEQ: u32 = 7;
-    /// Number of native history rows encoded by the payload (`u32`).
-    pub const ROWS: u32 = 8;
-}
+pub mod history_page;
 
 /// `BOOTSTRAP_TOMBSTONE` body fields (`docs/spec/L1.md` §4.6).
-pub mod bootstrap_tombstone {
-    /// Target `ResourceId`.
-    pub const TERMINAL_ID: u32 = 1;
-    /// Logical `StreamId`.
-    pub const STREAM_ID: u32 = 2;
-    /// Replica `BootstrapId`.
-    pub const BOOTSTRAP_ID: u32 = 3;
-    /// `TombstoneReason` tag (`u8`).
-    pub const REASON: u32 = 4;
-    /// Highest valid live sequence (`u64`).
-    pub const LAST_VALID_SEQ: u32 = 5;
-}
+pub mod bootstrap_tombstone;
 
 /// `HISTORY_TOMBSTONE` body fields (`docs/spec/L1.md` §4.5).
-pub mod history_tombstone {
-    /// Target `ResourceId`.
-    pub const TERMINAL_ID: u32 = 1;
-    /// Logical `StreamId`.
-    pub const STREAM_ID: u32 = 2;
-    /// Replica `BootstrapId`.
-    pub const BOOTSTRAP_ID: u32 = 3;
-    /// Opaque invalidated history cursor.
-    pub const CURSOR: u32 = 4;
-    /// `HistoryTombstoneReason` tag (`u8`).
-    pub const REASON: u32 = 5;
-}
+pub mod history_tombstone;
 
 /// `HISTORY_REJECTED` body fields (`docs/spec/L1.md` §4.5).
-pub mod history_rejected {
-    /// Target `ResourceId`.
-    pub const TERMINAL_ID: u32 = 1;
-    /// Logical `StreamId`.
-    pub const STREAM_ID: u32 = 2;
-    /// Replica `BootstrapId`.
-    pub const BOOTSTRAP_ID: u32 = 3;
-    /// Opaque history cursor that was not advanced.
-    pub const CURSOR: u32 = 4;
-    /// `HistoryRejectionReason` tag (`u8`).
-    pub const REASON: u32 = 5;
-    /// Non-zero required retry byte limit (`u32`).
-    pub const REQUIRED_BYTES: u32 = 6;
-    /// Non-zero required retry row limit (`u32`).
-    pub const REQUIRED_ROWS: u32 = 7;
-}
+pub mod history_rejected;
 
 /// `DETACHED` body fields (`docs/spec/proto.md` §7.2); both optional, so an
 /// empty body is valid.
@@ -644,181 +479,21 @@ pub mod session_state {
 /// One id space serves commands, `COMMITTED` / `ARRANGEMENT` values, session
 /// and resource records, and organization events, so a field means the same
 /// thing wherever it appears; each body names which ids it carries.
-pub mod org {
-    /// `OperationId` (16 non-zero bytes).
-    pub const OPERATION: u32 = 1;
-    /// `SessionKey` (16 bytes).
-    pub const SESSION: u32 = 2;
-    /// `ResourceKey` (16 bytes).
-    pub const RESOURCE: u32 = 3;
-    /// Expected `Revision` of the primary record (`u64`).
-    pub const EXPECTED: u32 = 4;
-    /// Name (`str`, at most 256 bytes).
-    pub const NAME: u32 = 5;
-    /// `SessionLifetime` (`u8`).
-    pub const LIFETIME: u32 = 6;
-    /// One descriptive attribute: positional `str key || str value`, each at
-    /// most 256 bytes. Repeated, in order.
-    pub const ATTR: u32 = 7;
-    /// `LaunchSpec`: nested [`org_launch`](super::org_launch) fields.
-    pub const LAUNCH: u32 = 8;
-    /// `ResourceKind` tag (`u8`).
-    pub const KIND: u32 = 9;
-    /// `ExitPolicy` (`u8`).
-    pub const ON_EXIT: u32 = 10;
-    /// Source `SessionKey` of a membership move (16 bytes).
-    pub const FROM: u32 = 11;
-    /// Expected or resulting source-session `Revision` (`u64`).
-    pub const FROM_REVISION: u32 = 12;
-    /// Destination `SessionKey` of a membership move (16 bytes).
-    pub const TO: u32 = 13;
-    /// Expected or resulting destination-session `Revision` (`u64`).
-    pub const TO_REVISION: u32 = 14;
-    /// `LiveTarget`, positional: `ResourceId || instance: bytes16 ||
-    /// activation: u64`.
-    pub const TARGET: u32 = 15;
-    /// `TerminateMode` (`u8`).
-    pub const MODE: u32 = 16;
-    /// `ActivationId` (`u64`).
-    pub const ACTIVATION: u32 = 17;
-    /// `ArrangementKey` (16 bytes).
-    pub const ARRANGEMENT: u32 = 18;
-    /// Arrangement document, positional, at most 64 KiB.
-    pub const DOCUMENT: u32 = 19;
-    /// `OrgFilter`, positional: `tag: u8`, then a 16-byte key for a session
-    /// or workspace filter.
-    pub const FILTER: u32 = 20;
-    /// Requested page size (`u32`); `0` asks for the server default.
-    pub const PAGE_SIZE: u32 = 21;
-    /// Opaque page cursor (bytes, at most 4 KiB).
-    pub const CURSOR: u32 = 22;
-    /// The `OperationId` an undo reverses (16 non-zero bytes).
-    pub const UNDO: u32 = 23;
-    /// One bulk-move item, positional: `resource: bytes16 || from: bytes16 ||
-    /// from_expected: u64`. Repeated.
-    pub const MOVE_ITEM: u32 = 24;
-    /// One record revision, positional: `key: bytes16 || revision: u64`.
-    /// Repeated.
-    pub const PIN: u32 = 25;
-    /// Resulting `Revision` of the primary record (`u64`).
-    pub const REVISION: u32 = 26;
-    /// Live `SessionId` handle (`u32`).
-    pub const LIVE_SESSION: u32 = 27;
-    /// Live `ResourceId` handle (positional tagged `ResourceId`).
-    pub const LIVE_RESOURCE: u32 = 28;
-    /// `ExecState` (`u8`).
-    pub const STATE: u32 = 29;
-    /// `Outcome`, positional: `tag: u8`, then `i32` for `EXITED` and
-    /// `SIGNALED`.
-    pub const OUTCOME: u32 = 30;
-    /// `LeaseEpoch` (`u64`).
-    pub const EPOCH: u32 = 31;
-    /// `ActorRef` of a lease holder (positional).
-    pub const HOLDER: u32 = 32;
-    /// Intake state (`u8`, `0` or `1`): whether the session awaits
-    /// organization.
-    pub const AWAITING: u32 = 33;
-    /// `ServerInstance` (16 bytes).
-    pub const INSTANCE: u32 = 34;
-    /// Member count (`u32`).
-    pub const MEMBERS: u32 = 35;
-    /// `WorkspaceKey` (16 bytes).
-    pub const WORKSPACE: u32 = 36;
-    /// Requested delegated-credential lifetime in seconds (`u32`); `0` asks
-    /// for the server default.
-    pub const TTL_SECS: u32 = 37;
-    /// Delegated credential id (`str`, at most 256 bytes).
-    pub const CREDENTIAL: u32 = 38;
-    /// Path of a delegated credential's socket (`str`, at most 4 KiB).
-    pub const SOCKET_PATH: u32 = 39;
-    /// When a delegated credential expires, Unix milliseconds (`u64`).
-    pub const EXPIRES_AT: u32 = 40;
-    /// `LaunchMode` (`u8`); absent = `IMMEDIATE`.
-    pub const LAUNCH_MODE: u32 = 41;
-    /// Session project link (`str`, at most 256 bytes); absent on
-    /// `SESSION_SET_PROJECT` clears it.
-    pub const PROJECT: u32 = 42;
-    /// Creation placement (tagged record); requires `CREATE_PLACEMENT`.
-    pub const PLACEMENT: u32 = 43;
-    /// Stable entry created with a resource (`bytes16`).
-    pub const ENTRY: u32 = 44;
-    /// Whether an organization operation replayed its retained receipt (`bool`).
-    pub const REPLAYED: u32 = 45;
-    /// Durable authority of a creation receipt (`bytes16`).
-    pub const AUTHORITY: u32 = 46;
-}
+pub mod org;
 
 /// Fields of a `LaunchSpec` value (`docs/spec/L1.md` §5.7).
-pub mod org_launch {
-    /// One argv element (`str`). Repeated, in order; absent = the default
-    /// shell.
-    pub const COMMAND: u32 = 1;
-    /// Working directory (`str`).
-    pub const CWD: u32 = 2;
-    /// One environment pair, positional `str name || str value`. Repeated.
-    pub const ENV: u32 = 3;
-    /// `TERM` override (`str`).
-    pub const TERM: u32 = 4;
-    /// Kind-specific restore record (bytes), e.g. the agent conversation a
-    /// relaunched Terminal resumes.
-    pub const RESTORE: u32 = 5;
-}
+pub mod org_launch;
 
 /// Fields of an `ORGANIZATION_PAGE` value (`docs/spec/L1.md` §5.7).
-pub mod org_page {
-    /// `AuthorityId` (16 bytes).
-    pub const AUTHORITY: u32 = 1;
-    /// The designated Intake `SessionKey` (16 bytes); legacy name, unchanged tag.
-    pub const INBOX: u32 = 2;
-    /// One session record: nested [`org`](super::org) fields. Repeated.
-    pub const SESSION: u32 = 3;
-    /// One resource record: nested [`org`](super::org) fields. Repeated.
-    pub const RESOURCE: u32 = 4;
-    /// Sessions matching the filter, all pages (`u32`).
-    pub const TOTAL_SESSIONS: u32 = 5;
-    /// Resources matching the filter, all pages (`u32`).
-    pub const TOTAL_RESOURCES: u32 = 6;
-    /// Sessions awaiting organization among those matching (`u32`).
-    pub const TOTAL_INTAKE: u32 = 7;
-    /// Organization revision the page was cut at (`u64`).
-    pub const SNAPSHOT_REVISION: u32 = 8;
-    /// Event-journal `seq` at the cut (`u64`): subscribe after it.
-    pub const JOURNAL_SEQ: u32 = 9;
-    /// Opaque cursor of the next page (bytes, at most 4 KiB); absent on the
-    /// last page.
-    pub const NEXT_CURSOR: u32 = 10;
-}
+pub mod org_page;
 
 /// Fields of one `RESOURCE_STATE` value, after its positional `ResourceId`.
-pub mod resource_state {
-    /// `ResourceLifecycle` (`u8`); absent = `RUNNING`.
-    pub const LIFECYCLE: u32 = 1;
-    /// `ExitFacet` (positional); present iff exited and retained (ADR-0124).
-    pub const EXIT: u32 = 2;
-    /// `ClientId` (`u32`) of the input-lease holder; absent = open.
-    pub const INPUT_HOLDER: u32 = 3;
-    /// `ClientId` (`u32`) of one `VIEWER` (ADR-0127); repeated.
-    pub const VIEWER: u32 = 4;
-}
+pub mod resource_state;
 
 /// `AgentEvent::Asked` body fields (`docs/spec/L1.md` §7.5); field-tagged,
 /// unlike the positional `AgentEvent` bodies, so fields stay additive.
-pub mod event_asked {
-    /// Stable question id (`str`).
-    pub const ID: u32 = 1;
-    /// Question text (`str`).
-    pub const QUESTION: u32 = 2;
-    /// One suggested answer (`str`), repeated in order.
-    pub const SUGGESTION: u32 = 3;
-    /// Optional seconds waiting (`u64`); absent = unknown.
-    pub const ELAPSED_SECONDS: u32 = 4;
-}
+pub mod event_asked;
 
 /// `AgentEvent::ResourceSpawned` body fields (`docs/spec/L1.md` §7.1);
 /// field-tagged, and an empty body is a root Terminal.
-pub mod event_pane_spawned {
-    /// `ResourceKind` tag (`u8`); absent = `Terminal`.
-    pub const KIND: u32 = 1;
-    /// Parent resource (positional tagged `ResourceId`). Absent = a root.
-    pub const PARENT: u32 = 2;
-}
+pub mod event_pane_spawned;

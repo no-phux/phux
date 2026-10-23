@@ -13,6 +13,13 @@ use super::{
     write_key,
 };
 
+fn decode_diagnostic(value: &[u8]) -> Result<crate::api::LaunchDiagnostic, DecodeError> {
+    if value.len() > 128 {
+        return Err(DecodeError::OrganizationLimitExceeded);
+    }
+    serde_json::from_slice(value).map_err(|_| DecodeError::UnexpectedEof)
+}
+
 /// Every `field::org` field a body carried. A body's decoder picks the ones
 /// it defines; an unknown id is skipped, so bodies stay additive.
 #[derive(Default)]
@@ -47,6 +54,8 @@ pub(super) struct Fields {
     pub(super) live_resource: Option<ResourceId>,
     pub(super) state: Option<u8>,
     pub(super) outcome: Option<Outcome>,
+    pub(super) diagnostic: Option<crate::api::LaunchDiagnostic>,
+    pub(super) persistence_pending: bool,
     pub(super) epoch: Option<LeaseEpoch>,
     pub(super) holder: Option<ActorRef>,
     pub(super) awaiting: Option<bool>,
@@ -141,6 +150,11 @@ impl Fields {
                 }
                 field::org::STATE => out.state = Some(read_u8(value)?),
                 field::org::OUTCOME => out.outcome = Some(decode_outcome(value)?),
+                field::org::LAUNCH_DIAGNOSTIC => out.diagnostic = Some(decode_diagnostic(value)?),
+                field::org::PERSISTENCE_PENDING => {
+                    out.persistence_pending =
+                        Decoder::new(value).read_bool("persistence_pending")?;
+                }
                 field::org::EPOCH => out.epoch = Some(LeaseEpoch::new(read_u64(value)?)),
                 field::org::HOLDER => {
                     out.holder = Some(decode_actor_ref(&mut Decoder::new(value))?);

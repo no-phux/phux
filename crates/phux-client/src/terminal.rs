@@ -46,20 +46,30 @@ impl CreateError {
     /// Stable machine-readable error document. Always preserves the supplied retry identity.
     #[must_use]
     pub fn document(&self, key: &str) -> serde_json::Value {
+        use api::{ErrorCode as C, OperationOutcome as O};
         let (code, outcome) = match self {
-            Self::Invalid(_) => ("invalid_argument", "not_sent"),
-            Self::Incomplete(_) => ("incomplete_receipt", "committed"),
-            Self::NotRetained => ("receipt_not_retained", "unknown"),
-            Self::Organization(OrgError::OutcomeUnknown { .. }) => ("outcome_unknown", "unknown"),
+            Self::Invalid(_) => (C::InvalidArgument, O::NotSent),
+            Self::Incomplete(_) => (C::IncompleteReceipt, O::Committed),
+            Self::NotRetained => (C::ReceiptNotRetained, O::Unknown),
+            Self::Organization(OrgError::OutcomeUnknown { .. }) => (C::OutcomeUnknown, O::Unknown),
             Self::Organization(error @ (OrgError::Unsupported | OrgError::Attach(_))) => {
-                (error.code(), "not_sent")
+                (error.api_code(), O::NotSent)
             }
             Self::Organization(error @ (OrgError::Refused(_) | OrgError::Server { .. })) => {
-                (error.code(), "refused")
+                (error.api_code(), O::Refused)
             }
-            Self::Lookup(error) | Self::Organization(error) => (error.code(), "unknown"),
+            Self::Lookup(error) | Self::Organization(error) => (error.api_code(), O::Unknown),
         };
-        serde_json::json!({"schema_version":1,"error":{"code":code,"message":self.to_string(),"outcome":outcome,"idempotency_key":key}})
+        serde_json::to_value(api::ErrorDocument {
+            schema_version: 1,
+            error: api::OperationError {
+                code,
+                outcome,
+                message: self.to_string(),
+                idempotency_key: Some(key.to_owned()),
+            },
+        })
+        .unwrap_or_default()
     }
 }
 
@@ -132,7 +142,7 @@ fn project(session: &str, key: &str, receipt: &Committed) -> Result<TerminalCrea
     })
 }
 
-fn observation(activation: ActivationInfo) -> ExecutionObservation {
+pub(crate) fn observation(activation: ActivationInfo) -> ExecutionObservation {
     let state = match activation.state {
         ExecState::Starting => ExecutionState::Starting,
         ExecState::Running => ExecutionState::Running,
@@ -152,6 +162,8 @@ fn observation(activation: ActivationInfo) -> ExecutionObservation {
         instance: api::hex16(activation.instance.as_bytes()),
         state,
         outcome,
+        diagnostic: activation.diagnostic,
+        persistence_pending: activation.persistence_pending,
     }
 }
 

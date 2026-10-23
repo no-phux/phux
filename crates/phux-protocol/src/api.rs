@@ -3,28 +3,42 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod errors;
+mod schemas;
+pub use errors::{ErrorCode, ErrorDocument, OperationError, OperationOutcome};
+pub use schemas::semantic_validation;
+
+/// Shared public argv/environment item bound, enforced by schema and runtime.
+pub const MAX_TERMINAL_ITEMS: usize = crate::wire::frame::MAX_LAUNCH_LIST;
+/// Maximum resource label length in UTF-8 bytes (schema can bound characters).
+pub const MAX_TERMINAL_NAME_BYTES: usize = crate::wire::frame::MAX_ORG_NAME_BYTES;
+
 /// A complete intention: create, place and start a new terminal process.
 /// A nonempty argv executes directly, never in an existing shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalCreate {
     /// Nonzero 32-hex retry identity. Reuse only for the identical intention.
-    #[schemars(length(min = 32, max = 32), regex(pattern = "^[0-9a-fA-F]{32}$"))]
+    #[schemars(schema_with = "schemas::retry_key")]
     pub idempotency_key: String,
     /// Full durable destination session key (26 base32 digits), not a name.
-    #[schemars(length(min = 26, max = 26))]
+    #[schemars(schema_with = "schemas::durable_key")]
     pub session: String,
     /// Program and arguments; empty selects the server's default shell.
     #[serde(default)]
+    #[schemars(schema_with = "schemas::argv")]
     pub argv: Vec<String>,
     /// Working directory on the executing server.
     #[serde(default)]
+    #[schemars(schema_with = "schemas::cwd")]
     pub cwd: Option<String>,
     /// Environment overrides. Reserved server routing variables remain server-owned.
     #[serde(default)]
+    #[schemars(schema_with = "schemas::environment")]
     pub env: BTreeMap<String, String>,
     /// Optional resource label.
     #[serde(default)]
+    #[schemars(schema_with = "schemas::name")]
     pub name: Option<String>,
     /// Placement is committed before any process starts. Defaults to a new group.
     #[serde(default)]
@@ -36,8 +50,10 @@ pub struct TerminalCreate {
 #[serde(deny_unknown_fields)]
 pub struct TerminalOperation {
     /// Same nonzero 32-hex identity supplied to terminal.create.
+    #[schemars(schema_with = "schemas::retry_key")]
     pub idempotency_key: String,
     /// Original full durable destination session key.
+    #[schemars(schema_with = "schemas::durable_key")]
     pub session: String,
 }
 impl TerminalOperation {
@@ -70,16 +86,21 @@ pub enum TerminalPlacement {
     /// Split one exact entry while it still displays the observed execution.
     Beside {
         /// Stable entry id, 32 hex digits.
+        #[schemars(length(min = 32, max = 32), regex(pattern = "^[0-9a-fA-F]{32}$"))]
         entry: String,
         /// Full durable anchor resource key.
+        #[schemars(schema_with = "schemas::durable_key")]
         resource: String,
         /// Anchor's incarnation token, 32 hex digits.
+        #[schemars(length(min = 32, max = 32), regex(pattern = "^[0-9a-fA-F]{32}$"))]
         instance: String,
         /// Anchor's observed activation, starting at 1.
+        #[schemars(range(min = 1))]
         activation: u64,
         /// Horizontal = side by side; vertical = stacked.
         axis: SplitAxis,
         /// Fraction kept by the anchor, finite and strictly between zero and one.
+        #[schemars(schema_with = "schemas::ratio")]
         ratio: f32,
     },
 }
@@ -99,14 +120,19 @@ pub enum SplitAxis {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalCreated {
     /// Public document revision, currently 1.
+    #[schemars(range(min = 1, max = 1))]
     pub schema_version: u32,
     /// Retry identity of the committed intention.
+    #[schemars(schema_with = "schemas::retry_key")]
     pub idempotency_key: String,
     /// Durable owning authority.
+    #[schemars(schema_with = "schemas::durable_key")]
     pub authority: String,
     /// Durable destination session.
+    #[schemars(schema_with = "schemas::durable_key")]
     pub session: String,
     /// Durable resource identity, independent of the current execution.
+    #[schemars(schema_with = "schemas::durable_key")]
     pub resource: String,
     /// Stable presentation identity created by this operation.
     pub placement: CreatedPlacement,
@@ -118,12 +144,43 @@ pub struct TerminalCreated {
     pub replayed: bool,
 }
 
+/// Durable-key resource inspection (schema 2); live-handle inspection remains
+/// schema 1.
+///
+/// This follows the resource's current session and current activation,
+/// not the historical activation of a creation receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ResourceObserved {
+    /// Document revision, 2 for durable-key inspection.
+    #[schemars(range(min = 2, max = 2))]
+    pub schema_version: u32,
+    /// Serving authority key.
+    #[schemars(schema_with = "schemas::durable_key")]
+    pub authority: String,
+    /// Exact durable resource key.
+    #[schemars(schema_with = "schemas::durable_key")]
+    pub resource: String,
+    /// Current owning session key.
+    #[schemars(schema_with = "schemas::durable_key")]
+    pub session: String,
+    /// User label, if any.
+    pub name: Option<String>,
+    /// Resource kind.
+    pub kind: String,
+    /// Current or latest retained activation, independent of a live engine.
+    pub execution: Option<ExecutionObservation>,
+    /// Current local engine handle, if any; never a durable address.
+    pub terminal_id: Option<u32>,
+}
+
 /// Stable placement identity. It may since have been edited or removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CreatedPlacement {
     /// Durable arrangement key.
+    #[schemars(schema_with = "schemas::durable_key")]
     pub arrangement: String,
     /// Stable entry id as 32 hex digits.
+    #[schemars(length(min = 32, max = 32), regex(pattern = "^[0-9a-fA-F]{32}$"))]
     pub entry: String,
 }
 
@@ -131,13 +188,48 @@ pub struct CreatedPlacement {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecutionObservation {
     /// Monotonic execution identity within the resource.
+    #[schemars(range(min = 1))]
     pub activation: u64,
     /// Incarnation token, 32 hex digits.
+    #[schemars(length(min = 32, max = 32), regex(pattern = "^[0-9a-fA-F]{32}$"))]
     pub instance: String,
     /// Current state.
     pub state: ExecutionState,
     /// Observed end, when known. Failed launch never implies exit status zero.
     pub outcome: Option<ExecutionOutcome>,
+    /// Safe launch failure evidence, absent for older records.
+    #[serde(default)]
+    pub diagnostic: Option<LaunchDiagnostic>,
+    /// Executor evidence is waiting for persistence; state above is last committed.
+    #[serde(default)]
+    pub persistence_pending: bool,
+}
+
+/// Safe, bounded launch failure evidence. No argv, paths, or environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LaunchDiagnostic {
+    /// Stage that failed.
+    pub stage: LaunchStage,
+    /// Platform errno, not the executed program's exit status.
+    pub errno: Option<i32>,
+}
+
+/// Launch stage; a failed handshake is uncertainty, not requested-exec success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchStage {
+    /// PTY acquisition or bridge setup.
+    Pty,
+    /// Launcher spawn.
+    Spawn,
+    /// Working directory.
+    Cwd,
+    /// Requested program or interpreter exec.
+    Exec,
+    /// Status handshake deadline or invalid status.
+    Handshake,
+    /// Terminal engine allocation.
+    Engine,
 }
 
 /// Execution lifecycle; loss is not completion.
@@ -215,11 +307,9 @@ impl TerminalCreate {
                     .collect(),
             );
         validate_terminal_launch(&launch)?;
-        if self
-            .name
-            .as_ref()
-            .is_some_and(|name| name.trim().is_empty() || name.len() > 256 || name.contains('\0'))
-        {
+        if self.name.as_ref().is_some_and(|name| {
+            name.trim().is_empty() || name.len() > MAX_TERMINAL_NAME_BYTES || name.contains('\0')
+        }) {
             return Err("name must be nonempty, NUL-free and at most 256 bytes".into());
         }
         Ok(Command::ResourceCreate {
@@ -286,7 +376,7 @@ pub fn validate_terminal_launch(launch: &crate::wire::frame::LaunchSpec) -> Resu
     {
         return Err("cwd must be an absolute directory on the executing server".into());
     }
-    if launch.command.len() > 256 || launch.env.len() > 256 {
+    if launch.command.len() > MAX_TERMINAL_ITEMS || launch.env.len() > MAX_TERMINAL_ITEMS {
         return Err("argv and env are limited to 256 items".into());
     }
     if launch
@@ -338,6 +428,30 @@ pub fn hex16(bytes: &[u8; 16]) -> String {
 #[must_use]
 pub fn terminal_create_schema() -> serde_json::Value {
     schemars::schema_for!(TerminalCreate).to_value()
+}
+
+/// Exact durable key shape, shared with workflow identities and resource inspection.
+#[must_use]
+pub fn resource_key_schema() -> serde_json::Value {
+    schemas::durable_key(&mut schemars::SchemaGenerator::default()).to_value()
+}
+
+/// Structured error vocabulary from the actual emitted DTO.
+#[must_use]
+pub fn error_schema() -> serde_json::Value {
+    schemars::schema_for!(ErrorDocument).to_value()
+}
+
+/// Recovery outcome meanings from the actual error DTO.
+#[must_use]
+pub fn outcome_schema() -> serde_json::Value {
+    schemars::schema_for!(OperationOutcome).to_value()
+}
+
+/// Durable inspection document schema; live-handle inspection remains v1.
+#[must_use]
+pub fn resource_observed_schema() -> serde_json::Value {
+    schemars::schema_for!(ResourceObserved).to_value()
 }
 
 /// Output schema derived from every nested receipt type.

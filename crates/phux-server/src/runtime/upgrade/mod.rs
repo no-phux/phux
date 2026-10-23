@@ -359,7 +359,11 @@ fn reassemble_unchanged_tree(
     handoffs: &UpgradeHandoffs,
 ) -> Result<StateBlob, UpgradeError> {
     state
-        .with(|s| {
+        .with_mut(|s| {
+            s.retry_activation_reports();
+            if s.has_pending_activation_reports() {
+                return None;
+            }
             let current = s.assemble_upgrade_blob(listener_fd, &UpgradeHandoffs::default());
             (current == *tree_identity)
                 .then(|| s.with_upgrade_metadata(s.assemble_upgrade_blob(inherited_fd, handoffs)))

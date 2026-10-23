@@ -102,6 +102,10 @@ pub struct ActivationInfo {
     pub state: ExecState,
     /// How it ended, once it has.
     pub outcome: Option<Outcome>,
+    /// Safe launch diagnostic, optional for older peers.
+    pub diagnostic: Option<crate::api::LaunchDiagnostic>,
+    /// In-memory executor evidence awaits durable commit.
+    pub persistence_pending: bool,
 }
 
 impl ActivationInfo {
@@ -113,6 +117,8 @@ impl ActivationInfo {
             instance,
             state,
             outcome: None,
+            diagnostic: None,
+            persistence_pending: false,
         }
     }
 
@@ -120,6 +126,18 @@ impl ActivationInfo {
     #[must_use]
     pub const fn with_outcome(mut self, outcome: Option<Outcome>) -> Self {
         self.outcome = outcome;
+        self
+    }
+
+    /// Attach safe execution evidence and persistence uncertainty.
+    #[must_use]
+    pub const fn with_evidence(
+        mut self,
+        diagnostic: Option<crate::api::LaunchDiagnostic>,
+        pending: bool,
+    ) -> Self {
+        self.diagnostic = diagnostic;
+        self.persistence_pending = pending;
         self
     }
 }

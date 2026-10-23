@@ -78,6 +78,16 @@ pub(crate) fn output_schemas() -> Value {
         "phux_api_describe".into(),
         crate::terminal_tools::description_schema(),
     );
+    let mut durable = phux_protocol::api::resource_observed_schema();
+    let definitions = durable
+        .as_object_mut()
+        .and_then(|object| object.remove("$defs"));
+    let live = schemas.remove("phux_resource_show").unwrap_or_default();
+    let mut show = json!({"type":"object", "anyOf":[live, durable]});
+    if let Some(definitions) = definitions {
+        show["$defs"] = definitions;
+    }
+    schemas.insert("phux_resource_show".into(), show);
     Value::Object(schemas)
 }
 
@@ -86,7 +96,7 @@ fn add_resource_id(input: &mut Value) {
         return;
     };
     target["description"] = json!(
-        "Prefer a direct resource ID returned by inventory (@N or host/@N), or use resource_id. Selector strings remain supported for compatibility; names, tags, and focus can resolve differently over time."
+        "For resource_show, a full ^KEY inspects the durable record/current activation without a live engine (schema 2). Otherwise prefer a direct resource ID returned by inventory (@N or host/@N), or use resource_id. Selector strings remain supported for compatibility; names, tags, and focus can resolve differently over time."
     );
     input["properties"]["resource_id"] = json!({ "type": "string", "minLength": 2, "maxLength": 4096, "description": "Exact resource ID (@N or host/@N). Preferred over target selectors; mutually exclusive with target. IDs belong to one server incarnation." });
     input["properties"]["resource_id"]["pattern"] = json!("^(.+/)?@[0-9]+$");

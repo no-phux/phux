@@ -72,8 +72,19 @@ not an assumed PID-kill or relaunch sequence.
 Ephemeral session). `Retain` keeps its outcome inspectable until purge or
 retention expiry. Exit is not close: purging a Terminal closes its bound
 AgentSession children; a retained parent can outlive its process.
+Executor lifecycle reports that encounter a refused store write stay pending
+in memory, ordered start-before-end and fenced by resource key, activation and
+instance. A bounded server-owned retry pass persists evidence, **never reruns
+the process**. Observations flag `persistence_pending` while displaying the last
+committed state. Removal/replacement retires stale reports. Hot handoff must
+flush them or refuse. Orderly shutdown makes one final attempt but still permits
+exit if the store is unavailable; any exit with undurable evidence can lose it.
+Restart can only reconcile the committed process identity, not recover a lost
+diagnostic.
+See [public durable inspection](./public-api.md#lost-replies-and-retry-scope).
+
 [Reconciliation](../crates/phux-server/src/reconcile.rs),
-[activation reports and policy tests](../crates/phux-server/src/state/org.rs)
+[activation reports and policy tests](../crates/phux-server/src/state/org/lifecycle.rs)
 and [core refusal rules](../crates/phux-core/src/apply.rs) own these decisions.
 
 ## Work and missions

@@ -103,21 +103,7 @@ impl Refusal {
     /// The stable lowercase name consumers print.
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Unauthorized { .. } => "unauthorized",
-            Self::NotFound => "not_found",
-            Self::Conflict { .. } => "conflict",
-            Self::Stale { .. } => "stale",
-            Self::NotEmpty { .. } => "not_empty",
-            Self::Unsupported { .. } => "unsupported",
-            Self::InvalidArgument { .. } => "invalid_argument",
-            Self::NameTaken => "name_taken",
-            Self::ExecutionUncertain => "execution_uncertain",
-            Self::LeaseHeld { .. } => "lease_held",
-            Self::DuplicateOperation => "duplicate_operation",
-            Self::StoreFailure { .. } => "store_failure",
-            Self::Unknown { .. } => "unknown",
-        }
+        crate::api::ErrorCode::from_refusal(self).as_str()
     }
 }
 
