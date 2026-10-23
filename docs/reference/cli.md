@@ -1743,7 +1743,10 @@ Flags:
                                  contacting the host at all.
       --remote-phux <PATH>       The `phux` to run on the host, for when a
                                  non-interactive ssh shell's `PATH` does not
-                                 find it (a Homebrew or Nix install).
+                                 find it (a Homebrew or Nix install). It is
+                                 recorded in the entry, so later attaches and
+                                 renewals use it too; omitted, a re-add keeps
+                                 the one recorded.
                                  (default: phux)
       --install                  Install phux on the host with the official
                                  installer when it is missing, or update it with
@@ -1970,6 +1973,8 @@ Arguments:
 Flags:
       --remote-phux <PATH>  The `phux` to run on the host, for when a
                             non-interactive ssh shell's `PATH` does not find it.
+                            Omitted: the one the entry recorded when it was
+                            added.
                             (default: phux)
       --json                Emit stable, versioned JSON on stdout instead of the
                             human view. On failure, stdout stays empty and

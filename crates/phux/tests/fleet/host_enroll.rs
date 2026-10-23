@@ -423,6 +423,30 @@ fn add_honors_remote_phux_and_the_target_port() {
         "the port travels into the candidate; config={}",
         home.config()
     );
+    assert!(
+        home.config()
+            .contains("remote-phux = \"/opt/homebrew/bin/phux\""),
+        "the phux that answered is recorded for later ssh commands; config={}",
+        home.config()
+    );
+
+    // Adding it again without the flag keeps using the recorded phux.
+    let before = home.ssh_calls().lines().count();
+    let (code, _stdout, stderr) = home.run(&["host", "add", "me@mini:9443"], &ssh);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let again: Vec<String> = home
+        .ssh_calls()
+        .lines()
+        .skip(before)
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        again
+            .iter()
+            .any(|call| call.contains("/opt/homebrew/bin/phux --version"))
+            && !again.iter().any(|call| call.ends_with(" phux --version")),
+        "re-add runs the recorded phux: {again:?}"
+    );
 }
 
 /// A server already holding the socket makes `service install` refuse;

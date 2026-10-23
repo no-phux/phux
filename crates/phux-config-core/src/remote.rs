@@ -58,6 +58,16 @@ pub struct RemoteConfigEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<String>,
 
+    /// The `phux` the host runs over ssh when it is not on a non-interactive
+    /// shell's `PATH` (`--remote-phux`, or where `--install` put it), as one
+    /// word of the remote command line; absent, `phux`.
+    #[serde(
+        default,
+        rename = "remote-phux",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub remote_phux: Option<String>,
+
     /// A paired `quic://` endpoint kept beside an `ssh://` or `wss://` one,
     /// tried first and promoted to `endpoint` once it answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
