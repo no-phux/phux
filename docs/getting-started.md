@@ -133,6 +133,11 @@ When an agent is waiting on you, <kbd>C-a</kbd> <kbd>q</kbd> jumps to it and <kb
 
 ## Coming from tmux
 
+Already have tmux configured the way you like? Run
+`phux config import-tmux` to preview a native config layer and a report of
+what carries over. See [Bring your tmux keys to phux](./tmux-import.md)
+before applying it.
+
 Most keys match tmux, with <kbd>C-a</kbd> where tmux uses <kbd>C-b</kbd>. What's different:
 
 | In tmux                                     | In phux                                                                |

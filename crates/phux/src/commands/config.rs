@@ -1,5 +1,6 @@
 mod config_json;
 mod distro;
+mod import_tmux;
 mod keys;
 mod live_feed;
 mod show;
@@ -25,6 +26,12 @@ use live_feed::{
 pub(crate) fn run_config(action: &ConfigAction, socket: Option<std::path::PathBuf>) -> ExitCode {
     match action {
         ConfigAction::Distro { action } => distro::run(action),
+        ConfigAction::ImportTmux {
+            tmux_socket,
+            output,
+            apply,
+            json,
+        } => import_tmux::run(tmux_socket.as_deref(), output.as_deref(), *apply, *json),
         ConfigAction::Path => {
             outln!("{}", config_loader::config_path().display());
             ExitCode::SUCCESS

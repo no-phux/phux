@@ -3,6 +3,32 @@ use usage::Subcommands;
 /// `phux config <action>` — local config inspection and scaffolding.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ConfigAction {
+    /// Bring tmux bindings and preferences into a native phux config layer.
+    ///
+    /// Reads global options and key tables from an already running tmux,
+    /// without sourcing files or changing either server. By default, prints
+    /// TOML on stdout and a fidelity report on stderr. Unsupported bindings
+    /// are never executed or silently replaced with a different phux action.
+    /// This configures the terminal UI; desktop shortcuts are separate.
+    ImportTmux {
+        /// Read this tmux socket instead of tmux's current/default server.
+        #[usage(long, value_name = "PATH")]
+        tmux_socket: Option<std::path::PathBuf>,
+
+        /// Save a new standalone TOML file; refuse to overwrite any file.
+        #[usage(long, value_name = "PATH", conflicts = "--apply")]
+        output: Option<std::path::PathBuf>,
+
+        /// Install tmux-import.toml below your existing config layers.
+        /// Existing phux settings win. Refuses to overwrite a previous import.
+        /// Remove its extends entry to undo. Does not reload a running server.
+        #[usage(long)]
+        apply: bool,
+
+        /// Emit TOML, the fidelity report, and saved paths in one JSON document.
+        #[usage(long)]
+        json: bool,
+    },
     /// Discover or switch distro layers without overwriting personal config.
     /// Changes are local only; run `phux config reload` afterwards for running
     /// clients. Server startup settings apply on the next server start.

@@ -1287,25 +1287,30 @@ place.
 Usage: phux config <SUBCOMMAND>
 
 Commands:
-  agents   List configured agents, merged with live pane state when a server is
-           running.
-  check    Validate the config and report every problem, with full key paths.
-  distro   Discover or switch distro layers without overwriting personal config.
-           Changes are local only; run `phux config reload` afterwards for
-           running clients. Server startup settings apply on the next server
-           start.
-  init     Write a commented starter config to the canonical path.
-  keys     List every key binding in effect and where it came from.
-  path     Print the resolved config path. Pure path math — prints the path
-           whether or not the file exists.
-  plugins  List plugin manifests declared by `[[plugins]]`.
-  reload   Re-read the layered config and apply it to running clients in place.
-  run      Execute one action declared by a configured plugin manifest.
-  show     Print the effective config (shipped defaults + your overrides) as
-           TOML. With `--default`, print the shipped defaults verbatim instead,
-           ignoring any user config. With `--layers`, print which layer of the
-           `extends` stack set each effective key instead of the values.
-  help     Print this message or the help of the given subcommand(s)
+  agents       List configured agents, merged with live pane state when a server
+               is running.
+  check        Validate the config and report every problem, with full key
+               paths.
+  distro       Discover or switch distro layers without overwriting personal
+               config. Changes are local only; run `phux config reload`
+               afterwards for running clients. Server startup settings apply on
+               the next server start.
+  import-tmux  Bring tmux bindings and preferences into a native phux config
+               layer.
+  init         Write a commented starter config to the canonical path.
+  keys         List every key binding in effect and where it came from.
+  path         Print the resolved config path. Pure path math — prints the path
+               whether or not the file exists.
+  plugins      List plugin manifests declared by `[[plugins]]`.
+  reload       Re-read the layered config and apply it to running clients in
+               place.
+  run          Execute one action declared by a configured plugin manifest.
+  show         Print the effective config (shipped defaults + your overrides) as
+               TOML. With `--default`, print the shipped defaults verbatim
+               instead, ignoring any user config. With `--layers`, print which
+               layer of the `extends` stack set each effective key instead of
+               the values.
+  help         Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -1444,6 +1449,36 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config import-tmux`
+
+```text
+Bring tmux bindings and preferences into a native phux config layer.
+
+Reads global options and key tables from an already running tmux, without
+sourcing files or changing either server. By default, prints TOML on stdout and
+a fidelity report on stderr. Unsupported bindings are never executed or silently
+replaced with a different phux action. This configures the terminal UI; desktop
+shortcuts are separate.
+
+Usage: phux config import-tmux [FLAGS]
+
+Flags:
+      --tmux-socket <PATH>  Read this tmux socket instead of tmux's
+                            current/default server.
+      --output <PATH>       Save a new standalone TOML file; refuse to overwrite
+                            any file.
+      --apply               Install tmux-import.toml below your existing config
+                            layers. Existing phux settings win. Refuses to
+                            overwrite a previous import. Remove its extends
+                            entry to undo. Does not reload a running server.
+      --json                Emit TOML, the fidelity report, and saved paths in
+                            one JSON document.
+  -h, --help                Print help
+
+Global flags:
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config init`

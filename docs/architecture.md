@@ -98,6 +98,14 @@ packages for agent hosts; they run the `phux` CLI and never speak the wire.
 
 ## Clients
 
+The one-shot tmux onboarding adapter lives in
+`phux/src/commands/config/import_tmux/`: it reads an existing tmux,
+translates a finite set of commands into native TOML, and validates it
+through `phux-config`. Installation uses the shared locked,
+comment-preserving config writer and `extends`, with existing user layers
+winning. No tmux syntax or compatibility behavior enters the loader,
+server, protocol or client runtime. See the [import contract](./tmux-import.md).
+
 `phux-client-core` is the part every client shares: a synchronous kernel
 that takes wire frames in and produces effects (paint this, send that),
 with no I/O of its own. `phux-client-runtime` wraps it with the async
