@@ -50,8 +50,9 @@ pub(crate) fn editor(
     let viewport = window.viewport_size();
     let width = (viewport.width.as_f32() - 32.).clamp(0., 720.);
     let page = gpui_kit::component::setting::SettingPage::new(key.title.clone()).group(
-        gpui_kit::component::setting::SettingGroup::new()
-            .items(item.map(|item| item.responsive_control(width < 720.))),
+        gpui_kit::component::setting::SettingGroup::new().items(
+            item.map(|item| item.responsive_control(width < super::catalog::STACK_CONTROLS_BELOW)),
+        ),
     );
     let settings = native_settings(SharedString::from(format!("palette-setting-{key:?}")), page);
     let look = desk.look();

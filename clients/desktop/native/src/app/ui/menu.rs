@@ -28,18 +28,18 @@ use crate::settings::{Backdrop, Skin};
 
 const INSET: f32 = 6.;
 /// A row's padding inside its selection, and the icon column it starts with.
-const PAD: f32 = 10.;
+const PAD: f32 = 8.;
 const ICON_COLUMN: f32 = 16.;
 /// The header's icon disc.
-const DISC: f32 = 30.;
+const DISC: f32 = 24.;
 /// The chevron glyph's blank right side at 13pt: trailing chevrons give it
 /// back so their ink ends on the shortcuts' edge.
 const CHEVRON_BEARING: f32 = 3.5;
-const ROW: f32 = 34.;
-const DETAIL_ROW: f32 = 48.;
+const ROW: f32 = 28.;
+const DETAIL_ROW: f32 = 44.;
 /// Space above a row that starts a group.
 const GAP: f32 = 7.;
-const HEADER: f32 = 56.;
+const HEADER: f32 = 46.;
 /// Between the trigger and the menu.
 const DROP: f32 = 6.;
 /// The closest a menu comes to a screen edge.
@@ -47,9 +47,6 @@ const MARGIN: f32 = 8.;
 
 /// Text and icon ink, as foreground alpha: type hierarchy, not material.
 const ICON: f32 = 0.8;
-const SECONDARY: f32 = 0.55;
-const MUTED: f32 = 0.5;
-const HINT: f32 = 0.45;
 
 /// Something a chosen item does, in the window that opened the menu.
 pub(crate) type Act = Rc<dyn Fn(&mut Window, &mut App)>;

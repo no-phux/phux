@@ -317,6 +317,7 @@ impl gpui::Render for PerformanceMonitor {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .text_left()
+            .line_height(gpui::relative(crate::app::ui::typography::LEADING))
             .child(TitleBar::new().child(
                 div().text_sm().child("phux Performance Monitor"),
             ))
@@ -337,11 +338,13 @@ impl gpui::Render for PerformanceMonitor {
                             .gap_3()
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w_0()
                                     .flex()
                                     .flex_col()
                                     .gap_1()
                                     .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Performance"))
-                                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!(
+                                    .child(div().truncate().text_sm().text_color(cx.theme().muted_foreground).child(format!(
                                         "PID {} · {status}", self.latest.report.pid,
                                     ))),
                             )

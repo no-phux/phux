@@ -43,7 +43,7 @@ fn line_height_description(desk: &Desk) -> String {
 pub(super) fn window_page(
     desk: &Desk,
     handle: &WeakEntity<Desk>,
-    controls: Option<&super::SettingsControls>,
+    _controls: Option<&super::SettingsControls>,
 ) -> SettingPage {
     let sidebar_chord = desk
         .shown_chord("sidebar")
@@ -137,13 +137,7 @@ pub(super) fn window_page(
                     .description(
                         "Off paints an opaque window, which costs the compositor less on every frame.",
                     ),
-                )
-                .items(slider_item(
-                    controls,
-                    handle,
-                    Knob::GLASS,
-                    "Terminal background opacity. Applies when Blur behind window is on.",
-                )),
+                ),
         )
         .group(sidebar_hosts(desk, handle))
         .group(SettingGroup::new().title("Experimental").item(toggle(

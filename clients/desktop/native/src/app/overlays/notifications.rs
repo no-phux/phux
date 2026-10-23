@@ -43,6 +43,27 @@ pub(super) fn notification_rows(
         .filter(|entry| entry.kind.inbox() == agents)
         .map(|entry| {
             let id = entry.id;
+            let expanded = desk.feed.details_open(id);
+            let details = entry.body.is_some().then(|| {
+                div()
+                    .debug_selector(move || format!("notification-details-{id}"))
+                    .child(
+                        ghost_button(
+                            format!("notification-details-{id}"),
+                            if expanded {
+                                "Show less"
+                            } else {
+                                "Show details"
+                            },
+                        )
+                        .xsmall()
+                        .on_click(cx.listener(move |desk, _, _, cx| {
+                            cx.stop_propagation();
+                            desk.feed.toggle_details(id);
+                            cx.notify();
+                        })),
+                    )
+            });
             let decide = entry
                 .approval
                 .map(|approval| approval_buttons(desk, approval, id, cx));
@@ -77,8 +98,14 @@ pub(super) fn notification_rows(
                         })),
                 )
                 .child(
-                    crate::app::view::notification_text(entry, look, !entry.read, 2)
-                        .children(decide),
+                    crate::app::view::notification_text(
+                        entry,
+                        look,
+                        !entry.read,
+                        if expanded { 0 } else { 2 },
+                    )
+                    .children(details)
+                    .children(decide),
                 )
                 .child(
                     div()
@@ -190,6 +217,7 @@ pub(super) fn notifications_panel(
         rows.extend(general_rows);
     }
     sheet(look, 460.)
+        .max_h(window.viewport_size().height - px(32.))
         .p(px(SHEET_PAD))
         .flex()
         .flex_col()
@@ -204,6 +232,7 @@ pub(super) fn notifications_panel(
                 .flex()
                 .items_center()
                 .justify_between()
+                .flex_shrink_0()
                 .child(
                     div()
                         .text_base()
@@ -226,6 +255,7 @@ pub(super) fn notifications_panel(
         } else {
             div()
                 .id("notification-list")
+                .min_h_0()
                 .max_h(px(480.))
                 .overflow_y_scroll()
                 .flex()

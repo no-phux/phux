@@ -172,8 +172,6 @@ Each update state also saves a `*-corner.png` with Settings closed, covering
 availability, measured downloads, verification, server installation, handoff
 recovery, and the explicit restart action. These are native scene captures,
 not compositor-presentation evidence.
-||||||| parent of 1d40d3341 (feat(desktop): redesign the agent fleet mission control)
-
 
 Capture the actual fleet composition with representative local/remote agents
 in dark, light, narrow, and empty layouts, without a daemon or credentials:
@@ -190,3 +188,20 @@ env -u PHUX_SOCKET -u PHUX_PROFILE HOME="$tmp" \
 
 These PNGs are native scene captures for design review, not compositor
 presentation evidence. Fixture inventory is excluded from shipping builds.
+
+Capture the main desktop compositions and overlays without a server:
+
+```sh
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/design.XXXXXX")
+cargo build --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --features ui-fixtures --example design_preview
+env -i PATH=/usr/bin:/bin TMPDIR="${TMPDIR:-/tmp}" HOME="$tmp" \
+  XDG_CONFIG_HOME="$tmp/config" XDG_STATE_HOME="$tmp/state" PHUX_DESKTOP_BACKGROUND=1 \
+  clients/desktop/native/target/debug/examples/design_preview clients/desktop/.cache/design-preview
+```
+
+The embedded runtime supplies synthetic terminal output. Captures cover top,
+bottom and side tabs, a collapsed sidebar, narrow layouts, menus, Work,
+Actions, notifications and Changes in dark and light appearances. These are
+native scene captures, not proof of compositor presentation. The preview
+refuses a non-temporary HOME or a named server and never runs terminal input.

@@ -47,6 +47,7 @@ test("portable bundle includes installed-version metadata, desktop integration a
     expect(read("share/icons/hicolor/scalable/apps/dev.phux.desktop.svg")).toContain("<svg");
     expect(read("share/phux-desktop/THIRD-PARTY-NOTICES.txt")).toBe("test notices");
     expect(read("share/phux-desktop/PaperMono-OFL.txt")).toContain("SIL OPEN FONT LICENSE");
+    expect(read("share/phux-desktop/Inter-OFL.txt")).toContain("SIL OPEN FONT LICENSE");
     expect(() => createLinuxBundle({ ...options, target: "aarch64-unknown-linux-gnu" })).toThrow(
       "ELF",
     );

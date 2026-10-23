@@ -235,7 +235,7 @@ pub(crate) fn card(
     if !matches!(desk.modal, Modal::None) || !updater.card_expanded || !updater.has_card() {
         return None;
     }
-    let top = look.skin.chrome.titlebar + SHEET_GUTTER / 2.;
+    let top = crate::app::view::content_top(desk, &look.skin) + SHEET_GUTTER / 2.;
     let width = (window.viewport_size().width.as_f32() - SHEET_GUTTER * 2.).min(344.);
     let entity = desk.updates.clone();
     let content = crate::app::overlays::card(look, width)

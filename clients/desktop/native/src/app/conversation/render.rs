@@ -117,12 +117,20 @@ pub(crate) fn render(
     );
     // Native drafts are local: a provider question or delivery fence blocks Send,
     // not composing the next message.
-    let editable = if native { live } else { !pending && writable };
-    let working = live && !disconnected && conversation.state.status == AgentSessionStatus::Working;
+    let editable = can_compose(native, live, pending, writable);
+    let working = turn_running(conversation.closed, disconnected, conversation.state.status);
     let following = face.follow;
     let muted = from_hex(&colors.muted);
     let hint = composer_hint(native, blocked, writable);
-    let header = header(placement, &style, swatch, state, native, cx);
+    let header = header(placement, &style, swatch, state, native, cx)
+        .id(SharedString::from(format!(
+            "conversation-header-{placement}"
+        )))
+        .when_some(native_identity, |header, identity| {
+            header.tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(identity.clone()).build(window, cx)
+            })
+        });
     let activity = turn_activity(placement, &provider, working, live && blocked, colors);
     let column = |body: gpui::Div| body.w_full().max_w(px(READING_WIDTH)).mx_auto();
     let composer = div()
@@ -144,14 +152,16 @@ pub(crate) fn render(
         .child(
             div()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(px(6.))
                 .child(
                     div()
                         .flex_1()
-                        .min_w_0()
-                        .truncate()
+                        .min_w(px(160.))
+                        .debug_selector(|| "conversation-composer-hint".into())
                         .text_xs()
+                        .line_height(px(16.))
                         .text_color(muted)
                         .child(hint),
                 )
@@ -187,13 +197,6 @@ pub(crate) fn render(
         .text_color(from_hex(&colors.theme.foreground))
         .on_mouse_down(gpui::MouseButton::Left, focus_on_click(placement, cx))
         .child(column(div().child(header)))
-        .children(native_identity.map(|identity| {
-            column(div())
-                .truncate()
-                .text_xs()
-                .text_color(from_hex(&colors.faint))
-                .child(identity)
-        }))
         .child(div().h(px(1.)).flex_shrink_0().bg(look.divider))
         .child(scrolling_transcript(
             placement,
@@ -214,11 +217,21 @@ pub(crate) fn render(
                 .text_sm()
                 .text_color(from_hex(&colors.theme.warning))
                 .child(Icon::new(IconName::TriangleAlert).size(px(13.)))
-                .child(error)
+                .child(div().flex_1().min_w_0().child(error))
         }))
         .children(notice.map(|notice| column(div()).text_xs().text_color(muted).child(notice)))
         .child(column(composer))
         .into_any_element()
+}
+
+/// Native drafts stay local even while sending; attached TUIs cannot accept
+/// another draft until their acknowledged paste has finished.
+fn can_compose(native: bool, live: bool, pending: bool, writable: bool) -> bool {
+    if native { live } else { !pending && writable }
+}
+
+fn turn_running(closed: bool, disconnected: bool, status: AgentSessionStatus) -> bool {
+    !closed && !disconnected && status == AgentSessionStatus::Working
 }
 
 fn composer_actions(
@@ -238,6 +251,7 @@ fn composer_actions(
             .accessibility_label("Stop agent")
             .ghost()
             .small()
+            .w(px(96.))
             .disabled(!stopping)
             .on_click(cx.listener(move |desk, _, _, cx| desk.stop_conversation(&stop_id, cx)))
             .into_any_element(),
@@ -247,6 +261,7 @@ fn composer_actions(
             .loading(pending)
             .primary()
             .small()
+            .w(px(96.))
             .disabled(!writable || empty)
             .on_click(cx.listener(move |desk, _, _, cx| desk.send_conversation(&send_id, cx)))
             .into_any_element(),

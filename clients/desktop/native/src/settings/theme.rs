@@ -206,13 +206,14 @@ pub fn theme_by_id(id: &str, extra: &[Theme]) -> Theme {
 pub fn palette(theme: &Theme) -> Palette {
     let base = &theme.background;
     let ink = &theme.foreground;
+    let raised = mix(&theme.surface, ink, 0.06);
     Palette {
-        raised: mix(&theme.surface, ink, 0.06),
+        raised: raised.clone(),
         border: mix(base, ink, 0.1),
         hover: mix(&theme.surface, ink, 0.07),
         active: mix(&theme.surface, ink, 0.12),
-        subtext: mix(base, ink, 0.78),
-        muted: mix(base, ink, 0.5),
+        subtext: text_tone(base, &raised, ink, 0.78),
+        muted: text_tone(base, &raised, ink, 0.5),
         faint: mix(base, ink, 0.3),
         accent_wash: mix(&theme.surface, &theme.accent, 0.2),
         accent_text: readable_on(&theme.accent, base, ink),
@@ -220,6 +221,33 @@ pub fn palette(theme: &Theme) -> Palette {
         backdrop: format!("{}b8", &base[..7.min(base.len())]),
         theme: theme.clone(),
     }
+}
+
+/// Secondary labels remain readable on both the sheet and raised controls.
+/// Keep the preferred quiet tone when it passes; move only as far toward the
+/// theme's foreground as required. Custom themes keep their own foreground.
+fn text_tone(base: &str, raised: &str, ink: &str, preferred: f64) -> String {
+    let readable =
+        |color: &str| contrast_ratio(color, base).min(contrast_ratio(color, raised)) >= 4.5;
+    let quiet = mix(base, ink, preferred);
+    if readable(&quiet) {
+        return quiet;
+    }
+    let (mut low, mut high) = (preferred, 1.);
+    for _ in 0..12 {
+        let mid = (low + high) / 2.;
+        if readable(&mix(base, ink, mid)) {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    mix(base, ink, high)
+}
+
+fn contrast_ratio(a: &str, b: &str) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 /// Linear mix of two `#rrggbb` colours. Unparseable channels are zero.
@@ -284,6 +312,32 @@ fn rgb(hex: &str) -> [u8; 3] {
 #[cfg(test)]
 mod lookup_tests {
     use super::*;
+
+    #[test]
+    fn secondary_labels_meet_text_contrast_on_sheet_and_raised_surfaces() {
+        for theme in themes() {
+            let colors = palette(&theme);
+            for text in [&colors.muted, &colors.subtext] {
+                for surface in [&theme.background, &colors.raised] {
+                    assert!(
+                        contrast_ratio(text, surface) >= 4.5,
+                        "{}: {text} on {surface}",
+                        theme.name
+                    );
+                }
+            }
+            assert_eq!(colors.theme, theme, "terminal colours are never changed");
+        }
+    }
+
+    #[test]
+    fn custom_low_contrast_themes_keep_their_foreground_instead_of_inventing_one() {
+        assert_eq!(text_tone("#111111", "#121212", "#131313", 0.5), "#131313");
+        assert_eq!(
+            text_tone("#000000", "#000000", "#ffffff", 0.78),
+            mix("#000000", "#ffffff", 0.78)
+        );
+    }
 
     #[test]
     fn cached_builtins_preserve_override_order_and_return_independent_themes() {

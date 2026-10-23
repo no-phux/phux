@@ -4,6 +4,50 @@ use super::{Page, window::SettingsWindow};
 use crate::app::desk::Desk;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
+#[gpui::test]
+fn category_labels_share_one_column_instead_of_centering_each_buttons_contents(
+    cx: &mut TestAppContext,
+) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    draw(settings);
+    let baseline = settings
+        .debug_bounds("settings-category-label-Appearance")
+        .unwrap();
+    for selector in [
+        "settings-category-label-Layout",
+        "settings-category-label-Keyboard",
+        "settings-category-label-Spacing",
+        "settings-category-label-Ghostty",
+        "settings-category-label-Updates",
+        "settings-category-label-Connections",
+        "settings-category-label-Developer",
+    ] {
+        let label = settings.debug_bounds(selector).unwrap();
+        assert_eq!(
+            label.left(),
+            baseline.left(),
+            "every category starts on one text column"
+        );
+        assert_eq!(label.size.height, baseline.size.height);
+    }
+    settings.update(|_, cx| {
+        use gpui_kit::component::ActiveTheme as _;
+        assert_eq!(
+            cx.theme().font_family.as_ref(),
+            crate::app::ui::typography::FAMILY
+        );
+        assert_eq!(
+            cx.theme().font_size,
+            gpui::px(crate::app::ui::typography::BASE)
+        );
+    });
+}
+
 pub(in crate::app) fn opened(
     desk: &Entity<Desk>,
     cx: &gpui::TestAppContext,

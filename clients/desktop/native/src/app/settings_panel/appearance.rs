@@ -16,7 +16,9 @@ use super::super::color::from_hex;
 use super::super::desk::Desk;
 use super::super::skin::Look;
 use super::super::ui::muted;
-use super::{click_sets, look_of, notes, prefs_of, resets, sourced, stepper, toggle};
+use super::{
+    Knob, click_sets, look_of, notes, prefs_of, resets, slider_item, sourced, stepper, toggle,
+};
 
 fn font_status(item: SettingItem, desk: &Desk, cx: &App) -> SettingItem {
     let mut font = gpui::font(desk.prefs.font_family.clone());
@@ -82,6 +84,7 @@ pub(super) fn appearance_page(
                 Button::new("settings-theme")
                     .label(label)
                     .outline()
+                    .small()
                     .w(px(260.))
                     .dropdown_caret(true)
                     .dropdown_menu(move |menu, _, _| {
@@ -107,6 +110,7 @@ pub(super) fn appearance_page(
         let font = controls.font.clone();
         let picker = SettingField::render(move |_, _, _| {
             Select::new(&font)
+                .small()
                 .id("font-family")
                 .accessibility_label("Terminal font family")
                 .w(px(260.))
@@ -152,11 +156,15 @@ pub(super) fn appearance_page(
                 ))
                 .item(theme_item),
         )
-        .group(look_group(desk, handle))
+        .group(look_group(desk, handle, controls))
 }
 
 /// Skin cards, the plain terminal switch, and motion.
-fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
+fn look_group(
+    desk: &Desk,
+    handle: &WeakEntity<Desk>,
+    controls: Option<&super::SettingsControls>,
+) -> SettingGroup {
     let plain_chord = desk
         .shown_chord("plain-terminal")
         .map(|chord| format!(" Toggle it with {chord}."))
@@ -167,11 +175,15 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
         .unwrap_or_default();
     let cards = handle.clone();
     SettingGroup::new()
-        .title("Look")
+        .title("Interface")
         .item(
-            SettingItem::render("Skin", move |_, _, cx| skin_cards(&cards, cx))
-                .keywords(["skin", "look", "glass", "terminal", "plain", "chrome"]),
+            SettingItem::render("Interface style", move |_, _, cx| skin_cards(&cards, cx))
+                .keywords(["skin", "look", "classic", "glass", "chrome"]),
         )
+        .item(toggle(handle, "Glassy panes", |prefs| &mut prefs.pane_glass,
+            "Translucent panes in Glass style with Blur behind window on. Classic and Plain terminal stay solid; your opacity is remembered."))
+        .items(slider_item(controls, handle, Knob::GLASS,
+            "Pane background opacity in Glass style. Lower values reveal more of the blurred desktop; terminal text stays opaque."))
         .item(
             toggle(
                 handle,
@@ -262,18 +274,25 @@ fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .when(!worn, |card| card.opacity(0.7))
+            .when(prefs.plain && !worn, |card| card.opacity(0.7))
             .child(skin_preview(skin, &look.chrome, &prefs))
             .child(
                 div()
                     .px(px(2.))
                     .pb(px(2.))
                     .text_sm()
-                    .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
+                    .text_color(if selected {
+                        ink
+                    } else {
+                        from_hex(&look.chrome.subtext)
+                    })
                     .child(skin.name),
             )
             .on_click(click_sets(handle, move |prefs| {
-                prefs.skin_id = skin.id.to_owned()
+                prefs.skin_id = skin.id.to_owned();
+                if skin.id == "glass" {
+                    prefs.window_background = settings::WindowBackground::Blur;
+                }
             }))
     };
     div()
@@ -282,11 +301,12 @@ fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
         .gap(px(8.))
         .children(hint)
         .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(10.))
-                .children(settings::skins().iter().map(card)),
+            div().flex().flex_wrap().gap(px(10.)).children(
+                settings::skins()
+                    .iter()
+                    .filter(|skin| skin.id != "terminal" || picked == "terminal")
+                    .map(card),
+            ),
         )
         .into_any_element()
 }

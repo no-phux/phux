@@ -65,7 +65,7 @@ fn workspace_viewport(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let open = desk.tab_peek.open;
-    let available = window.viewport_size().height.as_f32() - look.skin.chrome.titlebar;
+    let available = window.viewport_size().height.as_f32() - super::content_top(desk, &look.skin);
     let height = super::tab_peek::height(available);
     let shelf = open.then(|| super::tab_peek::shelf(desk, look, height, cx));
     let moves = super::chrome_moves(desk, cx);
@@ -120,6 +120,19 @@ pub(super) fn lead_inset(desk: &Desk, look: &Look) -> f32 {
     }
 }
 
+/// A top tab strip supplies separation; a compact unified header already
+/// meets the cards, so it must not keep the former strip's extra gutter.
+pub(super) fn top_inset(desk: &Desk, look: &Look) -> f32 {
+    if super::integrated_titlebar(desk, &look.skin)
+        || desk.prefs.tab_position == TabPosition::Top
+        || super::quick(desk)
+    {
+        look.skin.shape.gutter
+    } else {
+        0.
+    }
+}
+
 fn workspace_body(
     desk: &mut Desk,
     look: &Look,
@@ -136,7 +149,7 @@ fn workspace_body(
         .flex_grow(1.)
         .min_h(px(0.))
         .relative()
-        .pt(px(gutter))
+        .pt(px(top_inset(desk, look)))
         .pr(px(gutter))
         .pb(px(foot(desk, look)))
         .child(if let Some(id) = zoomed {
@@ -153,6 +166,11 @@ fn workspace_body(
             empty_state(desk, look, cx).into_any_element()
         })
         .children(super::status::peek_card(desk, look, window, cx))
+        .when(super::integrated_titlebar(desk, &look.skin), |body| {
+            body.child(div().id("workspace-drag").debug_selector(|| "workspace-drag".into())
+                .absolute().top_0().left_0().right_0().h(px(gutter))
+                .on_mouse_down(gpui::MouseButton::Left, crate::chrome::drag_window))
+        })
         // Springs with the sidebar, so the cards keep their gap as it moves.
         .with_spring(
             "workspace-lead",

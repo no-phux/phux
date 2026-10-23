@@ -351,7 +351,7 @@ fn tab_label(desk: &Desk, tab: &DeskTab, selected: bool, look: &Look) -> gpui::D
         .flex_1()
         .min_w_0()
         .truncate()
-        .text_sm()
+        .text_size(px(13.))
         .when(selected, |label| label.font_weight(FontWeight::MEDIUM))
         .text_color(if selected {
             look.ink

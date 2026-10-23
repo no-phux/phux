@@ -3,6 +3,50 @@
 use super::*;
 
 #[gpui::test]
+fn interface_style_and_pane_glass_are_live_without_overwriting_terminal_typography(
+    cx: &mut TestAppContext,
+) {
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, |desk, cx| {
+        desk.update_prefs(
+            |prefs| {
+                prefs.font_size = 17.;
+                prefs.terminal_opacity = 0.65;
+            },
+            cx,
+        )
+    });
+    keys(cx, "cmd-p");
+    type_text(cx, "Interface style");
+    keys(cx, "enter");
+    click(cx, "skin-card-classic");
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.prefs.skin_id, "classic");
+        assert!(!desk.prefs.plain);
+        assert_eq!(desk.look().card.a, 1.);
+        assert_eq!(desk.skin().chrome.sidebar, 1.);
+    });
+    click(cx, "skin-card-glass");
+    keys(cx, "escape");
+    keys(cx, "cmd-p");
+    type_text(cx, "Glassy panes");
+    keys(cx, "enter");
+    desk.read_with(cx, |desk, _| {
+        assert!(!desk.prefs.pane_glass);
+        assert_eq!(desk.look().card.a, 1.);
+        assert_eq!(desk.prefs.terminal_opacity, 0.65);
+        assert_eq!(desk.prefs.font_size, 17.);
+    });
+    keys(cx, "enter");
+    desk.read_with(cx, |desk, _| {
+        assert!(desk.prefs.pane_glass);
+        assert!(desk.look().card.a < 0.7);
+        assert_eq!(desk.prefs.terminal_opacity, 0.65);
+    });
+}
+
+#[gpui::test]
 fn switch_results_toggle_both_ways_keep_search_and_save(cx: &mut TestAppContext) {
     let path = std::env::temp_dir()
         .join(format!(
@@ -95,7 +139,7 @@ fn settings_catalog_covers_controls_without_shortcut_or_status_dead_ends(cx: &mu
         let entries = crate::app::settings_panel::entries(desk, &handle, cx);
         for title in [
             "Theme",
-            "Skin",
+            "Interface style",
             "Font family",
             "Font size",
             "Animations",
@@ -140,24 +184,32 @@ fn palette_and_exact_editor_stay_centered_after_filtering_and_resize(cx: &mut Te
     let cx = &mut VisualTestContext::from_window(handle, cx);
     for size in [
         gpui::size(gpui::px(1200.), gpui::px(900.)),
+        gpui::size(gpui::px(1199.), gpui::px(899.)),
         gpui::size(gpui::px(360.), gpui::px(480.)),
+        gpui::size(gpui::px(361.), gpui::px(481.)),
     ] {
         cx.simulate_resize(size);
+        // GPUI snaps both absolute edges to device pixels. An odd physical
+        // height cannot have both integral edges and an exact viewport center.
+        let half_pixel = cx.update(|window, _| gpui::px(0.5 / window.scale_factor()));
+        let center = gpui::point(size.width / 2., size.height / 2.);
         keys(cx, "cmd-p");
         for text in ["", "Horizontal padding"] {
             type_text(cx, text);
             let panel = cx.debug_bounds("palette-panel").unwrap();
-            assert_eq!(
-                panel.center(),
-                gpui::point(size.width / 2., size.height / 2.)
+            assert!(
+                (panel.center().x - center.x).abs() <= half_pixel
+                    && (panel.center().y - center.y).abs() <= half_pixel,
+                "pixel-snapped panel stays centered: {panel:?} within {size:?}"
             );
             assert!(panel.left() >= gpui::px(16.) && panel.right() <= size.width - gpui::px(16.));
         }
         keys(cx, "enter");
         let editor = cx.debug_bounds("palette-panel").unwrap();
-        assert_eq!(
-            editor.center(),
-            gpui::point(size.width / 2., size.height / 2.)
+        assert!(
+            (editor.center().x - center.x).abs() <= half_pixel
+                && (editor.center().y - center.y).abs() <= half_pixel,
+            "pixel-snapped editor stays centered: {editor:?} within {size:?}"
         );
         assert!(editor.top() >= gpui::px(16.) && editor.bottom() <= size.height - gpui::px(16.));
         keys(cx, "escape");
@@ -185,11 +237,12 @@ fn wide_palette_controls_fit_inside_the_exact_editor_at_narrow_widths(cx: &mut T
             type_text(cx, query);
             keys(cx, "enter");
             let editor = cx.debug_bounds("palette-setting-editor").unwrap();
+            let inset = cx.update(|window, _| window.rem_size());
             for selector in selectors {
                 let control = cx.debug_bounds(selector).expect(selector);
                 assert!(
-                    control.left() >= editor.left() + gpui::px(16.)
-                        && control.right() <= editor.right() - gpui::px(16.),
+                    control.left() >= editor.left() + inset
+                        && control.right() <= editor.right() - inset,
                     "{query} control {selector} fits at {width}: {control:?} in {editor:?}"
                 );
             }

@@ -49,6 +49,7 @@ pub(super) fn wanted(desk: &Desk) -> bool {
 
 pub(super) fn build(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
+    let integrated = super::integrated_titlebar(desk, &look.skin);
     div()
         .w(px(desk.prefs.sidebar_width as f32))
         .h_full()
@@ -56,17 +57,25 @@ pub(super) fn build(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> 
         .relative()
         .flex()
         .flex_col()
+        .when(integrated, |sidebar| {
+            sidebar.child(super::titlebar::sidebar_header(desk, &look, cx))
+        })
         .child(host_filter(desk, &look, cx))
-        .child(list(desk, &look, cx))
+        .child(
+            div().flex_1().min_h_0().relative().flex().flex_col()
+            .child(list(desk, &look, cx))
+            // Reserved scroll padding keeps selection controls from moving
+            // the catalog; anchoring here follows any footer size.
+            .child(div().absolute().left_0().right_0().bottom_0()
+                .child(organization_bar(desk, &look, cx))),
+        )
         .when(desk.tab_position() == TabPosition::Side, |sidebar| {
             sidebar.child(tab_shelf(desk, &look, cx))
         })
+        .when(integrated, |sidebar| {
+            sidebar.child(super::titlebar::sidebar_tools(desk, &look, cx))
+        })
         .child(footer(desk, &look, cx))
-        // Organization controls float over reserved scroll padding. Navigation
-        // clears their selection, but must not move the session tree with it.
-        .child(div().absolute().left_0().right_0()
-            .bottom(px(FOOTER_HEIGHT + if desk.tab_position() == TabPosition::Side { TAB_SHELF_HEIGHT } else { 0. }))
-            .child(organization_bar(desk, &look, cx)))
         .child(resize(desk, &look, cx))
         .into_any_element()
 }
@@ -194,7 +203,7 @@ fn footer(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement 
                         .size(px(14.))
                         .text_color(from_hex(&look.chrome.muted)),
                 )
-                .child(muted(look, "Filter").flex_1().text_sm())
+                .child(muted(look, "Search").flex_1().text_size(px(13.)))
                 .children(chord.map(|chord| muted(look, chord).flex_shrink_0()))
                 .on_click(cx.listener(|desk, _, window, cx| desk.execute("goto", window, cx))),
         )

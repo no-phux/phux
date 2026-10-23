@@ -163,7 +163,8 @@ pub(crate) struct Group {
 /// Pages inset their groups this far past Kit's list padding, so every
 /// heading, label and control shares the page header's text column.
 pub(crate) const GUTTER: f32 = 20.;
-const KIT_LIST_PADDING: f32 = 16.;
+pub(crate) const STACK_CONTROLS_BELOW: f32 = 600.;
+const KIT_LIST_PADDING: f32 = crate::app::ui::typography::BASE;
 
 impl Group {
     pub fn new() -> Self {
@@ -190,7 +191,9 @@ impl Group {
     }
 
     fn filtered(&self, page: Page, query: &str, stacked: bool) -> kit::SettingGroup {
-        let group = kit::SettingGroup::new().px(px(GUTTER - KIT_LIST_PADDING));
+        let group = kit::SettingGroup::new()
+            .px(px(GUTTER - KIT_LIST_PADDING))
+            .gap(px(12.));
         let group = match &self.title {
             Some(title) => group.title(title.clone()),
             None => group,
@@ -242,7 +245,8 @@ pub(crate) struct Content {
 impl Content {
     pub fn new(title: impl Into<SharedString>) -> Self {
         Self {
-            inner: kit::SettingPage::new(title),
+            inner: kit::SettingPage::new(title)
+                .header_style(&gpui::StyleRefinement::default().px(px(GUTTER))),
             entries: Vec::new(),
             groups: Vec::new(),
         }

@@ -27,6 +27,7 @@ pub(crate) mod menu;
 pub(crate) mod segmented;
 pub(crate) mod status;
 pub(crate) mod time;
+pub(crate) mod typography;
 
 pub(crate) use atoms::{badge, dot, keystroke, muted, notice_card, pill, shadow, specular};
 pub(crate) use buttons::{ghost_button, ghost_icon, icon_button};
