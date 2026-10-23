@@ -50,7 +50,11 @@ mod tests {
     #[gpui::test]
     fn miniatures_use_the_native_fonts_and_sanitize_before_scaling(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            let mut settings = Settings { font: gpui::font("Missing Phux Preview Font"), font_size: f32::NAN, ..Default::default() };
+            let mut settings = Settings {
+                font: gpui::font("Missing Phux Preview Font"),
+                font_size: f32::NAN,
+                ..Default::default()
+            };
             crate::fonts::install(cx);
             crate::fonts::resolve(&mut settings.font, cx);
             let expected = settings.font.clone();

@@ -1,7 +1,7 @@
 //! Collect cell text into runs, shape glyphs, and record fixture observations.
 
-use super::*;
 use super::model::TextStyle;
+use super::*;
 
 impl Builder {
     pub(super) fn prepare_ink(
