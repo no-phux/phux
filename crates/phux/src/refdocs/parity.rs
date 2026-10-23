@@ -1,5 +1,5 @@
 //! The generated CLI/MCP parity reference, rendered from the MCP tool table
-//! (`crates/phux-mcp/src/tool_table.rs`), compiled in here with `#[path]` so
+//! (`crates/phux-mcp/src/tool_table/`), compiled in here with `#[path]` so
 //! the `phux` binary renders the page without linking the MCP stack.
 //!
 //! The same table annotates the adapter's catalog and is held to the live
@@ -14,7 +14,7 @@ use super::Page;
     clippy::redundant_pub_crate,
     reason = "the table is written for the adapter crate, where pub(crate) is load-bearing"
 )]
-#[path = "../../../phux-mcp/src/tool_table.rs"]
+#[path = "../../../phux-mcp/src/tool_table/mod.rs"]
 mod tool_table;
 
 use tool_table::{CLI_ONLY, DESTRUCTIVE_SOURCE, Exec, Surface, TOOLS};

@@ -2,7 +2,7 @@
 //! an MCP tool, every tool names the verb it mirrors (or why it has none),
 //! and every tool's annotations are the kind table's.
 //!
-//! The table under test is `src/tool_table.rs`, compiled here with `#[path]`
+//! The table under test is `src/tool_table/`, compiled here with `#[path]`
 //! — the same file the adapter annotates its catalog from and the generated
 //! `docs/reference/parity.md` renders. It is checked against:
 //!
@@ -26,7 +26,7 @@
     clippy::redundant_pub_crate,
     reason = "the table is written for the adapter crate, where pub(crate) is load-bearing"
 )]
-#[path = "../src/tool_table.rs"]
+#[path = "../src/tool_table/mod.rs"]
 mod tool_table;
 
 use std::collections::BTreeSet;
@@ -177,7 +177,7 @@ fn every_agent_facing_cli_verb_has_a_tool() {
         assert!(
             tools.contains(verb.as_str()) || exempt,
             "`phux {verb}` is agent-facing but no MCP tool mirrors it; add the tool, \
-             or a CLI_ONLY row in crates/phux-mcp/src/tool_table.rs saying why not"
+             or a CLI_ONLY row in crates/phux-mcp/src/tool_table/cli_only.rs saying why not"
         );
         assert!(
             !(tools.contains(verb.as_str()) && exempt),
@@ -208,7 +208,7 @@ fn every_tool_names_its_verb_or_is_automation_only() {
     assert_eq!(
         served, rows,
         "the tool table and the live catalog disagree; add or remove the row in \
-         crates/phux-mcp/src/tool_table.rs"
+         crates/phux-mcp/src/tool_table/mod.rs"
     );
     for row in TOOLS {
         match row.surface {
