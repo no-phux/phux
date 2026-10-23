@@ -338,6 +338,41 @@ impl Workspace {
         }
     }
 
+    /// Open an explicit navigation target, retaining ownership only of a new focus request.
+    pub(crate) fn open_for_navigation(
+        &mut self,
+        connection: &Connection,
+        pane: &PaneDescriptor,
+    ) -> Option<PendingOpen> {
+        let label = terminal_label(&pane.terminal_id);
+        let previous = self.awaiting.get(&label).cloned();
+        // An explicit refusal must not be retried by automatic session adoption.
+        self.considered.insert(label.clone());
+        self.open(connection, pane);
+        (previous != Some(Destination::Tab) && self.awaiting.get(&label) == Some(&Destination::Tab))
+            .then_some(PendingOpen { label, previous })
+    }
+
+    /// Withdraw this navigation's focus request, preserving an earlier quiet tab.
+    pub(crate) fn cancel_pending_open(&mut self, intent: PendingOpen) {
+        if self.awaiting.get(&intent.label) != Some(&Destination::Tab) {
+            return;
+        }
+        match intent.previous {
+            Some(destination) => {
+                self.awaiting.insert(intent.label, destination);
+            }
+            None => {
+                self.awaiting.remove(&intent.label);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_open(&self, terminal: &ResourceId) -> bool {
+        self.awaiting.get(&terminal_label(terminal)) == Some(&Destination::Tab)
+    }
+
     /// Land a ready terminal in a new tab, or await it. Returns whether it waits.
     pub(super) fn tab_when_ready(
         &mut self,

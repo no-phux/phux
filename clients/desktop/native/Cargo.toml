@@ -40,6 +40,10 @@ required-features = ["ui-fixtures"]
 name = "settings_preview"
 required-features = ["ui-fixtures"]
 
+[[example]]
+name = "agent_fleet"
+required-features = ["ui-fixtures"]
+
 [dependencies]
 phux-client-core = { path = "../../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
