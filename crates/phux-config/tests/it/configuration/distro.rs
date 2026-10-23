@@ -310,6 +310,34 @@ fn selecting_the_same_distro_is_idempotent_and_off_keeps_entry_notes() {
 }
 
 #[test]
+fn off_preserves_suffix_comments_with_and_without_a_following_entry() {
+    let tmp = TempDir::new().expect("tempdir");
+    let path = tmp.path().join("config.toml");
+    fs::write(tmp.path().join("personal.toml"), "[sidebar]\nwidth = 31\n").expect("personal layer");
+    for original in [
+        "extends = [\n# phux-managed-distro\n'selected.toml' # keep this operator note\n]\n",
+        "extends = [\n# phux-managed-distro\n'selected.toml' # keep this operator note\n, 'personal.toml']\n",
+        "extends = ['personal.toml',\n# phux-managed-distro\n'selected.toml' # keep this operator note\n]\n",
+    ] {
+        fs::write(&path, original).expect("config");
+        switch_distro(&path, None).expect("off");
+        let text = fs::read_to_string(&path).expect("read");
+        assert_eq!(
+            text.matches("# keep this operator note").count(),
+            1,
+            "{text}"
+        );
+        assert!(!text.contains("# phux-managed-distro"), "{text}");
+        assert!(!text.contains("selected.toml"), "{text}");
+        assert_eq!(current_distro(&path).expect("current"), None);
+        phux_config::loader::load_from(&path).expect("remaining config loads");
+        if original.contains("personal.toml") {
+            assert!(text.contains("personal.toml"), "{text}");
+        }
+    }
+}
+
+#[test]
 fn missing_enabled_distro_plugins_are_rejected_but_disabled_plugins_are_allowed() {
     let tmp = TempDir::new().expect("tempdir");
     let layer = plant_distro(tmp.path(), "a");

@@ -187,8 +187,14 @@ fn remove_slot(array: &mut Array, index: usize) {
         .prefix()
         .and_then(toml_edit::RawString::as_str)
         .unwrap_or("");
-    let comments = prefix
-        .lines()
+    let suffix = removed
+        .decor()
+        .suffix()
+        .and_then(toml_edit::RawString::as_str)
+        .unwrap_or("");
+    let comments = [prefix, suffix]
+        .into_iter()
+        .flat_map(str::lines)
         .filter(|line| line.trim() != MARKER)
         .collect::<Vec<_>>()
         .join("\n");
