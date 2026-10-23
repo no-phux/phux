@@ -157,6 +157,12 @@ pub fn kill_session(phux: &Path, socket: &Path, name: &str) -> Option<String> {
     run(phux, socket_args(socket, &["kill", name.trim()])).err()
 }
 
+mod add;
+mod tailnet;
+
+pub use add::{AddHost, add_host};
+pub use tailnet::{Tailnet, TailnetPeer, discover_tailnet};
+
 /// A machine `phux host add` registered for `phux attach NAME`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteHost {
@@ -195,19 +201,6 @@ fn parse_hosts(output: &[u8]) -> Result<Vec<RemoteHost>, String> {
         .collect();
     hosts.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(hosts)
-}
-
-/// `phux host add TARGET` over the ssh trust the user already has. Enrollment
-/// installs the remote service and pairs, so it can take a while.
-pub fn add_host(phux: &Path, target: &str, name: &str) -> Result<(), String> {
-    if target.trim().is_empty() {
-        return Err("Enter an ssh destination such as me@mini.".into());
-    }
-    let mut args = args(&["host", "add", target.trim()]);
-    if !name.trim().is_empty() {
-        args.extend(["--name".to_owned(), name.trim().to_owned()]);
-    }
-    run(phux, args)
 }
 
 /// `phux host rm NAME`. The token file stays, as the CLI leaves it.

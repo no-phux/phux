@@ -24,7 +24,9 @@ in, or the most recent session. It never creates a session on its own.
 
 The sidebar lists every session on this machine and on each host
 registered with `phux host add`, grouped by repository, by machine, or
-flat. One window shows one session; selecting another restores its layout
+flat. **Add Machine…** lists the Mac and Linux machines on your Tailscale
+network (signing you in to Tailscale first if needed), installs or updates
+phux on the one you pick over ssh, and shows each setup step. One window shows one session; selecting another restores its layout
 in place without touching the processes. Connections stay open across host
 switches, retaining the last session on each host while only the selected
 session is drawn. Agents that need you are marked
