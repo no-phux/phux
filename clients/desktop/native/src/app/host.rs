@@ -56,6 +56,13 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
     })
 }
 
+/// The stable code of the CLI's JSON error on the last line of `error`.
+fn error_code(error: &str) -> Option<String> {
+    let line = error.lines().rfind(|line| !line.trim().is_empty())?;
+    let document: serde_json::Value = serde_json::from_str(line).ok()?;
+    Some(document.pointer("/error/code")?.as_str()?.to_owned())
+}
+
 /// The CLI's JSON refusal belongs on stderr; show its actionable message,
 /// not the wire document, when a folder's recipe needs trust or a name collides.
 fn project_error(error: String) -> String {
