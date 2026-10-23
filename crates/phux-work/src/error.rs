@@ -1,4 +1,7 @@
-//! Work store failures. A failed mutation leaves the file as it was.
+//! Work store failures. Store refusals leave the file as it was.
+//!
+//! A keeper exchange can fail after commit. Keep the original operation identity
+//! and reconcile rather than blindly submitting an uncertain write under a new id.
 
 /// Why a work store operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +125,32 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether a failed write lacks proof that it was not committed.
+    ///
+    /// Transport and storage errors are conservative, as is a conflict with an
+    /// already-admitted identity. New error variants default to uncertainty.
+    #[must_use]
+    pub const fn write_outcome_unknown(&self) -> bool {
+        !matches!(
+            self,
+            Self::UnsupportedSchema { .. }
+                | Self::Busy
+                | Self::NotFound { .. }
+                | Self::RevisionConflict { .. }
+                | Self::InvalidAlias(_)
+                | Self::InvalidOperationId(_)
+                | Self::InvalidRepo(_)
+                | Self::InvalidText { .. }
+                | Self::EmptyEdit
+                | Self::NotStartable { .. }
+                | Self::AlreadyStarted { .. }
+                | Self::WorktreeBound { .. }
+                | Self::AtCapacity { .. }
+                | Self::NoMail { .. }
+                | Self::NoClaim { .. }
+        )
+    }
+
     pub(crate) fn invalid_text(field: &str, reason: &str) -> Self {
         Self::InvalidText {
             field: field.to_owned(),

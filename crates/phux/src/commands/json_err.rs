@@ -31,7 +31,7 @@ pub(crate) mod codes;
 
 /// One CLI failure, carrying everything both output channels need: a stable
 /// machine `code`, the human `message`, and the `remedy` naming the way out.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CliError {
     pub(crate) code: &'static str,
     pub(crate) message: String,
@@ -39,6 +39,14 @@ pub(crate) struct CliError {
     /// Why this process's auto-start of the server failed, when it tried;
     /// emitted as `error.auto_start_error`.
     pub(crate) auto_start_error: Option<String>,
+    /// Cold metadata stays off the common error's stack footprint.
+    context: Option<Box<ErrorContext>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ErrorContext {
+    recovery: Option<phux_client::recovery::Recovery>,
+    cause_code: Option<&'static str>,
 }
 
 impl CliError {
@@ -52,7 +60,20 @@ impl CliError {
             message: message.into(),
             remedy: remedy.into(),
             auto_start_error: None,
+            context: None,
         }
+    }
+}
+
+impl CliError {
+    pub(crate) fn with_recovery(mut self, recovery: phux_client::recovery::Recovery) -> Self {
+        self.context.get_or_insert_with(Box::default).recovery = Some(recovery);
+        self
+    }
+
+    pub(crate) fn with_cause_code(mut self, code: &'static str) -> Self {
+        self.context.get_or_insert_with(Box::default).cause_code = Some(code);
+        self
     }
 }
 
@@ -110,6 +131,14 @@ pub(crate) fn error_document(err: &CliError, exit_code: u8) -> serde_json::Value
     let mut error = serde_json::json!({ "code": err.code, "message": err.message });
     if let Some(auto_start_error) = &err.auto_start_error {
         error["auto_start_error"] = serde_json::Value::from(auto_start_error.as_str());
+    }
+    if let Some(context) = &err.context {
+        if let Some(recovery) = &context.recovery {
+            error["recovery"] = serde_json::json!(recovery);
+        }
+        if let Some(code) = context.cause_code {
+            error["cause_code"] = serde_json::json!(code);
+        }
     }
     serde_json::json!({
         "schema_version": ERROR_SCHEMA_VERSION,
@@ -228,6 +257,33 @@ pub(crate) fn unreachable_socket_message(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recovery_is_additive_and_never_extracted_from_message_text() {
+        use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
+        let error = super::CliError::new(
+            "session_create_failed",
+            "opaque diagnostic",
+            "inspect state",
+        )
+        .with_cause_code("outcome_unknown")
+        .with_recovery(Recovery::new(
+            ScopeKind::OrganizationAuthority,
+            Some("actual-operation".into()),
+            EffectCertainty::Unknown,
+            NextAction::Reconcile,
+        ));
+        let doc = super::error_document(&error, 1);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["error"]["code"], "session_create_failed");
+        assert_eq!(doc["error"]["cause_code"], "outcome_unknown");
+        assert_eq!(doc["error"]["recovery"]["operation_id"], "actual-operation");
+        assert_eq!(
+            doc["error"]["recovery"]["scope"]["kind"],
+            "organization_authority"
+        );
+        assert!(doc["error"]["recovery"]["scope"].get("id").is_none());
+    }
+
     use std::path::Path;
 
     use phux_client::attach::AttachError;

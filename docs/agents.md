@@ -186,6 +186,31 @@ for something outside a pane. You speak as `--as`, else
 `$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`. Addresses are panes on
 this machine; `host/@N` is refused.
 
+For a send that may need recovery, choose a fresh unique nonzero 32-hex operation ID and
+keep the original sender, recipients, thread and body:
+
+```sh
+phux mail send @7 -m 'rebased onto main; rerun tests' -t fix-login \
+  --operation-id 12345678123456781234567812345678 --json
+```
+
+The reply includes `operation_id`, `scope.kind: "work_store"`, and
+`replayed`. If omitted, an ID is generated for that invocation. A keeper
+exchange can fail **after** committing mail: an uncertain error preserves
+that ID in `error.recovery`. Reconcile first; an explicit identical send
+with the original ID against the same work store replays its receipt,
+without creating another Mail. Changing the payload under the same ID
+is refused. Do not blindly retry with a fresh durable ID.
+
+MCP's `phux_mail_send` accepts the same durable `operation_id`. Its optional
+`idempotency_key` is a **different** identity: an invocation in one adapter's
+in-memory ledger. Adapter receipt documents expose `adapter_receipt_id`
+(the old `operation_id` field remains its alias) and
+`scope.kind: "mcp_adapter"`. Retrying the same adapter key returns its
+cached outcome, including failure. Explicit durable recovery may use a new
+adapter key with the original mail operation ID and identical arguments;
+restarting the adapter does not erase the work-store receipt.
+
 Sending mail only stores it. Nothing is ever typed into the recipient's
 pane: its harness takes the mail and puts it in the agent's conversation,
 once, framed as a message from another agent rather than from the user.

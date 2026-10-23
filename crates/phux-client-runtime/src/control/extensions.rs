@@ -17,7 +17,7 @@ use phux_protocol::wire::frame::{
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{ControlPlane, Pending, ServerFeature, ServerFeatureExt};
+use super::{ControlPlane, Pending, ServerFeature};
 
 mod types;
 mod uploads;
@@ -63,6 +63,15 @@ pub(super) struct Extensions {
 }
 
 impl ControlPlane {
+    /// Ordinary feature admission only; callers retain their payload,
+    /// connection, queue, and authority checks. Unknown methods fail closed.
+    pub(super) fn method_advertised(&self, name: &str) -> bool {
+        self.server.as_ref().is_some_and(|server| {
+            phux_protocol::kinds::method_named(name)
+                .is_some_and(|method| method.advertised(server.features, server.features_ext))
+        })
+    }
+
     /// Queue a reconnect-safe chunked file upload.
     pub fn put_file(&mut self, terminal_id: ResourceId, extension: String, data: Vec<u8>) -> u64 {
         let transfer_id = self.next_upload_id();
@@ -163,7 +172,7 @@ impl ControlPlane {
     pub fn transcribe(&mut self, transfer_id: u64) -> u32 {
         let refusal = if !self.handshake_ready {
             Some("not connected")
-        } else if !self.server_has(ServerFeature::Transcribe) {
+        } else if !self.method_advertised("TRANSCRIBE") {
             Some("the server does not support TRANSCRIBE; dictate on-device")
         } else {
             None
@@ -205,7 +214,7 @@ impl ControlPlane {
 
     /// Ask the server for child directories. Returns zero when unavailable.
     pub fn list_directory(&mut self, path: String) -> u32 {
-        if !self.handshake_ready || !self.server_has(ServerFeature::ListDirectory) {
+        if !self.handshake_ready || !self.method_advertised("LIST_DIRECTORY") {
             return 0;
         }
         let request_id = self.next_request_id();
@@ -273,10 +282,7 @@ impl ControlPlane {
 
     fn path_query_ready(&self) -> bool {
         self.handshake_ready
-            && self
-                .server
-                .as_ref()
-                .is_some_and(|server| server.has_ext(ServerFeatureExt::PathQuery))
+            && self.method_advertised("PATH_QUERY")
             && self.extensions.pending_paths.len() + self.extensions.path_answers.len()
                 < MAX_PATH_ANSWERS
     }

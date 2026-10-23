@@ -239,6 +239,34 @@ On failure, stdout is empty and stderr carries one JSON object:
 
 Branch on `error.code`, which comes from a fixed list, not on `message`.
 
+Mutation failures can also carry additive `error.recovery` facts:
+
+```json
+{"operation_id":"12345678123456781234567812345678","scope":{"kind":"organization_authority"},"effect_certainty":"unknown","next_action":"reconcile"}
+```
+
+The scope distinguishes `work_store`, `organization_authority`,
+`input_server_incarnation` and `mcp_adapter`; matching ID strings across
+these domains do not identify the same operation. `scope.id` is included
+only when an actual authority or executing incarnation is available. An
+omitted identity is unknown, not permission to infer one from a socket,
+pane number or later connection. Some existing source errors do not retain
+that context.
+
+`effect_certainty` is `not_applied`, `applied`, or `unknown`. These describe
+the operation's effects, not task success: acknowledged input may have
+reached the tty without an agent consuming or completing the turn.
+`next_action` distinguishes `retry_same_operation`, `retry_new_operation`
+and `reconcile`; normal authorization and retention limits still apply.
+Unknown input delivery is reconcile-only—never silently resend it.
+
+Legacy outer codes remain stable. For example, session creation still uses
+`session_create_failed`, while `error.cause_code` preserves the underlying
+classification and recovery metadata retains a known original operation
+ID. Automation must not extract identities from diagnostic prose. See
+[mail recovery](./agents.md#mail-and-path-claims) for the distinct durable
+mail and adapter-ledger rules.
+
 ## Exit codes
 
 Every command uses the same codes:

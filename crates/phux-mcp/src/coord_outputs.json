@@ -51,6 +51,29 @@
           "body",
           "created_at"
         ]
+      },
+      "operation_id": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{32}$",
+        "description": "Durable identity in the local work store; not an adapter receipt."
+      },
+      "replayed": {
+        "type": "boolean"
+      },
+      "scope": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "work_store"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
       }
     },
     "required": [
