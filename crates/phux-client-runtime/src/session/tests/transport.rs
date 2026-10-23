@@ -106,7 +106,12 @@ fn try_recv_drains_a_burst_without_waiting() {
 fn a_write_into_a_closed_peer_is_recorded_and_recv_reports_the_eof() {
     block_on(async {
         let (mut client, peer) = pair();
-        drop(peer);
+        // Shut the socket itself down, not just this handle: a child another
+        // test is spawning may hold a copy of the descriptor until it execs.
+        peer.into_std()
+            .expect("std socket")
+            .shutdown(std::net::Shutdown::Both)
+            .expect("shutdown");
         assert!(!client.write_hit_closed_peer());
         let resize = FrameKind::ResizeTerminal {
             terminal_id: ResourceId::local(1),
