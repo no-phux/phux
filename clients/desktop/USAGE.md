@@ -98,7 +98,8 @@ machines; selecting work is not required to identify it.
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
 Click a session's name to select it; only its caret expands or collapses its
-contents. Sessions start folded to one line each: name, terminal count, and a
+contents. The terminal you are viewing is highlighted under it.
+Sessions start folded to one line each: name, terminal count, and a
 dot while something in it needs you. Option-click a caret to open or fold
 every session, or use **Expand All Sessions** and **Collapse All Sessions** in
 **Sidebar view** or the palette. Empty sessions sink below the ones holding
