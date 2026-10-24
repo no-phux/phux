@@ -171,8 +171,8 @@ fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
     )
 }
 
-/// A sidebar tab's leading slot: a lit dot while it needs a person, else its
-/// agent's harness mark, else its agent's state, else a terminal glyph.
+/// A tab keeps its harness identity through attention and selection changes;
+/// the harness's pip carries state. Unclassified agents use a state dot.
 fn side_lead(
     attention: Option<AgentState>,
     agent: Option<AgentState>,
@@ -180,14 +180,11 @@ fn side_lead(
     selected: bool,
     look: &Look,
 ) -> AnyElement {
-    if attention.is_some() {
-        return state_dot(attention, agent).into_any_element();
-    }
     if let Some(harness) = harness {
         return harness_mark(harness, agent, 13., look).into_any_element();
     }
-    if agent.is_some() {
-        return state_dot(None, agent).into_any_element();
+    if attention.is_some() || agent.is_some() {
+        return state_dot(attention, agent).into_any_element();
     }
     Icon::new(IconName::SquareTerminal)
         .size(px(13.))
@@ -197,20 +194,6 @@ fn side_lead(
             &look.chrome.faint
         }))
         .into_any_element()
-}
-
-/// A titlebar tab's leading slot: nothing while its corner mark asks for a
-/// person, else what a sidebar tab leads with.
-fn top_lead(
-    attention: Option<AgentState>,
-    agent: Option<AgentState>,
-    harness: Option<Harness>,
-    selected: bool,
-    look: &Look,
-) -> Option<AnyElement> {
-    attention
-        .is_none()
-        .then(|| side_lead(None, agent, harness, selected, look))
 }
 
 /// A titlebar tab's close button: on hover, and always on the selected tab.
@@ -474,7 +457,7 @@ fn tab_button(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .children(top_lead(attention, agent, harness, selected, look)),
+                    .child(side_lead(None, agent, harness, selected, look)),
             )
         })
         .child(tab_label(desk, tab, selected, look))

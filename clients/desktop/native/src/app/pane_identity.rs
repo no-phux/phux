@@ -177,6 +177,16 @@ pub enum PaneOrigin {
 }
 
 impl PaneOrigin {
+    /// The same identity on active panes and passive inventory rows. Resource
+    /// ids are resolved only against the connection that owns the terminal.
+    pub(crate) fn on(connection: &crate::connection::Connection, terminal: &ResourceId) -> Self {
+        let provider = connection
+            .topology
+            .as_ref()
+            .and_then(|topology| session_provider(topology, terminal));
+        Self::classify(connection.agents.get(terminal), provider)
+    }
+
     /// Classify from the two published signals. A bound `AgentSession`'s
     /// provider is structured and wins over a badge's self-declared kind;
     /// either alone makes the pane agent-driven, even when it names no
@@ -250,12 +260,9 @@ pub fn tab_recessed(origins: impl IntoIterator<Item = PaneOrigin>) -> bool {
 impl Desk {
     /// Who drives `terminal`.
     pub(crate) fn terminal_origin(&self, terminal: &ResourceId) -> PaneOrigin {
-        let provider = self
-            .link
-            .as_ref()
-            .and_then(|link| link.connection.topology.as_ref())
-            .and_then(|topology| session_provider(topology, terminal));
-        PaneOrigin::classify(self.agent(terminal), provider)
+        self.link.as_ref().map_or(PaneOrigin::Human, |link| {
+            PaneOrigin::on(&link.connection, terminal)
+        })
     }
 
     /// Who drives `placement`'s terminal; a placement with none is a person's.
