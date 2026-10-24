@@ -38,24 +38,26 @@ fn inactive_session_marks_use_their_own_host_and_update_without_selection(cx: &m
     desk.update(cx, |desk, cx| {
         let observer = desk.fleet.observers.get_mut(&Some("mini".into())).unwrap();
         let connection = observer.connection.as_mut().unwrap();
-        connection
-            .agents
-            .get_mut(&ResourceId::local(1))
-            .unwrap()
-            .state = AgentState::Blocked;
+        let info = connection.agents.get_mut(&ResourceId::local(1)).unwrap();
+        info.state = AgentState::Unknown;
+        info.attention = crate::connection::AgentAttention::High;
         assert!(
             observer.refresh_inventory(&Some("mini".into())),
             "state is part of visible inventory"
         );
         let pane = &observer.last[0].panes[0];
         assert_eq!(pane.origin, PaneOrigin::Agent(Harness::Codex));
-        assert_eq!(pane.agent.as_ref().unwrap().state, AgentState::Blocked);
+        assert_eq!(pane.agent.as_ref().unwrap().state, AgentState::Unknown);
         cx.notify();
     });
     draw(cx);
     assert!(
         shown(cx, "harness-mark-Codex"),
         "attention does not erase identity"
+    );
+    assert!(
+        shown(cx, "harness-attention"),
+        "unknown lifecycle does not erase urgency"
     );
     desk.read_with(cx, |desk, _| {
         assert_eq!(desk.session, "main");
