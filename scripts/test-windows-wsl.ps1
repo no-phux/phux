@@ -17,7 +17,7 @@ function Assert-McpProcess([string] $Distro, [string] $Request, [string] $Expect
     # A real Windows MCP client launches a process and keeps stdin open while
     # waiting for a response. A finite PowerShell object pipe alone misses this.
     $process = [Diagnostics.Process]::new()
-    $process.StartInfo.FileName = (Get-Command wsl.exe -CommandType Application).Source
+    $process.StartInfo.FileName = 'wsl.exe'
     # This is the documented Windows MCP client entrypoint: native wsl.exe,
     # not an extra PowerShell process between the client and the protocol.
     $arguments = @('--distribution', $Distro, '--exec', 'sh', '-c', 'exec ~/.local/bin/phux-mcp')
@@ -28,8 +28,11 @@ function Assert-McpProcess([string] $Distro, [string] $Request, [string] $Expect
     $process.StartInfo.RedirectStandardError = $true
     $process.StartInfo.CreateNoWindow = $true
     $process.StartInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $processStarted = $false
     try {
-        Assert-True ($process.Start()) 'Could not start Windows MCP child'
+        Write-Output ('Native MCP program: ' + $process.StartInfo.FileName)
+        $processStarted = $process.Start()
+        Assert-True $processStarted 'Could not start Windows MCP child'
         Write-Output "Windows MCP child pid: $($process.Id)"
         $stderr = $process.StandardError.ReadToEndAsync()
         $bytes = [Text.Encoding]::UTF8.GetBytes($Request + "`n")
@@ -44,8 +47,10 @@ function Assert-McpProcess([string] $Distro, [string] $Request, [string] $Expect
         Assert-True ($process.WaitForExit(10000)) 'MCP child did not exit after stdin closed'
         Assert-True ($process.ExitCode -eq 0) ('MCP child failed: ' + $stderr.Result)
     } finally {
-        $process.StandardInput.Close()
-        if (-not $process.WaitForExit(5000)) { $process.Kill() }
+        if ($processStarted) {
+            $process.StandardInput.Close()
+            if (-not $process.WaitForExit(5000)) { $process.Kill() }
+        }
         $process.Dispose()
     }
 }
