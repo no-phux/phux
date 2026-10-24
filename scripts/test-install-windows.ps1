@@ -24,6 +24,7 @@ try {
     $bin = Join-Path $work 'bin with spaces'
     . $installer -InstallDir $bin -DryRun | Out-Null
     Assert-True (-not (Test-Path $work)) 'Dry-run wrote files'
+    Assert-Throws { ConvertTo-PhuxShellLiteral ("NUL" + [char]0) } 'cannot contain NUL'
     Assert-Throws { & $installer -InstallDir $bin -Channel next -Version 1.2.3 } 'requires -Channel stable'
     Assert-Throws { & $installer -InstallDir ' ' } 'must not be empty'
     Assert-Throws { & $installer -Distribution '--exec' -DryRun } 'pattern'
@@ -49,11 +50,18 @@ try {
     Assert-True ([IO.File]::ReadAllText($existing).EndsWith('sentinel')) 'Failed preflight changed a launcher'
 
     $global:PhuxTestWslResult = 0
-    & $installer -InstallDir $bin -Distribution 'Ubuntu-24.04' -Version 1.2.3 -NoModifyPath | Out-Null
+    $crlfInstaller = Join-Path $work 'install-crlf.ps1'
+    $crlf = [IO.File]::ReadAllText($installer).Replace("`r`n", "`n").Replace("`n", "`r`n")
+    [IO.File]::WriteAllText($crlfInstaller, $crlf)
+    & $crlfInstaller -InstallDir $bin -Distribution 'Ubuntu-24.04' -Version 1.2.3 -NoModifyPath | Out-Null
     Assert-True ($global:PhuxTestInvocations.Count -eq 3) 'Expected failed probe, successful probe and installation'
     $installArgs = $global:PhuxTestInvocations[-1]
     Assert-True ($installArgs[1] -eq 'Ubuntu-24.04') 'Distribution was not selected'
     Assert-True ($installArgs[-1] -notmatch '"') 'Native argument contains embedded double quotes'
+    $encoded = [regex]::Match($installArgs[-1], 'printf %s ([A-Za-z0-9+/=]+)\|').Groups[1].Value
+    $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
+    Assert-True (-not $decoded.Contains("`r")) 'Windows checkout injected CRLF into Linux shell source'
+    Assert-True ($decoded.Contains('--install-dir "$HOME/.local/bin"')) 'Launcher and Linux installation paths disagree'
     foreach ($tool in @('phux', 'phux-mcp')) {
         $file = Join-Path $bin ($tool + '.ps1')
         Assert-True (Test-Path $file) "Missing $tool launcher"

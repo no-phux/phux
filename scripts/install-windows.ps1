@@ -29,6 +29,7 @@ $ErrorActionPreference = 'Stop'
 function ConvertTo-PhuxShellLiteral([string] $Value) {
     # POSIX single quoting, including literal apostrophes. Never interpolate
     # caller arguments as shell source.
+    if ($Value.Contains([string][char]0)) { throw 'Command arguments cannot contain NUL characters.' }
     return "'" + $Value.Replace("'", "'\''") + "'"
 }
 
@@ -92,7 +93,7 @@ if ([string]::IsNullOrWhiteSpace($InstallDir)) {
 }
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
 
-$options = '--no-modify-path --channel ' + (ConvertTo-PhuxShellLiteral $Channel)
+$options = '--no-modify-path --install-dir "$HOME/.local/bin" --channel ' + (ConvertTo-PhuxShellLiteral $Channel)
 if ($Version) { $options += ' --version ' + (ConvertTo-PhuxShellLiteral $Version) }
 $install = @'
 set -eu
@@ -102,6 +103,9 @@ trap 'rm -rf "$work"' EXIT
 curl -fsSL --proto =https --connect-timeout 10 --max-time 120 https://phux.sh/install -o "$work/install.sh"
 sh "$work/install.sh"
 '@
+# Git's Windows checkout may use CRLF; the Linux shell source must use LF.
+# Normalize only this static source, never caller argument data.
+$install = $install.Replace("`r`n", "`n")
 $install += ' ' + $options + "`n" + '"$HOME/.local/bin/phux" --version' + "`n" + '"$HOME/.local/bin/phux-mcp" --version'
 
 if ($DryRun) {

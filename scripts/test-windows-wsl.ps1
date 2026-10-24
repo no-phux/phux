@@ -34,7 +34,7 @@ try {
     # An actual pane receives exact argv, including empty strings, Unicode,
     # quotes, shell metacharacters, line breaks and Windows-shaped paths.
     $values = @('', 'two words', 'single''quote', 'double"quote', 'back\slash\',
-        '$HOME; touch /tmp/PHUX_INJECTION', '*?[abc]', "line`nbreak",
+        '$HOME; touch /tmp/PHUX_INJECTION', '*?[abc]', "line`nbreak", "CR`r`nLF",
         ('"\ud83c\udf55"' | ConvertFrom-Json), '-n', 'C:\a b\')
     $python = 'import json,sys; open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(sys.argv[2:], ensure_ascii=False))'
     $pane = (& $cli --socket $socket spawn --retain=60 -- python3 -c $python $argvFile @values).Trim()

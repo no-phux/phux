@@ -41,6 +41,7 @@ jobs:
           wsl-version: 2
           wsl-shell-user: phux-ci
           additional-packages: curl ca-certificates python3
+          use-cache: 'false'
       - name: Set the disposable distribution's default user
         shell: pwsh
         run: |
