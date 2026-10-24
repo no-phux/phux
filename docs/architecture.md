@@ -7,6 +7,9 @@ owns grants and revocation; [embedding](./embedding.md#runtime-consumer-contract
 owns the runtime consumer boundary. [Substrate](./substrate.md) is the org's
 principals, home keeper, and adapters.
 
+Brand artwork and cross-repository release delivery are documented in
+[brand assets](./brand-assets.md).
+
 ## One server, many clients
 
 Each user runs one `phux-server` process per profile. It owns the

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "consumer": "phux",
+  "targets": {
+    "desktop/AppIcon.svg": "clients/desktop/packaging/AppIcon.svg",
+    "logos/docs-wordmark.svg": "docs/assets/logo.svg",
+    "logos/docs-wordmark.png": "docs/assets/logo.png",
+    "tooling/brand.py": "scripts/brand.py"
+  }
+}

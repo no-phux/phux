@@ -1,0 +1,57 @@
+name: brand-update
+on:
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Brand version; empty selects latest stable release'
+        type: string
+      allow_rollback:
+        description: 'Allow the explicit version to replace a newer pin'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: brand-consumer-updates
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: source
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: no-phux
+          repositories: phux-brand
+          permission-contents: read
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: consumers
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: no-phux
+          repositories: |
+            phux
+            phux-mobile
+            website
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Verify release and propose consumer updates
+        env:
+          BRAND_READ_TOKEN: ${{ steps.source.outputs.token }}
+          GH_TOKEN: ${{ steps.consumers.outputs.token }}
+          BRAND_VERSION: ${{ inputs.version }}
+          BRAND_ROLLBACK: ${{ inputs.allow_rollback }}
+        run: |
+          args=()
+          if [ -n "$BRAND_VERSION" ]; then args+=(--version "$BRAND_VERSION"); fi
+          if [ "$BRAND_ROLLBACK" = true ]; then args+=(--allow-rollback); fi
+          python3 -B scripts/update-brand.py "${args[@]}"
