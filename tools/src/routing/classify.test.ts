@@ -72,6 +72,7 @@ test.each<[string[], Surface[]]>([
   [["scripts/install-windows.ps1"], []],
   [["scripts/test-install-windows.ps1"], []],
   [["scripts/test-windows-wsl.ps1"], []],
+  [["scripts/test-windows-mcp.py"], []],
   [[".github/workflows/windows-wsl.yml"], []],
   [["clients/desktop/native/Cargo.lock"], ["desktop"]],
   [["clients/desktop/phux-protocol"], ALL],

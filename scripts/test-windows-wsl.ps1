@@ -13,48 +13,6 @@ function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw $Message }
 }
 
-function Assert-McpProcess([string] $Distro, [string] $Request, [string] $ExpectedId) {
-    # A real Windows MCP client launches a process and keeps stdin open while
-    # waiting for a response. A finite PowerShell object pipe alone misses this.
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo.FileName = 'wsl.exe'
-    # This is the documented Windows MCP client entrypoint: native wsl.exe,
-    # not an extra PowerShell process between the client and the protocol.
-    $arguments = @('--distribution', $Distro, '--exec', 'sh', '-c', 'exec ~/.local/bin/phux-mcp')
-    $process.StartInfo.Arguments = ($arguments | ForEach-Object { '"' + $_ + '"' }) -join ' '
-    $process.StartInfo.UseShellExecute = $false
-    $process.StartInfo.RedirectStandardInput = $true
-    $process.StartInfo.RedirectStandardOutput = $true
-    $process.StartInfo.RedirectStandardError = $true
-    $process.StartInfo.CreateNoWindow = $true
-    $process.StartInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
-    $processStarted = $false
-    try {
-        Write-Output ('Native MCP program: ' + $process.StartInfo.FileName)
-        $processStarted = $process.Start()
-        Assert-True $processStarted 'Could not start Windows MCP child'
-        Write-Output "Windows MCP child pid: $($process.Id)"
-        $stderr = $process.StandardError.ReadToEndAsync()
-        $bytes = [Text.Encoding]::UTF8.GetBytes($Request + "`n")
-        $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
-        $process.StandardInput.BaseStream.Flush()
-        $response = $process.StandardOutput.ReadLineAsync()
-        Assert-True ($response.Wait([TimeSpan]::FromSeconds(20))) 'MCP did not reply while stdin remained open'
-        $reply = $response.Result | ConvertFrom-Json
-        Assert-True ($reply.id -ceq $ExpectedId) 'Native Windows MCP process changed the request id'
-        Assert-True ($reply.result.serverInfo.name -eq 'phux') 'Native Windows MCP initialize failed'
-        $process.StandardInput.Close()
-        Assert-True ($process.WaitForExit(10000)) 'MCP child did not exit after stdin closed'
-        Assert-True ($process.ExitCode -eq 0) ('MCP child failed: ' + $stderr.Result)
-    } finally {
-        if ($processStarted) {
-            $process.StandardInput.Close()
-            if (-not $process.WaitForExit(5000)) { $process.Kill() }
-        }
-        $process.Dispose()
-    }
-}
-
 try {
     # This downloads and verifies the real published Linux release, then
     # installs the PowerShell entrypoints exactly as a Windows user does.
@@ -104,7 +62,8 @@ try {
     $request = @{ jsonrpc = '2.0'; id = $id; method = 'initialize'; params = @{
         protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'wsl-ci'; version = '1' }
     } } | ConvertTo-Json -Depth 5 -Compress
-    Assert-McpProcess $Distribution $request $id
+    & python (Join-Path $PSScriptRoot 'test-windows-mcp.py') $Distribution
+    Assert-True ($LASTEXITCODE -eq 0) 'Native Windows MCP client qualification failed'
     # Diagnose the exact native stdin bytes using the SAME installed launcher
     # implementation, before asking the real MCP server to parse them.
     $probeSource = "#!/usr/bin/python3`nimport sys`nprint(sys.stdin.buffer.read().hex())`n"

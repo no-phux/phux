@@ -8,6 +8,7 @@ on:
       - scripts/install-windows.ps1
       - scripts/test-install-windows.ps1
       - scripts/test-windows-wsl.ps1
+      - scripts/test-windows-mcp.py
       - .github/workflows/windows-wsl.yml
   push:
     branches: [main]
@@ -15,6 +16,7 @@ on:
       - scripts/install-windows.ps1
       - scripts/test-install-windows.ps1
       - scripts/test-windows-wsl.ps1
+      - scripts/test-windows-mcp.py
       - .github/workflows/windows-wsl.yml
   workflow_dispatch:
 
