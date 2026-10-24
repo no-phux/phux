@@ -82,6 +82,8 @@ pub struct Workspace {
     views_epoch: Option<u64>,
     spawns: HashMap<u32, Destination>,
     awaiting: HashMap<String, Destination>,
+    /// Only acknowledged spawns may be placed before their bootstrap.
+    answered_spawns: HashSet<String>,
     owners: HashMap<String, String>,
     restoring: Option<SavedLayout>,
     restored: bool,
@@ -214,6 +216,7 @@ impl Workspace {
                     ..
                 } => {
                     self.awaiting.remove(&terminal_label(terminal_id));
+                    self.answered_spawns.remove(&terminal_label(terminal_id));
                     self.error("Could not open terminal", error.clone());
                 }
                 Event::TerminalClosed { terminal_id, .. } => {
@@ -249,7 +252,10 @@ impl Workspace {
     fn land_answered(&mut self, connection: &Connection) {
         let landed: Vec<(String, Destination)> = self
             .awaiting
-            .extract_if(|label, _| parse_terminal(label).is_some())
+            .extract_if(|label, _| {
+                self.answered_spawns.contains(label)
+                    || parse_terminal(label).is_some_and(|id| connection.ready(&id))
+            })
             .collect();
         for (label, destination) in landed {
             self.place_ready(connection, &label, destination);
@@ -261,6 +267,7 @@ impl Workspace {
     /// a split always lands in its own tab.
     fn place_ready(&mut self, connection: &Connection, label: &str, destination: Destination) {
         self.awaiting.remove(label);
+        self.answered_spawns.remove(label);
         if destination == Destination::QuietTab {
             if !self
                 .all_placements()
@@ -300,11 +307,11 @@ impl Workspace {
             .all_placements()
             .filter_map(|placement| placement.terminal_id.as_ref())
         {
-            if connection.pane(terminal).is_some() {
-                let _ = connection
-                    .client
-                    .attach_terminal_preserving_geometry(terminal);
-            }
+            // A placed spawn may still lack bootstrap and be absent from the
+            // home inventory. Recover its exact id on every new connection too.
+            let _ = connection
+                .client
+                .attach_terminal_preserving_geometry(terminal);
         }
     }
 
@@ -390,7 +397,9 @@ impl Workspace {
                 if destination == Destination::Background {
                     self.considered.insert(terminal_label(terminal));
                 } else {
-                    self.awaiting.insert(terminal_label(terminal), destination);
+                    let label = terminal_label(terminal);
+                    self.answered_spawns.insert(label.clone());
+                    self.awaiting.insert(label, destination);
                 }
             }
             _ => self.error(
@@ -403,6 +412,7 @@ impl Workspace {
     fn closed(&mut self, label: &str) {
         self.closed_terminals.insert(label.to_owned());
         self.awaiting.remove(label);
+        self.answered_spawns.remove(label);
         let doomed: Vec<String> = self
             .all_placements()
             .filter(|placement| placement.terminal_label == label)

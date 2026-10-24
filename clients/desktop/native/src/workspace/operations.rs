@@ -408,6 +408,7 @@ impl Workspace {
         );
         self.spawns.clear();
         self.awaiting.clear();
+        self.answered_spawns.clear();
         self.unresolved.clear();
         self.attaching.clear();
         self.closed_terminals.clear();
