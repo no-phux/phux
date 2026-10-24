@@ -62,6 +62,16 @@ try {
     $request = @{ jsonrpc = '2.0'; id = $id; method = 'initialize'; params = @{
         protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'wsl-ci'; version = '1' }
     } } | ConvertTo-Json -Depth 5 -Compress
+    # Diagnose the exact native stdin bytes using the SAME installed launcher
+    # implementation, before asking the real MCP server to parse them.
+    $probeSource = "#!/usr/bin/python3`nimport sys`nprint(sys.stdin.buffer.read().hex())`n"
+    $probeEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($probeSource))
+    $probeSetup = Get-PhuxWslArguments $Distribution ('printf %s ' + $probeEncoded + '|base64 -d > "$HOME/.local/bin/phux-wsl-bytes"; chmod 755 "$HOME/.local/bin/phux-wsl-bytes"')
+    & wsl.exe @probeSetup
+    $probeLauncher = Join-Path $bin 'phux-wsl-bytes.ps1'
+    [IO.File]::WriteAllText($probeLauncher, (Get-PhuxLauncher $Distribution 'phux-wsl-bytes'), [Text.UTF8Encoding]::new($false))
+    $stdinBytes = ($request | & $probeLauncher) -join ''
+    Write-Output ('Native stdin bytes: ' + $stdinBytes)
     $response = @($request | & $mcp)
     Assert-True ($LASTEXITCODE -eq 0) 'MCP stdio launcher failed'
     Write-Output ('MCP qualification response: ' + ($response -join "`n"))
@@ -81,7 +91,7 @@ try {
 } finally {
     if ($started) { & $cli --socket $socket kill --server }
     if (Get-Command Get-PhuxWslArguments -ErrorAction SilentlyContinue) {
-        $cleanup = Get-PhuxWslArguments $Distribution ('rm -f ' + (ConvertTo-PhuxShellLiteral $argvFile))
+        $cleanup = Get-PhuxWslArguments $Distribution ('rm -f "$HOME/.local/bin/phux-wsl-bytes" ' + (ConvertTo-PhuxShellLiteral $argvFile))
         & wsl.exe @cleanup
     }
     if (Test-Path $work) { Remove-Item -LiteralPath $work -Recurse -Force }

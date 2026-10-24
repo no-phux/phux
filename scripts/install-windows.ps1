@@ -147,5 +147,9 @@ foreach ($tool in @('phux', 'phux-mcp')) {
 }
 if (-not $NoModifyPath) { Add-PhuxUserPath $InstallDir }
 Write-Output "Installed phux and phux-mcp PowerShell launchers in $InstallDir (WSL: $Distribution)."
-Write-Output 'Open a new PowerShell window, then run phux --version and phux.'
+if ($NoModifyPath) {
+    Write-Output "PATH was not changed. Invoke phux.ps1 from $InstallDir, or add that directory to PATH."
+} else {
+    Write-Output 'Open a new PowerShell window, then run phux --version and phux.'
+}
 Write-Output 'Linux paths and Linux tools apply to phux arguments. Use Windows Terminal for the interactive UI.'
