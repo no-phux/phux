@@ -126,6 +126,11 @@ desktop-package profile="release": (desktop-native-build profile)
     fi
 
 [group('desktop')]
+[doc('Package a local drag-to-Applications DMG (ad-hoc; stable releases notarize in CI)')]
+desktop-dmg: desktop-package
+    bun clients/desktop/scripts/package-dmg.ts --app clients/desktop/dist/app/Phux.app --output clients/desktop/dist/Phux.dmg
+
+[group('desktop')]
 [doc('Build Phux.app and install it to /Applications; it opens your Intake session')]
 desktop-install-app: desktop-native-build
     #!/usr/bin/env bash

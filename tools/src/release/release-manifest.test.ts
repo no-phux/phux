@@ -151,7 +151,7 @@ test("the stable desktop signer waits for every platform and signs all sidecars"
   for (const needle of [
     "needs: [macos, linux]",
     "pattern: desktop-sidecar-*",
-    'test "${#sidecars[@]}" -eq 3',
+    'test "${#sidecars[@]}" -eq 4',
     'bash scripts/ci/sign-release.sh "${sidecars[@]}"',
   ]) {
     expect(signer).toContain(needle);

@@ -37,6 +37,10 @@ pub(super) enum TtyInput {
 impl TtyInput {
     /// Prefer the readiness path, falling back to blocking stdin. Must run
     /// inside the attach runtime ([`AsyncFd`] registers with its reactor).
+    #[expect(
+        unsafe_code,
+        reason = "registering an exclusively owned tty descriptor"
+    )]
     pub(super) fn open() -> Self {
         if readiness_disabled() {
             tracing::debug!("PHUX_TTY_READINESS=0: using blocking stdin");
@@ -44,7 +48,11 @@ impl TtyInput {
         }
         match controlling_tty() {
             // Read interest only; the handle is `O_RDONLY`.
-            Ok(fd) => match AsyncFd::with_interest(fd, Interest::READABLE) {
+            // SAFETY: `controlling_tty` returns a freshly opened, valid `OwnedFd`.
+            // Moving it into `AsyncFd` keeps the same descriptor and underlying
+            // file description open until deregistration; we only borrow it for
+            // reads and never replace it or expose a raw alias that could close it.
+            Ok(fd) => match unsafe { AsyncFd::register_with_interest(fd, Interest::READABLE) } {
                 Ok(registered) => {
                     tracing::debug!("reading the outer terminal on reactor readiness");
                     return Self::Ready(Box::new(registered));
@@ -148,14 +156,20 @@ mod tests {
     /// EOF is reported exactly once and every later read parks; the timeout
     /// is the assertion (a second `Ok(0)` would spin the read loop).
     #[tokio::test]
+    #[expect(unsafe_code, reason = "registering an exclusively owned pipe reader")]
     async fn eof_is_reported_once_and_then_parks_forever() {
         // A closed pipe is a fd that is readable and at EOF, which is exactly
         // the shape a hung-up terminal presents.
         let (reader, writer) = std::io::pipe().expect("pipe");
         drop(writer);
-        let mut input = TtyInput::Ready(Box::new(
-            AsyncFd::with_interest(OwnedFd::from(reader), Interest::READABLE).expect("register"),
-        ));
+        // SAFETY: Converting the fresh pipe reader transfers its valid descriptor
+        // into `OwnedFd`, then `AsyncFd`. No alias can close or replace it, and
+        // reads only borrow it, so it stays the same open descriptor and file
+        // description until `AsyncFd` deregisters and drops it on EOF.
+        let registered =
+            unsafe { AsyncFd::register_with_interest(OwnedFd::from(reader), Interest::READABLE) }
+                .expect("register");
+        let mut input = TtyInput::Ready(Box::new(registered));
 
         let mut buf = [0u8; 16];
         assert_eq!(
