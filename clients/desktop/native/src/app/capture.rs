@@ -315,10 +315,11 @@ impl Desk {
             return false;
         };
         !pending.follow
-            || self
-                .link
-                .as_ref()
-                .is_some_and(|link| link.workspace.views_of(terminal) > 0)
+            || self.link.as_ref().is_some_and(|link| {
+                // Placement can precede bootstrap; keep the capture field's
+                // keyboard until the followed terminal can accept input.
+                link.connection.ready(terminal) && link.workspace.views_of(terminal) > 0
+            })
     }
 
     fn capture_source_matches(&self, pending: &Pending) -> bool {

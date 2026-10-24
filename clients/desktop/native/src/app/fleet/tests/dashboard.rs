@@ -155,7 +155,7 @@ fn fleet_keyboard_navigation_survives_a_narrow_resize(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("enter");
     draw(cx);
     desk.read_with(cx, |desk, _| {
-        assert!(desk.fleet_view.pending.is_some());
+        assert!(desk.fleet_view.pending.is_none());
         assert!(
             desk.link.as_ref().unwrap().workspace.awaiting_output(&[
                 phux_client_runtime::control::Event::TerminalChanged {
@@ -202,7 +202,7 @@ fn fleet_click_revalidates_the_agent_and_pins_the_remote_incarnation(cx: &mut Te
         assert_eq!(desk.remote.as_deref(), Some("mini"));
         assert_eq!(desk.session, "remote");
         assert_eq!(desk.modal, super::super::super::desk::Modal::None);
-        assert!(desk.fleet_view.pending.is_some());
+        assert!(desk.fleet_view.pending.is_none());
         assert!(
             desk.link.as_ref().unwrap().workspace.awaiting_output(&[
                 phux_client_runtime::control::Event::TerminalChanged {

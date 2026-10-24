@@ -80,10 +80,12 @@ fn awaiting_foreign_capture_rearms_a_stream_without_respawning_or_needing_invent
             .iter()
             .all(|frame| !matches!(frame, FrameKind::SpawnResource { .. }))
     );
-    assert_eq!(
-        workspace.tabs, before,
-        "no premature placement or focus change"
-    );
+    assert_eq!(workspace.tabs.len(), before.len() + 1);
+    assert_eq!(workspace.views_of(&foreign), 1);
+    let placed = workspace.focused().expect("answered spawn is visible");
+    assert_eq!(placed.terminal_id.as_ref(), Some(&foreign));
+    assert!(placed.view_id.is_none(), "view still waits for bootstrap");
+    assert!(workspace.unresolved.contains(&placed.id));
     workspace.settle(&connection);
     assert!(
         connection.client.take_outbound().is_empty(),
