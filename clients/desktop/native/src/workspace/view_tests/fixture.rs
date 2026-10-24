@@ -39,8 +39,23 @@ pub(crate) fn attached() -> Connection {
 /// [`attached`], with `others` in the same session, listed but not yet streamed.
 pub(crate) fn attached_with(others: &[ResourceId]) -> Connection {
     let mut connection = Connection::connect("/views.sock".into(), SESSION.into()).unwrap();
+    attach_home(&mut connection, others);
+    connection
+}
+
+pub(super) fn reconnect(connection: &mut Connection) {
+    connection
+        .client
+        .with_control(|control| control.connection_lost(None));
+    attach_home(connection, &[]);
+}
+
+fn attach_home(connection: &mut Connection, others: &[ResourceId]) {
     let client = Arc::clone(&connection.client);
     client.with_control(ControlPlane::connection_opened);
+    let generation = client.with_control(|control| control.connection_epoch());
+    let stream_id = StreamId::new(generation).unwrap();
+    let bootstrap_id = BootstrapId::new(generation).unwrap();
     let _ = client.take_outbound();
     client
         .feed(FrameKind::HelloOk {
@@ -83,8 +98,8 @@ pub(crate) fn attached_with(others: &[ResourceId]) -> Connection {
         },
         FrameKind::BootstrapBegin {
             terminal_id: terminal(),
-            stream_id: stream(),
-            bootstrap_id: bootstrap(),
+            stream_id,
+            bootstrap_id,
             profile: BootstrapStreamProfile::SynthesizedVtRaw,
             cols: 20,
             rows: 4,
@@ -92,8 +107,8 @@ pub(crate) fn attached_with(others: &[ResourceId]) -> Connection {
         },
         FrameKind::BootstrapChunk {
             terminal_id: terminal(),
-            stream_id: stream(),
-            bootstrap_id: bootstrap(),
+            stream_id,
+            bootstrap_id,
             chunk_seq: 0,
             payload: b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive"
                 .to_vec()
@@ -101,8 +116,8 @@ pub(crate) fn attached_with(others: &[ResourceId]) -> Connection {
         },
         FrameKind::BootstrapReady {
             terminal_id: terminal(),
-            stream_id: stream(),
-            bootstrap_id: bootstrap(),
+            stream_id,
+            bootstrap_id,
             history_cursor: None,
         },
     ] {
@@ -116,7 +131,6 @@ pub(crate) fn attached_with(others: &[ResourceId]) -> Connection {
     let _ = client.take_outbound();
     assert_eq!(connection.status, Status::Attached);
     assert!(connection.ready(&terminal()), "fixture terminal is ready");
-    connection
 }
 
 /// Stream `terminal` with no history, on stream and bootstrap `index`.

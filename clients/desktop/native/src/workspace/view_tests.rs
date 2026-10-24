@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 mod fixture;
 
-use fixture::{SESSION, bootstrap, stream, terminal};
+use fixture::{SESSION, bootstrap, reconnect, stream, terminal};
 pub(crate) use fixture::{attached, attached_with, opened};
 
 fn output(connection: &mut Connection, seq: u64, bytes: &[u8]) {
@@ -47,6 +47,47 @@ fn view(placement: &Placement) -> ViewId {
 }
 
 #[test]
+fn placed_foreign_spawn_reconnects_before_bootstrap_without_inventory() {
+    use phux_protocol::wire::frame::SpawnResult;
+    let _dial = DeterministicDial::arm();
+    let mut connection = attached();
+    let mut workspace = opened(&mut connection);
+    let foreign = ResourceId::local(9);
+    let id = workspace
+        .launch_capture(&connection, SpawnRequest::default(), true)
+        .unwrap();
+    connection
+        .client
+        .feed(FrameKind::ResourceSpawned {
+            request_id: id,
+            result: SpawnResult::Ok(foreign.clone()),
+        })
+        .unwrap();
+    let events = connection.drain();
+    workspace.handle(&events, &connection);
+    workspace.settle(&connection);
+    assert_eq!(workspace.views_of(&foreign), 1);
+    assert!(workspace.focused().unwrap().view_id.is_none());
+    assert!(connection.pane(&foreign).is_none());
+    reconnect(&mut connection);
+    workspace.settle(&connection);
+    let outbound: Vec<_> = connection
+        .client
+        .take_outbound()
+        .iter()
+        .map(|bytes| FrameKind::decode(bytes).unwrap().0)
+        .collect();
+    assert!(
+        outbound.iter().any(|frame| matches!(frame,
+            FrameKind::Command { command: Command::AttachResource { terminal_id, .. }, .. }
+                if terminal_id == &foreign
+        )),
+        "placed foreign spawn must reattach after reconnect: {outbound:?}"
+    );
+    assert_eq!(workspace.views_of(&foreign), 1, "no duplicate placement");
+}
+
+#[test]
 fn awaiting_foreign_capture_rearms_a_stream_without_respawning_or_needing_inventory() {
     let _dial = DeterministicDial::arm();
     let mut connection = attached();
@@ -56,9 +97,8 @@ fn awaiting_foreign_capture_rearms_a_stream_without_respawning_or_needing_invent
     // State after a same-incarnation reconnect: spawn was acknowledged,
     // but no bootstrap/placement arrived and own-spawn admission was reset.
     // The home-session snapshot does not include the foreign terminal.
-    workspace
-        .awaiting
-        .insert(terminal_label(&foreign), Destination::Tab);
+    workspace.spawns.insert(42, Destination::Tab);
+    workspace.answered(42, Some(&foreign), None);
     assert!(connection.pane(&foreign).is_none());
     let _ = connection.client.take_outbound();
     workspace.settle(&connection);
@@ -80,10 +120,12 @@ fn awaiting_foreign_capture_rearms_a_stream_without_respawning_or_needing_invent
             .iter()
             .all(|frame| !matches!(frame, FrameKind::SpawnResource { .. }))
     );
-    assert_eq!(
-        workspace.tabs, before,
-        "no premature placement or focus change"
-    );
+    assert_eq!(workspace.tabs.len(), before.len() + 1);
+    assert_eq!(workspace.views_of(&foreign), 1);
+    let placed = workspace.focused().expect("answered spawn is visible");
+    assert_eq!(placed.terminal_id.as_ref(), Some(&foreign));
+    assert!(placed.view_id.is_none(), "view still waits for bootstrap");
+    assert!(workspace.unresolved.contains(&placed.id));
     workspace.settle(&connection);
     assert!(
         connection.client.take_outbound().is_empty(),

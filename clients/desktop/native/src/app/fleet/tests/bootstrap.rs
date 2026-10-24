@@ -397,6 +397,14 @@ fn refused_fleet_attach_is_not_retried_and_keeps_workspace_notice(cx: &mut TestA
         assert!(!link.connection.ready(&ResourceId::local(SELECTED)));
         let requests = take_selected_attaches(&link.connection);
         assert_eq!(requests.len(), 1, "one real explicit attach was queued");
+        // Another structural event can settle the workspace before the reply.
+        let link = desk.link.as_mut().unwrap();
+        link.workspace.settle(&link.connection);
+        assert_eq!(
+            link.workspace.views_of(&ResourceId::local(SELECTED)),
+            0,
+            "an unanswered attach must not steal focus or leave a blank tab"
+        );
         link.connection
             .client
             .feed(FrameKind::CommandResult {

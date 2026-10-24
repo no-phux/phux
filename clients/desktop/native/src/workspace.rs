@@ -82,6 +82,9 @@ pub struct Workspace {
     views_epoch: Option<u64>,
     spawns: HashMap<u32, Destination>,
     awaiting: HashMap<String, Destination>,
+    /// Successful spawn receipts identify live processes even before bootstrap
+    /// or inventory, and must never be dismissed as missing saved placeholders.
+    spawned: HashSet<String>,
     owners: HashMap<String, String>,
     restoring: Option<SavedLayout>,
     restored: bool,
@@ -227,20 +230,14 @@ impl Workspace {
         }
     }
 
-    /// Place ready terminals and finish a pending restore. Call after [`Self::handle`].
+    /// Place answered spawns and finish a pending restore. Call after [`Self::handle`].
     pub fn settle(&mut self, connection: &Connection) {
         self.sync_server(connection);
         if connection.status != Status::Attached || !connection.session_validated() {
             return;
         }
         self.rearm_views(connection);
-        let ready: Vec<(String, Destination)> = self
-            .awaiting
-            .extract_if(|label, _| parse_terminal(label).is_some_and(|id| connection.ready(&id)))
-            .collect();
-        for (label, destination) in ready {
-            self.place_ready(connection, &label, destination);
-        }
+        self.land_answered(connection);
         if !self.restored {
             self.finish_restore(connection);
         }
@@ -250,9 +247,24 @@ impl Workspace {
         }
     }
 
-    /// Place one terminal the server reports ready at its recorded
-    /// destination. A tab spawn whose terminal is already shown is revealed
-    /// instead of landing twice; a split always lands in its own tab.
+    /// Put every answered spawn on screen. The view binds later, in
+    /// [`Self::resolve_restored`], once the terminal accepts input.
+    fn land_answered(&mut self, connection: &Connection) {
+        let landed: Vec<(String, Destination)> = self
+            .awaiting
+            .extract_if(|label, _| {
+                self.spawned.contains(label)
+                    || parse_terminal(label).is_some_and(|id| connection.ready(&id))
+            })
+            .collect();
+        for (label, destination) in landed {
+            self.place_ready(connection, &label, destination);
+        }
+    }
+
+    /// Place one answered terminal at its recorded destination. A tab spawn
+    /// whose terminal is already shown is revealed instead of landing twice;
+    /// a split always lands in its own tab.
     fn place_ready(&mut self, connection: &Connection, label: &str, destination: Destination) {
         self.awaiting.remove(label);
         if destination == Destination::QuietTab {
@@ -294,11 +306,11 @@ impl Workspace {
             .all_placements()
             .filter_map(|placement| placement.terminal_id.as_ref())
         {
-            if connection.pane(terminal).is_some() {
-                let _ = connection
-                    .client
-                    .attach_terminal_preserving_geometry(terminal);
-            }
+            // A placed spawn may still lack bootstrap and be absent from the
+            // home inventory. Recover its exact id on every new connection too.
+            let _ = connection
+                .client
+                .attach_terminal_preserving_geometry(terminal);
         }
     }
 
@@ -384,7 +396,9 @@ impl Workspace {
                 if destination == Destination::Background {
                     self.considered.insert(terminal_label(terminal));
                 } else {
-                    self.awaiting.insert(terminal_label(terminal), destination);
+                    let label = terminal_label(terminal);
+                    self.spawned.insert(label.clone());
+                    self.awaiting.insert(label, destination);
                 }
             }
             _ => self.error(
@@ -397,6 +411,7 @@ impl Workspace {
     fn closed(&mut self, label: &str) {
         self.closed_terminals.insert(label.to_owned());
         self.awaiting.remove(label);
+        self.spawned.remove(label);
         let doomed: Vec<String> = self
             .all_placements()
             .filter(|placement| placement.terminal_label == label)

@@ -195,9 +195,10 @@ hides as card edges stacked behind its top; click them to restore the split.
 A split tab carries a small map of its panes: the focused one lit, an agent's
 in its state's colour, and the ones a zoom hides faded. Drag the gap between
 panes, the sidebar edge, or tabs to rearrange; double-click a tab to rename it.
-Splits grow in and closed panes fold away; the PTY is resized once, when the
-motion settles. Cycling panes, directional navigation, and revealing a
-terminal keep the zoom on the pane receiving keyboard input.
+A new split or tab is full size on its first frame. Closed panes fold away;
+the PTY is resized once, when that fold settles. Cycling panes, directional
+navigation, and revealing a terminal keep the zoom on the pane receiving
+keyboard input.
 Drag to select; double-click selects a word, triple-click a line, Option-drag
 a rectangle, and Shift-drag selects even in a program that takes the mouse.
 A drag can leave the pane: held above or below it, the terminal scrolls and
