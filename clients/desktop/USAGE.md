@@ -158,18 +158,18 @@ Enter. This is a desktop preference, independent of your TUI configuration.
 
 Press the leader, release it, then:
 
-| Key after the leader | Action |
-| --- | --- |
-| `h j k l` or arrows | Focus left / down / up / right |
-| `H J K L` | Move the pane divider left / down / up / right |
-| `\|` or `%` / `-` or `"` | Split right / down |
-| `o` / `;` | Next / previous pane |
-| `z` | Zoom / restore pane |
-| `c`, `n` / `p` | New tab, next / previous tab |
+| Key after the leader         | Action                                                |
+| ---------------------------- | ----------------------------------------------------- |
+| `h j k l` or arrows          | Focus left / down / up / right                        |
+| `H J K L`                    | Move the pane divider left / down / up / right        |
+| `\|` or `%` / `-` or `"`     | Split right / down                                    |
+| `o` / `;`                    | Next / previous pane                                  |
+| `z`                          | Zoom / restore pane                                   |
+| `c`, `n` / `p`               | New tab, next / previous tab                          |
 | `Tab` / `Shift+Tab`, `1`–`9` | Cycle tabs, select by position (`9` selects the last) |
-| `b`, `w`, `s` | Toggle sidebar, Go To, session menu |
-| `Space`, `:` or `?` | Command palette |
-| `,`, `S`, `q` | Rename tab, Settings, agent needing attention |
+| `b`, `w`, `s`                | Toggle sidebar, Go To, session menu                   |
+| `Space`, `:` or `?`          | Command palette                                       |
+| `,`, `S`, `q`                | Rename tab, Settings, agent needing attention         |
 
 Hesitate for 400 ms to see the shortcut list. **Escape** cancels; pressing
 the leader twice sends its literal key to the terminal. An unbound suffix
