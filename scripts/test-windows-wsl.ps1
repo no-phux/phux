@@ -37,8 +37,9 @@ try {
         '$HOME; touch /tmp/PHUX_INJECTION', '*?[abc]', "line`nbreak", "CR`r`nLF",
         ('"\ud83c\udf55"' | ConvertFrom-Json), '-n', 'C:\a b\')
     $python = 'import json,sys; open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(sys.argv[2:], ensure_ascii=False))'
-    $pane = (& $cli --socket $socket spawn --retain=60 -- python3 -c $python $argvFile @values).Trim()
+    $spawned = ((& $cli --socket $socket spawn --json --retain=60 -- python3 -c $python $argvFile @values) -join "`n") | ConvertFrom-Json
     Assert-True ($LASTEXITCODE -eq 0) 'Could not spawn the argv test pane'
+    $pane = '@' + $spawned.terminal_id
     & $cli --socket $socket resource wait --timeout 20 $pane
     Assert-True ($LASTEXITCODE -eq 0) 'Argv test pane did not exit'
     $readArgs = Get-PhuxWslArguments $Distribution ('cat ' + (ConvertTo-PhuxShellLiteral $argvFile))
