@@ -10,7 +10,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ErrorCode, FrameKind,
-    SpawnResult, ViewportInfo,
+    SpawnResult, StateScope, ViewportInfo,
 };
 use phux_server::terminal_actor::{ProcessFacetRequest, TerminalActor};
 use phux_server_testkit::{
@@ -331,5 +331,23 @@ fn cwd_changed_announces_the_start_dir_once_then_real_moves() {
             );
             seen.extend(cwd_events(&mut stream, Duration::from_millis(200)).await);
         }
+
+        // phux-qkaii: a client that refreshes its inventory after the move
+        // reads the registry, which must have followed the event.
+        let get_state = Command::GetState {
+            scope: StateScope::Server,
+        };
+        let CommandResult::OkWith(CommandValue::State(snapshot)) =
+            command(&mut stream, 3, get_state).await
+        else {
+            panic!("GET_STATE failed");
+        };
+        let listed = snapshot
+            .resources
+            .iter()
+            .find(|p| p.id == pane)
+            .and_then(|p| p.cwd.as_deref())
+            .map(|cwd| canonical(Path::new(cwd)));
+        assert_eq!(listed, Some(canonical(&home)), "GET_STATE reports the move");
     });
 }

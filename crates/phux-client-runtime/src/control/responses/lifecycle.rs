@@ -252,6 +252,17 @@ impl ControlPlane {
                 .panes
                 .retain(|pane| !engine.is_closed(&pane.terminal_id));
         }
+        // The snapshot carries the user-set title; the shell's title only
+        // ever arrives live, so a refresh keeps the one already shown.
+        if let Some(previous) = &self.topology {
+            for pane in &mut topology.panes {
+                if pane.title.is_none() {
+                    pane.title = previous
+                        .pane(&pane.terminal_id)
+                        .and_then(|shown| shown.title.clone());
+                }
+            }
+        }
         if self.attached_session.is_none() && self.active_attach_id.is_none() {
             // A browsing connection has no attach barrier; its first
             // topology is the moment it becomes usable.
