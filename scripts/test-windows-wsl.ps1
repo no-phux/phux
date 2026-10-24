@@ -13,6 +13,39 @@ function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw $Message }
 }
 
+function Assert-McpProcess([string] $Launcher, [string] $Request, [string] $ExpectedId) {
+    # A real Windows MCP client launches a process and keeps stdin open while
+    # waiting for a response. A finite PowerShell object pipe alone misses this.
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo.FileName = (Get-Process -Id $PID).Path
+    $process.StartInfo.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $Launcher + '"'
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.RedirectStandardInput = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    $process.StartInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    try {
+        Assert-True ($process.Start()) 'Could not start Windows MCP child'
+        Write-Output "Windows MCP child pid: $($process.Id)"
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $bytes = [Text.Encoding]::UTF8.GetBytes($Request + "`n")
+        $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+        $process.StandardInput.BaseStream.Flush()
+        $response = $process.StandardOutput.ReadLineAsync()
+        Assert-True ($response.Wait([TimeSpan]::FromSeconds(20))) 'MCP did not reply while stdin remained open'
+        $reply = $response.Result | ConvertFrom-Json
+        Assert-True ($reply.id -ceq $ExpectedId) 'Native Windows MCP process changed the request id'
+        Assert-True ($reply.result.serverInfo.name -eq 'phux') 'Native Windows MCP initialize failed'
+        $process.StandardInput.Close()
+        Assert-True ($process.WaitForExit(10000)) 'MCP child did not exit after stdin closed'
+        Assert-True ($process.ExitCode -eq 0) ('MCP child failed: ' + $stderr.Result)
+    } finally {
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(5000)) { $process.Kill() }
+        $process.Dispose()
+    }
+}
+
 try {
     # This downloads and verifies the real published Linux release, then
     # installs the PowerShell entrypoints exactly as a Windows user does.
@@ -80,6 +113,7 @@ try {
     $reply = $response[0] | ConvertFrom-Json
     Assert-True ($reply.id -ceq $id) 'MCP stdin/stdout was not UTF-8'
     Assert-True ($reply.result.serverInfo.name -eq 'phux') 'MCP initialize did not reply'
+    Assert-McpProcess $mcp $request $id
 
     # Invalid syntax is an ordinary exit, not a terminating PowerShell error.
     $savedPreference = $ErrorActionPreference
