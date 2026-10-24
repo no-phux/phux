@@ -66,7 +66,7 @@ def public_kit(root, archive, checksum, manifest):
     shutil.copyfile(archive, existing)
     (target / "SHA256SUMS").write_text(f"{checksum}  phux-brand.zip\n")
     (target / "manifest.json").write_bytes(brand.encode(manifest))
-    index_path = root / "public/brand/releases/index.json"
+    index_path = root / "public/brand/index.json"
     index = json.loads(index_path.read_bytes()) if index_path.exists() else {"schema": 1, "releases": {}}
     index["releases"][version] = {"sha256": checksum, "source_revision": manifest["source_revision"]}
     index_path.write_bytes(brand.encode(index))
@@ -99,7 +99,7 @@ def propose(directory, repository, archive, checksum, manifest, rollback=False):
         public_kit(root, archive, checksum, manifest)
     targets = ["brand.lock.json", *json.loads((root / "brand.config.json").read_bytes())["targets"].values()]
     if repository == "website":
-        targets.append("public/brand/releases")
+        targets.extend(["public/brand/releases", "public/brand/index.json"])
     git(root, "add", "--", *targets)
     git(root, "-c", "user.name=PHUX Brand Bot", "-c", "user.email=phux-brand[bot]@users.noreply.github.com",
         "-c", "core.hooksPath=/dev/null", "commit", "-m", f"chore(brand): update approved assets to {version}")

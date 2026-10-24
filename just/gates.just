@@ -194,8 +194,9 @@ brand-check:
     python3 -B -m unittest discover -s scripts -p 'test_brand*.py'
 
 # Install an explicitly checksummed approved release (or roll back to one).
+[positional-arguments]
 brand-sync ARCHIVE SHA256:
-    python3 -B scripts/brand.py sync --archive "{{ARCHIVE}}" --sha256 "{{SHA256}}"
+    python3 -B scripts/brand.py sync --archive "$1" --sha256 "$2"
 
 # Restore the current release pin from the public brand archive.
 brand-restore:
