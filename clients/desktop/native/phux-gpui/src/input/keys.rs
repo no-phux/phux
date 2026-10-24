@@ -58,7 +58,9 @@ pub(super) fn uses_text(event: &KeyDownEvent, option_as_alt: bool) -> bool {
         .is_some_and(|text| text.chars().all(|ch| !ch.is_control()))
 }
 
-pub(super) fn event(stroke: &Keystroke, action: KeyAction) -> KeyEvent {
+/// Convert a native keystroke to the terminal's structured key atom.
+/// No input is delivered; callers must enforce focus and input ownership.
+pub fn event(stroke: &Keystroke, action: KeyAction) -> KeyEvent {
     KeyEvent {
         action,
         key: physical_key(&stroke.key),

@@ -1,6 +1,109 @@
 use super::*;
 
 #[gpui::test]
+fn inactive_session_marks_use_their_own_host_and_update_without_selection(cx: &mut TestAppContext) {
+    use crate::app::pane_identity::{Harness, PaneOrigin};
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut gpui::VisualTestContext::from_window(*handle, cx);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    desk.update(cx, |desk, cx| {
+        install(
+            desk,
+            with_agent(
+                connection(1, vec![session(7, "main")]),
+                1,
+                AgentState::Working,
+            ),
+        );
+        let mut remote = with_agent(
+            connection(2, vec![session(8, "remote")]),
+            1,
+            AgentState::Idle,
+        );
+        remote.agents.get_mut(&ResourceId::local(1)).unwrap().kind = Some("codex".into());
+        observe(&mut desk.fleet, Some("mini"), remote);
+        desk.prefs.sidebar_visible = true;
+        cx.notify();
+    });
+    desk.update_in(cx, |desk, window, cx| {
+        desk.execute("expand-sessions", window, cx)
+    });
+    draw(cx);
+    assert!(shown(cx, "harness-mark-OpenCode"));
+    assert!(
+        shown(cx, "harness-mark-Codex"),
+        "inactive host retains its harness, not a terminal logo"
+    );
+    desk.update(cx, |desk, cx| {
+        let observer = desk.fleet.observers.get_mut(&Some("mini".into())).unwrap();
+        let connection = observer.connection.as_mut().unwrap();
+        connection
+            .agents
+            .get_mut(&ResourceId::local(1))
+            .unwrap()
+            .state = AgentState::Blocked;
+        assert!(
+            observer.refresh_inventory(&Some("mini".into())),
+            "state is part of visible inventory"
+        );
+        let pane = &observer.last[0].panes[0];
+        assert_eq!(pane.origin, PaneOrigin::Agent(Harness::Codex));
+        assert_eq!(pane.agent.as_ref().unwrap().state, AgentState::Blocked);
+        cx.notify();
+    });
+    draw(cx);
+    assert!(
+        shown(cx, "harness-mark-Codex"),
+        "attention does not erase identity"
+    );
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.session, "main");
+        assert!(
+            desk.remote.is_none(),
+            "browsing never selects the other host"
+        );
+    });
+}
+
+#[gpui::test]
+fn inventory_identity_includes_bound_sessions_and_survives_offline_retention(
+    cx: &mut TestAppContext,
+) {
+    use crate::app::pane_identity::{Harness, PaneOrigin};
+    let _dial = DeterministicDial::arm();
+    let _ = cx;
+    let mut connection = with_pane(connection(1, vec![session(7, "main")]));
+    connection.topology.as_mut().unwrap().agent_sessions.push(
+        phux_client_runtime::control::AgentSessionDescriptor {
+            id: ResourceId::local(2),
+            parent: Some(ResourceId::local(1)),
+            provider: Some("claude-acp".into()),
+            native_id: None,
+            state: None,
+        },
+    );
+    let mut observer = Observer {
+        connection: Some(connection),
+        workspace: None,
+        last: Vec::new(),
+        error: None,
+        _wake: None,
+    };
+    observer.refresh_inventory(&None);
+    let pane = observer.last[0].panes[0].clone();
+    assert_eq!(pane.origin, PaneOrigin::Agent(Harness::Claude));
+    assert!(pane.agent.is_none(), "a bound session needs no badge");
+    observer.connection.as_mut().unwrap().status = Status::Closed;
+    observer.refresh_inventory(&None);
+    assert!(!observer.last[0].online);
+    assert_eq!(
+        observer.last[0].panes[0], pane,
+        "retained inventory keeps identity"
+    );
+}
+
+#[gpui::test]
 fn the_host_filter_opens_at_its_trigger_and_filters_without_navigation(cx: &mut TestAppContext) {
     use gpui::{Modifiers, VisualTestContext};
     let _dial = DeterministicDial::arm();

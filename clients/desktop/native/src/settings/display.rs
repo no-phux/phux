@@ -141,6 +141,8 @@ pub struct DisplayPrefs {
     pub window_background: WindowBackground,
     /// Whether Ghostty keybinds override the built-in chords.
     pub ghostty_keys: bool,
+    /// Optional desktop command prefix; ordinary shortcuts remain available.
+    pub leader_key: Option<String>,
     /// Whether a jumping cursor streaks a laser beam behind it.
     pub cursor_laser: bool,
     /// Skin id. Unknown sanitizes to `"glass"`.
@@ -181,6 +183,7 @@ pub fn default_display() -> DisplayPrefs {
         pane_glass: true,
         window_background: WindowBackground::Blur,
         ghostty_keys: true,
+        leader_key: None,
         cursor_laser: true,
         skin_id: "glass".to_owned(),
         plain: false,
@@ -274,6 +277,10 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
         unfocused_opacity: hundredths(display.unfocused_opacity, 1.0).clamp(0.15, 1.0),
         terminal_opacity: hundredths(display.terminal_opacity, 1.0).clamp(0.55, 1.0),
         skin_id: skin_by_id(&display.skin_id).id.to_owned(),
+        leader_key: display
+            .leader_key
+            .as_deref()
+            .and_then(super::leader::normalize_leader),
         ..display.clone()
     }
 }
@@ -338,6 +345,10 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
             object.get("windowBackground").and_then(Value::as_str),
         ),
         ghostty_keys: flag("ghosttyKeys", fallback.ghostty_keys),
+        leader_key: object
+            .get("leaderKey")
+            .and_then(Value::as_str)
+            .and_then(super::leader::normalize_leader),
         cursor_laser: flag("cursorLaser", fallback.cursor_laser),
         skin_id: string("skinId", fallback.skin_id),
         plain: flag("plainTerminal", fallback.plain),
@@ -372,6 +383,7 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "paneGlass": display.pane_glass,
         "windowBackground": display.window_background.as_str(),
         "ghosttyKeys": display.ghostty_keys,
+        "leaderKey": display.leader_key,
         "cursorLaser": display.cursor_laser,
         "skinId": display.skin_id,
         "plainTerminal": display.plain,

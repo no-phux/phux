@@ -2,6 +2,64 @@
 use super::*;
 
 #[test]
+fn desktop_leader_defaults_off_and_rejects_unsafe_saved_values() {
+    assert_eq!(default_display().leader_key, None);
+    assert_eq!(parse_display(&json!({})).leader_key, None);
+    for value in [
+        json!(null),
+        json!(true),
+        json!(42),
+        json!(["ctrl+a"]),
+        json!(""),
+        json!("a"),
+        json!("shift+a"),
+        json!("ctrl"),
+        json!("escape"),
+        json!("ctrl+escape"),
+        json!("ctrl+a ctrl+b"),
+    ] {
+        let parsed = parse_display(&json!({"leaderKey": value, "fontSize": 17}));
+        assert_eq!(parsed.leader_key, None, "{value}");
+        assert_eq!(parsed.font_size, 17.);
+    }
+}
+
+#[test]
+fn desktop_leader_normalizes_round_trips_and_can_be_disabled() {
+    for (input, expected) in [
+        ("ctrl+a", "ctrl+a"),
+        ("C-b", "ctrl+b"),
+        ("ctrl+space", "ctrl+space"),
+        ("ctrl+alt+a", "ctrl+alt+a"),
+    ] {
+        let parsed = parse_display(&json!({"leaderKey": input}));
+        assert_eq!(parsed.leader_key.as_deref(), Some(expected));
+        let value = display_value(&parsed);
+        assert_eq!(value["leaderKey"], expected);
+        assert_eq!(parse_display(&value), parsed);
+        let mut off = parsed;
+        off.leader_key = None;
+        assert_eq!(display_value(&off)["leaderKey"], Value::Null);
+        assert_eq!(parse_display(&display_value(&off)), off);
+    }
+}
+
+#[test]
+fn desktop_leader_is_sanitized_before_writing_preferences() {
+    for (input, expected) in [("C-a", Some("ctrl+a")), ("a", None), ("ctrl", None)] {
+        let prefs = DisplayPrefs {
+            leader_key: Some(input.to_owned()),
+            ..default_display()
+        };
+        assert_eq!(sanitize_display(&prefs).leader_key.as_deref(), expected);
+        assert_eq!(
+            parse_display(&display_value(&prefs)).leader_key.as_deref(),
+            expected,
+        );
+    }
+}
+
+#[test]
 fn pane_glass_is_independent_and_preserves_the_saved_strength_across_styles() {
     assert!(
         parse_display(&json!({})).pane_glass,

@@ -81,6 +81,7 @@ pub(crate) fn harness_mark(
 ) -> gpui::Div {
     let pip = (size * 0.45).max(4.);
     div()
+        .debug_selector(move || format!("harness-mark-{harness:?}"))
         .flex_shrink_0()
         .relative()
         .size(px(size))

@@ -169,6 +169,14 @@ pub(super) fn journal_drained_event(
         event,
         operation_id,
     } = emitted;
+    // The registry's cwd is what GET_STATE reports; a client that joins or
+    // refreshes after this event must see the move, not the ATTACH-time dir.
+    if let AgentEvent::CwdChanged { cwd } = &event
+        && let Some(pane) = s.terminal_from_wire(wire_terminal_id)
+        && let Some(desc) = s.registry_mut().terminal_mut(pane)
+    {
+        desc.cwd = std::path::PathBuf::from(cwd);
+    }
     let actor = control_actor(&event);
     let record = crate::state::EventRecord::new(Some(wire_terminal_id.clone()), event)
         .with_actor(actor)

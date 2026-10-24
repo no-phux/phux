@@ -4,8 +4,8 @@
 
 Choose **Top**, **Bottom** or **Sidebar** in **Settings > Layout & notifications > Tab placement**,
 or **View** in the main menu. The choice is saved with your display
-preferences. Side tabs live in a fixed-height, separately scrollable area at the
-foot of the sidebar. Switching sessions never inserts tabs into the session tree;
+preferences. Side tabs live in a stable-height, separately scrollable area directly
+below the window header, above the session catalog. Switching sessions never inserts tabs into the session tree;
 hiding the sidebar returns them to the titlebar,
 and Quick Terminal keeps compact titlebar tabs. Bottom tabs sit below your work,
 including in Plain Terminal mode. Plain Terminal has no sidebar, so side tabs
@@ -43,6 +43,11 @@ Left/Right browse; Enter opens; Escape or a click on the displaced work closes
 the peek, as does the close button beside the keyboard hints below the previews.
 Selecting an inactive tab still switches directly, and dragging,
 modifier-selection and double-click rename keep their usual behavior.
+
+Split tabs show a layered mosaic of their pane layout. The focused pane remains
+lit on inactive tabs, and zoom dims hidden panes without removing their cells.
+Harness marks keep their identity when agents need attention; the corner pip
+reports state instead of replacing the mark.
 
 Peeking slides the full-size workspace down and clips its bottom: terminal
 dimensions never change, so programs do not reflow. Miniatures use the native

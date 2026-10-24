@@ -290,6 +290,26 @@ fn live_label_changes_overlay_a_delayed_state_snapshot_without_a_retry() {
     );
 }
 
+/// phux-qkaii: the snapshot's title is the user-set one, so a refresh after
+/// the shell retitled the pane used to blank the label other clients saw.
+#[test]
+fn a_refresh_keeps_the_shell_title_the_snapshot_cannot_carry() {
+    let (mut plane, read) = discovered();
+    answer_metadata(&mut plane, read, None);
+    event(
+        &mut plane,
+        Some(terminal()),
+        AgentEvent::TitleChanged {
+            title: "opencode".into(),
+        },
+    );
+    let request_id = plane.refresh_topology().unwrap();
+    let _ = outbound(&mut plane);
+    answer_state(&mut plane, request_id, snapshot());
+    let descriptor = plane.topology().unwrap().pane(&terminal()).unwrap();
+    assert_eq!(descriptor.title.as_deref(), Some("opencode"));
+}
+
 #[test]
 fn an_animating_title_cannot_starve_a_spawn_out_of_the_inventory() {
     let (mut plane, read) = discovered();

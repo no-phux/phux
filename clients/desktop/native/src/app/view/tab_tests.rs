@@ -190,6 +190,7 @@ mod chrome;
 mod closing;
 mod geometry;
 mod hover;
+mod indicators;
 mod panes;
 mod peek;
 mod placement;

@@ -312,3 +312,54 @@ fn native_edit_menu_edits_settings_search_not_the_terminal(cx: &mut TestAppConte
         crate::app::desk::Modal::None
     );
 }
+
+#[gpui::test]
+fn leader_presets_custom_validation_and_off_apply_to_the_owner(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.update(|window, cx| {
+        desk.update(cx, |desk, cx| {
+            desk.show_settings_page(Page::Keyboard, window, cx)
+        });
+    });
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    settings.simulate_resize(gpui::size(gpui::px(860.), gpui::px(1100.)));
+    draw(settings);
+    let preset = settings.debug_bounds("leader-key-ctrl+b").unwrap();
+    settings.simulate_click(preset.center(), gpui::Modifiers::none());
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.leader_key.clone())
+            .as_deref(),
+        Some("ctrl+b")
+    );
+    let input = settings.debug_bounds("leader-custom-input").unwrap();
+    settings.simulate_click(input.center(), gpui::Modifiers::none());
+    settings.simulate_keystrokes("cmd-a");
+    settings.simulate_input("a");
+    settings.simulate_keystrokes("enter");
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.leader_key.clone())
+            .as_deref(),
+        Some("ctrl+b")
+    );
+    settings.simulate_keystrokes("cmd-a");
+    settings.simulate_input("C-M-a");
+    settings.simulate_keystrokes("enter");
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.leader_key.clone())
+            .as_deref(),
+        Some("ctrl+alt+a")
+    );
+    let off = settings.debug_bounds("leader-key-off").unwrap();
+    settings.simulate_click(off.center(), gpui::Modifiers::none());
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.leader_key.clone()),
+        None
+    );
+}

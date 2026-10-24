@@ -48,14 +48,17 @@ pub(super) fn render(desk: &Desk, tab: &DeskTab, selected: bool, look: &Look) ->
             .filter(|state| *state != AgentState::Unknown)
             .map(|state| from_hex(agent_swatch(state)));
         match (cell_tone(tab, placement), agent) {
-            (CellTone::Hidden, _) => ink.opacity(0.16),
+            (CellTone::Hidden, _) => ink.opacity(0.2),
             (CellTone::Front, Some(swatch)) => swatch,
             (CellTone::Front, None) if selected => accent,
-            (CellTone::Front, None) => ink.opacity(0.6),
+            (CellTone::Front, None) => ink.opacity(0.7),
             (CellTone::Beside, Some(swatch)) => swatch.opacity(0.45),
-            (CellTone::Beside, None) => ink.opacity(if selected { 0.24 } else { 0.18 }),
+            (CellTone::Beside, None) => ink.opacity(if selected { 0.32 } else { 0.28 }),
         }
     };
     let id = tab.id.clone();
-    Some(layout_map(&tab.root, 20., 14., &paint).debug_selector(move || format!("tab-map-{id}")))
+    Some(
+        layout_map(&tab.root, 28., 20., &paint, look)
+            .debug_selector(move || format!("tab-map-{id}")),
+    )
 }

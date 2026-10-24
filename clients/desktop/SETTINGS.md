@@ -36,3 +36,17 @@ minimal-chrome mode, not the Classic style.
 Chrome uses bundled Inter with compact leading and consistent label columns.
 **Font family** and **Font size** still change only terminal text; the searchable
 font dropdown previews each face, with bundled terminal fonts pinned first.
+
+## Desktop leader
+
+In **Keyboard & shortcuts**, **Desktop leader** adds an optional command prefix
+without replacing Command shortcuts or Ghostty keybinds. It is **Off** for new
+and existing layouts. Select **Ctrl+A**, **Ctrl+B**, or **Ctrl+Space**, or type a
+single custom chord such as `ctrl+alt+a` in **Custom leader** and press **Enter**
+to save it. Custom chords require Control, Alt, or Command plus a key; invalid
+input is identified inline and does not replace the saved preference. The chosen
+leader chord takes precedence if it conflicts with another workspace shortcut;
+turning the leader off restores that shortcut.
+
+Press the leader twice to send its literal chord to the terminal. **Escape**
+cancels the pending leader. Select **Off** (or reset the control) to disable it.
