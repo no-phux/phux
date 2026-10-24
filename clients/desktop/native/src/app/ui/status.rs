@@ -79,6 +79,18 @@ pub(crate) fn harness_mark(
     size: f32,
     look: &Look,
 ) -> gpui::Div {
+    harness_status(harness, state, None, size, look)
+}
+
+/// A retained identity with independent attention. Urgency lights the pip even
+/// when lifecycle state is unknown; it must not look like an ordinary idle pip.
+pub(crate) fn harness_status(
+    harness: Harness,
+    state: Option<AgentState>,
+    attention: Option<AgentState>,
+    size: f32,
+    look: &Look,
+) -> gpui::Div {
     let pip = (size * 0.45).max(4.);
     div()
         .debug_selector(move || format!("harness-mark-{harness:?}"))
@@ -91,15 +103,20 @@ pub(crate) fn harness_mark(
                 .text_color(harness_tint(harness, look)),
         )
         .children(
-            state
-                .filter(|state| *state != AgentState::Unknown)
+            attention
+                .or(state.filter(|state| *state != AgentState::Unknown))
                 .map(|state| {
-                    dot(pip, from_hex(agent_swatch(state)))
+                    let color = from_hex(agent_swatch(state));
+                    dot(pip, color)
                         .absolute()
                         .right(px(-pip / 3.))
                         .bottom(px(-pip / 3.))
                         .border_1()
                         .border_color(look.sheet.opacity(1.))
+                        .when(attention.is_some(), |pip| {
+                            pip.debug_selector(|| "harness-attention".into())
+                                .shadow(vec![shadow(color.opacity(0.6), 0., 6., 0., false)])
+                        })
                 }),
         )
 }
