@@ -17,6 +17,7 @@ mod tests;
 
 pub use clipboard::{HeldPaste, copy_too_large, paste_needs_confirmation};
 use fit::{FitProposal, PendingFit, next_fit_token};
+pub use keys::event as key_event;
 pub(crate) use link::{LinkAdmit, admit_path, admit_url};
 
 use composition::Composition;

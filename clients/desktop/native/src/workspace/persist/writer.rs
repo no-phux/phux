@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use super::{FileLayoutStore, SavedLayout, layout_value};
 
 enum Snapshot {
-    Layout(SavedLayout),
+    Layout(Box<SavedLayout>),
     Json(serde_json::Value),
 }
 
@@ -97,7 +97,7 @@ impl Writer {
     pub fn layout(&self, store: FileLayoutStore, layout: SavedLayout) {
         self.enqueue(Write {
             store,
-            snapshot: Snapshot::Layout(layout),
+            snapshot: Snapshot::Layout(Box::new(layout)),
         });
     }
 

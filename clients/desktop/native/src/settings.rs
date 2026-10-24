@@ -7,6 +7,7 @@
 pub mod display;
 pub mod ghostty;
 pub mod keymap;
+pub mod leader;
 pub mod provenance;
 pub mod skin;
 pub mod theme;

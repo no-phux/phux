@@ -46,6 +46,7 @@ mod clipboard;
 mod commands;
 mod input;
 mod labels;
+mod leader;
 mod lifecycle;
 mod machines;
 mod prefs;
@@ -178,6 +179,7 @@ pub struct Desk {
     keymap: Vec<(String, String)>,
     /// The chord each command shows, from `keymap`.
     chords: HashMap<String, Chord>,
+    leader: leader::Leader,
     /// Paint values for the current preferences, skin, Ghostty config and keymap.
     paint: RefCell<Option<Rc<Paint>>>,
     pub modal: Modal,
