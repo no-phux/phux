@@ -142,6 +142,55 @@ fn arrange(desk: &mut Desk, cx: &mut gpui::Context<Desk>) {
     cx.notify();
 }
 
+/// A split mosaic and an unselected session with a different harness. These
+/// use the real catalog/row renderers, with no socket or terminal acquisition.
+fn arrange_navigation(desk: &mut Desk, cx: &mut gpui::Context<Desk>) {
+    use crate::connection::{AgentAttention, AgentInfo, AgentState};
+    use crate::workspace::layout::{Axis, LayoutNode};
+    arrange(desk, cx);
+    let link = desk.link.as_mut().unwrap();
+    let other = link.workspace.tabs.pop().unwrap();
+    let first = &mut link.workspace.tabs[0];
+    first.root = LayoutNode::Split {
+        id: "preview-split".into(),
+        axis: Axis::Row,
+        ratio: 0.6,
+        first: Box::new(first.root.clone()),
+        second: Box::new(other.root),
+    };
+    link.workspace.active_id = first.id.clone();
+    let topology = link.connection.topology.as_mut().unwrap();
+    let mut session = topology.sessions[0].clone();
+    session.id = 2;
+    session.name = "Review".into();
+    session.members = 1;
+    topology.sessions.push(session);
+    let mut pane = topology.panes[0].clone();
+    pane.terminal_id = ResourceId::local(4);
+    pane.session_id = 2;
+    pane.session_name = "Review".into();
+    pane.title = Some("Check sidebar polish".into());
+    topology.panes.push(pane);
+    for (id, kind, state) in [
+        (2, "codex", AgentState::Working),
+        (4, "pi", AgentState::Blocked),
+    ] {
+        link.connection.agents.insert(
+            ResourceId::local(id),
+            AgentInfo {
+                name: "Reviewer".into(),
+                kind: Some(kind.into()),
+                state,
+                attention: AgentAttention::None,
+                changed_at_ms: 0,
+            },
+        );
+    }
+    let keys = super::navigator::foldable_sessions(desk);
+    desk.expanded.extend(keys);
+    cx.notify();
+}
+
 fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
     cx.spawn(async move |cx| {
         for theme in ["midnight", "latte"] {
@@ -167,10 +216,18 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                 ("conversation-needs-you", "tabs-side", 1280., true),
                 ("conversation-disconnected", "tabs-side", 1280., true),
                 ("capture", "capture", 1280., true),
+                ("navigation", "tabs-side", 1280., true),
+                ("navigation-narrow", "tabs-side", 760., true),
             ] {
                 root.update(cx, |root, window, cx| {
                     let desk = root.view().clone().downcast::<Desk>().unwrap();
                     desk.update(cx, |desk, cx| {
+                        if name == "top" {
+                            arrange(desk, cx);
+                        }
+                        if name.starts_with("navigation") {
+                            arrange_navigation(desk, cx);
+                        }
                         desk.close_menu(cx);
                         desk.modal = crate::app::Modal::None;
                         desk.changes.open = false;

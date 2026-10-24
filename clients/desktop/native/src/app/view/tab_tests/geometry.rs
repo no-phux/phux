@@ -4,6 +4,41 @@ use super::*;
 use crate::app::ui::list::{ROW, ROW_INSET};
 
 #[gpui::test]
+fn side_tabs_stay_under_the_header_not_under_the_catalog(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, selectable_work);
+    run(&desk, "tabs-side", cx);
+    for height in [360., 700., 1200.] {
+        cx.simulate_resize(gpui::size(px(1000.), px(height)));
+        for count in [1, 3, 12] {
+            desk.update(cx, |desk, cx| {
+                desk.link.as_mut().unwrap().workspace.tabs = tabs(count);
+                cx.notify();
+            });
+            draw(cx);
+            let header = cx.debug_bounds("titlebar").unwrap();
+            let shelf = cx.debug_bounds("sidebar-tab-shelf").unwrap();
+            let catalog = cx.debug_bounds("sidebar-list").unwrap();
+            let filter = cx.debug_bounds("sidebar-host-filter").unwrap();
+            let first = cx.debug_bounds("tab-fixture-a").unwrap();
+            let footer = cx.debug_bounds("sidebar-footer").unwrap();
+            assert_eq!(shelf.top(), header.bottom());
+            assert!(
+                first.top() - shelf.top() <= px(28.),
+                "no dead space before tabs"
+            );
+            assert!(shelf.bottom() <= filter.top());
+            assert!(filter.bottom() <= catalog.top());
+            assert!(catalog.size.height > px(0.), "catalog remains reachable");
+            assert!(catalog.bottom() <= footer.top());
+            assert_eq!(footer.bottom(), px(height));
+        }
+    }
+}
+
+#[gpui::test]
 fn off_top_tabs_reclaim_the_header_and_keep_global_actions_in_the_sidebar(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = fixture(cx);
