@@ -1,0 +1,26 @@
+{
+  "consumer": "phux",
+  "files": {
+    "desktop/AppIcon.svg": {
+      "destination": "clients/desktop/packaging/AppIcon.svg",
+      "sha256": "95480f04e17c7fb10eef74768327f5727b2ffed29968f9fef1bae246c2179559"
+    },
+    "logos/docs-wordmark.png": {
+      "destination": "docs/assets/logo.png",
+      "sha256": "634eded3432075e6e4c3fb25b43f1dc07117d320cb5d8ee96b5ab78f6e713a6c"
+    },
+    "logos/docs-wordmark.svg": {
+      "destination": "docs/assets/logo.svg",
+      "sha256": "cf22adcda8f6803f7ac38c3e1e1f8ec5d408956e9e5615894cbeb666880a9ca4"
+    },
+    "tooling/brand.py": {
+      "destination": "scripts/brand.py",
+      "sha256": "7525b577bb88ff01e0ccf683d07fe7924e38480fadb9b768fa62d67cbb4d62ef"
+    }
+  },
+  "schema": 1,
+  "sha256": "140408fdbbb7ee95212cb17995932b965721437faebaf0bb5815f7e0b02120aa",
+  "source_revision": "528b7752937be7a57c16f06344bdf2b0136f7d8b",
+  "url": "https://phux.sh/brand/releases/1.0.0/phux-brand.zip",
+  "version": "1.0.0"
+}
