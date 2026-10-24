@@ -72,6 +72,8 @@ try {
     [IO.File]::WriteAllText($probeLauncher, (Get-PhuxLauncher $Distribution 'phux-wsl-bytes'), [Text.UTF8Encoding]::new($false))
     $stdinBytes = ($request | & $probeLauncher) -join ''
     Write-Output ('Native stdin bytes: ' + $stdinBytes)
+    $expectedBytes = [BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes($request)).Replace('-', '').ToLowerInvariant()
+    Assert-True ($stdinBytes.StartsWith($expectedBytes)) 'Native stdin was changed or prefixed with a BOM'
     $response = @($request | & $mcp)
     Assert-True ($LASTEXITCODE -eq 0) 'MCP stdio launcher failed'
     Write-Output ('MCP qualification response: ' + ($response -join "`n"))
