@@ -116,11 +116,13 @@ Actions secrets before marking the desktop release PR ready:
 | `APPLE_NOTARY_ISSUER_ID` | Its issuer UUID |
 
 An **Apple Distribution** or **Apple Development** certificate is not a
-Developer ID Application certificate and cannot substitute for it. An Apple
-Developer Program account holder/admin must create the Developer ID
-certificate in Certificates, Identifiers & Profiles, export it with its
-private key from Keychain Access, and create an authorized team API key in
-App Store Connect. Keep the originals and export password outside the repo.
+Developer ID Application certificate and cannot substitute for it. The Apple
+Developer Program **Account Holder** creates the exportable Developer ID
+certificate in [Certificates, Identifiers & Profiles](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)
+and exports it with its private key from Keychain Access. Use an authorized
+team API key from App Store Connect for notarization; an existing mobile
+release key may suffice if it has the required access. Keep the originals
+and export password outside the repo.
 Upload locally with `gh secret set --repo no-phux/phux`, reading values
 from files/stdin rather than putting private material in command arguments
 or chat. Do not commit P12/P8 files or notarization credentials.
