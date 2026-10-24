@@ -243,7 +243,8 @@ impl Workspace {
         let mut seen = HashSet::new();
         for placement in leaves {
             if let Some(terminal) = &placement.terminal_id
-                && !self.unresolved.contains(&placement.id)
+                && (!self.unresolved.contains(&placement.id)
+                    || self.spawned.contains(&placement.terminal_label))
                 && !seen.insert(terminal.clone())
             {
                 continue;
@@ -264,6 +265,7 @@ impl Workspace {
             || connection.status != Status::Attached
             || !connection.session_validated()
             || connection.pane(terminal).is_some()
+            || self.spawned.contains(&terminal_label(terminal))
             || connection.ready(terminal)
         {
             return false;
@@ -408,7 +410,7 @@ impl Workspace {
         );
         self.spawns.clear();
         self.awaiting.clear();
-        self.answered_spawns.clear();
+        self.spawned.clear();
         self.unresolved.clear();
         self.attaching.clear();
         self.closed_terminals.clear();
