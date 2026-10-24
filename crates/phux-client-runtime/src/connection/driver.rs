@@ -122,6 +122,9 @@ async fn wait_to_retry(
             () = &mut retry => return false,
             () = signal(&mut signals.nudge) => return false,
             () = signal(&mut signals.resync) => return false,
+            // No socket to migrate while waiting: a new path is a reason to
+            // dial now rather than finish the backoff the old one earned.
+            () = signal(&mut signals.rebind) => return false,
             () = tokio::time::sleep(expiry) => expire_operations(shared, wake),
             () = closed(&mut signals.close) => {
                 lock(shared).close();
@@ -664,6 +667,24 @@ mod tests {
             types.contains(&TYPE_PING),
             "a probe follows the path change; wrote {types:?}"
         );
+    }
+
+    /// Between dials there is no socket to migrate, so a path change ends
+    /// the backoff wait the way a nudge does instead of being dropped.
+    #[tokio::test(start_paused = true)]
+    async fn a_path_change_cuts_a_backoff_wait_short() {
+        let mut fixture = WriteFixture::new(1024);
+        let wake: Wake = Arc::new(|| {});
+        let waiting = wait_to_retry(
+            Duration::from_secs(60),
+            &fixture.shared,
+            &mut fixture.signals,
+            &wake,
+        );
+        tokio::pin!(waiting);
+        assert!(waiting.as_mut().now_or_never().is_none());
+        fixture.rebind.send_modify(|n| *n += 1);
+        assert!(!waiting.await, "a path change redials; it never closes");
     }
 
     /// A refused token ends even an attached window; a lost link redials.
