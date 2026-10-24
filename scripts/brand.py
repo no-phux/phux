@@ -45,6 +45,13 @@ def destination(root, name):
     return path
 
 
+def asset_destination(root, name):
+    first = safe_name(name).parts[0]
+    if first in (".git", ".beads", "brand.lock.json", "brand.config.json"):
+        raise ValueError(f"reserved consumer destination: {name}")
+    return destination(root, name)
+
+
 def config(root):
     value = json.loads((root / "brand.config.json").read_bytes())
     if value.get("schema") != 1 or value.get("consumer") not in ("phux", "mobile", "website"):
@@ -54,9 +61,7 @@ def config(root):
         raise ValueError("empty or duplicate consumer destinations")
     for name, target in targets.items():
         safe_name(name)
-        destination(root, target)
-        if target in ("brand.lock.json", "brand.config.json") or target.startswith(".git/"):
-            raise ValueError("reserved consumer destination")
+        asset_destination(root, target)
     return value
 
 
@@ -141,7 +146,7 @@ def obsolete_files(root, previous, targets):
         name = record["destination"]
         if name in targets.values():
             continue
-        path = destination(root, name)
+        path = asset_destination(root, name)
         if path.exists() and digest(path.read_bytes()) != record["sha256"]:
             raise ValueError(f"refusing to remove edited brand asset: {name}")
         removed[path] = None
@@ -160,7 +165,7 @@ def install(root, archive, expected):
     changes = obsolete_files(root, previous, targets)
     records = {}
     for name, target in targets.items():
-        changes[destination(root, target)] = files[name]
+        changes[asset_destination(root, target)] = files[name]
         records[name] = {"destination": target, "sha256": digest(files[name])}
     lock = {
         "schema": 1, "consumer": settings["consumer"], "version": manifest["version"],
@@ -186,7 +191,7 @@ def check(root):
         record = lock["files"][name]
         if record["destination"] != target:
             raise ValueError(f"brand destination changed: {name}")
-        if digest(destination(root, target).read_bytes()) != record["sha256"]:
+        if digest(asset_destination(root, target).read_bytes()) != record["sha256"]:
             raise ValueError(f"brand asset drift: {target}; update in phux-brand and synchronize")
     return lock
 
