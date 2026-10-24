@@ -21,6 +21,9 @@ macOS on Apple silicon, Linux x86_64 and arm64. Also `brew install
 no-phux/tap/phux`. [More options](./docs/install.md), including the desktop
 app and building from source.
 
+**Windows:** use [WSL, with PowerShell launchers](./docs/install.md#windows-wsl).
+The server and panes run in Linux; there is no native Windows build.
+
 ## Use
 
 ```sh

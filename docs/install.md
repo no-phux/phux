@@ -16,9 +16,82 @@ Release builds exist for three platforms:
 | Linux | x86_64                      | glibc; there is no musl build |
 | Linux | arm64                       | glibc; there is no musl build |
 
-There is no build for Windows or Intel Macs. On anything else, [build from source](#build-from-source).
+Windows uses these Linux builds through [WSL](#windows-wsl), including from
+PowerShell. There is no native Windows or Intel Mac build.
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
+
+## Windows (WSL)
+
+Use Windows Terminal and WSL 2 with Ubuntu 22.04 or newer (x64 or arm64).
+The server, panes, configuration, credentials, and agent integrations live
+**inside that Linux distribution**, not in Windows. PowerShell can launch
+and control them; this is not a native Windows terminal or desktop port.
+
+If you do not have WSL, run this in an administrator PowerShell, restart if
+Windows requests it, then open Ubuntu once and create your Linux user:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+In Ubuntu, ensure the download tools are present:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y curl ca-certificates
+curl -fsSL https://phux.sh/install | sh
+phux
+```
+
+That is sufficient for using phux in a WSL terminal. To also expose `phux`
+and `phux-mcp` as PowerShell commands, download and run the
+[PowerShell installer](../scripts/install-windows.ps1):
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/no-phux/phux/main/scripts/install-windows.ps1 -OutFile install-windows.ps1
+# Inspect the downloaded script before running it.
+.\install-windows.ps1 -Distribution Ubuntu
+```
+
+Use `wsl --list --quiet` to find your distribution's exact name, such as
+`Ubuntu-24.04`, and pass it with `-Distribution`. It must have an initialized,
+non-root default Linux user. The installer uses the existing release
+installer and its checksum/signature checks. It writes `phux.ps1` and
+`phux-mcp.ps1` to `%LOCALAPPDATA%\phux\bin` and adds that directory to your
+user `PATH`; it never changes your execution policy or PowerShell profile.
+If your policy blocks scripts, follow your organization's policy; on an
+unmanaged machine, `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+allows locally generated scripts. An administrator-enforced policy wins.
+
+Options: `-Channel next`, `-Version 0.112.0` (stable only),
+`-InstallDir C:\Tools\phux`, `-NoModifyPath`, and `-DryRun`.
+Open a new PowerShell window after installing:
+
+```powershell
+phux --version
+phux                         # Linux terminal UI in Windows Terminal
+phux ls
+phux spawn --cwd /mnt/c/Users/me/project -- bash
+phux update                  # updates the Linux installation
+```
+
+Arguments are Linux paths: use `/mnt/c/...`, not `C:\...`. WSL maps the
+PowerShell working directory when launching the command. Keep repositories
+in the Linux filesystem for best performance. Tools and agents you run in
+panes must be installed inside WSL. `phux --help` and `phux-mcp --schema`
+work from PowerShell too; launchers preserve arguments, exit codes, and
+UTF-8 text pipes. For a Windows MCP client, configure its stdio server as
+`powershell.exe -NoProfile -File C:\Users\me\AppData\Local\phux\bin\phux-mcp.ps1`
+(or use `pwsh`); a client running inside WSL can invoke `phux mcp` directly.
+
+Re-running the installer updates the launchers and Linux programs. To
+remove the Windows entrypoints, delete only `phux.ps1` and `phux-mcp.ps1`
+from the chosen install directory and remove that directory from your user
+`PATH`. To remove the Linux programs and state, follow [Uninstall](#uninstall)
+inside WSL. Neither step removes your distribution. WSLg users can try the
+[Linux desktop app](#desktop-app) inside WSL; there is no Windows desktop
+installer.
 
 ## Install script
 

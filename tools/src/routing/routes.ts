@@ -46,6 +46,9 @@ const ROUTES: Record<string, Surface[]> = {
   ".github/workflows/ci.yml": [...SURFACES],
   ".github/actions/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],
+  // The separate Windows WSL workflow exercises PowerShell and real WSL;
+  // these distribution scripts do not change the Unix Rust build.
+  "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
   // Passive maintainer task exports/configuration are not product inputs.
