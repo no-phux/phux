@@ -84,6 +84,9 @@ pub(super) fn pane_row(
     let terminal = pane.terminal_id.clone();
     let key = pane.key;
     let selected = key.is_some_and(|key| desk.organization.selected.contains(&key));
+    // Only the current session lists `pane_row`s, so the focused terminal is
+    // on this connection: the row you are looking at reads like its session.
+    let viewing = desk.focused_terminal().as_ref() == Some(&terminal);
     let drag = key.map(|key| {
         let keys = desk.organization.drag_keys(key);
         let label = drag_label(&keys, &title);
@@ -102,12 +105,14 @@ pub(super) fn pane_row(
     let selector = SharedString::from(format!("pane-{terminal}"));
     child_row(selector.clone(), look)
         .debug_selector(move || selector.to_string())
-        .when(selected, |row| row.bg(look.active))
+        .when(selected || viewing, |row| row.bg(look.active))
         .child(row_icon(glyph))
         .child(
             row_label(
                 title,
-                if attention.is_some() {
+                if viewing {
+                    Emphasis::Current
+                } else if attention.is_some() {
                     Emphasis::Normal
                 } else {
                     Emphasis::Quiet
