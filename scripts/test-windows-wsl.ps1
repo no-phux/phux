@@ -64,6 +64,7 @@ try {
     } } | ConvertTo-Json -Depth 5 -Compress
     $response = @($request | & $mcp)
     Assert-True ($LASTEXITCODE -eq 0) 'MCP stdio launcher failed'
+    Write-Output ('MCP qualification response: ' + ($response -join "`n"))
     $reply = $response[0] | ConvertFrom-Json
     Assert-True ($reply.id -ceq $id) 'MCP stdin/stdout was not UTF-8'
     Assert-True ($reply.result.serverInfo.name -eq 'phux') 'MCP initialize did not reply'
