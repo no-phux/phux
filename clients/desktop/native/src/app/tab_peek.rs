@@ -14,6 +14,8 @@ pub(crate) struct TabPeek {
     pub click: Option<String>,
     pub scenes: HashMap<String, Preview>,
     pub scroll: gpui::ScrollHandle,
+    /// The horizontal strip owns scrolling; aligned top previews follow it.
+    pub strip_scroll: gpui::ScrollHandle,
 }
 
 impl TabPeek {
@@ -77,6 +79,7 @@ impl Desk {
                 .position(|tab| tab.id == link.workspace.active_id)
         {
             self.tab_peek.scroll.scroll_to_item(index);
+            self.tab_peek.strip_scroll.scroll_to_item(index);
         }
     }
 

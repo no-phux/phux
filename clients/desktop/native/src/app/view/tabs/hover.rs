@@ -66,6 +66,11 @@ pub(super) fn tooltip(
             return div();
         };
         let desk = handle.read(cx);
+        // A tooltip already waiting on its delay must not cover a newly opened
+        // live shelf, even if it was built before peeking began.
+        if desk.tab_peek.open {
+            return div();
+        }
         let Some(tab) = desk
             .link
             .as_ref()
