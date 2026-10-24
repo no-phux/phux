@@ -22,6 +22,8 @@
     "tests/tooling/tooling.test.ts",
     "tests/tooling/qualification.test.ts",
     "tests/tooling/package-linux.test.ts",
+    "tests/tooling/package-dmg.test.ts",
+    "tests/tooling/sign-macos.test.ts",
     "tests/framework/process.test.ts",
     "tests/desktop-demo.test.ts",
     "oxlint.config.ts"

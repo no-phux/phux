@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capture } from "../lib/process.ts";
 import { repoPath, ROOT } from "../lib/repo.ts";
-import { action, jobs, run, steps, uses, withInput, workflow } from "../policy/workflows.ts";
+import { action, job, jobs, run, steps, uses, withInput, workflow } from "../policy/workflows.ts";
+import { table } from "../lib/value.ts";
 
 function dryRun(...args: string[]): string {
   const result = Bun.spawnSync(
@@ -90,4 +91,40 @@ test("macOS provisioning is shared but still reads toolchain pins from the selec
     ),
   ).toBe(true);
   expect(releaseSteps.filter((step) => run(step) === "just desktop-package").length).toBe(2);
+});
+
+test("only stable macOS receives Apple credentials, before upload and after packaging", () => {
+  const release = workflow("desktop-release.yml");
+  const macosSteps = steps(job(release, "macos"));
+  const signed = macosSteps.findIndex((step) => String(step["name"]).startsWith("Sign, notarize"));
+  expect(signed).toBeGreaterThan(
+    macosSteps.findIndex((step) => run(step) === "just desktop-package"),
+  );
+  expect(signed).toBeLessThan(
+    macosSteps.findIndex((step) => run(step).includes("qualify-macos-desktop.sh")),
+  );
+  expect(signed).toBeLessThan(
+    macosSteps.findIndex((step) => run(step).includes("gh release upload")),
+  );
+  const signStep = macosSteps[signed] ?? {};
+  expect(signStep["if"]).toBe("inputs.channel == 'stable'");
+  for (const secret of [
+    "APPLE_DEVELOPER_ID_P12",
+    "APPLE_DEVELOPER_ID_PASSWORD",
+    "APPLE_NOTARY_KEY_P8",
+    "APPLE_NOTARY_KEY_ID",
+    "APPLE_NOTARY_ISSUER_ID",
+  ]) {
+    expect(table(signStep["env"])[secret]).toBe(`\${{ secrets.${secret} }}`);
+    expect(table(job(workflow("release.yml"), "desktop")["secrets"])[secret]).toBe(
+      `\${{ secrets.${secret} }}`,
+    );
+    expect(table(job(workflow("next.yml"), "desktop")["secrets"])[secret]).toBeUndefined();
+  }
+  expect(
+    macosSteps.some((step) => run(step).includes("sign-macos-desktop.sh --check-config")),
+  ).toBe(true);
+  const qualification = readFileSync(repoPath("scripts/ci/qualify-macos-desktop.sh"), "utf8");
+  expect(qualification).toContain("hdiutil attach -readonly -nobrowse");
+  expect(qualification).toContain("spctl --assess --type execute");
 });

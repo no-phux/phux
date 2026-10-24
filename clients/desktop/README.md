@@ -12,8 +12,28 @@ against the channel manifest and the release signature, installs
 `Phux.app` (macOS) or a tarball under `$XDG_DATA_HOME/phux-desktop` with a
 `.desktop` entry (Linux), plus a `phux-desktop` launcher, and installs the
 phux CLI if none is found. It never replaces an existing CLI or stops its
-server. macOS releases are ad-hoc signed, not notarized; the installer
-clears quarantine after verifying.
+server. The shell installer also supports older ad-hoc-signed releases,
+clearing quarantine only after verifying the release signature.
+
+### macOS download
+
+Download the **macos-arm64.dmg** from the newest
+[Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
+open it, and drag **Phux.app** onto **Applications**. Eject the image and
+open Phux from Applications. Apple silicon and macOS 27+ are required.
+The ZIP remains available for the installer and automatic updates.
+
+The app needs the separately installed phux CLI. On a fresh Mac, install
+it once in Terminal before opening Phux:
+
+```sh
+curl -fsSL https://phux.sh/install | sh
+```
+
+New stable releases require Developer ID signing and Apple notarization;
+older releases through 0.44.1 have only an ad-hoc-signed ZIP. Until the
+first notarized DMG is published, use the shell installer above. Do not
+disable Gatekeeper to install a downloaded app.
 
 ## What it does
 
@@ -138,6 +158,7 @@ just desktop-test      # the native crate's tests
 just desktop-lint
 just desktop-check     # the CI gate: script typecheck, lint, qualification guards, host lock
 just desktop-package   # build the app without installing it
+just desktop-dmg       # local ad-hoc DMG; not a notarized public release
 ```
 
 `desktop-demo` builds the CLI and desktop executable from this checkout and
