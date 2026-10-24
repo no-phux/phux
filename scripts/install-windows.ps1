@@ -55,13 +55,12 @@ foreach ($argument in $args) {
 }
 $wslArguments = Get-PhuxWslArguments $distribution $script
 $savedEncoding = [Console]::OutputEncoding
-$savedOutputEncoding = $global:OutputEncoding
+$savedInputEncoding = [Console]::InputEncoding
 try {
-    $OutputEncoding = [Text.UTF8Encoding]::new($false)
-    [Console]::OutputEncoding = $OutputEncoding
-    # Windows PowerShell 5.1's native pipeline can use the caller/global
-    # preference, not this script's local value. A BOM there breaks MCP JSON.
-    $global:OutputEncoding = $OutputEncoding
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    [Console]::InputEncoding = $utf8
+    [Console]::OutputEncoding = $utf8
+    $OutputEncoding = $utf8
     if ($MyInvocation.ExpectingInput) {
         $input | & wsl.exe @wslArguments
     } else {
@@ -69,7 +68,7 @@ try {
     }
     $code = $LASTEXITCODE
 } finally {
-    $global:OutputEncoding = $savedOutputEncoding
+    [Console]::InputEncoding = $savedInputEncoding
     [Console]::OutputEncoding = $savedEncoding
 }
 exit $code

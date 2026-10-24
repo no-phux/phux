@@ -95,6 +95,7 @@ try {
     $request = @{ jsonrpc = '2.0'; id = $id; method = 'initialize'; params = @{
         protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'wsl-ci'; version = '1' }
     } } | ConvertTo-Json -Depth 5 -Compress
+    Assert-McpProcess $mcp $request $id
     # Diagnose the exact native stdin bytes using the SAME installed launcher
     # implementation, before asking the real MCP server to parse them.
     $probeSource = "#!/usr/bin/python3`nimport sys`nprint(sys.stdin.buffer.read().hex())`n"
@@ -102,7 +103,9 @@ try {
     $probeSetup = Get-PhuxWslArguments $Distribution ('printf %s ' + $probeEncoded + '|base64 -d > "$HOME/.local/bin/phux-wsl-bytes"; chmod 755 "$HOME/.local/bin/phux-wsl-bytes"')
     & wsl.exe @probeSetup
     $probeLauncher = Join-Path $bin 'phux-wsl-bytes.ps1'
-    [IO.File]::WriteAllText($probeLauncher, (Get-PhuxLauncher $Distribution 'phux-wsl-bytes'), [Text.UTF8Encoding]::new($false))
+    $probeContents = Get-PhuxLauncher $Distribution 'phux-wsl-bytes'
+    $probeContents = $probeContents.Replace('$OutputEncoding = $utf8', '$OutputEncoding = $utf8; [Console]::Error.WriteLine("Encoding preambles: local={0}, input={1}, output={2}", $OutputEncoding.GetPreamble().Length, [Console]::InputEncoding.GetPreamble().Length, [Console]::OutputEncoding.GetPreamble().Length)')
+    [IO.File]::WriteAllText($probeLauncher, $probeContents, [Text.UTF8Encoding]::new($false))
     $stdinBytes = ($request | & $probeLauncher) -join ''
     Write-Output ('Native stdin bytes: ' + $stdinBytes)
     $expectedBytes = [BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes($request)).Replace('-', '').ToLowerInvariant()
@@ -113,7 +116,6 @@ try {
     $reply = $response[0] | ConvertFrom-Json
     Assert-True ($reply.id -ceq $id) 'MCP stdin/stdout was not UTF-8'
     Assert-True ($reply.result.serverInfo.name -eq 'phux') 'MCP initialize did not reply'
-    Assert-McpProcess $mcp $request $id
 
     # Invalid syntax is an ordinary exit, not a terminating PowerShell error.
     $savedPreference = $ErrorActionPreference
