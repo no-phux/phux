@@ -232,6 +232,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
     let tab_position = desk.tab_position();
     desk.set_viewport(window.viewport_size());
     desk.settle_tab_peek();
+    desk.settle_leader(window, cx);
     if desk.tab_position() != tab_position {
         // Cached chrome must follow a responsive placement change on resize.
         cx.notify();
@@ -295,6 +296,12 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         .on_action(cx.listener(|desk, action: &Run, window, cx| {
             desk.execute(&action.id, window, cx);
         }))
+        .capture_key_up(cx.listener(|desk, event: &gpui::KeyUpEvent, _, _| {
+            desk.release_leader(&event.keystroke);
+        }))
+        .capture_any_mouse_down(cx.listener(|desk, _, _, cx| {
+            desk.cancel_leader(cx);
+        }))
         .on_action(cx.listener(|desk, _: &OpenPathDirectory, window, cx| {
             desk.open_selected_directory(window, cx);
         }))
@@ -318,6 +325,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
             cx,
         ))
         .children(super::hud::element(desk.prefs.font_family.clone().into()))
+        .children(desk.leader_hint())
         .children(cursor.map(|cursor| drag_capture(cursor, cx)))
 }
 

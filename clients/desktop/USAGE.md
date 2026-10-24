@@ -83,7 +83,8 @@ speak where they apply: a connection or startup chip in the titlebar, and a
 **Follow live** pill on a pane scrolled back from its output. The sidebar, the
 Changes panel and a session's rows slide open and shut unless **Animations** is
 off or the system reduces motion. Command-key chords belong to the app;
-everything else reaches the terminal.
+other keys reach the terminal unless you bind them through Ghostty or enable
+the optional desktop leader.
 
 Tabs can sit on the top, bottom or sidebar. Hover for pane context, or click
 the selected tab for live miniatures without resizing your terminals. See
@@ -147,6 +148,34 @@ another window, or a capture started in the background, stays out.
 | ⇧⌘I              | Insert Path: browse or search paths on the focused terminal's host          |
 | ⇧⌘R              | Reconnect, first restarting the server if it has stopped                    |
 | ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                |
+
+### Leader navigation
+
+**Settings > Keyboard & shortcuts > Desktop leader** adds a prefix alongside
+the existing shortcuts. It defaults to **Off**; choose **Ctrl+A**, **Ctrl+B**,
+**Ctrl+Space**, or enter a custom chord such as `C-a` or `ctrl+alt+a` and press
+Enter. This is a desktop preference, independent of your TUI configuration.
+
+Press the leader, release it, then:
+
+| Key after the leader | Action |
+| --- | --- |
+| `h j k l` or arrows | Focus left / down / up / right |
+| `H J K L` | Move the pane divider left / down / up / right |
+| `\|` or `%` / `-` or `"` | Split right / down |
+| `o` / `;` | Next / previous pane |
+| `z` | Zoom / restore pane |
+| `c`, `n` / `p` | New tab, next / previous tab |
+| `Tab` / `Shift+Tab`, `1`–`9` | Cycle tabs, select by position (`9` selects the last) |
+| `b`, `w`, `s` | Toggle sidebar, Go To, session menu |
+| `Space`, `:` or `?` | Command palette |
+| `,`, `S`, `q` | Rename tab, Settings, agent needing attention |
+
+Hesitate for 400 ms to see the shortcut list. **Escape** cancels; pressing
+the leader twice sends its literal key to the terminal. An unbound suffix
+keeps its normal meaning; only the leader is swallowed. Text fields and
+conversations keep their normal input. Changing focus, clicking, or switching
+away from the window cancels a pending leader.
 
 ### Coming from Ghostty
 
