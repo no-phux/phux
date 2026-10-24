@@ -19,8 +19,9 @@ explains itself at the top.
 | channel manifests `stable.json`, `next.json`                 | the `channels` release                       | `bun tools/main.ts release-manifest`     |
 
 Linux CLI builds link against glibc 2.35 (built in an `ubuntu:22.04`
-container). The desktop does not inherit that promise. macOS desktop builds
-are ad-hoc signed and not notarized. Only CLI releases are GitHub's
+container). The desktop does not inherit that promise. Stable macOS desktop
+releases require Developer ID signing and Apple notarization; next and local
+builds remain ad-hoc signed. Only CLI releases are GitHub's
 "Latest"; the Homebrew tap renders its formula from Latest on a schedule.
 
 ## Stable
@@ -92,6 +93,62 @@ unpack if it changes.
 The desktop is qualified before upload: `smoke-app.ts` on macOS, and
 `smoke-linux.ts` under Xvfb and lavapipe on Linux, against an isolated
 server built from the same checkout.
+
+### macOS desktop signing
+
+Stable macOS releases contain a drag-to-Applications **DMG** and an updater
+**ZIP** of the same stapled `Phux.app`. Both receive SHA-256 sidecars and
+minisign signatures; the channel manifest continues to name the ZIP so
+existing installers and automatic updates keep working. Linux is unchanged.
+The DMG includes an Applications link and instructions for the separately
+installed CLI; it does not bundle a second coordinator or mutate an existing
+installation. macOS 27+ on Apple silicon remains the supported baseline.
+
+The Apple credentials are separate from minisign. Configure these repository
+Actions secrets before marking the desktop release PR ready:
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_DEVELOPER_ID_P12` | Base64 of an exported **Developer ID Application** certificate **and private key** (`.p12`) |
+| `APPLE_DEVELOPER_ID_PASSWORD` | Password protecting that P12 export |
+| `APPLE_NOTARY_KEY_P8` | Base64 of an App Store Connect team API private key (`.p8`) with notarization access |
+| `APPLE_NOTARY_KEY_ID` | Its 10-character key ID |
+| `APPLE_NOTARY_ISSUER_ID` | Its issuer UUID |
+
+An **Apple Distribution** or **Apple Development** certificate is not a
+Developer ID Application certificate and cannot substitute for it. An Apple
+Developer Program account holder/admin must create the Developer ID
+certificate in Certificates, Identifiers & Profiles, export it with its
+private key from Keychain Access, and create an authorized team API key in
+App Store Connect. Keep the originals and export password outside the repo.
+Upload locally with `gh secret set --repo no-phux/phux`, reading values
+from files/stdin rather than putting private material in command arguments
+or chat. Do not commit P12/P8 files or notarization credentials.
+
+`scripts/ci/sign-macos-desktop.sh --check-config` checks required settings
+before an expensive stable build. Missing credentials fail closed: stable
+publication never silently falls back to ad-hoc signing. The script imports
+the P12 into a temporary keychain, signs with hardened runtime and a secure
+timestamp, waits for Apple's `Accepted` result, staples/validates the app,
+and creates the ZIP and DMG. It then signs, notarizes, and staples the DMG.
+Temporary keys and keychain are removed even on failure. No JIT or sandbox
+exceptions are needed for the native GPUI executable.
+
+The workflow checks Gatekeeper acceptance of both the copied app and image,
+mounts the image read-only, and smoke-tests its copied app on an isolated
+same-checkout server. It checksums only the final stapled bytes, uploads and
+downloads them again, and signs all four desktop checksum sidecars (two
+macOS, two Linux) before making the draft public. Apple submission receipts
+and runtime evidence are retained as Actions artifacts. A failure leaves the
+release in draft. The `next` channel remains the existing ad-hoc ZIP path.
+
+For local packaging, `just desktop-dmg` creates
+`clients/desktop/dist/Phux.dmg` without installing anything or accessing
+Apple credentials. Remove that task-owned output before rebuilding; the
+packager refuses to overwrite an existing image. This is a development
+artifact, not evidence of notarization. The first notarized stable release
+must pass the real Apple and Gatekeeper checks; local ad-hoc tests cannot
+prove those steps.
 
 ## Release-key custody and rotation
 

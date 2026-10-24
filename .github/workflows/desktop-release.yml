@@ -1,5 +1,5 @@
 # Release Please owns the immutable tag and draft; release.yml is the only door.
-# Stable: Apple silicon (ad-hoc signed) and Ubuntu 24.04 GNU/Linux x64/arm64.
+# Stable: notarized Apple silicon DMG + updater ZIP, and Linux x64/arm64.
 name: Release Desktop
 
 on:
@@ -20,6 +20,18 @@ on:
     secrets:
       PHUX_MINISIGN_SECRET_KEY:
         description: minisign secret key that signs a stable checksum (ADR-0178); next signs in next.yml
+        required: false
+      APPLE_DEVELOPER_ID_P12:
+        description: Base64 Developer ID Application certificate and private key
+        required: false
+      APPLE_DEVELOPER_ID_PASSWORD:
+        required: false
+      APPLE_NOTARY_KEY_P8:
+        description: Base64 App Store Connect API private key for notarytool
+        required: false
+      APPLE_NOTARY_KEY_ID:
+        required: false
+      APPLE_NOTARY_ISSUER_ID:
         required: false
 
 permissions:
@@ -67,6 +79,15 @@ jobs:
             [[ "$RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
             test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           fi
+      - name: Require stable Apple signing configuration before building
+        if: inputs.channel == 'stable'
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash harness/scripts/ci/sign-macos-desktop.sh --check-config
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.sha || inputs.tag }}
@@ -112,40 +133,21 @@ jobs:
       - name: Package optimized desktop
         working-directory: source
         run: just desktop-package
-      - name: Verify signature and create checksummed release archive
+      - name: Sign, notarize and staple the stable app and DMG
+        if: inputs.channel == 'stable'
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          ARCHIVE: ${{ steps.version.outputs.archive }}
+        run: bash harness/scripts/ci/sign-macos-desktop.sh source/clients/desktop/dist/app/Phux.app "$RUNNER_TEMP/desktop-release/$ARCHIVE"
+      - name: Verify final bytes and qualify ZIP and stable DMG installations
         working-directory: source
         env:
           ARCHIVE: ${{ steps.version.outputs.archive }}
-        run: |
-          set -euo pipefail
-          app=clients/desktop/dist/app/Phux.app
-          codesign --verify --deep --strict --verbose=2 "$app"
-          codesign -dv --verbose=4 "$app" 2>&1 | grep -F 'Signature=adhoc'
-          PHUX_MACOS_MIN_MAX=27.0 bash ../harness/scripts/check-binary-portability.sh \
-            "$app/Contents/MacOS/phux-desktop"
-          test ! -e "$app/Contents/Resources/phux-desktop-native.darwin-arm64.node"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopHost' "$app/Contents/Info.plist")" = gpui
-          test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxBuildSHA' "$app/Contents/Info.plist")" = "$(git rev-parse HEAD)"
-          if [[ "$PHUX_BUILD_CHANNEL" == next ]]; then
-            test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopChannel' "$app/Contents/Info.plist")" = next
-          fi
-          mkdir -p "$RUNNER_TEMP/desktop-release"
-          ditto -c -k --norsrc --keepParent "$app" "$RUNNER_TEMP/desktop-release/$ARCHIVE"
-          cd "$RUNNER_TEMP/desktop-release"
-          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
-          shasum -a 256 -c "$ARCHIVE.sha256"
-          cp "$ARCHIVE.sha256" SHA256SUMS
-      - name: Qualify the archived app against an isolated same-checkout server
-        env:
-          ARCHIVE: ${{ steps.version.outputs.archive }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/desktop-qualified"
-          ditto -x -k "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-qualified"
-          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/desktop-qualified/Phux.app"
-          # Hosted runners have only a virtual display, which never confirms a
-          # presented drawable; the evidence records `submitted` instead.
-          bun harness/clients/desktop/scripts/smoke-app.ts --app "$RUNNER_TEMP/desktop-qualified/Phux.app" --phux "$GITHUB_WORKSPACE/source/target/release/phux" --output "$RUNNER_TEMP/desktop-evidence" --allow-unconfirmed-present
+        run: bash ../harness/scripts/ci/qualify-macos-desktop.sh
       - name: Exercise installer transactions
         run: bun test ./harness/tools/src/install/desktop.e2e.ts
       - name: Retain packaged runtime evidence
@@ -156,6 +158,16 @@ jobs:
           path: ${{ runner.temp }}/desktop-evidence
           if-no-files-found: warn
           retention-days: 14
+      - name: Retain DMG qualification and Apple notarization receipts
+        if: always() && inputs.channel == 'stable'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-dmg-${{ inputs.tag }}
+          path: |
+            ${{ runner.temp }}/desktop-dmg-evidence
+            ${{ runner.temp }}/desktop-release/*-notary.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload to draft and verify downloaded bytes
         if: inputs.channel == 'stable'
         env:
@@ -163,8 +175,9 @@ jobs:
           ARCHIVE: ${{ steps.version.outputs.archive }}
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-release/$ARCHIVE.sha256" "$RUNNER_TEMP/desktop-release/SHA256SUMS" --clobber
-          gh release download "$RELEASE_TAG" --pattern "$ARCHIVE" --pattern SHA256SUMS --dir "$RUNNER_TEMP/desktop-download"
+          dmg="${ARCHIVE%.zip}.dmg"
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-release/$ARCHIVE.sha256" "$RUNNER_TEMP/desktop-release/$dmg" "$RUNNER_TEMP/desktop-release/$dmg.sha256" "$RUNNER_TEMP/desktop-release/SHA256SUMS" --clobber
+          gh release download "$RELEASE_TAG" --pattern "$ARCHIVE" --pattern "$dmg" --pattern SHA256SUMS --dir "$RUNNER_TEMP/desktop-download"
           cd "$RUNNER_TEMP/desktop-download"
           cmp SHA256SUMS "$RUNNER_TEMP/desktop-release/SHA256SUMS"
           shasum -a 256 -c SHA256SUMS
@@ -173,7 +186,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: desktop-sidecar-macos-arm64
-          path: ${{ runner.temp }}/desktop-release/phux-desktop-*-macos-arm64.zip.sha256
+          path: ${{ runner.temp }}/desktop-release/phux-desktop-*-macos-arm64.*.sha256
           if-no-files-found: error
       - name: Retain qualified next artifacts for serialized publication
         if: inputs.channel == 'next'
@@ -345,7 +358,8 @@ jobs:
             ${{ runner.temp }}/desktop-release/*.tar.gz.sha256
           if-no-files-found: error
 
-  # Signing is isolated from every build host (ADR-0178). All three platforms
+  # Minisign is isolated from build hosts (ADR-0178). Apple signs on macOS.
+  # All three platforms
   # must qualify before any signature is issued or the draft is published.
   sign:
     name: Sign and publish stable
@@ -373,7 +387,8 @@ jobs:
         run: |
           set -euo pipefail
           sidecars=("$RUNNER_TEMP"/desktop-sidecar/phux-desktop-*.sha256)
-          test "${#sidecars[@]}" -eq 3
+          test "${#sidecars[@]}" -eq 4
+          test -f "$RUNNER_TEMP/desktop-sidecar/phux-desktop-${RELEASE_TAG#desktop-v}-macos-arm64.dmg.sha256"
           for sidecar in "${sidecars[@]}"; do
             name="$(basename "$sidecar")"
             # Sign only the checksum the draft actually carries.
@@ -391,9 +406,9 @@ jobs:
           set -euo pipefail
           notes="$RUNNER_TEMP/desktop-release-notes"
           gh release view "$RELEASE_TAG" --json body --jq '.body // ""' > "$notes"
-          marker='Desktop: ad-hoc signed; not Apple-notarized.'
+          marker='Desktop: Developer ID signed and Apple-notarized.'
           if ! grep -Fq "$marker" "$notes"; then
-            printf '\n%s\n\nApple silicon macOS 27 or later; Ubuntu 24.04 GNU/Linux x64 and arm64 (X11 and Wayland; release qualification uses X11 with lavapipe). Requires a separately installed phux CLI (https://phux.sh/install); this app does not install or upgrade your coordinator.\n' "$marker" >> "$notes"
+            printf '\n%s\n\nmacOS: download phux-desktop-%s-macos-arm64.dmg, open it, and drag Phux.app onto Applications. The ZIP is for automatic updates. Apple silicon macOS 27 or later; Ubuntu 24.04 GNU/Linux x64 and arm64 (X11 and Wayland; release qualification uses X11 with lavapipe). Requires a separately installed phux CLI (https://phux.sh/install); this app does not install or upgrade your coordinator.\n' "$marker" "${RELEASE_TAG#desktop-v}" >> "$notes"
           fi
           gh release edit "$RELEASE_TAG" --notes-file "$notes" \
             --draft=false --latest=false
