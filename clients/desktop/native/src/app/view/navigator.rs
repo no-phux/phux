@@ -2,7 +2,8 @@
 //! machines, grouped by project, by machine, or not at all. A session is one
 //! line, folded until its caret opens it; empty sessions sink below the ones
 //! holding work. Disclosure and host visibility never follow selection.
-//! Sidebar tabs occupy a separate, fixed-height shelf so they cannot displace
+//! Sidebar tabs occupy a separate shelf directly below the window header,
+//! above the catalog. Its stable height keeps session switches from moving
 //! the tree. Where work runs is a word on its row only where its name alone
 //! is ambiguous; what needs a person is a mark on its row, not a list.
 //!
@@ -60,6 +61,9 @@ pub(super) fn build(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> 
         .when(integrated, |sidebar| {
             sidebar.child(super::titlebar::sidebar_header(desk, &look, cx))
         })
+        .when(desk.tab_position() == TabPosition::Side, |sidebar| {
+            sidebar.child(tab_shelf(desk, &look, cx))
+        })
         .child(host_filter(desk, &look, cx))
         .child(
             div().flex_1().min_h_0().relative().flex().flex_col()
@@ -69,9 +73,6 @@ pub(super) fn build(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> 
             .child(div().absolute().left_0().right_0().bottom_0()
                 .child(organization_bar(desk, &look, cx))),
         )
-        .when(desk.tab_position() == TabPosition::Side, |sidebar| {
-            sidebar.child(tab_shelf(desk, &look, cx))
-        })
         .when(integrated, |sidebar| {
             sidebar.child(super::titlebar::sidebar_tools(desk, &look, cx))
         })
@@ -279,6 +280,7 @@ fn list(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
     let empty = rows.is_empty();
     div()
         .id("sidebar-list")
+        .debug_selector(|| "sidebar-list".into())
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
@@ -389,6 +391,9 @@ fn tab_shelf(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEleme
         .debug_selector(|| "sidebar-tab-shelf".into())
         .h(px(TAB_SHELF_HEIGHT))
         .flex_shrink_0()
+        .pb(px(8.))
+        .border_b_1()
+        .border_color(look.divider)
         .flex()
         .flex_col()
         .child(tab_list(desk, look, cx))

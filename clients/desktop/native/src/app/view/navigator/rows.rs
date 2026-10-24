@@ -17,11 +17,13 @@ use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 
 use crate::app::color::from_hex;
 use crate::app::desk::Desk;
+use crate::app::pane_identity::PaneOrigin;
 use crate::app::skin::Look;
 use crate::app::ui::list::{Emphasis, child_row, row_detail, row_label};
 use crate::app::ui::status::{harness_mark, state_dot};
 use crate::app::ui::{ago, dot, row_icon};
 use crate::app::view::{ResourceDrag, drag_label};
+use crate::connection::AgentInfo;
 
 fn exec_state(resource: &ResourceRecord) -> Option<ExecState> {
     resource
@@ -91,12 +93,7 @@ pub(super) fn pane_row(
     });
     let agent = desk.agent(&terminal);
     let attention = agent.filter(|info| info.needs_you()).map(|info| info.state);
-    let state = agent.map(|info| info.state);
-    let glyph = match (attention, desk.terminal_origin(&terminal).harness()) {
-        (None, Some(harness)) => harness_mark(harness, state, 12., look).into_any_element(),
-        _ if agent.is_some() => state_dot(attention, state).into_any_element(),
-        _ => terminal_glyph(look).into_any_element(),
-    };
+    let glyph = pane_mark(desk.terminal_origin(&terminal), agent, look);
     let tooltip_terminal = terminal.clone();
     let handle = cx.weak_entity();
     let selector = SharedString::from(format!("pane-{terminal}"));
@@ -154,7 +151,7 @@ pub(super) fn catalog_pane_row(
     let selector = format!("catalog-pane-{}-{terminal}", destination.host_label());
     child_row(SharedString::from(format!("pane-{terminal}")), look)
         .debug_selector(move || selector.clone())
-        .child(row_icon(terminal_glyph(look)))
+        .child(row_icon(pane_mark(pane.origin, pane.agent.as_ref(), look)))
         .child(row_label(title, Emphasis::Quiet, look))
         .children(suffix.map(|suffix| {
             let selector = format!(
@@ -184,6 +181,19 @@ pub(super) fn catalog_record_row(
     .child(row_label(record_label(resource), Emphasis::Quiet, look))
     .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(destination.clone(), cx)))
     .into_any_element()
+}
+
+/// Identity never depends on selection. Keep the harness visible while its
+/// corner pip reports state; a badge without a known harness still gets a dot.
+fn pane_mark(origin: PaneOrigin, agent: Option<&AgentInfo>, look: &Look) -> AnyElement {
+    let state = agent.map(|info| info.state);
+    if let Some(harness) = origin.harness() {
+        return harness_mark(harness, state, 12., look).into_any_element();
+    }
+    if let Some(info) = agent {
+        return state_dot(info.needs_you().then_some(info.state), state).into_any_element();
+    }
+    terminal_glyph(look).into_any_element()
 }
 
 /// A terminal nobody's agent drives: a terminal, not a bullet.

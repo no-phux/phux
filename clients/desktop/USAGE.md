@@ -89,6 +89,11 @@ the optional desktop leader.
 Tabs can sit on the top, bottom or sidebar. Hover for pane context, or click
 the selected tab for live miniatures without resizing your terminals. See
 [Tabs and previews](TAB_PEEK.md) for placement, controls and shortcuts.
+Sidebar tabs sit directly below the window header, above the session catalog;
+both lists scroll independently. Split tabs carry a layered mosaic of their
+layout, with the focused pane lit even when the tab is inactive. Agent harness
+marks and state pips stay visible in unselected sessions, including on other
+machines; selecting work is not required to identify it.
 
 Hosts are context on work, not window owners. The sidebar and Work search keep
 all registered hosts' sessions available while the selected session changes.
