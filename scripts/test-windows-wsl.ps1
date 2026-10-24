@@ -13,16 +13,20 @@ function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw $Message }
 }
 
-function Assert-McpProcess([string] $Launcher, [string] $Request, [string] $ExpectedId) {
+function Assert-McpProcess([string] $Distro, [string] $Request, [string] $ExpectedId) {
     # A real Windows MCP client launches a process and keeps stdin open while
     # waiting for a response. A finite PowerShell object pipe alone misses this.
     $process = [Diagnostics.Process]::new()
-    $process.StartInfo.FileName = (Get-Process -Id $PID).Path
-    $process.StartInfo.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $Launcher + '"'
+    $process.StartInfo.FileName = (Get-Command wsl.exe -CommandType Application).Source
+    # This is the documented Windows MCP client entrypoint: native wsl.exe,
+    # not an extra PowerShell process between the client and the protocol.
+    $arguments = @('--distribution', $Distro, '--exec', 'sh', '-c', 'exec ~/.local/bin/phux-mcp')
+    $process.StartInfo.Arguments = ($arguments | ForEach-Object { '"' + $_ + '"' }) -join ' '
     $process.StartInfo.UseShellExecute = $false
     $process.StartInfo.RedirectStandardInput = $true
     $process.StartInfo.RedirectStandardOutput = $true
     $process.StartInfo.RedirectStandardError = $true
+    $process.StartInfo.CreateNoWindow = $true
     $process.StartInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
     try {
         Assert-True ($process.Start()) 'Could not start Windows MCP child'
@@ -95,7 +99,7 @@ try {
     $request = @{ jsonrpc = '2.0'; id = $id; method = 'initialize'; params = @{
         protocolVersion = '2025-03-26'; capabilities = @{}; clientInfo = @{ name = 'wsl-ci'; version = '1' }
     } } | ConvertTo-Json -Depth 5 -Compress
-    Assert-McpProcess $mcp $request $id
+    Assert-McpProcess $Distribution $request $id
     # Diagnose the exact native stdin bytes using the SAME installed launcher
     # implementation, before asking the real MCP server to parse them.
     $probeSource = "#!/usr/bin/python3`nimport sys`nprint(sys.stdin.buffer.read().hex())`n"

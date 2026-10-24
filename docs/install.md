@@ -81,9 +81,21 @@ PowerShell working directory when launching the command. Keep repositories
 in the Linux filesystem for best performance. Tools and agents you run in
 panes must be installed inside WSL. `phux --help` and `phux-mcp --schema`
 work from PowerShell too; launchers preserve arguments, exit codes, and
-UTF-8 text pipes. For a Windows MCP client, configure its stdio server as
-`powershell.exe -NoProfile -File C:\Users\me\AppData\Local\phux\bin\phux-mcp.ps1`
-(or use `pwsh`); a client running inside WSL can invoke `phux mcp` directly.
+UTF-8 text pipes. For a Windows MCP client, use the native WSL executable
+directly, so stdin/stdout bypass PowerShell's text encoders and buffering:
+
+```json
+{
+  "command": "wsl.exe",
+  "args": ["--distribution", "Ubuntu", "--exec", "sh", "-c", "exec ~/.local/bin/phux-mcp"]
+}
+```
+
+Use your distribution's name in place of `Ubuntu`. Windows PowerShell 5.1
+cannot transparently forward a native client's open stdin through a script;
+its launcher refuses that mode instead of hanging. PowerShell 7 supports it,
+but the direct WSL entrypoint above is recommended for clients on both.
+A client running inside WSL can invoke `phux mcp` directly.
 
 Re-running the installer updates the launchers and Linux programs. To
 remove the Windows entrypoints, delete only `phux.ps1` and `phux-mcp.ps1`
