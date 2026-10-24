@@ -99,6 +99,9 @@ serde_json.workspace = true
 # `phux config show` renders the effective merged config table as TOML.
 toml.workspace = true
 toml_edit.workspace = true
+# Tokenize tmux's quoted list-keys/show-options output without executing it.
+# Already locked through portable-pty; this is not a tmux config interpreter.
+shell-words = "1.1"
 # `phux update` verifies a downloaded release archive against the `.sha256`
 # sidecar `release.yml` publishes beside it, BEFORE unpacking anything. That
 # checksum is the trust anchor of the whole self-update path, so the digest is

@@ -139,6 +139,7 @@ fn schema_contracts() -> Value {
         { "invocation": "phux agent log --follow --json", "schema_version": null, "kind": "ndjson", "note": "AgentEventsJsonlV1 records; the record shape is the compatibility contract" },
         { "invocation": "phux config agents --json", "schema_version": 2, "kind": "document" },
         { "invocation": "phux config check|plugins --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux config import-tmux --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux plugin --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux project inspect --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux archive export|import", "schema_version": 2, "kind": "document", "note": "the archive file export writes and import reads" },
