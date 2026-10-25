@@ -63,10 +63,8 @@ foreach ($argument in $args) {
 }
 $wslArguments = Get-PhuxWslArguments $distribution $script
 $savedEncoding = [Console]::OutputEncoding
-$savedInputEncoding = [Console]::InputEncoding
 try {
     $utf8 = [Text.UTF8Encoding]::new($false)
-    [Console]::InputEncoding = $utf8
     [Console]::OutputEncoding = $utf8
     $OutputEncoding = $utf8
     if ($MyInvocation.ExpectingInput) {
@@ -83,7 +81,6 @@ try {
     }
     $code = $LASTEXITCODE
 } finally {
-    [Console]::InputEncoding = $savedInputEncoding
     [Console]::OutputEncoding = $savedEncoding
 }
 exit $code
