@@ -11,6 +11,39 @@ fn dwell(cx: &mut VisualTestContext) {
     draw(cx);
 }
 
+#[gpui::test]
+fn live_previews_suppress_open_and_pending_tab_context_in_every_position(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1000.), px(600.)));
+    desk.update(cx, selectable_work);
+    draw(cx);
+    for position in ["tabs-top", "tabs-bottom", "tabs-side"] {
+        run(&desk, position, cx);
+        let tab = cx.debug_bounds("tab-fixture-c").unwrap();
+        cx.simulate_mouse_move(tab.center(), None, Modifiers::none());
+        dwell(cx);
+        assert!(cx.debug_bounds("tab-context").is_some());
+        cx.simulate_click(tab.center(), Modifiers::none());
+        dwell(cx);
+        assert!(cx.debug_bounds("tab-peek").is_some());
+        assert!(cx.debug_bounds("tab-context").is_none());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.simulate_mouse_move(point(px(500.), px(300.)), None, Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_move(tab.center(), None, Modifiers::none());
+        // Open the shelf before the tooltip delay elapses.
+        cx.simulate_click(tab.center(), Modifiers::none());
+        dwell(cx);
+        assert!(cx.debug_bounds("tab-context").is_none());
+        assert!(cx.debug_bounds("tab-peek").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+    }
+}
+
 // The shared resize helper re-reads the platform mouse position (0,0 in
 // TestPlatform), so it would erase the simulated hover before tooltip prepaint.
 fn draw(cx: &mut VisualTestContext) {

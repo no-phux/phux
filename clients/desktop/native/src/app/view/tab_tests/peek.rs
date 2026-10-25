@@ -10,6 +10,117 @@ fn setup(desk: &Entity<Desk>, cx: &mut VisualTestContext) {
     draw(cx);
 }
 
+fn assert_top_alignment(desk: &Entity<Desk>, cx: &mut VisualTestContext) {
+    for id in ids(desk, cx) {
+        let tab_selector = Box::leak(format!("tab-{id}").into_boxed_str());
+        let preview_selector = Box::leak(format!("tab-peek-{id}").into_boxed_str());
+        let tab = cx.debug_bounds(tab_selector).unwrap();
+        let preview = cx.debug_bounds(preview_selector).unwrap();
+        assert_eq!(preview.left(), tab.left(), "{id}: leading edge");
+        assert_eq!(preview.right(), tab.right(), "{id}: trailing edge");
+    }
+}
+
+#[gpui::test]
+fn top_previews_follow_tab_edges_across_sizes_skins_and_sidebar_changes(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    setup(&desk, cx);
+    desk.update(cx, |desk, cx| {
+        desk.link.as_mut().unwrap().workspace.tabs = tabs(6);
+        cx.notify();
+    });
+    run(&desk, "tab-peek", cx);
+    for skin in ["glass", "classic", "terminal"] {
+        for sidebar in [false, true] {
+            desk.update(cx, |desk, cx| {
+                desk.update_prefs(
+                    |prefs| {
+                        prefs.skin_id = skin.into();
+                        prefs.sidebar_visible = sidebar;
+                    },
+                    cx,
+                );
+            });
+            for width in [800., 1280., 2000.] {
+                cx.simulate_resize(gpui::size(px(width), px(600.)));
+                draw(cx);
+                assert_top_alignment(&desk, cx);
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn top_previews_and_tabs_share_wheel_and_keyboard_scrolling(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(800.), px(600.)));
+    setup(&desk, cx);
+    desk.update(cx, |desk, cx| {
+        desk.link.as_mut().unwrap().workspace.tabs = tabs(12);
+        cx.notify();
+    });
+    run(&desk, "tab-peek", cx);
+    let before = cx.debug_bounds("tab-fixture-a").unwrap();
+    let preview = cx.debug_bounds("tab-peek-scroll").unwrap();
+    let strip = cx.debug_bounds("top-tabs").unwrap();
+    for position in [point(strip.center().x, preview.center().y), strip.center()] {
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(point(px(-220.), px(0.))),
+            ..Default::default()
+        });
+        draw(cx);
+        assert_top_alignment(&desk, cx);
+    }
+    assert!(cx.debug_bounds("tab-fixture-a").unwrap().left() < before.left());
+    for _ in 0..11 {
+        cx.simulate_keystrokes("right");
+        draw(cx);
+        assert_top_alignment(&desk, cx);
+    }
+    let selected = cx.debug_bounds("tab-peek-fixture-l").unwrap();
+    assert!(strip.left() <= selected.left() && selected.right() <= strip.right());
+    // The visible card retains its hit target after following a scrolled tab.
+    cx.simulate_click(selected.center(), Modifiers::none());
+    draw(cx);
+    desk.read_with(cx, |desk, _| {
+        assert!(!desk.tab_peek.open);
+        assert_eq!(desk.active_tab_id().as_deref(), Some("fixture-l"));
+    });
+}
+
+#[gpui::test]
+fn constrained_overview_keeps_last_preview_reachable_and_has_a_close_control(
+    cx: &mut TestAppContext,
+) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1000.), px(600.)));
+    setup(&desk, cx);
+    desk.update(cx, |desk, cx| {
+        desk.changes.open = true;
+        desk.link.as_mut().unwrap().workspace.tabs = tabs(6);
+        cx.notify();
+    });
+    run(&desk, "tab-peek", cx);
+    for _ in 0..5 {
+        cx.simulate_keystrokes("right");
+        draw(cx);
+    }
+    let shelf = cx.debug_bounds("tab-peek-scroll").unwrap();
+    assert!(shelf.contains(&cx.debug_bounds("tab-peek-fixture-f").unwrap().center()));
+    // Closing through the visible control is equivalent to Escape.
+    let close = cx.debug_bounds("close-tab-peek").unwrap();
+    cx.simulate_click(close.center(), Modifiers::none());
+    draw(cx);
+    assert!(cx.debug_bounds("tab-peek").is_none());
+}
+
 #[gpui::test]
 fn peeking_translates_without_resizing_in_every_tab_position(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();

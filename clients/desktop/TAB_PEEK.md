@@ -35,8 +35,13 @@ large splits show a compact list and a “+N more” count.
 Click the **selected tab** to peek at all open tabs as live native terminal
 miniatures, including their split layouts and attention marks. Click a preview
 to open that tab, or use **Peek Tabs** in the command palette (⇧⌘\\).
+With top tabs, each preview sits directly under its tab at the same width;
+scrolling either row moves both together. Side and bottom tabs, and a workspace
+narrowed by Changes, use a separately scrollable overview. The selected preview
+has an accent edge and a checkmark; tab hover cards stay hidden while peeking.
 Left/Right browse; Enter opens; Escape or a click on the displaced work closes
-the peek. Selecting an inactive tab still switches directly, and dragging,
+the peek, as does the close button beside the keyboard hints below the previews.
+Selecting an inactive tab still switches directly, and dragging,
 modifier-selection and double-click rename keep their usual behavior.
 
 Split tabs show a layered mosaic of their pane layout. The focused pane remains

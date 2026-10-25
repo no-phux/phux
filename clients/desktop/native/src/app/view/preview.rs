@@ -196,6 +196,11 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
         for theme in ["midnight", "latte"] {
             for (name, command, width, sidebar) in [
                 ("top", "tabs-top", 1280., true),
+                ("top-peek", "tabs-top", 1280., true),
+                ("top-peek-wide", "tabs-top", 2000., true),
+                ("top-peek-narrow", "tabs-top", 760., false),
+                ("bottom-peek", "tabs-bottom", 1280., true),
+                ("side-peek", "tabs-side", 1280., true),
                 ("side", "tabs-side", 1280., true),
                 ("side-collapsed", "tabs-side", 1280., false),
                 ("bottom", "tabs-bottom", 1280., true),
@@ -229,6 +234,7 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                             arrange_navigation(desk, cx);
                         }
                         desk.close_menu(cx);
+                        desk.tab_peek.close();
                         desk.modal = crate::app::Modal::None;
                         desk.changes.open = false;
                         crate::app::conversation::preview::scene(desk, name);
@@ -248,6 +254,9 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                         // Placement commands can reveal navigation themselves.
                         // Apply the scenario's collapse choice after dispatch.
                         desk.update_prefs(|prefs| prefs.sidebar_visible = sidebar, cx);
+                        if name.contains("peek") {
+                            desk.execute("tab-peek", window, cx);
+                        }
                         desk.chrome_hover = None;
                         desk.controls_hover = None;
                     });

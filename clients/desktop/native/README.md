@@ -201,7 +201,7 @@ env -i PATH=/usr/bin:/bin TMPDIR="${TMPDIR:-/tmp}" HOME="$tmp" \
 ```
 
 The embedded runtime supplies synthetic terminal output. Captures cover top,
-bottom and side tabs, a collapsed sidebar, narrow layouts, menus, Work,
+bottom and side tabs, live tab previews, a collapsed sidebar, narrow layouts, menus, Work,
 Actions, notifications, Changes, capture and the actual agent conversation
 (ready, working, permission, disconnected and narrow) in dark and light appearances.
 The `navigation` and `navigation-narrow` scenes include a split mosaic and an
