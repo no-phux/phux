@@ -4,6 +4,8 @@
 //! the test re-runs itself with a disposable config directory and dev
 //! socket path, and without an inherited `PHUX_DEV`.
 
+#![cfg(unix)]
+
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;

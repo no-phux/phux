@@ -150,6 +150,7 @@ fn run_phux(phux: &Path, socket: Option<&Path>, args: &[&str]) -> anyhow::Result
 }
 
 fn ensure_server(phux: &Path, socket: Option<&Path>) -> anyhow::Result<PathBuf> {
+    crate::platform::validate_coordinator().map_err(anyhow::Error::msg)?;
     run_phux(phux, socket, &["server", "--ensure"])?;
     if let Some(socket) = socket {
         return Ok(socket.to_owned());

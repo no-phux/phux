@@ -83,6 +83,30 @@ pub(crate) fn phux_command(phux: &Path) -> Command {
     Command::new(phux)
 }
 
+pub(crate) fn validate_coordinator() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let output = wsl_command()
+            .args(["--exec", "id", "-u"])
+            .output()
+            .map_err(|error| {
+                format!(
+                    "Could not start WSL: {error}. Install WSL 2 and initialize a Linux user first."
+                )
+            })?;
+        if !output.status.success() {
+            return Err("Could not start the selected WSL distribution. Run wsl --update, initialize its non-root Linux user, then install phux inside it.".into());
+        }
+        let uid = std::str::from_utf8(&output.stdout)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok());
+        if !uid.is_some_and(|uid| uid != 0) {
+            return Err("Phux Desktop needs a non-root default WSL user. Initialize Ubuntu and select that user before opening the app.".into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 pub(crate) fn wsl_command() -> Command {
     use std::os::windows::process::CommandExt as _;

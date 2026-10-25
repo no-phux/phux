@@ -109,6 +109,7 @@ pub fn start_server(phux: &Path, socket: &Path) -> Result<(), String> {
 }
 
 fn restart(phux: &Path, socket: &Path) -> Result<(), String> {
+    crate::platform::validate_coordinator()?;
     run(phux, socket_args(socket, &["server", "--ensure"]))?;
     let listening = server_socket(phux, socket)?;
     if listening != socket {
