@@ -1,3 +1,4 @@
+import { desktopBrand } from "./brand.ts";
 /**
  * Build `Phux.app`: the release GPUI executable, embedded-font license and
  * font files, the repository LICENSE and NOTICE with a third-party notice
@@ -100,6 +101,7 @@ export function infoPlist(
   <key>CFBundleDisplayName</key><string>Phux</string>
   <key>CFBundleExecutable</key><string>phux-desktop</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>PhuxBrandProfile</key><string>${desktopBrand().id}</string>
   <key>CFBundleIdentifier</key><string>dev.phux.desktop</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Phux</string>
@@ -143,7 +145,7 @@ function renderIcon(output: string): void {
   const iconset = join(work, "AppIcon.iconset");
   mkdirSync(iconset, { recursive: true });
   // Use canonical pixels: Quick Look adds a white background or document frame.
-  const master = resolve(root, "packaging/AppIcon.png");
+  const master = desktopBrand().iconPng;
   for (const size of [16, 32, 128, 256, 512]) {
     run([
       "sips",

@@ -1,3 +1,4 @@
+import { desktopBrand } from "../../scripts/brand.ts";
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,6 +39,7 @@ test("portable bundle includes installed-version metadata, desktop integration a
     const read = (path: string) => readFileSync(join(bundle, path), "utf8");
     expect(JSON.parse(read("share/phux-desktop/release.json"))).toEqual({
       identifier: "dev.phux.desktop",
+      brandProfile: desktopBrand().id,
       version: "1.2.3",
       sha: "a".repeat(40),
       channel: "stable",

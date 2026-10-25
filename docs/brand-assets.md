@@ -21,6 +21,19 @@ in phux-brand, inspect its preview, and publish a new approved version.
 Consumer CI rejects edits that drift from the pin. Product code continues
 to own behavior, animation, and platform resource packaging.
 
+## Selecting the identity
+
+The private library's `profiles.json.selected` is the single selection for
+Flat Fox, Silver Fox or Classic Prompt. Run `just profile <id>` there to
+render the chosen profile for every platform, then review and publish its kit.
+Flat Fox is the default. `identity/profile.json` travels with the assets and
+is installed as `clients/desktop/packaging/brand-profile.json` here.
+
+Desktop packaging uses `desktopBrand()` for the selected profile and its
+PNG/SVG paths. Mobile drawing and launch silhouettes use their native brand
+interface over the same generated geometry and finish. Clients keep stable
+asset paths and do not hard-code individual profile names.
+
 ## Publishing and updates
 
 phux-brand checks the catalog's explicit public approval, generated mobile
