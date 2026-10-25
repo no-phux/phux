@@ -1,6 +1,5 @@
 //! Executing-host context, submit-once requests, and correlated setup receipts.
 use super::*;
-use std::path::Path;
 use std::time::Duration;
 
 impl Flight {
@@ -27,7 +26,7 @@ pub(super) fn destination(
     let key = session
         .key
         .ok_or("Waiting for this session's persistent identity. Refresh after connecting.")?;
-    let cwd = pane.cwd.as_deref().filter(|cwd| Path::new(cwd).is_absolute())
+    let cwd = pane.cwd.as_deref().filter(|cwd| crate::platform::coordinator_absolute(cwd))
         .ok_or("The focused terminal has no known absolute folder. Open a terminal in the intended checkout first.")?;
     Ok(Destination {
         session: key,

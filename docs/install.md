@@ -16,8 +16,10 @@ Release builds exist for three platforms:
 | Linux | x86_64                      | glibc; there is no musl build |
 | Linux | arm64                       | glibc; there is no musl build |
 
-Windows uses these Linux builds through [WSL](#windows-wsl), including from
-PowerShell. There is no native Windows or Intel Mac build.
+Windows uses these Linux CLI/server builds through [WSL](#windows-wsl),
+including from PowerShell. The [Windows desktop](../clients/desktop/README.md#windows)
+is native, with its coordinator in WSL. There is no native Windows coordinator
+or Intel Mac build.
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
 
@@ -48,7 +50,8 @@ for the operating system's permission boundaries.
 Use Windows Terminal and WSL 2 with Ubuntu 22.04 or newer (x64 or arm64).
 The server, panes, configuration, credentials, and agent integrations live
 **inside that Linux distribution**, not in Windows. PowerShell can launch
-and control them; this is not a native Windows terminal or desktop port.
+and control them. The terminal UI runs in WSL; the native Windows desktop
+connects to the same coordinator.
 
 If you do not have WSL, run this in an administrator PowerShell, restart if
 Windows requests it, then open Ubuntu once and create your Linux user:
@@ -126,9 +129,8 @@ Re-running the installer updates the launchers and Linux programs. To
 remove the Windows entrypoints, delete only `phux.ps1` and `phux-mcp.ps1`
 from the chosen install directory and remove that directory from your user
 `PATH`. To remove the Linux programs and state, follow [Uninstall](#uninstall)
-inside WSL. Neither step removes your distribution. WSLg users can try the
-[Linux desktop app](#desktop-app) inside WSL; there is no Windows desktop
-installer.
+inside WSL. Neither step removes your distribution. For a native window,
+see [Windows Desktop](../clients/desktop/README.md#windows); WSLg is not required.
 
 ## Install script
 

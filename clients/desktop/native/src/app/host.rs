@@ -2,9 +2,9 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const MISSING_CLI: &str =
     "Install the phux CLI from https://phux.sh/install so the desktop can change sessions.";
@@ -21,6 +21,7 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
     if phux.as_os_str().is_empty() {
         return Err(MISSING_CLI.into());
     }
+    let path = crate::platform::coordinator_path(path)?;
     let path = path
         .to_str()
         .ok_or_else(|| "The selected folder has a non-UTF-8 path.".to_owned())?;
@@ -32,7 +33,11 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
         ),
     )
     .map_err(project_error)?;
-    let result: serde_json::Value = serde_json::from_slice(&output)
+    parse_opened_project(&output)
+}
+
+fn parse_opened_project(output: &[u8]) -> Result<OpenedProject, String> {
+    let result: serde_json::Value = serde_json::from_slice(output)
         .map_err(|_| "Project open returned an invalid response.".to_owned())?;
     let session = result
         .get("session")
@@ -47,7 +52,7 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
     let root = result
         .get("path")
         .and_then(serde_json::Value::as_str)
-        .filter(|path| Path::new(path).is_absolute())
+        .filter(|path| crate::platform::coordinator_absolute(path))
         .ok_or_else(|| "Project open returned no checkout path.".to_owned())?;
     Ok(OpenedProject {
         session: session.to_owned(),
@@ -217,19 +222,25 @@ pub fn remove_host(phux: &Path, name: &str) -> Result<(), String> {
 
 /// A fresh private file under the temporary directory. The path is never reused.
 pub fn write_temp_file(name: &str, text: &str) -> Result<PathBuf, String> {
-    let base = std::env::temp_dir().join(format!("phux-{}", std::process::id()));
+    // Windows' per-user LocalAppData inherits the user's ACL, unlike a shared
+    // temporary directory configured by a service or system account.
+    let temporary = if cfg!(windows) {
+        crate::platform::state_dir().join("exports")
+    } else {
+        std::env::temp_dir()
+    };
+    let base = temporary.join(format!("phux-{}", std::process::id()));
     fs::create_dir_all(&base).map_err(|error| error.to_string())?;
     let dir = unique_dir(&base)?;
     let file_name = Path::new(name)
         .file_name()
         .unwrap_or(std::ffi::OsStr::new("export.txt"));
     let path = dir.join(file_name);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|error| error.to_string())?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&path).map_err(|error| error.to_string())?;
     file.write_all(text.as_bytes())
         .map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
@@ -272,7 +283,7 @@ fn run_output(phux: &Path, args: Vec<String>) -> Result<Vec<u8>, String> {
     if phux.as_os_str().is_empty() {
         return Err(MISSING_CLI.into());
     }
-    let output = Command::new(phux)
+    let output = crate::platform::phux_command(phux)
         .args(&args)
         .stdin(std::process::Stdio::null())
         .output()
@@ -295,7 +306,7 @@ fn run_output(phux: &Path, args: Vec<String>) -> Result<Vec<u8>, String> {
 }
 
 fn server_socket(phux: &Path, socket: &Path) -> Result<PathBuf, String> {
-    let output = Command::new(phux)
+    let output = crate::platform::phux_command(phux)
         .args(socket_args(socket, &["status", "--json"]))
         .output()
         .map_err(|error| error.to_string())?;
@@ -311,7 +322,20 @@ fn server_socket(phux: &Path, socket: &Path) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RemoteHost, parse_hosts, project_error};
+    use super::{RemoteHost, parse_hosts, parse_opened_project, project_error};
+
+    #[test]
+    fn project_response_uses_coordinator_paths() {
+        let opened =
+            parse_opened_project(br#"{"session":"work","terminal_id":7,"path":"/home/user/work"}"#)
+                .unwrap();
+        assert_eq!(opened.path.to_string_lossy(), "/home/user/work");
+        assert!(
+            parse_opened_project(br#"{"session":"work","terminal_id":7,"path":"relative"}"#)
+                .is_err()
+        );
+        assert!(parse_opened_project(br#"{"session":"work","path":"/home/user/work"}"#).is_err());
+    }
 
     #[test]
     fn project_refusal_shows_remedy_without_json() {

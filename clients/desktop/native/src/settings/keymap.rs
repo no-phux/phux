@@ -115,7 +115,7 @@ pub fn default_chords() -> Vec<(String, String)> {
     let mut chords = Vec::new();
     // Keep Super bindings available, but put terminal-native Linux shortcuts
     // first so menus show them. Plain Ctrl-C/Z/D stay with the terminal.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     chords.extend(
         [
             ("ctrl+shift+p", "palette"),
@@ -125,6 +125,19 @@ pub fn default_chords() -> Vec<(String, String)> {
             ("ctrl+shift+f", "find"),
             ("ctrl+shift+c", "copy"),
             ("ctrl+shift+v", "paste"),
+        ]
+        .map(|(chord, id)| (chord.to_owned(), id.to_owned())),
+    );
+    #[cfg(windows)]
+    chords.extend(
+        [
+            ("ctrl+shift+r", "reconnect"),
+            ("ctrl+shift+d", "split-right"),
+            ("ctrl+alt+d", "split-down"),
+            ("ctrl+shift+o", "folder"),
+            ("ctrl+shift+,", "settings"),
+            ("ctrl+shift+pageup", "tab-prev"),
+            ("ctrl+shift+pagedown", "tab-next"),
         ]
         .map(|(chord, id)| (chord.to_owned(), id.to_owned())),
     );
@@ -412,12 +425,12 @@ pub fn plain_key(key: &str) -> String {
 /// Platform modifier labels, followed by the key.
 #[must_use]
 pub fn display_chord(chord: &str) -> String {
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     {
         chord
             .split('+')
             .map(|part| match part {
-                "cmd" => "Super".to_owned(),
+                "cmd" => if cfg!(windows) { "Win" } else { "Super" }.to_owned(),
                 "ctrl" => "Ctrl".to_owned(),
                 "alt" => "Alt".to_owned(),
                 "shift" => "Shift".to_owned(),
@@ -426,11 +439,11 @@ pub fn display_chord(chord: &str) -> String {
             .collect::<Vec<_>>()
             .join("+")
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     display_apple_chord(chord)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn display_apple_chord(chord: &str) -> String {
     let parts: Vec<&str> = chord.split('+').collect();
     let key = parts.last().copied().unwrap_or("");
@@ -448,7 +461,7 @@ fn display_apple_chord(chord: &str) -> String {
     shown
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn glyph(name: &str) -> &str {
     match name {
         "cmd" => "⌘",

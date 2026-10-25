@@ -95,6 +95,7 @@ fn session_confirmation_refuses_a_replaced_identity(cx: &mut TestAppContext) {
     std::fs::remove_dir_all(path).unwrap();
 }
 
+#[cfg(unix)]
 #[gpui::test]
 fn inactive_empty_session_can_be_killed_from_its_three_dot_menu(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();

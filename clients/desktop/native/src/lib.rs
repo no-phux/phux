@@ -31,6 +31,7 @@ pub mod diag;
 pub mod git;
 pub mod hotkeys;
 pub mod launch;
+mod platform;
 pub mod settings;
 pub mod telemetry;
 mod updates;

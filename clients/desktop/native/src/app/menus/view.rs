@@ -80,7 +80,9 @@ fn host_filter_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
     }];
     items.extend(hosts.into_iter().map(|host| {
         let shown = desk.prefs.sidebar_shows_host(host.as_deref());
-        let name = host.clone().unwrap_or_else(|| "This Mac".into());
+        let name = host
+            .clone()
+            .unwrap_or_else(|| crate::platform::local_machine_label().into());
         let label = super::machine_name::label(host.as_deref());
         let handle = handle.clone();
         MenuItem::action(label, move |_, cx| {

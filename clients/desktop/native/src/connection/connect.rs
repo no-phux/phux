@@ -15,7 +15,7 @@ impl Connection {
         if socket.as_os_str().is_empty() {
             anyhow::bail!("InvalidConnectOptions");
         }
-        Self::connect_target(Target::uds(socket), session, key)
+        Self::connect_target(crate::platform::local_target(socket), session, key)
     }
 
     /// Attach `session` on a host from the remote registry.
@@ -68,7 +68,7 @@ impl Connection {
     pub(crate) fn browse(socket: &std::path::Path, remote: Option<&str>) -> anyhow::Result<Self> {
         let target = match remote {
             Some(host) => remote_target(host)?,
-            None => Target::uds(socket.to_path_buf()),
+            None => crate::platform::local_target(socket.to_path_buf()),
         };
         let client = open_client(
             target,

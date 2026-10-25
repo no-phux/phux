@@ -8,7 +8,7 @@
 //! session; it never creates one ([`crate::connection::home`]).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use anyhow::{Context as _, bail};
 use phux_protocol::ResourceId;
@@ -98,6 +98,17 @@ fn find_phux(explicit: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(path) = explicit.or_else(|| std::env::var_os("PHUX_BIN").map(PathBuf::from)) {
         return Some(path);
     }
+    find_installed_phux()
+}
+
+#[cfg(windows)]
+fn find_installed_phux() -> Option<PathBuf> {
+    // Resolution occurs in WSL's login environment, not Windows PATH.
+    Some(PathBuf::from("phux"))
+}
+
+#[cfg(not(windows))]
+fn find_installed_phux() -> Option<PathBuf> {
     // Where installs land; a Finder-launched app has launchd's minimal `PATH`.
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -113,14 +124,17 @@ fn find_phux(explicit: Option<PathBuf>) -> Option<PathBuf> {
     {
         return Some(found);
     }
-    let which = Command::new("/usr/bin/which").arg("phux").output().ok()?;
+    let which = std::process::Command::new("/usr/bin/which")
+        .arg("phux")
+        .output()
+        .ok()?;
     let path = String::from_utf8(which.stdout).ok()?.trim().to_owned();
     (which.status.success() && !path.is_empty()).then(|| PathBuf::from(path))
 }
 
 /// `phux [--socket SOCKET] ARGS`'s stdout, or its stderr as the error.
 fn run_phux(phux: &Path, socket: Option<&Path>, args: &[&str]) -> anyhow::Result<Vec<u8>> {
-    let mut command = Command::new(phux);
+    let mut command = crate::platform::phux_command(phux);
     if let Some(socket) = socket {
         command.arg("--socket").arg(socket);
     }
@@ -164,10 +178,22 @@ fn resolve(options: &Options) -> Resolved {
 
 /// [`resolve`] with the CLI already found, or `None` when none is installed.
 fn resolve_with(options: &Options, phux: Option<PathBuf>) -> Resolved {
+    if let Some(phux) = phux.as_deref() {
+        crate::platform::configure_cli(phux);
+    }
     let explicit_socket = options
         .socket
         .clone()
         .or_else(|| std::env::var_os("PHUX_SOCKET").map(PathBuf::from));
+    #[cfg(windows)]
+    if phux_config_core::instance::is_dev_build() && explicit_socket.is_none() {
+        return Resolved {
+            socket: PathBuf::new(),
+            session: options.session.clone().unwrap_or_default(),
+            phux: phux.unwrap_or_default(),
+            error: Some("A development Windows build needs --socket pointing to an isolated WSL server. It will not start or connect to the installed server by default.".into()),
+        };
+    }
     let requested = options.session.clone().or_else(|| {
         std::env::var("PHUX_SESSION")
             .ok()
@@ -218,6 +244,9 @@ pub fn main() -> ExitCode {
     };
     diag::init_logging();
     let resolved = resolve(&options);
+    if resolved.error.is_none() {
+        crate::platform::prepare_coordinator_home();
+    }
     log::info!(
         "launch socket={} session={} phux={} error={:?}",
         resolved.socket.display(),
