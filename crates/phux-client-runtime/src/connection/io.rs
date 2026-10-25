@@ -44,7 +44,10 @@ const SEND_STALL_CHUNK: usize = 16 * 1024;
 /// The application-close reason a client's QUIC teardown sends.
 const CLOSE_REASON: &[u8] = b"session closed";
 
+mod child;
 mod read;
+
+use child::ChildLink;
 
 use read::{
     read_stream_frames, read_ws_frames, refused_or, try_read_stream_frames, try_read_ws_frame,
@@ -120,6 +123,8 @@ pub(crate) enum Io {
         quic: Option<QuicLink>,
         /// The server's pid from Unix-socket peer credentials.
         peer_pid: Option<i32>,
+        /// Own the stdio bridge and its stderr drainer for this link's life.
+        child: Option<ChildLink>,
     },
     Ws {
         reader: WsReader,
@@ -150,6 +155,7 @@ impl Io {
 
     /// A lane over a connected Unix socket, its peer pid captured first
     /// (credentials are only readable before the split).
+    #[cfg(unix)]
     pub(crate) fn from_unix_stream(stream: tokio::net::UnixStream) -> Self {
         let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid());
         let (reader, writer) = stream.into_split();
@@ -164,7 +170,7 @@ impl Io {
         stream: phux_dial::quic::DialedStream,
     ) -> Self {
         let terminal_streams = matches!(stream, phux_dial::quic::DialedStream::Plain { .. });
-        let (reader, writer) = crate::tunnel::host_halves(stream);
+        let (reader, writer) = host_halves(stream);
         let link = QuicLink {
             endpoint,
             connection,
@@ -185,7 +191,19 @@ impl Io {
             pending: BytesMut::with_capacity(64 * 1024),
             quic,
             peer_pid,
+            child: None,
         }
+    }
+
+    /// Adopt a spawned stdio bridge. Missing pipes are a failed dial.
+    #[cfg(any(windows, test))]
+    pub(crate) fn child(command: &mut tokio::process::Command) -> std::io::Result<Self> {
+        let (child, reader, writer) = ChildLink::spawn(command)?;
+        let mut link = Self::framed(Box::new(reader), Box::new(writer), None, None);
+        if let Self::Stream { child: owner, .. } = &mut link {
+            *owner = Some(child);
+        }
+        Ok(link)
     }
 
     /// A WebSocket lane over an upgraded connection.
@@ -233,8 +251,15 @@ impl Io {
                 reader,
                 pending,
                 quic,
+                child,
                 ..
-            } => read_stream_frames(reader, pending, quic.as_ref()).await,
+            } => {
+                let frames = read_stream_frames(reader, pending, quic.as_ref()).await?;
+                match (frames, child) {
+                    (None, Some(child)) => Err(LinkError::Read(child.closed().await)),
+                    (frames, _) => Ok(frames),
+                }
+            }
             Self::Ws {
                 reader,
                 writer,
@@ -358,6 +383,22 @@ impl Io {
         {
             link.close();
             link.endpoint.wait_idle().await;
+        }
+    }
+}
+
+/// The plain QUIC halves, or the end-to-end TLS session inside the stream.
+pub(crate) fn host_halves(
+    stream: phux_dial::quic::DialedStream,
+) -> (
+    Box<dyn AsyncRead + Send + Sync + Unpin>,
+    Box<dyn AsyncWrite + Send + Sync + Unpin>,
+) {
+    match stream {
+        phux_dial::quic::DialedStream::Plain { send, recv } => (Box::new(recv), Box::new(send)),
+        phux_dial::quic::DialedStream::Inner(stream) => {
+            let (recv, send) = tokio::io::split(*stream);
+            (Box::new(recv), Box::new(send))
         }
     }
 }
