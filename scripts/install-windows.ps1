@@ -43,9 +43,8 @@ function Get-PhuxWslArguments([string] $Distro, [string] $Script) {
         ('IFS=;set -f;eval $(printf %s ' + $encoded + '|base64 -d)'))
 }
 
-function Get-PhuxCommandIndex([string[]] $Arguments) {
+function Get-PhuxCommandIndex([string[]] $Arguments, [int] $Index = 0) {
     $valueFlags = @('--socket', '--rec', '--rec-format', '--remote')
-    $index = 0
     while ($index -lt $Arguments.Count) {
         if ($Arguments[$index] -match '^--(socket|rec|rec-format|remote)=') { $index++; continue }
         if ($valueFlags -contains $Arguments[$index]) { $index += 2; continue }
@@ -56,6 +55,9 @@ function Get-PhuxCommandIndex([string[]] $Arguments) {
 
 function Test-PhuxTui([string] $Tool, [string[]] $Arguments) {
     if ($Tool -ne 'phux') { return $false }
+    if (-not $Arguments.Count) { return $true }
+    $separator = [Array]::IndexOf($Arguments, '--')
+    if ($separator -ge 0) { $Arguments = @($Arguments | Select-Object -First $separator) }
     $headlessFlags = @('--json', '--help', '-h', '--version', '-V', '--skill', '--capabilities')
     foreach ($argument in $Arguments) {
         if ($headlessFlags -contains $argument) { return $false }
@@ -65,7 +67,10 @@ function Test-PhuxTui([string] $Tool, [string[]] $Arguments) {
     $verb = $Arguments[$index]
     if (@('attach', 'a', 'new') -contains $verb) { return $true }
     $subcommands = @{ project = 'open'; p = 'open'; host = 'attach'; machine = 'attach' }
-    if ($subcommands.ContainsKey($verb)) { return $Arguments[$index + 1] -eq $subcommands[$verb] }
+    if ($subcommands.ContainsKey($verb)) {
+        $nested = Get-PhuxCommandIndex $Arguments ($index + 1)
+        return $Arguments[$nested] -eq $subcommands[$verb]
+    }
     return $verb -eq 'worktree' -and $Arguments -contains '--attach'
 }
 
