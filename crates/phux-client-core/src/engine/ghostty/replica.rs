@@ -124,6 +124,25 @@ impl GhosttyReplica {
         }
     }
 
+    /// Update local pixel metrics without changing authoritative grid geometry.
+    pub fn set_cell_pixels(&mut self, width: u16, height: u16) -> Result<(), GhosttyEngineError> {
+        let terminal = match &mut self.state {
+            ReplicaState::Synthesized { terminal, .. } => terminal,
+            ReplicaState::Native(native) => match &mut native.decoder {
+                NativeDecoderState::Finished(terminal) => terminal,
+                NativeDecoderState::Ready(decoder) => decoder.terminal_mut(),
+                _ => return Err(GhosttyEngineError::LiveOutputBeforeReady),
+            },
+        };
+        terminal.resize(
+            terminal.cols()?,
+            terminal.rows()?,
+            u32::from(width.max(1)),
+            u32::from(height.max(1)),
+        )?;
+        Ok(())
+    }
+
     /// Apply a client-local viewport scroll without exposing mutable terminal ownership.
     pub fn scroll_viewport(&mut self, scroll: ScrollViewport) -> Result<(), GhosttyEngineError> {
         match &mut self.state {

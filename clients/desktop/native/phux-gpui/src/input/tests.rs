@@ -85,6 +85,7 @@ fn grid(terminal: phux_protocol::ResourceId, stream: u64, bootstrap: u64) -> sup
         scrollbar: Scrollbar::default(),
         colors: FrameColors::default(),
         damage: GridDamage::Full,
+        images: Vec::new(),
         buffer: GridBuffer::default(),
     }
 }

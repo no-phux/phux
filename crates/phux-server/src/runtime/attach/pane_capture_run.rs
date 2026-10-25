@@ -91,6 +91,7 @@ impl PaneCaptureContext<'_> {
             .snapshot
             .send(SnapshotRequest {
                 scrollback: self.scrollback,
+                image_protocols: self.client_caps.image_protocols,
                 max_bytes,
                 max_frames,
                 chunk_bytes: self.chunk_bytes,

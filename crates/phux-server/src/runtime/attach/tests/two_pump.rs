@@ -33,6 +33,9 @@ pub(super) fn spawn_two_pump_consumer(
     resize: &ResizeSender,
 ) -> TwoPumpConsumer {
     let (out_tx, out_rx) = tokio::sync::mpsc::channel(mailbox);
+    // This fixture supplies text resyncs directly, without actor capture.
+    let mut client_caps = ClientCapabilities::default();
+    client_caps.image_protocols = phux_protocol::caps::ImageProtocolSet::new();
     let ctx = OutputPumpContext {
         out_tx,
         resize: resize.clone(),
@@ -40,7 +43,7 @@ pub(super) fn spawn_two_pump_consumer(
         stream_id: two_pump_stream(),
         initial_bootstrap_id: two_pump_initial_generation(),
         client_id: ClientId(client),
-        client_caps: ClientCapabilities::default(),
+        client_caps,
         profile: BootstrapStreamProfile::SynthesizedVtRaw,
         limits: BootstrapLimits::default(),
         lag_label: "two-pump test pump",

@@ -39,16 +39,49 @@ impl Prepared {
                 .min(bounds.bottom());
             Bounds::from_corners(bounds.origin, point(bounds.right(), bottom))
         };
+        let has_images = !scene.frame.images.is_empty();
+        let hosted = scene.settings.host_fills_background
+            && scene.settings.background == Some(scene.background);
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            if has_images {
+                window.paint_layer(bounds, |window| {
+                    if !hosted {
+                        window.paint_quad(fill(bounds, scene.background));
+                    }
+                });
+                window.with_content_mask(Some(ContentMask { bounds: grid }), |window| {
+                    if let Err(error) = images::paint(
+                        &scene,
+                        images::Layer::BelowBackground,
+                        shift,
+                        grid,
+                        window,
+                        cx,
+                    ) {
+                        self.report.error = Some(error);
+                    }
+                    window.paint_layer(bounds, |window| {
+                        for quad in scene.backgrounds.iter().filter(|quad| shown(quad.row)) {
+                            window.paint_quad(fill(moved(quad.bounds), quad.color));
+                        }
+                        images::mask_explicit_backgrounds(&scene, shift, window);
+                    });
+                    if let Err(error) =
+                        images::paint(&scene, images::Layer::BelowText, shift, grid, window, cx)
+                    {
+                        self.report.error = Some(error);
+                    }
+                });
+            }
             window.paint_layer(bounds, |window| {
-                let hosted = scene.settings.host_fills_background
-                    && scene.settings.background == Some(scene.background);
-                if !hosted {
+                if !has_images && !hosted {
                     window.paint_quad(fill(bounds, scene.background));
                 }
                 window.with_content_mask(Some(ContentMask { bounds: grid }), |window| {
-                    for quad in scene.backgrounds.iter().filter(|quad| shown(quad.row)) {
-                        window.paint_quad(fill(moved(quad.bounds), quad.color));
+                    if !has_images {
+                        for quad in scene.backgrounds.iter().filter(|quad| shown(quad.row)) {
+                            window.paint_quad(fill(moved(quad.bounds), quad.color));
+                        }
                     }
                     for (bounds, color) in &scene.cursor_blocks {
                         window.paint_quad(fill(moved(*bounds), *color));
@@ -92,6 +125,15 @@ impl Prepared {
                     }
                 });
             });
+            if has_images {
+                window.with_content_mask(Some(ContentMask { bounds: grid }), |window| {
+                    if let Err(error) =
+                        images::paint(&scene, images::Layer::AboveText, shift, grid, window, cx)
+                    {
+                        self.report.error = Some(error);
+                    }
+                });
+            }
         });
         self.report.shift = shift;
         self.report.geometry = scene.geometry;

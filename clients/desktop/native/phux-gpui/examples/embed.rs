@@ -111,6 +111,9 @@ fn main() {
             control: ControlOptions {
                 client_name: "phux-gpui-embed".to_owned(),
                 viewport: (0, 0),
+                image_protocols: phux_protocol::caps::ImageProtocolSet::with(&[
+                    phux_protocol::caps::ImageProtocol::KittyGraphics,
+                ]),
                 attach: Some(AttachTarget::ByName(session.clone())),
                 attach_role: Some(RolePolicy::PRIMARY),
                 ..ControlOptions::default()

@@ -27,6 +27,8 @@ phux-protocol = { path = "../../../../crates/phux-protocol" }
 gpui = { package = "gpui-fast", version = "=0.1.9", default-features = false }
 log = "0.4"
 unicode-segmentation = "1"
+# GPUI's RenderImage owns image::Frame; use the same already-resolved pixel type.
+image = { version = "0.25", default-features = false }
 
 [dev-dependencies]
 gpui = { package = "gpui-fast", version = "=0.1.9", default-features = false, features = ["test-support"] }

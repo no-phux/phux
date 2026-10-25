@@ -4,6 +4,9 @@
 
 ### Features
 
+- Render inline Kitty graphics in terminal panes and previews, including PNG,
+  RGB/RGBA, chunked transfers, Unicode placeholders, cropping, transparency and
+  z-order. Preserve resident images across attach and reconnect.
 - Make session ownership explicit with readable **Runs on …** host chips,
   restrained per-host glass tints, and an active session/host titlebar label
   that remains visible with the sidebar hidden.

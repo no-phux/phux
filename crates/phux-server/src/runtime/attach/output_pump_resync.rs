@@ -6,6 +6,10 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "tests_image_resync.rs"]
+mod tests;
+
 impl OutputPumpContext {
     /// Tombstone the live generation, publish its native replacement, and
     /// adopt the post-cut receiver the actor fenced it behind. `false` means
@@ -136,6 +140,7 @@ impl OutputPumpContext {
             snapshot
                 .send(SnapshotRequest {
                     scrollback: None,
+                    image_protocols: self.client_caps.image_protocols,
                     max_bytes: bootstrap_source_ceiling(
                         MAX_STAGED_BOOTSTRAP_BYTES,
                         self.client_caps,
@@ -250,6 +255,57 @@ impl OutputPumpContext {
                 Ok(false) => self.await_superseded_resync(generation).await,
                 Err(fault) => ControlFlow::Break(Some(fault)),
             };
+        }
+        // The shared resync carries text only. Capture images only for pumps
+        // that negotiated them, under the same bounded source budget.
+        if self
+            .client_caps
+            .image_protocols
+            .contains(phux_protocol::caps::ImageProtocol::KittyGraphics)
+        {
+            let Some(snapshot) = self.snapshot.as_ref() else {
+                return ControlFlow::Break(Some(PumpFault::PublicationNotActivated));
+            };
+            let (reply, receive) = oneshot::channel();
+            if snapshot
+                .send(SnapshotRequest {
+                    scrollback: Some(crate::resource::terminal::DEFAULT_REPLAY_SCROLLBACK_LINES),
+                    image_protocols: self.client_caps.image_protocols,
+                    max_bytes: bootstrap_source_ceiling(
+                        MAX_STAGED_BOOTSTRAP_BYTES,
+                        self.client_caps,
+                    )
+                    .min(32 * 1024 * 1024),
+                    max_frames: MAX_STAGED_BOOTSTRAP_FRAMES - 1,
+                    chunk_bytes: self.limits.max_chunk_bytes() as usize,
+                    reply,
+                })
+                .await
+                .is_err()
+            {
+                return ControlFlow::Break(Some(PumpFault::PaneGone));
+            }
+            let Ok(Ok((snapshot, base_seq))) = receive.await else {
+                return ControlFlow::Break(Some(PumpFault::PublicationNotActivated));
+            };
+            let bytes = if snapshot.scrollback.is_empty() {
+                snapshot.bytes
+            } else {
+                let mut bytes = snapshot.scrollback;
+                bytes.reserve_exact(snapshot.bytes.len());
+                bytes.extend_from_slice(&snapshot.bytes);
+                bytes
+            };
+            let captured = PaneResync {
+                cols: snapshot.cols,
+                rows: snapshot.rows,
+                bytes: bytes.into(),
+                base_seq,
+                reason: resync.reason,
+            };
+            return self
+                .republish_synthesized_generation(generation, &captured)
+                .await;
         }
         self.republish_synthesized_generation(generation, resync)
             .await

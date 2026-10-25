@@ -169,6 +169,7 @@ async fn service_rotation_cannot_be_monopolized_by_snapshot_requests() {
         facet
             .snapshot
             .try_send(SnapshotRequest {
+                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
                 scrollback: None,
                 max_bytes: usize::MAX,
                 max_frames: usize::MAX,
@@ -275,6 +276,7 @@ async fn service_rotation_keeps_snapshot_gated_during_native_capture() {
         .expect("terminal")
         .snapshot
         .try_send(SnapshotRequest {
+            image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
             scrollback: None,
             max_bytes: usize::MAX,
             max_frames: usize::MAX,
@@ -327,6 +329,7 @@ async fn service_rotation_services_due_state_tick_under_request_pressure() {
             .expect("terminal")
             .snapshot
             .try_send(SnapshotRequest {
+                image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
                 scrollback: None,
                 max_bytes: usize::MAX,
                 max_frames: usize::MAX,

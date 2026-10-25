@@ -35,6 +35,9 @@
     "patches/0010-path-source-over-alpha.patch": "405cb870623b8d40dc2dd7a7a736e73708b8ebc07e000b84e8937feae293e2dd",
     "patches/0011-native-fullscreen-presentation.patch": "71576f89b0c9aca7ca6c94ea1e2160e3aa77705ebec173ef2aa4b703b8ce1c1b",
     "patches/0012-rounded-glass-sheds-frame-shadow.patch": "7a52355e20b1857ee3e83a875abe94a004b50bc06e2f95eff0048806344dc4ec",
-    "patches/0013-arena-memory-retention.patch": "8e159ae7004eb957a5105838f537e1732c2669716cc83c281c0febd55d0810dd"
+    "patches/0013-arena-memory-retention.patch": "8e159ae7004eb957a5105838f537e1732c2669716cc83c281c0febd55d0810dd",
+    "patches/0014-image-source-sampling.patch": "c67b39b922a8784abcbf7265da1d8d39502460b4d0e353c2b20f11b0e08d737b",
+    "patches/0015-metal-image-source-sampling.patch": "2b0f0a53fdb15c4d58c87ac0185b792220890dc3c4642c511afe5ea3a7d5b34d",
+    "patches/0016-wgpu-image-source-sampling.patch": "b881e78c72d588061e9c6006d7d5d0172480a87fb6dbceb84fa368d8668f90d9"
   }
 }

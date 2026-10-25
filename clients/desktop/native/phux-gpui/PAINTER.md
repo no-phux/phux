@@ -128,8 +128,35 @@ over 170 ms. The beam is painted over the cached scene and never enters it,
 asks for animation frames only while it burns, and is off under macOS
 reduce motion.
 Hyperlink metadata stays in the retained `GridFrame`. Cross-cell ligatures,
-procedural box drawing, blink timers, and Kitty/sixel graphics (`GridFrame`
-carries no image data) are not provided.
+procedural box drawing and blink timers are not provided.
+
+## Kitty graphics
+
+`GridFrame.images` carries classic and Unicode-placeholder placements with
+immutable shared RGBA pixels, signed cell geometry, source rectangles and z-order.
+libghostty owns APC parsing, image storage, chunk assembly, placement and deletion;
+the runtime projects its state rather than parsing a second graphics protocol.
+PNG decoding uses the engine's bounded allocator. Inline RGB/RGBA and PNG are
+supported; external file, temporary-file and shared-memory media remain disabled.
+See [client compatibility limits](../../../../docs/clients.md#desktop).
+
+The painter retains a texture per immutable pixel allocation, converting RGBA
+to GPUI's straight-alpha BGRA once. Deletion, replacement and view release evict
+unused atlas entries. Text-only frames allocate no image cache.
+Planes below `z = -1073741824` paint beneath non-default cell backgrounds;
+other negative planes paint beneath glyphs; nonnegative planes paint above text.
+An explicitly set background masks the lowest plane even if its RGB equals the
+theme default. Placeholder glyphs and their decorations do not paint, but their
+backgrounds still participate.
+
+Virtual prototypes preserve aspect ratio and resolve omitted grid dimensions
+from image dimensions and actual cell pitch. Palette foreground/underline IDs,
+combining marks and placeholder inheritance select image, placement and source
+cells. The runtime preserves original source-crop bounds separately from each
+visible placeholder slice. Patches 0014–0016 clamp filtering to that original crop;
+independently rounded shared mask edges avoid alpha overlap at fractional preview
+sizes. A plain GPUI build uses its existing image API without exact crop-edge
+filtering. Cell-pixel changes republish quiet views without replacing their pixels.
 
 ## Fixture
 
@@ -201,5 +228,5 @@ several visible panes can paint in one draw. Desk build p99 covers only the
 root element-tree build, not the GPU or the terminal-only cached redraws.
 The hosted packaged-app smoke remains the visual release qualification.
 
-phux-d4x9.4 remains open for Retina/scale-change GPU evidence, wider
-script/box-drawing fidelity, and a graphics product decision.
+phux-d4x9.4 remains open for Retina/scale-change GPU evidence and wider
+script/box-drawing fidelity.

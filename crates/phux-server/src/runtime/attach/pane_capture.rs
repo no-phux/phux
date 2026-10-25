@@ -62,6 +62,7 @@ impl PaneCaptureContext<'_> {
                 bootstrap_id: self.bootstrap_id,
                 wants_state_sync: self.wants_state_sync(),
                 state_sync_scrollback: self.scrollback,
+                image_protocols: self.client_caps.image_protocols,
                 bootstrap_max_bytes,
                 bootstrap_max_frames,
                 bootstrap_chunk_bytes: self.chunk_bytes,

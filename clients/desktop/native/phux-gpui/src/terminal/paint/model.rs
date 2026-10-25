@@ -239,6 +239,8 @@ pub(in crate::terminal) struct Scene {
     /// retain glyphs, and then every ink paints from its shaped line.
     pub(super) raster: Option<crate::platform::Raster>,
     pub(super) background: Hsla,
+    /// Pixel textures shared across scene rebuilds, released with the view.
+    pub(super) images: Option<gpui::Entity<images::Images>>,
     pub(super) backgrounds: Vec<RowQuad>,
     pub(super) inks: Vec<RowInk>,
     /// Resolved glyphs, one entry per row that has any, in row order.

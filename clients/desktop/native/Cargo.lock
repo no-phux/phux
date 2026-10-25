@@ -3640,17 +3640,18 @@ dependencies = [
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=7702d08e4d3ad2acbac73fbb3bc15bbf48e80be6#7702d08e4d3ad2acbac73fbb3bc15bbf48e80be6"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=9b06bf34eb996fb3580e834e440cef7d38862975#9b06bf34eb996fb3580e834e440cef7d38862975"
 dependencies = [
  "bitflags 2.13.2",
  "int-enum",
  "libghostty-vt-sys",
+ "png 0.18.1",
 ]
 
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=7702d08e4d3ad2acbac73fbb3bc15bbf48e80be6#7702d08e4d3ad2acbac73fbb3bc15bbf48e80be6"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=9b06bf34eb996fb3580e834e440cef7d38862975#9b06bf34eb996fb3580e834e440cef7d38862975"
 
 [[package]]
 name = "libloading"
@@ -5033,6 +5034,7 @@ dependencies = [
  "async-channel",
  "gpui-fast",
  "gpui-fast-platform",
+ "image",
  "log",
  "phux-client-core",
  "phux-client-runtime",
@@ -5060,6 +5062,7 @@ dependencies = [
  "flate2",
  "int-enum",
  "libghostty-vt",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

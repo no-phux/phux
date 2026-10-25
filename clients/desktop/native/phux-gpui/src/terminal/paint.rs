@@ -24,6 +24,7 @@ mod builder;
 mod damage;
 mod decorations;
 mod drawing;
+mod images;
 mod model;
 mod preparation;
 mod preview;

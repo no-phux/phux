@@ -52,6 +52,7 @@ impl Builder {
                 fonts,
                 raster,
                 background: defaults.1,
+                images: None,
                 backgrounds: Vec::new(),
                 inks: Vec::new(),
                 sprites: Vec::new(),
@@ -154,7 +155,9 @@ impl Builder {
         }
         let colors = cell_colors(cell, metadata, frame, &self.theme, self.defaults);
         self.background_cell(row, col, colors.background);
-        if hidden(cell, &self.scene.settings) {
+        if hidden(cell, &self.scene.settings)
+            || painted_text(frame, row, col).starts_with("\u{10eeee}".as_bytes())
+        {
             return;
         }
         self.prepare_ink(frame, (row, col), cell, bounds, colors, window);
