@@ -30,7 +30,7 @@ usage() {
 Usage: curl -fsSL https://phux.sh/install | sh -s -- [options]
 
 Installs phux and phux-mcp. With --desktop, also installs Phux Desktop
-(Apple silicon macOS 27+, or x86_64/arm64 GNU/Linux), installing
+(Apple silicon macOS 26+, or x86_64/arm64 GNU/Linux), installing
 the CLI only when none is found.
 
   --channel <stable|latest|next>  Release channel (default: stable, or $PHUX_CHANNEL).

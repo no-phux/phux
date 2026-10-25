@@ -1,7 +1,7 @@
 // Workflows use free public compute and spend the shared cache budget only
 // from main.
 import { expect, test } from "bun:test";
-import { str, table, type Table } from "../lib/value.ts";
+import { list, str, table, type Table } from "../lib/value.ts";
 import {
   action,
   job,
@@ -22,6 +22,7 @@ const STANDARD = new Set([
   "windows-2022",
   "windows-2025",
   "xcode-27",
+  "macos-26",
 ]);
 const MAIN = "github.ref == 'refs/heads/main'";
 const CACHE_WRITERS = new Set([
@@ -38,6 +39,15 @@ test("all runner selectors are standard public capacity", () => {
       expect([name, selector, allowed]).toEqual([name, selector, true]);
     }
   }
+});
+
+test("desktop qualifies both Apple generations and releases from its supported floor", () => {
+  const desktop = job(workflow("ci.yml"), "desktop");
+  const matrix = table(table(desktop["strategy"])["matrix"]);
+  const runners = list(matrix["include"]).map((entry) => table(entry)["os"]);
+  expect(runners).toContain("macos-26");
+  expect(runners).toContain("xcode-27");
+  expect(job(workflow("desktop-release.yml"), "macos")["runs-on"]).toBe("macos-26");
 });
 
 test("closing a pull request cancels its in-flight ci run", () => {

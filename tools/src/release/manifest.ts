@@ -79,7 +79,7 @@ export function entry(
     release,
     sha: valid(SHA, sha, `${product} sha`),
     protocol: valid(PROTOCOL, protocol, `${product} protocol`),
-    ...(product === "desktop" ? { minimum_macos: "27.0" } : {}),
+    ...(product === "desktop" ? { minimum_macos: "26.0" } : {}),
     artifacts,
   };
 }
@@ -124,7 +124,7 @@ export function bridgeRecord(
   if (product === "desktop") {
     record["archive"] = assetName("desktop", "next", sha, "aarch64-apple-darwin");
     record["sha256"] = digests["aarch64-apple-darwin"];
-    record["minimum_macos"] = "27.0";
+    record["minimum_macos"] = "26.0";
   }
   record["published_at"] = now();
   const name = product === "phux" ? "channel.json" : "desktop-channel.json";

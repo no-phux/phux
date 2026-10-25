@@ -18,7 +18,8 @@ verify_bundle() {
         codesign -dv --verbose=4 "$app" 2>&1 | grep -F 'Authority=Developer ID Application:'
         xcrun stapler validate "$app"
     fi
-    PHUX_MACOS_MIN_MAX=27.0 bash "$harness/scripts/check-binary-portability.sh" "$app/Contents/MacOS/phux-desktop"
+    PHUX_MACOS_MIN_MAX=26.0 bash "$harness/scripts/check-binary-portability.sh" "$app/Contents/MacOS/phux-desktop"
+    test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = 26.0
     test ! -e "$app/Contents/Resources/phux-desktop-native.darwin-arm64.node"
     test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopHost' "$app/Contents/Info.plist")" = gpui
     test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxBuildSHA' "$app/Contents/Info.plist")" = "$(git rev-parse HEAD)"

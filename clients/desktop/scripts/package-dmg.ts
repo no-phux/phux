@@ -10,7 +10,7 @@ export const installInstructions = `Install Phux
 Drag Phux.app onto Applications, then open Phux from Applications.
 Eject this disk image after copying. Do not run Phux from the disk image.
 
-Requires Apple silicon and macOS 27 or later.
+Requires Apple silicon and macOS 26 or later.
 Phux Desktop uses the separately installed phux CLI to start its server.
 If you have not installed it yet, run this in Terminal:
 

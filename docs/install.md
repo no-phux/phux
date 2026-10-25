@@ -180,7 +180,7 @@ This installs Phux Desktop, and the `phux` command too if you don't have it; the
 
 | OS    | Needs                                       | Installs to                                         |
 | ----- | ------------------------------------------- | --------------------------------------------------- |
-| macOS | Apple silicon, macOS 27 or later            | `/Applications`, or `~/Applications` if not writable |
+| macOS | Apple silicon, macOS 26 or later            | `/Applications`, or `~/Applications` if not writable |
 | Linux | x86_64 or arm64, glibc, a working Vulkan driver | `~/.local/share/phux-desktop`, with a menu entry |
 
 **The macOS app is ad-hoc signed and not notarized.** It's rougher than the terminal UI; [Clients](./clients.md#desktop) says what it does today.

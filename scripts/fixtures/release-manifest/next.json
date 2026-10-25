@@ -31,7 +31,7 @@
       "release": "next",
       "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "protocol": "0.9",
-      "minimum_macos": "27.0",
+      "minimum_macos": "26.0",
       "artifacts": {
         "aarch64-apple-darwin": {
           "name": "phux-desktop-next.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-macos-arm64.zip",

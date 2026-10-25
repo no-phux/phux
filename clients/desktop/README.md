@@ -1,6 +1,6 @@
 # Phux Desktop
 
-A native app for Apple silicon macOS 27+, Linux x86_64/arm64 (X11 or
+A native app for Apple silicon macOS 26+, Linux x86_64/arm64 (X11 or
 Wayland, Vulkan), and Windows x64 (Direct3D 11, WSL 2 coordinator).
 Rust, GPUI, and the shared client runtime; no web view.
 
@@ -21,7 +21,7 @@ clearing quarantine only after verifying the release signature.
 Download the **macos-arm64.dmg** from the newest
 [Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
 open it, and drag **Phux.app** onto **Applications**. Eject the image and
-open Phux from Applications. Apple silicon and macOS 27+ are required.
+open Phux from Applications. Apple silicon and macOS 26+ are required.
 The ZIP remains available for the installer and automatic updates.
 
 ### Windows

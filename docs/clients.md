@@ -27,7 +27,7 @@ new pane and never overwrites an existing one.
 
 ## Desktop
 
-Phux Desktop is a native app for macOS 27 or later on Apple silicon,
+Phux Desktop is a native app for macOS 26 or later on Apple silicon,
 Linux on x86_64 or arm64 with Vulkan, and Windows x64 with a WSL 2 server.
 On macOS and Linux, install it with:
 
