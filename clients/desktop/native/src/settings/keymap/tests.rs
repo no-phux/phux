@@ -1,6 +1,25 @@
 use super::super::ghostty::parse_ghostty;
 use super::{ChordSource, chord_source, default_chords, effective_keymap, keymap_conflicts};
 
+#[cfg(windows)]
+#[test]
+fn windows_shortcuts_do_not_intercept_shell_signals() {
+    let chords = default_chords();
+    for (key, action) in [
+        ("ctrl+shift+c", "copy"),
+        ("ctrl+shift+v", "paste"),
+        ("ctrl+shift+r", "reconnect"),
+        ("ctrl+shift+d", "split-right"),
+    ] {
+        assert!(chords.contains(&(key.into(), action.into())));
+    }
+    for key in ["ctrl+c", "ctrl+z", "ctrl+d"] {
+        assert!(!chords.iter().any(|(chord, _)| chord == key));
+    }
+    assert_eq!(super::display_chord("ctrl+shift+c"), "Ctrl+Shift+C");
+    assert_eq!(super::display_chord("cmd+t"), "Win+T");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_shortcuts_leave_shell_control_keys_alone() {

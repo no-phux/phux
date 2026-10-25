@@ -23,6 +23,7 @@ thiserror.workspace = true
 tracing.workspace = true
 # `instance` reads the uid and the host name through `nix`'s safe wrappers,
 # keeping this crate's `forbid(unsafe_code)`.
+[target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["user", "hostname"] }
 
 [dev-dependencies]

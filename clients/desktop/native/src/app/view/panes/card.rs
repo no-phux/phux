@@ -70,7 +70,7 @@ fn terminal_body(
     let (Some(settings), Some(client)) = (settings, client) else {
         return pending_terminal(false, look);
     };
-    let remote = desk.remote.clone();
+    let remote = crate::platform::filesystem_host(desk.remote.as_deref()).map(str::to_owned);
     let entity = desk.panes_mut().entity_for(
         &placement_id,
         &terminal,
@@ -169,7 +169,10 @@ pub(super) fn pane_view(
     let dropping = desk.drop_target.as_deref() == Some(id.as_str());
     let remote_files = placement.terminal_id.as_ref().is_some_and(|terminal| {
         !matches!(
-            crate::attach::terminal_host(desk.remote.as_deref(), terminal),
+            crate::attach::terminal_host(
+                crate::platform::filesystem_host(desk.remote.as_deref()),
+                terminal
+            ),
             crate::attach::TerminalHost::Local
         )
     });

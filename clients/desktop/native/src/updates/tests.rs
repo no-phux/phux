@@ -105,6 +105,82 @@ fn portable_bundle_version_and_identity_are_checked() {
 }
 
 #[test]
+fn windows_bundle_requires_its_layout_identity_and_msvc_target() {
+    let dir = scratch("windows-release");
+    let bundle = dir.join("phux-desktop");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let metadata = bundle.join("share/phux-desktop/release.json");
+    std::fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+    let executable = bundle.join("phux-desktop.exe");
+    assert!(windows_bundle(&executable).is_none());
+    assert!(windows_bundle(Path::new("target/debug/phux-desktop.exe")).is_none());
+    let value = json!({"identifier":"dev.phux.desktop", "version":"1.2.3",
+        "sha":"b".repeat(40), "channel":"next", "target":WINDOWS_TARGET});
+    std::fs::write(&metadata, value.to_string()).unwrap();
+    assert_eq!(windows_bundle(&executable), Some(bundle.clone()));
+    let current = dir.join("Phux/current");
+    std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+    std::fs::rename(&bundle, &current).unwrap();
+    assert_eq!(
+        windows_bundle(&current.join("phux-desktop.exe")),
+        Some(current.clone())
+    );
+    std::fs::rename(&current, &bundle).unwrap();
+    assert_eq!(windows_release(&bundle).unwrap().channel, Channel::Next);
+    for (field, invalid) in [
+        ("identifier", "dev.example.other"),
+        ("version", "1.2.3-unverified"),
+        ("sha", "not-a-revision"),
+        ("channel", "unknown"),
+        ("target", "x86_64-unknown-linux-gnu"),
+    ] {
+        let mut invalid_value = value.clone();
+        invalid_value[field] = json!(invalid);
+        std::fs::write(&metadata, invalid_value.to_string()).unwrap();
+        assert!(windows_bundle(&executable).is_none(), "accepted {field}");
+    }
+    let mut missing_target = value;
+    missing_target.as_object_mut().unwrap().remove("target");
+    std::fs::write(&metadata, missing_target.to_string()).unwrap();
+    assert!(windows_bundle(&executable).is_none());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn windows_manual_update_names_the_signed_installer_and_quotes_the_destination() {
+    let remedy = windows_install_remedy(Channel::Next, None);
+    assert!(remedy.contains("not supported on Windows"));
+    assert!(remedy.contains("PowerShell"));
+    assert!(remedy.contains("minisign"));
+    assert!(remedy.contains("verifies release signatures"));
+    assert!(remedy.contains("main/scripts/install-desktop-windows.ps1"));
+    assert!(remedy.ends_with("-Channel next"));
+    let remedy = windows_install_remedy(
+        Channel::Stable,
+        Some(Path::new("C:/custom apps/person's desktop/phux-desktop")),
+    );
+    assert!(remedy.ends_with("-InstallDir 'C:/custom apps/person''s desktop/phux-desktop'"));
+    let remedy = windows_install_remedy(
+        Channel::Stable,
+        Some(Path::new("C:/custom apps/person's desktop/current")),
+    );
+    assert!(remedy.ends_with("-InstallDir 'C:/custom apps/person''s desktop'"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_never_runs_the_macos_swap_or_staging_installer() {
+    assert_eq!(TARGET, WINDOWS_TARGET);
+    assert_eq!(CURL, "curl.exe");
+    let path = Path::new("C:/does-not-exist/phux-desktop");
+    let error = stage(path, &Release::default(), std::sync::mpsc::channel().0).unwrap_err();
+    assert!(error.to_string().contains("install-desktop-windows.ps1"));
+    let error = apply_on_exit(path, path, true).unwrap_err();
+    assert!(error.to_string().contains("not supported on Windows"));
+    clear_stale_stage(path);
+}
+
+#[test]
 fn linux_manual_update_requires_release_signatures() {
     let remedy = linux_install_remedy(Channel::Next, None);
     assert!(remedy.contains("PHUX_REQUIRE_SIGNATURE=1"));
@@ -174,6 +250,7 @@ fn structured_failure_has_readable_remedy() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_timed_out_command_has_its_process_group_killed() {
     let start = std::time::Instant::now();
@@ -187,6 +264,7 @@ fn a_timed_out_command_has_its_process_group_killed() {
     assert!(start.elapsed() < Duration::from_secs(3));
 }
 
+#[cfg(unix)]
 #[test]
 fn bounded_runs_feed_stdin() {
     let text = run_bounded(
@@ -199,6 +277,68 @@ fn bounded_runs_feed_stdin() {
     assert_eq!(text, "fed\n");
 }
 
+#[cfg(windows)]
+#[test]
+fn a_timed_out_windows_command_has_only_its_recorded_tree_cancelled() {
+    let mut unrelated = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 30",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let dir = scratch("windows-timeout");
+    let marker = dir.join("survived");
+    let start = std::time::Instant::now();
+    let result = run_bounded(
+        Command::new("powershell.exe").args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 2; [IO.File]::WriteAllText($env:PHUX_UPDATE_TEST_MARKER, 'survived')",
+        ]).env("PHUX_UPDATE_TEST_MARKER", &marker),
+        None,
+        Duration::from_millis(100),
+        "timed out",
+    );
+    let elapsed = start.elapsed();
+    let unrelated_survived = unrelated.try_wait().unwrap().is_none();
+    let _ = unrelated.kill();
+    let _ = unrelated.wait();
+    assert!(result.unwrap_err().to_string().contains("timed out"));
+    assert!(elapsed < Duration::from_secs(5));
+    assert!(
+        unrelated_survived,
+        "cancellation killed an unrelated process"
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!marker.exists(), "timed-out child was left running");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn bounded_windows_runs_feed_stdin() {
+    let text = run_bounded(
+        Command::new("powershell.exe").args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::Write([Console]::In.ReadToEnd())",
+        ]),
+        Some(b"fed"),
+        Duration::from_secs(10),
+        "timed out",
+    )
+    .unwrap();
+    assert_eq!(text, "fed");
+}
+
 #[cfg(unix)]
 #[test]
 fn runtime_commands_use_explicit_socket_and_never_close_agents() {
@@ -206,12 +346,15 @@ fn runtime_commands_use_explicit_socket_and_never_close_agents() {
     let dir = scratch("runtime");
     let phux = dir.join("phux");
     let record = dir.join("args");
+    let response = dir.join("response.json");
     let document = json!({"schema_version":2,"current_version":"1.0.0","target_version":"next","update_available":true,"install":{"mutable":true},"server_handoff":{"result":"upgrading"}});
+    std::fs::write(&response, document.to_string()).unwrap();
     std::fs::write(
         &phux,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncat <<'JSON'\n{document}\nJSON\n",
-            record.display()
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncat '{}'\n",
+            record.display(),
+            response.display()
         ),
     )
     .unwrap();
@@ -241,6 +384,23 @@ fn runtime_commands_use_explicit_socket_and_never_close_agents() {
         std::fs::read_to_string(&record).unwrap(),
         format!(
             "--socket\n{}\nupgrade\n",
+            dir.join("isolated.sock").display()
+        )
+    );
+    std::fs::write(
+        &response,
+        json!({"schema_version":2,"server_handoff":{"result":"no_server"}}).to_string(),
+    )
+    .unwrap();
+    assert!(
+        runtime_install(&phux, &dir.join("isolated.sock"), Channel::Stable)
+            .unwrap()
+            .reconnect
+    );
+    assert_eq!(
+        std::fs::read_to_string(&record).unwrap(),
+        format!(
+            "--socket\n{}\nserver\n--ensure\n",
             dir.join("isolated.sock").display()
         )
     );

@@ -102,7 +102,7 @@ pub(crate) fn group(mut work: Vec<Work>, grouping: SidebarGrouping) -> Vec<Group
                 work.destination
                     .host
                     .clone()
-                    .unwrap_or_else(|| "This Mac".into()),
+                    .unwrap_or_else(|| crate::platform::local_machine_label().into()),
             ),
             SidebarGrouping::None => None,
         }

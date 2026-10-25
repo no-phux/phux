@@ -170,6 +170,7 @@ mod tests {
     use super::super::{RecentProjects, StoreValue, load_layout, save_layout};
     use super::*;
     use crate::settings::default_display;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
@@ -408,6 +409,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_write_keeps_the_previous_bytes_and_stays_unacknowledged() {
         let scratch = Scratch::new("failed-write");

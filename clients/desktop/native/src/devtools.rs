@@ -24,6 +24,10 @@
 pub mod frames;
 pub mod prefs;
 pub mod server;
+#[cfg(unix)]
+pub mod socket;
+#[cfg(windows)]
+#[path = "devtools/socket_windows.rs"]
 pub mod socket;
 
 use std::path::{Path, PathBuf};
@@ -519,7 +523,7 @@ fn sample_counters() {
 /// `path` without the home directory, for a status line.
 #[must_use]
 pub fn display_path(path: &Path) -> String {
-    std::env::var_os("HOME")
+    crate::platform::home_dir()
         .and_then(|home| {
             path.strip_prefix(home)
                 .ok()

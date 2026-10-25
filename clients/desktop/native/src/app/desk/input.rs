@@ -122,7 +122,10 @@ impl Desk {
         if self.refuse_native_input(terminal) {
             return;
         }
-        let host = crate::attach::terminal_host(self.remote.as_deref(), terminal);
+        let host = crate::attach::terminal_host(
+            crate::platform::filesystem_host(self.remote.as_deref()),
+            terminal,
+        );
         match crate::attach::attach_paths(&host, paths) {
             Some(crate::attach::PathAttach::Paste(text)) => {
                 self.paste_text_to(terminal, &text);
@@ -351,7 +354,10 @@ impl Desk {
         self.placement_of(terminal)?;
         Some(crate::attach::UploadDestination {
             terminal: terminal.clone(),
-            host: crate::attach::terminal_host(self.remote.as_deref(), terminal),
+            host: crate::attach::terminal_host(
+                crate::platform::filesystem_host(self.remote.as_deref()),
+                terminal,
+            ),
         })
     }
 

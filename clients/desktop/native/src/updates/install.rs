@@ -49,8 +49,8 @@ pub fn stage(
     target: &Release,
     progress: std::sync::mpsc::Sender<StageProgress>,
 ) -> anyhow::Result<PathBuf> {
-    if cfg!(target_os = "linux") {
-        bail!("{}", linux_install_remedy(target.channel, Some(bundle)));
+    if manual_desktop_install() {
+        bail!("{}", install_remedy(target.channel, Some(bundle)));
     }
     stage_with_progress(
         bundle,
@@ -58,6 +58,44 @@ pub fn stage(
         |target| check_signed(target, RELEASE_KEYS, fetch),
         |_| {},
         Some(progress),
+    )
+}
+
+/// Platforms whose first release uses an explicit, signature-verifying installer.
+pub const fn manual_desktop_install() -> bool {
+    cfg!(any(target_os = "linux", windows))
+}
+
+pub fn install_remedy(channel: Channel, bundle: Option<&Path>) -> String {
+    if cfg!(windows) {
+        windows_install_remedy(channel, bundle)
+    } else {
+        linux_install_remedy(channel, bundle)
+    }
+}
+
+pub fn windows_install_remedy(channel: Channel, bundle: Option<&Path>) -> String {
+    // The per-user installer replaces <InstallDir>/current, not InstallDir itself.
+    let root = bundle.and_then(|bundle| {
+        if bundle.file_name().is_some_and(|name| name == "current") {
+            bundle.parent()
+        } else {
+            Some(bundle)
+        }
+    });
+    let destination = root.map_or_else(String::new, |root| {
+        format!(
+            " -InstallDir '{}'",
+            root.to_string_lossy().replace('\'', "''")
+        )
+    });
+    format!(
+        "Automatic Desktop installation is not supported on Windows. With minisign available in Windows or WSL, \
+         quit Phux Desktop and run in PowerShell (the installer verifies release signatures): \
+         & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing \
+         -Uri 'https://raw.githubusercontent.com/no-phux/phux/main/scripts/install-desktop-windows.ps1' \
+         -ErrorAction Stop).Content)) -Channel {}{destination}",
+        channel.as_str(),
     )
 }
 
@@ -80,7 +118,7 @@ pub fn linux_install_remedy(channel: Channel, bundle: Option<&Path>) -> String {
 
 /// One small release file over HTTPS, bounded like a manifest fetch.
 pub(super) fn fetch(url: &str) -> anyhow::Result<Vec<u8>> {
-    let result = Command::new("/usr/bin/curl")
+    let result = native_command(CURL)
         .args(MANIFEST_CURL_ARGS)
         .arg(url)
         .output()
@@ -146,6 +184,9 @@ pub(super) fn stage_with_progress(
     configure: impl FnOnce(&mut Command),
     progress: Option<std::sync::mpsc::Sender<StageProgress>>,
 ) -> anyhow::Result<PathBuf> {
+    if manual_desktop_install() {
+        bail!("{}", install_remedy(target.channel, Some(bundle)));
+    }
     if !release::is_lower_hex(&target.sha256, 64) {
         bail!("No verified digest for the Desktop update");
     }
@@ -305,10 +346,9 @@ pub(super) fn update_log() -> Stdio {
 /// process exits, and relaunches it when asked. The running bundle is never
 /// touched while this process uses it.
 pub fn apply_on_exit(bundle: &Path, staged: &Path, relaunch: bool) -> anyhow::Result<()> {
-    if cfg!(target_os = "linux") {
-        bail!("{}", linux_install_remedy(Channel::Stable, Some(bundle)));
+    if manual_desktop_install() {
+        bail!("{}", install_remedy(Channel::Stable, Some(bundle)));
     }
-    use std::os::unix::process::CommandExt;
     let mut command = apply_command(
         bundle,
         staged,
@@ -316,8 +356,12 @@ pub fn apply_on_exit(bundle: &Path, staged: &Path, relaunch: bool) -> anyhow::Re
         relaunch,
         Path::new("/usr/bin/open"),
     )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     command
-        .process_group(0)
         .stdin(Stdio::null())
         .stdout(update_log())
         .stderr(update_log())
@@ -329,7 +373,7 @@ pub fn apply_on_exit(bundle: &Path, staged: &Path, relaunch: bool) -> anyhow::Re
 /// A staged bundle from an earlier session is discarded at launch, but only
 /// when no helper holds the installer lock.
 pub fn clear_stale_stage(bundle: &Path) {
-    if cfg!(target_os = "linux") {
+    if manual_desktop_install() {
         return;
     }
     let (Ok(dir), Ok(lock)) = (staging_dir(bundle), lock_file(bundle)) else {

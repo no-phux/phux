@@ -540,7 +540,7 @@ mod authority_tests;
 #[cfg(test)]
 mod inventory_tests;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod remote_acceptance;
 
 #[cfg(test)]

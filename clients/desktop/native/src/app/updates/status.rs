@@ -197,7 +197,11 @@ impl Updater {
                 "Restart now, or it installs the next time you quit. Sessions keep running."
             }
             UpdateAction::Desktop { staged: false } => {
-                "Downloads and verifies the signed bundle. Restart when you’re ready; sessions keep running."
+                if updates::manual_desktop_install() {
+                    "Quit Desktop and rerun its signature-verifying installer. Instructions are below; server sessions keep running."
+                } else {
+                    "Downloads and verifies the signed bundle. Restart when you’re ready; sessions keep running."
+                }
             }
             UpdateAction::Phux { retry: true } => {
                 "The new phux is in place. Retry hands the live server off without downloading again."
@@ -231,7 +235,7 @@ impl Updater {
 
     pub(super) fn action_label(&self) -> Option<&'static str> {
         let action = self.action()?;
-        if cfg!(target_os = "linux") && action.desktop() {
+        if updates::manual_desktop_install() && action.desktop() {
             return Some("Installation instructions");
         }
         if self.pending_handoff {
@@ -258,7 +262,7 @@ impl Updater {
 
     /// Failures first, then what the button cannot do by itself: a refused
     /// handoff, a protocol change left unresolved, a package-managed phux, or
-    /// a Linux desktop that reruns its installer. Each with whether it failed.
+    /// a desktop that reruns its installer. Each with whether it failed.
     pub(super) fn notices(&self) -> Vec<(String, bool)> {
         let mut notices = ["Desktop", "phux"]
             .into_iter()
@@ -291,9 +295,9 @@ impl Updater {
                 false,
             ));
         }
-        if cfg!(target_os = "linux") && self.desktop_available() {
+        if updates::manual_desktop_install() && self.desktop_available() {
             notices.push((
-                updates::linux_install_remedy(self.prefs.desktop, self.bundle.as_deref()),
+                updates::install_remedy(self.prefs.desktop, self.bundle.as_deref()),
                 false,
             ));
         }

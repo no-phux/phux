@@ -17,7 +17,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+#[cfg(unix)]
 mod bounded;
+#[cfg(unix)]
 pub mod checkout;
 mod patch;
 mod stage;

@@ -1,6 +1,6 @@
 //! Process-wide windows, native menus, and the quick-terminal hotkey.
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod journey_tests;
 mod keys;
 mod projects;

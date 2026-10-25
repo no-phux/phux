@@ -1,7 +1,8 @@
 # Phux Desktop
 
-A native app for Apple silicon macOS 27+ and Linux x86_64/arm64 (X11 or
-Wayland, Vulkan). Rust, GPUI, and the shared client runtime; no web view.
+A native app for Apple silicon macOS 27+, Linux x86_64/arm64 (X11 or
+Wayland, Vulkan), and Windows x64 (Direct3D 11, WSL 2 coordinator).
+Rust, GPUI, and the shared client runtime; no web view.
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
@@ -22,6 +23,30 @@ Download the **macos-arm64.dmg** from the newest
 open it, and drag **Phux.app** onto **Applications**. Eject the image and
 open Phux from Applications. Apple silicon and macOS 27+ are required.
 The ZIP remains available for the installer and automatic updates.
+
+### Windows
+
+The Windows app is a native `.exe`, not a Linux window through WSLg.
+Install the [WSL CLI and server](../../docs/install.md#windows-wsl) first.
+Shells, agents and their credentials stay in WSL; the window, clipboard,
+keyboard input and preferences are native Windows. No network listener is
+needed: the app connects through `wsl.exe` and phux's binary stdio bridge.
+
+The default WSL distribution is used unless `PHUX_WSL_DISTRO` names another.
+`--phux` and `PHUX_BIN` name a **Linux** CLI path in that distribution;
+`--socket` is likewise a Linux socket path. Native folder-picker paths are
+translated with `wslpath`. Dropped files and clipboard images are uploaded
+to the coordinator before their Linux paths are pasted.
+
+Windows uses `Ctrl-Shift-P/T/W/F` for palette, new terminal, close pane and
+find, `Ctrl-Shift-C/V` for copy/paste, `Ctrl-Shift-D` / `Ctrl-Alt-D` for
+splits, and `Ctrl-Shift-R` to reconnect. Plain `Ctrl-C/Z/D` stay with the
+shell. Closing the app detaches; the WSL processes keep running.
+
+The local Changes panel and the external Unix developer socket are not
+available for WSL checkouts. Use Git in the terminal and the in-app
+Performance Monitor instead. Desktop updates use the Windows installer;
+the macOS bundle-swap helper is never run on Windows.
 
 The app needs the separately installed phux CLI. On a fresh Mac, install
 it once in Terminal before opening Phux:
@@ -111,7 +136,8 @@ one-time restoration. **Update phux with Desktop** (on by
 default) turns the phux half off. Linux desktop updates rerun the installer.
 
 Logs: `~/Library/Logs/phux-desktop.log` on macOS,
-`$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, redacted and rotated.
+`$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, and
+`%LOCALAPPDATA%\phux-desktop\logs\desktop.log` on Windows, redacted and rotated.
 **Copy Diagnostics** in the palette copies versions, server id, host, and
 recent errors, without terminal content. **Settings > Developer** gathers
 these with Developer mode, profiling and traces
