@@ -93,6 +93,10 @@ try {
         $failureCode = $LASTEXITCODE
     } finally { $ErrorActionPreference = $savedPreference }
     Assert-True ($failureCode -eq 2) 'CLI exit code was not propagated'
+    & $cli --socket $socket new --json --session windows-tui-smoke | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'Could not create interactive TUI smoke session'
+    & python (Join-Path $PSScriptRoot 'test-windows-terminal.py') $cli $socket windows-tui-smoke (Get-Process -Id $PID).Path
+    Assert-True ($LASTEXITCODE -eq 0) 'Windows ConPTY TUI qualification failed'
     Write-Output "Real Windows/WSL qualification passed under PowerShell $($PSVersionTable.PSVersion)."
 } finally {
     if ($started) { & $cli --socket $socket kill --server }
