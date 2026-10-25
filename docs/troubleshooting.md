@@ -85,8 +85,9 @@ way `phux doctor` warns on its `instance` line. If that is fine, see
 ## Versions
 
 **Desktop update says `new binary failed validation` and names an `extends
-layer ... No such file or directory`.** The updater checks your configuration
-before replacing the CLI or server. Run `phux config check`, then correct the
+layer ... No such file or directory`.** The server upgrade checks your
+configuration before replacing the running server image. The CLI may already
+have been updated. Run `phux config check`, then correct the
 missing path in your config's `extends` array. A distribution layer pointing
 inside a source checkout must follow that checkout if you move it. Keep the
 layer's plugin files with it; removing the import also removes its settings.
