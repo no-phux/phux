@@ -9,6 +9,7 @@ on:
       - scripts/test-install-windows.ps1
       - scripts/test-windows-wsl.ps1
       - scripts/test-windows-mcp.py
+      - scripts/test-windows-terminal.py
       - .github/workflows/windows-wsl.yml
   push:
     branches: [main]
@@ -17,6 +18,7 @@ on:
       - scripts/test-install-windows.ps1
       - scripts/test-windows-wsl.ps1
       - scripts/test-windows-mcp.py
+      - scripts/test-windows-terminal.py
       - .github/workflows/windows-wsl.yml
   workflow_dispatch:
 
@@ -25,12 +27,18 @@ permissions:
 
 jobs:
   windows:
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Install the test-only native ConPTY adapter
+        run: |
+          python -m pip install --disable-pip-version-check --no-input --only-binary=:all: pywinpty==3.1.0
       - name: Installer contracts in Windows PowerShell 5.1
         shell: powershell
         run: ./scripts/test-install-windows.ps1

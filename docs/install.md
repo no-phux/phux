@@ -57,6 +57,9 @@ Windows requests it, then open Ubuntu once and create your Linux user:
 wsl --install -d Ubuntu
 ```
 
+For an existing WSL installation, run `wsl --update` from PowerShell before
+installing phux so its Windows console host is current.
+
 In Ubuntu, ensure the download tools are present:
 
 ```sh

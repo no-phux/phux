@@ -50,6 +50,7 @@ const ROUTES: Record<string, Surface[]> = {
   // these distribution scripts do not change the Unix Rust build.
   "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],
   "scripts/test-windows-mcp.py": [],
+  "scripts/test-windows-terminal.py": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
   // Passive maintainer task exports/configuration are not product inputs.
