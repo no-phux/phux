@@ -501,6 +501,11 @@ stage_desktop() {
   echo "staged: ${stage_dir}/Phux.app"
 }
 
+desktop_matches_install() {
+  [ -x "$installed/Contents/MacOS/phux-desktop" ] || return 1
+  diff -qr "$app" "$installed" >/dev/null 2>&1
+}
+
 publish_desktop() {
   installed="${applications_dir}/Phux.app"
   if [ -e "$installed" ] && [ ! -d "$installed" ]; then
@@ -511,7 +516,8 @@ publish_desktop() {
   fi
   # Only byte-identical verified bundles are a no-op: a matching version alone
   # cannot detect a corrupted install or a different next-channel build.
-  if [ -d "$installed" ] && diff -qr "$app" "$installed" >/dev/null 2>&1; then
+  if desktop_matches_install; then
+    xattr -d com.apple.quarantine "$installed" 2>/dev/null || true
     return
   fi
   # Copy onto the destination volume first, so publishing is two renames.

@@ -3,6 +3,7 @@
 // explicitly: `bun test ./tools/src/install/desktop.e2e.ts`.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -155,6 +156,9 @@ describe.skipIf(!macos26Arm64())("install.sh --desktop on macOS", () => {
     f.install();
     capture(["codesign", "--verify", "--deep", "--strict", f.installed]);
     expect(statSync(binary).ino).not.toBe(identity[0]);
+    chmodSync(binary, 0o644);
+    f.install();
+    expect(executable(binary)).toBe(true);
   });
 
   test("unpinned installs verify the manifest digest", () => {
