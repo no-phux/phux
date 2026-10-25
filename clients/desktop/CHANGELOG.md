@@ -36,6 +36,23 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.46.0](https://github.com/no-phux/phux/compare/desktop-v0.45.0...desktop-v0.46.0) (2026-10-25)
+
+
+### Features
+
+* **brand:** apply Sculptural Fox to desktop and docs ([#1781](https://github.com/no-phux/phux/issues/1781)) ([e3a1586](https://github.com/no-phux/phux/commit/e3a1586dfcf82987b9b5a8048d76bc92c81e1823))
+* **desktop:** add optional leader key navigation ([#1773](https://github.com/no-phux/phux/issues/1773)) ([c293239](https://github.com/no-phux/phux/commit/c293239aa8e66ec5784fafabd87815a6be3eed5d))
+* **desktop:** highlight the viewed terminal in the sidebar ([#1770](https://github.com/no-phux/phux/issues/1770)) ([eabb863](https://github.com/no-phux/phux/commit/eabb86310eec8d2ceb80b79de4e275ea69d7c1b2))
+* **desktop:** render inline Kitty graphics end to end ([#1780](https://github.com/no-phux/phux/issues/1780)) ([0a9443f](https://github.com/no-phux/phux/commit/0a9443f95557e1618b7bbf212b464a586f69feaf))
+
+
+### Bug Fixes
+
+* **desktop:** align and polish live tab previews ([12b552b](https://github.com/no-phux/phux/commit/12b552bb3977f0dc79e3998f84d00e00f781e4f7))
+* **desktop:** lift sidebar tabs and preserve pane indicators ([#1772](https://github.com/no-phux/phux/issues/1772)) ([6477b67](https://github.com/no-phux/phux/commit/6477b67dd390b07da1a25d99a2265a4f529cca9d))
+* **desktop:** retain urgent attention beside harness marks ([#1778](https://github.com/no-phux/phux/issues/1778)) ([93f0ab4](https://github.com/no-phux/phux/commit/93f0ab44f15dabf8e229c20e8dda32921e78814a))
+
 ## [0.45.0](https://github.com/no-phux/phux/compare/desktop-v0.44.1...desktop-v0.45.0) (2026-10-24)
 
 
