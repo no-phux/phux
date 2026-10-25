@@ -324,9 +324,9 @@ impl Updater {
         if self.busy || self.development {
             return None;
         }
-        // Linux reruns the installer for the desktop, so phux moves alone
+        // Manual-install platforms rerun the desktop installer, so phux moves alone
         // there and the page names the installer command.
-        let desktop = self.desktop_due() && !cfg!(target_os = "linux");
+        let desktop = self.desktop_due() && !updates::manual_desktop_install();
         match (desktop, self.phux_due()) {
             (true, true) => Some(UpdateAction::Both),
             (true, false) => Some(UpdateAction::Desktop {
@@ -346,9 +346,8 @@ impl Updater {
         };
         self.card_expanded = true;
         self.completed = false;
-        if action.desktop() && cfg!(target_os = "linux") {
-            self.message =
-                updates::linux_install_remedy(self.prefs.desktop, self.bundle.as_deref());
+        if action.desktop() && updates::manual_desktop_install() {
+            self.message = updates::install_remedy(self.prefs.desktop, self.bundle.as_deref());
             cx.notify();
             return;
         }

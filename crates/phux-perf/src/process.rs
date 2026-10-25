@@ -22,16 +22,16 @@ pub struct ProcessStats {
 
 impl ProcessStats {
     /// Read the current figures; `None` if `getrusage` fails or the target
-    /// has no such call (wasm).
+    /// has no such call.
     #[must_use]
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(unix))]
     pub const fn capture() -> Option<Self> {
         None
     }
 
     /// Read the current figures; `None` if `getrusage` fails.
     #[must_use]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(unix)]
     pub fn capture() -> Option<Self> {
         let ru = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF).ok()?;
         let to_us = |tv: nix::sys::time::TimeVal| -> u64 {
@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(unix)]
     fn capture_reports_a_live_process() {
         let s = ProcessStats::capture().unwrap_or_default();
         assert!(
@@ -221,6 +221,12 @@ mod tests {
             "rss should be non-zero for a running test"
         );
         assert!(s.cpu_total_us() > 0 || s.voluntary_ctx_switches > 0);
+    }
+
+    #[test]
+    #[cfg(not(unix))]
+    fn capture_is_unavailable_without_getrusage() {
+        assert_eq!(ProcessStats::capture(), None);
     }
 
     #[test]

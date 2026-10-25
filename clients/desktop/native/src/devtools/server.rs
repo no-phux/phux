@@ -6,7 +6,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,7 @@ impl ServerCli {
     /// is the error).
     pub fn run(&self, args: &[&str], timeout: Duration) -> anyhow::Result<Vec<u8>> {
         self.check_socket()?;
-        let mut child = Command::new(&self.phux)
+        let mut child = crate::platform::phux_command(&self.phux)
             .arg("--socket")
             .arg(&self.socket)
             .args(args)

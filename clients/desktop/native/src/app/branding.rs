@@ -123,7 +123,7 @@ impl Branding {
 }
 
 fn apply(profile: &Profile, cx: &gpui::App) -> Result<()> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         cx.set_app_icon(&profile.png()?)
     }

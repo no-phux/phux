@@ -68,6 +68,7 @@ use bytes::{Bytes, BytesMut};
 use phux_protocol::caps::{BootstrapLimits, ClientCapabilities, Layer, LayerSet, ServerFeature};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, RolePolicy};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 
 use crate::connection::establish;
@@ -89,7 +90,7 @@ pub use reply::{Answer, Refusal, Reply, error_code_label, unexpected_reply};
 pub use requests::METADATA_WINDOW;
 
 use framed::decode_frame;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use {
     crate::control::encode,
     framed::{check_barrier_bound, is_pong},
@@ -178,6 +179,7 @@ impl Session {
     /// An unnegotiated session over an already-connected [`UnixStream`]:
     /// the in-process seam tests use for either end of a socket pair.
     #[must_use]
+    #[cfg(unix)]
     pub fn from_stream(stream: UnixStream) -> Self {
         Self::over(Io::from_unix_stream(stream))
     }
@@ -196,7 +198,7 @@ impl Session {
     }
 
     /// Negotiate the protocol once. [`Self::connect`] already did; this is
-    /// for a [`Self::from_stream`] session.
+    /// for a `Self::from_stream` session on Unix.
     ///
     /// # Errors
     ///
@@ -446,7 +448,9 @@ fn dial_timed_out() -> SessionError {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests;
 
 #[cfg(test)]
+#[cfg(unix)]
 mod newer_server_tests;

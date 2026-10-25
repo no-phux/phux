@@ -96,6 +96,8 @@ impl From<DialFailure> for SessionError {
     fn from(failure: DialFailure) -> Self {
         match failure {
             DialFailure::Uds { error, .. } => Self::Io(error),
+            #[cfg(windows)]
+            DialFailure::Wsl(error) => Self::Io(error),
             DialFailure::Remote(error) => Self::from(error),
             DialFailure::Closed(error) => closed(error),
         }

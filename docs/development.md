@@ -181,6 +181,15 @@ just desktop-app      # build the app and the CLI from this tree, start a server
 
 [`clients/desktop`](../clients/desktop) has the app's own commands and gates.
 
+The Windows desktop is a separate native MSVC build of that same workspace,
+with Direct3D 11/DirectWrite rather than Metal or Vulkan. Its coordinator
+and CLI remain in WSL 2. Set `PHUX_WSL_DISTRO` to select a distribution;
+`--phux` is a Linux executable path and `--socket` a Linux socket path.
+A development Windows app requires an explicit isolated socket and does
+not discover the installed server by default. Windows-native qualification
+must exercise the packaged `.exe` and real window input, not the Linux TUI
+or the macOS/Linux headless renderer fixtures.
+
 ## Archived Zig Cockpit
 
 The Zig Cockpit is tabled, not a supported build or install on `main`.

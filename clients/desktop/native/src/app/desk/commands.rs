@@ -64,11 +64,7 @@ impl Desk {
             // the Inbox when it is decided, expires, or is withdrawn.
             "clear-notifications" => self.feed.retain(|entry| entry.kind == Kind::Approval),
             "new" | "new-home" => {
-                let home = std::env::var("HOME").ok().filter(|_| id == "new-home");
-                self.workspace_call(|link| {
-                    link.workspace
-                        .new_terminal(&link.connection, home.as_deref())
-                });
+                self.new_catalog_terminal(id);
             }
             "new-session" => {
                 self.modal = Modal::Session {
@@ -182,6 +178,18 @@ impl Desk {
             other => self.run_patterned(other),
         }
         self.after_command(window, cx);
+    }
+
+    fn new_catalog_terminal(&mut self, id: &str) {
+        let home = crate::platform::coordinator_home().filter(|_| id == "new-home");
+        if id == "new-home" && home.is_none() {
+            self.post(Kind::Refusal, "Home directory unavailable", Some("The coordinator did not report its home directory. Relaunch the app and try again.".into()));
+            return;
+        }
+        self.workspace_call(|link| {
+            link.workspace
+                .new_terminal(&link.connection, home.as_deref())
+        });
     }
 
     /// Commands named by pattern: a modal, a direction, or a tab number.

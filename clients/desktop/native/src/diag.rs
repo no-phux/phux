@@ -129,13 +129,18 @@ pub fn log_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PHUX_DESKTOP_LOG") {
         return Some(PathBuf::from(path));
     }
+    #[cfg(windows)]
+    return Some(crate::platform::state_dir().join("logs/desktop.log"));
+    #[cfg(not(windows))]
     let home = std::env::var_os("HOME")?;
+    #[cfg(not(windows))]
     Some(default_log_path(
         Path::new(&home),
         std::env::var_os("XDG_STATE_HOME"),
     ))
 }
 
+#[cfg(any(test, not(windows)))]
 fn default_log_path(home: &Path, state: Option<std::ffi::OsString>) -> PathBuf {
     if cfg!(target_os = "linux") {
         state

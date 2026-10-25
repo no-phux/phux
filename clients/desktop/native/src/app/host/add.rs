@@ -1,7 +1,6 @@
 //! `phux host add` with its progress read line by line.
 
 use std::path::Path;
-use std::process::Command;
 
 use super::{MISSING_CLI, args};
 
@@ -48,7 +47,7 @@ pub fn add_host(
         return Err(MISSING_CLI.into());
     }
     // Plain diagnostics: the progress lines are read by their prefix.
-    let mut child = Command::new(phux)
+    let mut child = crate::platform::phux_command(phux)
         .args(request.args())
         .env("NO_COLOR", "1")
         .env_remove("CLICOLOR_FORCE")

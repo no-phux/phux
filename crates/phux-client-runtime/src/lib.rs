@@ -7,7 +7,7 @@
 //!   registry (ADR-0093 rung 1).
 //! - [`dial`]: dial a resolved entry under the CLI's trust rules.
 //! - [`reconnect`]: backoff ladders and fatal-refusal rules.
-//! - [`tunnel`]: the byte relay for a socket-owning embedder.
+//! - `tunnel` (Unix): the byte relay for a socket-owning embedder.
 //! - [`control`]: the sans-IO control plane over `SessionKernel`.
 //! - [`engine`]: the owner thread hosting the kernel and every replica.
 //! - [`perf`]: owner-thread apply and publication telemetry.
@@ -52,6 +52,7 @@ pub mod release;
 pub mod runtime;
 pub mod session;
 pub mod target;
+#[cfg(unix)]
 pub mod tunnel;
 
 pub use runtime::{

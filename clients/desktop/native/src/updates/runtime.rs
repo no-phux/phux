@@ -3,6 +3,14 @@
 
 use super::*;
 
+#[cfg(windows)]
+use crate::platform::phux_command;
+
+#[cfg(not(windows))]
+fn phux_command(phux: &Path) -> Command {
+    Command::new(phux)
+}
+
 #[derive(Clone, Debug)]
 pub struct RuntimeRelease {
     pub current: String,
@@ -18,7 +26,7 @@ pub struct RuntimeRelease {
 
 pub fn runtime_check(phux: &Path, channel: Channel) -> anyhow::Result<RuntimeRelease> {
     let text = run_bounded(
-        Command::new(phux).args(["update", "--check", "--channel", channel.as_str(), "--json"]),
+        phux_command(phux).args(["update", "--check", "--channel", channel.as_str(), "--json"]),
         None,
         CHECK_TIMEOUT,
         "phux release check timed out. Nothing was installed; try Check now again.",
@@ -81,7 +89,7 @@ pub fn runtime_install(
     channel: Channel,
 ) -> anyhow::Result<RuntimeInstalled> {
     let text = run_bounded(
-        Command::new(phux).arg("--socket").arg(socket).args([
+        phux_command(phux).arg("--socket").arg(socket).args([
             "update",
             "--channel",
             channel.as_str(),
@@ -89,20 +97,32 @@ pub fn runtime_install(
         ]),
         None,
         STAGE_TIMEOUT,
-        "phux update timed out. The previous binaries stay in place; try again.",
+        if cfg!(windows) {
+            "phux update timed out. Check the installed version in WSL before retrying; Desktop did not close any agent sessions."
+        } else {
+            "phux update timed out. The previous binaries stay in place; try again."
+        },
     )?;
     let value: Value = serde_json::from_str(&text)?;
     let mut result = runtime_result(&value)?;
     if value["server_handoff"]["result"] == "no_server" {
-        output(
-            Command::new(phux)
+        run_bounded(
+            phux_command(phux)
                 .arg("--socket")
                 .arg(socket)
                 .args(["server", "--ensure"]),
+            None,
+            CHECK_TIMEOUT,
+            "phux was installed but starting its server timed out. Try the server handoff again.",
         )
         .context("phux was installed but the server could not start")?;
     }
     if !result.reconnect {
+        #[cfg(windows)]
+        result.message.push_str(
+            " Use Retry server handoff in Desktop to retry in the selected WSL distribution. No agent sessions were closed.",
+        );
+        #[cfg(not(windows))]
         result.message.push_str(&format!(
             " Retry the handoff with {} --socket {} upgrade. No agent sessions were closed.",
             crate::attach::quote_paths(&[phux.to_path_buf()]),
@@ -113,12 +133,15 @@ pub fn runtime_install(
 }
 
 pub fn runtime_retry(phux: &Path, socket: &Path) -> anyhow::Result<RuntimeInstalled> {
-    output(
-        Command::new(phux)
+    run_bounded(
+        phux_command(phux)
             .arg("--socket")
             .arg(socket)
             .arg("upgrade")
             .stdin(Stdio::null()),
+        None,
+        CHECK_TIMEOUT,
+        "Server handoff timed out. Try Retry server handoff again; no agent sessions were closed.",
     )?;
     Ok(RuntimeInstalled {
         message: "Server handoff requested; reconnecting windows.".into(),

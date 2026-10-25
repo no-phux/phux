@@ -83,7 +83,8 @@ fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
 /// A sentence for the window when the server cannot be read, the create is
 /// refused, or there is nothing to open.
 pub fn open_home(phux: &Path, socket: &Path, requested: Option<&str>) -> Result<String, String> {
-    Probe::connect(Target::uds(socket.to_path_buf()))?.resolve(phux, socket, requested)
+    Probe::connect(crate::platform::local_target(socket.to_path_buf()))?
+        .resolve(phux, socket, requested)
 }
 
 /// The session a window on registered host `name` opens: its Intake, else its
@@ -111,7 +112,11 @@ pub(crate) fn existing_home(
     name: &str,
     key: Option<SessionKey>,
 ) -> Result<String, String> {
-    existing_target_home(Target::uds(socket.to_path_buf()), name, key)
+    existing_target_home(
+        crate::platform::local_target(socket.to_path_buf()),
+        name,
+        key,
+    )
 }
 
 pub(crate) fn existing_remote_home(
@@ -235,7 +240,13 @@ impl Probe {
     }
 
     fn create(&self, name: &str) -> Result<(), String> {
-        let home = std::env::var("HOME").ok().filter(|home| !home.is_empty());
+        // Windows HOME names a different filesystem. Let the WSL server choose
+        // its own home instead of sending a Windows profile path as a cwd.
+        let home = if cfg!(windows) {
+            None
+        } else {
+            std::env::var("HOME").ok().filter(|home| !home.is_empty())
+        };
         self.client
             .submit_organization(session_create(name, home))
             .map_err(|error| error.to_string())
@@ -287,7 +298,7 @@ fn create_with_cli(phux: &Path, socket: &Path, name: &str) -> Result<(), String>
                 .to_owned(),
         );
     }
-    let output = std::process::Command::new(phux)
+    let output = crate::platform::phux_command(phux)
         .arg("--socket")
         .arg(socket)
         .args(["new", "--json", "-s", name])

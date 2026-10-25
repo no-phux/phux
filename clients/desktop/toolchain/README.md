@@ -4,7 +4,7 @@ The desktop builds against GPUI Kit 0.7.3 on
 [gpui-fast](https://github.com/longbridge/gpui-fast) 0.1.9, a GPUI fork with
 retained views, layout and text measurement, at the Zed revision of the
 `gpui-pre` 0.3.9 snapshot Kit pins. Kit's `gpui-pre` crates are served by
-small compatibility crates in `compat/` that re-export gpui-fast. Five
+small compatibility crates in `compat/` that re-export gpui-fast. Six
 gpui-fast crates carry reviewed local patches. `source.json` pins each
 crates.io archive and each patch by SHA-256; `just desktop-source`
 (`tools/src/desktop/`) materializes the patched copies under `gpui/` (ignored
@@ -15,7 +15,7 @@ at `compat/`.
 
 `just desktop-source` runs `bun tools/main.ts desktop-source`.
 It downloads `gpui-fast`, `gpui-fast-apple`, `gpui-fast-macos`,
-`gpui-fast-linux` and `gpui-fast-wgpu` from
+`gpui-fast-linux`, `gpui-fast-wgpu` and `gpui-fast-windows` from
 crates.io (cached under `clients/desktop/.cache/crates`), verifies them,
 applies `patches/` in order, and moves the result to `gpui/`. The output is a
 pure function of the pins. An existing `gpui/` is verified against a fresh

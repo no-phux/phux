@@ -93,3 +93,8 @@ An interrupted update is detected by `brand-check` and can be repeated.
 Locally edited obsolete assets cause an error instead of being deleted.
 The updater reports failures per repository and can safely be rerun after
 correcting access or an export mapping.
+
+Windows applies the chosen artwork to running and newly opened window icons.
+Explorer and pinned shortcuts retain the release icon. The Windows CI fixture
+exercises all approved PNGs through the actual managed native adapter without
+a WSL coordinator.

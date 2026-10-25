@@ -1,0 +1,219 @@
+diff --git a/gpui-fast-macos/src/platform.rs b/gpui-fast-macos/src/platform.rs
+index f053856..9650457 100644
+--- a/gpui-fast-macos/src/platform.rs
++++ b/gpui-fast-macos/src/platform.rs
+@@ -1139,6 +1139,22 @@ impl Platform for MacPlatform {
+         self.0.lock().keyboard_mapper.clone()
+     }
+ 
++    fn set_app_icon(&self, png: &[u8]) -> Result<()> {
++        // SAFETY: App calls this on its UI thread. NSData copies the bytes;
++        // NSImage is owned until AppKit retains it as applicationIconImage.
++        unsafe {
++            use cocoa::foundation::NSData;
++            let data = NSData::dataWithBytes_length_(nil, png.as_ptr().cast(), png.len() as u64);
++            let image: id = msg_send![class!(NSImage), alloc];
++            let image: id = msg_send![image, initWithData: data];
++            anyhow::ensure!(image != nil, "Invalid application icon PNG");
++            let app: id = msg_send![APP_CLASS, sharedApplication];
++            let _: () = msg_send![app, setApplicationIconImage: image];
++            let _: () = msg_send![image, release];
++        }
++        Ok(())
++    }
++
+     fn app_path(&self) -> Result<PathBuf> {
+         unsafe {
+             let bundle: id = NSBundle::mainBundle();
+diff --git a/gpui-fast-windows/src/platform.rs b/gpui-fast-windows/src/platform.rs
+index 901be70..fa5195f 100644
+--- a/gpui-fast-windows/src/platform.rs
++++ b/gpui-fast-windows/src/platform.rs
+@@ -62,6 +62,7 @@ pub struct WindowsPlatform {
+     /// Created with `headless()`: never windowed, and without a real text system.
+     headless: bool,
+     icon: HICON,
++    runtime_icon: Cell<Option<HICON>>,
+     background_executor: BackgroundExecutor,
+     foreground_executor: ForegroundExecutor,
+     text_system: Arc<dyn PlatformTextSystem>,
+@@ -274,6 +275,7 @@ impl WindowsPlatform {
+             vsync_stop: RefCell::new(None),
+             headless,
+             icon,
++            runtime_icon: Cell::new(None),
+             background_executor,
+             foreground_executor,
+             text_system,
+@@ -306,6 +308,19 @@ impl WindowsPlatform {
+             });
+     }
+ 
++    fn update_window_icons(&self, icon: HICON) {
++        // Sending a window message can reenter platform code: release the lock.
++        let handles: Vec<_> = self
++            .raw_window_handles
++            .read()
++            .iter()
++            .map(TrackedWindow::as_raw)
++            .collect();
++        for hwnd in handles {
++            set_window_icon(hwnd, icon);
++        }
++    }
++
+     fn generate_creation_info(&self) -> WindowCreationInfo {
+         WindowCreationInfo {
+             icon: self.icon,
+@@ -551,6 +566,25 @@ fn encode_restart_arguments(arguments: &[OsString]) -> OsString {
+ }
+ 
+ impl Platform for WindowsPlatform {
++    fn set_app_icon(&self, png: &[u8]) -> Result<()> {
++        let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)?
++            .resize_exact(256, 256, image::imageops::FilterType::Lanczos3);
++        let mut encoded = std::io::Cursor::new(Vec::new());
++        image.write_to(&mut encoded, image::ImageFormat::Png)?;
++        // SAFETY: Windows accepts PNG resource bits and copies them. This handle
++        // is ours; retain it until every synchronous WM_SETICON has replaced it.
++        let icon = unsafe {
++            CreateIconFromResourceEx(encoded.get_ref(), true, 0x0003_0000, 0, 0, LR_DEFAULTCOLOR)?
++        };
++        self.update_window_icons(icon);
++        if let Some(previous) = self.runtime_icon.replace(Some(icon)) {
++            unsafe {
++                DestroyIcon(previous).log_err();
++            }
++        }
++        Ok(())
++    }
++
+     fn background_executor(&self) -> BackgroundExecutor {
+         self.background_executor.clone()
+     }
+@@ -773,6 +807,9 @@ impl Platform for WindowsPlatform {
+         }
+         let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
+         let handle = window.get_raw_handle();
++        if let Some(icon) = self.runtime_icon.get() {
++            set_window_icon(handle, icon);
++        }
+         self.raw_window_handles.write().push(TrackedWindow {
+             handle: handle.into(),
+             frame_signal: window.state.frame_signal.clone(),
+@@ -1408,6 +1445,12 @@ impl Drop for WindowsPlatform {
+         if let Some(stop) = self.vsync_stop.borrow_mut().take() {
+             stop.store(true, Ordering::Release);
+         }
++        if let Some(icon) = self.runtime_icon.take() {
++            self.update_window_icons(self.icon);
++            unsafe {
++                DestroyIcon(icon).log_err();
++            }
++        }
+         unsafe {
+             if let Some(notification) = self.suspend_resume_notification.borrow_mut().take() {
+                 // SAFETY: notification was returned by RegisterSuspendResumeNotification.
+@@ -1421,6 +1464,21 @@ impl Drop for WindowsPlatform {
+     }
+ }
+ 
++fn set_window_icon(hwnd: HWND, icon: HICON) {
++    // SAFETY: platform-owned windows are updated on their UI thread. The caller
++    // retains the HICON until both small and large icons have been replaced.
++    unsafe {
++        for size in [ICON_SMALL, ICON_BIG] {
++            SendMessageW(
++                hwnd,
++                WM_SETICON,
++                Some(WPARAM(size as usize)),
++                Some(LPARAM(icon.0 as isize)),
++            );
++        }
++    }
++}
++
+ pub(crate) struct WindowCreationInfo {
+     pub(crate) icon: HICON,
+     pub(crate) executor: ForegroundExecutor,
+diff --git a/gpui-fast/src/app.rs b/gpui-fast/src/app.rs
+index 4836552..631425d 100644
+--- a/gpui-fast/src/app.rs
++++ b/gpui-fast/src/app.rs
+@@ -1851,6 +1851,11 @@ impl App {
+             }));
+     }
+ 
++    /// Replace the running application icon without modifying the signed bundle.
++    pub fn set_app_icon(&self, png: &[u8]) -> Result<()> {
++        self.platform.set_app_icon(png)
++    }
++
+     /// Returns the full pathname of the current app bundle.
+     ///
+     /// Returns an error if the app is not being run from a bundle.
+diff --git a/gpui-fast/src/app/test_context.rs b/gpui-fast/src/app/test_context.rs
+index 906b155..aae775a 100644
+--- a/gpui-fast/src/app/test_context.rs
++++ b/gpui-fast/src/app/test_context.rs
+@@ -483,6 +483,11 @@ impl TestAppContext {
+             .simulate_display_added(display_id, refresh_interval);
+     }
+ 
++    /// The last valid PNG accepted by the simulated application icon interface.
++    pub fn app_icon_png(&self) -> Option<Vec<u8>> {
++        self.test_platform.app_icon.borrow().clone()
++    }
++
+     #[cfg(test)]
+     pub(crate) fn test_platform(&self) -> &TestPlatform {
+         &self.test_platform
+diff --git a/gpui-fast/src/platform.rs b/gpui-fast/src/platform.rs
+index 9e5c180..1c80aae 100644
+--- a/gpui-fast/src/platform.rs
++++ b/gpui-fast/src/platform.rs
+@@ -556,6 +556,11 @@ pub trait Platform: 'static {
+     fn graphical_environment(&self) -> Option<GraphicalEnvironment> {
+         None
+     }
++    /// Replace the running application icon from encoded PNG bytes.
++    fn set_app_icon(&self, _png: &[u8]) -> Result<()> {
++        anyhow::bail!("Runtime application icons are unsupported on this platform")
++    }
++
+     fn app_path(&self) -> Result<PathBuf>;
+     fn path_for_auxiliary_executable(&self, name: &str) -> Result<PathBuf>;
+ 
+diff --git a/gpui-fast/src/platform/test/platform.rs b/gpui-fast/src/platform/test/platform.rs
+index 6769859..9b6017f 100644
+--- a/gpui-fast/src/platform/test/platform.rs
++++ b/gpui-fast/src/platform/test/platform.rs
+@@ -56,6 +56,7 @@ pub(crate) struct TestPlatform {
+         Option<Box<dyn Fn() -> anyhow::Result<Option<Box<dyn PlatformHeadlessRenderer>>>>>,
+     weak: Weak<Self>,
+     menus: RefCell<Vec<OwnedMenu>>,
++    pub(crate) app_icon: RefCell<Option<Vec<u8>>>,
+ }
+ 
+ #[derive(Clone)]
+@@ -226,6 +227,7 @@ impl TestPlatform {
+             text_system,
+             headless_renderer_factory,
+             menus: Default::default(),
++            app_icon: Default::default(),
+         })
+     }
+ 
+@@ -716,6 +718,12 @@ impl Platform for TestPlatform {
+ 
+     fn on_validate_app_menu_command(&self, _callback: Box<dyn FnMut(&dyn crate::Action) -> bool>) {}
+ 
++    fn set_app_icon(&self, png: &[u8]) -> Result<()> {
++        image::load_from_memory_with_format(png, image::ImageFormat::Png)?;
++        self.app_icon.replace(Some(png.to_vec()));
++        Ok(())
++    }
++
+     fn app_path(&self) -> Result<std::path::PathBuf> {
+         unimplemented!()
+     }

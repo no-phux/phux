@@ -17,6 +17,10 @@
       "version": "0.1.9",
       "sha256": "908b5fc7b6225e9b5cb0ce0aec500a4ae643a5ecdaa838b224d4c8f5690546c9"
     },
+    "gpui-fast-windows": {
+      "version": "0.1.9",
+      "sha256": "6c4cf30e5269146dc29dafcaeaa3cc78ff2371811873057833e8fab9e1891102"
+    },
     "gpui-fast-wgpu": {
       "version": "0.1.9",
       "sha256": "43832ede90bd5e924ad12774cf18f51ae288cc4a6f4f0c6888f8b14899590c39"
@@ -39,6 +43,9 @@
     "patches/0014-image-source-sampling.patch": "c67b39b922a8784abcbf7265da1d8d39502460b4d0e353c2b20f11b0e08d737b",
     "patches/0015-metal-image-source-sampling.patch": "2b0f0a53fdb15c4d58c87ac0185b792220890dc3c4642c511afe5ea3a7d5b34d",
     "patches/0016-wgpu-image-source-sampling.patch": "b881e78c72d588061e9c6006d7d5d0172480a87fb6dbceb84fa368d8668f90d9",
-    "patches/0017-runtime-application-icon.patch": "4d3bdda0057e293fa492808c81fa851e1a05488bfcf27d6bbd7c3baf6dff0727"
+    "patches/0017-windows-submission-and-capture.patch": "bfc74c95a895b7434966071a06a6e0f5fdea870c229506248f1fc6dc967acb87",
+    "patches/0018-windows-hardware-first-warp.patch": "407efaa66d1b653ccb2dd79f573a76b58cd5a6b6705f677d714694b12614a93f",
+    "patches/0019-windows-image-source-sampling.patch": "b0d2204c0652ca8c092506866e76781b709685d4d6a1cd857e89da9076cc2011",
+    "patches/0020-runtime-application-icon.patch": "9b570139c8a11c8140a000de2ef4a655016591ed6fbbe78a05566092cda8b155"
   }
 }

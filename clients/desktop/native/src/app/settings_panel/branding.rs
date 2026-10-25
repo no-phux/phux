@@ -56,6 +56,8 @@ pub(super) fn group(desk: &Desk, _cx: &App) -> Group {
     });
     let description = if cfg!(target_os = "macos") {
         "Changes app artwork and the Dock icon. Finder uses the release icon."
+    } else if cfg!(target_os = "windows") {
+        "Changes app artwork and running window icons. Shortcuts use the release icon."
     } else {
         "Changes app artwork and the launcher icon. Your launcher may take a moment to refresh."
     };

@@ -23,9 +23,9 @@ serde_json.workspace = true
 # context switches). Same crate and version phux-server already pins for its
 # own syscalls; `resource` is the only feature this crate needs, and it keeps
 # the call safe.
-# Native only: the wasm kernel build (clients/phux-web) has no getrusage and
-# reports `process: null`.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Unix only: Windows and the wasm kernel build (clients/phux-web) have no
+# getrusage and report `process: null`.
+[target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["resource"] }
 
 # `pthread_set_qos_class_self_np` for `sched::promote_current_thread` on

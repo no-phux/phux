@@ -1,7 +1,10 @@
 use super::*;
+#[cfg(unix)]
 use crate::updates::{run_bounded_with_progress, tests::scratch};
+#[cfg(unix)]
 use std::process::Command;
 use std::sync::mpsc;
+#[cfg(unix)]
 use std::time::Duration;
 
 /// Force curl's records to straddle reads, including the decimal and CR.
@@ -79,6 +82,7 @@ fn unknown_content_length_never_synthesizes_a_percentage() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn progress_arrives_before_a_live_command_exits_and_timeout_kills_its_group() {
     let dir = scratch("progress-timeout");
@@ -121,6 +125,7 @@ fn progress_arrives_before_a_live_command_exits_and_timeout_kills_its_group() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn a_failed_transfer_keeps_stderr_and_never_claims_verification() {
     let (tx, rx) = mpsc::channel();
@@ -142,6 +147,7 @@ fn a_failed_transfer_keeps_stderr_and_never_claims_verification() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn successful_commands_deliver_verification_and_leave_stdout_unchanged() {
     let (tx, rx) = mpsc::channel();
