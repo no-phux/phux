@@ -69,6 +69,11 @@ test.each<[string[], Surface[]]>([
   [[".config/zig-toolchain.json"], ["phux", "web", "web_engine", "native", "desktop"]],
   [["scripts/install-zig.sh"], ["web_engine", "native", "desktop"]],
   [["scripts/setup-rust.sh"], ["native", "desktop"]],
+  [["scripts/install-windows.ps1"], []],
+  [["scripts/test-install-windows.ps1"], []],
+  [["scripts/test-windows-wsl.ps1"], []],
+  [["scripts/test-windows-mcp.py"], []],
+  [[".github/workflows/windows-wsl.yml"], []],
   [["clients/desktop/native/Cargo.lock"], ["desktop"]],
   [["clients/desktop/phux-protocol"], ALL],
   [

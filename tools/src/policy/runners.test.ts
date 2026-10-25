@@ -15,7 +15,13 @@ import {
   workflowText,
 } from "./workflows.ts";
 
-const STANDARD = new Set(["ubuntu-latest", "ubuntu-24.04", "ubuntu-24.04-arm", "xcode-27"]);
+const STANDARD = new Set([
+  "ubuntu-latest",
+  "ubuntu-24.04",
+  "ubuntu-24.04-arm",
+  "windows-2022",
+  "xcode-27",
+]);
 const MAIN = "github.ref == 'refs/heads/main'";
 const CACHE_WRITERS = new Set([
   "actions/cache/save",
