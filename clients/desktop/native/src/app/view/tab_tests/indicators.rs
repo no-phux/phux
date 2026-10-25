@@ -5,6 +5,63 @@ use crate::connection::{AgentAttention, AgentInfo, AgentState};
 use phux_protocol::ResourceId;
 
 #[gpui::test]
+fn urgent_attention_stays_visible_on_selected_side_tabs_and_terminal_rows(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, selectable_work);
+    for position in ["tabs-side", "tabs-top", "tabs-bottom"] {
+        run(&desk, position, cx);
+        for state in [AgentState::Unknown, AgentState::Working, AgentState::Idle] {
+            desk.update(cx, |desk, cx| {
+                let link = desk.link.as_mut().unwrap();
+                link.workspace.active_id = "fixture-a".into();
+                link.connection.agents.insert(
+                    ResourceId::local(1),
+                    AgentInfo {
+                        name: "reviewer".into(),
+                        kind: Some("opencode".into()),
+                        state,
+                        attention: AgentAttention::High,
+                        changed_at_ms: 0,
+                    },
+                );
+                cx.notify();
+            });
+            draw(cx);
+            let tab = cx.debug_bounds("tab-fixture-a").unwrap();
+            let alert = cx
+                .debug_bounds("harness-attention")
+                .expect("urgent pip independent of lifecycle");
+            assert!(tab.contains(&alert.center()), "{position}, {state:?}");
+        }
+    }
+    // With the session expanded, its terminal row keeps the same alert even
+    // after its tab is no longer the selected one.
+    run(&desk, "tabs-side", cx);
+    desk.update(cx, |desk, cx| {
+        let link = desk.link.as_mut().unwrap();
+        link.connection.agents.remove(&ResourceId::local(1));
+        link.connection.agents.insert(
+            ResourceId::local(4),
+            AgentInfo {
+                name: "background".into(),
+                kind: Some("pi".into()),
+                state: AgentState::Unknown,
+                attention: AgentAttention::High,
+                changed_at_ms: 0,
+            },
+        );
+        cx.notify();
+    });
+    run(&desk, "expand-sessions", cx);
+    let pane = cx.debug_bounds("pane-@4").unwrap();
+    let alert = cx.debug_bounds("harness-attention").unwrap();
+    assert!(pane.contains(&alert.center()));
+    assert!(cx.debug_bounds("harness-mark-Pi").is_some());
+}
+
+#[gpui::test]
 fn harness_marks_survive_attention_and_inactive_tabs_in_every_placement(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = fixture(cx);

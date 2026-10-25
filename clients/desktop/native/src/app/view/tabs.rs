@@ -27,7 +27,9 @@ use super::super::pane_identity::Harness;
 use super::super::skin::{Look, Surface, Surfaced};
 use super::super::ui::list::{CHILD_INSET, ROW, ROW_GAP, ROW_INSET, row_icon, row_radius};
 use super::super::ui::menu::Anchor;
-use super::super::ui::status::{attention_wash, harness_mark, state_dot, strongest};
+use super::super::ui::status::{
+    attention_wash, harness_mark, harness_status, state_dot, strongest,
+};
 use super::super::ui::{attention_mark, ghost_icon};
 use super::tab_glow;
 
@@ -183,7 +185,7 @@ pub(super) fn side_lead(
     look: &Look,
 ) -> AnyElement {
     if let Some(harness) = harness {
-        return harness_mark(harness, agent, 13., look).into_any_element();
+        return harness_status(harness, agent, attention, 13., look).into_any_element();
     }
     if attention.is_some() || agent.is_some() {
         return state_dot(attention, agent).into_any_element();
@@ -459,7 +461,7 @@ fn tab_button(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(side_lead(None, agent, harness, selected, look)),
+                    .child(side_lead(attention, agent, harness, selected, look)),
             )
         })
         .child(tab_label(desk, tab, selected, look))

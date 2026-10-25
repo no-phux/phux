@@ -20,7 +20,7 @@ use crate::app::desk::Desk;
 use crate::app::pane_identity::PaneOrigin;
 use crate::app::skin::Look;
 use crate::app::ui::list::{Emphasis, child_row, row_detail, row_label};
-use crate::app::ui::status::{harness_mark, state_dot};
+use crate::app::ui::status::{harness_status, state_dot};
 use crate::app::ui::{ago, dot, row_icon};
 use crate::app::view::{ResourceDrag, drag_label};
 use crate::connection::AgentInfo;
@@ -192,8 +192,9 @@ pub(super) fn catalog_record_row(
 /// corner pip reports state; a badge without a known harness still gets a dot.
 fn pane_mark(origin: PaneOrigin, agent: Option<&AgentInfo>, look: &Look) -> AnyElement {
     let state = agent.map(|info| info.state);
+    let attention = agent.filter(|info| info.needs_you()).map(|info| info.state);
     if let Some(harness) = origin.harness() {
-        return harness_mark(harness, state, 12., look).into_any_element();
+        return harness_status(harness, state, attention, 12., look).into_any_element();
     }
     if let Some(info) = agent {
         return state_dot(info.needs_you().then_some(info.state), state).into_any_element();

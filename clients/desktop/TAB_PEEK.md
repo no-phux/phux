@@ -48,6 +48,7 @@ Split tabs show a layered mosaic of their pane layout. The focused pane remains
 lit on inactive tabs, and zoom dims hidden panes without removing their cells.
 Harness marks keep their identity when agents need attention; the corner pip
 reports state instead of replacing the mark.
+Urgent attention lights the pip even when the agent's lifecycle state is unknown.
 
 Peeking slides the full-size workspace down and clips its bottom: terminal
 dimensions never change, so programs do not reflow. Miniatures use the native
