@@ -5,6 +5,23 @@ plist() {
   /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist" 2>/dev/null
 }
 
+macos_at_least() {
+  awk -v actual="$1" -v minimum="$2" 'BEGIN {
+    pattern = "^[0-9]+([.][0-9]+){0,2}$"
+    if (actual !~ pattern || minimum !~ pattern) exit 1
+    split(actual, a, "."); split(minimum, b, ".")
+    for (i = 1; i <= 3; i++) {
+      if (a[i]+0 > b[i]+0) exit 0
+      if (a[i]+0 < b[i]+0) exit 1
+    }
+  }'
+}
+
+check_macos_desktop_host() {
+  [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || die "Phux Desktop requires Apple silicon macOS or GNU/Linux"
+  macos_at_least "$(sw_vers -productVersion)" 26.0 || die "Phux Desktop requires macOS 26 or later"
+}
+
 # Unzip the verified archive and check it is the signed bundle that was asked for.
 unpack_desktop() {
   unzip -Z1 "${work}/${asset_name}" > "${work}/members" || die "could not read the archive"
@@ -22,9 +39,19 @@ unpack_desktop() {
   mkdir "${work}/desktop"
   unzip -q "${work}/${asset_name}" -d "${work}/desktop"
   app="${work}/desktop/Phux.app"
+  check_macos_desktop_bundle
+  check_macos_desktop_release
+}
+
+check_macos_desktop_bundle() {
   [ -x "${app}/Contents/MacOS/phux-desktop" ] || die "the archive has no desktop executable"
   codesign --verify --deep --strict "$app" || die "the desktop app's signature does not verify"
   [ "$(plist "$app" CFBundleIdentifier)" = dev.phux.desktop ] || die "the archive is not Phux Desktop"
+  minimum_macos="$(plist "$app" LSMinimumSystemVersion)" || die "the bundle has no minimum macOS version"
+  macos_at_least "$(sw_vers -productVersion)" "$minimum_macos" || die "this desktop bundle requires macOS ${minimum_macos}"
+}
+
+check_macos_desktop_release() {
   if [ "$channel" = next ]; then
     [ "$(plist "$app" PhuxBuildSHA)" = "$build_id" ] || die "the bundle is not commit ${build_id}"
     [ "$(plist "$app" PhuxDesktopChannel)" = next ] || die "the bundle is not a next build"
@@ -65,6 +92,11 @@ publish_desktop() {
   if [ -d "$installed" ] && [ "$(plist "$installed" CFBundleIdentifier || true)" != dev.phux.desktop ]; then
     die "refusing to replace an unrelated ${installed}"
   fi
+  # Only byte-identical verified bundles are a no-op: a matching version alone
+  # cannot detect a corrupted install or a different next-channel build.
+  if [ -d "$installed" ] && diff -qr "$app" "$installed" >/dev/null 2>&1; then
+    return
+  fi
   # Copy onto the destination volume first, so publishing is two renames.
   app_publish="$(mktemp -d "${applications_dir}/.phux-desktop-install.XXXXXX")"
   ditto "$app" "${app_publish}/Phux.app"
@@ -102,6 +134,10 @@ if [ ! -f "\$APP/Contents/Info.plist" ]; then
 fi
 exec open "\$APP"
 EOF
+  if cmp -s "$launcher" "${install_dir}/phux-desktop" && [ -x "${install_dir}/phux-desktop" ]; then
+    rm -f "$launcher"
+    return
+  fi
   chmod 755 "$launcher" && mv -f "$launcher" "${install_dir}/phux-desktop"
 }
 
@@ -118,8 +154,7 @@ install_desktop() {
     *-linux-gnu) install_linux_desktop; return ;;
   esac
   if [ "$dry_run" -eq 0 ]; then
-    [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || die "Phux Desktop requires Apple silicon macOS or GNU/Linux"
-    [ "$(/usr/bin/sw_vers -productVersion | cut -d. -f1)" -ge 27 ] || die "Phux Desktop requires macOS 27 or later"
+    check_macos_desktop_host
   fi
   if [ -z "$stage_dir" ] && ! has_cli; then
     phux_message info "phux CLI not found; installing it first"

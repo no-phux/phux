@@ -1,4 +1,4 @@
-// scripts/install.sh --desktop on macOS 27+ arm64 (skipped elsewhere): real
+// scripts/install.sh --desktop on macOS 26+ arm64 (skipped elsewhere): real
 // zips, ad-hoc signatures and lockf locks behind a fake network. Run
 // explicitly: `bun test ./tools/src/install/desktop.e2e.ts`.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -24,9 +24,9 @@ const NEXT_SHA = "a".repeat(40);
 const LOCK = ".phux-desktop-install.lock";
 const LOCKED = "another Desktop install is publishing";
 
-function macos27Arm64(): boolean {
+function macos26Arm64(): boolean {
   if (process.platform !== "darwin" || process.arch !== "arm64") return false;
-  return Number(capture(["sw_vers", "-productVersion"]).split(".")[0]) >= 27;
+  return Number(capture(["sw_vers", "-productVersion"]).split(".")[0]) >= 26;
 }
 
 const readPlist = (path: string): Table =>
@@ -62,6 +62,7 @@ class Fixture extends InstallFixture {
     CFBundleExecutable: "phux-desktop",
     CFBundlePackageType: "APPL",
     PhuxDesktopVersion: VERSION,
+    LSMinimumSystemVersion: "26.0",
   };
 
   constructor() {
@@ -111,7 +112,7 @@ class Fixture extends InstallFixture {
   }
 }
 
-describe.skipIf(!macos27Arm64())("install.sh --desktop on macOS", () => {
+describe.skipIf(!macos26Arm64())("install.sh --desktop on macOS", () => {
   let f: Fixture;
   beforeEach(() => {
     f = new Fixture();
@@ -125,6 +126,35 @@ describe.skipIf(!macos27Arm64())("install.sh --desktop on macOS", () => {
     f.install();
     expect(f.installedPlist()["TestBuild"]).toBe("updated");
     expect(executable(join(f.launchers, "phux-desktop"))).toBe(true);
+  });
+
+  test("detects macOS 26 and 27, refuses older hosts and incompatible bundles", () => {
+    for (const version of ["26.0", "26.5.1", "27.0"]) {
+      f.script("sw_vers", `#!/bin/sh\necho ${version}\n`);
+      f.install();
+    }
+    const before = f.installedPlist();
+    f.script("sw_vers", "#!/bin/sh\necho 25.6\n");
+    expect(f.install(undefined, false).stderr).toContain("requires macOS 26");
+    f.script("sw_vers", "#!/bin/sh\necho 26.0\n");
+    f.pack({ LSMinimumSystemVersion: "26.1" });
+    expect(f.install(undefined, false).stderr).toContain("requires macOS 26.1");
+    f.pack({ LSMinimumSystemVersion: "invalid" });
+    expect(f.install(undefined, false).stderr).toContain("requires macOS invalid");
+    expect(f.installedPlist()).toEqual(before);
+  });
+
+  test("reinstall is a no-op for identical bytes, but repairs corruption", () => {
+    f.install();
+    const binary = join(f.installed, "Contents/MacOS/phux-desktop");
+    const launcher = join(f.launchers, "phux-desktop");
+    const identity = [statSync(binary).ino, statSync(launcher).ino];
+    f.install();
+    expect([statSync(binary).ino, statSync(launcher).ino]).toEqual(identity);
+    writeFileSync(binary, "corrupted");
+    f.install();
+    capture(["codesign", "--verify", "--deep", "--strict", f.installed]);
+    expect(statSync(binary).ino).not.toBe(identity[0]);
   });
 
   test("unpinned installs verify the manifest digest", () => {

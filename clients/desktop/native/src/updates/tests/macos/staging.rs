@@ -50,6 +50,7 @@ impl Network {
 <key>CFBundleExecutable</key><string>phux-desktop</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>PhuxDesktopVersion</key><string>1.2.3</string>
+<key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>PhuxDesktopChannel</key><string>stable</string>
 <key>PhuxBuildSHA</key><string>{sha}</string>
 </dict></plist>

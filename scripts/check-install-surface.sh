@@ -31,7 +31,7 @@ done
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
 bash scripts/test-install.sh
-# The macOS Desktop installer test skips itself off macOS 27+ arm64.
+# The macOS Desktop installer test skips itself off macOS 26+ arm64.
 bun test ./tools/src/install/desktop.e2e.ts
 bun test ./tools/src/install/desktop-linux.e2e.ts
 # Real Windows PowerShell 5.1/7 + WSL qualification lives in windows-wsl.yml.

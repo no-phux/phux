@@ -7,9 +7,10 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=scripts/lib/dev-toolchain.sh
 source "$root/scripts/lib/dev-toolchain.sh"
 check_desktop_toolchain
-# shellcheck source=scripts/lib/apple-toolchain-env.sh
 if [[ "$(uname -s)" == Darwin ]]; then
-    source "$root/scripts/lib/apple-toolchain-env.sh"
+    # shellcheck source=scripts/lib/macos-desktop.sh
+    source "$root/scripts/lib/macos-desktop.sh"
+    prepare_macos_desktop
 fi
 export RUSTUP_TOOLCHAIN="$RUST_CHANNEL"
 # Ignore an inherited CARGO_TARGET_DIR. The shipping path is this directory.
@@ -28,4 +29,7 @@ fi
 cargo build "${args[@]}"
 binary="$CARGO_TARGET_DIR/$profile/phux-desktop"
 test -x "$binary"
+if [[ "$(uname -s)" == Darwin ]]; then
+    PHUX_MACOS_MIN_MAX=26.0 bash "$root/scripts/check-binary-portability.sh" "$binary"
+fi
 printf '%s\n' "$binary"

@@ -102,7 +102,9 @@ minisign signatures; the channel manifest continues to name the ZIP so
 existing installers and automatic updates keep working. Linux is unchanged.
 The DMG includes an Applications link and instructions for the separately
 installed CLI; it does not bundle a second coordinator or mutate an existing
-installation. macOS 27+ on Apple silicon remains the supported baseline.
+installation. macOS 26+ on Apple silicon is the supported baseline. Both the
+bundle's minimum version and the executable's Mach-O deployment floor are
+checked before publication; a newer build host must not raise either one.
 
 The Apple credentials are separate from minisign. Configure these repository
 Actions secrets before marking the desktop release PR ready:

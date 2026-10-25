@@ -46,6 +46,7 @@ const ROUTES: Record<string, Surface[]> = {
   ".github/workflows/ci.yml": [...SURFACES],
   ".github/actions/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],
+  "scripts/ci/prune-build-cache.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;
   // these distribution scripts do not change the Unix Rust build.
   "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],
@@ -97,6 +98,8 @@ const ROUTES: Record<string, Surface[]> = {
   "just/setup.just": ["native"],
   "scripts/{doctor,test-dev-setup,native-smoke}.sh": ["native"],
   "scripts/setup-rust.sh": ["native", "desktop"],
+  "scripts/{setup,test}-macos-desktop.sh": ["native", "desktop"],
+  "scripts/lib/macos-desktop.sh": ["native", "desktop"],
   // How the native, web-engine and desktop lanes get libghostty's Zig; the Nix
   // lanes use flake.nix's compiler.
   ".config/zig-toolchain.json": [...SHARED, ...ZIG],

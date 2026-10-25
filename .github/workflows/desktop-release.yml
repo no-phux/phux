@@ -44,7 +44,8 @@ concurrency:
 jobs:
   macos:
     name: Qualify and publish macOS arm64
-    runs-on: xcode-27
+    # Build on the oldest supported host/SDK; PRs also qualify Xcode 27.
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       RELEASE_TAG: ${{ inputs.tag }}
@@ -54,7 +55,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       LIBGHOSTTY_VT_SYS_CPU: baseline
       RUSTFLAGS: -C target-cpu=apple-m1
-      MACOSX_DEPLOYMENT_TARGET: "27.0"
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
     steps:
       # The harness follows main; all product builds use the immutable tag below.
       # Keep checkouts siblings: an ancestor Cargo workspace captures GPUI's
@@ -408,7 +409,7 @@ jobs:
           gh release view "$RELEASE_TAG" --json body --jq '.body // ""' > "$notes"
           marker='Desktop: Developer ID signed and Apple-notarized.'
           if ! grep -Fq "$marker" "$notes"; then
-            printf '\n%s\n\nmacOS: download phux-desktop-%s-macos-arm64.dmg, open it, and drag Phux.app onto Applications. The ZIP is for automatic updates. Apple silicon macOS 27 or later; Ubuntu 24.04 GNU/Linux x64 and arm64 (X11 and Wayland; release qualification uses X11 with lavapipe). Requires a separately installed phux CLI (https://phux.sh/install); this app does not install or upgrade your coordinator.\n' "$marker" "${RELEASE_TAG#desktop-v}" >> "$notes"
+            printf '\n%s\n\nmacOS: download phux-desktop-%s-macos-arm64.dmg, open it, and drag Phux.app onto Applications. The ZIP is for automatic updates. Apple silicon macOS 26 or later; Ubuntu 24.04 GNU/Linux x64 and arm64 (X11 and Wayland; release qualification uses X11 with lavapipe). Requires a separately installed phux CLI (https://phux.sh/install); this app does not install or upgrade your coordinator.\n' "$marker" "${RELEASE_TAG#desktop-v}" >> "$notes"
           fi
           gh release edit "$RELEASE_TAG" --notes-file "$notes" \
             --draft=false --latest=false

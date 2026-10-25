@@ -112,7 +112,7 @@ export function infoPlist(
   <key>PhuxDesktopChannel</key><string>${channel}</string>
   <key>PhuxDesktopHost</key><string>gpui</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <key>LSMinimumSystemVersion</key><string>27.0</string>
+  <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>PhuxBuildSHA</key><string>${sha}</string>

@@ -11,12 +11,19 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installInstructions, packageDmg } from "../../scripts/package-dmg.ts";
+import { infoPlist } from "../../scripts/package-app.ts";
 
 test("drag-to-Applications instructions state platform and separate runtime requirements", () => {
   expect(installInstructions).toContain("Drag Phux.app onto Applications");
-  expect(installInstructions).toContain("Apple silicon and macOS 27");
+  expect(installInstructions).toContain("Apple silicon and macOS 26");
   expect(installInstructions).toContain("https://phux.sh/install | sh");
   expect(installInstructions).toContain("does not replace your CLI");
+});
+
+test("the packaged bundle declares the macOS 26 compatibility floor", () => {
+  expect(infoPlist("1.2.3", "a".repeat(40))).toContain(
+    "<key>LSMinimumSystemVersion</key><string>26.0</string>",
+  );
 });
 
 test.skipIf(process.platform !== "darwin")(

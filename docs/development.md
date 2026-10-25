@@ -170,9 +170,16 @@ sudo apt-get install -y libfontconfig1-dev libfreetype-dev libxkbcommon-dev \
 ```
 
 On macOS use Mise plus the host Xcode for the daily loop; the desktop
-gates refuse a Nix shell whose compiler is shadowed by Mise. The Metal
-compiler must run, not just exist (`xcodebuild -downloadComponent
-MetalToolchain` if not).
+gates refuse a Nix shell whose compiler is shadowed by Mise. The desktop
+supports macOS 26+ and full Xcode 26+ compatible with the host OS.
+`bash scripts/setup-macos-desktop.sh` detects the host version and selected
+Xcode (or an installed `/Applications/Xcode*.app` when needed), downloads
+only a missing matching Metal component, and verifies that it executes.
+Rerunning it is a no-op when Metal works. An explicit `DEVELOPER_DIR` selects
+that Xcode or fails rather than silently using another. It never installs
+Xcode, changes the global `xcode-select` setting, or replaces the installed app.
+Builds perform this setup automatically and enforce a macOS 26.0 deployment
+target even on newer hosts; `doctor desktop` only checks, never installs.
 
 ```sh
 just doctor desktop
@@ -287,8 +294,9 @@ The test lanes compile once (`just test-archive`) and run the unit halves
 and e2e from that nextest archive. Pull requests restore caches and never
 save them; `main` pushes save one entry per lane under a 10 GB repository
 budget, pruned by `prune-build-cache`. Runners are the free hosted ones:
-Ubuntu x64 and arm64, and macOS on the `xcode-27` image, where the desktop
-lane shares a handful of slots with the release builds.
+Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image. Desktop releases
+build on macOS 26 (the supported floor); PRs qualify both Apple toolchains.
+The desktop lane shares a handful of macOS slots with release builds.
 
 Workflow files carry their own comments; `.github/workflows/` is the
 reference. `just guards` lints them.
