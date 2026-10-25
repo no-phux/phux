@@ -113,6 +113,7 @@ gpui-fast-apple = { path = "../toolchain/gpui/gpui-fast-apple" }
 gpui-fast-macos = { path = "../toolchain/gpui/gpui-fast-macos" }
 gpui-fast-linux = { path = "../toolchain/gpui/gpui-fast-linux" }
 gpui-fast-wgpu = { path = "../toolchain/gpui/gpui-fast-wgpu" }
+gpui-fast-windows = { path = "../toolchain/gpui/gpui-fast-windows" }
 
 [dev-dependencies]
 # `HeadlessAppContext` and `gpui_platform::current_headless_renderer` exist
