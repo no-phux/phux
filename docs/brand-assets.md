@@ -55,6 +55,12 @@ For coordinated rollback PRs, dispatch `brand-update` with an explicit
 Old public archives remain available so older consumer versions can restore
 their assets. Never rewrite or replace a published brand version.
 
+A rollback bundle must supply every export required by the checked-in mapping,
+and its geometry must match the platform code. When reversing a change that added
+exports or changed the geometry API, revert the matching consumer configuration
+and platform code together with the pin. Missing required exports are rejected
+before any files are written.
+
 `brand-restore` repairs local drift using the existing public pin. A malformed
 bundle fails before writing files; a failed write restores previous bytes.
 An interrupted update is detected by `brand-check` and can be repeated.
