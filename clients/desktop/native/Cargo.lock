@@ -4976,6 +4976,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "base64 0.22.1",
  "global-hotkey",
  "gpui-component",
  "gpui-kit",

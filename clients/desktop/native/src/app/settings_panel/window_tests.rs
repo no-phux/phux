@@ -16,7 +16,7 @@ fn appearance_pickers_fit_the_page_at_narrow_medium_and_wide_widths(cx: &mut Tes
         settings.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
         draw(settings);
         let sidebar = settings.debug_bounds("settings-sidebar").unwrap();
-        for selector in ["settings-font", "settings-theme"] {
+        for selector in ["settings-font", "settings-theme", "settings-brand-profile"] {
             let picker = settings.debug_bounds(selector).unwrap();
             assert!(
                 picker.left() >= sidebar.right() + gpui::px(20.)
@@ -386,4 +386,59 @@ fn leader_presets_custom_validation_and_off_apply_to_the_owner(cx: &mut TestAppC
         desk.read_with(settings, |desk, _| desk.prefs.leader_key.clone()),
         None
     );
+}
+
+#[gpui::test]
+fn brand_picker_changes_the_running_icon_and_persists_outside_workspace_preferences(
+    cx: &mut TestAppContext,
+) {
+    use crate::app::branding::{self, Branding};
+    use crate::workspace::persist::FileLayoutStore;
+    use gpui::AppContext as _;
+    let path = std::env::temp_dir().join(format!(
+        "phux-brand-ui-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let config = path.join("appearance.json");
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let branding = cx.new(|_| Branding::from_store(FileLayoutStore::new(&config, None)));
+    let original_preferences = desk.read_with(cx, |desk, _| desk.prefs.clone());
+    let desktop = desk.read_with(cx, |desk, _| desk.desktop.clone());
+    desktop.update(cx, |desktop, _| desktop.branding = branding.clone());
+    desk.update(cx, |desk, _| desk.branding = branding.clone());
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    settings.simulate_resize(gpui::size(gpui::px(860.), gpui::px(1000.)));
+    draw(settings);
+    let field = settings.debug_bounds("settings-brand-profile").unwrap();
+    settings.simulate_click(
+        gpui::point(field.center().x, field.bottom() - gpui::px(12.)),
+        gpui::Modifiers::none(),
+    );
+    draw(settings);
+    settings.simulate_keystrokes("up");
+    settings.simulate_keystrokes("enter");
+    draw(settings);
+    let selected = branding.read_with(settings, |brand, _| brand.id.clone());
+    assert_eq!(selected, "classic-prompt");
+    assert_eq!(
+        settings.app_icon_png().unwrap(),
+        branding::profile(&selected).png().unwrap()
+    );
+    assert_eq!(
+        Branding::from_store(FileLayoutStore::new(&config, None)).id,
+        selected
+    );
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.clone()),
+        original_preferences
+    );
+    std::fs::remove_dir_all(path).unwrap();
 }

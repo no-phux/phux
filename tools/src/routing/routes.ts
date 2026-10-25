@@ -76,7 +76,7 @@ const ROUTES: Record<string, Surface[]> = {
   "clients/desktop/native/**": ["desktop"],
   "clients/desktop/packaging/AppIcon.svg": ["desktop"],
   "clients/desktop/packaging/AppIcon.png": ["desktop"],
-  "clients/desktop/packaging/brand-profile.json": ["desktop"],
+  "clients/desktop/packaging/brand-profile{,s}.json": ["desktop"],
   "clients/desktop/scripts/brand.ts": ["desktop"],
   "just/desktop.just": ["desktop"],
   "just/web.just": ["web"],

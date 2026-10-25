@@ -65,6 +65,16 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        if let Some(id) = path
+            .strip_prefix("brand/")
+            .and_then(|p| p.strip_suffix(".png"))
+        {
+            return crate::app::branding::profiles()
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.png().map(Cow::Owned))
+                .transpose();
+        }
         match MenuIcons.load(path)? {
             Some(bytes) => Ok(Some(bytes)),
             None => gpui_kit::assets::Assets.load(path),
@@ -74,6 +84,11 @@ impl AssetSource for Assets {
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
         let mut paths = gpui_kit::assets::Assets.list(path)?;
         paths.extend(MenuIcons.list(path)?);
+        paths.extend(
+            crate::app::branding::profiles()
+                .iter()
+                .map(|p| format!("brand/{}.png", p.id).into()),
+        );
         paths.sort();
         paths.dedup();
         Ok(paths)

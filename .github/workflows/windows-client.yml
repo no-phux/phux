@@ -7,6 +7,9 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
+      - clients/desktop/toolchain/**
+      - clients/desktop/packaging/brand-profiles.json
+      - scripts/ci/test-windows-brand-icons.ps1
       - crates/phux-client-runtime/**
       - crates/phux-client-core/**
       - crates/phux-config-core/**
@@ -22,6 +25,9 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
+      - clients/desktop/toolchain/**
+      - clients/desktop/packaging/brand-profiles.json
+      - scripts/ci/test-windows-brand-icons.ps1
       - crates/phux-client-runtime/**
       - crates/phux-client-core/**
       - crates/phux-config-core/**
@@ -41,7 +47,7 @@ concurrency:
 jobs:
   native-client:
     runs-on: windows-2025
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,3 +63,9 @@ jobs:
         run: cargo check --locked -p phux-client-runtime --no-default-features --lib
       - name: Compile portable local Git helpers without the Unix coordinator API
         run: cargo check --locked -p phux-git --lib
+      - uses: ./.github/actions/setup-bun
+      - name: Materialize the approved Windows framework patches
+        run: bun tools/main.ts desktop-source
+      - name: Apply every approved icon through the native Windows API
+        shell: pwsh
+        run: ./scripts/ci/test-windows-brand-icons.ps1

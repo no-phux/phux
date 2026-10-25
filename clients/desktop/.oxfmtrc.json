@@ -8,6 +8,7 @@
     "tools/oxlint/anti-slop/**",
     "tests/tooling/negative/**",
     "bun.lock",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "packaging/brand-profiles.json"
   ]
 }

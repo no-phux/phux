@@ -29,6 +29,10 @@ terminal-fixtures = ["phux-gpui/terminal-fixtures"]
 ui-fixtures = []
 
 [[example]]
+name = "brand_icons"
+required-features = ["ui-fixtures"]
+
+[[example]]
 name = "glass_menu"
 required-features = ["ui-fixtures"]
 
@@ -86,6 +90,7 @@ gpui-component = { version = "=0.7.3", features = [
     "tree-sitter-zig",
 ] }
 anyhow = "1"
+base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 async-channel = "2"
 log = "0.4"

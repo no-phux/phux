@@ -21,18 +21,31 @@ in phux-brand, inspect its preview, and publish a new approved version.
 Consumer CI rejects edits that drift from the pin. Product code continues
 to own behavior, animation, and platform resource packaging.
 
-## Selecting the identity
+## Choosing branding in the apps
 
-The private library's `profiles.json.selected` is the single selection for
+Open **Settings → Appearance → Brand profile** to choose Flat Fox, Silver Fox or
+Classic Prompt. All choices ship offline. Desktop remembers one choice across
+windows and workspaces; mobile saves it on the device. Changing a host or account
+does not reset it. The picker reports icon or preference-save failures.
+
+macOS changes the running Dock icon and restores the choice on launch; Finder
+keeps the signed release icon. Linux updates a user-local launcher entry while
+preserving its command; refresh timing belongs to the launcher. iOS uses alternate
+app icons and Android uses launcher aliases alongside the selected in-app marks.
+
+## Selecting the release default
+
+The private library's `profiles.json.selected` sets the shared release default for
 Flat Fox, Silver Fox or Classic Prompt. Run `just profile <id>` there to
 render the chosen profile for every platform, then review and publish its kit.
 Flat Fox is the default. `identity/profile.json` travels with the assets and
 is installed as `clients/desktop/packaging/brand-profile.json` here.
 
 Desktop packaging uses `desktopBrand()` for the selected profile and its
-PNG/SVG paths. Mobile drawing and launch silhouettes use their native brand
-interface over the same generated geometry and finish. Clients keep stable
-asset paths and do not hard-code individual profile names.
+PNG/SVG paths. Native apps additionally bundle every approved choice. Mobile drawing and launch
+silhouettes use their native brand interface over the selected geometry and finish.
+Desktop's process-wide branding interface owns its saved choice, preview and
+platform icon. Clients keep stable asset paths and do not branch on profile names.
 
 ## Publishing and updates
 
@@ -80,3 +93,8 @@ An interrupted update is detected by `brand-check` and can be repeated.
 Locally edited obsolete assets cause an error instead of being deleted.
 The updater reports failures per repository and can safely be rerun after
 correcting access or an export mapping.
+
+Windows applies the chosen artwork to running and newly opened window icons.
+Explorer and pinned shortcuts retain the release icon. The Windows CI fixture
+exercises all approved PNGs through the actual managed native adapter without
+a WSL coordinator.

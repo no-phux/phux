@@ -281,6 +281,7 @@ impl Desktop {
     ) -> anyhow::Result<WindowHandle<Root>> {
         let desktop = cx.entity();
         let updates = self.updates.clone();
+        let branding = self.branding.clone();
         let phux = self.phux.clone();
         let socket = self.socket.clone();
         let session = request.session.clone();
@@ -320,6 +321,7 @@ impl Desktop {
                     Desk::open(
                         desktop,
                         updates,
+                        branding,
                         phux,
                         socket,
                         request,

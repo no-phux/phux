@@ -24,3 +24,9 @@ crate). None has been published upstream.
 - A patch states its reason here and is the smallest change that works.
 - Upstream candidates: these are general GPUI features; propose them to Zed
   when their shape has settled.
+
+`0020-runtime-application-icon.patch` exposes `App::set_app_icon` with AppKit
+and Windows implementations. Appearance changes the running app icon without
+modifying the signed application bundle. Windows retains its owned HICON until
+all current windows have replaced it and applies it to newly opened windows.
+The Linux host owns its user-local desktop-entry icon.

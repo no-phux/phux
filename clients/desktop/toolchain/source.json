@@ -45,6 +45,7 @@
     "patches/0016-wgpu-image-source-sampling.patch": "b881e78c72d588061e9c6006d7d5d0172480a87fb6dbceb84fa368d8668f90d9",
     "patches/0017-windows-submission-and-capture.patch": "bfc74c95a895b7434966071a06a6e0f5fdea870c229506248f1fc6dc967acb87",
     "patches/0018-windows-hardware-first-warp.patch": "407efaa66d1b653ccb2dd79f573a76b58cd5a6b6705f677d714694b12614a93f",
-    "patches/0019-windows-image-source-sampling.patch": "b0d2204c0652ca8c092506866e76781b709685d4d6a1cd857e89da9076cc2011"
+    "patches/0019-windows-image-source-sampling.patch": "b0d2204c0652ca8c092506866e76781b709685d4d6a1cd857e89da9076cc2011",
+    "patches/0020-runtime-application-icon.patch": "9b570139c8a11c8140a000de2ef4a655016591ed6fbbe78a05566092cda8b155"
   }
 }
