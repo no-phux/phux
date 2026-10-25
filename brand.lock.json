@@ -21,14 +21,18 @@
       "destination": "docs/assets/logo.svg",
       "sha256": "9cda166900ba0be12aecfb1378515d3173d5b57704e29e20f81a5100a9cc0c01"
     },
+    "runtime/desktop/profiles.json": {
+      "destination": "clients/desktop/packaging/brand-profiles.json",
+      "sha256": "052466379489c77edda7b8a25783a63e8c59c83dbdb80078b2de06c7568ba6b6"
+    },
     "tooling/brand.py": {
       "destination": "scripts/brand.py",
       "sha256": "7c1b9f2253ce695d65748b10ea2b2a0cf9a22c45f0d2d2d45001dc289a603e1d"
     }
   },
   "schema": 1,
-  "sha256": "24bb2b00c7ec6f8f3572e147ea42c9cf5b68998bc70423a827c58d437f63f94c",
-  "source_revision": "81098b48140abb6f8643f5c05661afd08781c418",
-  "url": "https://phux.sh/brand/releases/1.2.0/phux-brand.zip",
-  "version": "1.2.0"
+  "sha256": "c4d7a1ac4f91c90f1fa57ea8fe6d6348653497e3b2ee0d4eefbfce79d1348f0a",
+  "source_revision": "5b044a9e0ac0fa9957d7abdfbeefc17be60a3f82",
+  "url": "https://phux.sh/brand/releases/1.3.1/phux-brand.zip",
+  "version": "1.3.1"
 }

@@ -3,6 +3,7 @@
 //! Settings stays open, and every control moves both ways with a reset.
 
 mod appearance;
+mod branding;
 pub(super) mod catalog;
 mod connections;
 mod developer;

@@ -162,6 +162,7 @@ pub struct FindState {
 pub struct Desk {
     pub desktop: Entity<Desktop>,
     pub(crate) updates: Entity<super::updates::Updater>,
+    pub(crate) branding: Entity<super::branding::Branding>,
     pub role: WindowRole,
     pub socket: PathBuf,
     /// A host from the remote registry this window attaches to instead of `socket`.

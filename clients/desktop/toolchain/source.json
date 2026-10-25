@@ -38,6 +38,7 @@
     "patches/0013-arena-memory-retention.patch": "8e159ae7004eb957a5105838f537e1732c2669716cc83c281c0febd55d0810dd",
     "patches/0014-image-source-sampling.patch": "c67b39b922a8784abcbf7265da1d8d39502460b4d0e353c2b20f11b0e08d737b",
     "patches/0015-metal-image-source-sampling.patch": "2b0f0a53fdb15c4d58c87ac0185b792220890dc3c4642c511afe5ea3a7d5b34d",
-    "patches/0016-wgpu-image-source-sampling.patch": "b881e78c72d588061e9c6006d7d5d0172480a87fb6dbceb84fa368d8668f90d9"
+    "patches/0016-wgpu-image-source-sampling.patch": "b881e78c72d588061e9c6006d7d5d0172480a87fb6dbceb84fa368d8668f90d9",
+    "patches/0017-runtime-application-icon.patch": "4d3bdda0057e293fa492808c81fa851e1a05488bfcf27d6bbd7c3baf6dff0727"
   }
 }

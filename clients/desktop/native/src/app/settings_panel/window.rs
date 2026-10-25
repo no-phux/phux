@@ -75,7 +75,9 @@ impl SettingsWindow {
         window.focus(&focus, cx);
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search Settings"));
         let updates = desk.read(cx).updates.clone();
+        let branding = desk.read(cx).branding.clone();
         let subscriptions = vec![
+            cx.observe(&branding, |_, _, cx| cx.notify()),
             cx.observe(&desk, |_, _, cx| cx.notify()),
             cx.subscribe(&query, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {

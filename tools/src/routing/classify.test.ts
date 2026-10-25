@@ -100,7 +100,11 @@ test.each<[string[], Surface[]]>([
   [["brand.lock.json", "clients/desktop/packaging/AppIcon.svg"], ["desktop"]],
   [["brand.lock.json", "clients/desktop/packaging/AppIcon.png"], ["desktop"]],
   [
-    ["clients/desktop/packaging/brand-profile.json", "clients/desktop/scripts/brand.ts"],
+    [
+      "clients/desktop/packaging/brand-profile.json",
+      "clients/desktop/packaging/brand-profiles.json",
+      "clients/desktop/scripts/brand.ts",
+    ],
     ["desktop"],
   ],
   [[".github/workflows/ffi-xcframework.yml"], []],

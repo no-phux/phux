@@ -167,6 +167,7 @@ pub(super) fn appearance_page(
                 ))
                 .item(theme_item),
         )
+        .group(super::branding::group(desk, cx))
         .group(look_group(desk, handle, controls))
 }
 

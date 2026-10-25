@@ -7,6 +7,7 @@
     "logos/docs-wordmark.png": "docs/assets/logo.png",
     "tooling/brand.py": "scripts/brand.py",
     "desktop/AppIcon.png": "clients/desktop/packaging/AppIcon.png",
-    "identity/profile.json": "clients/desktop/packaging/brand-profile.json"
+    "identity/profile.json": "clients/desktop/packaging/brand-profile.json",
+    "runtime/desktop/profiles.json": "clients/desktop/packaging/brand-profiles.json"
   }
 }

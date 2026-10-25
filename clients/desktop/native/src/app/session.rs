@@ -101,6 +101,7 @@ struct Opened {
 }
 
 pub struct Desktop {
+    pub(crate) branding: Entity<super::branding::Branding>,
     pub(crate) updates: Entity<super::updates::Updater>,
     phux: PathBuf,
     socket: PathBuf,
@@ -154,7 +155,15 @@ impl Desktop {
             updater.watch_quit(cx);
             updater
         });
+        let branding = cx.new(|cx| {
+            let mut state = super::branding::Branding::load();
+            if !cfg!(test) {
+                state.restore(cx);
+            }
+            state
+        });
         let desktop = cx.new(|_| Self {
+            branding,
             updates,
             phux: PathBuf::new(),
             socket: PathBuf::new(),

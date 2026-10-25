@@ -6,6 +6,7 @@
 
 mod actions;
 mod approvals;
+pub(crate) mod branding;
 mod capture;
 mod changes;
 mod color;
@@ -96,21 +97,21 @@ pub(crate) fn open_with_restore(
 }
 
 /// Open the real menu material in a standalone native fixture.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn open_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
     ui::typography::install(cx);
     ui::menu::preview(cx)
 }
 
 /// Preview or capture the real monitor without a daemon or production state.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn preview_performance_monitor(capture: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
     ui::typography::install(cx);
     performance::preview(capture, cx)
 }
 
 /// Open a desk and capture every Settings page into `directory`, then quit.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn capture_settings_fixture(
     options: AppOptions,
     directory: PathBuf,
@@ -121,7 +122,7 @@ pub fn capture_settings_fixture(
 }
 
 /// Capture the real fleet composition with isolated, representative inventory.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn capture_fleet_fixture(
     options: AppOptions,
     directory: PathBuf,
@@ -132,7 +133,7 @@ pub fn capture_fleet_fixture(
 }
 
 /// Capture the real desktop layouts with an embedded, server-free runtime.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn capture_design_fixture(
     options: AppOptions,
     directory: PathBuf,
@@ -142,7 +143,7 @@ pub fn capture_design_fixture(
 }
 
 /// Measure native menu creation without opening visible windows.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn benchmark_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
     ui::menu::benchmark(cx)
 }
@@ -153,3 +154,6 @@ pub fn command_ids() -> impl Iterator<Item = &'static str> {
         .iter()
         .map(|command| command.id)
 }
+
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
+pub use branding::verify_runtime_branding;

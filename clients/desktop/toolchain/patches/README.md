@@ -24,3 +24,8 @@ crate). None has been published upstream.
 - A patch states its reason here and is the smallest change that works.
 - Upstream candidates: these are general GPUI features; propose them to Zed
   when their shape has settled.
+
+`0017-runtime-application-icon.patch` exposes `App::set_app_icon` and a macOS
+implementation using AppKit. Appearance changes the running app icon without
+modifying the signed application bundle. Other platforms report unsupported;
+the Linux host owns its user-local desktop-entry icon.
