@@ -145,3 +145,42 @@ test("only stable macOS receives Apple credentials, before upload and after pack
   expect(qualification).toContain("hdiutil attach -readonly -nobrowse");
   expect(qualification).toContain("spctl --assess --type execute");
 });
+
+test("Windows builds native MSVC and signs only after a same-source WSL GUI journey", () => {
+  const windows = workflow("windows-desktop.yml");
+  expect(job(windows, "windows")["runs-on"]).toBe("windows-2025");
+  expect(job(windows, "windows")["needs"]).toBeUndefined();
+  const build = steps(job(windows, "windows"));
+  expect(build.some((step) => run(step).includes("--target x86_64-pc-windows-msvc"))).toBe(true);
+  expect(build.some((step) => run(step).includes("rust-toolchain.toml"))).toBe(true);
+  expect(build.some((step) => run(step).includes("install-zig-windows.ps1"))).toBe(true);
+  expect(build.some((step) => withInput(step, "name") === "desktop-build-windows-x64")).toBe(true);
+  expect(build.some((step) => withInput(step, "name") === "desktop-windows-x64")).toBe(false);
+  const qualified = steps(job(windows, "qualify"));
+  const smoke = qualified.findIndex((step) => run(step).includes("smoke-windows.ps1"));
+  const product = qualified.findIndex((step) => withInput(step, "name") === "desktop-windows-x64");
+  expect(smoke).toBeGreaterThan(0);
+  expect(product).toBeGreaterThan(smoke);
+  expect(qualified[product]?.["if"]).toBeUndefined();
+  expect(
+    steps(job(windows, "server")).some(
+      (step) => run(step) === "cargo build --locked --release -p phux",
+    ),
+  ).toBe(true);
+  const installer = readFileSync(repoPath("scripts/install-desktop-windows.ps1"), "utf8");
+  const keys =
+    readFileSync(repoPath("crates/phux-client-runtime/src/release/signature.rs"), "utf8").match(
+      /"RW[A-Za-z0-9+/=]+"/g,
+    ) ?? [];
+  expect(keys).toHaveLength(2);
+  for (const key of keys) expect(installer).toContain(key.slice(1, -1));
+  const smokeScript = readFileSync(repoPath("clients/desktop/scripts/smoke-windows.ps1"), "utf8");
+  for (const proof of [
+    "SendInput",
+    "CopyFromScreen",
+    "Get-ConnectionEpoch",
+    "stty size",
+    "PHUXSURVIVALAFTERCRASH",
+  ])
+    expect(smokeScript).toContain(proof);
+});

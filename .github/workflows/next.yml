@@ -88,7 +88,7 @@ jobs:
       # Products only: the desktop jobs also upload runtime evidence.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: "{cli-*,desktop-macos-*,desktop-linux-*}"
+          pattern: "{cli-*,desktop-macos-*,desktop-linux-*,desktop-windows-*}"
           path: dist
           merge-multiple: true
       # `release-manifest next` refuses an unsigned build (ADR-0178).

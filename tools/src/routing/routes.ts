@@ -54,6 +54,8 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],
   "scripts/test-windows-mcp.py": [],
   "scripts/test-windows-terminal.py": [],
+  // Native Windows distribution contracts have their own hosted GUI workflow.
+  "scripts/{install-desktop-windows,test-install-desktop-windows,install-zig-windows}.ps1": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
   // Passive maintainer task exports/configuration are not product inputs.
@@ -85,6 +87,7 @@ const ROUTES: Record<string, Surface[]> = {
   "clients/desktop/scripts/dmg-*.{py,swift}": ["desktop"],
   "clients/desktop/packaging/dmg-requirements.txt": ["desktop"],
   "clients/desktop/tests/tooling/{package-dmg.test.ts,verify-dmg.py,verify-dmg.swift}": ["desktop"],
+  "clients/desktop/scripts/*windows*": ["desktop"],
   "just/desktop.just": ["desktop"],
   "just/web.just": ["web"],
   // Root crates reach the web and desktop lanes only through Cargo (see

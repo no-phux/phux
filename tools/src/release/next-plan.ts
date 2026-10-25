@@ -17,7 +17,11 @@ const BUILDERS: Record<Product, string[]> = {
     "scripts/{build-release-binaries,pack-release,check-binary-portability}.sh",
     "scripts/ci/setup-linux-release-userspace.sh",
   ],
-  desktop: [".github/workflows/desktop-release.yml"],
+  desktop: [
+    ".github/workflows/desktop-release.yml",
+    ".github/workflows/windows-desktop.yml",
+    "scripts/{install-desktop-windows,test-install-desktop-windows,install-zig-windows}.ps1",
+  ],
 };
 
 const SURFACES: Record<Product, (c: Classification) => boolean> = {
