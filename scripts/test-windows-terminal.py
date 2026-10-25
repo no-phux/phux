@@ -47,6 +47,7 @@ class Terminal:
 def qualify(launcher: str, socket: str, session: str, host: str) -> None:
     assert sys.platform == "win32", "Run this test in native Windows Python"
     runner = Path(launcher).with_name("terminal-smoke.ps1")
+    evidence = runner.with_suffix(".evidence.txt")
     runner.write_text(r'''param([string] $Socket, [string] $Session)
 $ErrorActionPreference = 'Stop'
 Add-Type @'
@@ -69,9 +70,12 @@ function Get-ConsoleState {
         [Console]::CursorVisible) -join ',')
 }
 $before = Get-ConsoleState
+[IO.File]::WriteAllText([IO.Path]::ChangeExtension($PSCommandPath, '.evidence.txt'), "before=$before`n")
 & (Join-Path $PSScriptRoot 'phux.ps1') --socket $Socket attach $Session
+[IO.File]::AppendAllText([IO.Path]::ChangeExtension($PSCommandPath, '.evidence.txt'), "exit=$LASTEXITCODE`n")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $after = Get-ConsoleState
+[IO.File]::AppendAllText([IO.Path]::ChangeExtension($PSCommandPath, '.evidence.txt'), "after=$after`n")
 if ($before -cne $after) { throw "Console state changed: $before -> $after" }
 Write-Output 'PHUX_MODES_RESTORED'
 $typed = Read-Host 'After detach'
@@ -102,11 +106,17 @@ Write-Output 'PHUX_CONSOLE_RESTORED'
         assert not terminal.child.isalive(), "TUI did not exit after detach"
         assert terminal.child.exitstatus == 0, terminal.child.exitstatus
         print(f"Windows ConPTY rendering/input/resize/detach/restoration passed: {before} -> {after}", flush=True)
+    except BaseException:
+        print(f"ConPTY process: alive={terminal.child.isalive()}, exit={terminal.child.exitstatus}", flush=True)
+        if evidence.exists():
+            print(evidence.read_text(encoding="utf-8-sig"), flush=True)
+        raise
     finally:
         if terminal.child.isalive():
             terminal.child.terminate(force=True)  # Only our recorded child PID.
         terminal.child.close()
         runner.unlink(missing_ok=True)
+        evidence.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
