@@ -32,10 +32,32 @@ test("stable signing fails closed for every missing Apple credential", () => {
 // Command fixtures exercise orchestration and cleanup, NOT Apple's trust service.
 // No fixture invokes security, codesign, or notarytool on the real computer.
 const commands: Record<string, string> = {
-  security: `if [[ "$1" == find-identity ]]; then
+  security: `if [[ "$1" == list-keychains ]]; then
+    if [[ "$*" != *' -s'* ]]; then
+      if [[ "$TEST_FAIL" != empty ]]; then
+        printf '    "/fixture/login.keychain-db"\n    "/fixture/extra keys.keychain-db"\n'
+      fi
+    elif [[ "\${5:-}" == */release.keychain-db ]]; then
+      if [[ "$TEST_FAIL" == empty ]]; then
+        test "$#" = 5
+      else
+        test "$#" = 7 && test "$6" = /fixture/login.keychain-db && test "$7" = '/fixture/extra keys.keychain-db'
+      fi
+      touch "$TEST_SEARCH_LIST"
+    else
+      if [[ "$TEST_FAIL" == empty ]]; then
+        test "$#" = 4
+      else
+        test "$#" = 6 && test "$5" = /fixture/login.keychain-db && test "$6" = '/fixture/extra keys.keychain-db'
+      fi
+      rm -f "$TEST_SEARCH_LIST"
+    fi
+  elif [[ "$1" == find-identity ]]; then
     echo '  1) 1234567890123456789012345678901234567890 "Developer ID Application: Fixture"'
   fi`,
-  codesign: ":",
+  codesign: `if [[ "$*" == *' --sign '* ]]; then
+    test -f "$TEST_SEARCH_LIST" || { echo 'no identity found' >&2; exit 1; }
+  fi`,
   spctl: ":",
   uuidgen: "echo fixture-keychain-password",
   ditto: 'touch "${@: -1}"',
@@ -48,8 +70,8 @@ const commands: Record<string, string> = {
   fi`,
 };
 
-test.each(["none", "app", "dmg"])(
-  "signing transaction handles %s rejection and removes temporary keys",
+test.each(["none", "app", "dmg", "empty"])(
+  "signing transaction handles %s outcome and removes temporary keys",
   (failure) => {
     const root = mkdtempSync(join(tmpdir(), "phux-sign-test-"));
     try {
@@ -75,13 +97,23 @@ test.each(["none", "app", "dmg"])(
           PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
           TMPDIR: root,
           TEST_LOG: log,
+          TEST_SEARCH_LIST: join(root, "search-list"),
           TEST_FAIL: failure,
         },
       });
-      expect(result.exitCode).toBe(failure === "none" ? 0 : 1);
+      expect(result.exitCode).toBe(failure === "none" || failure === "empty" ? 0 : 1);
       const calls = readFileSync(log, "utf8");
       expect(calls).toContain("--options runtime --timestamp");
       expect(calls).toContain("security delete-keychain");
+      expect(calls).toContain(
+        failure === "empty"
+          ? "security list-keychains -d user -s\n"
+          : "security list-keychains -d user -s /fixture/login.keychain-db /fixture/extra keys.keychain-db",
+      );
+      expect(calls.indexOf("security list-keychains -d user -s")).toBeLessThan(
+        calls.indexOf("codesign --force"),
+      );
+      expect(existsSync(join(root, "search-list"))).toBe(false);
       expect(readdirSync(root).some((name) => name.startsWith("phux-apple-sign."))).toBe(false);
       if (failure === "app") {
         expect(existsSync(archive)).toBe(false);
