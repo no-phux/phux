@@ -1,0 +1,137 @@
+diff --git a/gpui-fast-windows/src/fast/layers/tests.rs b/gpui-fast-windows/src/fast/layers/tests.rs
+index 7f7933a..af824c2 100644
+--- a/gpui-fast-windows/src/fast/layers/tests.rs
++++ b/gpui-fast-windows/src/fast/layers/tests.rs
+@@ -100,6 +100,66 @@ fn harness_renders_a_quad_at_the_right_pixels() {
+     assert_eq!(pixel(&pixels, 32, 1, 1), [255, 255, 255, 255]);
+ }
+ 
++#[test]
++fn image_source_crop_clamps_filtering_independently_of_the_visibility_mask() {
++    let mut harness = Harness::new().expect("image sampling regression requires Direct3D or WARP");
++    let tile = harness
++        .atlas
++        .get_or_insert_with(
++            AtlasKey::Image(RenderImageParams {
++                image_id: ImageId(10_000),
++                frame_index: 0,
++            }),
++            &mut || {
++                Ok(Some((
++                    device_size(3, 1),
++                    Cow::Owned(vec![0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255]),
++                )))
++            },
++        )
++        .unwrap()
++        .unwrap();
++    let mut scene = Scene::default();
++    // Two instances also exercise the extended Rust/HLSL structure stride.
++    for (x, mask_width) in [(0., 8.), (32., 30.)] {
++        scene.insert_primitive(PolychromeSprite {
++            order: 0,
++            pad: 1,
++            grayscale: false.into(),
++            opacity: 1.,
++            bounds: sp(x, 0., 30., 10.),
++            content_mask: ContentMask {
++                bounds: sp(x, 0., mask_width, 10.),
++            },
++            corner_radii: Corners::default(),
++            tile,
++            sample_bounds: Bounds::new(point(1., 0.), size(1., 1.)),
++        });
++    }
++    scene.finish();
++    let pixels = harness.render(&scene, device_size(64, 12), rgba(0x00000000));
++    assert_eq!(pixel(&pixels, 64, 4, 4), [0, 255, 0, 255]);
++    assert_eq!(pixel(&pixels, 64, 40, 4), [0, 255, 0, 255]);
++    assert_eq!(pixel(&pixels, 64, 12, 4), [0, 0, 0, 0]);
++}
++
++#[test]
++fn capture_target_alpha_is_source_over_not_additive() {
++    let mut harness = Harness::new().expect("capture alpha regression requires Direct3D or WARP");
++    let mut scene = Scene::default();
++    scene.insert_primitive(quad(sp(0., 0., 16., 16.), Hsla::from(rgba(0x0000ff80))));
++    scene.insert_primitive(quad(sp(0., 0., 16., 16.), Hsla::from(rgba(0xff000080))));
++    scene.finish();
++    let pixels = harness.render(&scene, device_size(16, 16), rgba(0x00000000));
++    let actual = pixel(&pixels, 16, 8, 8);
++    for (actual, expected) in actual.into_iter().zip([128u8, 0, 64, 192]) {
++        assert!(
++            actual.abs_diff(expected) <= 1,
++            "source-over capture: {actual} != {expected}"
++        );
++    }
++}
++
+ #[test]
+ fn a_tile_is_cleared_to_the_bytes_an_opaque_quad_of_its_background_writes() {
+     let Some(mut harness) = Harness::new() else {
+@@ -270,6 +330,7 @@ fn composited_scene(
+     for &tile in tiles {
+         let bounds = layer.tile_bounds(tile);
+         composited.insert_primitive(PolychromeSprite {
++            sample_bounds: Default::default(),
+             order: 0,
+             pad: 0,
+             grayscale: false.into(),
+@@ -445,6 +506,7 @@ fn rasterize_and_assemble(harness: &mut Harness, content: Scene, tiles: &[(i32,
+     for &tile in &coords {
+         let bounds = layer.tile_bounds(tile);
+         frame.insert_primitive(PolychromeSprite {
++            sample_bounds: Default::default(),
+             order: 0,
+             pad: 0,
+             grayscale: false.into(),
+@@ -624,6 +686,7 @@ fn add_content(
+         transformation: TransformationMatrix::unit(),
+     });
+     scene.insert_primitive(PolychromeSprite {
++        sample_bounds: Default::default(),
+         order: 0,
+         pad: 0,
+         grayscale: false.into(),
+diff --git a/gpui-fast-windows/src/shaders.hlsl b/gpui-fast-windows/src/shaders.hlsl
+index b724300..40cee74 100644
+--- a/gpui-fast-windows/src/shaders.hlsl
++++ b/gpui-fast-windows/src/shaders.hlsl
+@@ -1220,6 +1220,7 @@ struct PolychromeSprite {
+     Bounds content_mask;
+     Corners corner_radii;
+     AtlasTile tile;
++    Bounds sample_bounds;
+ };
+ 
+ struct PolychromeSpriteVertexOutput {
+@@ -1256,7 +1257,28 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
+ 
+ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
+     PolychromeSprite sprite = poly_sprites[input.sprite_id];
+-    float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
++    float2 position = input.tile_position;
++    if ((sprite.pad & 1u) != 0u) {
++        // Match Metal/wgpu: source filtering limits do not follow the mask.
++        float2 tile_origin = sprite.tile.bounds.origin;
++        float2 tile_extent = sprite.tile.bounds.size;
++        float2 crop_origin = sprite.sample_bounds.origin;
++        float2 crop_extent = sprite.sample_bounds.size;
++        if (any(crop_extent <= 0.0)) {
++            crop_origin = 0.0;
++            crop_extent = tile_extent;
++        }
++        float2 first = tile_origin + crop_origin;
++        float2 last = first + crop_extent;
++        float2 inset = min(float2(0.5, 0.5), (last - first) * 0.5);
++        uint2 dimensions;
++        t_sprite.GetDimensions(dimensions.x, dimensions.y);
++        float2 atlas_size = float2(dimensions);
++        position = clamp(position, (first + inset) / atlas_size, (last - inset) / atlas_size);
++        position = clamp(position, (tile_origin + 0.5) / atlas_size,
++                         (tile_origin + tile_extent - 0.5) / atlas_size);
++    }
++    float4 sample = t_sprite.Sample(s_sprite, position);
+     float distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
+ 
+     float4 color = sample;
