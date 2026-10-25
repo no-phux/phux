@@ -87,7 +87,9 @@ impl AssetSource for Assets {
         paths.extend(
             crate::app::branding::profiles()
                 .iter()
-                .map(|p| format!("brand/{}.png", p.id).into()),
+                .map(|p| format!("brand/{}.png", p.id))
+                .filter(|name| name.starts_with(path))
+                .map(Into::into),
         );
         paths.sort();
         paths.dedup();
@@ -99,6 +101,22 @@ impl AssetSource for Assets {
 mod tests {
     use super::*;
     use gpui_kit::assets::IconName;
+
+    #[test]
+    fn asset_listing_respects_folders_and_exposes_every_approved_brand() {
+        for prefix in ["brand/", "icons/", "fonts/", "missing/"] {
+            let paths = Assets.list(prefix).unwrap();
+            assert!(
+                paths.iter().all(|name| name.starts_with(prefix)),
+                "{prefix}"
+            );
+        }
+        let brands = Assets.list("brand/").unwrap();
+        assert_eq!(brands.len(), crate::app::branding::profiles().len());
+        for name in brands {
+            assert!(Assets.load(&name).unwrap().is_some());
+        }
+    }
 
     #[test]
     fn menu_and_component_icons_are_embedded() {
