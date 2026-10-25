@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stable macOS distribution only. Never uses the runner's login keychain.
+# Stable macOS distribution only. Signs only with the temporary identity.
 set -euo pipefail
 
 for name in APPLE_DEVELOPER_ID_P12 APPLE_DEVELOPER_ID_PASSWORD APPLE_NOTARY_KEY_P8 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
@@ -26,7 +26,13 @@ test ! -e "$dmg"
 harness="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/phux-apple-sign.XXXXXX")"
 keychain="$work/release.keychain-db"
+original_keychains=()
+search_list_changed=0
 cleanup() {
+    if [[ "$search_list_changed" -eq 1 ]]; then
+        security list-keychains -d user -s ${original_keychains[@]+"${original_keychains[@]}"} >/dev/null 2>&1 ||
+            echo 'Warning: could not restore the original keychain search list' >&2
+    fi
     security delete-keychain "$keychain" >/dev/null 2>&1 || true
     rm -rf "$work"
 }
@@ -35,11 +41,24 @@ umask 077
 printf '%s' "$APPLE_DEVELOPER_ID_P12" | base64 --decode > "$work/identity.p12"
 printf '%s' "$APPLE_NOTARY_KEY_P8" | base64 --decode > "$work/notary.p8"
 password="$(uuidgen)"
+security list-keychains -d user > "$work/original-keychains"
+while IFS= read -r entry; do
+    entry="$(printf '%s\n' "$entry" | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')"
+    [[ -n "$entry" ]] || continue
+    original_keychains+=("$entry")
+done < "$work/original-keychains"
 security create-keychain -p "$password" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
 security unlock-keychain -p "$password" "$keychain"
 security import "$work/identity.p12" -k "$keychain" -P "$APPLE_DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign >/dev/null
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+# --keychain restricts identity lookup, but codesign still resolves the
+# certificate chain through the user search list (codesign(1)). macOS 26
+# cannot use the imported identity reliably unless this keychain is listed.
+# Keep existing chain certificates available; --keychain still prevents any
+# login identity from being selected. Restore the exact prior list on exit.
+search_list_changed=1
+security list-keychains -d user -s "$keychain" ${original_keychains[@]+"${original_keychains[@]}"}
 identities="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2}')"
 if [[ -z "$identities" || "$identities" == *$'\n'* ]]; then
     echo 'The P12 must contain exactly one valid Developer ID Application identity (not Apple Distribution).' >&2
