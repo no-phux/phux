@@ -15,6 +15,7 @@ class Terminal:
     def __init__(self, command: list[str]):
         self.child = PtyProcess.spawn(command, dimensions=(36, 120), backend="0")
         self.output = ""
+        self.cursor_queries = 0
         print(f"Windows ConPTY child pid: {self.child.pid}", flush=True)
 
     def expect(self, pattern: str, timeout: float = 30) -> re.Match[str]:
@@ -26,6 +27,13 @@ class Terminal:
             if select.select([self.child.fileobj], [], [], max(0, min(0.5, deadline - time.monotonic())))[0]:
                 try:
                     self.output += self.child.read(65536)
+                    # ConPTY/PowerShell asks its terminal host for the cursor
+                    # position when returning from WSL. Act as that host rather
+                    # than leaving a legitimate DSR request unanswered.
+                    queries = self.output.count("\x1b[6n")
+                    for _ in range(queries - self.cursor_queries):
+                        self.child.write("\x1b[1;1R")
+                    self.cursor_queries = queries
                 except EOFError:
                     break
         raise AssertionError(f"ConPTY did not produce {pattern!r}: {self.output[-12000:]!r}")
