@@ -356,6 +356,8 @@ impl Page {
             Self::Ghostty => "Ghostty",
             Self::Updates => "Updates",
             Self::Connections => "Machines",
+            #[cfg(target_os = "macos")]
+            Self::Permissions => "Permissions",
             Self::Developer => "Developer",
         }
     }
@@ -370,6 +372,8 @@ impl Page {
             Self::Ghostty => IconName::Terminal,
             Self::Updates => IconName::Download,
             Self::Connections => IconName::Network,
+            #[cfg(target_os = "macos")]
+            Self::Permissions => IconName::Lock,
             Self::Developer => IconName::CodeXml,
         }
     }

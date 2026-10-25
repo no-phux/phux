@@ -1,0 +1,141 @@
+//! Permission setup opens the OS-owned approval surface. Never infer a grant
+//! from a saved preference or read protected user data to probe for access.
+
+use std::path::{Path, PathBuf};
+
+use gpui::prelude::*;
+use gpui::{div, px};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::button::Button;
+use gpui_kit::component::setting::SettingField;
+use gpui_kit::component::{Disableable, Sizable};
+
+use super::catalog::{Content, Group, Item};
+use super::fact;
+
+const FULL_DISK_ACCESS: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+const NOTIFICATIONS: &str = "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
+
+pub(super) fn page(phux: &Path) -> Content {
+    let desktop = std::env::current_exe()
+        .ok()
+        .map(|path| desktop_target(&path));
+    // Resolve symlinked launchers so Finder selects the executable, rather
+    // than a Homebrew or user-created symlink that Settings may reject.
+    let launcher = phux.canonicalize().ok().filter(|path| path.is_file());
+    Content::new("Permissions")
+        .icon(IconName::Lock)
+        .group(
+            Group::new()
+                .title("Protected files")
+                .description(
+                    "Optional for work in protected folders. Set up opens Full Disk Access \
+                     and selects the item in Finder. Drag it into the list and turn it on. \
+                     macOS requires your approval.",
+                )
+                .item(file_access(
+                    "Phux desktop",
+                    "desktop",
+                    desktop,
+                    "Allows the desktop to read protected project files.",
+                ))
+                .item(file_access(
+                    "Local shells & agents",
+                    "server",
+                    launcher,
+                    "The local phux launcher runs shells and agents in a separate server. \
+                     A server started by a background service may need its own grant. \
+                     If that service uses a different phux install, add its executable instead.",
+                ))
+                .item(
+                    fact("After granting access", "Reopen Phux".into()).description(
+                        "An already-running background server may also need a restart. \
+                         Finish or save its work first: quitting the desktop leaves shells running. \
+                         These settings apply to this Mac; remote hosts have their own permissions.",
+                    ),
+                ),
+        )
+        .group(
+            Group::new()
+                .title("Notifications & other permissions")
+                .item(
+                    Item::new(
+                        "System notifications",
+                        SettingField::render(|_, _, _| {
+                            Button::new("settings-permissions-notifications")
+                                .small()
+                                .label("Open Settings")
+                                .on_click(|_, _, cx| cx.open_url(NOTIFICATIONS))
+                        }),
+                    )
+                    .description("Choose Phux in macOS Notifications to allow background alerts."),
+                )
+                .item(fact("Terminal & quick terminal", "No extra grant needed".into()).description(
+                    "Typing, clipboard and global quick-terminal shortcuts work without \
+                     Accessibility, Input Monitoring or Screen Recording. Tools you run that \
+                     control other apps or capture the screen may request separate permissions; \
+                     Full Disk Access does not grant those.",
+                )),
+        )
+}
+
+/// Reveal the running bundle even if it was renamed or installed outside
+/// /Applications. Unbundled development builds reveal their executable.
+fn desktop_target(executable: &Path) -> PathBuf {
+    executable
+        .ends_with("Contents/MacOS/phux-desktop")
+        .then(|| executable.ancestors().nth(3))
+        .flatten()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "app"))
+        .unwrap_or(executable)
+        .to_path_buf()
+}
+
+fn file_access(title: &'static str, id: &'static str, path: Option<PathBuf>, note: &str) -> Item {
+    let description = path.as_ref().map_or_else(
+        || format!("Executable unavailable. {note}"),
+        |path| format!("{}\n{note}", path.display()),
+    );
+    Item::new(
+        title,
+        SettingField::render(move |_, _, _| {
+            let path = path.clone();
+            div()
+                .debug_selector(move || format!("settings-permissions-{id}"))
+                .flex()
+                .gap(px(8.))
+                .child(
+                    Button::new(format!("settings-permissions-setup-{id}"))
+                        .small()
+                        .label("Set up")
+                        .disabled(path.is_none())
+                        .on_click(move |_, _, cx| {
+                            if let Some(path) = &path {
+                                cx.open_url(FULL_DISK_ACCESS);
+                                cx.reveal_path(path);
+                            }
+                        }),
+                )
+        }),
+    )
+    .description(description)
+    .keywords(["full disk access", "files folders", "drag drop", "privacy"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_setup_reveals_the_running_app_including_renamed_bundles() {
+        for bundle in ["/Applications/Phux.app", "/Users/me/Apps/Phux Preview.app"] {
+            assert_eq!(
+                desktop_target(&Path::new(bundle).join("Contents/MacOS/phux-desktop")),
+                Path::new(bundle),
+            );
+        }
+        let development = Path::new("/checkout/target/debug/phux-desktop");
+        assert_eq!(desktop_target(development), development);
+    }
+}

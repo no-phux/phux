@@ -21,6 +21,28 @@ PowerShell. There is no native Windows or Intel Mac build.
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
 
+## macOS permissions
+
+In the desktop, open **Phux Settings → Permissions** (or search for
+**Full Disk Access**). **Set up** opens macOS Full Disk Access and selects
+the running app in Finder. Drag it into the list and turn it on. Use the
+**Local shells & agents** row for the separate local `phux` executable when
+the background server also needs access to protected folders. If your
+service launches a different install, grant that executable access instead.
+macOS owns the approval; phux cannot grant access on your behalf.
+
+Reopen the desktop after granting access. A running server may also need
+a restart; save its work first, because quitting the desktop does not stop
+shells or agents. Grants on this Mac do not change permissions on a remote
+host.
+
+Full Disk Access is optional and only applies to file access. Phux's
+terminal and quick-terminal shortcuts do not need Accessibility, Input
+Monitoring or Screen Recording. Tools you run may request those separately.
+Background notification permissions have their own **Open Settings** button.
+See Apple's [file access controls](https://support.apple.com/guide/security/controlling-app-access-to-files-secddd1d86a6/web)
+for the operating system's permission boundaries.
+
 ## Windows (WSL)
 
 Use Windows Terminal and WSL 2 with Ubuntu 22.04 or newer (x64 or arm64).

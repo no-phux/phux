@@ -10,6 +10,8 @@ mod input;
 mod items;
 mod layout;
 mod palette;
+#[cfg(target_os = "macos")]
+mod permissions;
 #[cfg(feature = "ui-fixtures")]
 pub(super) mod preview;
 pub(crate) mod window;
@@ -53,11 +55,13 @@ pub(crate) enum Page {
     Ghostty,
     Updates,
     Connections,
+    #[cfg(target_os = "macos")]
+    Permissions,
     Developer,
 }
 
 impl Page {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 8 + cfg!(target_os = "macos") as usize] = [
         Self::Appearance,
         Self::Layout,
         Self::Keyboard,
@@ -65,6 +69,8 @@ impl Page {
         Self::Ghostty,
         Self::Updates,
         Self::Connections,
+        #[cfg(target_os = "macos")]
+        Self::Permissions,
         Self::Developer,
     ];
     pub fn title(self) -> &'static str {
@@ -76,6 +82,8 @@ impl Page {
             Self::Ghostty => "Ghostty integration",
             Self::Updates => "Updates",
             Self::Connections => "Hosts & connections",
+            #[cfg(target_os = "macos")]
+            Self::Permissions => "Permissions",
             Self::Developer => "Developer",
         }
     }
@@ -88,6 +96,8 @@ impl Page {
             Self::Ghostty => "Import or reload your Ghostty preferences",
             Self::Updates => "Version, downloads and updates",
             Self::Connections => "Your machines, connection status and recovery",
+            #[cfg(target_os = "macos")]
+            Self::Permissions => "File access and macOS privacy settings",
             Self::Developer => "Developer mode, profiling, traces, logs and diagnostics",
         }
     }
@@ -111,6 +121,10 @@ impl Page {
             Self::Updates => "version release install update download channel",
             Self::Connections => {
                 "hosts machines remote ssh local add remove retry reconnect status endpoint"
+            }
+            #[cfg(target_os = "macos")]
+            Self::Permissions => {
+                "permissions privacy security full disk access files folders macos settings notifications accessibility screen recording drag drop"
             }
             Self::Developer => {
                 "developer dev mode debug debugging telemetry socket performance hud heap rust allocation allocations counting counters profiling trace perfetto log logs diagnostics"
@@ -402,6 +416,8 @@ fn content(
             super::updates::page(&desk.updates, &look, &desk.prefs.font_family, moves, cx)
         }
         Page::Connections => connections::connection_page(desk, handle),
+        #[cfg(target_os = "macos")]
+        Page::Permissions => permissions::page(&desk.phux),
         Page::Developer => developer::page(handle),
     }
 }
