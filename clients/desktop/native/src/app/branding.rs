@@ -123,11 +123,13 @@ impl Branding {
 }
 
 fn apply(profile: &Profile, cx: &gpui::App) -> Result<()> {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    // GUI tests use GPUI's simulated native adapter on every host. The Linux
+    // launcher writer is verified separately against disposable directories.
+    #[cfg(any(test, target_os = "macos", target_os = "windows"))]
     {
         cx.set_app_icon(&profile.png()?)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(test)))]
     {
         let _ = cx;
         linux::apply(profile)

@@ -1,7 +1,7 @@
 //! User-local launcher override; signed/release bundle files remain immutable.
 use super::Profile;
 use anyhow::{Context as _, Result};
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 use std::path::PathBuf;
 use std::{
     fs,
@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(test)))]
 pub(super) fn apply(profile: &Profile) -> Result<()> {
     let home = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
