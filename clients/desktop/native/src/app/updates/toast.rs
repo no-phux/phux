@@ -172,8 +172,8 @@ fn controls(desk: &Desk, cx: &mut Context<Desk>) -> impl IntoElement {
     let updater = desk.updates.read(cx);
     let action = updater.action_label();
     let check = !updater.busy && updater.failed() && action.is_none();
-    let manual =
-        cfg!(target_os = "linux") && updater.action().is_some_and(super::UpdateAction::desktop);
+    let manual = crate::updates::manual_desktop_install()
+        && updater.action().is_some_and(super::UpdateAction::desktop);
     div()
         .flex()
         .items_center()

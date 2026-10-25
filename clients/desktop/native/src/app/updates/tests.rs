@@ -58,7 +58,7 @@ fn a_failed_check_clears_stale_targets_but_preserves_independent_success() {
     assert_eq!(updater.summary().0, "Could not check for updates");
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 #[test]
 fn a_combined_download_prepares_desktop_but_leaves_the_server_running() {
     let mut updater = installed("0.2.0");
@@ -91,7 +91,7 @@ fn a_combined_download_prepares_desktop_but_leaves_the_server_running() {
     );
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 #[test]
 fn a_desktop_only_download_waits_for_an_explicit_restart() {
     let mut updater = installed("0.2.0");
@@ -399,9 +399,9 @@ fn development_builds_never_stage_or_swap(cx: &mut gpui::TestAppContext) {
     });
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[gpui::test]
-fn linux_install_action_is_manual_and_never_stages(cx: &mut gpui::TestAppContext) {
+fn manual_install_action_never_stages(cx: &mut gpui::TestAppContext) {
     use gpui::AppContext;
     let updater = cx.new(|_| installed("0.2.0"));
     updater.update(cx, |updater, cx| {
@@ -411,13 +411,18 @@ fn linux_install_action_is_manual_and_never_stages(cx: &mut gpui::TestAppContext
         assert!(!updater.busy);
         assert!(updater.staged.is_none());
         assert!(!updater.handed_off);
-        assert!(updater.message.contains("PHUX_REQUIRE_SIGNATURE=1"));
+        assert_eq!(updater.action_label(), Some("Installation instructions"));
+        assert!(updater.summary_detail().unwrap().contains("rerun"));
+        assert_eq!(
+            updater.message,
+            updates::install_remedy(updater.prefs.desktop, None)
+        );
     });
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[test]
-fn linux_moves_phux_alone_and_names_the_desktop_installer() {
+fn manual_install_platforms_move_phux_alone_and_name_the_desktop_installer() {
     let mut updater = installed("0.2.0");
     updater.record_check(
         Ok(release("0.3.0", &updates::own_protocol())),
@@ -428,6 +433,6 @@ fn linux_moves_phux_alone_and_names_the_desktop_installer() {
         updater
             .notices()
             .iter()
-            .any(|(text, _)| text.contains("PHUX_REQUIRE_SIGNATURE=1"))
+            .any(|(text, _)| text == &updates::install_remedy(updater.prefs.desktop, None))
     );
 }

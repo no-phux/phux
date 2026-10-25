@@ -29,7 +29,7 @@ fn remove_restart_state(socket: &str) {
 #[gpui::test]
 fn a_staged_update_restarts_only_on_the_next_click(cx: &mut gpui::TestAppContext) {
     use gpui::AppContext;
-    if cfg!(target_os = "linux") {
+    if updates::manual_desktop_install() {
         return;
     }
     let socket = format!("phux-update-click-{}", std::process::id());
@@ -58,6 +58,7 @@ fn a_staged_update_restarts_only_on_the_next_click(cx: &mut gpui::TestAppContext
 
 /// Drive the actual async CLI completion callback using only a private shell
 /// fixture. No installed phux, server socket, or application bundle is used.
+#[cfg(unix)]
 fn runtime_callback(cx: &mut gpui::TestAppContext, desktop: bool) {
     use gpui::AppContext;
     use std::os::unix::fs::PermissionsExt;
@@ -146,7 +147,7 @@ fn runtime_callback(cx: &mut gpui::TestAppContext, desktop: bool) {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 #[gpui::test]
 fn a_protocol_major_change_hands_off_and_restarts_only_after_consent(
     cx: &mut gpui::TestAppContext,
@@ -154,6 +155,7 @@ fn a_protocol_major_change_hands_off_and_restarts_only_after_consent(
     runtime_callback(cx, true);
 }
 
+#[cfg(unix)]
 #[gpui::test]
 fn the_server_only_async_completion_never_restarts_desktop(cx: &mut gpui::TestAppContext) {
     runtime_callback(cx, false);
