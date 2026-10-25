@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{App, IntoElement, SharedString, Window, px};
-use gpui_kit::component::IconName;
+use gpui_kit::component::Icon;
 use gpui_kit::component::setting::{self as kit, RenderOptions, SettingField};
 
 use super::Page;
@@ -254,7 +254,7 @@ impl Content {
         }
     }
 
-    pub fn icon(mut self, icon: IconName) -> Self {
+    pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.inner = self.inner.icon(icon);
         self
     }

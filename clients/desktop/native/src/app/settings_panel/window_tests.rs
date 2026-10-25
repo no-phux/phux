@@ -96,6 +96,30 @@ fn draw(cx: &mut VisualTestContext) {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn permissions_search_reaches_setup_for_the_desktop_and_local_launcher(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, view) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    settings.simulate_keystrokes("cmd-f");
+    settings.simulate_input("full disk access");
+    draw(settings);
+    assert_eq!(
+        view.read_with(settings, |view, _| view.page),
+        Page::Permissions
+    );
+    for selector in [
+        "settings-permissions-desktop",
+        "settings-permissions-server",
+    ] {
+        assert!(settings.debug_bounds(selector).is_some(), "{selector}");
+    }
+}
+
 #[gpui::test]
 fn settings_shortcut_opens_a_separate_reusable_window(cx: &mut TestAppContext) {
     let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);

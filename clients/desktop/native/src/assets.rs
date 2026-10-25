@@ -13,6 +13,7 @@ gpui_kit::assets::icon_assets!(
         // Settings > Layout: tab placement.
         PanelTop,
         // Settings categories.
+        Lock,
         Keyboard,
         Terminal,
         Download,
@@ -88,6 +89,7 @@ mod tests {
     fn menu_and_component_icons_are_embedded() {
         for icon in [
             IconName::SquareTerminal,
+            IconName::Lock,
             IconName::Keyboard,
             IconName::Terminal,
             IconName::Download,
