@@ -74,6 +74,7 @@ const ROUTES: Record<string, Surface[]> = {
   // root CLI inputs (e.g. phux-protocol), so they still fail closed.
   "clients/desktop/native/**": ["desktop"],
   "clients/desktop/packaging/AppIcon.svg": ["desktop"],
+  "clients/desktop/packaging/AppIcon.png": ["desktop"],
   "just/desktop.just": ["desktop"],
   "just/web.just": ["web"],
   // Root crates reach the web and desktop lanes only through Cargo (see

@@ -201,7 +201,10 @@ def fetch(root):
     expected_url = f"{PUBLIC_BASE}/{lock['version']}/phux-brand.zip"
     if lock["url"] != expected_url or not re.fullmatch(r"\d+\.\d+\.\d+", lock["version"]):
         raise ValueError("unsupported brand download URL")
-    with urllib.request.urlopen(expected_url, timeout=60) as response:
+    request = urllib.request.Request(expected_url, headers={
+        "User-Agent": "phux-brand/1", "Accept": "application/zip",
+    })
+    with urllib.request.urlopen(request, timeout=60) as response:
         data = response.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise ValueError("brand download exceeds size limit")

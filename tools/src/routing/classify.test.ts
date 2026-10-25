@@ -97,6 +97,7 @@ test.each<[string[], Surface[]]>([
   [["brand.config.json", "brand.lock.json"], []],
   [["scripts/brand.py", "scripts/update-brand.py", "scripts/test_brand_update.py"], []],
   [["brand.lock.json", "clients/desktop/packaging/AppIcon.svg"], ["desktop"]],
+  [["brand.lock.json", "clients/desktop/packaging/AppIcon.png"], ["desktop"]],
   [[".github/workflows/ffi-xcframework.yml"], []],
   [[".github/actions/setup-rust-lane/action.yml"], ALL],
   [[".cargo/config.toml"], ["phux", "web", "native", "desktop"]],

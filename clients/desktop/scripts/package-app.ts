@@ -2,7 +2,7 @@
  * Build `Phux.app`: the release GPUI executable, embedded-font license and
  * font files, the repository LICENSE and NOTICE with a third-party notice
  * generated from the desktop's Cargo graph, an icon rendered from
- * packaging/AppIcon.svg, and an ad-hoc signature. The executable is the Rust
+ * packaging/AppIcon.png, and an ad-hoc signature. The executable is the Rust
  * binary. There is no JS bundle and no native addon.
  *
  * Usage: bun scripts/package-app.ts [--install]
@@ -142,8 +142,8 @@ function renderIcon(output: string): void {
   const work = join(tmpdir(), `phux-icon-${process.pid}`);
   const iconset = join(work, "AppIcon.iconset");
   mkdirSync(iconset, { recursive: true });
-  run(["qlmanage", "-t", "-s", "1024", "-o", work, resolve(root, "packaging/AppIcon.svg")]);
-  const master = join(work, "AppIcon.svg.png");
+  // Use canonical pixels: Quick Look adds a white background or document frame.
+  const master = resolve(root, "packaging/AppIcon.png");
   for (const size of [16, 32, 128, 256, 512]) {
     run([
       "sips",
