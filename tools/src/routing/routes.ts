@@ -69,6 +69,7 @@ const ROUTES: Record<string, Surface[]> = {
   // not unrelated root/browser/integration builds. Other desktop files can be
   // root CLI inputs (e.g. phux-protocol), so they still fail closed.
   "clients/desktop/native/**": ["desktop"],
+  "clients/desktop/packaging/AppIcon.svg": ["desktop"],
   "just/desktop.just": ["desktop"],
   "just/web.just": ["web"],
   // Root crates reach the web and desktop lanes only through Cargo (see
@@ -101,6 +102,10 @@ const ROUTES: Record<string, Surface[]> = {
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
   "scripts/check-*": [],
+  // Brand release plumbing is verified by guards. Changed application artwork
+  // still routes through its destination's packaging/build checks.
+  "brand.{config,lock}.json": [],
+  "scripts/{brand,update-brand,test_brand_update}.py": [],
   "scripts/{export-product-skills.sh,product-skills}": [],
   "scripts/skills-package/**": [],
   "scripts/{build-ffi-xcframework,build-mobile-ffi-android}.sh": [],

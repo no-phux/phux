@@ -24,6 +24,9 @@ There is no string registry and no second listener.
   key-down until the platform commits text. Control characters, including
   Enter's newline and Tab's tab character on macOS, send key atoms on key-down.
   Control/Option-as-Alt keys also send on key-down.
+  Hosts implementing a leader can use `input::key_event` to convert a literal
+  leader back to the same structured key atoms; the host must check focus
+  and native ownership before delivering it.
 - Pointer and scroll use `Geometry::hit`, the same device-pixel edges as
   paint. GPUI capture keeps releases on the originating view, and a
   window-wide move listener keeps a selection drag or a captured application

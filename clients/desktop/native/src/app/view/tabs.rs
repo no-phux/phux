@@ -100,6 +100,8 @@ pub(super) fn strip(
         )
     });
     let geometry = desk.tab_geometry.clone();
+    let scroll = desk.tab_peek.strip_scroll.clone();
+    let count = tabs.len();
     geometry.borrow_mut().prepare(position, tabs.len());
     let side = position == TabPosition::Side;
     // Beside the sidebar, top tabs start on the cards' column (the titlebar
@@ -115,38 +117,38 @@ pub(super) fn strip(
         TabPosition::Side => "side-tabs",
     };
     div()
+        .on_children_prepainted(move |bounds, _, _| {
+            // Tracked scrollers keep their child bounds on the handle rather
+            // than passing them to this callback. Add their painted offset.
+            let bounds = if position != TabPosition::Side {
+                (0..count).filter_map(|index| scroll.bounds_for_item(index))
+                    .map(|mut bounds| { bounds.origin += scroll.offset(); bounds })
+                    .collect()
+            } else { bounds };
+            let mut geometry = geometry.borrow_mut();
+            for (index, bounds) in bounds.into_iter().enumerate() {
+                geometry.record(index, position, bounds);
+            }
+        })
         .id(id)
         .debug_selector(move || id.into())
         .when(side, |list| list.w_full())
         .when(!side, |list| {
             list.flex_1().min_w_0().h_full().overflow_x_scroll()
+                .track_scroll(&desk.tab_peek.strip_scroll)
         })
-        .child(
-            // Measure inside the scroller: its children then include the actual
-            // painted scroll offset, not the unscrolled layout coordinates.
-            div()
-                .flex()
-                .when(side, |list| list.flex_col().gap(px(1.)).w_full())
-                .when(!side, |list| {
-                    list.gap(px(5.))
-                        .w_full()
-                        .min_w(px(tabs.len() as f32 * 105. + 3. + lead_pad - 4.))
-                        .h_full()
-                        .items_center()
-                        .when(position == TabPosition::Top, |list| {
-                            list.pl(px(lead_pad)).pr(px(4.))
-                        })
-                })
-                .children(tabs.iter().map(|tab| {
-                    tab_button(desk, tab, active, position, look, cx).into_any_element()
-                }))
-                .on_children_prepainted(move |bounds, _, _| {
-                    let mut geometry = geometry.borrow_mut();
-                    for (index, bounds) in bounds.into_iter().enumerate() {
-                        geometry.record(index, position, bounds);
-                    }
-                }),
-        )
+        .flex()
+        .when(side, |list| list.flex_col().gap(px(1.)))
+        .when(!side, |list| list.gap(px(5.)).items_center())
+        .when(position == TabPosition::Top, |list| {
+            list.pl(px(lead_pad))
+                .pr(px(4.))
+        })
+        // Direct children let the scroll handle reveal individual tabs and give
+        // the live shelf their exact layout bounds, without a second grid.
+        .children(tabs.iter().map(|tab| {
+            tab_button(desk, tab, active, position, look, cx).into_any_element()
+        }))
 }
 
 /// The most pressing agent state in `tab`, only when it needs a person.
@@ -161,7 +163,7 @@ pub(super) fn tab_attention(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
 }
 
 /// The calmer state an agent in `tab` is in, for a quiet leading dot.
-fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
+pub(super) fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
     strongest(
         layout::placements(&tab.root)
             .into_iter()
@@ -171,23 +173,20 @@ fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
     )
 }
 
-/// A sidebar tab's leading slot: a lit dot while it needs a person, else its
-/// agent's harness mark, else its agent's state, else a terminal glyph.
-fn side_lead(
+/// A tab keeps its harness identity through attention and selection changes;
+/// the harness's pip carries state. Unclassified agents use a state dot.
+pub(super) fn side_lead(
     attention: Option<AgentState>,
     agent: Option<AgentState>,
     harness: Option<Harness>,
     selected: bool,
     look: &Look,
 ) -> AnyElement {
-    if attention.is_some() {
-        return state_dot(attention, agent).into_any_element();
-    }
     if let Some(harness) = harness {
         return harness_mark(harness, agent, 13., look).into_any_element();
     }
-    if agent.is_some() {
-        return state_dot(None, agent).into_any_element();
+    if attention.is_some() || agent.is_some() {
+        return state_dot(attention, agent).into_any_element();
     }
     Icon::new(IconName::SquareTerminal)
         .size(px(13.))
@@ -197,20 +196,6 @@ fn side_lead(
             &look.chrome.faint
         }))
         .into_any_element()
-}
-
-/// A titlebar tab's leading slot: nothing while its corner mark asks for a
-/// person, else what a sidebar tab leads with.
-fn top_lead(
-    attention: Option<AgentState>,
-    agent: Option<AgentState>,
-    harness: Option<Harness>,
-    selected: bool,
-    look: &Look,
-) -> Option<AnyElement> {
-    attention
-        .is_none()
-        .then(|| side_lead(None, agent, harness, selected, look))
 }
 
 /// A titlebar tab's close button: on hover, and always on the selected tab.
@@ -474,7 +459,7 @@ fn tab_button(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .children(top_lead(attention, agent, harness, selected, look)),
+                    .child(side_lead(None, agent, harness, selected, look)),
             )
         })
         .child(tab_label(desk, tab, selected, look))
@@ -507,5 +492,7 @@ fn tab_button(
         .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
             tab_click(desk, &rename_id, event, window, cx);
         }))
-        .tooltip(move |window, cx| hover::tooltip(&tooltip_tab, &handle, window, cx))
+        .when(!desk.tab_peek.open, |tab| {
+            tab.tooltip(move |window, cx| hover::tooltip(&tooltip_tab, &handle, window, cx))
+        })
 }

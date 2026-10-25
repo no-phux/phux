@@ -70,6 +70,7 @@ impl Desk {
             ghostty_found: text.is_some(),
             chords: shown_chords(&keymap),
             keymap,
+            leader: leader::Leader::new(window, cx),
             ghostty,
             paint: RefCell::new(None),
             capture: super::super::capture::State::default(),

@@ -36,6 +36,38 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.45.0](https://github.com/no-phux/phux/compare/desktop-v0.44.1...desktop-v0.45.0) (2026-10-24)
+
+
+### Features
+
+* **desktop:** add a saved developer mode and a developer settings page ([#1734](https://github.com/no-phux/phux/issues/1734)) ([7259f32](https://github.com/no-phux/phux/commit/7259f32ed98303c3f320855d255b6534fb44031f))
+* **desktop:** add corner update progress and explicit restart ([#1732](https://github.com/no-phux/phux/issues/1732)) ([54733cc](https://github.com/no-phux/phux/commit/54733ccd43193b32fc4cf4c63dbadc97d802ac4d))
+* **desktop:** add notarized macOS DMG distribution ([#1767](https://github.com/no-phux/phux/issues/1767)) ([52f04b0](https://github.com/no-phux/phux/commit/52f04b08a83dc77d131a8ab3be5875a1190033b1))
+* **desktop:** peek tabs with live native terminal previews ([#1738](https://github.com/no-phux/phux/issues/1738)) ([16b462d](https://github.com/no-phux/phux/commit/16b462db890f3f54489dd82d46952f28df15d6da))
+* **desktop:** put the agent reply loop first ([#1763](https://github.com/no-phux/phux/issues/1763)) ([7d5b8d0](https://github.com/no-phux/phux/commit/7d5b8d0191ea24fead04ff8a7f790f555cdebfe6))
+* **desktop:** redesign the agent fleet mission control ([df82a8b](https://github.com/no-phux/phux/commit/df82a8bf5c83f6d7b53341d4a609a82f0cdf0057))
+* **desktop:** separate native-style settings from the command palette ([4bf8533](https://github.com/no-phux/phux/commit/4bf8533a3f1fbc7458269df33b0a1e5dff417b63))
+* **desktop:** show tab context on hover ([#1744](https://github.com/no-phux/phux/issues/1744)) ([77f96f3](https://github.com/no-phux/phux/commit/77f96f35a9279065fafe1b41d254f31dca9f25f2))
+* sign in to Tailscale, discover tailnet machines, and install phux from desktop Add Machine ([#1742](https://github.com/no-phux/phux/issues/1742)) ([2d24592](https://github.com/no-phux/phux/commit/2d2459265453de41959bc486953d5e0b27d6d456))
+
+
+### Bug Fixes
+
+* **deps:** update Tokio for I/O-safe descriptor registration ([#1768](https://github.com/no-phux/phux/issues/1768)) ([f932a89](https://github.com/no-phux/phux/commit/f932a897a7400ab5d9dbed4dfaf303e887cb83fc))
+* **desktop:** bound diagnostic capture and batch fence reads ([#1748](https://github.com/no-phux/phux/issues/1748)) ([af355be](https://github.com/no-phux/phux/commit/af355bee278a8bcdc5ff7d051cc6e25315979f5b))
+* **desktop:** format-check phux-gpui too, and format it ([#1753](https://github.com/no-phux/phux/issues/1753)) ([9f6b2a5](https://github.com/no-phux/phux/commit/9f6b2a585dfc1950eb6ff3c93dc9cb5f911c92e7))
+* **desktop:** give every terminal in the session a tab without a click ([#1743](https://github.com/no-phux/phux/issues/1743)) ([a764f37](https://github.com/no-phux/phux/commit/a764f3739ab0b017469ec1fe7947f818a048be47))
+* **desktop:** read an old CLI from its usage_error code, not the error wording ([#1752](https://github.com/no-phux/phux/issues/1752)) ([4ea702f](https://github.com/no-phux/phux/commit/4ea702ffb70c4e85328c5e3fd51285d8ea17a491))
+* **desktop:** yield activity pump during sustained output ([#1760](https://github.com/no-phux/phux/issues/1760)) ([1967457](https://github.com/no-phux/phux/commit/1967457ab16a846dbb6b82d1186354458119bc99))
+
+
+### Performance
+
+* **desktop:** cache ASCII glyph layouts for terminal animation ([#1761](https://github.com/no-phux/phux/issues/1761)) ([7881e7e](https://github.com/no-phux/phux/commit/7881e7e66a3f8e1d029aeaef2f5ea621beeb6cea))
+* **desktop:** open a new shell at full size ([#1758](https://github.com/no-phux/phux/issues/1758)) ([0df8a0a](https://github.com/no-phux/phux/commit/0df8a0a8d7952c8dc527785c4ac5f58a8c82f715))
+* **desktop:** reuse ASCII glyph layouts and yield under output load ([7881e7e](https://github.com/no-phux/phux/commit/7881e7e66a3f8e1d029aeaef2f5ea621beeb6cea))
+
 ## [0.44.1](https://github.com/no-phux/phux/compare/desktop-v0.44.0...desktop-v0.44.1) (2026-10-23)
 
 

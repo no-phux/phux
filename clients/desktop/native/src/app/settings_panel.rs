@@ -29,6 +29,7 @@ use gpui::{
     App, ClickEvent, Context, Entity, SharedString, Subscription, WeakEntity, Window, div, px,
 };
 use gpui_kit::component::group_box::GroupBoxVariant;
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::setting::{NumberFieldOptions, SettingField, Settings};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
@@ -101,7 +102,7 @@ impl Page {
                 "sidebar tabs top bottom side background opacity glass blur solid opaque notifications alerts experimental agent fleet dashboard overview"
             }
             Self::Keyboard => {
-                "option alt keys keybind shortcuts chord input conflicts duplicate source"
+                "option alt keys keybind shortcuts chord input conflicts duplicate source leader prefix tmux"
             }
             Self::Spacing => "line height cell width padding horizontal vertical unfocused dimming",
             Self::Ghostty => {
@@ -152,6 +153,8 @@ pub(crate) struct SettingsControls {
     sliders: Vec<(Knob, Entity<SliderState>)>,
     font: Entity<FontSelect>,
     fonts: Vec<SharedString>,
+    leader: Entity<InputState>,
+    leader_saved: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -309,10 +312,28 @@ fn build_controls(desk: &Desk, window: &mut Window, cx: &mut Context<Desk>) -> S
             desk.update_prefs(|prefs| prefs.font_family = family, cx);
         },
     ));
+    let leader = cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder("ctrl+alt+a")
+            .default_value(desk.prefs.leader_key.clone().unwrap_or_default())
+    });
+    subs.push(
+        cx.subscribe_in(&leader, window, |desk, input, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                let value = input.read(cx).value();
+                if let Some(chord) = settings::leader::normalize_leader(value.as_ref()) {
+                    desk.update_prefs(|prefs| prefs.leader_key = Some(chord), cx);
+                }
+            }
+            cx.notify();
+        }),
+    );
     SettingsControls {
         sliders,
         font,
         fonts,
+        leader,
+        leader_saved: desk.prefs.leader_key.clone(),
         _subs: subs,
     }
 }
@@ -328,6 +349,12 @@ fn sync_controls(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
 impl SettingsControls {
     fn sync(&mut self, prefs: &DisplayPrefs, window: &mut Window, cx: &mut App) {
         let controls = self;
+        if controls.leader_saved != prefs.leader_key {
+            controls.leader_saved.clone_from(&prefs.leader_key);
+            controls.leader.update(cx, |input, cx| {
+                input.set_value(prefs.leader_key.clone().unwrap_or_default(), window, cx);
+            });
+        }
         for (knob, slider) in &controls.sliders {
             let wanted = knob.shown(prefs);
             if (slider.read(cx).value().start() - wanted).abs() > knob.range.2 / 2. {
@@ -367,7 +394,7 @@ fn content(
     match page {
         Page::Appearance => appearance::appearance_page(desk, handle, controls, cx),
         Page::Layout => layout::window_page(desk, handle, controls),
-        Page::Keyboard => input::keyboard_page(desk, handle),
+        Page::Keyboard => input::keyboard_page(desk, handle, controls),
         Page::Spacing => layout::advanced_page(desk, handle, controls),
         Page::Ghostty => input::ghostty_page(desk, handle),
         Page::Updates => {
