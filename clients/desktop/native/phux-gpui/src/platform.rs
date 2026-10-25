@@ -136,3 +136,31 @@ pub(crate) fn terminal_input_handler<V: gpui::EntityInputHandler>(
 ) -> gpui::ElementInputHandler<V> {
     handler
 }
+
+/// Paint an image without letting visibility clips alter source filtering.
+#[cfg(feature = "patched-gpui")]
+pub(crate) fn paint_image(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    source: [f32; 4],
+    image: Arc<gpui::RenderImage>,
+) -> gpui::Result<()> {
+    window.paint_image_with_sampling(
+        bounds,
+        Bounds::new(
+            gpui::point(source[0], source[1]),
+            gpui::size(source[2], source[3]),
+        ),
+        image,
+    )
+}
+
+#[cfg(not(feature = "patched-gpui"))]
+pub(crate) fn paint_image(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    _source: [f32; 4],
+    image: std::sync::Arc<gpui::RenderImage>,
+) -> gpui::Result<()> {
+    window.paint_image(bounds, bounds, Default::default(), image, 0, false)
+}

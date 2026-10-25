@@ -133,6 +133,7 @@ impl SpawnPublication<'_> {
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
+                image_protocols: self.client_caps.image_protocols,
                 max_bytes: usize::MAX,
                 max_frames: usize::MAX,
                 chunk_bytes: 1,

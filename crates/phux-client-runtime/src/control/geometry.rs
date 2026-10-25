@@ -128,6 +128,10 @@ impl ControlPlane {
             return TerminalResizeOutcome::NotReady;
         }
         let cell_px = cell_px.filter(|&(width, height)| width > 0 && height > 0);
+        #[cfg(feature = "engine")]
+        if let (Some(engine), Some((width, height))) = (&self.engine, cell_px) {
+            let _ = engine.set_cell_pixels(terminal_id, width, height);
+        }
         self.queue_frame(&FrameKind::ResizeTerminal {
             terminal_id: terminal_id.clone(),
             cols,

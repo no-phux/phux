@@ -203,8 +203,8 @@ pub(super) fn cell_px(metrics: InputMetrics) -> (u16, u16) {
 
 /// `None` when this proposal was already sent, or on the first look when the
 /// grid matches and the pitch is [`DEFAULT_CELL_PX`]. Any other pitch is
-/// reported so mouse pixels and the encoder share one cell. Sending a new
-/// pitch tombstones native history once; that is the server's resize contract.
+/// reported so mouse encoding and image geometry share one cell. Pixel-only
+/// changes preserve native history; only a text-grid reflow retires its cursors.
 pub(super) fn pending_fit(
     fitted: Option<FitProposal>,
     capacity: (u16, u16),

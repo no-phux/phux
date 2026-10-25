@@ -9,10 +9,7 @@ use std::io::{self, Write};
 
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
-    alloc::{Allocator, Bytes},
-    kitty::graphics::{
-        self, Compression, DecodedImage, Image, ImageFormat, PlacementIterator, PlacementRenderInfo,
-    },
+    kitty::graphics::{self, Compression, Image, ImageFormat, PlacementIterator},
 };
 
 /// Per-terminal Kitty image storage budget.
@@ -39,7 +36,7 @@ pub enum KittyReplayError {
 pub fn configure_terminal_for_kitty_graphics(
     terminal: &mut GhosttyTerminal<'_, '_>,
 ) -> Result<(), libghostty_vt::Error> {
-    graphics::set_png_decoder(Some(Box::<PngDecoder>::default()))?;
+    graphics::set_png_decoder(Some(Box::new(graphics::RustPngDecoder::new())))?;
     terminal.set_kitty_image_storage_limit(KITTY_IMAGE_STORAGE_LIMIT_BYTES)?;
     Ok(())
 }
@@ -47,10 +44,11 @@ pub fn configure_terminal_for_kitty_graphics(
 /// Re-emit Kitty graphics state held by `terminal` as APC bytes.
 ///
 /// `origin` is the outer-terminal cell coordinate for pane-local `(0, 0)`.
-/// `clip` is the pane's visible cell extent. Virtual/placeholder placements
-/// only need the image payload re-transmitted; classic placements are replayed
-/// with `a=T` at their viewport position so they survive cell-renderer paints
-/// and server snapshots without introducing a new wire field.
+/// `clip` is the pane's visible cell extent. Only payloads needed by collected,
+/// clipped placements are transmitted, followed by explicit classic or
+/// Unicode-placeholder placements with their original identities, source
+/// rectangles, offsets and stacking order.
+/// The caller owns clearing stale placements before a full repaint.
 ///
 /// Returns `true` when bytes were written.
 pub fn emit_kitty_graphics_replay(
@@ -60,198 +58,398 @@ pub fn emit_kitty_graphics_replay(
     origin: (u16, u16),
     clip: (u16, u16),
 ) -> Result<bool, KittyReplayError> {
+    emit_replay(terminal, placement_iter, out, origin, Some(clip))
+}
+
+/// Restore graphics into a dedicated terminal replica.
+///
+/// The receiver clips its own viewport. Preserve right/bottom extents so a
+/// later cell-pixel resize can reveal the rest of a natural-size image.
+/// All resident payloads, including unplaced images, are restored so later
+/// live placement commands can reference them.
+pub fn emit_kitty_graphics_snapshot(
+    terminal: &GhosttyTerminal<'_, '_>,
+    placement_iter: &mut PlacementIterator<'_>,
+    out: &mut impl Write,
+) -> Result<bool, KittyReplayError> {
+    emit_replay(terminal, placement_iter, out, (0, 0), None)
+}
+
+fn emit_replay(
+    terminal: &GhosttyTerminal<'_, '_>,
+    placement_iter: &mut PlacementIterator<'_>,
+    out: &mut impl Write,
+    origin: (u16, u16),
+    clip: Option<(u16, u16)>,
+) -> Result<bool, KittyReplayError> {
     let graphics = terminal.kitty_graphics()?;
-    let mut placements = placement_iter.update(&graphics)?;
-    let mut transmitted: Vec<u32> = Vec::new();
-    let mut wrote = false;
-
-    while let Some(placement) = placements.next() {
-        let image_id = placement.image_id()?;
-        let Some(image) = graphics.image(image_id) else {
-            continue;
-        };
-
-        if placement.is_virtual()? {
-            if transmitted.contains(&image_id) {
-                continue;
-            }
-            write_image_apc(out, &image, ImageAction::TransmitOnly, None)?;
-        } else {
-            let info = placement.placement_render_info(&image, terminal)?;
-            let Some(region) = clip_placement(&info, clip) else {
-                continue;
-            };
-            write_placement(out, &image, region, origin)?;
-        }
-
-        transmitted.push(image_id);
-        wrote = true;
+    let mut image_ids = Vec::new();
+    graphics.image_ids_into(&mut image_ids)?;
+    image_ids.sort_unstable();
+    let mut replay = collect_placements(terminal, &graphics, placement_iter, &image_ids, clip)?;
+    // Preserve default-placeholder preference without exposing internal IDs.
+    replay.sort_by_key(|p| (p.image_id, !p.external, p.placement_id));
+    if clip.is_some() {
+        image_ids.retain(|id| replay.binary_search_by_key(id, |p| p.image_id).is_ok());
     }
-
+    transmit_images(&graphics, out, &mut image_ids)?;
+    replay.retain(|p| image_ids.binary_search(&p.image_id).is_ok());
+    let wrote = !image_ids.is_empty();
+    for placement in replay {
+        placement.write(out, origin)?;
+    }
     Ok(wrote)
 }
 
-/// One placement's pane-local cell geometry, already clipped to the pane.
-#[derive(Clone, Copy, Debug)]
-struct PlacementRegion {
-    col: u16,
-    row: u16,
+fn transmit_images(
+    graphics: &graphics::Graphics<'_>,
+    out: &mut impl Write,
+    ids: &mut Vec<u32>,
+) -> Result<(), KittyReplayError> {
+    let mut transmitted = 0;
+    for index in 0..ids.len() {
+        let id = ids[index];
+        if let Some(image) = graphics.image(id)
+            && write_image_apc(out, &image)?
+        {
+            ids[transmitted] = id;
+            transmitted += 1;
+        }
+    }
+    ids.truncate(transmitted);
+    Ok(())
+}
+
+fn cell_pixels(terminal: &GhosttyTerminal<'_, '_>) -> Result<(u32, u32), libghostty_vt::Error> {
+    Ok((
+        terminal.width_px()? / u32::from(terminal.cols()?.max(1)),
+        terminal.height_px()? / u32::from(terminal.rows()?.max(1)),
+    ))
+}
+
+fn collect_placements(
+    terminal: &GhosttyTerminal<'_, '_>,
+    graphics: &graphics::Graphics<'_>,
+    iter: &mut PlacementIterator<'_>,
+    image_ids: &[u32],
+    clip: Option<(u16, u16)>,
+) -> Result<Vec<ReplayPlacement>, KittyReplayError> {
+    let cell = cell_pixels(terminal)?;
+    let mut placements = iter.update(graphics)?;
+    let mut replay = Vec::new();
+    while let Some(placement) = placements.next() {
+        let id = placement.image_id()?;
+        if image_ids.binary_search(&id).is_err() {
+            continue;
+        }
+        let Some(image) = graphics.image(id) else {
+            continue;
+        };
+        if let Some(placement) = ReplayPlacement::new(id, placement, &image, terminal, cell, clip)?
+        {
+            replay.push(placement);
+        }
+    }
+    Ok(replay)
+}
+
+/// Raw placement controls. Preserve zero dimensions (natural size/aspect ratio)
+/// unless clipping requires a smaller destination and source rectangle.
+struct PlacementGeometry {
     cols: u32,
     rows: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    x_offset: u32,
+    y_offset: u32,
 }
 
-/// Whether a placement is on-screen with a non-degenerate cell footprint.
-const fn is_renderable(info: &PlacementRenderInfo) -> bool {
-    info.viewport_visible
-        && info.grid_cols != 0
-        && info.grid_rows != 0
-        && info.viewport_col >= 0
-        && info.viewport_row >= 0
+struct ReplayPlacement {
+    image_id: u32,
+    placement_id: u32,
+    external: bool,
+    virtual_placement: bool,
+    geometry: PlacementGeometry,
+    position: Option<(u16, u16)>,
+    z: i32,
 }
 
-/// Clip a classic placement's render info to the pane's visible cell extent.
-///
-/// Returns `None` for every case the replay must skip: off-viewport,
-/// degenerate, or starting past the pane's own `clip` bounds.
-fn clip_placement(info: &PlacementRenderInfo, clip: (u16, u16)) -> Option<PlacementRegion> {
-    if !is_renderable(info) {
-        return None;
+impl ReplayPlacement {
+    fn new(
+        image_id: u32,
+        placement: &graphics::PlacementIteration<'_, '_>,
+        image: &Image<'_>,
+        terminal: &GhosttyTerminal<'_, '_>,
+        cell: (u32, u32),
+        clip: Option<(u16, u16)>,
+    ) -> Result<Option<Self>, libghostty_vt::Error> {
+        let virtual_placement = placement.is_virtual()?;
+        let mut geometry = PlacementGeometry::from_placement(placement)?;
+        let position = if virtual_placement {
+            None
+        } else {
+            let Some(position) = geometry.clip(
+                &placement.placement_render_info(image, terminal)?,
+                cell,
+                clip,
+            ) else {
+                return Ok(None);
+            };
+            Some(position)
+        };
+        Ok(Some(Self {
+            image_id,
+            virtual_placement,
+            geometry,
+            position,
+            placement_id: placement.placement_id()?,
+            external: placement.is_external()?,
+            z: placement.z()?,
+        }))
     }
 
-    let col = u16::try_from(info.viewport_col)
-        .ok()
-        .filter(|c| *c < clip.0)?;
-    let row = u16::try_from(info.viewport_row)
-        .ok()
-        .filter(|r| *r < clip.1)?;
-    let cols = u32::from(clip.0.saturating_sub(col)).min(info.grid_cols);
-    let rows = u32::from(clip.1.saturating_sub(row)).min(info.grid_rows);
-    if cols == 0 || rows == 0 {
-        return None;
-    }
-
-    Some(PlacementRegion {
-        col,
-        row,
-        cols,
-        rows,
-    })
-}
-
-/// Replay one classic placement with `a=T` at its outer-terminal position.
-fn write_placement(
-    out: &mut impl Write,
-    image: &Image<'_>,
-    region: PlacementRegion,
-    origin: (u16, u16),
-) -> Result<(), KittyReplayError> {
-    write_cup(
-        out,
-        region.row.saturating_add(origin.1),
-        region.col.saturating_add(origin.0),
-    )?;
-    write_image_apc(
-        out,
-        image,
-        ImageAction::TransmitAndDisplay,
-        Some((region.cols, region.rows)),
-    )
-}
-
-#[derive(Debug, Default)]
-struct PngDecoder {
-    buf: Vec<u8>,
-}
-
-impl graphics::DecodePng for PngDecoder {
-    fn decode_png<'alloc>(
-        &mut self,
-        alloc: &'alloc Allocator<'_>,
-        data: &[u8],
-    ) -> Option<DecodedImage<'alloc>> {
-        use png::{Decoder, Transformations};
-        use std::io::Cursor;
-
-        let mut decoder = Decoder::new(Cursor::new(data));
-        decoder.set_transformations(Transformations::ALPHA | Transformations::STRIP_16);
-
-        let mut reader = decoder.read_info().ok()?;
-        let needed = reader.output_buffer_size()?;
-        if self.buf.len() < needed {
-            self.buf.resize(needed, 0);
+    fn write(&self, out: &mut impl Write, origin: (u16, u16)) -> Result<(), KittyReplayError> {
+        if let Some((col, row)) = self.position {
+            write_cup(
+                out,
+                row.saturating_add(origin.1),
+                col.saturating_add(origin.0),
+            )?;
         }
-        let info = reader.next_frame(&mut self.buf).ok()?;
+        let geometry = &self.geometry;
+        write!(
+            out,
+            "\x1b_Ga=p,i={},p={},U={},c={},r={},x={},y={},w={},h={},X={},Y={},z={},C=1,q=2;\x1b\\",
+            self.image_id,
+            if self.external { self.placement_id } else { 0 },
+            u8::from(self.virtual_placement),
+            geometry.cols,
+            geometry.rows,
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height,
+            geometry.x_offset,
+            geometry.y_offset,
+            self.z,
+        )?;
+        Ok(())
+    }
+}
 
-        let mut bytes = Bytes::new_with_alloc(alloc, info.buffer_size()).ok()?;
-        bytes.copy_from_slice(&self.buf[..info.buffer_size()]);
-        reader.finish().ok()?;
-
-        Some(DecodedImage {
-            width: info.width,
-            height: info.height,
-            data: bytes,
+impl PlacementGeometry {
+    fn from_placement(
+        placement: &libghostty_vt::kitty::graphics::PlacementIteration<'_, '_>,
+    ) -> Result<Self, libghostty_vt::Error> {
+        Ok(Self {
+            cols: placement.columns()?,
+            rows: placement.rows()?,
+            x: placement.source_x()?,
+            y: placement.source_y()?,
+            width: placement.source_width()?,
+            height: placement.source_height()?,
+            x_offset: placement.x_offset()?,
+            y_offset: placement.y_offset()?,
         })
     }
+
+    fn clip(
+        &mut self,
+        info: &libghostty_vt::kitty::graphics::PlacementRenderInfo,
+        cell: (u32, u32),
+        clip: Option<(u16, u16)>,
+    ) -> Option<(u16, u16)> {
+        if !info.viewport_visible {
+            return None;
+        }
+        let col = clip_axis(
+            info.viewport_col,
+            info.grid_cols,
+            info.pixel_width,
+            cell.0,
+            clip.map(|clip| clip.0),
+            info.source_x,
+            info.source_width,
+            &mut self.cols,
+            &mut self.x,
+            &mut self.width,
+            &mut self.x_offset,
+        )?;
+        let row = clip_axis(
+            info.viewport_row,
+            info.grid_rows,
+            info.pixel_height,
+            cell.1,
+            clip.map(|clip| clip.1),
+            info.source_y,
+            info.source_height,
+            &mut self.rows,
+            &mut self.y,
+            &mut self.height,
+            &mut self.y_offset,
+        )?;
+        Some((col, row))
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ImageAction {
-    TransmitOnly,
-    TransmitAndDisplay,
+/// Clip in destination pixels, then map the visible interval into the source.
+/// In particular, a negative viewport row is a partially scrolled image, not
+/// an invisible image. Integer source bounds round outwards as Kitty requires.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one axis of Kitty placement geometry"
+)]
+fn clip_axis(
+    position: i32,
+    grid_size: u32,
+    pixel_size: u32,
+    cell_size: u32,
+    clip: Option<u16>,
+    source_start: u32,
+    source_size: u32,
+    cells: &mut u32,
+    source: &mut u32,
+    size: &mut u32,
+    offset: &mut u32,
+) -> Option<u16> {
+    let (start, end, visible_position) =
+        visible_cell_interval(position, grid_size, pixel_size, source_size, clip)?;
+    if start == i64::from(position) && end == i64::from(position) + i64::from(grid_size) {
+        return Some(visible_position);
+    }
+    let (first, last, visible_offset) =
+        visible_pixel_interval(position, start, end, pixel_size, cell_size, *offset)?;
+    let (source_first, source_len) =
+        mapped_source_interval(first, last, pixel_size, source_start, source_size)?;
+    *source = source_first;
+    *size = source_len;
+    *offset = visible_offset;
+    if *cells != 0 {
+        *cells = u32::try_from(end - start).ok()?;
+    }
+    Some(visible_position)
 }
 
-fn write_image_apc(
-    out: &mut impl Write,
-    image: &Image<'_>,
-    action: ImageAction,
-    placement_size: Option<(u32, u32)>,
-) -> Result<(), KittyReplayError> {
+fn visible_cell_interval(
+    position: i32,
+    grid_size: u32,
+    pixel_size: u32,
+    source_size: u32,
+    clip: Option<u16>,
+) -> Option<(i64, i64, u16)> {
+    let start = i64::from(position).max(0);
+    let end = (i64::from(position) + i64::from(grid_size)).min(clip.map_or(i64::MAX, i64::from));
+    if start >= end || grid_size == 0 || pixel_size == 0 || source_size == 0 {
+        return None;
+    }
+    Some((start, end, u16::try_from(start).ok()?))
+}
+
+fn visible_pixel_interval(
+    position: i32,
+    start: i64,
+    end: i64,
+    pixel_size: u32,
+    cell_size: u32,
+    offset: u32,
+) -> Option<(u64, u64, u32)> {
+    if cell_size == 0 {
+        return None;
+    }
+    let offset_px = offset.min(cell_size - 1);
+    let skipped_cells = u64::try_from(start - i64::from(position)).ok()?;
+    let skipped_pixels = skipped_cells * u64::from(cell_size);
+    let first = skipped_pixels.saturating_sub(u64::from(offset_px));
+    let visible_offset = u32::try_from(u64::from(offset_px).saturating_sub(skipped_pixels)).ok()?;
+    let available = u64::try_from(end - start).ok()? * u64::from(cell_size);
+    let last = (skipped_pixels + available)
+        .saturating_sub(u64::from(offset_px))
+        .min(u64::from(pixel_size));
+    if first >= last {
+        return None;
+    }
+    Some((first, last, visible_offset))
+}
+
+fn mapped_source_interval(
+    first: u64,
+    last: u64,
+    pixel_size: u32,
+    source_start: u32,
+    source_size: u32,
+) -> Option<(u32, u32)> {
+    let first = first * u64::from(source_size) / u64::from(pixel_size);
+    let last = (last * u64::from(source_size)).div_ceil(u64::from(pixel_size));
+    Some((
+        source_start.checked_add(u32::try_from(first).ok()?)?,
+        u32::try_from(last - first).ok()?,
+    ))
+}
+
+/// Replace pixels and retire old placements before replaying the current set.
+fn write_image_apc(out: &mut impl Write, image: &Image<'_>) -> Result<bool, KittyReplayError> {
+    let Some((format, data)) = image_payload(image)? else {
+        return Ok(false);
+    };
+    let header = ImageHeader {
+        format,
+        id: image.id()?,
+        width: image.width()?,
+        height: image.height()?,
+    };
+    // Anonymous p=0 placements cannot be overwritten by ID.
+    write!(out, "\x1b_Ga=d,d=I,i={},q=2;\x1b\\", header.id)?;
+    write_image_chunks(out, &header, data)?;
+    Ok(true)
+}
+
+struct ImageHeader {
+    format: u32,
+    id: u32,
+    width: u32,
+    height: u32,
+}
+
+fn image_payload<'a>(
+    image: &'a Image<'_>,
+) -> Result<Option<(u32, &'a [u8])>, libghostty_vt::Error> {
     let Some(format) = kitty_format_code(image.format()?) else {
-        return Ok(());
+        return Ok(None);
     };
     if !matches!(image.compression()?, Compression::None) {
-        return Ok(());
+        return Ok(None);
     }
-
-    let action = match action {
-        ImageAction::TransmitOnly => b't',
-        ImageAction::TransmitAndDisplay => b'T',
-    };
     let Some(data) = image.data()? else {
-        return Ok(());
+        return Ok(None);
     };
     if data.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
+    Ok(Some((format, data)))
+}
 
+fn write_image_chunks(out: &mut impl Write, header: &ImageHeader, data: &[u8]) -> io::Result<()> {
     let mut first = true;
     let mut offset = 0usize;
     while offset < data.len() {
         let end = (offset + 3_072).min(data.len());
-        let more = end < data.len();
+        let more = u8::from(end < data.len());
         if first {
             write!(
                 out,
-                "\x1b_Ga={},f={},s={},v={},i={},q=2",
-                char::from(action),
-                format,
-                image.width()?,
-                image.height()?,
-                image.id()?
+                "\x1b_Ga=t,f={},s={},v={},i={},q=2,m={more};",
+                header.format, header.width, header.height, header.id
             )?;
-            if let Some((cols, rows)) = placement_size {
-                write!(out, ",c={cols},r={rows}")?;
-            }
-            write!(out, ",m={};", u8::from(more))?;
             first = false;
         } else {
-            write!(out, "\x1b_Gm={};", u8::from(more))?;
+            write!(out, "\x1b_Gm={more};")?;
         }
         write_base64(out, &data[offset..end])?;
         out.write_all(b"\x1b\\")?;
         offset = end;
     }
-
     Ok(())
 }
 
@@ -308,50 +506,4 @@ fn write_cup(out: &mut impl Write, row: u16, col: u16) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn base64_encodes_padding_cases() {
-        let mut out = Vec::new();
-        write_base64(&mut out, b"f").expect("encode one");
-        assert_eq!(out, b"Zg==");
-
-        out.clear();
-        write_base64(&mut out, b"fo").expect("encode two");
-        assert_eq!(out, b"Zm8=");
-
-        out.clear();
-        write_base64(&mut out, b"foo").expect("encode three");
-        assert_eq!(out, b"Zm9v");
-    }
-
-    #[test]
-    fn replay_reemits_classic_rgba_placement() {
-        let mut terminal = GhosttyTerminal::new(10, 5).expect("terminal");
-        terminal
-            .set_scrollback_max_lines(Some(0))
-            .expect("scrollback");
-        configure_terminal_for_kitty_graphics(&mut terminal).expect("kitty config");
-        terminal.resize(10, 5, 8, 16).expect("cell geometry");
-        terminal.vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,i=7,q=2;/wAA/w==\x1b\\");
-
-        let mut iter = PlacementIterator::new().expect("placement iterator");
-        let mut out = Vec::new();
-        assert!(
-            emit_kitty_graphics_replay(&terminal, &mut iter, &mut out, (2, 3), (10, 5))
-                .expect("replay"),
-            "stored placement must emit replay bytes"
-        );
-
-        let replay = String::from_utf8_lossy(&out);
-        assert!(
-            replay.contains("\x1b[4;3H"),
-            "placement must be shifted by pane origin; got {replay:?}"
-        );
-        assert!(
-            replay.contains("\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2,c=1,r=1,m=0;/wAA/w==\x1b\\"),
-            "replay must transmit and display the stored RGBA image; got {replay:?}"
-        );
-    }
-}
+mod tests;

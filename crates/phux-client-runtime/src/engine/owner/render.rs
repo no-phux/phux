@@ -116,6 +116,7 @@ impl Owner {
                 len: bar.len,
             },
             colors,
+            images: Vec::new(),
             // Publication has no metadata-only damage channel. Multi-view
             // damage is conservative because the cache's last reader may be
             // another view; default-only row damage remains exact.
@@ -133,6 +134,10 @@ impl Owner {
                 }),
         };
         slot.projector.swap_buffer(&mut frame.buffer);
+        frame.images = slot
+            .images
+            .project(self.terminal(id)?, &frame.buffer, frame.cols, frame.rows)
+            .map_err(|error| engine_error(format!("image projection: {error}")))?;
         if full {
             frame.buffer.row_dirty.fill(true);
         }

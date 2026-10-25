@@ -46,6 +46,8 @@ mod glyph_pixels;
 mod headless_perf;
 #[path = "support/hub.rs"]
 mod hub;
+#[path = "support/kitty_pixels.rs"]
+mod kitty_pixels;
 #[path = "support/stream_pixels.rs"]
 mod stream_pixels;
 #[path = "support/window_perf.rs"]
@@ -105,6 +107,9 @@ fn publish_at(payload: &[u8], cols: u16, rows: u16) -> (Arc<Client>, ViewId) {
     let client = Runtime::embedded(ControlOptions {
         attach: Some(AttachTarget::ByName("pixels".into())),
         viewport: (cols, rows),
+        image_protocols: phux_protocol::caps::ImageProtocolSet::with(&[
+            phux_protocol::caps::ImageProtocol::KittyGraphics,
+        ]),
         ..ControlOptions::default()
     });
     client.with_control(ControlPlane::connection_opened);
@@ -348,6 +353,26 @@ fn assert_blank(pixels: &[[u8; 4]], what: &str) {
 /// `cargo test terminal::pixels` and `--skip terminal::pixels` still select
 /// this binary's fixtures.
 const FIXTURES: &[(&str, fn(), bool)] = &[
+    (
+        "terminal::pixels::kitty_graphics_paints_rgb_png_and_unicode_placeholders",
+        kitty_pixels::kitty_graphics_paints_rgb_png_and_unicode_placeholders,
+        false,
+    ),
+    (
+        "terminal::pixels::kitty_graphics_preserves_crop_alpha_and_z_order",
+        kitty_pixels::kitty_graphics_preserves_crop_alpha_and_z_order,
+        false,
+    ),
+    (
+        "terminal::pixels::kitty_graphics_replaces_and_deletes_cached_pixels",
+        kitty_pixels::kitty_graphics_replaces_and_deletes_cached_pixels,
+        false,
+    ),
+    (
+        "terminal::pixels::kitty_placeholder_sampling_matches_classic_in_fractional_previews",
+        kitty_pixels::kitty_placeholder_sampling_matches_classic_in_fractional_previews,
+        false,
+    ),
     (
         "app::hub::navigation_and_settings_render",
         hub::navigation_and_settings_render,

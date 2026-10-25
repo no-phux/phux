@@ -56,6 +56,24 @@ live allocator capacity, not necessarily the process's immediate footprint.
 `clients/desktop/native/tests/gpui_arena.rs` runs the exact materialized arena tests without
 the image/font fixtures missing from the published GPUI archive.
 
+## Image-source sampling
+
+Patch 0014 adds `Window::paint_image_with_sampling` and the shared sprite fields;
+patches 0015 and 0016 implement the Metal and wgpu samplers. The visible mask
+does not narrow the texture's source-crop sampling interval. This prevents atlas
+gutters, crop bleed and seams between Unicode-placeholder cells in fractional
+terminal previews. Ordinary image painting uses the same tile-edge clamp;
+glyph sprites and compositor sprites retain their existing sampling.
+Wgpu clips sprite geometry to the visible mask in the vertex stage while keeping
+full-image UVs; a placeholder grid must not rasterize the entire image per cell.
+
+`PolychromeSprite` carries the source bounds and an image-sampling flag in its
+reserved word. Keep the main and Apple `release_gpui` mirrored Rust layouts,
+Metal/WGSL structs, WebGL stride/loader, size assertion and sprite hash in sync.
+The pixel fixtures exercise source crop, alpha and equivalence of classic versus
+placeholder sampling at fractional preview sizes.
+
+
 ## Changing the framework
 
 ```sh

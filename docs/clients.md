@@ -54,6 +54,19 @@ so install the CLI first; the desktop installer does it if you haven't. The
 app never creates sessions on its own and never stops the server. Quitting
 it detaches.
 
+Terminal panes and previews render inline Kitty graphics: PNG and raw RGB/RGBA,
+chunked transfers, classic placements and Unicode placeholders, cropping,
+transparency and z-order. Visible images survive attach and reconnect through
+synthesized terminal replay. File, temporary-file and shared-memory transfers are
+disabled; applications must send image bytes inline. Sixel, Kitty animations and
+relative placements are not supported. Image-number (`I=`) references are not
+preserved across a synthesized reattach; use explicit image IDs (`i=`).
+Classic placements outside the captured bootstrap viewport are not reconstructed;
+resident virtual prototypes remain available to Unicode placeholders in history.
+
+For `icat`, use `kitten icat --transfer-mode=stream image.png`
+([transfer modes](https://sw.kovidgoyal.net/kitty/kittens/icat/#cmdoption-kitty-kitten-icat-transfer-mode)).
+
 - [Quick Capture](./desktop-capture.md) turns a thought into a new agent
   terminal.
 - The [Changes panel](./desktop-changes.md) reviews and stages Git changes

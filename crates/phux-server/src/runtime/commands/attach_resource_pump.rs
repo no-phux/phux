@@ -223,6 +223,7 @@ impl AttachResourceSession<'_> {
             .snapshot
             .send(SnapshotRequest {
                 scrollback: Some(crate::resource::terminal::DEFAULT_REPLAY_SCROLLBACK_LINES),
+                image_protocols: self.client_caps.image_protocols,
                 max_bytes: crate::runtime::attach::bootstrap_source_ceiling(
                     crate::runtime::attach::MAX_STAGED_BOOTSTRAP_BYTES,
                     self.client_caps,

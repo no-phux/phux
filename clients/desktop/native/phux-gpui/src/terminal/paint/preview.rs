@@ -30,10 +30,15 @@ pub(in crate::terminal) fn prepare_preview(
     {
         Rc::clone(scene)
     } else {
-        Rc::new(
-            Builder::from_kept(frame, settings, geometry, (bounds, scale, None), None)
-                .build(window),
-        )
+        let textures = cache
+            .borrow()
+            .as_ref()
+            .and_then(|scene| scene.images.clone());
+        let mut scene = Builder::from_kept(frame, settings, geometry, (bounds, scale, None), None)
+            .build(window);
+        scene.images = textures;
+        images::prepare(&mut scene, window, cx);
+        Rc::new(scene)
     };
     *cache.borrow_mut() = Some(Rc::clone(&scene));
     Prepared {

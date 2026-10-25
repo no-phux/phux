@@ -39,6 +39,7 @@ mod fixtures {
             scrollbar: Scrollbar::default(),
             colors: FrameColors::default(),
             damage: GridDamage::Full,
+            images: Vec::new(),
             buffer: GridBuffer::default(),
         }
     }
@@ -66,6 +67,7 @@ mod fixtures {
                 raster: None,
                 background: defaults.1,
                 backgrounds: Vec::new(),
+                images: None,
                 inks: Vec::new(),
                 sprites: Vec::new(),
                 decorations: Vec::new(),

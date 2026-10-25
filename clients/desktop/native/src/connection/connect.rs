@@ -40,6 +40,9 @@ impl Connection {
             ControlOptions {
                 client_name: "phux-desktop".to_owned(),
                 viewport: (0, 0),
+                image_protocols: phux_protocol::caps::ImageProtocolSet::with(&[
+                    phux_protocol::caps::ImageProtocol::KittyGraphics,
+                ]),
                 attach: key.is_none().then(|| AttachTarget::ByName(session.clone())),
                 session_recovery: if key.is_some() {
                     SessionRecovery::CallerValidated
@@ -72,6 +75,9 @@ impl Connection {
             ControlOptions {
                 client_name: "phux-desktop-catalog".to_owned(),
                 viewport: (0, 0),
+                image_protocols: phux_protocol::caps::ImageProtocolSet::with(&[
+                    phux_protocol::caps::ImageProtocol::KittyGraphics,
+                ]),
                 attach: None,
                 attach_role: Some(RolePolicy::PRIMARY),
                 auto_attach_foreign_spawns: false,

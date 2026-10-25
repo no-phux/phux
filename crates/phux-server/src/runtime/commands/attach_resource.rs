@@ -123,6 +123,7 @@ impl AttachResourceSession<'_> {
                 stream_id: self.stream_id,
                 bootstrap_id,
                 wants_state_sync: self.wants_state_sync(),
+                image_protocols: self.client_caps.image_protocols,
                 live_gate,
                 state_sync_scrollback: Some(
                     crate::resource::terminal::DEFAULT_REPLAY_SCROLLBACK_LINES,

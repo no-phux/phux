@@ -38,6 +38,7 @@ async fn attach(handle: &phux_server::ResourceHandle, id: u32) -> mpsc::Receiver
     handle
         .consumer_attach
         .send(ConsumerAttachRequest {
+            image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
             client_id: ClientId(id),
             outbound,
             wire_terminal_id: WIRE_TID,
@@ -141,6 +142,7 @@ fn tick_and_ack_routing_survive_every_consumer_lifecycle_edge() {
 async fn snapshot(handle: &phux_server::ResourceHandle) -> SnapshotBytes {
     let (reply, rx) = oneshot::channel();
     let request = SnapshotRequest {
+        image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
         scrollback: None,
         max_bytes: usize::MAX,
         max_frames: usize::MAX,

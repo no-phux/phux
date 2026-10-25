@@ -29,7 +29,7 @@ pub(in crate::terminal) fn prepare(
     };
     match frame {
         Ok(frame) => {
-            let scene = scene(frame, settings, bounds, cache, window);
+            let scene = scene(frame, settings, bounds, cache, window, cx);
             if has_fringe(&scene.frame) {
                 prepared.shift = row_shift(scene.geometry, fraction);
             }
@@ -63,7 +63,8 @@ fn scene(
     settings: Settings,
     bounds: Bounds<Pixels>,
     cache: &SceneCache,
-    window: &gpui::Window,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
 ) -> Rc<Scene> {
     let scale = window.scale_factor();
     let raster = crate::platform::glyph_raster(window);
@@ -73,8 +74,12 @@ fn scene(
         crate::perf::PREPARE_REUSED.incr();
         return Rc::clone(scene);
     }
+    let textures = cache
+        .borrow()
+        .as_ref()
+        .and_then(|scene| scene.images.clone());
     if let Some(previous) = take_scene(cache)
-        && let Some(patched) = patch(
+        && let Some(mut patched) = patch(
             previous,
             frame.clone(),
             settings.clone(),
@@ -84,11 +89,15 @@ fn scene(
         )
     {
         crate::perf::PREPARE_PATCHED.incr();
+        images::prepare(&mut patched, window, cx);
         let patched = Rc::new(patched);
         *cache.borrow_mut() = Some(Rc::clone(&patched));
         return patched;
     }
-    let scene = Rc::new(Builder::new(frame, settings, bounds, window).build(window));
+    let mut scene = Builder::new(frame, settings, bounds, window).build(window);
+    scene.images = textures;
+    images::prepare(&mut scene, window, cx);
+    let scene = Rc::new(scene);
     *cache.borrow_mut() = Some(Rc::clone(&scene));
     scene
 }

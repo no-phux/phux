@@ -23,6 +23,8 @@ impl EngineAdapter for GhosttyAdapter {
             BootstrapStreamProfile::SynthesizedVtRaw
             | BootstrapStreamProfile::SynthesizedVtStateSync => {
                 let mut terminal = GhosttyTerminal::new(geometry.cols, geometry.rows)?;
+                phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
+                terminal.resize(geometry.cols, geometry.rows, 8, 16)?;
                 terminal.set_scrollback_max_lines(Some(SYNTH_SCROLLBACK_ROWS))?;
                 let _ = terminal.set_continuation_max_bytes(CONTINUATION_LIMIT);
                 install_effect_hooks(&mut terminal, &pending)?;
