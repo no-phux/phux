@@ -26,7 +26,8 @@
     "tests/tooling/sign-macos.test.ts",
     "tests/framework/process.test.ts",
     "tests/desktop-demo.test.ts",
-    "oxlint.config.ts"
+    "oxlint.config.ts",
+    "tests/tooling/brand.test.ts"
   ],
   "exclude": ["node_modules", "toolchain", "native", "dist"]
 }

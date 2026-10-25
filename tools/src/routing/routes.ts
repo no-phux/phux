@@ -76,6 +76,8 @@ const ROUTES: Record<string, Surface[]> = {
   "clients/desktop/native/**": ["desktop"],
   "clients/desktop/packaging/AppIcon.svg": ["desktop"],
   "clients/desktop/packaging/AppIcon.png": ["desktop"],
+  "clients/desktop/packaging/brand-profile.json": ["desktop"],
+  "clients/desktop/scripts/brand.ts": ["desktop"],
   "just/desktop.just": ["desktop"],
   "just/web.just": ["web"],
   // Root crates reach the web and desktop lanes only through Cargo (see
