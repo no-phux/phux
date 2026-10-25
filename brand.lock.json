@@ -3,24 +3,24 @@
   "files": {
     "desktop/AppIcon.svg": {
       "destination": "clients/desktop/packaging/AppIcon.svg",
-      "sha256": "95480f04e17c7fb10eef74768327f5727b2ffed29968f9fef1bae246c2179559"
+      "sha256": "2e5cc4fb1a9205913dd57f87cfc7e54f2341bed039336b4b89b3754cd8cce116"
     },
     "logos/docs-wordmark.png": {
       "destination": "docs/assets/logo.png",
-      "sha256": "634eded3432075e6e4c3fb25b43f1dc07117d320cb5d8ee96b5ab78f6e713a6c"
+      "sha256": "3eaca2dd2a05474c7afda4131eda676dc6fcfb940186498aa24a8c77a775fdd0"
     },
     "logos/docs-wordmark.svg": {
       "destination": "docs/assets/logo.svg",
-      "sha256": "cf22adcda8f6803f7ac38c3e1e1f8ec5d408956e9e5615894cbeb666880a9ca4"
+      "sha256": "cff08321d62a2b717d09e446041cfef97fecde45ef6d58cfef55ab539095736c"
     },
     "tooling/brand.py": {
       "destination": "scripts/brand.py",
-      "sha256": "4d85898407248bf782adf29c0b1d7d25f6cb5b3c7decc6783997149f860346e7"
+      "sha256": "7c1b9f2253ce695d65748b10ea2b2a0cf9a22c45f0d2d2d45001dc289a603e1d"
     }
   },
   "schema": 1,
-  "sha256": "d1982daff3c2d2599423937747f680fc099a54e4125e97fb12a21b24a3b9038d",
-  "source_revision": "903389081bf5849b17acc53b59c7b3c100964bbe",
-  "url": "https://phux.sh/brand/releases/1.0.1/phux-brand.zip",
-  "version": "1.0.1"
+  "sha256": "378506af0aedae53adc2106d19f7463ef4bb390c24103b0dcd3ba678ecd83690",
+  "source_revision": "2bdb12736c58ff074ec9a92b71c72cc8ea52723d",
+  "url": "https://phux.sh/brand/releases/1.1.2/phux-brand.zip",
+  "version": "1.1.2"
 }
