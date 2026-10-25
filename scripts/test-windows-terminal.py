@@ -39,13 +39,37 @@ class Terminal:
 def qualify(launcher: str, socket: str, session: str, host: str) -> None:
     assert sys.platform == "win32", "Run this test in native Windows Python"
     runner = Path(launcher).with_name("terminal-smoke.ps1")
-    runner.write_text(
-        "param([string] $Socket, [string] $Session)\n"
-        "& (Join-Path $PSScriptRoot 'phux.ps1') --socket $Socket attach $Session\n"
-        "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
-        "Write-Output 'PHUX_CONSOLE_RESTORED'\n",
-        encoding="utf-8",
-    )
+    runner.write_text(r'''param([string] $Socket, [string] $Session)
+$ErrorActionPreference = 'Stop'
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class PhuxConsoleModes {
+    [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int which);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+    public static uint Read(int which) {
+        uint mode;
+        if (!GetConsoleMode(GetStdHandle(which), out mode)) throw new System.ComponentModel.Win32Exception();
+        return mode;
+    }
+}
+'@
+function Get-ConsoleState {
+    return (@([PhuxConsoleModes]::Read(-10), [PhuxConsoleModes]::Read(-11),
+        [Console]::InputEncoding.CodePage, [Console]::OutputEncoding.CodePage,
+        [Console]::InputEncoding.GetPreamble().Length, [Console]::OutputEncoding.GetPreamble().Length,
+        [Console]::CursorVisible) -join ',')
+}
+$before = Get-ConsoleState
+& (Join-Path $PSScriptRoot 'phux.ps1') --socket $Socket attach $Session
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$after = Get-ConsoleState
+if ($before -cne $after) { throw "Console state changed: $before -> $after" }
+Write-Output 'PHUX_MODES_RESTORED'
+$typed = Read-Host 'After detach'
+if ($typed -cne 'post-detach-input') { throw 'Post-detach keyboard input was not restored' }
+Write-Output 'PHUX_CONSOLE_RESTORED'
+''', encoding="utf-8")
     terminal = Terminal([host, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(runner), socket, session])
     try:
         terminal.expect(re.escape(session))
@@ -60,6 +84,9 @@ def qualify(launcher: str, socket: str, session: str, host: str) -> None:
                 break
         assert after[0] > before[0] and after[1] > before[1], (before, after)
         terminal.child.write("\x01d")
+        terminal.expect("PHUX_MODES_RESTORED")
+        assert "\x1b[?1049l" in terminal.output, "Alternate screen was not left on detach"
+        terminal.child.write("post-detach-input\r")
         terminal.expect("PHUX_CONSOLE_RESTORED")
         deadline = time.monotonic() + 10
         while terminal.child.isalive() and time.monotonic() < deadline:
