@@ -36,6 +36,23 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.47.0](https://github.com/no-phux/phux/compare/desktop-v0.46.0...desktop-v0.47.0) (2026-10-25)
+
+
+### Features
+
+* **brand:** bind desktop packaging to the shared brand profile ([0b98573](https://github.com/no-phux/phux/commit/0b9857386b380d1b7b59b73c2387ac0d6a34263b))
+* **brand:** use one profile interface for desktop branding ([#1787](https://github.com/no-phux/phux/issues/1787)) ([0b98573](https://github.com/no-phux/phux/commit/0b9857386b380d1b7b59b73c2387ac0d6a34263b))
+* **desktop:** add macOS permission setup ([#1783](https://github.com/no-phux/phux/issues/1783)) ([d5c9516](https://github.com/no-phux/phux/commit/d5c9516eac156f24624b0dc2234a4dae835cea50))
+* **desktop:** add saved brand profiles in Appearance settings ([#1789](https://github.com/no-phux/phux/issues/1789)) ([55f11ef](https://github.com/no-phux/phux/commit/55f11eff5e728ade431f9e53a4335b447f242f1d))
+* **desktop:** ship a native Windows client backed by WSL ([#1788](https://github.com/no-phux/phux/issues/1788)) ([d536b5d](https://github.com/no-phux/phux/commit/d536b5dd1206deea6a6fd16abc4186d8b8268224))
+
+
+### Bug Fixes
+
+* **desktop:** filter brand asset listings by the requested folder ([#1790](https://github.com/no-phux/phux/issues/1790)) ([ddcb7ef](https://github.com/no-phux/phux/commit/ddcb7ef4f598784dd4280d0ece58133f3e61e5ab))
+* **desktop:** support macOS 26 with idempotent Apple setup ([#1791](https://github.com/no-phux/phux/issues/1791)) ([a028fa3](https://github.com/no-phux/phux/commit/a028fa3ac0988c2de806619f212fea6bb8e6ff33))
+
 ## [0.46.0](https://github.com/no-phux/phux/compare/desktop-v0.45.0...desktop-v0.46.0) (2026-10-25)
 
 
