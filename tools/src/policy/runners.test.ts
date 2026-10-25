@@ -20,6 +20,7 @@ const STANDARD = new Set([
   "ubuntu-24.04",
   "ubuntu-24.04-arm",
   "windows-2022",
+  "windows-2025",
   "xcode-27",
 ]);
 const MAIN = "github.ref == 'refs/heads/main'";
