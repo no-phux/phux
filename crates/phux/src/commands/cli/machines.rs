@@ -55,8 +55,13 @@ pub(crate) struct DownloadArgs {
 /// with `MagicDNS` the link names the host's `MagicDNS` name rather than its
 /// tailnet address. `--relay-route`
 /// mints for a relay route instead, which needs the server to answer but
-/// no bound listener. `ls`, `prune`, `rotate`, and `revoke` only edit the
-/// store and need no server.
+/// no bound listener. When nothing is bound because `[policy] mode` is
+/// unset, a terminal asks once whether to write `mode = "paired"` and
+/// restart the server (panes are kept). `--json`, and a run whose stdin
+/// is not a terminal, do not ask. `--enable` answers yes without a
+/// prompt. A mode that is already set is left as it is; that refusal names `--listen` or
+/// `--quic`. `ls`, `prune`, `rotate`, and `revoke` only edit the store
+/// and need no server.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "one independent CLI flag per bool, as the verb declares them"
@@ -156,6 +161,17 @@ pub(crate) struct PairArgs {
     /// `--relay-route` the device enrolls end to end through the relay.
     #[usage(long)]
     pub(crate) enroll: bool,
+
+    /// When no remote listener is bound because `[policy] mode` is unset,
+    /// write `mode = "paired"` and restart the server (`phux upgrade`,
+    /// panes kept) without asking. On a terminal, `phux pair` asks once
+    /// and this flag is the yes. With no terminal, or with `--json`, and
+    /// without this flag, pairing refuses in one line that names this flag
+    /// and the setting.
+    /// A listener that is already bound is left alone, and a mode that is
+    /// already set is not rewritten.
+    #[usage(long)]
+    pub(crate) enable: bool,
 }
 
 /// Manage the mTLS workload authority

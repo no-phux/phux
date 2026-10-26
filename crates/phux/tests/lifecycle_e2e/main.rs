@@ -13,6 +13,7 @@ mod failure_ux_e2e;
 mod hermetic;
 mod host_add_e2e;
 mod idle_exit_e2e;
+mod pair_enable_e2e;
 mod project_link_e2e;
 mod relay_route_e2e;
 mod remote_session_verbs_e2e;
