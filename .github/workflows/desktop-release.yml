@@ -409,7 +409,7 @@ jobs:
           gh release view "$RELEASE_TAG" --json body --jq '.body // ""' > "$notes"
           marker='Desktop: Developer ID signed and Apple-notarized.'
           if ! grep -Fq "$marker" "$notes"; then
-            printf '\n%s\n\nmacOS: download phux-desktop-%s-macos-arm64.dmg, open it, and drag Phux.app onto Applications. The ZIP is for automatic updates. Apple silicon macOS 26 or later; Ubuntu 24.04 GNU/Linux x64 and arm64 (X11 and Wayland; release qualification uses X11 with lavapipe). Includes the phux CLI and server; first launch installs the bundled CLI only when no CLI is already installed, then starts or reuses the local server. Existing CLIs and running sessions are not replaced.\n' "$marker" "${RELEASE_TAG#desktop-v}" >> "$notes"
+            printf '\n%s\n\nmacOS: download phux-desktop-%s-macos-arm64.dmg, open it, and drag Phux.app onto Applications. The ZIP is for automatic updates. Apple silicon macOS 26 or later; Ubuntu 24.04 GNU/Linux x64 and arm64 (X11 and Wayland; release qualification uses X11 with lavapipe). Recent DMGs include the phux CLI and server; older releases may require the separate CLI installer (https://phux.sh/install). Existing CLIs and running sessions are not replaced.\n' "$marker" "${RELEASE_TAG#desktop-v}" >> "$notes"
           fi
           gh release edit "$RELEASE_TAG" --notes-file "$notes" \
             --draft=false --latest=false

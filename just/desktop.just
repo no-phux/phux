@@ -106,14 +106,18 @@ desktop-framework-check profile="release": desktop-cli (desktop-package profile)
 desktop-tests:
     #!/usr/bin/env bash
     set -euo pipefail
+    tests=(desktop-test)
+    # The current harness also qualifies immutable releases that predate this recipe.
+    if just --show desktop-bootstrap-test >/dev/null 2>&1; then
+        tests+=(desktop-bootstrap-test)
+    fi
     if [[ "$(uname -s)" != Linux ]]; then
-        just desktop-test
-        just desktop-bootstrap-test
+        just "${tests[@]}"
         just desktop-perf-budget
         exit 0
     fi
-    if [[ -n "${DISPLAY:-}" ]]; then just desktop-test desktop-bootstrap-test; else
-        xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test desktop-bootstrap-test
+    if [[ -n "${DISPLAY:-}" ]]; then just "${tests[@]}"; else
+        xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just "${tests[@]}"
     fi
     just desktop-renderer-test
 

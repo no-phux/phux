@@ -10,7 +10,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installInstructions, packageDmg } from "../../scripts/package-dmg.ts";
+import {
+  installInstructions,
+  legacyInstallInstructions,
+  packageDmg,
+} from "../../scripts/package-dmg.ts";
 import { bundleRuntime, infoPlist } from "../../scripts/package-app.ts";
 
 test("drag-to-Applications instructions require no separate runtime download", () => {
@@ -41,42 +45,50 @@ test("the packaged bundle declares the macOS 26 compatibility floor", () => {
   );
 });
 
-test.skipIf(process.platform !== "darwin")(
-  "DMG mounts read-only with the app, Applications link and install guide",
-  () => {
-    const root = mkdtempSync(join(tmpdir(), "phux-dmg-test-"));
-    const mount = join(root, "mounted");
-    const image = join(root, "Phux.dmg");
-    const app = join(root, "Phux.app");
-    let mounted = false;
-    try {
-      expect(() => packageDmg(app, image)).toThrow("Not an app bundle");
-      mkdirSync(join(app, "Contents"), { recursive: true });
-      writeFileSync(join(app, "Contents/Info.plist"), "fixture bundle");
-      packageDmg(app, image);
-      expect(() => packageDmg(app, image)).toThrow("Refusing to overwrite");
-      const result = Bun.spawnSync([
-        "hdiutil",
-        "attach",
-        "-readonly",
-        "-nobrowse",
-        "-mountpoint",
-        mount,
-        image,
-      ]);
-      expect(result.exitCode).toBe(0);
-      mounted = true;
-      expect(readFileSync(join(mount, "Phux.app/Contents/Info.plist"), "utf8")).toBe(
-        "fixture bundle",
-      );
-      expect(readlinkSync(join(mount, "Applications"))).toBe("/Applications");
-      expect(readFileSync(join(mount, "Install Phux.txt"), "utf8")).toBe(installInstructions);
-      expect(() => writeFileSync(join(mount, "unexpected"), "no")).toThrow();
-    } finally {
-      if (mounted) expect(Bun.spawnSync(["hdiutil", "detach", mount]).exitCode).toBe(0);
-      rmSync(root, { recursive: true, force: true });
-    }
-    expect(existsSync(root)).toBe(false);
-  },
-  120_000,
-);
+for (const bundled of [false, true]) {
+  test.skipIf(process.platform !== "darwin")(
+    `DMG mounts read-only with matching install guide (bundled=${bundled})`,
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "phux-dmg-test-"));
+      const mount = join(root, "mounted");
+      const image = join(root, "Phux.dmg");
+      const app = join(root, "Phux.app");
+      let mounted = false;
+      try {
+        expect(() => packageDmg(app, image)).toThrow("Not an app bundle");
+        mkdirSync(join(app, "Contents"), { recursive: true });
+        writeFileSync(join(app, "Contents/Info.plist"), "fixture bundle");
+        if (bundled) {
+          mkdirSync(join(app, "Contents/MacOS"));
+          writeFileSync(join(app, "Contents/MacOS/phux"), "fixture runtime", { mode: 0o755 });
+        }
+        packageDmg(app, image);
+        expect(() => packageDmg(app, image)).toThrow("Refusing to overwrite");
+        const result = Bun.spawnSync([
+          "hdiutil",
+          "attach",
+          "-readonly",
+          "-nobrowse",
+          "-mountpoint",
+          mount,
+          image,
+        ]);
+        expect(result.exitCode).toBe(0);
+        mounted = true;
+        expect(readFileSync(join(mount, "Phux.app/Contents/Info.plist"), "utf8")).toBe(
+          "fixture bundle",
+        );
+        expect(readlinkSync(join(mount, "Applications"))).toBe("/Applications");
+        expect(readFileSync(join(mount, "Install Phux.txt"), "utf8")).toBe(
+          bundled ? installInstructions : legacyInstallInstructions,
+        );
+        expect(() => writeFileSync(join(mount, "unexpected"), "no")).toThrow();
+      } finally {
+        if (mounted) expect(Bun.spawnSync(["hdiutil", "detach", mount]).exitCode).toBe(0);
+        rmSync(root, { recursive: true, force: true });
+      }
+      expect(existsSync(root)).toBe(false);
+    },
+    120_000,
+  );
+}

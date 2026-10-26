@@ -20,6 +20,22 @@ If startup fails, the window explains why and offers Retry connection.
 Help: https://phux.sh
 `;
 
+// Retried historical releases use this harness too; describe the bundle actually copied.
+export const legacyInstallInstructions = `Install Phux
+============
+
+Drag Phux.app onto Applications, then open Phux from Applications.
+Eject this disk image after copying. Do not run Phux from the disk image.
+
+Requires Apple silicon and macOS 26 or later.
+This older release uses a separately installed phux CLI. If needed, run:
+
+    curl -fsSL https://phux.sh/install | sh
+
+Then reopen Phux. An existing CLI and running sessions are not replaced.
+Help: https://phux.sh
+`;
+
 export function packageDmg(appPath: string, outputPath: string): void {
   const app = resolve(appPath);
   const output = resolve(outputPath);
@@ -31,7 +47,12 @@ export function packageDmg(appPath: string, outputPath: string): void {
   try {
     run(["ditto", app, join(work, "Phux.app")]);
     symlinkSync("/Applications", join(work, "Applications"));
-    writeFileSync(join(work, "Install Phux.txt"), installInstructions);
+    writeFileSync(
+      join(work, "Install Phux.txt"),
+      existsSync(join(app, "Contents/MacOS/phux"))
+        ? installInstructions
+        : legacyInstallInstructions,
+    );
     mkdirSync(dirname(output), { recursive: true });
     run([
       "hdiutil",
