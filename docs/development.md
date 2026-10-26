@@ -200,6 +200,15 @@ not discover the installed server by default. Windows-native qualification
 must exercise the packaged `.exe` and real window input, not the Linux TUI
 or the macOS/Linux headless renderer fixtures.
 
+These notes are for testing that unpublished source build, not install
+steps. `Ctrl-Shift-P/T/W/F` are palette, new terminal, close pane, and find;
+`Ctrl-Shift-C/V` copy and paste; `Ctrl-Shift-D` and `Ctrl-Alt-D` split;
+`Ctrl-Shift-R` reconnects. Plain `Ctrl-C/Z/D` stay with the shell. Closing
+the app detaches; the WSL processes keep running. The local Changes panel
+and the external Unix developer socket are not available for WSL checkouts.
+Use Git in the terminal and the in-app Performance Monitor instead. The
+build logs to `%LOCALAPPDATA%\phux-desktop\logs\desktop.log`.
+
 ## Archived Zig Cockpit
 
 The Zig Cockpit is tabled, not a supported build or install on `main`.

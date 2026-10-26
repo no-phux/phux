@@ -1,8 +1,7 @@
 # phux desktop
 
 A native app for Apple silicon macOS 26+ and Linux x86_64/arm64 (X11 or
-Wayland, Vulkan). Windows: the CLI and server run in WSL 2, with PowerShell
-launchers. A native Windows desktop build is not published yet.
+Wayland, Vulkan).
 
 Rust, GPUI, and the shared client runtime; no web view.
 
@@ -30,33 +29,6 @@ required. The app and DMG are Developer ID signed, Apple-notarized, and
 stapled. The app bundles the phux CLI and server.
 The ZIP remains available for the installer and automatic updates.
 
-### Windows
-
-Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
-Windows desktop build is not published yet.
-
-Built from source, the Windows app is a native `.exe`, not a Linux window through WSLg.
-Install the [WSL CLI and server](../../docs/install.md#windows-wsl) first.
-Shells, agents and their credentials stay in WSL; the window, clipboard,
-keyboard input and preferences are native Windows. No network listener is
-needed: the app connects through `wsl.exe` and phux's binary stdio bridge.
-
-The default WSL distribution is used unless `PHUX_WSL_DISTRO` names another.
-`--phux` and `PHUX_BIN` name a **Linux** CLI path in that distribution;
-`--socket` is likewise a Linux socket path. Native folder-picker paths are
-translated with `wslpath`. Dropped files and clipboard images are uploaded
-to the coordinator before their Linux paths are pasted.
-
-Windows uses `Ctrl-Shift-P/T/W/F` for palette, new terminal, close pane and
-find, `Ctrl-Shift-C/V` for copy/paste, `Ctrl-Shift-D` / `Ctrl-Alt-D` for
-splits, and `Ctrl-Shift-R` to reconnect. Plain `Ctrl-C/Z/D` stay with the
-shell. Closing the app detaches; the WSL processes keep running.
-
-The local Changes panel and the external Unix developer socket are not
-available for WSL checkouts. Use Git in the terminal and the in-app
-Performance Monitor instead. Automatic desktop installation is not supported
-on Windows, and the macOS bundle-swap helper is never run on Windows.
-
 The macOS app includes the CLI and server. On a fresh Mac, first launch installs
 the bundled CLI at `~/.local/bin/phux` and starts the server. No separate download
 is required. If Terminal cannot find phux, choose **Add to PATH** in Phux. It appends
@@ -69,6 +41,12 @@ restarting Desktop. Explicit `--phux` / `PHUX_BIN` paths stay pinned.
 The stable macOS app and DMG are Developer ID signed, Apple-notarized, and
 stapled. Older releases through 0.44.1 have only an ad-hoc-signed ZIP. Do not
 disable Gatekeeper to install a downloaded app.
+
+### Windows
+
+On Windows today, the CLI and terminal UI run in WSL 2, with PowerShell
+launchers. A native Windows desktop build is not published yet.
+[Install in WSL](../../docs/install.md#windows-wsl).
 
 ## First launch and recovery
 
@@ -163,9 +141,8 @@ window back to the front. Explicit launch targets take priority over this
 one-time restoration. **Update phux with Desktop** (on by
 default) turns the phux half off. Linux desktop updates rerun the installer.
 
-Logs: `~/Library/Logs/phux-desktop.log` on macOS,
-`$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, and
-`%LOCALAPPDATA%\phux-desktop\logs\desktop.log` on Windows, redacted and rotated.
+Logs: `~/Library/Logs/phux-desktop.log` on macOS and
+`$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, redacted and rotated.
 **Copy Diagnostics** in the palette copies versions, server id, host, and
 recent errors, without terminal content. **Settings > Developer** gathers
 these with Developer mode, profiling and traces

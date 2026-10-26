@@ -53,7 +53,7 @@
 * **brand:** use one profile interface for desktop branding ([#1787](https://github.com/no-phux/phux/issues/1787)) ([0b98573](https://github.com/no-phux/phux/commit/0b9857386b380d1b7b59b73c2387ac0d6a34263b))
 * **desktop:** add macOS permission setup ([#1783](https://github.com/no-phux/phux/issues/1783)) ([d5c9516](https://github.com/no-phux/phux/commit/d5c9516eac156f24624b0dc2234a4dae835cea50))
 * **desktop:** add saved brand profiles in Appearance settings ([#1789](https://github.com/no-phux/phux/issues/1789)) ([55f11ef](https://github.com/no-phux/phux/commit/55f11eff5e728ade431f9e53a4335b447f242f1d))
-* **desktop:** ship a native Windows client backed by WSL ([#1788](https://github.com/no-phux/phux/issues/1788)) ([d536b5d](https://github.com/no-phux/phux/commit/d536b5dd1206deea6a6fd16abc4186d8b8268224))
+* **desktop:** ship a native Windows client backed by WSL ([#1788](https://github.com/no-phux/phux/issues/1788)) (not published yet) ([d536b5d](https://github.com/no-phux/phux/commit/d536b5dd1206deea6a6fd16abc4186d8b8268224))
 
 
 ### Bug Fixes

@@ -23,7 +23,7 @@ from the conventional-commit log on every release. Do not edit it by hand.
 * **desktop:** add macOS permission setup ([#1783](https://github.com/no-phux/phux/issues/1783)) ([d5c9516](https://github.com/no-phux/phux/commit/d5c9516eac156f24624b0dc2234a4dae835cea50))
 * **desktop:** add saved brand profiles in Appearance settings ([#1789](https://github.com/no-phux/phux/issues/1789)) ([55f11ef](https://github.com/no-phux/phux/commit/55f11eff5e728ade431f9e53a4335b447f242f1d))
 * **desktop:** render inline Kitty graphics end to end ([#1780](https://github.com/no-phux/phux/issues/1780)) ([0a9443f](https://github.com/no-phux/phux/commit/0a9443f95557e1618b7bbf212b464a586f69feaf))
-* **desktop:** ship a native Windows client backed by WSL ([#1788](https://github.com/no-phux/phux/issues/1788)) ([d536b5d](https://github.com/no-phux/phux/commit/d536b5dd1206deea6a6fd16abc4186d8b8268224))
+* **desktop:** ship a native Windows client backed by WSL ([#1788](https://github.com/no-phux/phux/issues/1788)) (not published yet) ([d536b5d](https://github.com/no-phux/phux/commit/d536b5dd1206deea6a6fd16abc4186d8b8268224))
 * **windows:** distribute phux through WSL and PowerShell ([#1777](https://github.com/no-phux/phux/issues/1777)) ([d18bd01](https://github.com/no-phux/phux/commit/d18bd01a060ec469467e83f61c4d0efb0a44c870))
 
 
