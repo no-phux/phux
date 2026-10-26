@@ -203,7 +203,9 @@ fn line_present(profile: &Path, line: &str) -> anyhow::Result<bool> {
 }
 
 fn confine(home: &Path, profile: &Path) -> anyhow::Result<()> {
-    let home = lexical(home);
+    // macOS temp homes live under `/var`, which is a symlink to `/private/var`.
+    // Compare the resolved profile with the resolved home, and allow that ancestor.
+    let home = resolved_home(home);
     if !profile.is_absolute() {
         anyhow::bail!(
             "Refusing to change {}: it is outside {}",
@@ -235,7 +237,8 @@ fn confine(home: &Path, profile: &Path) -> anyhow::Result<()> {
                             current.display()
                         )
                     })?;
-                    if !lexical(&target).starts_with(&home) {
+                    let target = lexical(&target);
+                    if !symlink_stays_with_home(&home, &target) {
                         anyhow::bail!(
                             "Refusing to change {}: {} is a symlink outside {}",
                             profile.display(),
@@ -251,7 +254,8 @@ fn confine(home: &Path, profile: &Path) -> anyhow::Result<()> {
             }
         }
     }
-    if !lexical(&current).starts_with(&home) || lexical(&current) == home {
+    let current = lexical(&current);
+    if !current.starts_with(&home) || current == home {
         anyhow::bail!(
             "Refusing to change {}: it is outside {}",
             profile.display(),
@@ -259,6 +263,35 @@ fn confine(home: &Path, profile: &Path) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// `home` with symlinks resolved. A missing home still resolves the existing prefix.
+fn resolved_home(home: &Path) -> PathBuf {
+    let home = lexical(home);
+    if let Ok(path) = std::fs::canonicalize(&home) {
+        return lexical(&path);
+    }
+    let mut resolved = PathBuf::new();
+    let mut missing = false;
+    for component in home.components() {
+        if missing {
+            resolved.push(component);
+            continue;
+        }
+        let next = resolved.join(component);
+        if next.exists() {
+            resolved = std::fs::canonicalize(&next).map_or(next, |path| lexical(&path));
+        } else {
+            missing = true;
+            resolved.push(component);
+        }
+    }
+    resolved
+}
+
+/// An intermediate symlink may be inside home or an ancestor of it.
+fn symlink_stays_with_home(home: &Path, target: &Path) -> bool {
+    target.starts_with(home) || home.starts_with(target)
 }
 
 fn lexical(path: &Path) -> PathBuf {
@@ -576,6 +609,35 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("symlink outside"), "{error}");
         assert_eq!(fs::read_to_string(&outside).unwrap(), "secret\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_ancestor_symlink_still_writes_inside_home() {
+        let fixture = Fixture::new();
+        let real = fixture.0.join("real");
+        let home = real.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let link = fixture.0.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let linked_home = link.join("home");
+        let line = "export PATH=/x:\"$PATH\"";
+        let profile = linked_home.join(".zshrc");
+        append_once_in(&linked_home, &profile, INSTALLER_MARKER, line, true).unwrap();
+        assert_eq!(
+            fs::read_to_string(home.join(".zshrc"))
+                .unwrap()
+                .lines()
+                .filter(|existing| *existing == line)
+                .count(),
+            1
+        );
+        let outside = link.join("not-home");
+        let error =
+            append_once_in(&linked_home, &outside, INSTALLER_MARKER, line, true).unwrap_err();
+        assert!(error.to_string().contains("outside"), "{error}");
+        assert!(!outside.exists());
+        assert!(!real.join("not-home").exists());
     }
 
     #[cfg(unix)]
