@@ -211,6 +211,8 @@ phux update --rollback # put the previous version back
 
 `phux upgrade` does only the restart: it moves the running server onto whatever `phux` is already installed, again without stopping your panes. Run it after updating some other way, such as `brew upgrade`.
 
+If you're upgrading from 0.110 or older, stop the old server first (`pkill phux`), then run `phux server`.
+
 If you installed with Homebrew, Nix, or `cargo install`, `phux update` changes nothing and prints the command for that package manager instead.
 
 ### Channels
