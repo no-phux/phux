@@ -211,7 +211,7 @@ fn check_socket_path(socket_path: &std::path::Path) -> Check {
 
 /// Is a server running, and does it speak a protocol this binary knows? A
 /// stopped server is a warning: running doctor first is ordinary.
-fn check_server(socket_path: &std::path::Path) -> Check {
+pub(super) fn check_server(socket_path: &std::path::Path) -> Check {
     if !socket_path.exists() {
         return Check::warn(
             "server",
@@ -262,14 +262,47 @@ fn check_server(socket_path: &std::path::Path) -> Check {
                 )
             }
         }
-        // A socket file with nothing behind it is a stale socket: a real failure.
-        Err(err) => Check::fail(
+        Err(err) => {
+            let pid = crate::commands::diagnostics::recovery_pid(&err, socket_path);
+            server_probe_failure(socket_path, &err, pid)
+        }
+    }
+}
+
+/// The hint for a socket that exists but did not answer `GET_STATE`.
+///
+/// A dead socket (`ConnectionRefused` / `NotFound`) may be called stale.
+/// A live incompatible server gets the stop-and-start recovery. Anything
+/// else gets a neutral hint.
+pub(super) fn server_probe_failure(
+    socket_path: &std::path::Path,
+    err: &phux_client::attach::AttachError,
+    pid: Option<i32>,
+) -> Check {
+    use crate::commands::diagnostics::{
+        STALE_SOCKET_HINT, SocketFailure, UNANSWERED_SOCKET_HINT, socket_failure,
+    };
+    match socket_failure(socket_path, err, pid) {
+        SocketFailure::Incompatible(lines) => Check::fail(
+            "server",
+            lines.first().cloned().unwrap_or_default(),
+            lines.into_iter().skip(1).collect::<Vec<_>>().join("\n"),
+        ),
+        SocketFailure::Dead => Check::fail(
             "server",
             format!(
                 "socket {} exists but did not answer: {err}",
                 socket_path.display()
             ),
-            "the socket may be stale — remove it and start a fresh server",
+            STALE_SOCKET_HINT,
+        ),
+        SocketFailure::Other => Check::fail(
+            "server",
+            format!(
+                "socket {} exists but did not answer: {err}",
+                socket_path.display()
+            ),
+            UNANSWERED_SOCKET_HINT,
         ),
     }
 }

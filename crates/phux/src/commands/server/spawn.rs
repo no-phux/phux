@@ -353,27 +353,63 @@ fn reconcile_version_skew(socket_path: &Path) {
         return;
     }
 
-    info!("the running server is {theirs}, this binary is {ours} — upgrading it in place");
-    match crate::commands::upgrade::request_upgrade(socket_path) {
-        Ok(crate::commands::upgrade::UpgradeAck::Upgrading) => {
-            // Wait for the re-exec'd server so the caller's connect does not race it.
-            let deadline = Instant::now() + AUTO_SPAWN_SOCKET_TIMEOUT;
-            while Instant::now() < deadline {
-                if socket::probe(socket_path) == SocketState::Live {
-                    return;
-                }
-                std::thread::sleep(AUTO_SPAWN_POLL_INTERVAL);
-            }
+    let result = crate::commands::upgrade::request_upgrade(socket_path);
+    let pid = result.as_ref().err().and_then(|err| {
+        phux_client::attach::is_incompatible_protocol(err)
+            .then(|| crate::commands::diagnostics::server_pid(socket_path))
+            .flatten()
+    });
+    let lines = skew_handover_lines(&theirs, ours, &result, socket_path, pid);
+    // "Upgrading it in place" only after the server has accepted the hand-over.
+    // An incompatible refusal prints the stop-and-start recovery instead.
+    let started = matches!(result, Ok(crate::commands::upgrade::UpgradeAck::Upgrading));
+    for line in &lines {
+        if started {
+            info!("{line}");
+        } else {
+            warn!("{line}");
         }
-        Ok(
-            crate::commands::upgrade::UpgradeAck::Refused(message)
-            | crate::commands::upgrade::UpgradeAck::Unexpected(message),
-        ) => {
-            warn!("the server declined the upgrade ({message}); continuing on {theirs}");
+    }
+    if !started {
+        return;
+    }
+    // Wait for the re-exec'd server so the caller's connect does not race it.
+    let deadline = Instant::now() + AUTO_SPAWN_SOCKET_TIMEOUT;
+    while Instant::now() < deadline {
+        if socket::probe(socket_path) == SocketState::Live {
+            return;
         }
-        Err(err) => {
-            warn!("could not upgrade the running server ({err}); continuing on {theirs}");
+        std::thread::sleep(AUTO_SPAWN_POLL_INTERVAL);
+    }
+}
+
+/// What auto-attach tells the user about a version skew hand-over.
+///
+/// An upgrade that has started may say it is upgrading in place. An
+/// incompatible protocol prints the stop-and-start recovery and does not
+/// claim the panes survive.
+pub(super) fn skew_handover_lines(
+    theirs: &str,
+    ours: &str,
+    result: &Result<crate::commands::upgrade::UpgradeAck, phux_client::attach::AttachError>,
+    socket: &Path,
+    pid: Option<i32>,
+) -> Vec<String> {
+    use crate::commands::upgrade::UpgradeAck;
+    use phux_client::attach::is_incompatible_protocol;
+    match result {
+        Ok(UpgradeAck::Upgrading) => vec![format!(
+            "the running server is {theirs}, this binary is {ours} — upgrading it in place"
+        )],
+        Ok(UpgradeAck::Refused(message) | UpgradeAck::Unexpected(message)) => vec![format!(
+            "the server declined the upgrade ({message}); continuing on {theirs}"
+        )],
+        Err(err) if is_incompatible_protocol(err) => {
+            crate::commands::diagnostics::old_server_recovery_lines(socket, pid)
         }
+        Err(err) => vec![format!(
+            "could not upgrade the running server ({err}); continuing on {theirs}"
+        )],
     }
 }
 
@@ -425,5 +461,84 @@ impl Drop for SpawnLock {
             // Best-effort: closing the descriptor releases the lock anyway.
             let _ = rustix::fs::flock(&file, rustix::fs::FlockOperation::Unlock);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use phux_client::attach::AttachError;
+
+    use super::skew_handover_lines;
+    use crate::commands::upgrade::UpgradeAck;
+
+    fn incompatible() -> AttachError {
+        AttachError::IncompatibleProtocol(
+            "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
+             update the phux server so protocol major.minor match"
+                .to_owned(),
+        )
+    }
+
+    #[test]
+    fn an_incompatible_refusal_prints_the_stop_recovery() {
+        let text = skew_handover_lines(
+            "0.9.0",
+            "1.4.0",
+            &Err(incompatible()),
+            Path::new("/tmp/old.sock"),
+            Some(4242),
+        )
+        .join("\n");
+        assert!(text.contains("`kill 4242`"), "{text}");
+        assert!(text.contains("pkill -f 'phux server'"), "{text}");
+        assert!(text.contains("`phux server`"), "{text}");
+        assert!(!text.contains("in place"), "{text}");
+        assert!(!text.contains("continuing on"), "{text}");
+        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+            assert!(!text.contains(forbidden), "{forbidden} in {text}");
+        }
+
+        let unknown = skew_handover_lines(
+            "0.9.0",
+            "1.4.0",
+            &Err(incompatible()),
+            Path::new("/tmp/old.sock"),
+            None,
+        )
+        .join("\n");
+        assert!(unknown.contains("pkill -f 'phux server'"), "{unknown}");
+        assert!(!unknown.contains("`kill "), "{unknown}");
+    }
+
+    #[test]
+    fn an_accepted_handover_is_the_only_in_place_line() {
+        let text = skew_handover_lines(
+            "0.14.0",
+            "0.15.0",
+            &Ok(UpgradeAck::Upgrading),
+            Path::new("/tmp/s.sock"),
+            None,
+        )
+        .join("\n");
+        assert!(text.contains("upgrading it in place"), "{text}");
+        assert!(!text.contains("continuing on"), "{text}");
+        assert!(!text.contains("pkill"), "{text}");
+    }
+
+    #[test]
+    fn a_compatible_refusal_keeps_continuing_on() {
+        let text = skew_handover_lines(
+            "0.14.0",
+            "0.15.0",
+            &Ok(UpgradeAck::Refused("agent sessions are open".to_owned())),
+            Path::new("/tmp/s.sock"),
+            None,
+        )
+        .join("\n");
+        assert!(text.contains("continuing on 0.14.0"), "{text}");
+        assert!(!text.contains("upgrading it in place"), "{text}");
+        assert!(!text.contains("pkill"), "{text}");
     }
 }

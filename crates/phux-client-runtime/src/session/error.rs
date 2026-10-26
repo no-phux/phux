@@ -50,6 +50,12 @@ pub enum SessionError {
     /// The server answered `HELLO` with an `ERROR`.
     #[error("server refused: {0}")]
     Refused(String),
+
+    /// The server answered `HELLO` with `ERROR { VERSION_INCOMPATIBLE }`:
+    /// a live server from another protocol major. Distinct from
+    /// [`Self::Refused`] so callers can name the recovery instead of retrying.
+    #[error("server refused: {0}")]
+    IncompatibleProtocol(String),
 }
 
 impl SessionError {

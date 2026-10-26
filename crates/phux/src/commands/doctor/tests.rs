@@ -160,3 +160,58 @@ fn human_report_aligns_details_past_the_longest_name() {
     assert!(lines[0].starts_with("phux: ok: "));
     assert!(lines[1].starts_with("phux: warn: "));
 }
+
+/// A socket file with nothing listening is still called stale.
+#[test]
+fn a_dead_socket_is_still_called_stale() {
+    for kind in [
+        std::io::ErrorKind::ConnectionRefused,
+        std::io::ErrorKind::NotFound,
+    ] {
+        let err = phux_client::attach::AttachError::Io(std::io::Error::from(kind));
+        let check = server_probe_failure(std::path::Path::new("/tmp/dead.sock"), &err, None);
+        assert_eq!(check.status, Status::Fail);
+        let hint = check.hint.expect("a dead socket names its remedy");
+        assert!(hint.contains("stale"), "{hint}");
+        assert!(
+            hint.contains("remove it and start a fresh server"),
+            "{hint}"
+        );
+    }
+}
+
+/// A socket that failed for some other reason is not called stale and is
+/// not told to remove the file.
+#[test]
+fn an_unanswered_socket_is_not_called_stale() {
+    let err = phux_client::attach::AttachError::Io(std::io::Error::from(
+        std::io::ErrorKind::PermissionDenied,
+    ));
+    let check = server_probe_failure(std::path::Path::new("/tmp/denied.sock"), &err, None);
+    assert_eq!(check.status, Status::Fail);
+    let hint = check.hint.expect("hint");
+    assert!(!hint.contains("stale"), "{hint}");
+    assert!(!hint.contains("remove"), "{hint}");
+    assert_eq!(hint, crate::commands::diagnostics::UNANSWERED_SOCKET_HINT);
+}
+
+/// Doctor's old "remove it and start a fresh server" advice is for a dead
+/// socket. A live incompatible server gets the stop-and-start recovery.
+#[test]
+fn a_live_incompatible_socket_is_not_told_to_remove_it() {
+    let err = phux_client::attach::AttachError::IncompatibleProtocol(
+        "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
+         update the phux server so protocol major.minor match"
+            .to_owned(),
+    );
+    let check = server_probe_failure(std::path::Path::new("/tmp/old.sock"), &err, Some(4242));
+    assert_eq!(check.status, Status::Fail);
+    let text = format!("{}\n{}", check.detail, check.hint.expect("hint"));
+    assert!(text.contains("kill 4242"), "{text}");
+    assert!(text.contains("pkill -f 'phux server'"), "{text}");
+    assert!(text.contains("`phux server`"), "{text}");
+    assert!(text.contains("closes the panes"), "{text}");
+    for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+        assert!(!text.contains(forbidden), "{forbidden} in {text}");
+    }
+}
