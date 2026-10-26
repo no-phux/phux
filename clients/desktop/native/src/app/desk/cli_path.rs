@@ -81,23 +81,41 @@ impl Desk {
             cx.notify();
             return;
         };
+        let shown = display_profile(&profile);
         match shell_path::append_once(&profile, shell_path::INSTALLER_MARKER, &line) {
-            Ok(()) => {
-                let shown = display_profile(&profile);
+            Ok(true) => {
                 self.path_prompt.added = true;
-                self.path_prompt.message =
-                    Some(format!("Added to {shown}. Open a new Terminal window."));
+                self.path_prompt.message = Some(format!(
+                    "Added ~/.local/bin to PATH in {shown}. Open a new Terminal window to use \
+                     phux. Windows already open won't see it."
+                ));
             }
-            Err(error) => self.path_prompt.message = Some(format!("{error:#}")),
+            Ok(false) => {
+                self.path_prompt.added = true;
+                self.path_prompt.message = Some(format!(
+                    "{shown} already adds ~/.local/bin to PATH. Open a new Terminal window. If \
+                     phux is still not found, check that nothing later in {shown} resets PATH."
+                ));
+            }
+            Err(error) => {
+                self.path_prompt.message = Some(format!(
+                    "{error:#}. Nothing was changed. Use Copy line and add it to {shown} yourself."
+                ));
+            }
         }
         cx.notify();
     }
 
     pub(crate) fn copy_cli_command(&mut self, cx: &mut Context<Self>) {
-        let Some((_, line)) = shell_path::profile_target() else {
+        let Some((profile, line)) = shell_path::profile_target() else {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(line));
+        let shown = display_profile(&profile);
+        self.path_prompt.message = Some(format!(
+            "Copied. Paste it at the end of {shown}, then open a new Terminal window."
+        ));
+        cx.notify();
     }
 
     fn dismiss_cli_path(&mut self, cx: &mut Context<Self>) {
@@ -131,8 +149,9 @@ fn body(desk: &Desk, profile: &std::path::Path) -> String {
     let profile = display_profile(profile);
     if desk.path_prompt.status == Status::Unverified {
         return format!(
-            "~/.local/bin is probably not on Terminal's PATH. Phux could not check the login \
-             shell, so it will not change {profile}. Copy this command and run it in Terminal."
+            "Phux could not check whether Terminal finds phux, so it won't change {profile}. To \
+             add it yourself, paste the line below at the end of {profile}, then open a new \
+             Terminal window."
         );
     }
     let lead = if desk.cli_install.as_ref().is_some_and(|cli| cli.installed) {
@@ -141,7 +160,8 @@ fn body(desk: &Desk, profile: &std::path::Path) -> String {
         "The phux command is in ~/.local/bin."
     };
     format!(
-        "{lead} Terminal does not search that folder yet. Add it to {profile}, or copy this command."
+        "{lead} Terminal can't find it yet. Add to PATH appends the line below to {profile}. \
+         Then open a new Terminal window."
     )
 }
 
@@ -248,7 +268,7 @@ pub(crate) fn card(
                 .gap(px(8.))
                 .child(
                     Button::new("cli-path-copy")
-                        .label("Copy command")
+                        .label("Copy line")
                         .ghost()
                         .small()
                         .on_click(cx.listener(|desk, _, _, cx| desk.copy_cli_command(cx))),

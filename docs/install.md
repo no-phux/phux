@@ -260,5 +260,5 @@ If you installed the desktop app, also remove `Phux.app` from `/Applications` or
 
 - **`no phux release for <os>/<arch>; build from source`**: your platform has no release build. See [Requirements](#requirements).
 - **`checksum mismatch for <file>`**: the download was corrupted or altered, and nothing was installed. Run the script again.
-- **`phux: command not found` after installing**: open a new shell so it reads the updated profile, or add `~/.local/bin` to your `PATH`. A DMG first launch installs the CLI there and leaves your shell profile unchanged until you choose **Add to PATH** in the app (or Settings > Permissions). The shell installer adds the directory itself when profile changes are allowed.
+- **`phux: command not found` after installing**: open a new shell so it reads the updated profile, or add `~/.local/bin` to your `PATH`. A DMG first launch installs the CLI there and leaves your shell profile unchanged until you choose **Add to PATH** in the app (or **Phux Settings → Permissions**). The shell installer adds the directory itself when profile changes are allowed.
 - Anything else: run `phux doctor`, then see [Troubleshooting](./troubleshooting.md).

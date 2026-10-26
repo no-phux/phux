@@ -135,11 +135,12 @@ pub(crate) fn is_user_local_cli(home: &Path, path: &Path) -> bool {
 }
 
 /// Append `line` once, under `marker`, without truncating or rewriting.
-/// A no-op when the exact line is already present. Creates a missing file or
-/// parent directory only under `$HOME`. Refuses a symlink that leaves `$HOME`
-/// and a file owned by someone else. `PHUX_NO_MODIFY_PATH` (anything other
-/// than empty or `0`) refuses before touching the file.
-pub(crate) fn append_once(profile: &Path, marker: &str, line: &str) -> anyhow::Result<()> {
+/// `Ok(true)` when this call appended it. `Ok(false)` when the exact line was
+/// already present. Creates a missing file or parent directory only under
+/// `$HOME`. Refuses a symlink that leaves `$HOME` and a file owned by someone
+/// else. `PHUX_NO_MODIFY_PATH` (anything other than empty or `0`) refuses
+/// before touching the file.
+pub(crate) fn append_once(profile: &Path, marker: &str, line: &str) -> anyhow::Result<bool> {
     let home =
         std::env::var_os("HOME").context("HOME is not set; the shell profile was not changed")?;
     append_once_in(Path::new(&home), profile, marker, line, changes_allowed())
@@ -160,7 +161,7 @@ fn append_once_in(
     marker: &str,
     line: &str,
     allow: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     if !allow {
         anyhow::bail!(
             "PHUX_NO_MODIFY_PATH is set, so {} was not changed",
@@ -175,7 +176,7 @@ fn append_once_in(
         ensure_owned(profile)?;
     }
     if line_present(profile, line)? {
-        return Ok(());
+        return Ok(false);
     }
     ensure_parent(home, profile)?;
     confine(home, profile)?;
@@ -190,7 +191,7 @@ fn append_once_in(
     let payload = format!("\n{marker}\n{line}\n");
     file.write_all(payload.as_bytes())
         .with_context(|| format!("Could not update {}", profile.display()))?;
-    Ok(())
+    Ok(true)
 }
 
 fn line_present(profile: &Path, line: &str) -> anyhow::Result<bool> {
@@ -547,8 +548,8 @@ mod tests {
         let home = fixture.home();
         let (profile, line) =
             profile_for("fish", &home, None, Some(&home.join(".config")), "Linux");
-        append_once_in(&home, &profile, INSTALLER_MARKER, &line, true).unwrap();
-        append_once_in(&home, &profile, INSTALLER_MARKER, &line, true).unwrap();
+        assert!(append_once_in(&home, &profile, INSTALLER_MARKER, &line, true).unwrap());
+        assert!(!append_once_in(&home, &profile, INSTALLER_MARKER, &line, true).unwrap());
         let text = fs::read_to_string(&profile).unwrap();
         assert_eq!(text.lines().filter(|existing| *existing == line).count(), 1);
         assert_eq!(
@@ -568,7 +569,7 @@ mod tests {
         let (profile, line) = profile_for("zsh", &home, None, None, "Darwin");
         let original = format!("# already there\n{line}\n");
         fs::write(&profile, &original).unwrap();
-        append_once_in(&home, &profile, INSTALLER_MARKER, &line, true).unwrap();
+        assert!(!append_once_in(&home, &profile, INSTALLER_MARKER, &line, true).unwrap());
         assert_eq!(fs::read_to_string(&profile).unwrap(), original);
     }
 

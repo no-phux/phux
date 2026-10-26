@@ -13,6 +13,7 @@ use gpui_kit::component::{Disableable, Sizable};
 use super::catalog::{Content, Group, Item};
 use super::fact;
 use crate::app::desk::Desk;
+use crate::app::desk::cli_path::Status;
 use crate::launch::shell_path;
 
 const FULL_DISK_ACCESS: &str =
@@ -94,24 +95,29 @@ pub(super) fn page(desk: &Desk, handle: &WeakEntity<Desk>) -> Content {
 }
 
 fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
+    let on_path = desk.path_prompt.status == Status::OnPath;
     let (description, ready) = match shell_path::profile_target() {
         Some((profile, _)) => (
             format!(
-                "~/.local/bin is where Desktop installs the phux command. Terminal reads {}. \
-                 Add that directory to PATH, or copy the command.",
+                "Phux installs the phux command in ~/.local/bin. Add to PATH appends one line to \
+                 {} so new Terminal windows can find it.",
                 shell_path::home_display(&profile)
             ),
             true,
         ),
         None => (
-            "HOME is not set, so Phux cannot update a shell profile.".to_owned(),
+            "HOME is not set, so Phux can't find your shell profile. Set HOME, then reopen Phux."
+                .to_owned(),
             false,
         ),
     };
-    let detail = desk.path_prompt.message.clone().unwrap_or_else(|| {
-        "Nothing is written until you choose Add to PATH. Then open a new Terminal window."
-            .to_owned()
-    });
+    let detail = if let Some(message) = &desk.path_prompt.message {
+        message.clone()
+    } else if on_path {
+        "Terminal already finds phux. Nothing to add.".to_owned()
+    } else {
+        "Nothing is written until you click. Afterwards, open a new Terminal window.".to_owned()
+    };
     let add = handle.clone();
     let copy = handle.clone();
     Group::new()
@@ -131,7 +137,7 @@ fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
                             Button::new("settings-cli-path-add")
                                 .small()
                                 .label("Add to PATH")
-                                .disabled(!ready)
+                                .disabled(!ready || on_path)
                                 .on_click(move |_, _, cx| {
                                     let _ = add.update(cx, |desk, cx| desk.add_cli_to_path(cx));
                                 }),
@@ -139,7 +145,7 @@ fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
                         .child(
                             Button::new("settings-cli-path-copy")
                                 .small()
-                                .label("Copy command")
+                                .label("Copy line")
                                 .disabled(!ready)
                                 .on_click(move |_, _, cx| {
                                     let _ = copy.update(cx, |desk, cx| desk.copy_cli_command(cx));
