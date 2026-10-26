@@ -36,6 +36,14 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.47.1](https://github.com/no-phux/phux/compare/desktop-v0.47.0...desktop-v0.47.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **desktop:** make DMG installs self-contained and recoverable ([#1795](https://github.com/no-phux/phux/issues/1795)) ([eedd146](https://github.com/no-phux/phux/commit/eedd14698f07c098f372dee23664091b34417f80))
+* **release:** register the signing keychain on macOS 26 ([#1792](https://github.com/no-phux/phux/issues/1792)) ([1f60463](https://github.com/no-phux/phux/commit/1f60463f86f31d01e3cf0b77a2e23aaf7814056f))
+
 ## [0.47.0](https://github.com/no-phux/phux/compare/desktop-v0.46.0...desktop-v0.47.0) (2026-10-25)
 
 
