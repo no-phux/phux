@@ -2,6 +2,7 @@
 
 mod agent_fleet;
 mod agent_stream;
+mod bootstrap;
 mod capture;
 mod clipboard;
 mod federation;

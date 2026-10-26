@@ -305,9 +305,22 @@ impl Desktop {
 
     /// Reopen the window `old` on `session`, for a launch that could not name
     /// a session: the home session and the layout files follow it.
-    pub fn rehome(&mut self, old: EntityId, session: String, cx: &mut Context<Self>) {
+    pub fn rehome(
+        &mut self,
+        old: EntityId,
+        session: String,
+        key: Option<SessionKey>,
+        phux: PathBuf,
+        socket: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.phux = phux;
+        self.socket = socket;
+        self.updates.update(cx, |updater, _| {
+            updater.retarget(self.phux.clone(), self.socket.clone());
+        });
         self.home_session = session.clone();
-        self.home_key = None;
+        self.home_key = key;
         if !self.explicit_layout {
             self.follow_layout(&session);
         }
@@ -320,6 +333,7 @@ impl Desktop {
         } else {
             OpenRequest {
                 session,
+                home_key: key,
                 layout_path: self.layout.clone(),
                 legacy_layout: self.legacy_layout.clone(),
                 stable_layout: !self.explicit_layout,

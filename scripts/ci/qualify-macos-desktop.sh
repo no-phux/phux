@@ -20,6 +20,9 @@ verify_bundle() {
     fi
     PHUX_MACOS_MIN_MAX=26.0 bash "$harness/scripts/check-binary-portability.sh" "$app/Contents/MacOS/phux-desktop"
     test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = 26.0
+    test -x "$app/Contents/MacOS/phux"
+    test "$("$phux" --version)" = "$("$app/Contents/MacOS/phux" --version)"
+    PHUX_MACOS_MIN_MAX=26.0 bash "$harness/scripts/check-binary-portability.sh" "$app/Contents/MacOS/phux"
     test ! -e "$app/Contents/Resources/phux-desktop-native.darwin-arm64.node"
     test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopHost' "$app/Contents/Info.plist")" = gpui
     test "$(/usr/libexec/PlistBuddy -c 'Print :PhuxBuildSHA' "$app/Contents/Info.plist")" = "$(git rev-parse HEAD)"
@@ -46,6 +49,7 @@ qualify_dmg() (
     codesign --verify --deep --strict --verbose=2 "$installed"
     xcrun stapler validate "$installed"
     spctl --assess --type execute --verbose=2 "$installed"
+    bun "$harness/clients/desktop/scripts/smoke-bootstrap.ts" --app "$installed" --output "$RUNNER_TEMP/desktop-dmg-evidence/bootstrap"
     bun "$harness/clients/desktop/scripts/smoke-app.ts" --app "$installed" --phux "$phux" \
         --output "$RUNNER_TEMP/desktop-dmg-evidence" --allow-unconfirmed-present
 )
@@ -60,6 +64,8 @@ if [[ "$PHUX_BUILD_CHANNEL" == stable ]]; then checksum "${ARCHIVE%.zip}.dmg"; f
 cat "$artifacts"/*.sha256 > "$artifacts/SHA256SUMS"
 ditto -x -k "$artifacts/$ARCHIVE" "$RUNNER_TEMP/desktop-qualified"
 codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/desktop-qualified/Phux.app"
+bun "$harness/clients/desktop/scripts/smoke-bootstrap.ts" --app "$RUNNER_TEMP/desktop-qualified/Phux.app" \
+    --output "$RUNNER_TEMP/desktop-evidence/bootstrap"
 # Virtual displays confirm submission, not presentation; the evidence says so.
 bun "$harness/clients/desktop/scripts/smoke-app.ts" --app "$RUNNER_TEMP/desktop-qualified/Phux.app" \
     --phux "$phux" --output "$RUNNER_TEMP/desktop-evidence" --allow-unconfirmed-present

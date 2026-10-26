@@ -50,6 +50,7 @@ mod leader;
 mod lifecycle;
 mod machines;
 mod prefs;
+mod recovery;
 mod request;
 pub use request::{OpenRequest, WindowRole};
 mod search;

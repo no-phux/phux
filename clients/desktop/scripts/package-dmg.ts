@@ -11,13 +11,11 @@ Drag Phux.app onto Applications, then open Phux from Applications.
 Eject this disk image after copying. Do not run Phux from the disk image.
 
 Requires Apple silicon and macOS 26 or later.
-Phux Desktop uses the separately installed phux CLI to start its server.
-If you have not installed it yet, run this in Terminal:
-
-    curl -fsSL https://phux.sh/install | sh
-
-Then reopen Phux. Installing the app does not replace your CLI, restart
-your server, or interrupt running sessions.
+Phux includes its CLI and server. On first launch it installs the bundled CLI
+in ~/.local/bin/phux if no CLI is already installed, then starts or reuses
+your local server. No separate download or Terminal command is required.
+An existing CLI is never replaced, and running sessions are not restarted.
+If startup fails, the window explains why and offers Retry connection.
 
 Help: https://phux.sh
 `;

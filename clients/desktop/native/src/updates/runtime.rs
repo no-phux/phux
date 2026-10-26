@@ -25,8 +25,9 @@ pub struct RuntimeRelease {
 }
 
 pub fn runtime_check(phux: &Path, channel: Channel) -> anyhow::Result<RuntimeRelease> {
+    let phux = crate::launch::command_path(phux)?;
     let text = run_bounded(
-        phux_command(phux).args(["update", "--check", "--channel", channel.as_str(), "--json"]),
+        phux_command(&phux).args(["update", "--check", "--channel", channel.as_str(), "--json"]),
         None,
         CHECK_TIMEOUT,
         "phux release check timed out. Nothing was installed; try Check now again.",
@@ -61,6 +62,7 @@ pub fn runtime_release(value: &Value) -> anyhow::Result<RuntimeRelease> {
 }
 
 pub struct RuntimeInstalled {
+    pub socket: PathBuf,
     pub message: String,
     pub reconnect: bool,
     pub retry_handoff: bool,
@@ -74,6 +76,7 @@ pub fn runtime_result(value: &Value) -> anyhow::Result<RuntimeInstalled> {
         .as_str()
         .unwrap_or("not attempted");
     Ok(RuntimeInstalled {
+        socket: PathBuf::new(),
         message: format!(
             "phux installed. Server handoff: {result}. {}",
             value["server_handoff"]["detail"].as_str().unwrap_or("")
@@ -88,8 +91,10 @@ pub fn runtime_install(
     socket: &Path,
     channel: Channel,
 ) -> anyhow::Result<RuntimeInstalled> {
+    let phux = crate::launch::command_path(phux)?;
+    let socket = runtime_socket(&phux, socket)?;
     let text = run_bounded(
-        phux_command(phux).arg("--socket").arg(socket).args([
+        phux_command(&phux).arg("--socket").arg(&socket).args([
             "update",
             "--channel",
             channel.as_str(),
@@ -105,11 +110,12 @@ pub fn runtime_install(
     )?;
     let value: Value = serde_json::from_str(&text)?;
     let mut result = runtime_result(&value)?;
+    result.socket = socket.clone();
     if value["server_handoff"]["result"] == "no_server" {
         run_bounded(
-            phux_command(phux)
+            phux_command(&phux)
                 .arg("--socket")
-                .arg(socket)
+                .arg(&socket)
                 .args(["server", "--ensure"]),
             None,
             CHECK_TIMEOUT,
@@ -125,18 +131,28 @@ pub fn runtime_install(
         #[cfg(not(windows))]
         result.message.push_str(&format!(
             " Retry the handoff with {} --socket {} upgrade. No agent sessions were closed.",
-            crate::attach::quote_paths(&[phux.to_path_buf()]),
-            crate::attach::quote_paths(&[socket.to_path_buf()])
+            crate::attach::quote_paths(std::slice::from_ref(&phux)),
+            crate::attach::quote_paths(std::slice::from_ref(&socket))
         ));
     }
     Ok(result)
 }
 
+fn runtime_socket(phux: &Path, socket: &Path) -> anyhow::Result<PathBuf> {
+    if socket.as_os_str().is_empty() {
+        crate::launch::ensure_server(phux, None)
+    } else {
+        Ok(socket.to_path_buf())
+    }
+}
+
 pub fn runtime_retry(phux: &Path, socket: &Path) -> anyhow::Result<RuntimeInstalled> {
+    let phux = crate::launch::command_path(phux)?;
+    let socket = runtime_socket(&phux, socket)?;
     run_bounded(
-        phux_command(phux)
+        phux_command(&phux)
             .arg("--socket")
-            .arg(socket)
+            .arg(&socket)
             .arg("upgrade")
             .stdin(Stdio::null()),
         None,
@@ -144,6 +160,7 @@ pub fn runtime_retry(phux: &Path, socket: &Path) -> anyhow::Result<RuntimeInstal
         "Server handoff timed out. Try Retry server handoff again; no agent sessions were closed.",
     )?;
     Ok(RuntimeInstalled {
+        socket,
         message: "Server handoff requested; reconnecting windows.".into(),
         reconnect: true,
         retry_handoff: false,

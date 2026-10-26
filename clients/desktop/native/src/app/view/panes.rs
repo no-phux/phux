@@ -233,7 +233,7 @@ fn empty_state(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEle
             .child(empty_action(
                 desk,
                 "empty-reconnect",
-                "Reconnect",
+                "Retry connection",
                 "reconnect",
                 true,
                 cx,

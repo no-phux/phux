@@ -11,15 +11,30 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installInstructions, packageDmg } from "../../scripts/package-dmg.ts";
-import { infoPlist } from "../../scripts/package-app.ts";
+import { bundleRuntime, infoPlist } from "../../scripts/package-app.ts";
 
-test("drag-to-Applications instructions state platform and separate runtime requirements", () => {
+test("drag-to-Applications instructions require no separate runtime download", () => {
   expect(installInstructions).toContain("Drag Phux.app onto Applications");
   expect(installInstructions).toContain("Apple silicon and macOS 26");
-  expect(installInstructions).toContain("https://phux.sh/install | sh");
-  expect(installInstructions).toContain("does not replace your CLI");
+  expect(installInstructions).toContain("No separate download or Terminal command is required");
+  expect(installInstructions).toContain("An existing CLI is never replaced");
+  expect(installInstructions).toContain("Retry connection");
 });
 
+test("the bundle includes the executable CLI and refuses a missing runtime", () => {
+  const root = mkdtempSync(join(tmpdir(), "phux-bundle-runtime-"));
+  try {
+    const source = join(root, "phux");
+    const bundle = join(root, "Phux.app");
+    expect(() => bundleRuntime(source, bundle)).toThrow("Missing bundled phux CLI");
+    writeFileSync(source, "same-checkout runtime");
+    bundleRuntime(source, bundle);
+    expect(readFileSync(join(bundle, "Contents/MacOS/phux"), "utf8")).toBe("same-checkout runtime");
+    expect(Bun.spawnSync(["test", "-x", join(bundle, "Contents/MacOS/phux")]).exitCode).toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 test("the packaged bundle declares the macOS 26 compatibility floor", () => {
   expect(infoPlist("1.2.3", "a".repeat(40))).toContain(
     "<key>LSMinimumSystemVersion</key><string>26.0</string>",

@@ -80,7 +80,8 @@ test.each(["none", "app", "dmg", "empty"])(
       const log = join(root, "commands.log");
       const archive = join(root, "output/Phux.zip");
       mkdirSync(bin);
-      mkdirSync(join(app, "Contents"), { recursive: true });
+      mkdirSync(join(app, "Contents/MacOS"), { recursive: true });
+      writeFileSync(join(app, "Contents/MacOS/phux"), "fixture CLI", { mode: 0o755 });
       writeFileSync(join(app, "Contents/Info.plist"), "fixture app");
       for (const [name, body] of Object.entries(commands)) {
         writeFileSync(
@@ -103,7 +104,10 @@ test.each(["none", "app", "dmg", "empty"])(
       });
       expect(result.exitCode).toBe(failure === "none" || failure === "empty" ? 0 : 1);
       const calls = readFileSync(log, "utf8");
-      expect(calls).toContain("--options runtime --timestamp");
+      expect(calls).toContain(`--options runtime --timestamp ${app}/Contents/MacOS/phux`);
+      expect(calls.indexOf(`--timestamp ${app}/Contents/MacOS/phux`)).toBeLessThan(
+        calls.indexOf(`--timestamp ${app}\n`),
+      );
       expect(calls).toContain("security delete-keychain");
       expect(calls).toContain(
         failure === "empty"

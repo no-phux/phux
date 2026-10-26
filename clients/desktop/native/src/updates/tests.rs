@@ -341,6 +341,41 @@ fn bounded_windows_runs_feed_stdin() {
 
 #[cfg(unix)]
 #[test]
+fn runtime_update_resolves_an_empty_socket_before_installing_or_retrying() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("runtime-first-launch");
+    let phux = dir.join("phux");
+    let record = dir.join("args");
+    let socket = dir.join("resolved.sock");
+    std::fs::write(&phux, format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\ncase \"$*\" in\n 'status --json') printf '%s\\n' '{{\"socket\":\"{}\"}}' ;;\n *'update --channel'*) printf '%s\\n' '{{\"schema_version\":2,\"server_handoff\":{{\"result\":\"upgrading\"}}}}' ;;\nesac\n",
+        record.display(), socket.display()
+    )).unwrap();
+    std::fs::set_permissions(&phux, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let installed = runtime_install(&phux, Path::new(""), Channel::Stable).unwrap();
+    assert_eq!(installed.socket, socket);
+    assert!(installed.reconnect);
+    let retried = runtime_retry(&phux, Path::new("")).unwrap();
+    assert_eq!(retried.socket, socket);
+    let calls = std::fs::read_to_string(record).unwrap();
+    assert!(
+        calls.starts_with("server\n--ensure\nstatus\n--json\n"),
+        "{calls}"
+    );
+    assert!(!calls.contains("--socket\n\n"), "{calls}");
+    assert!(
+        calls.contains(&format!("--socket\n{}\nupdate", socket.display())),
+        "{calls}"
+    );
+    assert!(
+        calls.contains(&format!("--socket\n{}\nupgrade", socket.display())),
+        "{calls}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn runtime_commands_use_explicit_socket_and_never_close_agents() {
     use std::os::unix::fs::PermissionsExt;
     let dir = scratch("runtime");
