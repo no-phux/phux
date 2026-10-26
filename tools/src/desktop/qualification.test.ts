@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capture } from "../lib/process.ts";
@@ -26,52 +33,62 @@ test("PR qualification builds and packages debug, while the public default stays
   expect(release).toContain("native/target/release/phux-desktop");
 });
 
-test("shared desktop test orchestration uses historical source recipes, not the harness sources", () => {
-  const root = mkdtempSync(join(tmpdir(), "phux-desktop-qualification-"));
-  try {
-    const bin = join(root, "bin");
-    mkdirSync(bin);
-    const source = join(root, "source");
-    mkdirSync(source);
-    const observed = join(root, "observed");
-    // This historical source has no desktop-tests wrapper at all.
-    writeFileSync(
-      join(source, "justfile"),
-      "desktop-test:\n    @printf 'tests\\n' >> \"$QUALIFICATION_LOG\"\ndesktop-renderer-test:\n    @printf 'renderer\\n' >> \"$QUALIFICATION_LOG\"\ndesktop-perf-budget:\n    @printf 'perf\\n' >> \"$QUALIFICATION_LOG\"\n",
-    );
-    for (const [platform, expected] of [
-      ["Linux", "tests\nrenderer\n"],
-      ["Darwin", "tests\nperf\n"],
-    ] as const) {
-      writeFileSync(join(bin, "uname"), `#!/usr/bin/env bash\nprintf '%s\\n' '${platform}'\n`, {
-        mode: 0o755,
-      });
-      writeFileSync(observed, "");
-      capture(
-        [
-          "just",
-          "--justfile",
-          repoPath("justfile"),
-          "--working-directory",
-          source,
-          "desktop-tests",
-        ],
-        {
-          cwd: root,
-          env: {
-            ...process.env,
-            PATH: `${bin}:${process.env["PATH"] ?? ""}`,
-            DISPLAY: ":fixture",
-            QUALIFICATION_LOG: observed,
-          },
-        },
+test.each([false, true])(
+  "shared desktop tests use selected source capabilities (bootstrap=%s)",
+  (bootstrap) => {
+    const root = mkdtempSync(join(tmpdir(), "phux-desktop-qualification-"));
+    try {
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      const source = join(root, "source");
+      mkdirSync(source);
+      const observed = join(root, "observed");
+      // Historical sources have neither the wrapper nor the new bootstrap recipe.
+      writeFileSync(
+        join(source, "justfile"),
+        "desktop-test:\n    @printf 'tests\\n' >> \"$QUALIFICATION_LOG\"\ndesktop-renderer-test:\n    @printf 'renderer\\n' >> \"$QUALIFICATION_LOG\"\ndesktop-perf-budget:\n    @printf 'perf\\n' >> \"$QUALIFICATION_LOG\"\n",
       );
-      expect(readFileSync(observed, "utf8")).toBe(expected);
+      if (bootstrap) {
+        appendFileSync(
+          join(source, "justfile"),
+          "desktop-bootstrap-test:\n    @printf 'bootstrap\\n' >> \"$QUALIFICATION_LOG\"\n",
+        );
+      }
+      const extra = bootstrap ? "bootstrap\n" : "";
+      for (const [platform, expected] of [
+        ["Linux", `tests\n${extra}renderer\n`],
+        ["Darwin", `tests\n${extra}perf\n`],
+      ] as const) {
+        writeFileSync(join(bin, "uname"), `#!/usr/bin/env bash\nprintf '%s\\n' '${platform}'\n`, {
+          mode: 0o755,
+        });
+        writeFileSync(observed, "");
+        capture(
+          [
+            "just",
+            "--justfile",
+            repoPath("justfile"),
+            "--working-directory",
+            source,
+            "desktop-tests",
+          ],
+          {
+            cwd: root,
+            env: {
+              ...process.env,
+              PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+              DISPLAY: ":fixture",
+              QUALIFICATION_LOG: observed,
+            },
+          },
+        );
+        expect(readFileSync(observed, "utf8")).toBe(expected);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+  },
+);
 
 test("macOS provisioning is shared but still reads toolchain pins from the selected source", () => {
   const setup = action("setup-macos-desktop");

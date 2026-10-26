@@ -65,7 +65,11 @@ if [[ -z "$identities" || "$identities" == *$'\n'* ]]; then
     exit 1
 fi
 
-# The GPUI app has one executable and no nested code or JIT entitlements.
+# Sign the bundled coordinator before sealing the app; never mutate it after signing.
+if [[ -e "$app/Contents/MacOS/phux" ]]; then
+    test -x "$app/Contents/MacOS/phux"
+    codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$app/Contents/MacOS/phux"
+fi
 codesign --force --keychain "$keychain" --sign "$identities" --options runtime --timestamp "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 

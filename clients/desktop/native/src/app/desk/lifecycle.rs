@@ -156,7 +156,9 @@ impl Desk {
             upload_epoch: 0,
             uploads_reading: 0,
         };
+        let ready = request.startup_error.is_none();
         if let Some(error) = request.startup_error {
+            desk.connect_error = Some(error.clone());
             desk.post(Kind::Error, "Could not start the phux server", Some(error));
         }
         if blocked {
@@ -166,7 +168,9 @@ impl Desk {
                 Some("This layout is invalid or from an unsupported version. Layout and settings changes will not be saved.".into()),
             );
         }
-        desk.attach(request.initial_terminal, cx);
+        if ready {
+            desk.attach(request.initial_terminal, cx);
+        }
         desk.refresh_hosts(cx);
         desk.sync_bindings(cx);
         desk.set_motion_spans();
@@ -178,9 +182,10 @@ impl Desk {
             let generation = updates.read(cx).runtime_generation;
             if generation != runtime_generation {
                 runtime_generation = generation;
+                let socket = updates.read(cx).local_socket();
                 cx.spawn(async move |this, cx| {
                     smol::Timer::after(Duration::from_millis(500)).await;
-                    let _ = this.update(cx, |desk, cx| desk.redial(cx));
+                    let _ = this.update(cx, |desk, cx| desk.runtime_reconnect(socket, cx));
                 })
                 .detach();
             }
@@ -201,7 +206,8 @@ impl Desk {
         self.reset_native_launch();
         if self.session.is_empty() {
             // The launch could not name a session; its reason is already shown.
-            self.connect_error = Some("No session to open".into());
+            self.connect_error
+                .get_or_insert_with(|| "No session to open".into());
             cx.notify();
             return;
         }
@@ -386,51 +392,6 @@ impl Desk {
             self.find = None;
             self.find_input = None;
         }
-    }
-
-    /// Resolve the existing home before redialing; never recreate a stale name.
-    pub(super) fn prepare_reconnect_home(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.session_is_attached() {
-            return true;
-        }
-        let key = self.link_home_key().or(self.home_key);
-        let result = if let Some(remote) = self.remote.as_deref() {
-            crate::connection::home::existing_remote_home(remote, &self.session, key)
-        } else {
-            host::start_server(&self.phux, &self.socket).and_then(|()| {
-                if self.session.is_empty() {
-                    crate::connection::home::open_home(&self.phux, &self.socket, None)
-                } else {
-                    crate::connection::home::existing_home(&self.socket, &self.session, key)
-                }
-            })
-        };
-        match result {
-            // A launch that could not name a session reopens on the one
-            // the server now offers, with that session's saved layout.
-            Ok(name) if self.session.is_empty() => {
-                let old = cx.entity_id();
-                self.defer_desktop(cx, move |desktop, cx| desktop.rehome(old, name, cx));
-                false
-            }
-            Ok(name) => {
-                self.session = name.clone();
-                self.workspace_call(|link| link.workspace.set_home_session(name));
-                true
-            }
-            Err(error) => {
-                self.post(Kind::Error, "Could not reconnect", Some(error));
-                cx.notify();
-                false
-            }
-        }
-    }
-
-    pub(crate) fn reconnect(&mut self, cx: &mut Context<Self>) {
-        if !self.prepare_reconnect_home(cx) {
-            return;
-        }
-        self.redial(cx);
     }
 
     /// Reattach after a managed handoff. The updater already performed the

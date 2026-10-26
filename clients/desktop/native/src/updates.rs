@@ -334,7 +334,7 @@ fn decode_output(result: std::process::Output) -> anyhow::Result<String> {
 
 /// Run `command`, feeding `input` on stdin, and kill its private Unix process
 /// group or recorded Windows process tree on timeout. Never cancel by name.
-fn run_bounded(
+pub(crate) fn run_bounded(
     command: &mut Command,
     input: Option<&'static [u8]>,
     timeout: Duration,

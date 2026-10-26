@@ -94,43 +94,8 @@ impl Options {
     }
 }
 
-fn find_phux(explicit: Option<PathBuf>) -> Option<PathBuf> {
-    if let Some(path) = explicit.or_else(|| std::env::var_os("PHUX_BIN").map(PathBuf::from)) {
-        return Some(path);
-    }
-    find_installed_phux()
-}
-
-#[cfg(windows)]
-fn find_installed_phux() -> Option<PathBuf> {
-    // Resolution occurs in WSL's login environment, not Windows PATH.
-    Some(PathBuf::from("phux"))
-}
-
-#[cfg(not(windows))]
-fn find_installed_phux() -> Option<PathBuf> {
-    // Where installs land; a Finder-launched app has launchd's minimal `PATH`.
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    if let Some(found) = [
-        home.join(".local/bin/phux"),
-        PathBuf::from("/opt/homebrew/bin/phux"),
-        PathBuf::from("/usr/local/bin/phux"),
-        home.join(".cargo/bin/phux"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-    {
-        return Some(found);
-    }
-    let which = std::process::Command::new("/usr/bin/which")
-        .arg("phux")
-        .output()
-        .ok()?;
-    let path = String::from_utf8(which.stdout).ok()?.trim().to_owned();
-    (which.status.success() && !path.is_empty()).then(|| PathBuf::from(path))
-}
+mod runtime;
+pub(crate) use runtime::command_path;
 
 /// `phux [--socket SOCKET] ARGS`'s stdout, or its stderr as the error.
 fn run_phux(phux: &Path, socket: Option<&Path>, args: &[&str]) -> anyhow::Result<Vec<u8>> {
@@ -138,18 +103,17 @@ fn run_phux(phux: &Path, socket: Option<&Path>, args: &[&str]) -> anyhow::Result
     if let Some(socket) = socket {
         command.arg("--socket").arg(socket);
     }
-    let output = command
-        .args(args)
-        .output()
-        .with_context(|| format!("could not run {}", phux.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("`phux {}` failed: {}", args.join(" "), stderr.trim());
-    }
-    Ok(output.stdout)
+    crate::updates::run_bounded(
+        command.args(args),
+        None,
+        std::time::Duration::from_secs(30),
+        "Starting phux timed out. Click Retry connection to try again; your saved sessions were not removed.",
+    )
+    .map(String::into_bytes)
+    .with_context(|| format!("could not run {}", phux.display()))
 }
 
-fn ensure_server(phux: &Path, socket: Option<&Path>) -> anyhow::Result<PathBuf> {
+pub(crate) fn ensure_server(phux: &Path, socket: Option<&Path>) -> anyhow::Result<PathBuf> {
     crate::platform::validate_coordinator().map_err(anyhow::Error::msg)?;
     run_phux(phux, socket, &["server", "--ensure"])?;
     if let Some(socket) = socket {
@@ -174,7 +138,22 @@ struct Resolved {
 }
 
 fn resolve(options: &Options) -> Resolved {
-    resolve_with(options, find_phux(options.phux.clone()))
+    let automatic = options.phux.is_none() && std::env::var_os("PHUX_BIN").is_none();
+    match runtime::find(options.phux.clone()) {
+        Ok(phux) => {
+            let mut resolved = resolve_with(options, Some(phux));
+            if automatic {
+                // Keep discovery live instead of pinning an inferred path forever.
+                resolved.phux = "phux".into();
+            }
+            resolved
+        }
+        Err(error) => {
+            let mut resolved = resolve_with(options, None);
+            resolved.error = Some(format!("{error:#}"));
+            resolved
+        }
+    }
 }
 
 /// [`resolve`] with the CLI already found, or `None` when none is installed.
@@ -204,10 +183,7 @@ fn resolve_with(options: &Options, phux: Option<PathBuf>) -> Resolved {
         None => (
             PathBuf::from("phux"),
             explicit_socket.unwrap_or_default(),
-            Err(
-                "Install the phux CLI from https://phux.sh/install so the desktop can start a server."
-                    .to_owned(),
-            ),
+            Err(runtime::MISSING.to_owned()),
         ),
         Some(phux) => match ensure_server(&phux, explicit_socket.as_deref()) {
             Ok(socket) => {
@@ -244,6 +220,7 @@ pub fn main() -> ExitCode {
         }
     };
     diag::init_logging();
+    runtime::configure_explicit(options.phux.is_some() || std::env::var_os("PHUX_BIN").is_some());
     let resolved = resolve(&options);
     if resolved.error.is_none() {
         crate::platform::prepare_coordinator_home();
@@ -390,12 +367,7 @@ mod tests {
             ..Options::default()
         };
         let resolved = resolve_with(&options, None);
-        assert_eq!(
-            resolved.error.as_deref(),
-            Some(
-                "Install the phux CLI from https://phux.sh/install so the desktop can start a server."
-            )
-        );
+        assert_eq!(resolved.error.as_deref(), Some(runtime::MISSING));
         assert_eq!(resolved.phux, Path::new("phux"));
         assert_eq!(resolved.session, "w");
         assert_eq!(

@@ -167,6 +167,15 @@ impl Updater {
         }
     }
 
+    pub(crate) fn local_socket(&self) -> PathBuf {
+        self.socket.clone()
+    }
+
+    pub(crate) fn retarget(&mut self, phux: PathBuf, socket: PathBuf) {
+        self.phux = phux;
+        self.socket = socket;
+    }
+
     pub fn start(&mut self, phux: PathBuf, socket: PathBuf, cx: &mut Context<Self>) {
         if self._automatic.is_some() {
             return;
