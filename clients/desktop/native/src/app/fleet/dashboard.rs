@@ -3,6 +3,7 @@
 
 mod cards;
 mod overview;
+mod playground;
 #[cfg(feature = "ui-fixtures")]
 pub(crate) mod preview;
 
@@ -21,6 +22,8 @@ const ENTER: Duration = Duration::from_millis(360);
 const STAGGER: Duration = Duration::from_millis(18);
 const GAP: f32 = 12.;
 const INSET: f32 = 24.;
+/// The playground's frame interval.
+const TICK: Duration = Duration::from_millis(80);
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -29,6 +32,10 @@ pub(crate) struct State {
     scroll: ScrollHandle,
     pub pending: Option<Agent>,
     pub(super) pending_open: Option<crate::workspace::PendingOpen>,
+    /// The playground: the same agents as ghosts in their hosts' rooms.
+    pub(super) playground: playground::View,
+    /// A playground frame is already on its way.
+    tick_scheduled: bool,
     #[cfg(feature = "ui-fixtures")]
     fixture: Option<Vec<Agent>>,
 }
@@ -128,6 +135,33 @@ pub(crate) fn panel(
     }
     let width = width(window);
     let inner = (width - INSET * 2.).max(0.);
+    let playground = desk.fleet_view.playground.on;
+    // The playground's own clock: a dozen frames a second while it is open
+    // and motion is allowed, nothing otherwise. ponytail: this re-renders the
+    // desk's chrome each tick; move the scene into its own entity if that
+    // ever shows in the HUD.
+    if playground && animate && !desk.fleet_view.tick_scheduled {
+        desk.fleet_view.tick_scheduled = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TICK).await;
+            let _ = this.update(cx, |desk, cx| {
+                desk.fleet_view.tick_scheduled = false;
+                if desk.fleet_view.playground.on
+                    && matches!(desk.modal, crate::app::desk::Modal::AgentFleet)
+                {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+    let time = if animate {
+        desk.fleet_view
+            .opened
+            .map_or(0., |opened| now.duration_since(opened).as_secs_f32())
+    } else {
+        0.
+    };
     let cols = columns(inner);
     let tile_width = ((inner - GAP * (cols - 1) as f32) / cols as f32).max(0.);
     let height = (window.viewport_size().height.as_f32() - 2. * SHEET_GUTTER).max(0.);
@@ -160,19 +194,39 @@ pub(crate) fn panel(
         .flex()
         .flex_col()
         .overflow_hidden()
-        .child(overview::header(&agents, look, cx))
-        .child(
-            div()
-                .id("fleet-grid")
-                .min_h_0()
-                .overflow_y_scroll()
-                .track_scroll(&desk.fleet_view.scroll)
-                .px(px(INSET))
-                .pt(px(4.))
-                .children(rows)
-                .when(agents.is_empty(), |grid| grid.child(overview::empty(look)))
-                .children(machine_notices(desk, look)),
-        )
+        .child(overview::header(&agents, playground, look, cx))
+        .when(playground, |panel| {
+            let scene_height = (height - 300.).max(240.);
+            panel.child(
+                div()
+                    .px(px(INSET))
+                    .pt(px(4.))
+                    .flex_shrink_0()
+                    .child(playground::scene(
+                        desk,
+                        &agents,
+                        inner,
+                        scene_height,
+                        time,
+                        look,
+                        cx,
+                    )),
+            )
+        })
+        .when(!playground, |panel| {
+            panel.child(
+                div()
+                    .id("fleet-grid")
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&desk.fleet_view.scroll)
+                    .px(px(INSET))
+                    .pt(px(4.))
+                    .children(rows)
+                    .when(agents.is_empty(), |grid| grid.child(overview::empty(look)))
+                    .children(machine_notices(desk, look)),
+            )
+        })
         .child(
             div()
                 .flex()

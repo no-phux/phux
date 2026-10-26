@@ -1,7 +1,7 @@
 ---
 audience: humans
 stability: experimental
-last-reviewed: 2026-10-23
+last-reviewed: 2026-10-26
 ---
 
 # Agent fleet
@@ -35,6 +35,21 @@ tab. An attach refusal is reported once and never automatically retried.
 Browsing never acquires terminal views, changes
 PTY sizes, sends agent input, or acknowledges attention. Turning the experiment
 off removes its titlebar and palette entry; terminals keep running.
+
+## Playground
+
+The header's playground button swaps the cards for the same agents as ghosts
+on an isometric campus: a room per machine, Local first, with a door, a desk
+per agent and a dimmed empty room for a machine that is not connected. A
+working ghost roams its room, a blocked one bobs at its desk, an idle one
+sleeps, a fresh finish celebrates; the name and the same status word as the
+card sit under each ghost. Drag to pan, scroll to pan, pinch to zoom. The
+camera opens on the first room that needs you. Clicking a ghost opens that
+exact agent, as a card does, and the keyboard path is unchanged. A ghost
+never leaves its machine's room. The scene draws about twelve frames a
+second while it is open; **Appearance > Animations** off or system **Reduce
+Motion** leaves every ghost on a still frame. The ghost artwork is a
+phux-brand export for this surface only; it is not the PHUX mark.
 
 See the [desktop README](README.md) for installation and development, and
 [desktop usage](USAGE.md) for the rest of the app.

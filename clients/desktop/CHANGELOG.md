@@ -4,6 +4,10 @@
 
 ### Features
 
+- Add a playground to the Agent Fleet: every agent as a ghost in its
+  machine's room on an isometric campus, with a camera to drag, scroll and
+  pinch, and a click that opens the exact agent.
+
 - Render inline Kitty graphics in terminal panes and previews, including PNG,
   RGB/RGBA, chunked transfers, Unicode placeholders, cropping, transparency and
   z-order. Preserve resident images across attach and reconnect.

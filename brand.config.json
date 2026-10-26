@@ -8,6 +8,12 @@
     "tooling/brand.py": "scripts/brand.py",
     "desktop/AppIcon.png": "clients/desktop/packaging/AppIcon.png",
     "identity/profile.json": "clients/desktop/packaging/brand-profile.json",
-    "runtime/desktop/profiles.json": "clients/desktop/packaging/brand-profiles.json"
+    "runtime/desktop/profiles.json": "clients/desktop/packaging/brand-profiles.json",
+    "playground/ghost/idle.png": "clients/desktop/native/assets/playground/ghost/idle.png",
+    "playground/ghost/celebrate.png": "clients/desktop/native/assets/playground/ghost/celebrate.png",
+    "playground/ghost/dash.png": "clients/desktop/native/assets/playground/ghost/dash.png",
+    "playground/ghost/sleep.png": "clients/desktop/native/assets/playground/ghost/sleep.png",
+    "playground/ghost/still.png": "clients/desktop/native/assets/playground/ghost/still.png",
+    "playground/ghost/atlas.json": "clients/desktop/native/assets/playground/ghost/atlas.json"
   }
 }

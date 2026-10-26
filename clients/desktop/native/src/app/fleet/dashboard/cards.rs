@@ -225,7 +225,7 @@ fn status_ink(color: Hsla, look: &Look) -> Hsla {
     if look.light { look.ink } else { color }
 }
 
-fn state_label(info: &AgentInfo) -> String {
+pub(super) fn state_label(info: &AgentInfo) -> String {
     if info.urgent() {
         return "Needs you".into();
     }

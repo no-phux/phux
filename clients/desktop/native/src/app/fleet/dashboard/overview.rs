@@ -12,7 +12,12 @@ use crate::app::skin::Look;
 use crate::app::ui::{agent_swatch, dot, icon_button, muted};
 use crate::connection::AgentState;
 
-pub(super) fn header(agents: &[Agent], look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+pub(super) fn header(
+    agents: &[Agent],
+    playground: bool,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -48,6 +53,28 @@ pub(super) fn header(agents: &[Agent], look: &Look, cx: &mut Context<Desk>) -> i
                                 .child("Agent fleet"),
                         )
                         .child(muted(look, "Every agent. One vantage point.").mt(px(4.))),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "fleet-playground-toggle".into())
+                        .child(icon_button(
+                            "fleet-playground-toggle",
+                            if playground {
+                                IconName::LayoutDashboard
+                            } else {
+                                IconName::Orbit
+                            },
+                            if playground {
+                                "Show cards"
+                            } else {
+                                "Show playground"
+                            },
+                            None,
+                            cx.listener(|desk, _, _, cx| {
+                                desk.fleet_view.playground.on = !desk.fleet_view.playground.on;
+                                cx.notify();
+                            }),
+                        )),
                 )
                 .child(icon_button(
                     "fleet-refresh",
