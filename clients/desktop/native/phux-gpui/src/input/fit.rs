@@ -70,7 +70,14 @@ impl TerminalInput {
     /// Hiding keeps this input and that timer. Delivery rechecks that this
     /// view is still the visible size owner of the generation that armed the
     /// proposal, so a hidden former owner cannot override the focused view.
+    ///
+    /// The painted cell pitch is not that proposal. The first time it changes,
+    /// it is stored on the local replica immediately, for the size owner and
+    /// for every other view, before settle, readiness, or the viewer gate.
+    /// Unchanged paints do not republish. The server still learns the pitch
+    /// only from the settled resize.
     pub fn fit(&mut self, owner: bool, window: &Window, cx: &mut Context<Self>) {
+        self.apply_local_cell_pixels();
         let active = window.is_window_active();
         let reactivated = active && !self.fit_active;
         self.fit_active = active;
@@ -156,6 +163,30 @@ impl TerminalInput {
             self.fitted = Some(pending.proposal);
         }
         self.settling = None;
+    }
+
+    /// Store this paint's cell pitch locally when it changed. No server frame.
+    fn apply_local_cell_pixels(&mut self) {
+        let Some(metrics) = self.metrics else {
+            return;
+        };
+        let cell = cell_px(metrics);
+        if self.applied_cell == Some(cell) {
+            return;
+        }
+        let Ok(client) = self.client() else {
+            return;
+        };
+        let stored = client.with_control(|control| {
+            if control.engine().is_none() {
+                return false;
+            }
+            control.set_local_cell_pixels(&self.terminal, cell.0, cell.1);
+            true
+        });
+        if stored {
+            self.applied_cell = Some(cell);
+        }
     }
 
     fn claim_fit(&self) {

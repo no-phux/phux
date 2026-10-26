@@ -39,6 +39,8 @@ mod batching;
 mod checkout;
 mod geometry;
 mod global_metadata;
+#[cfg(feature = "engine")]
+mod kitty;
 mod lifecycle;
 mod native_agent;
 mod newer_server;
