@@ -169,32 +169,31 @@ pub(crate) fn is_user_local_cli(home: &Path, path: &Path) -> bool {
     path == expected || resolves_to(path, &expected)
 }
 
+pub(crate) fn append_for(
+    home: &Path,
+    profile: &Path,
+    line: &str,
+    allow: bool,
+) -> anyhow::Result<bool> {
+    append_once_in(home, profile, INSTALLER_MARKER, line, allow)
+}
+
 /// Append `line` once, under `marker`, without truncating or rewriting.
 /// `Ok(true)` when this call appended it. `Ok(false)` when the exact line was
 /// already present. Creates a missing file or parent directory only under
 /// `$HOME`. Refuses a symlink that leaves `$HOME` and a file owned by someone
 /// else. `PHUX_NO_MODIFY_PATH` (anything other than empty or `0`) refuses
 /// before touching the file.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn append_once(profile: &Path, marker: &str, line: &str) -> anyhow::Result<bool> {
-    append_guarded(
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    append_once_in(
+        Path::new(&home),
         profile,
         marker,
         line,
         changes_allowed(std::env::var_os("PHUX_NO_MODIFY_PATH").as_deref()),
     )
-}
-
-/// Same write as [`append_once`], with the login shell's allow/refuse flag.
-/// `allow` comes from the probe when it succeeded, and from this process only
-/// when the probe failed.
-pub(crate) fn append_guarded(
-    profile: &Path,
-    marker: &str,
-    line: &str,
-    allow: bool,
-) -> anyhow::Result<bool> {
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    append_once_in(Path::new(&home), profile, marker, line, allow)
 }
 
 /// `PHUX_NO_MODIFY_PATH` refuses the write unless it is unset, empty, or `0`.

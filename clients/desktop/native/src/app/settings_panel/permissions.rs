@@ -13,7 +13,7 @@ use gpui_kit::component::{Disableable, Sizable};
 use super::catalog::{Content, Group, Item};
 use super::fact;
 use crate::app::desk::Desk;
-use crate::app::desk::cli_path::Status;
+use crate::app::desk::cli_path::{self, Status};
 use crate::launch::shell_path;
 
 const FULL_DISK_ACCESS: &str =
@@ -95,8 +95,9 @@ pub(super) fn page(desk: &Desk, handle: &WeakEntity<Desk>) -> Content {
 }
 
 fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
-    let on_path = desk.path_prompt.status == Status::OnPath;
-    let local = crate::app::desk::cli_path::user_local_cli(desk).is_some();
+    let status = desk.path_prompt.status;
+    let on_path = status == Status::OnPath;
+    let local = cli_path::user_local_cli(desk).is_some();
     let (description, ready) = match shell_path::profile_target(desk.path_prompt.login.as_ref()) {
         Some((profile, _)) => {
             let description = if local {
@@ -118,7 +119,9 @@ fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
             false,
         ),
     };
-    let detail = if let Some(message) = &desk.path_prompt.message {
+    let detail = if !local {
+        cli_path::NOTHING_TO_ADD.to_owned()
+    } else if let Some(message) = &desk.path_prompt.message {
         message.clone()
     } else if on_path {
         "Terminal already finds phux. Nothing to add.".to_owned()
@@ -144,7 +147,7 @@ fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
                             Button::new("settings-cli-path-add")
                                 .small()
                                 .label("Add to PATH")
-                                .disabled(!ready || on_path || !local)
+                                .disabled(cli_path::add_to_path_disabled(ready, local, status))
                                 .on_click(move |_, _, cx| {
                                     let _ = add.update(cx, |desk, cx| desk.add_cli_to_path(cx));
                                 }),
