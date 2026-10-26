@@ -70,6 +70,17 @@ pub struct AppOptions {
     pub dev_telemetry: bool,
     /// Shown in the window when the server could not be ensured. Not hidden as an empty inventory.
     pub startup_error: Option<String>,
+    /// CLI automatic discovery found or installed. `phux` stays the command
+    /// name (`phux`) so later launches keep searching.
+    pub cli_install: Option<CliInstall>,
+}
+
+/// The CLI this process resolved before the command was rewritten to `phux`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliInstall {
+    pub path: PathBuf,
+    /// True only when this launch copied the bundled CLI into place.
+    pub installed: bool,
 }
 
 /// Open the desktop on an already-initialized GPUI app.

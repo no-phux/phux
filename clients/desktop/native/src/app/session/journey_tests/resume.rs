@@ -109,6 +109,7 @@ fn update_reopens_the_current_session_and_fresh_window_without_spawning(cx: &mut
                     quick: false,
                     dev_telemetry: false,
                     startup_error: None,
+                    cli_install: None,
                 },
                 true,
                 cx,

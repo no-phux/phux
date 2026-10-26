@@ -26,6 +26,7 @@ fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<Desk>) {
                 quick: false,
                 dev_telemetry: false,
                 startup_error: Some("Update card fixture: no server".into()),
+                cli_install: None,
             },
             cx,
         )

@@ -213,7 +213,7 @@ impl Updater {
     }
 
     /// No nagging when current or in development; a completed handoff stays dismissible.
-    pub(super) fn has_card(&self) -> bool {
+    pub(crate) fn has_card(&self) -> bool {
         if self.development {
             return false;
         }

@@ -15,6 +15,7 @@ impl Desk {
         updates: Entity<super::super::updates::Updater>,
         branding: Entity<super::super::branding::Branding>,
         phux: PathBuf,
+        cli_install: Option<crate::app::CliInstall>,
         socket: PathBuf,
         request: OpenRequest,
         recent_projects: Vec<PathBuf>,
@@ -70,6 +71,8 @@ impl Desk {
             home_key: request.home_key,
             expected_authority: request.authority,
             phux,
+            cli_install,
+            path_prompt: super::cli_path::Prompt::default(),
             focus,
             prefs,
             ghostty_found: text.is_some(),
@@ -198,6 +201,8 @@ impl Desk {
         }));
         // Window keys need the `Desk` context on the dispatch path before any terminal exists.
         window.focus(&desk.focus, cx);
+        #[cfg(target_os = "macos")]
+        desk.start_path_probe(cx);
         desk
     }
 

@@ -283,6 +283,7 @@ impl Desktop {
         let updates = self.updates.clone();
         let branding = self.branding.clone();
         let phux = self.phux.clone();
+        let cli_install = self.cli_install.clone();
         let socket = self.socket.clone();
         let session = request.session.clone();
         let recent_projects = self.recent_projects().to_vec();
@@ -323,6 +324,7 @@ impl Desktop {
                         updates,
                         branding,
                         phux,
+                        cli_install,
                         socket,
                         request,
                         recent_projects,

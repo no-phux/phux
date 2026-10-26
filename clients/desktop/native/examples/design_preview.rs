@@ -38,6 +38,7 @@ fn main() {
                     quick: false,
                     dev_telemetry: false,
                     startup_error: Some("Design preview: embedded runtime".into()),
+                    cli_install: None,
                 },
                 directory.clone(),
                 cx,

@@ -95,6 +95,7 @@ impl Options {
 }
 
 mod runtime;
+pub(crate) mod shell_path;
 pub(crate) use runtime::command_path;
 
 /// `phux [--socket SOCKET] ARGS`'s stdout, or its stderr as the error.
@@ -135,17 +136,17 @@ struct Resolved {
     session: String,
     phux: PathBuf,
     error: Option<String>,
+    /// The CLI discovery found or installed. Automatic discovery still runs
+    /// later commands as `phux`, so this is the only record of the real path.
+    cli: Option<crate::app::CliInstall>,
 }
 
 fn resolve(options: &Options) -> Resolved {
     let automatic = options.phux.is_none() && std::env::var_os("PHUX_BIN").is_none();
-    match runtime::find(options.phux.clone()) {
-        Ok(phux) => {
-            let mut resolved = resolve_with(options, Some(phux));
-            if automatic {
-                // Keep discovery live instead of pinning an inferred path forever.
-                resolved.phux = "phux".into();
-            }
+    match runtime::locate(options.phux.clone()) {
+        Ok(located) => {
+            let mut resolved = resolve_with(options, Some(located.path.clone()));
+            note_discovered_cli(&mut resolved, located, automatic);
             resolved
         }
         Err(error) => {
@@ -153,6 +154,18 @@ fn resolve(options: &Options) -> Resolved {
             resolved.error = Some(format!("{error:#}"));
             resolved
         }
+    }
+}
+
+/// Record where discovery looked, and keep automatic launches on the `phux`
+/// command so the next launch searches again instead of pinning a path.
+fn note_discovered_cli(resolved: &mut Resolved, located: runtime::Located, automatic: bool) {
+    resolved.cli = Some(crate::app::CliInstall {
+        path: located.path,
+        installed: located.installed,
+    });
+    if automatic {
+        resolved.phux = "phux".into();
     }
 }
 
@@ -172,6 +185,7 @@ fn resolve_with(options: &Options, phux: Option<PathBuf>) -> Resolved {
             session: options.session.clone().unwrap_or_default(),
             phux: phux.unwrap_or_default(),
             error: Some("A development Windows build needs --socket pointing to an isolated WSL server. It will not start or connect to the installed server by default.".into()),
+            cli: None,
         };
     }
     let requested = options.session.clone().or_else(|| {
@@ -206,6 +220,7 @@ fn resolve_with(options: &Options, phux: Option<PathBuf>) -> Resolved {
         session,
         phux,
         error,
+        cli: None,
     }
 }
 
@@ -251,6 +266,7 @@ pub fn main() -> ExitCode {
         dev_telemetry: options.dev_telemetry
             || std::env::var("PHUX_DESKTOP_DEV_TELEMETRY").as_deref() == Ok("1"),
         startup_error: resolved.error,
+        cli_install: resolved.cli,
     };
     // A startup error means no CLI or no server; the HUD then shows no server line.
     let cli = (app_options.startup_error.is_none() && !app_options.socket.as_os_str().is_empty())
@@ -392,5 +408,47 @@ mod tests {
             "{error}"
         );
         assert_eq!(resolved.phux, missing);
+    }
+
+    #[test]
+    fn automatic_discovery_keeps_the_command_name_and_records_installed_or_found() {
+        let path = PathBuf::from("/Users/ada/.local/bin/phux");
+        let mut resolved = Resolved {
+            socket: PathBuf::new(),
+            session: String::new(),
+            phux: path.clone(),
+            error: None,
+            cli: None,
+        };
+        note_discovered_cli(
+            &mut resolved,
+            runtime::Located {
+                path: path.clone(),
+                installed: true,
+            },
+            true,
+        );
+        assert_eq!(resolved.phux, Path::new("phux"));
+        let cli = resolved.cli.expect("installed cli");
+        assert!(cli.installed);
+        assert_eq!(cli.path, path);
+
+        let mut pinned = Resolved {
+            socket: PathBuf::new(),
+            session: String::new(),
+            phux: path.clone(),
+            error: None,
+            cli: None,
+        };
+        note_discovered_cli(
+            &mut pinned,
+            runtime::Located {
+                path: path.clone(),
+                installed: false,
+            },
+            false,
+        );
+        assert_eq!(pinned.phux, path);
+        assert!(!pinned.cli.expect("found cli").installed);
     }
 }

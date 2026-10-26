@@ -58,8 +58,11 @@ Performance Monitor instead. Automatic desktop installation is not supported
 on Windows, and the macOS bundle-swap helper is never run on Windows.
 
 The macOS app includes the CLI and server. On a fresh Mac, first launch installs
-the bundled CLI at `~/.local/bin/phux` and starts the server; no separate download
-or Terminal command is needed. An existing CLI is never replaced. If the CLI
+the bundled CLI at `~/.local/bin/phux` and starts the server. No separate download
+is required. If Terminal cannot find phux, choose **Add to PATH** in Phux. It appends
+one line to your shell profile (~/.zshrc for zsh, ~/.bash_profile for bash). Then open
+a new Terminal window. The same buttons are in **Phux Settings → Permissions**. An existing CLI
+is never replaced. If the CLI
 is installed while the app is open, **Retry connection** discovers it without
 restarting Desktop. Explicit `--phux` / `PHUX_BIN` paths stay pinned.
 
@@ -69,16 +72,16 @@ disable Gatekeeper to install a downloaded app.
 
 ## First launch and recovery
 
-| Starting point                                            | Expected behavior                                                                                                                                             |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fresh Mac, DMG only                                       | Copy to Applications and open. The bundled CLI is installed per-user and the local server starts.                                                             |
-| CLI installed first (including Homebrew)                  | Desktop uses that CLI without replacing it; starts a stopped server or reuses a healthy one.                                                                  |
-| CLI installed while Desktop is open                       | **Retry connection** and update checks rediscover it, even with Finder's minimal `PATH`.                                                                      |
-| Previously discovered CLI moved or removed                | Automatic discovery runs again; an explicit `--phux` / `PHUX_BIN` override never silently changes.                                                            |
-| Server stopped                                            | **Retry connection** starts it and reconnects to the same existing session, never recreating a deleted session.                                               |
-| CLI/server update before the first connection             | Desktop resolves the local socket, starts the server if necessary, and opens its home after the update.                                                       |
-| Invalid configuration or unwritable CLI install directory | The window shows the actual failure beside **Retry connection**. Repair the named file/permissions, then retry. No config, credentials or sessions are reset. |
-| Offline first launch                                      | The bundled runtime needs no download. A failed release check does not prevent local terminal use.                                                            |
+| Starting point                                            | Expected behavior                                                                                                                                                                                                                                                                          |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Fresh Mac, DMG only                                       | Copy to Applications and open. The bundled CLI is installed per-user and the local server starts. If Terminal cannot find `phux`, choose **Add to PATH** in Phux. It appends one line to your shell profile (~/.zshrc for zsh, ~/.bash_profile for bash). Then open a new Terminal window. |
+| CLI installed first (including Homebrew)                  | Desktop uses that CLI without replacing it; starts a stopped server or reuses a healthy one.                                                                                                                                                                                               |
+| CLI installed while Desktop is open                       | **Retry connection** and update checks rediscover it, even with Finder's minimal `PATH`.                                                                                                                                                                                                   |
+| Previously discovered CLI moved or removed                | Automatic discovery runs again; an explicit `--phux` / `PHUX_BIN` override never silently changes.                                                                                                                                                                                         |
+| Server stopped                                            | **Retry connection** starts it and reconnects to the same existing session, never recreating a deleted session.                                                                                                                                                                            |
+| CLI/server update before the first connection             | Desktop resolves the local socket, starts the server if necessary, and opens its home after the update.                                                                                                                                                                                    |
+| Invalid configuration or unwritable CLI install directory | The window shows the actual failure beside **Retry connection**. Repair the named file/permissions, then retry. No config, credentials or sessions are reset.                                                                                                                              |
+| Offline first launch                                      | The bundled runtime needs no download. A failed release check does not prevent local terminal use.                                                                                                                                                                                         |
 
 The CLI-only shell installer does not start a daemon by itself. Opening Desktop
 or running `phux` starts the local server. Closing Desktop detaches; it does

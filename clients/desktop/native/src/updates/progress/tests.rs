@@ -103,6 +103,8 @@ fn progress_arrives_before_a_live_command_exits_and_timeout_kills_its_group() {
             Duration::from_millis(300),
             "download timed out",
             Some(tx),
+            None,
+            false,
         );
         done_tx.send(result).unwrap();
     });
@@ -138,6 +140,8 @@ fn a_failed_transfer_keeps_stderr_and_never_claims_verification() {
         Duration::from_secs(3),
         "timed out",
         Some(tx),
+        None,
+        false,
     )
     .unwrap_err();
     assert_eq!(error.to_string(), "curl: (18) partial file");
@@ -160,6 +164,8 @@ fn successful_commands_deliver_verification_and_leave_stdout_unchanged() {
         Duration::from_secs(3),
         "timed out",
         Some(tx),
+        None,
+        false,
     )
     .unwrap();
     assert_eq!(text, "staged\n");

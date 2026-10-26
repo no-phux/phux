@@ -1,6 +1,46 @@
 //! A failed first launch remains repairable in the same app process.
 use super::*;
 
+/// Shell profiles the PATH card could touch. Launch must not write them.
+fn shell_profiles() -> Vec<std::path::PathBuf> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let mut paths = vec![
+        home.join(".zshrc"),
+        home.join(".bashrc"),
+        home.join(".bash_profile"),
+        home.join(".profile"),
+    ];
+    if let Some(zdot) = std::env::var_os("ZDOTDIR") {
+        paths.push(std::path::PathBuf::from(zdot).join(".zshrc"));
+    }
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    paths.push(config.join("fish/conf.d/phux.fish"));
+    paths
+}
+
+fn profile_bytes() -> Vec<(std::path::PathBuf, Option<Vec<u8>>)> {
+    shell_profiles()
+        .into_iter()
+        .map(|path| {
+            let bytes = std::fs::read(&path).ok();
+            (path, bytes)
+        })
+        .collect()
+}
+
+fn assert_profiles_unchanged(before: &[(std::path::PathBuf, Option<Vec<u8>>)]) {
+    for (path, bytes) in before {
+        assert_eq!(
+            &std::fs::read(path).ok(),
+            bytes,
+            "launch wrote {} without Add to PATH",
+            path.display()
+        );
+    }
+}
+
 fn launch_unconnected(
     server: &Server,
     desktop: &Entity<Desktop>,
@@ -21,6 +61,7 @@ fn launch_unconnected(
                     quick: false,
                     dev_telemetry: false,
                     startup_error: Some("The CLI is still being installed.".into()),
+                    cli_install: None,
                 },
                 cx,
             )
@@ -84,6 +125,7 @@ fn retry_after_cli_install_keeps_an_explicit_session_and_updates_new_windows(
 
 fn retry_after_install(session: &str, cx: &mut TestAppContext) {
     use std::os::unix::fs::PermissionsExt;
+    let profiles = profile_bytes();
     let server = Server::new();
     let desktop = desktop(cx);
     let cli = server.root.join("installed-later");
@@ -110,12 +152,14 @@ fn retry_after_install(session: &str, cx: &mut TestAppContext) {
             .iter()
             .any(|session| session["name"] == "journey-A")
     );
+    assert_profiles_unchanged(&profiles);
 }
 
 #[gpui::test]
 #[ignore = "requires PHUX_DESKTOP_JOURNEY_TEST_BIN pointing at a checkout-built CLI"]
 fn a_failed_home_probe_keeps_named_first_launch_retryable(cx: &mut TestAppContext) {
     use std::os::unix::fs::PermissionsExt;
+    let profiles = profile_bytes();
     let server = Server::new();
     let desktop = desktop(cx);
     let cli = server.root.join("recovering-cli");
@@ -144,11 +188,13 @@ fn a_failed_home_probe_keeps_named_first_launch_retryable(cx: &mut TestAppContex
     std::fs::write(target, server.socket.display().to_string()).unwrap();
     old.update(cx, |desk, cx| desk.reconnect(cx));
     assert_recovered(&server, &desktop, &old, "journey-B", cx);
+    assert_profiles_unchanged(&profiles);
 }
 
 #[gpui::test]
 #[ignore = "requires PHUX_DESKTOP_JOURNEY_TEST_BIN pointing at a checkout-built CLI"]
 fn a_failed_update_home_probe_keeps_its_next_target_retryable(cx: &mut TestAppContext) {
+    let profiles = profile_bytes();
     let server = Server::new();
     let desktop = desktop(cx);
     let old = launch_unconnected(&server, &desktop, server.binary.clone(), "journey-B", cx);
@@ -170,11 +216,13 @@ fn a_failed_update_home_probe_keeps_its_next_target_retryable(cx: &mut TestAppCo
         cx.notify();
     });
     assert_recovered(&server, &desktop, &old, "journey-B", cx);
+    assert_profiles_unchanged(&profiles);
 }
 
 #[gpui::test]
 #[ignore = "requires PHUX_DESKTOP_JOURNEY_TEST_BIN pointing at a checkout-built CLI"]
 fn updating_before_first_connection_opens_the_resolved_server_home(cx: &mut TestAppContext) {
+    let profiles = profile_bytes();
     let server = Server::new();
     let desktop = desktop(cx);
     let session = "journey-B";
@@ -186,4 +234,5 @@ fn updating_before_first_connection_opens_the_resolved_server_home(cx: &mut Test
         cx.notify();
     });
     assert_recovered(&server, &desktop, &old, session, cx);
+    assert_profiles_unchanged(&profiles);
 }
