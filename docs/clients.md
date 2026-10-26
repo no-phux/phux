@@ -35,7 +35,8 @@ On macOS and Linux, install it with:
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-The [Windows app](../clients/desktop/README.md#windows) uses native Direct3D
+The [Windows app](../clients/desktop/README.md#windows) is currently a source
+build, not a published stable installer. It uses native Direct3D
 rendering, input and clipboard; shells and agents stay in WSL. Its desktop
 updates use the Windows installer. WSLg is not required. The local Changes
 panel and external Unix developer socket are not available on Windows.
@@ -55,8 +56,10 @@ session you just left is instant. Machines you aren't looking at keep their
 data current without drawing anything. Disconnecting, forgetting a machine,
 or closing the window closes its connections.
 
-The app starts or reaches the server through the installed `phux` command,
-so install the CLI first; the desktop installer does it if you haven't. The
+The app starts or reaches the server through the installed `phux` command.
+The macOS app bundles it and installs it on first launch if none is found;
+the Linux installer supplies it, while Windows needs the WSL CLI first. An
+existing CLI is not replaced by desktop installation. The
 app never creates sessions on its own and never stops the server. Quitting
 it detaches.
 
@@ -79,9 +82,11 @@ For `icat`, use `kitten icat --transfer-mode=stream image.png`
   beside your panes.
 - [Agent panes](./desktop-panes.md) explains how panes an agent drives look.
 
-The desktop app has its own version and release notes. The macOS build is
-signed ad hoc, not notarized. Expect rough edges: the terminal UI is ahead
-of it.
+The desktop app has its own version and release notes. Current stable macOS
+downloads are Developer ID signed and Apple notarized; the
+[DMG installation guide](./install.md#macos-drag-and-drop-download) needs no
+Terminal command. Local development packages are still ad-hoc signed.
+Expect rough edges: the terminal UI is ahead of it.
 
 ## Browser
 

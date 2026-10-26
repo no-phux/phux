@@ -24,9 +24,22 @@ open it, and drag **Phux.app** onto **Applications**. Eject the image and
 open Phux from Applications. Apple silicon and macOS 26+ are required.
 The ZIP remains available for the installer and automatic updates.
 
+Current stable downloads are Developer ID signed and Apple notarized. No
+Xcode is needed to install them. Older releases through 0.44.1 have only an
+ad-hoc-signed ZIP; prefer the latest stable release and do not disable
+Gatekeeper to install a downloaded app.
+
+The macOS app includes the CLI and server. On a fresh Mac, first launch installs
+the bundled CLI at `~/.local/bin/phux` and starts the server; no separate download
+or Terminal command is needed. An existing CLI is never replaced. If the CLI
+is installed while the app is open, **Retry connection** discovers it without
+restarting Desktop. Explicit `--phux` / `PHUX_BIN` paths stay pinned.
+
 ### Windows
 
 The Windows app is a native `.exe`, not a Linux window through WSLg.
+It is currently a source build; stable Desktop releases publish macOS and
+Linux downloads, not a Windows installer.
 Install the [WSL CLI and server](../../docs/install.md#windows-wsl) first.
 Shells, agents and their credentials stay in WSL; the window, clipboard,
 keyboard input and preferences are native Windows. No network listener is
@@ -47,17 +60,6 @@ The local Changes panel and the external Unix developer socket are not
 available for WSL checkouts. Use Git in the terminal and the in-app
 Performance Monitor instead. Desktop updates use the Windows installer;
 the macOS bundle-swap helper is never run on Windows.
-
-The macOS app includes the CLI and server. On a fresh Mac, first launch installs
-the bundled CLI at `~/.local/bin/phux` and starts the server; no separate download
-or Terminal command is needed. An existing CLI is never replaced. If the CLI
-is installed while the app is open, **Retry connection** discovers it without
-restarting Desktop. Explicit `--phux` / `PHUX_BIN` paths stay pinned.
-
-New stable releases require Developer ID signing and Apple notarization;
-older releases through 0.44.1 have only an ad-hoc-signed ZIP. Until the
-first notarized DMG is published, use the shell installer above. Do not
-disable Gatekeeper to install a downloaded app.
 
 ## First launch and recovery
 
@@ -221,6 +223,15 @@ point a development build at the installed server.
 The native crate's layout is in [native/README.md](./native/README.md).
 The TypeScript under `scripts/` is build, packaging, and smoke tooling, run
 with the pinned Bun; it is not part of the shipped app.
+
+macOS source builds need full Xcode 26+ compatible with the host OS; see
+[toolchain setup](../../docs/development.md#gpui-desktop). DMG packaging also
+uses Python 3 with `venv`/`pip` and Apple's Swift, `sips`, `iconutil`, and
+`tiffutil`. It installs the two hash-pinned Finder metadata libraries from
+`packaging/dmg-requirements.txt` into a disposable environment; neither Python
+nor those libraries ship in the app. No Finder automation permission is needed.
+The [pinned brand release](../../docs/brand-assets.md) supplies the unmodified
+logo and wordmark for the Retina background and badged disk icon.
 
 ## Qualification
 

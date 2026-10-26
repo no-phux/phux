@@ -79,6 +79,10 @@ const ROUTES: Record<string, Surface[]> = {
   "clients/desktop/packaging/AppIcon.png": ["desktop"],
   "clients/desktop/packaging/brand-profile{,s}.json": ["desktop"],
   "clients/desktop/scripts/brand.ts": ["desktop"],
+  "clients/desktop/scripts/package-{app,dmg}.ts": ["desktop"],
+  "clients/desktop/scripts/dmg-*.{py,swift}": ["desktop"],
+  "clients/desktop/packaging/dmg-requirements.txt": ["desktop"],
+  "clients/desktop/tests/tooling/{package-dmg.test.ts,verify-dmg.py,verify-dmg.swift}": ["desktop"],
   "just/desktop.just": ["desktop"],
   "just/web.just": ["web"],
   // Root crates reach the web and desktop lanes only through Cargo (see

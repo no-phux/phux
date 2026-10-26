@@ -1,8 +1,20 @@
 /** A read-only drag-to-Applications image; signing/notarization is a release step. */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  constants,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { desktopBrand } from "./brand.ts";
+import { renderIcon } from "./package-app.ts";
+import { repoRoot } from "./host.ts";
 
 export const installInstructions = `Install Phux
 ============
@@ -44,15 +56,22 @@ export function packageDmg(appPath: string, outputPath: string): void {
   }
   if (existsSync(output)) throw new Error(`Refusing to overwrite ${output}`);
   const work = mkdtempSync(join(tmpdir(), "phux-dmg-"));
+  const stage = join(work, "stage");
+  const mount = join(work, "mounted");
+  let mounted = false;
   try {
-    run(["ditto", app, join(work, "Phux.app")]);
-    symlinkSync("/Applications", join(work, "Applications"));
+    run(["python3", join(repoRoot, "scripts/brand.py"), "check", "--root", repoRoot]);
+    mkdirSync(stage);
+    run(["ditto", app, join(stage, "Phux.app")]);
+    symlinkSync("/Applications", join(stage, "Applications"));
     writeFileSync(
-      join(work, "Install Phux.txt"),
+      join(stage, "Install Phux.txt"),
       existsSync(join(app, "Contents/MacOS/phux"))
         ? installInstructions
         : legacyInstallInstructions,
     );
+    const python = prepareLayoutTools(work);
+    renderInstallerArtwork(work, stage);
     mkdirSync(dirname(output), { recursive: true });
     run([
       "hdiutil",
@@ -60,17 +79,75 @@ export function packageDmg(appPath: string, outputPath: string): void {
       "-volname",
       "Phux",
       "-srcfolder",
-      work,
+      stage,
       "-format",
-      "UDZO",
+      "UDRW",
       "-fs",
       "HFS+",
-      output,
+      join(work, "writable.dmg"),
     ]);
-    run(["hdiutil", "verify", output]);
+    run([
+      "hdiutil",
+      "attach",
+      "-nobrowse",
+      "-noautoopen",
+      "-mountpoint",
+      mount,
+      join(work, "writable.dmg"),
+    ]);
+    mounted = true;
+    run([python, join(import.meta.dir, "dmg-layout.py"), mount]);
+    run(["xcrun", "SetFile", "-a", "C", mount]);
+    run(["hdiutil", "detach", mount]);
+    mounted = false;
+    // Convert privately, then publish only a complete verified image.
+    const compressed = join(work, "Phux.dmg");
+    run(["hdiutil", "convert", join(work, "writable.dmg"), "-format", "UDZO", "-o", compressed]);
+    run(["hdiutil", "verify", compressed]);
+    copyFileSync(compressed, output, constants.COPYFILE_EXCL);
   } finally {
+    // Never remove a directory while our image is still mounted inside it.
+    if (mounted) run(["hdiutil", "detach", mount]);
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+export function prepareLayoutTools(work: string): string {
+  const environment = join(work, "python");
+  run(["python3", "-m", "venv", environment]);
+  const python = join(environment, "bin/python3");
+  run([
+    python,
+    "-m",
+    "pip",
+    "install",
+    "--disable-pip-version-check",
+    "--require-hashes",
+    "--only-binary=:all:",
+    "-r",
+    join(import.meta.dir, "../packaging/dmg-requirements.txt"),
+  ]);
+  return python;
+}
+
+function renderInstallerArtwork(work: string, stage: string): void {
+  run([
+    "xcrun",
+    "swift",
+    join(import.meta.dir, "dmg-artwork.swift"),
+    join(repoRoot, "docs/assets/logo.png"),
+    desktopBrand().iconPng,
+    work,
+  ]);
+  run([
+    "tiffutil",
+    "-cathidpicheck",
+    join(work, "background.png"),
+    join(work, "background@2x.png"),
+    "-out",
+    join(stage, ".background.tiff"),
+  ]);
+  renderIcon(join(stage, ".VolumeIcon.icns"), join(work, "VolumeIcon.png"));
 }
 
 function run(command: string[]): void {

@@ -1,5 +1,7 @@
 # phux
 
+<img src="./docs/assets/logo.png" alt="Phux fox and wordmark" width="280">
+
 A terminal multiplexer whose server you can drive from code.
 
 phux keeps your shells running in a background server and shows them in a
@@ -8,21 +10,45 @@ also a command with JSON output and an exit code, the server tracks which
 panes are running a coding agent and whether it is waiting on you, and
 another machine is one `phux host add me@mini` away, with no account.
 
-[Docs](./docs/README.md) · [Discord](https://discord.gg/dUv5rzdHp) ·
+[Docs](./docs/README.md) · [Help](#help) · [Releases](https://github.com/no-phux/phux/releases) ·
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
 
 ## Install
+
+### CLI and terminal UI
 
 ```sh
 curl -fsSL https://phux.sh/install | sh
 ```
 
-macOS on Apple silicon, Linux x86_64 and arm64. Also `brew install
-no-phux/tap/phux`. [More options](./docs/install.md), including the desktop
-app and building from source.
+Or use [Homebrew](./docs/install.md#homebrew). Run `phux` after installing.
 
-**Windows:** use [WSL, with PowerShell launchers](./docs/install.md#windows-wsl).
-The server and panes run in Linux; there is no native Windows build.
+### Desktop app
+
+**macOS:** download the **macos-arm64.dmg** from the latest
+[Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true).
+Drag **Phux.app** to **Applications**, eject the image, and open Phux.
+Stable downloads are Developer ID signed and Apple notarized. The app includes
+the CLI/server for first launch; an existing CLI is never replaced.
+
+**macOS or Linux:** prefer a shell installer?
+
+```sh
+curl -fsSL https://phux.sh/install-desktop | sh
+```
+
+### Platform support
+
+| Platform | CLI / server / terminal UI | Desktop |
+| --- | --- | --- |
+| macOS, Apple silicon | Native | macOS 26+; no Xcode needed to install |
+| Linux, x86_64 or arm64 | Native, glibc | X11 or Wayland, Vulkan driver |
+| Windows | WSL 2; optional PowerShell launchers | Native x64 source build, WSL 2 coordinator |
+
+No Intel Mac build, musl build, or native Windows server is published.
+See [installation options and requirements](./docs/install.md#requirements),
+[Windows setup](./docs/install.md#windows-wsl), and
+[desktop setup](./clients/desktop/README.md).
 
 ## Use
 
@@ -65,6 +91,14 @@ changes additively; see [protocol](./docs/protocol.md).
 
 [CONTRIBUTING.md](./CONTRIBUTING.md), then [development](./docs/development.md).
 phux is picky about new surface area; ask before building a feature.
+
+## Help
+
+- **Something broken?** Run `phux doctor`, then see [troubleshooting](./docs/troubleshooting.md).
+- **Desktop startup?** See [first launch and recovery](./clients/desktop/README.md#first-launch-and-recovery); the palette's **Copy Diagnostics** gathers useful details.
+- **Questions and setup help:** [Discord](https://discord.gg/dUv5rzdHp).
+- **Reproducible bug or feature proposal:** [GitHub issues](https://github.com/no-phux/phux/issues). See [what to include](./docs/troubleshooting.md#reporting-a-bug); review logs for secrets first.
+- **Building from source:** [development setup](./docs/development.md#gpui-desktop), including macOS 26+ / Xcode 26+.
 
 ## License
 

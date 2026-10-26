@@ -47,6 +47,13 @@ silhouettes use their native brand interface over the selected geometry and fini
 Desktop's process-wide branding interface owns its saved choice, preview and
 platform icon. Clients keep stable asset paths and do not branch on profile names.
 
+The README uses the pinned docs wordmark. macOS DMG packaging verifies the
+brand lock before composing that wordmark and `desktopBrand().iconPng` into
+installer chrome: a 1x/2x background and a disk-image icon badged with the
+unmodified app artwork. Finder metadata fixes the drag-to-Applications layout
+without GUI automation. Installer instructions and platform packaging live in
+the desktop consumer; no replacement fox geometry or private originals are used.
+
 ## Publishing and updates
 
 phux-brand checks the catalog's explicit public approval, generated mobile

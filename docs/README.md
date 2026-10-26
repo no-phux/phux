@@ -42,6 +42,11 @@ Every page in the phux docs, grouped by what you're trying to do.
 ## Help
 
 - [Troubleshooting](./troubleshooting.md): what to run first, and the failures people hit.
+- [Supported platforms](./install.md#requirements) and [desktop installation](./install.md#desktop-app): choose the right download.
+- [Desktop first launch and recovery](../clients/desktop/README.md#first-launch-and-recovery): bundled runtime, retry, and startup failures.
+- [Report a bug](./troubleshooting.md#reporting-a-bug): gather diagnostics and remove private information before sharing.
+- [Discord](https://discord.gg/dUv5rzdHp): questions and setup help.
+- [GitHub issues](https://github.com/no-phux/phux/issues): reproducible bugs and feature proposals.
 
 ## Reference
 

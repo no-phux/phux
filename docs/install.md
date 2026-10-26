@@ -1,6 +1,8 @@
 # Install
 
-phux is one command-line program, `phux`, plus `phux-mcp` for coding agents. Install it with the script below, then run `phux`.
+Choose the **CLI and terminal UI** below, or the [desktop app](#desktop-app).
+The CLI installation includes `phux` and `phux-mcp` for coding agents.
+After installing, run `phux` to start your first session.
 
 ```sh
 curl -fsSL https://phux.sh/install | sh
@@ -8,13 +10,13 @@ curl -fsSL https://phux.sh/install | sh
 
 ## Requirements
 
-Release builds exist for three platforms:
+Published CLI/server builds and desktop requirements:
 
-| OS    | Architecture                | Notes                         |
-| ----- | --------------------------- | ----------------------------- |
-| macOS | Apple silicon (arm64)       |                               |
-| Linux | x86_64                      | glibc; there is no musl build |
-| Linux | arm64                       | glibc; there is no musl build |
+| OS | Architecture | CLI / server | Desktop |
+| --- | --- | --- | --- |
+| macOS | Apple silicon (arm64) | Native | macOS 26+ |
+| Linux | x86_64 or arm64 | Native, glibc; no musl build | X11 or Wayland and Vulkan |
+| Windows | x64 desktop; x64 or arm64 WSL | Linux builds in WSL 2 | Native x64 source build, WSL 2 coordinator |
 
 Windows uses these Linux CLI/server builds through [WSL](#windows-wsl),
 including from PowerShell. The [Windows desktop](../clients/desktop/README.md#windows)
@@ -22,6 +24,9 @@ is native, with its coordinator in WSL. There is no native Windows coordinator
 or Intel Mac build.
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
+Installing a macOS release does **not** require Xcode. Building Desktop from
+source needs full Xcode 26+ compatible with the host OS; see
+[development setup](./development.md#gpui-desktop).
 
 ## macOS permissions
 
@@ -172,6 +177,25 @@ Homebrew 6 and later ask you to trust a third-party tap before installing from i
 
 ## Desktop app
 
+### macOS drag-and-drop download
+
+Download **macos-arm64.dmg** from the latest
+[Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true).
+Open it, drag **Phux.app** to **Applications**, eject the image, then open
+Phux from Applications—not from the mounted image.
+
+The macOS app bundles its CLI and server. On a fresh Mac, first launch
+installs `~/.local/bin/phux` and starts the local server, without another
+download or Terminal command. An existing CLI is never replaced, and its
+running sessions are not restarted. See [first launch and recovery](../clients/desktop/README.md#first-launch-and-recovery).
+
+**Current stable macOS downloads are Developer ID signed and Apple notarized.**
+Older ad-hoc-signed releases remain in the archive; use the latest stable
+release rather than disabling Gatekeeper. The ZIP serves the shell installer
+and automatic updater.
+
+### Shell installer (macOS and Linux)
+
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
@@ -183,7 +207,14 @@ This installs Phux Desktop, and the `phux` command too if you don't have it; the
 | macOS | Apple silicon, macOS 26 or later            | `/Applications`, or `~/Applications` if not writable |
 | Linux | x86_64 or arm64, glibc, a working Vulkan driver | `~/.local/share/phux-desktop`, with a menu entry |
 
-**The macOS app is ad-hoc signed and not notarized.** It's rougher than the terminal UI; [Clients](./clients.md#desktop) says what it does today.
+### Windows desktop
+
+The native Windows x64 app requires the [WSL CLI/server setup](#windows-wsl)
+first. The shell installer above targets macOS and Linux, not Windows.
+Windows desktop is currently a source build, not a published stable installer.
+See [Windows Desktop](../clients/desktop/README.md#windows) for its current
+setup and limitations. [Clients](./clients.md#desktop) describes what each
+desktop build does today.
 
 ## Check it worked
 
