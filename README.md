@@ -21,8 +21,9 @@ macOS on Apple silicon, Linux x86_64 and arm64. Also `brew install
 no-phux/tap/phux`. [More options](./docs/install.md), including the desktop
 app and building from source.
 
-**Windows:** use [WSL, with PowerShell launchers](./docs/install.md#windows-wsl).
-The server and panes run in Linux; there is no native Windows build.
+**Windows:** the CLI and server run in WSL 2, with PowerShell launchers. A
+native Windows desktop build is not published yet.
+[Install in WSL](./docs/install.md#windows-wsl).
 
 ## Use
 
@@ -56,10 +57,9 @@ is the bundled agent distro, with isolated homes, native missions and safe
 
 ## Status
 
-The CLI and terminal UI are the parts in daily use. The desktop app is
-released and rough. The browser client is a starting point, not a product.
-Phone apps are in progress elsewhere. The wire protocol is `0.x` and
-changes additively; see [protocol](./docs/protocol.md).
+The CLI and terminal UI are the parts in daily use. The desktop app (macOS, Linux) is new and changes weekly. The browser client is a starting point, not a product.
+Phone apps are in progress elsewhere. The wire protocol is `1.x`; any 1.x
+client works with any 1.x server. See [protocol](./docs/protocol.md).
 
 ## Contributing
 

@@ -74,8 +74,8 @@ pub fn set_checkout_distros(dir: &'static str) {
     completion,
     // `--rec` and `--remote` belong to the naked attach; their scope is a
     // post-parse check because globals parse on either side of a verb.
-    about = "A terminal multiplexer you can drive by hand or script.",
-    long_about = "A terminal multiplexer you can drive by hand or script.\n\n\
+    about = "A terminal multiplexer whose server you can drive from code.",
+    long_about = "A terminal multiplexer whose server you can drive from code.\n\n\
         Run `phux` alone to attach to your session; every other verb is headless.",
     // The root page is laid out for 80 columns whatever the terminal is:
     // the groups read as one table, and the width test on it is exact.

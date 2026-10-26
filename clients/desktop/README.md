@@ -1,7 +1,9 @@
-# Phux Desktop
+# phux desktop
 
-A native app for Apple silicon macOS 26+, Linux x86_64/arm64 (X11 or
-Wayland, Vulkan), and Windows x64 (Direct3D 11, WSL 2 coordinator).
+A native app for Apple silicon macOS 26+ and Linux x86_64/arm64 (X11 or
+Wayland, Vulkan). Windows: the CLI and server run in WSL 2, with PowerShell
+launchers. A native Windows desktop build is not published yet.
+
 Rust, GPUI, and the shared client runtime; no web view.
 
 ```sh
@@ -11,22 +13,29 @@ curl -fsSL https://phux.sh/install-desktop | sh
 That is the phux installer with `--desktop`. It verifies the archive
 against the channel manifest and the release signature, installs
 `Phux.app` (macOS) or a tarball under `$XDG_DATA_HOME/phux-desktop` with a
-`.desktop` entry (Linux), plus a `phux-desktop` launcher, and installs the
-phux CLI if none is found. It never replaces an existing CLI or stops its
-server. The shell installer also supports older ad-hoc-signed releases,
-clearing quarantine only after verifying the release signature.
+`.desktop` entry (Linux), plus a `phux-desktop` launcher. The Mac app
+bundles the phux CLI and server. The Linux desktop archive does not; that
+installer adds the CLI when none is found. It never replaces an existing
+CLI or stops its server. The shell installer also supports older
+ad-hoc-signed releases, clearing quarantine only after verifying the
+release signature.
 
 ### macOS download
 
 Download the **macos-arm64.dmg** from the newest
 [Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
 open it, and drag **Phux.app** onto **Applications**. Eject the image and
-open Phux from Applications. Apple silicon and macOS 26+ are required.
+open Phux from Applications. Apple silicon and macOS 26.0 or later are
+required. The app and DMG are Developer ID signed, Apple-notarized, and
+stapled. The app bundles the phux CLI and server.
 The ZIP remains available for the installer and automatic updates.
 
 ### Windows
 
-The Windows app is a native `.exe`, not a Linux window through WSLg.
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
+Windows desktop build is not published yet.
+
+Built from source, the Windows app is a native `.exe`, not a Linux window through WSLg.
 Install the [WSL CLI and server](../../docs/install.md#windows-wsl) first.
 Shells, agents and their credentials stay in WSL; the window, clipboard,
 keyboard input and preferences are native Windows. No network listener is
@@ -45,8 +54,8 @@ shell. Closing the app detaches; the WSL processes keep running.
 
 The local Changes panel and the external Unix developer socket are not
 available for WSL checkouts. Use Git in the terminal and the in-app
-Performance Monitor instead. Desktop updates use the Windows installer;
-the macOS bundle-swap helper is never run on Windows.
+Performance Monitor instead. Automatic desktop installation is not supported
+on Windows, and the macOS bundle-swap helper is never run on Windows.
 
 The macOS app includes the CLI and server. On a fresh Mac, first launch installs
 the bundled CLI at `~/.local/bin/phux` and starts the server; no separate download
@@ -54,9 +63,8 @@ or Terminal command is needed. An existing CLI is never replaced. If the CLI
 is installed while the app is open, **Retry connection** discovers it without
 restarting Desktop. Explicit `--phux` / `PHUX_BIN` paths stay pinned.
 
-New stable releases require Developer ID signing and Apple notarization;
-older releases through 0.44.1 have only an ad-hoc-signed ZIP. Until the
-first notarized DMG is published, use the shell installer above. Do not
+The stable macOS app and DMG are Developer ID signed, Apple-notarized, and
+stapled. Older releases through 0.44.1 have only an ad-hoc-signed ZIP. Do not
 disable Gatekeeper to install a downloaded app.
 
 ## First launch and recovery
@@ -207,7 +215,7 @@ just desktop-dmg       # local ad-hoc DMG; not a notarized public release
 
 `desktop-demo` builds the CLI and desktop executable from this checkout and
 owns a private foreground server and app. Each run gets a temporary socket,
-HOME and XDG directories; inherited Phux listener/auth settings are cleared.
+HOME and XDG directories; inherited phux listener/auth settings are cleared.
 Closing the app or interrupting the supervisor reaps both children and
 removes that state. It refuses installed or external artifacts and does not
 restart a lost server behind the supervisor.

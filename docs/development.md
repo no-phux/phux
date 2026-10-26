@@ -188,6 +188,9 @@ just desktop-app      # build the app and the CLI from this tree, start a server
 
 [`clients/desktop`](../clients/desktop) has the app's own commands and gates.
 
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
+Windows desktop build is not published yet.
+
 The Windows desktop is a separate native MSVC build of that same workspace,
 with Direct3D 11/DirectWrite rather than Metal or Vulkan. Its coordinator
 and CLI remain in WSL 2. Set `PHUX_WSL_DISTRO` to select a distribution;

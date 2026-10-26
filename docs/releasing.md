@@ -100,11 +100,12 @@ Stable macOS releases contain a drag-to-Applications **DMG** and an updater
 **ZIP** of the same stapled `Phux.app`. Both receive SHA-256 sidecars and
 minisign signatures; the channel manifest continues to name the ZIP so
 existing installers and automatic updates keep working. Linux is unchanged.
-The DMG includes an Applications link and instructions for the separately
-installed CLI; it does not bundle a second coordinator or mutate an existing
-installation. macOS 26+ on Apple silicon is the supported baseline. Both the
-bundle's minimum version and the executable's Mach-O deployment floor are
-checked before publication; a newer build host must not raise either one.
+The DMG's `Phux.app` bundles the phux CLI and server. It does not replace an
+existing CLI or restart running sessions. Linux desktop archives do not
+include the CLI. macOS 26.0 on Apple silicon is the desktop minimum; the
+standalone CLI's Mach-O floor stays at macOS 11.0. Both the bundle's minimum
+version and each executable's Mach-O deployment floor are checked before
+publication; a newer build host must not raise either one.
 
 The Apple credentials are separate from minisign. Configure these repository
 Actions secrets before marking the desktop release PR ready:
@@ -150,9 +151,9 @@ For local packaging, `just desktop-dmg` creates
 `clients/desktop/dist/Phux.dmg` without installing anything or accessing
 Apple credentials. Remove that task-owned output before rebuilding; the
 packager refuses to overwrite an existing image. This is a development
-artifact, not evidence of notarization. The first notarized stable release
-must pass the real Apple and Gatekeeper checks; local ad-hoc tests cannot
-prove those steps.
+artifact, not evidence of notarization. Stable macOS apps and DMGs are
+Developer ID signed, Apple-notarized, and stapled. Local ad-hoc tests cannot
+prove those Apple checks.
 
 ## Release-key custody and rotation
 

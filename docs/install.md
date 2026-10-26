@@ -10,16 +10,15 @@ curl -fsSL https://phux.sh/install | sh
 
 Release builds exist for three platforms:
 
-| OS    | Architecture                | Notes                         |
-| ----- | --------------------------- | ----------------------------- |
-| macOS | Apple silicon (arm64)       |                               |
-| Linux | x86_64                      | glibc; there is no musl build |
-| Linux | arm64                       | glibc; there is no musl build |
+| OS    | Architecture          | Notes                                   |
+| ----- | --------------------- | --------------------------------------- |
+| macOS | Apple silicon (arm64) | standalone CLI: macOS 11.0 or later     |
+| Linux | x86_64                | glibc; there is no musl build           |
+| Linux | arm64                 | glibc; there is no musl build           |
 
-Windows uses these Linux CLI/server builds through [WSL](#windows-wsl),
-including from PowerShell. The [Windows desktop](../clients/desktop/README.md#windows)
-is native, with its coordinator in WSL. There is no native Windows coordinator
-or Intel Mac build.
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
+Windows desktop build is not published yet. There is no native Windows
+coordinator or Intel Mac build. See [Windows (WSL)](#windows-wsl).
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
 
@@ -38,7 +37,7 @@ a restart; save its work first, because quitting the desktop does not stop
 shells or agents. Grants on this Mac do not change permissions on a remote
 host.
 
-Full Disk Access is optional and only applies to file access. Phux's
+Full Disk Access is optional and only applies to file access. phux's
 terminal and quick-terminal shortcuts do not need Accessibility, Input
 Monitoring or Screen Recording. Tools you run may request those separately.
 Background notification permissions have their own **Open Settings** button.
@@ -47,11 +46,13 @@ for the operating system's permission boundaries.
 
 ## Windows (WSL)
 
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
+Windows desktop build is not published yet.
+
 Use Windows Terminal and WSL 2 with Ubuntu 22.04 or newer (x64 or arm64).
 The server, panes, configuration, credentials, and agent integrations live
 **inside that Linux distribution**, not in Windows. PowerShell can launch
-and control them. The terminal UI runs in WSL; the native Windows desktop
-connects to the same coordinator.
+and control them. The terminal UI runs in WSL.
 
 If you do not have WSL, run this in an administrator PowerShell, restart if
 Windows requests it, then open Ubuntu once and create your Linux user:
@@ -129,8 +130,8 @@ Re-running the installer updates the launchers and Linux programs. To
 remove the Windows entrypoints, delete only `phux.ps1` and `phux-mcp.ps1`
 from the chosen install directory and remove that directory from your user
 `PATH`. To remove the Linux programs and state, follow [Uninstall](#uninstall)
-inside WSL. Neither step removes your distribution. For a native window,
-see [Windows Desktop](../clients/desktop/README.md#windows); WSLg is not required.
+inside WSL. Neither step removes your distribution. The terminal UI runs in
+Windows Terminal, and WSLg is not required.
 
 ## Install script
 
@@ -176,14 +177,18 @@ Homebrew 6 and later ask you to trust a third-party tap before installing from i
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-This installs Phux Desktop, and the `phux` command too if you don't have it; the app uses it to reach the server. It's the same script as `install --desktop`.
+This is the same script as `install --desktop`.
+
+The Mac app bundles the phux CLI and server. The app and DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app requires Apple silicon and macOS 26.0 or later. The standalone CLI requires macOS 11.0 or later.
+
+The Linux desktop archive does not include the CLI. On Linux, this script installs the CLI when none is found.
 
 | OS    | Needs                                       | Installs to                                         |
 | ----- | ------------------------------------------- | --------------------------------------------------- |
-| macOS | Apple silicon, macOS 26 or later            | `/Applications`, or `~/Applications` if not writable |
+| macOS | Apple silicon, macOS 26.0 or later          | `/Applications`, or `~/Applications` if not writable |
 | Linux | x86_64 or arm64, glibc, a working Vulkan driver | `~/.local/share/phux-desktop`, with a menu entry |
 
-**The macOS app is ad-hoc signed and not notarized.** It's rougher than the terminal UI; [Clients](./clients.md#desktop) says what it does today.
+The desktop app is rougher than the terminal UI; [Clients](./clients.md#desktop) says what it does today.
 
 ## Check it worked
 
@@ -205,6 +210,8 @@ phux update --rollback # put the previous version back
 `phux update` downloads the new release, checks it, replaces both programs, and restarts the server in place. **Your panes keep running through an update**, and attached clients reconnect on their own.
 
 `phux upgrade` does only the restart: it moves the running server onto whatever `phux` is already installed, again without stopping your panes. Run it after updating some other way, such as `brew upgrade`.
+
+If you're upgrading from 0.110 or older, the new CLI can't stop the old server (`phux upgrade` and `phux kill --server` are refused across protocol majors). Stop it with `pkill -f 'phux server'` or by its pid, then start the new one with `phux server --ensure` (or just run `phux`). Stopping the server ends the programs running in its panes; the new server brings the sessions back without them, and `phux restore` relaunches them. A bare `pkill phux` would also quit attached terminals, agents' `phux mcp` bridges, and the desktop app.
 
 If you installed with Homebrew, Nix, or `cargo install`, `phux update` changes nothing and prints the command for that package manager instead.
 
