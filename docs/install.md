@@ -145,7 +145,7 @@ Pass options after `sh -s --`:
 ```sh
 curl -fsSL https://phux.sh/install | sh -s -- --help
 curl -fsSL https://phux.sh/install | sh -s -- --install-dir ~/bin --no-modify-path
-curl -fsSL https://phux.sh/install | sh -s -- --version 1.2.3
+curl -fsSL https://phux.sh/install | sh -s -- --version 0.113.0
 curl -fsSL https://phux.sh/install | sh -s -- --channel next
 curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 ```

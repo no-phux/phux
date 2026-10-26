@@ -15,6 +15,7 @@ test.each<[string[], Trigger, Lane[]]>([
   // A change to how lanes run reruns every lane.
   [[".github/workflows/ci.yml"], "pull_request", [...LANES]],
   [[".github/workflows/release.yml"], "pull_request", ["guards"]],
+  [[".github/ISSUE_TEMPLATE/bug.yml"], "pull_request", ["guards"]],
   [["clients/desktop/native/src/main.rs"], "pull_request", ["guards", "desktop"]],
   // Release qualification builds desktop on main; the push is guards only.
   [["clients/desktop/native/src/main.rs"], "push", ["guards"]],

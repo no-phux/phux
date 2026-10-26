@@ -4,8 +4,8 @@ phux is picky about what it takes on. The multiplexers before it each grew
 a scripting language, a plugin host, a config DSL, and a copy mode, and that
 accreted surface is now the thing nobody can finish refactoring. Every
 feature declined is one that never has to keep working across every future
-version of the wire. If a change adds surface, expect to argue for it; a
-[discussion](https://github.com/no-phux/phux/discussions) before a PR saves
+version of the wire. If a change adds surface, expect to argue for it; an
+[issue](https://github.com/no-phux/phux/issues) before a PR saves
 everyone time.
 
 ## Setup

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Docs
+    url: https://docs.phux.sh
+    about: Install, commands, and troubleshooting.
+  - name: GitHub issues
+    url: https://github.com/no-phux/phux/issues
+    about: Search existing reports and requests before opening a new one.
