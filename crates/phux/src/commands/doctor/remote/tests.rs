@@ -252,7 +252,7 @@ fn an_incompatible_remote_probe_is_not_told_to_remove_the_socket() {
     let text = format!("{}\n{}", check.detail, check.hint.expect("hint"));
     assert!(text.contains("kill 4242"), "{text}");
     assert!(text.contains("pkill -f 'phux server'"), "{text}");
-    assert!(text.contains("`phux server`"), "{text}");
+    assert!(text.contains("`phux server --ensure`"), "{text}");
     for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
         assert!(!text.contains(forbidden), "{forbidden} in {text}");
     }

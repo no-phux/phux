@@ -404,7 +404,7 @@ mod tests {
             with_pid.remedy
         );
         assert!(
-            with_pid.remedy.contains("`phux server`"),
+            with_pid.remedy.contains("`phux server --ensure`"),
             "{}",
             with_pid.remedy
         );

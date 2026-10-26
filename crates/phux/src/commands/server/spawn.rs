@@ -493,7 +493,7 @@ mod tests {
         .join("\n");
         assert!(text.contains("`kill 4242`"), "{text}");
         assert!(text.contains("pkill -f 'phux server'"), "{text}");
-        assert!(text.contains("`phux server`"), "{text}");
+        assert!(text.contains("`phux server --ensure`"), "{text}");
         assert!(!text.contains("in place"), "{text}");
         assert!(!text.contains("continuing on"), "{text}");
         for forbidden in ["stale", "phux upgrade", "survive", "remove"] {

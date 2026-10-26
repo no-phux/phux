@@ -98,7 +98,7 @@ missing file, not a macOS permission refusal.
 and the running server speak different protocols, usually because you updated
 and an older server is still running. Stop that server, then start a fresh
 one. When its pid is known, run `kill <pid>` (or `pkill -f 'phux server'`).
-When it is not, run `pkill -f 'phux server'`. Then run `phux server`.
+When it is not, run `pkill -f 'phux server'`. Then run `phux server --ensure`.
 Stopping the old server closes the panes it is running.
 
 **Releases on the same protocol major.** They work together in either

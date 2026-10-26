@@ -209,7 +209,7 @@ fn a_live_incompatible_socket_is_not_told_to_remove_it() {
     let text = format!("{}\n{}", check.detail, check.hint.expect("hint"));
     assert!(text.contains("kill 4242"), "{text}");
     assert!(text.contains("pkill -f 'phux server'"), "{text}");
-    assert!(text.contains("`phux server`"), "{text}");
+    assert!(text.contains("`phux server --ensure`"), "{text}");
     assert!(text.contains("closes the panes"), "{text}");
     for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
         assert!(!text.contains(forbidden), "{forbidden} in {text}");

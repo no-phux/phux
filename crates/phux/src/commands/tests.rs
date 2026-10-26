@@ -86,7 +86,7 @@ fn no_server_lines_name_start_commands_log_and_doctor() {
     assert_eq!(lines[0], "no server running at /tmp/phux-test.sock");
     assert_eq!(
         lines[1],
-        "start one with `phux` (attaches, auto-starting a server) or `phux server`"
+        "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`"
     );
     assert_eq!(lines[2], "server log: /state/phux/server.log");
     assert_eq!(lines[3], "run `phux doctor` for a health check");
@@ -162,7 +162,7 @@ fn attach_error_named_arms_stay_single_line() {
 
     assert_eq!(
         attach_error_lines(&refused_io(), socket, "main", log, None),
-        ["no server at /tmp/a.sock. Start one with: phux server --session main"]
+        ["no server at /tmp/a.sock. Start one with: phux server --ensure"]
     );
     assert_eq!(
         attach_error_lines(
@@ -261,7 +261,7 @@ fn incompatible_lines_are_the_stop_recovery_with_and_without_a_pid() {
             assert!(!text.contains("`kill "), "{text}");
         }
         assert!(text.contains("pkill -f 'phux server'"), "{text}");
-        assert!(text.contains("`phux server`"), "{text}");
+        assert!(text.contains("`phux server --ensure`"), "{text}");
         assert!(text.contains("closes the panes"), "{text}");
         for forbidden in [
             "stale",
@@ -277,7 +277,7 @@ fn incompatible_lines_are_the_stop_recovery_with_and_without_a_pid() {
 
 /// A scripted server that refuses `HELLO` the way v0.110 (`0.9.x`) does.
 /// The client classifies it by `VERSION_INCOMPATIBLE`, and every hint names
-/// `kill <pid>` plus `phux server` without calling the live socket stale.
+/// `kill <pid>` plus `phux server --ensure` without calling the live socket stale.
 #[cfg(unix)]
 #[test]
 fn a_v0_110_hello_refusal_prints_the_stop_and_start_recovery() {
@@ -375,7 +375,7 @@ fn old_protocol_server(
 fn assert_live_old_server_hint(text: &str, pid: i32) {
     assert!(text.contains(&format!("`kill {pid}`")), "{text}");
     assert!(text.contains("pkill -f 'phux server'"), "{text}");
-    assert!(text.contains("`phux server`"), "{text}");
+    assert!(text.contains("`phux server --ensure`"), "{text}");
     assert!(text.contains("closes the panes"), "{text}");
     for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
         assert!(!text.contains(forbidden), "{forbidden} in {text}");

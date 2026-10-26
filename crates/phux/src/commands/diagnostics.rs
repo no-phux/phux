@@ -52,12 +52,12 @@ pub(crate) fn recovery_pid(err: &AttachError, socket: &Path) -> Option<i32> {
 }
 
 /// Peer credentials on `socket`, then the latest [`phux_server::health`]
-/// record when that pid is still alive.
+/// record when that pid is alive and owned by this user.
 pub(crate) fn server_pid(socket: &Path) -> Option<i32> {
     phux_client::explain::peer_pid(socket).or_else(|| {
         let raw = phux_server::health::running_pid()?;
         let pid = i32::try_from(raw).ok()?;
-        phux_client::explain::pid_is_alive(pid).then_some(pid)
+        phux_client::explain::owned_live_pid(pid)
     })
 }
 
@@ -114,7 +114,7 @@ pub(super) fn no_server_lines(
         {
             vec![
                 format!("no server running at {}", socket_path.display()),
-                "start one with `phux` (attaches, auto-starting a server) or `phux server`"
+                "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`"
                     .to_owned(),
             ]
         }
@@ -140,8 +140,9 @@ pub(super) fn no_server_lines(
 ///
 /// `phux-roz` (5): the previous output was `attach failed: connection
 /// refused` — accurate but useless. The new shape names the socket and
-/// suggests the exact `phux server --session …` invocation, so the
-/// user can copy-paste their way out of the failure mode.
+/// `phux server --ensure`, so the user can copy-paste their way out of
+/// the failure mode. A bare `phux server` stays in the foreground and
+/// dies with the terminal. `--ensure` conflicts with `--session`.
 pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session: &str) {
     crate::output::error_block(
         attach_error_lines(
@@ -170,7 +171,7 @@ pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session:
 pub(super) fn attach_error_lines(
     err: &AttachError,
     socket_path: &Path,
-    session: &str,
+    _session: &str,
     client_log: &Path,
     pid: Option<i32>,
 ) -> Vec<String> {
@@ -182,7 +183,7 @@ pub(super) fn attach_error_lines(
             ) =>
         {
             vec![format!(
-                "no server at {}. Start one with: phux server --session {session}",
+                "no server at {}. Start one with: phux server --ensure",
                 socket_path.display()
             )]
         }

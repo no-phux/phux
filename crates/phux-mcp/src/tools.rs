@@ -1172,7 +1172,7 @@ mod tests {
         let remedy = doc["remedy"].as_str().unwrap_or_default();
         assert!(remedy.contains("kill 4242"), "{remedy}");
         assert!(remedy.contains("pkill -f 'phux server'"), "{remedy}");
-        assert!(remedy.contains("`phux server`"), "{remedy}");
+        assert!(remedy.contains("`phux server --ensure`"), "{remedy}");
         for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
             assert!(!remedy.contains(forbidden), "{forbidden} in {remedy}");
         }
