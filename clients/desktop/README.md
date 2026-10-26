@@ -52,7 +52,8 @@ The macOS app includes the CLI and server. On a fresh Mac, first launch installs
 the bundled CLI at `~/.local/bin/phux` and starts the server. No separate download
 is required. If Terminal cannot find phux, choose **Add to PATH** in Phux. It appends
 one line to your shell profile (~/.zshrc for zsh, ~/.bash_profile for bash). Then open
-a new Terminal window. An existing CLI is never replaced. If the CLI
+a new Terminal window. The same buttons are in **Phux Settings → Permissions**. An existing CLI
+is never replaced. If the CLI
 is installed while the app is open, **Retry connection** discovers it without
 restarting Desktop. Explicit `--phux` / `PHUX_BIN` paths stay pinned.
 

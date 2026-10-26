@@ -42,29 +42,16 @@ pub(crate) enum Status {
 
 impl Desk {
     pub(super) fn start_path_probe(&mut self, cx: &mut Context<Self>) {
-        if shell_path::is_dismissed() {
-            self.path_prompt.dismissed = true;
-            return;
-        }
-        let Some(cli) = user_local_cli(self) else {
-            return;
-        };
-        let Some(shell) = std::env::var_os("SHELL")
-            .map(PathBuf::from)
-            .filter(|path| !path.as_os_str().is_empty())
-        else {
-            self.path_prompt.status = Status::Unverified;
+        // Dismissal hides the card only; Settings still needs the probe result.
+        self.path_prompt.dismissed = shell_path::is_dismissed();
+        let cli = user_local_cli(self);
+        let shell = std::env::var_os("SHELL").map(PathBuf::from);
+        let Some((cli, shell)) = schedule_path_probe(&mut self.path_prompt, cli, shell) else {
             return;
         };
-        self.path_prompt.status = Status::Pending;
         self.path_prompt.task = Some(cx.spawn(async move |this, cx| {
             let status = smol::unblock(move || {
-                let result = shell_path::probe_login_shell(&shell, PROBE_TIMEOUT);
-                match shell_path::classify(result, &cli) {
-                    PathStatus::OnPath => Status::OnPath,
-                    PathStatus::Missing => Status::Missing,
-                    PathStatus::Unverified => Status::Unverified,
-                }
+                status_of(shell_path::probe_login_shell(&shell, PROBE_TIMEOUT), &cli)
             })
             .await;
             let _ = this.update(cx, |desk, cx| {
@@ -85,22 +72,14 @@ impl Desk {
         match shell_path::append_once(&profile, shell_path::INSTALLER_MARKER, &line) {
             Ok(true) => {
                 self.path_prompt.added = true;
-                self.path_prompt.message = Some(format!(
-                    "Added ~/.local/bin to PATH in {shown}. Open a new Terminal window to use \
-                     phux. Windows already open won't see it."
-                ));
+                self.path_prompt.message = Some(added_message(&shown));
             }
             Ok(false) => {
                 self.path_prompt.added = true;
-                self.path_prompt.message = Some(format!(
-                    "{shown} already adds ~/.local/bin to PATH. Open a new Terminal window. If \
-                     phux is still not found, check that nothing later in {shown} resets PATH."
-                ));
+                self.path_prompt.message = Some(already_message(&shown));
             }
             Err(error) => {
-                self.path_prompt.message = Some(format!(
-                    "{error:#}. Nothing was changed. Use Copy line and add it to {shown} yourself."
-                ));
+                self.path_prompt.message = Some(add_error_message(&format!("{error:#}"), &shown));
             }
         }
         cx.notify();
@@ -128,7 +107,7 @@ impl Desk {
     }
 }
 
-fn user_local_cli(desk: &Desk) -> Option<PathBuf> {
+pub(crate) fn user_local_cli(desk: &Desk) -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
     let path = desk
         .cli_install
@@ -148,13 +127,40 @@ fn body(desk: &Desk, profile: &std::path::Path) -> String {
     }
     let profile = display_profile(profile);
     if desk.path_prompt.status == Status::Unverified {
-        return format!(
-            "Phux could not check whether Terminal finds phux, so it won't change {profile}. To \
-             add it yourself, paste the line below at the end of {profile}, then open a new \
-             Terminal window."
-        );
+        return unverified_body(&profile);
     }
-    let lead = if desk.cli_install.as_ref().is_some_and(|cli| cli.installed) {
+    missing_body(
+        desk.cli_install.as_ref().is_some_and(|cli| cli.installed),
+        &profile,
+    )
+}
+
+/// Continue the login-shell probe after dismissal is recorded. `None` means
+/// there is no user-local CLI, or the shell could not be named.
+pub(crate) fn schedule_path_probe(
+    prompt: &mut Prompt,
+    cli: Option<PathBuf>,
+    shell: Option<PathBuf>,
+) -> Option<(PathBuf, PathBuf)> {
+    let cli = cli?;
+    let Some(shell) = shell.filter(|path| !path.as_os_str().is_empty()) else {
+        prompt.status = Status::Unverified;
+        return None;
+    };
+    prompt.status = Status::Pending;
+    Some((cli, shell))
+}
+
+pub(crate) fn status_of(result: anyhow::Result<Option<PathBuf>>, cli: &std::path::Path) -> Status {
+    match shell_path::classify(result, cli) {
+        PathStatus::OnPath => Status::OnPath,
+        PathStatus::Missing => Status::Missing,
+        PathStatus::Unverified => Status::Unverified,
+    }
+}
+
+pub(crate) fn missing_body(installed: bool, profile: &str) -> String {
+    let lead = if installed {
         "Phux installed the phux command in ~/.local/bin."
     } else {
         "The phux command is in ~/.local/bin."
@@ -163,6 +169,32 @@ fn body(desk: &Desk, profile: &std::path::Path) -> String {
         "{lead} Terminal can't find it yet. Add to PATH appends the line below to {profile}. \
          Then open a new Terminal window."
     )
+}
+
+pub(crate) fn unverified_body(profile: &str) -> String {
+    format!(
+        "Phux could not check whether Terminal finds phux, so it won't change {profile}. To add \
+         it yourself, paste the line below at the end of {profile}, then open a new Terminal \
+         window."
+    )
+}
+
+pub(crate) fn added_message(shown: &str) -> String {
+    format!(
+        "Added ~/.local/bin to PATH in {shown}. Open a new Terminal window to use phux. Windows \
+         already open won't see it."
+    )
+}
+
+pub(crate) fn already_message(shown: &str) -> String {
+    format!(
+        "{shown} already adds ~/.local/bin to PATH. Open a new Terminal window. If phux is still \
+         not found, check that nothing later in {shown} resets PATH."
+    )
+}
+
+pub(crate) fn add_error_message(error: &str, shown: &str) -> String {
+    format!("{error}. Nothing was changed. Use Copy line and add it to {shown} yourself.")
 }
 
 pub(crate) fn card(
@@ -291,4 +323,86 @@ pub(crate) fn card(
             .child(content)
             .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn card_copy_pins_the_bodies_and_the_three_results() {
+        let profile = "~/.zshrc";
+        assert_eq!(
+            missing_body(true, profile),
+            "Phux installed the phux command in ~/.local/bin. Terminal can't find it yet. Add to \
+             PATH appends the line below to ~/.zshrc. Then open a new Terminal window."
+        );
+        assert_eq!(
+            unverified_body(profile),
+            "Phux could not check whether Terminal finds phux, so it won't change ~/.zshrc. To \
+             add it yourself, paste the line below at the end of ~/.zshrc, then open a new \
+             Terminal window."
+        );
+        assert_eq!(
+            added_message(profile),
+            "Added ~/.local/bin to PATH in ~/.zshrc. Open a new Terminal window to use phux. \
+             Windows already open won't see it."
+        );
+        assert_eq!(
+            already_message(profile),
+            "~/.zshrc already adds ~/.local/bin to PATH. Open a new Terminal window. If phux is \
+             still not found, check that nothing later in ~/.zshrc resets PATH."
+        );
+        assert_eq!(
+            add_error_message("PHUX_NO_MODIFY_PATH is set", profile),
+            "PHUX_NO_MODIFY_PATH is set. Nothing was changed. Use Copy line and add it to \
+             ~/.zshrc yourself."
+        );
+    }
+
+    /// Dismissal used to return before the probe, so Settings never learned
+    /// that `phux` was already on PATH.
+    #[cfg(unix)]
+    #[test]
+    fn a_dismissed_card_still_sets_on_path() {
+        let root = std::env::temp_dir().join(format!(
+            "phux-cli-path-dismissed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let cli = root.join("bin/phux");
+        std::fs::write(&cli, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shell = root.join("stub-shell");
+        let bin = cli.parent().unwrap().display();
+        std::fs::write(
+            &shell,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' 'welcome from rc'\nPATH={bin}:/usr/bin:/bin\nexport PATH\nif [ \"$1\" = -lic ]; then /bin/sh -c \"$2\"; fi\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut prompt = Prompt {
+            dismissed: true,
+            ..Prompt::default()
+        };
+        let scheduled = schedule_path_probe(&mut prompt, Some(cli.clone()), Some(shell.clone()));
+        let (cli, shell) = scheduled.expect("dismissal skipped the probe");
+        prompt.status = status_of(
+            shell_path::probe_login_shell(&shell, Duration::from_secs(3)),
+            &cli,
+        );
+        assert!(prompt.dismissed);
+        assert_eq!(prompt.status, Status::OnPath);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

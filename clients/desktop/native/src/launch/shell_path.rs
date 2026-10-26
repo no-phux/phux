@@ -141,8 +141,7 @@ pub(crate) fn is_user_local_cli(home: &Path, path: &Path) -> bool {
 /// else. `PHUX_NO_MODIFY_PATH` (anything other than empty or `0`) refuses
 /// before touching the file.
 pub(crate) fn append_once(profile: &Path, marker: &str, line: &str) -> anyhow::Result<bool> {
-    let home =
-        std::env::var_os("HOME").context("HOME is not set; the shell profile was not changed")?;
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
     append_once_in(Path::new(&home), profile, marker, line, changes_allowed())
 }
 
@@ -163,13 +162,10 @@ fn append_once_in(
     allow: bool,
 ) -> anyhow::Result<bool> {
     if !allow {
-        anyhow::bail!(
-            "PHUX_NO_MODIFY_PATH is set, so {} was not changed",
-            profile.display()
-        );
+        anyhow::bail!("PHUX_NO_MODIFY_PATH is set");
     }
     if !home.is_absolute() {
-        anyhow::bail!("HOME is not absolute; the shell profile was not changed");
+        anyhow::bail!("HOME is not absolute");
     }
     confine(home, profile)?;
     if profile.exists() {
@@ -655,7 +651,7 @@ mod tests {
             false,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("PHUX_NO_MODIFY_PATH"), "{error}");
+        assert_eq!(error.to_string(), "PHUX_NO_MODIFY_PATH is set");
         assert!(!profile.exists());
         assert!(!changes_allowed_value(Some(std::ffi::OsStr::new("1"))));
         assert!(changes_allowed_value(None));

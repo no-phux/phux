@@ -96,15 +96,22 @@ pub(super) fn page(desk: &Desk, handle: &WeakEntity<Desk>) -> Content {
 
 fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
     let on_path = desk.path_prompt.status == Status::OnPath;
+    let local = crate::app::desk::cli_path::user_local_cli(desk).is_some();
     let (description, ready) = match shell_path::profile_target() {
-        Some((profile, _)) => (
-            format!(
-                "Phux installs the phux command in ~/.local/bin. Add to PATH appends one line to \
-                 {} so new Terminal windows can find it.",
-                shell_path::home_display(&profile)
-            ),
-            true,
-        ),
+        Some((profile, _)) => {
+            let description = if local {
+                format!(
+                    "Phux installs the phux command in ~/.local/bin. Add to PATH appends one line \
+                     to {} so new Terminal windows can find it.",
+                    shell_path::home_display(&profile)
+                )
+            } else {
+                "Phux is using a phux command installed outside ~/.local/bin, so there is nothing \
+                 to add here."
+                    .to_owned()
+            };
+            (description, true)
+        }
         None => (
             "HOME is not set, so Phux can't find your shell profile. Set HOME, then reopen Phux."
                 .to_owned(),
@@ -137,7 +144,7 @@ fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
                             Button::new("settings-cli-path-add")
                                 .small()
                                 .label("Add to PATH")
-                                .disabled(!ready || on_path)
+                                .disabled(!ready || on_path || !local)
                                 .on_click(move |_, _, cx| {
                                     let _ = add.update(cx, |desk, cx| desk.add_cli_to_path(cx));
                                 }),
@@ -146,7 +153,7 @@ fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
                             Button::new("settings-cli-path-copy")
                                 .small()
                                 .label("Copy line")
-                                .disabled(!ready)
+                                .disabled(!ready || !local)
                                 .on_click(move |_, _, cx| {
                                     let _ = copy.update(cx, |desk, cx| desk.copy_cli_command(cx));
                                 }),
