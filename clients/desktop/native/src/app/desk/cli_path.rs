@@ -27,6 +27,9 @@ pub(crate) struct Prompt {
     pub dismissed: bool,
     pub added: bool,
     pub message: Option<String>,
+    /// Login-shell environment from a probe that succeeded. `None` means the
+    /// probe has not run or it failed, so profile lookup uses this process.
+    pub login: Option<shell_path::LoginEnv>,
     task: Option<Task<()>>,
 }
 
@@ -41,6 +44,9 @@ pub(crate) enum Status {
 }
 
 impl Desk {
+    /// The call site is macOS-only. The body stays compiled everywhere so a
+    /// Finder-launch regression is not Linux-only dead code.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(super) fn start_path_probe(&mut self, cx: &mut Context<Self>) {
         // Dismissal hides the card only; Settings still needs the probe result.
         self.path_prompt.dismissed = shell_path::is_dismissed();
@@ -50,29 +56,44 @@ impl Desk {
             return;
         };
         self.path_prompt.task = Some(cx.spawn(async move |this, cx| {
-            let status = smol::unblock(move || {
-                status_of(shell_path::probe_login_shell(&shell, PROBE_TIMEOUT), &cli)
-            })
-            .await;
+            let probed =
+                smol::unblock(move || shell_path::probe_login_shell(&shell, PROBE_TIMEOUT)).await;
             let _ = this.update(cx, |desk, cx| {
-                desk.path_prompt.status = status;
+                let command = match &probed {
+                    Ok(probe) => {
+                        desk.path_prompt.login = Some(probe.env.clone());
+                        Ok(probe.command.clone())
+                    }
+                    Err(error) => Err(anyhow::anyhow!("{error:#}")),
+                };
+                desk.path_prompt.status = status_of(command, &cli);
                 cx.notify();
             });
         }));
     }
 
     pub(crate) fn add_cli_to_path(&mut self, cx: &mut Context<Self>) {
-        let Some((profile, line)) = shell_path::profile_target() else {
+        let Some((profile, line)) = shell_path::profile_target(self.path_prompt.login.as_ref())
+        else {
             self.path_prompt.message =
                 Some("HOME is not set, so the shell profile was not changed.".into());
             cx.notify();
             return;
         };
         let shown = display_profile(&profile);
-        match shell_path::append_once(&profile, shell_path::INSTALLER_MARKER, &line) {
+        let written = match self.path_prompt.login.clone() {
+            Some(env) => shell_path::append_guarded(
+                &profile,
+                shell_path::INSTALLER_MARKER,
+                &line,
+                shell_path::changes_allowed(env.modify_path.as_deref()),
+            ),
+            None => shell_path::append_once(&profile, shell_path::INSTALLER_MARKER, &line),
+        };
+        match written {
             Ok(true) => {
                 self.path_prompt.added = true;
-                self.path_prompt.message = Some(added_message(&shown));
+                self.reprobe_after_add(shown, cx);
             }
             Ok(false) => {
                 self.path_prompt.added = true;
@@ -85,8 +106,35 @@ impl Desk {
         cx.notify();
     }
 
+    fn reprobe_after_add(&mut self, shown: String, cx: &mut Context<Self>) {
+        let cli = user_local_cli(self);
+        let shell = std::env::var_os("SHELL").map(PathBuf::from);
+        self.path_prompt.task = Some(cx.spawn(async move |this, cx| {
+            let probed = smol::unblock(move || {
+                let shell = shell.filter(|path| !path.as_os_str().is_empty())?;
+                shell_path::probe_login_shell(&shell, PROBE_TIMEOUT).ok()
+            })
+            .await;
+            let _ = this.update(cx, |desk, cx| {
+                let on_path = if let Some(probe) = &probed {
+                    desk.path_prompt.login = Some(probe.env.clone());
+                    cli.as_ref().is_some_and(|cli| {
+                        let status = status_of(Ok(probe.command.clone()), cli);
+                        desk.path_prompt.status = status;
+                        status == Status::OnPath
+                    })
+                } else {
+                    false
+                };
+                desk.path_prompt.message = Some(added_outcome(on_path, &shown));
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn copy_cli_command(&mut self, cx: &mut Context<Self>) {
-        let Some((profile, line)) = shell_path::profile_target() else {
+        let Some((profile, line)) = shell_path::profile_target(self.path_prompt.login.as_ref())
+        else {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(line));
@@ -197,6 +245,19 @@ pub(crate) fn add_error_message(error: &str, shown: &str) -> String {
     format!("{error}. Nothing was changed. Use Copy line and add it to {shown} yourself.")
 }
 
+/// Success only when the login shell we just wrote for can see `phux`.
+pub(crate) fn added_outcome(on_path: bool, shown: &str) -> String {
+    if on_path {
+        added_message(shown)
+    } else {
+        format!(
+            "Added ~/.local/bin to PATH in {shown}, but your shell isn't picking it up. Open a \
+             new Terminal window. If phux is still not found, check ZDOTDIR or that nothing \
+             later in {shown} resets PATH."
+        )
+    }
+}
+
 pub(crate) fn card(
     desk: &Desk,
     look: &Look,
@@ -206,13 +267,16 @@ pub(crate) fn card(
     if !matches!(desk.modal, Modal::None) || desk.path_prompt.dismissed {
         return None;
     }
-    if !matches!(
-        desk.path_prompt.status,
-        Status::Missing | Status::Unverified
-    ) {
+    let reported = desk.path_prompt.added && desk.path_prompt.message.is_some();
+    if !reported
+        && !matches!(
+            desk.path_prompt.status,
+            Status::Missing | Status::Unverified
+        )
+    {
         return None;
     }
-    let (profile, line) = shell_path::profile_target()?;
+    let (profile, line) = shell_path::profile_target(desk.path_prompt.login.as_ref())?;
     let allow_add = desk.path_prompt.status == Status::Missing && !desk.path_prompt.added;
     let top = crate::app::view::content_top(desk, &look.skin) + SHEET_GUTTER / 2.;
     let shift = {
@@ -361,6 +425,13 @@ mod tests {
             "PHUX_NO_MODIFY_PATH is set. Nothing was changed. Use Copy line and add it to \
              ~/.zshrc yourself."
         );
+        assert_eq!(added_outcome(true, profile), added_message(profile));
+        assert_eq!(
+            added_outcome(false, profile),
+            "Added ~/.local/bin to PATH in ~/.zshrc, but your shell isn't picking it up. Open a \
+             new Terminal window. If phux is still not found, check ZDOTDIR or that nothing \
+             later in ~/.zshrc resets PATH."
+        );
     }
 
     /// Dismissal used to return before the probe, so Settings never learned
@@ -398,7 +469,8 @@ mod tests {
         let scheduled = schedule_path_probe(&mut prompt, Some(cli.clone()), Some(shell.clone()));
         let (cli, shell) = scheduled.expect("dismissal skipped the probe");
         prompt.status = status_of(
-            shell_path::probe_login_shell(&shell, Duration::from_secs(3)),
+            shell_path::probe_login_shell(&shell, Duration::from_secs(3))
+                .map(|probe| probe.command),
             &cli,
         );
         assert!(prompt.dismissed);

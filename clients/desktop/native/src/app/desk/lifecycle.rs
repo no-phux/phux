@@ -201,6 +201,7 @@ impl Desk {
         }));
         // Window keys need the `Desk` context on the dispatch path before any terminal exists.
         window.focus(&desk.focus, cx);
+        #[cfg(target_os = "macos")]
         desk.start_path_probe(cx);
         desk
     }

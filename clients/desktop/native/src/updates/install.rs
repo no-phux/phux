@@ -203,6 +203,8 @@ pub(super) fn stage_with_progress(
         STAGE_TIMEOUT,
         "Desktop update download timed out after 15 minutes. Nothing was installed.",
         progress,
+        None,
+        false,
     )?;
     let staged = staged_path(&text, &staging_dir(bundle)?)?;
     verify_staged_release(&staged, target)?;

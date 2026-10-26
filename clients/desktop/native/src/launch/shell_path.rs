@@ -16,6 +16,10 @@ pub(crate) const INSTALLER_MARKER: &str = "# Added by the phux installer";
 
 const PROBE_BEGIN: &str = "PHUX_PATH_PROBE_BEGIN";
 const PROBE_END: &str = "PHUX_PATH_PROBE_END";
+const PROBE_STDOUT_CAP: usize = 64 * 1024;
+const KEY_ZDOTDIR: &str = "ZDOTDIR=";
+const KEY_XDG: &str = "XDG_CONFIG_HOME=";
+const KEY_MODIFY: &str = "PHUX_NO_MODIFY_PATH=";
 
 /// What a login-shell probe means for the CLI Desktop is using.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,19 +80,36 @@ pub(crate) fn shell_quote(value: &str) -> String {
     }
 }
 
-/// `Ok(Some(path))` when `command -v` printed a path between the sentinels.
-/// `Ok(None)` when the sentinels are present and it printed nothing.
-/// `Err` when the sentinels are missing, so a timeout fragment is not "not found".
-pub(crate) fn parse_probe(stdout: &str) -> Result<Option<PathBuf>, ()> {
+/// Environment a login shell actually has. A Finder or Dock launch does not
+/// inherit `ZDOTDIR` or `PHUX_NO_MODIFY_PATH` from that shell.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LoginEnv {
+    pub zdotdir: Option<PathBuf>,
+    pub xdg_config: Option<PathBuf>,
+    /// Raw `PHUX_NO_MODIFY_PATH`. `None` when the shell left it unset or empty.
+    pub modify_path: Option<std::ffi::OsString>,
+}
+
+/// `command -v phux` plus the shell variables printed between the sentinels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Probe {
+    pub command: Option<PathBuf>,
+    pub env: LoginEnv,
+}
+
+/// `Ok` when both sentinels were found. A marker matches with `ends_with`, so
+/// rc noise before it does not hide the probe. `Err` when a sentinel is
+/// missing, so a timeout fragment is not "not found".
+pub(crate) fn parse_probe(stdout: &str) -> Result<Probe, ()> {
     let mut start = None;
     let mut end = None;
     let mut pos = 0;
     for line in stdout.split_inclusive('\n') {
         let trimmed = line.trim_end_matches(['\r', '\n']).trim();
-        if trimmed == PROBE_BEGIN {
+        if trimmed.ends_with(PROBE_BEGIN) {
             start = Some(pos + line.len());
             end = None;
-        } else if trimmed == PROBE_END && start.is_some() {
+        } else if trimmed.ends_with(PROBE_END) && start.is_some() {
             end = Some(pos);
         }
         pos += line.len();
@@ -96,20 +117,34 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<PathBuf>, ()> {
     let (Some(start), Some(end)) = (start, end) else {
         return Err(());
     };
-    let body = stdout[start..end].trim();
-    if body.is_empty() {
-        return Ok(None);
+    let mut probe = Probe {
+        command: None,
+        env: LoginEnv::default(),
+    };
+    for line in stdout[start..end].lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix(KEY_ZDOTDIR) {
+            probe.env.zdotdir = nonempty_path(value);
+        } else if let Some(value) = line.strip_prefix(KEY_XDG) {
+            probe.env.xdg_config = nonempty_path(value);
+        } else if let Some(value) = line.strip_prefix(KEY_MODIFY) {
+            probe.env.modify_path = nonempty_os(value);
+        } else if probe.command.is_none() {
+            probe.command = Some(PathBuf::from(line));
+        }
     }
-    let path = body
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("");
-    if path.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(PathBuf::from(path)))
-    }
+    Ok(probe)
+}
+
+fn nonempty_path(value: &str) -> Option<PathBuf> {
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
+fn nonempty_os(value: &str) -> Option<std::ffi::OsString> {
+    (!value.is_empty()).then(|| std::ffi::OsString::from(value))
 }
 
 /// Whether `found` and `cli` are the same file after resolving symlinks.
@@ -141,12 +176,30 @@ pub(crate) fn is_user_local_cli(home: &Path, path: &Path) -> bool {
 /// else. `PHUX_NO_MODIFY_PATH` (anything other than empty or `0`) refuses
 /// before touching the file.
 pub(crate) fn append_once(profile: &Path, marker: &str, line: &str) -> anyhow::Result<bool> {
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    append_once_in(Path::new(&home), profile, marker, line, changes_allowed())
+    append_guarded(
+        profile,
+        marker,
+        line,
+        changes_allowed(std::env::var_os("PHUX_NO_MODIFY_PATH").as_deref()),
+    )
 }
 
-fn changes_allowed() -> bool {
-    match std::env::var_os("PHUX_NO_MODIFY_PATH") {
+/// Same write as [`append_once`], with the login shell's allow/refuse flag.
+/// `allow` comes from the probe when it succeeded, and from this process only
+/// when the probe failed.
+pub(crate) fn append_guarded(
+    profile: &Path,
+    marker: &str,
+    line: &str,
+    allow: bool,
+) -> anyhow::Result<bool> {
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    append_once_in(Path::new(&home), profile, marker, line, allow)
+}
+
+/// `PHUX_NO_MODIFY_PATH` refuses the write unless it is unset, empty, or `0`.
+pub(crate) fn changes_allowed(modify_path: Option<&std::ffi::OsStr>) -> bool {
+    match modify_path {
         None => true,
         Some(value) => value.is_empty() || value == "0",
     }
@@ -359,30 +412,33 @@ fn ensure_owned(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Run `"$SHELL" -lic` with sentinels around `command -v phux`.
-/// Timeout and any spawn or exit error are `Err` (treat as not on PATH, and
-/// do not write). Off the UI thread: this blocks until the shell exits.
-pub(crate) fn probe_login_shell(
-    shell: &Path,
-    timeout: Duration,
-) -> anyhow::Result<Option<PathBuf>> {
+/// Run `"$SHELL" -lic` with sentinels around `command -v phux` and the shell's
+/// `ZDOTDIR`, `XDG_CONFIG_HOME`, and `PHUX_NO_MODIFY_PATH`. Timeout and any
+/// spawn or exit error are `Err`. Off the UI thread: this blocks until the
+/// shell exits or the timeout kills its session.
+pub(crate) fn probe_login_shell(shell: &Path, timeout: Duration) -> anyhow::Result<Probe> {
     let script = format!(
-        "printf '%s\\n' '{PROBE_BEGIN}'; command -v phux || true; printf '%s\\n' '{PROBE_END}'"
+        "printf '%s\\n' '{PROBE_BEGIN}'; printf '{KEY_ZDOTDIR}%s\\n' \"${{ZDOTDIR-}}\"; \
+         printf '{KEY_XDG}%s\\n' \"${{XDG_CONFIG_HOME-}}\"; \
+         printf '{KEY_MODIFY}%s\\n' \"${{PHUX_NO_MODIFY_PATH-}}\"; \
+         command -v phux || true; printf '%s\\n' '{PROBE_END}'"
     );
     let mut command = std::process::Command::new(shell);
     command.arg("-lic").arg(&script);
-    let stdout = crate::updates::run_bounded(
+    let stdout = crate::updates::run_bounded_session(
         &mut command,
-        None,
         timeout,
         "Checking whether Terminal can find phux timed out.",
+        PROBE_STDOUT_CAP,
     )?;
     parse_probe(&stdout)
         .map_err(|()| anyhow::anyhow!("The login shell did not report a PATH probe"))
 }
 
 /// The profile and line for this process's login shell, using the installer's rules.
-pub(crate) fn profile_target() -> Option<(PathBuf, String)> {
+/// `from_shell` is the probe result. `None` means the probe failed, so
+/// `ZDOTDIR`, `XDG_CONFIG_HOME`, and `PHUX_NO_MODIFY_PATH` fall back to this process.
+pub(crate) fn profile_target(from_shell: Option<&LoginEnv>) -> Option<(PathBuf, String)> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
     if !home.is_absolute() {
         return None;
@@ -391,20 +447,28 @@ pub(crate) fn profile_target() -> Option<(PathBuf, String)> {
         || "sh".to_owned(),
         |value| value.to_string_lossy().into_owned(),
     );
-    let zdotdir = std::env::var_os("ZDOTDIR").map(PathBuf::from);
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let os = if cfg!(target_os = "macos") {
         "Darwin"
     } else {
         std::env::consts::OS
     };
-    Some(profile_for(
-        &shell,
-        &home,
-        zdotdir.as_deref(),
-        xdg.as_deref(),
-        os,
-    ))
+    Some(profile_target_for(&home, &shell, from_shell, os))
+}
+
+pub(crate) fn profile_target_for(
+    home: &Path,
+    shell: &str,
+    from_shell: Option<&LoginEnv>,
+    os: &str,
+) -> (PathBuf, String) {
+    let (zdotdir, xdg) = match from_shell {
+        Some(env) => (env.zdotdir.clone(), env.xdg_config.clone()),
+        None => (
+            std::env::var_os("ZDOTDIR").map(PathBuf::from),
+            std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        ),
+    };
+    profile_for(shell, home, zdotdir.as_deref(), xdg.as_deref(), os)
 }
 
 /// Dismissal lives beside `updates.json` and is written only after the user closes the card.
@@ -653,17 +717,10 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.to_string(), "PHUX_NO_MODIFY_PATH is set");
         assert!(!profile.exists());
-        assert!(!changes_allowed_value(Some(std::ffi::OsStr::new("1"))));
-        assert!(changes_allowed_value(None));
-        assert!(changes_allowed_value(Some(std::ffi::OsStr::new("0"))));
-        assert!(changes_allowed_value(Some(std::ffi::OsStr::new(""))));
-    }
-
-    fn changes_allowed_value(value: Option<&std::ffi::OsStr>) -> bool {
-        match value {
-            None => true,
-            Some(value) => value.is_empty() || value == "0",
-        }
+        assert!(!changes_allowed(Some(std::ffi::OsStr::new("1"))));
+        assert!(changes_allowed(None));
+        assert!(changes_allowed(Some(std::ffi::OsStr::new("0"))));
+        assert!(changes_allowed(Some(std::ffi::OsStr::new(""))));
     }
 
     #[cfg(unix)]
@@ -683,13 +740,27 @@ mod tests {
 
     #[test]
     fn noisy_probe_output_parses_and_a_missing_sentinel_does_not() {
-        let noisy = "welcome from rc\nPHUX_PATH_PROBE_BEGIN\n/Users/ada/.local/bin/phux\nPHUX_PATH_PROBE_END\ndone from rc\n";
+        let noisy = "welcome from rc\nrc noise PHUX_PATH_PROBE_BEGIN\nZDOTDIR=/Users/ada/.zsh\nXDG_CONFIG_HOME=\nPHUX_NO_MODIFY_PATH=1\n/Users/ada/.local/bin/phux\ndone PHUX_PATH_PROBE_END\n";
+        let probe = parse_probe(noisy).unwrap();
         assert_eq!(
-            parse_probe(noisy).unwrap().unwrap(),
+            probe.command.unwrap(),
             PathBuf::from("/Users/ada/.local/bin/phux")
         );
-        let empty = "noise\nPHUX_PATH_PROBE_BEGIN\n\nPHUX_PATH_PROBE_END\nmore\n";
-        assert_eq!(parse_probe(empty).unwrap(), None);
+        assert_eq!(
+            probe.env.zdotdir.as_deref(),
+            Some(Path::new("/Users/ada/.zsh"))
+        );
+        assert_eq!(probe.env.xdg_config, None);
+        assert_eq!(
+            probe.env.modify_path.as_deref(),
+            Some(std::ffi::OsStr::new("1"))
+        );
+        let (profile, _) =
+            profile_target_for(Path::new("/Users/ada"), "zsh", Some(&probe.env), "Darwin");
+        assert_eq!(profile, PathBuf::from("/Users/ada/.zsh/.zshrc"));
+        assert!(!changes_allowed(probe.env.modify_path.as_deref()));
+        let empty = "noise PHUX_PATH_PROBE_BEGIN\n\ndone PHUX_PATH_PROBE_END\nmore\n";
+        assert_eq!(parse_probe(empty).unwrap().command, None);
         assert!(parse_probe("PHUX_PATH_PROBE_BEGIN\n/bin/phux\n").is_err());
         assert!(parse_probe("no sentinels\n").is_err());
     }
@@ -718,7 +789,10 @@ mod tests {
             "probe waited for sleep"
         );
         assert!(result.is_err());
-        assert_eq!(classify(result, &cli), PathStatus::Unverified);
+        assert_eq!(
+            classify(result.map(|probe| probe.command), &cli),
+            PathStatus::Unverified
+        );
     }
 
     #[cfg(unix)]
@@ -735,6 +809,7 @@ mod tests {
         );
         let found = probe_login_shell(&shell, Duration::from_secs(3))
             .unwrap()
+            .command
             .expect("command -v printed a path");
         assert!(resolves_to(&found, &cli), "{found:?}");
         assert_eq!(classify(Ok(Some(found)), &cli), PathStatus::OnPath);
@@ -743,7 +818,100 @@ mod tests {
             "#!/bin/sh\nprintf '%s\\n' 'welcome from rc'\nPATH=/usr/bin:/bin\nexport PATH\nif [ \"$1\" = -lic ]; then /bin/sh -c \"$2\"; fi\n",
         );
         let result = probe_login_shell(&missing, Duration::from_secs(3)).unwrap();
-        assert_eq!(result, None);
-        assert_eq!(classify(Ok(result), &cli), PathStatus::Missing);
+        assert_eq!(result.command, None);
+        assert_eq!(classify(Ok(result.command), &cli), PathStatus::Missing);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_reads_the_login_shell_environment_not_the_app() {
+        let fixture = Fixture::new();
+        let shell = fixture.executable(
+            "env-shell",
+            "#!/bin/sh\nexport ZDOTDIR=/from/the/shell\nexport XDG_CONFIG_HOME=/from/the/xdg\nexport PHUX_NO_MODIFY_PATH=1\nif [ \"$1\" = -lic ]; then /bin/sh -c \"$2\"; fi\n",
+        );
+        let probe = probe_login_shell(&shell, Duration::from_secs(3)).unwrap();
+        assert_eq!(
+            probe.env.zdotdir.as_deref(),
+            Some(Path::new("/from/the/shell"))
+        );
+        assert_eq!(
+            probe.env.xdg_config.as_deref(),
+            Some(Path::new("/from/the/xdg"))
+        );
+        assert!(!changes_allowed(probe.env.modify_path.as_deref()));
+        let (profile, line) =
+            profile_target_for(Path::new("/Users/ada"), "zsh", Some(&probe.env), "Darwin");
+        assert_eq!(profile, PathBuf::from("/from/the/shell/.zshrc"));
+        assert!(line.contains("/Users/ada/.local/bin"));
+        let (fish, _) =
+            profile_target_for(Path::new("/Users/ada"), "fish", Some(&probe.env), "Darwin");
+        assert_eq!(fish, PathBuf::from("/from/the/xdg/fish/conf.d/phux.fish"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_profile_is_not_replaced() {
+        let fixture = Fixture::new();
+        let home = fixture.home();
+        let missing = home.join("missing-target");
+        let profile = home.join(".zshrc");
+        std::os::unix::fs::symlink(&missing, &profile).unwrap();
+        let error = append_once_in(
+            &home,
+            &profile,
+            INSTALLER_MARKER,
+            "export PATH=/x:\"$PATH\"",
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("symlink") || error.to_string().contains("resolve"),
+            "{error}"
+        );
+        assert!(profile.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(!missing.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_kills_the_probe_process_group() {
+        let fixture = Fixture::new();
+        let marker = fixture.0.join("still-alive");
+        let shell = fixture.executable(
+            "group-shell",
+            &format!(
+                "#!/bin/sh\n(sleep 1; echo live > '{}') &\nsleep 30\n",
+                marker.display()
+            ),
+        );
+        let started = std::time::Instant::now();
+        let result = probe_login_shell(&shell, Duration::from_millis(400));
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("timed out"), "{message}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "probe waited for the grandchild"
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "timeout left a live probe descendant");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_stdout_is_capped_and_trailing_noise_still_parses() {
+        let fixture = Fixture::new();
+        let leading = fixture.executable(
+            "leading-noise",
+            "#!/bin/sh\nyes A | head -c 81920\nprintf '\\n'\nif [ \"$1\" = -lic ]; then /bin/sh -c \"$2\"; fi\n",
+        );
+        let hidden = probe_login_shell(&leading, Duration::from_secs(3)).unwrap_err();
+        assert!(hidden.to_string().contains("did not report"), "{hidden}");
+        let trailing = fixture.executable(
+            "trailing-noise",
+            "#!/bin/sh\nif [ \"$1\" = -lic ]; then /bin/sh -c \"$2\"; fi\nyes A | head -c 81920\n",
+        );
+        let probe = probe_login_shell(&trailing, Duration::from_secs(3)).unwrap();
+        assert_eq!(probe.command, None);
     }
 }

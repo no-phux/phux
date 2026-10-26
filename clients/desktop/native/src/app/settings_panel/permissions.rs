@@ -97,7 +97,7 @@ pub(super) fn page(desk: &Desk, handle: &WeakEntity<Desk>) -> Content {
 fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
     let on_path = desk.path_prompt.status == Status::OnPath;
     let local = crate::app::desk::cli_path::user_local_cli(desk).is_some();
-    let (description, ready) = match shell_path::profile_target() {
+    let (description, ready) = match shell_path::profile_target(desk.path_prompt.login.as_ref()) {
         Some((profile, _)) => {
             let description = if local {
                 format!(
