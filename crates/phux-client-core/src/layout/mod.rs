@@ -191,9 +191,11 @@ pub use projection::{
 };
 
 mod arrangement;
+mod mutation;
 mod ops;
 
 pub use arrangement::ArrangementDoc;
+pub use mutation::{LayoutMutation, MutationError, adopt_unarranged_groups, apply_mutation};
 use ops::shifted_index;
 pub use ops::{focus_direction, kill_pane, leaves, repair_focus, set_ratio_at, split_at};
 

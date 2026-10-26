@@ -8,11 +8,12 @@ use crate::layout::layout_key;
 use crate::layout::wire::HandleMap;
 use crate::org::{self, OrgError, OrgOutcome};
 
-use super::mutation::{adopt_unarranged_groups, apply_mutation};
+use super::apply_mutation;
 use super::{
     DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, LayoutOpsError, ReadArrangement,
     validate_projection_key,
 };
+use crate::layout::adopt_unarranged_groups;
 
 /// Layout client over a dedicated [`Connection`], allocating request ids from
 /// `first_request_id`. See the module docs for the two paths.
