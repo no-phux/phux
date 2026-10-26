@@ -143,6 +143,59 @@ fn the_first_fit_applies_local_cell_pixels(cx: &mut TestAppContext) {
     });
 }
 
+/// The reattach snapshot is published before any `fit`. The first paint must
+/// already use the font pitch: `fit` runs only after that paint.
+#[gpui::test]
+fn a_snapshot_before_fit_paints_the_font_pitch(cx: &mut TestAppContext) {
+    let client = session_with(None, &natural_column());
+    let view = client.create_view(&terminal()).expect("view");
+    let before = client.acquire_view(view).expect("snapshot frame");
+    assert_eq!(
+        before.images[0].rows,
+        17.0 / 16.0,
+        "the snapshot used the 8x16 replica, before fit"
+    );
+    let settings = crate::terminal::Settings {
+        line_height: 2.,
+        ..crate::terminal::Settings::default()
+    };
+    let (surface, cx) = cx.add_window_view(|window, cx| {
+        crate::terminal::Terminal::new(client.clone(), view, terminal(), settings, window, cx)
+    });
+    // The render that acquires this frame stores the font pitch first. `fit`
+    // runs in the paint callback, after the frame has been drawn.
+    let painted = cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+        surface.read(cx).painted()
+    });
+    assert!(
+        resizes(&client).is_empty(),
+        "storing the font pitch sends no resize"
+    );
+    let frame = painted.frame.expect("the first paint has a frame");
+    let pitch = crate::terminal::geometry::cell_px(
+        painted.geometry.cell_width,
+        painted.geometry.cell_height,
+    );
+    assert_ne!(pitch.1, 16, "the font pitch is not the replica fallback");
+    assert_eq!(frame.images.len(), 1);
+    assert_eq!(
+        (frame.images[0].image.width, frame.images[0].image.height),
+        (1, 17)
+    );
+    assert_eq!(frame.images[0].rows, 17.0 / f64::from(pitch.1));
+    assert_eq!(
+        frame.generation,
+        before.generation + 1,
+        "one republish, acquired before fit"
+    );
+    assert_eq!(
+        client.acquire_view(view).expect("view").generation,
+        frame.generation
+    );
+    assert_eq!(image_rows(&client).0, frame.images[0].rows);
+}
+
 fn unready_fit_sizes_the_snapshot(
     owner: bool,
     image: &[u8],

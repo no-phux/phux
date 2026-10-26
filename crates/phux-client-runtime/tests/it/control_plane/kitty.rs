@@ -34,6 +34,26 @@ fn local_cell_pixels_size_the_first_kitty_frame_and_its_resync() {
     }
 }
 
+/// A snapshot can publish on the 8×16 replica before the painter has stored
+/// its pitch. The next published frame, the one a view acquires to paint, is
+/// already exact. One republish, and no server message.
+#[test]
+fn local_cell_pixels_correct_a_snapshot_that_published_first() {
+    for height in [270_u32, 272] {
+        let mut plane = browse();
+        let frame = publish_natural_image(&mut plane, 1, height);
+        assert_eq!(frame.images[0].rows, f64::from(height) / 16.0);
+        plane.set_local_cell_pixels(&terminal(), 8, 17);
+        let corrected = plane
+            .publication()
+            .acquire(&terminal())
+            .expect("republished");
+        assert_eq!(corrected.generation, frame.generation + 1);
+        assert_natural_rows(&corrected, height);
+        assert!(resize_frames(&mut plane).is_empty());
+    }
+}
+
 fn browse() -> ControlPlane {
     let mut plane = ControlPlane::new(ControlOptions::default());
     plane.connection_opened();
