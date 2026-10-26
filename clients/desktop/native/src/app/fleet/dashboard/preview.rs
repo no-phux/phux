@@ -87,11 +87,13 @@ pub(crate) fn capture(
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(&directory)?;
     cx.spawn(async move |cx| {
-        for (name, width, height, light, empty) in [
-            ("fleet-dark", 1280., 900., false, false),
-            ("fleet-light", 1280., 900., true, false),
-            ("fleet-narrow", 520., 780., false, false),
-            ("fleet-empty", 900., 700., false, true),
+        for (name, width, height, light, empty, playground) in [
+            ("fleet-dark", 1280., 900., false, false, false),
+            ("fleet-light", 1280., 900., true, false, false),
+            ("fleet-narrow", 520., 780., false, false, false),
+            ("fleet-empty", 900., 700., false, true, false),
+            ("fleet-playground", 1280., 900., false, false, true),
+            ("fleet-playground-light", 1280., 900., true, false, true),
         ] {
             root.update(cx, |root, window, cx| {
                 let desk = root.view().clone().downcast::<Desk>().expect("desk");
@@ -112,6 +114,7 @@ pub(crate) fn capture(
                         cx,
                     );
                     desk.fleet_view.open();
+                    desk.fleet_view.playground.on = playground;
                     desk.fleet_view.fixture = Some(if empty { Vec::new() } else { inventory() });
                     desk.modal = Modal::AgentFleet;
                     cx.notify();
