@@ -27,7 +27,7 @@ new pane and never overwrites an existing one.
 
 ## Desktop
 
-The phux desktop is a native app for macOS 26 or later on Apple silicon
+The phux desktop is a native app for macOS 26.0 or later on Apple silicon
 and Linux on x86_64 or arm64 with Vulkan. On macOS and Linux, install it with:
 
 ```sh
@@ -52,10 +52,11 @@ session you just left is instant. Machines you aren't looking at keep their
 data current without drawing anything. Disconnecting, forgetting a machine,
 or closing the window closes its connections.
 
-The app starts or reaches the server through the installed `phux` command,
-so install the CLI first; the desktop installer does it if you haven't. The
-app never creates sessions on its own and never stops the server. Quitting
-it detaches.
+On macOS the DMG bundles the phux CLI and server. The app and DMG are
+Developer ID signed, Apple-notarized, and stapled. On Linux the desktop
+archive does not include the CLI; install the CLI first, or use the desktop
+installer, which installs it when none is found. The app never creates
+sessions on its own and never stops the server. Quitting it detaches.
 
 Terminal panes and previews render inline Kitty graphics: PNG and raw RGB/RGBA,
 chunked transfers, classic placements and Unicode placeholders, cropping,
@@ -76,9 +77,10 @@ For `icat`, use `kitten icat --transfer-mode=stream image.png`
   beside your panes.
 - [Agent panes](./desktop-panes.md) explains how panes an agent drives look.
 
-The desktop app has its own version and release notes. The macOS build is
-signed ad hoc, not notarized. Expect rough edges: the terminal UI is ahead
-of it.
+The desktop app has its own version and release notes. The macOS app and
+DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app
+requires macOS 26.0; the standalone CLI requires macOS 11.0. Expect rough
+edges: the terminal UI is ahead of the desktop.
 
 ## Browser
 
