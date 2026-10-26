@@ -8,7 +8,7 @@
 //! link names the address that door is actually bound to (ADR-0141). When
 //! nothing is bound because `[policy] mode` is unset, a terminal offers to
 //! write `paired` and restart the server (`--enable` does that without
-//! asking). `ls`, `prune`, `rotate`, and `revoke` only edit the store and
+//! asking; `--json` does not ask). `ls`, `prune`, `rotate`, and `revoke` only edit the store and
 //! need no server.
 
 use std::io::{BufRead, Write as _};
@@ -663,8 +663,7 @@ fn live_listeners(
 
 /// The one question a terminal gets when nothing is bound because
 /// `[policy] mode` is unset. Default is no.
-const PAIRED_MODE_PROMPT: &str =
-    "phones need paired mode. turn it on and restart the server? (panes are kept) [y/N] ";
+const PAIRED_MODE_PROMPT: &str = "phones need paired mode: the server will listen on your tailnet for enrolled devices only. turn it on and restart the server? (panes are kept) [y/N] ";
 
 /// How long to wait for the restarted server to answer, and then for an
 /// overlay listener to show up, after `phux upgrade` re-binds it.
@@ -766,11 +765,13 @@ fn is_affirmative(reply: &str) -> bool {
 }
 
 /// Whether to write paired mode: `--enable`, or a yes at the one prompt.
-fn accept_paired_mode(enable: bool, prompt: &mut dyn ModePrompt) -> bool {
+/// `--json` is machine output, so it never asks, the same as a run with
+/// no terminal. `--enable` still writes.
+fn accept_paired_mode(enable: bool, json: bool, prompt: &mut dyn ModePrompt) -> bool {
     if enable {
         return true;
     }
-    if !prompt.is_interactive() {
+    if json || !prompt.is_interactive() {
         return false;
     }
     prompt.prompt();
@@ -806,10 +807,11 @@ fn other_unbound_refusal(socket: &Path, disabled: &[String]) -> String {
 /// returned as the server reported it. An unset `[policy] mode` is the one
 /// case that offers to write `paired` and restart; any other unbound cause
 /// is a refusal.
-fn bound_remote_listener(socket: &Path, enable: bool) -> Option<LiveListeners> {
+fn bound_remote_listener(socket: &Path, enable: bool, json: bool) -> Option<LiveListeners> {
     ensure_remote_listener(
         socket,
         enable,
+        json,
         &mut StdinModePrompt,
         &mut LiveListenerSetup { socket },
     )
@@ -823,6 +825,7 @@ fn bound_remote_listener(socket: &Path, enable: bool) -> Option<LiveListeners> {
 fn ensure_remote_listener(
     socket: &Path,
     enable: bool,
+    json: bool,
     prompt: &mut dyn ModePrompt,
     setup: &mut dyn ListenerSetup,
 ) -> Result<LiveListeners, String> {
@@ -841,7 +844,7 @@ fn ensure_remote_listener(
         Ok(Some(_)) => return Err(other_unbound_refusal(socket, &disabled)),
         Ok(None) => {}
     }
-    if !accept_paired_mode(enable, prompt) {
+    if !accept_paired_mode(enable, json, prompt) {
         return Err(mode_unset_refusal(socket));
     }
     setup.write_paired()?;
@@ -1121,7 +1124,7 @@ pub(crate) fn run_pair(
             return mint_relay_link(&route, &socket, &tokens, output, replace, enroll);
         }
     };
-    let Some(live) = bound_remote_listener(&socket, enable) else {
+    let Some(live) = bound_remote_listener(&socket, enable, json) else {
         return ExitCode::FAILURE;
     };
     let addresses = resolve_pair_addresses(host.as_deref(), live);
@@ -3365,9 +3368,10 @@ mod tests {
     #[test]
     fn the_paired_mode_prompt_defaults_to_no() {
         assert!(!PAIRED_MODE_PROMPT.contains('\n'));
-        assert!(PAIRED_MODE_PROMPT.contains(
-            "phones need paired mode. turn it on and restart the server? (panes are kept) [y/N] "
-        ));
+        assert_eq!(
+            PAIRED_MODE_PROMPT,
+            "phones need paired mode: the server will listen on your tailnet for enrolled devices only. turn it on and restart the server? (panes are kept) [y/N] "
+        );
         assert!(is_affirmative("y"));
         assert!(is_affirmative(" YES "));
         assert!(!is_affirmative("n"));
@@ -3380,26 +3384,26 @@ mod tests {
             prompted: 0,
             reads: 0,
         };
-        assert!(accept_paired_mode(false, &mut prompt));
+        assert!(accept_paired_mode(false, false, &mut prompt));
         assert_eq!((prompt.prompted, prompt.reads), (1, 1));
 
         prompt.answer = Some("\n".to_owned());
-        assert!(!accept_paired_mode(false, &mut prompt));
+        assert!(!accept_paired_mode(false, false, &mut prompt));
         prompt.answer = Some("n\n".to_owned());
-        assert!(!accept_paired_mode(false, &mut prompt));
+        assert!(!accept_paired_mode(false, false, &mut prompt));
         prompt.answer = None;
-        assert!(!accept_paired_mode(false, &mut prompt));
+        assert!(!accept_paired_mode(false, false, &mut prompt));
 
         prompt.interactive = false;
         prompt.answer = Some("y\n".to_owned());
-        assert!(!accept_paired_mode(false, &mut prompt));
+        assert!(!accept_paired_mode(false, false, &mut prompt));
         assert_eq!(
             (prompt.prompted, prompt.reads),
             (4, 4),
             "a non-interactive run must not ask"
         );
 
-        assert!(accept_paired_mode(true, &mut prompt));
+        assert!(accept_paired_mode(true, false, &mut prompt));
         assert_eq!(
             (prompt.prompted, prompt.reads),
             (4, 4),
@@ -3417,9 +3421,14 @@ mod tests {
         setup
             .queries
             .push_back(Ok(live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))));
-        let found =
-            ensure_remote_listener(Path::new("/run/phux.sock"), true, &mut prompt, &mut setup)
-                .expect("bound");
+        let found = ensure_remote_listener(
+            Path::new("/run/phux.sock"),
+            true,
+            false,
+            &mut prompt,
+            &mut setup,
+        )
+        .expect("bound");
         assert_eq!(
             found,
             live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))
@@ -3442,7 +3451,7 @@ mod tests {
                 reads: 0,
             };
             let mut setup = ScriptedSetup::unbound(None);
-            let err = ensure_remote_listener(socket, false, &mut prompt, &mut setup)
+            let err = ensure_remote_listener(socket, false, false, &mut prompt, &mut setup)
                 .expect_err("declined");
             assert_eq!(err, mode_unset_refusal(socket));
             assert!(!err.contains('\n'), "{err}");
@@ -3461,8 +3470,8 @@ mod tests {
         setup
             .queries
             .push_back(Ok(live(Some("100.64.0.2:8787"), None)));
-        let found =
-            ensure_remote_listener(socket, false, &mut prompt, &mut setup).expect("accepted");
+        let found = ensure_remote_listener(socket, false, false, &mut prompt, &mut setup)
+            .expect("accepted");
         assert_eq!(found, live(Some("100.64.0.2:8787"), None));
         assert!(setup.wrote && setup.rebound);
         assert_eq!(prompt.prompted, 1);
@@ -3475,7 +3484,7 @@ mod tests {
         let socket = Path::new("/tmp/phux.sock");
         let mut prompt = ScriptedPrompt::silent();
         let mut setup = ScriptedSetup::unbound(None);
-        let err = ensure_remote_listener(socket, false, &mut prompt, &mut setup)
+        let err = ensure_remote_listener(socket, false, false, &mut prompt, &mut setup)
             .expect_err("no one to ask");
         assert_eq!(err, mode_unset_refusal(socket));
         assert!(!err.contains('\n'), "{err}");
@@ -3485,6 +3494,43 @@ mod tests {
         );
         assert_eq!(prompt.prompted, 0);
         assert!(!setup.wrote && !setup.rebound);
+    }
+
+    /// `--json` on a terminal is the non-interactive path: no question, the
+    /// config stays put, and the refusal names `--enable`. `--enable --json`
+    /// still writes paired mode and continues.
+    #[test]
+    fn json_on_a_terminal_does_not_ask_and_leaves_the_config() {
+        let socket = Path::new("/run/phux.sock");
+        let mut prompt = ScriptedPrompt {
+            interactive: true,
+            answer: Some("y\n".to_owned()),
+            prompted: 0,
+            reads: 0,
+        };
+        let mut setup = ScriptedSetup::unbound(None);
+        let err = ensure_remote_listener(socket, false, true, &mut prompt, &mut setup)
+            .expect_err("json does not ask");
+        assert_eq!(err, mode_unset_refusal(socket));
+        assert!(!err.contains('\n'), "{err}");
+        assert!(
+            err.contains("phux pair --enable") && err.contains("[policy] mode = \"paired\""),
+            "{err}"
+        );
+        assert_eq!((prompt.prompted, prompt.reads), (0, 0));
+        assert!(!setup.wrote && !setup.rebound);
+
+        setup.queries.push_back(Err(ListenerQueryError::Unbound {
+            disabled: Vec::new(),
+        }));
+        setup
+            .queries
+            .push_back(Ok(live(Some("100.64.0.2:8787"), None)));
+        let found = ensure_remote_listener(socket, true, true, &mut prompt, &mut setup)
+            .expect("enable --json");
+        assert_eq!(found, live(Some("100.64.0.2:8787"), None));
+        assert_eq!((prompt.prompted, prompt.reads), (0, 0));
+        assert!(setup.wrote && setup.rebound);
     }
 
     /// `--enable` is the non-interactive yes: it writes the mode and
@@ -3501,9 +3547,14 @@ mod tests {
         setup
             .queries
             .push_back(Ok(live(None, Some("100.64.0.2:8788"))));
-        let found =
-            ensure_remote_listener(Path::new("/run/phux.sock"), true, &mut prompt, &mut setup)
-                .expect("enabled");
+        let found = ensure_remote_listener(
+            Path::new("/run/phux.sock"),
+            true,
+            false,
+            &mut prompt,
+            &mut setup,
+        )
+        .expect("enabled");
         assert_eq!(found, live(None, Some("100.64.0.2:8788")));
         assert_eq!(prompt.prompted, 0);
         assert!(setup.wrote && setup.rebound);
@@ -3529,7 +3580,7 @@ mod tests {
             setup.queries.push_back(Err(ListenerQueryError::Unbound {
                 disabled: vec!["quic at ? disabled (no_overlay_address)".to_owned()],
             }));
-            let err = ensure_remote_listener(socket, true, &mut prompt, &mut setup)
+            let err = ensure_remote_listener(socket, true, false, &mut prompt, &mut setup)
                 .expect_err("mode is set");
             assert!(!err.contains('\n'), "{err}");
             assert!(

@@ -82,6 +82,36 @@ fn pair_without_a_terminal_names_enable_and_leaves_the_config() {
     }
 }
 
+/// `--json` on a terminal does not ask, even though stdin is a tty. The
+/// refusal is the one line naming `--enable`, and the config is unchanged.
+#[test]
+#[ignore = "spawns a real phux server and a pty; run via `just e2e`."]
+fn pair_json_on_a_terminal_names_enable_and_leaves_the_config() {
+    let config = tempfile::tempdir().expect("config");
+    let path = write_config(config.path(), UNSET_CONFIG);
+    let server = ServerGuard::builder("pairjson")
+        .env("XDG_CONFIG_HOME", config.path())
+        .start();
+
+    // A yes is queued only if a prompt appears. The command must exit
+    // before that, so the reply is never consumed.
+    let (code, transcript) = drive_pty(&server, &["--json"], "phones need paired mode", "y\n");
+    assert_ne!(code, Some(0), "{transcript}");
+    assert!(
+        !transcript.contains("phones need paired mode"),
+        "json prompted:\n{transcript}"
+    );
+    assert!(
+        transcript.contains("phux pair --enable")
+            && transcript.contains("[policy] mode = \"paired\""),
+        "{transcript}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("config"),
+        UNSET_CONFIG
+    );
+}
+
 /// A terminal asks once. `n` and an empty answer leave the config alone
 /// and print the same one-line refusal. This is `phux pair --qr`, the
 /// first-phone command.
@@ -103,7 +133,7 @@ fn pair_on_a_terminal_declines_without_changing_the_config() {
         );
         assert!(
             transcript.contains(
-                "phones need paired mode. turn it on and restart the server? (panes are kept) [y/N]"
+                "phones need paired mode: the server will listen on your tailnet for enrolled devices only. turn it on and restart the server? (panes are kept) [y/N] "
             ),
             "{transcript}"
         );
@@ -303,6 +333,8 @@ fn drive_pty(
             break;
         }
         if let Some(status) = child.try_wait().expect("poll pair") {
+            std::thread::sleep(Duration::from_millis(100));
+            let text = visible(&transcript.lock().expect("transcript"));
             return (Some(exit_code(&status)), text);
         }
         if Instant::now() > deadline {

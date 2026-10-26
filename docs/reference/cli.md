@@ -3107,10 +3107,10 @@ device can dial. On a tailnet with `MagicDNS` the link names the host's
 relay route instead, which needs the server to answer but no bound listener.
 When nothing is bound because `[policy] mode` is unset, a terminal asks once
 whether to write `mode = "paired"` and restart the server (panes are kept).
-`--enable` answers yes without a prompt, which is required when stdin is not a
-terminal. A mode that is already set is left as it is; that refusal names
-`--listen` or `--quic`. `ls`, `prune`, `rotate`, and `revoke` only edit the
-store and need no server.
+`--json`, and a run whose stdin is not a terminal, do not ask. `--enable`
+answers yes without a prompt. A mode that is already set is left as it is; that
+refusal names `--listen` or `--quic`. `ls`, `prune`, `rotate`, and `revoke` only
+edit the store and need no server.
 
 Usage: phux pair [FLAGS] [SUBCOMMAND]
 
@@ -3196,11 +3196,11 @@ Flags:
                              mode` is unset, write `mode = "paired"` and restart
                              the server (`phux upgrade`, panes kept) without
                              asking. On a terminal, `phux pair` asks once and
-                             this flag is the yes. With no terminal and without
-                             this flag, pairing refuses in one line that names
-                             this flag and the setting. A listener that is
-                             already bound is left alone, and a mode that is
-                             already set is not rewritten.
+                             this flag is the yes. With no terminal, or with
+                             `--json`, and without this flag, pairing refuses in
+                             one line that names this flag and the setting. A
+                             listener that is already bound is left alone, and a
+                             mode that is already set is not rewritten.
   -h, --help                 Print help
 
 Global flags:
