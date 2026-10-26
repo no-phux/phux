@@ -24,16 +24,41 @@ use thiserror::Error;
 
 use crate::attach::AttachError;
 use crate::layout::wire::{EntryBinding, HandleMap, WireError};
-use crate::layout::{ArrangementDoc, LayoutDecodeError, LayoutEncodeError, LayoutError, SplitDir};
+use crate::layout::{
+    ArrangementDoc, LayoutDecodeError, LayoutEncodeError, LayoutError, MutationError,
+};
 use crate::org::OrgError;
 
-pub use crate::layout::{LAYOUT_KEY, layout_key};
+pub use crate::layout::{LAYOUT_KEY, LayoutMutation, layout_key};
 
-mod mutation;
 mod ops;
 
-pub use mutation::apply_mutation;
 pub use ops::{LayoutOps, write_layout_on};
+
+/// Apply one mutation without doing I/O; see [`crate::layout::apply_mutation`].
+///
+/// # Errors
+///
+/// Rejects missing/duplicate targets, invalid ratios, same-pane operations,
+/// and closing the final pane.
+pub fn apply_mutation(
+    workspace: &mut ArrangementDoc,
+    mutation: &LayoutMutation,
+) -> Result<(), LayoutOpsError> {
+    crate::layout::apply_mutation(workspace, mutation).map_err(Into::into)
+}
+
+impl From<MutationError> for LayoutOpsError {
+    fn from(error: MutationError) -> Self {
+        match error {
+            MutationError::Layout(error) => Self::Layout(error),
+            MutationError::ForeignTarget(id) => Self::ForeignTarget(id),
+            MutationError::DuplicatePane(id) => Self::DuplicatePane(id),
+            MutationError::SamePane => Self::SamePane,
+            MutationError::LastPane => Self::LastPane,
+        }
+    }
+}
 
 /// The static Group used by v0.x servers for layout metadata.
 pub const DEFAULT_LAYOUT_GROUP_ID: GroupId = crate::layout::LAYOUT_METADATA_GROUP;
@@ -78,58 +103,6 @@ pub fn validate_projection_key(key: &str, session: SessionId) -> Result<(), Layo
         return Err(invalid());
     }
     Ok(())
-}
-
-/// One pure mutation of a decoded [`ArrangementDoc`].
-#[derive(Debug, Clone, PartialEq)]
-pub enum LayoutMutation {
-    /// Insert `new_pane` beside `target`.
-    Split {
-        /// Existing pane whose leaf is replaced by a split.
-        target: ResourceId,
-        /// Already-created pane to insert.
-        new_pane: ResourceId,
-        /// Split axis.
-        dir: SplitDir,
-        /// Fraction assigned to the existing target, in `(0, 1)`.
-        ratio: f32,
-    },
-    /// [`Self::Split`] without changing the serialized active window or focus,
-    /// so headless spawn placement cannot publish shared focus.
-    SplitPreservingFocus {
-        /// Existing pane whose leaf is replaced by a split.
-        target: ResourceId,
-        /// Already-created pane to insert.
-        new_pane: ResourceId,
-        /// Split axis.
-        dir: SplitDir,
-        /// Fraction assigned to the existing target, in `(0, 1)`.
-        ratio: f32,
-    },
-    /// Remove `source` from its old parent (collapsing it), then insert it
-    /// beside `target`.
-    Move {
-        /// Existing pane to relocate.
-        source: ResourceId,
-        /// Existing destination pane.
-        target: ResourceId,
-        /// Destination split axis.
-        dir: SplitDir,
-        /// Fraction assigned to `target`, in `(0, 1)`.
-        ratio: f32,
-    },
-    /// Exchange two leaf positions without changing split geometry.
-    Swap {
-        /// First existing pane.
-        first: ResourceId,
-        /// Second existing pane.
-        second: ResourceId,
-    },
-    /// Remove `target`, collapsing its parent split (never the final pane).
-    Close {
-        /// Existing pane to remove.
-        target: ResourceId,
-    },
 }
 
 /// Errors from pure mutations and metadata request/reply operations.

@@ -1,7 +1,6 @@
 use super::*;
 use crate::attach::connection::Connection;
-use crate::layout::{Group, LayoutNode, LayoutState, leaves};
-use crate::layout_ops::mutation::adopt_unarranged_groups;
+use crate::layout::{Group, LayoutNode, LayoutState, SplitDir, adopt_unarranged_groups, leaves};
 use crate::testkit::{ScriptSpec, ScriptedServer};
 use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope};
 
