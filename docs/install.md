@@ -37,7 +37,7 @@ a restart; save its work first, because quitting the desktop does not stop
 shells or agents. Grants on this Mac do not change permissions on a remote
 host.
 
-Full Disk Access is optional and only applies to file access. phux's
+Full Disk Access is optional and only applies to file access. Phux's
 terminal and quick-terminal shortcuts do not need Accessibility, Input
 Monitoring or Screen Recording. Tools you run may request those separately.
 Background notification permissions have their own **Open Settings** button.
