@@ -118,9 +118,10 @@ impl Owner {
                             Ok(())
                         }
                     });
-                // The republish above replaces a frame the desktop has not
-                // acquired yet. Drop that unheld buffer so the next redraw
-                // still starts from an empty pool.
+                // Exists only to keep desktop-perf-budget's buffer_fresh count
+                // stable after a pitch republish. The real fix is to not
+                // republish render_views before any consumer has acquired a
+                // frame, then drop this. Tracked in PHUX-557.
                 if changed {
                     self.discard_unheld_retired(&id);
                 }
