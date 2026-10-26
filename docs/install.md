@@ -211,7 +211,7 @@ phux update --rollback # put the previous version back
 
 `phux upgrade` does only the restart: it moves the running server onto whatever `phux` is already installed, again without stopping your panes. Run it after updating some other way, such as `brew upgrade`.
 
-If you're upgrading from 0.110 or older, the new CLI can't stop the old server. Stop it first, by its pid or with `pkill phux` (which also quits any open phux windows), then run `phux server`. Stopping the server ends the programs running in those sessions. The next server brings the sessions back with no program running in them.
+If you're upgrading from 0.110 or older, the new CLI can't stop the old server (`phux upgrade` and `phux kill --server` are refused across protocol majors). Stop it with `pkill -f 'phux server'` or by its pid, then start the new one with `phux server --ensure` (or just run `phux`). Stopping the server ends the programs running in its panes; the new server brings the sessions back without them, and `phux restore` relaunches them. A bare `pkill phux` would also quit attached terminals, agents' `phux mcp` bridges, and the desktop app.
 
 If you installed with Homebrew, Nix, or `cargo install`, `phux update` changes nothing and prints the command for that package manager instead.
 
