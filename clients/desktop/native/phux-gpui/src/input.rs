@@ -186,6 +186,9 @@ pub struct TerminalInput {
     last_error: Option<InputError>,
     /// The size and cell pitch this view last proposed.
     fitted: Option<FitProposal>,
+    /// Cell pitch last stored on the local replica. An unchanged paint does
+    /// not touch the engine, so it does not republish.
+    applied_cell: Option<(u16, u16)>,
     /// A proposal waiting to hold still for `FIT_SETTLE`.
     settling: Option<PendingFit>,
     /// Distinguishes this input from a later one bound to the same view.
@@ -230,6 +233,7 @@ impl TerminalInput {
             window_remote: None,
             last_error: None,
             fitted: None,
+            applied_cell: None,
             settling: None,
             fit_token: next_fit_token(),
             fit_active: false,
@@ -279,6 +283,7 @@ impl TerminalInput {
                 self.painted_links.forget();
                 self.metrics = None;
                 self.fitted = None;
+                self.applied_cell = None;
                 self.revoke_fit();
                 self.key_probe.forget();
                 Err(InputError::StalePresentation)

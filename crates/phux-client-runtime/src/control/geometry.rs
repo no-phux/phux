@@ -141,6 +141,28 @@ impl ControlPlane {
         TerminalResizeOutcome::Queued
     }
 
+    /// Remember the painter's cell pitch for local image geometry.
+    ///
+    /// [`Self::resize_terminal_with_cell`] is the settled PTY resize. It waits
+    /// until the terminal is a ready, non-observer subscription and then queues
+    /// `RESIZE_TERMINAL`. Kitty rows are natural pixels divided by the replica's
+    /// cell height, and that division is published with the snapshot, so the
+    /// settled path is too late for the first frame. This call has neither gate
+    /// and sends nothing. A positive pair is stored before a replica exists and
+    /// applied to each replacement, including the replica a resync publishes.
+    /// A zero axis is ignored.
+    pub fn set_local_cell_pixels(&self, terminal_id: &ResourceId, width: u16, height: u16) {
+        #[cfg(not(feature = "engine"))]
+        let _ = (self, terminal_id, width, height);
+        #[cfg(feature = "engine")]
+        if width > 0
+            && height > 0
+            && let Some(engine) = &self.engine
+        {
+            let _ = engine.set_cell_pixels(terminal_id, width, height);
+        }
+    }
+
     fn geometry_ready(&self, terminal_id: &ResourceId) -> bool {
         self.handshake_ready
             && !self.status.is_terminal()
