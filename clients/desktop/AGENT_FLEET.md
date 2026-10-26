@@ -45,7 +45,10 @@ working ghost roams its room, a blocked one bobs at its desk, an idle one
 sleeps, a fresh finish celebrates; the name and the same status word as the
 card sit under each ghost. Drag to pan, scroll to pan, pinch to zoom. The
 camera opens on the first room that needs you. Clicking a ghost opens that
-exact agent, as a card does, and the keyboard path is unchanged. A ghost
+exact agent, as a card does, and the keyboard path is unchanged. The map
+button beside it switches the skin between office and matrix, the same two
+maps the phone has; the choice is saved with this window's display
+preferences. A ghost
 never leaves its machine's room. The scene draws about twelve frames a
 second while it is open; **Appearance > Animations** off or system **Reduce
 Motion** leaves every ghost on a still frame. The ghost artwork is a

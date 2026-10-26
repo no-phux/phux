@@ -14,7 +14,7 @@ use crate::connection::AgentState;
 
 pub(super) fn header(
     agents: &[Agent],
-    playground: bool,
+    playground: Option<super::playground::Map>,
     look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
@@ -54,17 +54,33 @@ pub(super) fn header(
                         )
                         .child(muted(look, "Every agent. One vantage point.").mt(px(4.))),
                 )
+                .when_some(playground, |row, map| {
+                    row.child(div().debug_selector(|| "fleet-map-toggle".into()).child(
+                        icon_button(
+                            "fleet-map-toggle",
+                            IconName::Layers,
+                            map.next().label(),
+                            None,
+                            cx.listener(move |desk, _, _, cx| {
+                                desk.update_prefs(
+                                    |prefs| prefs.playground_map = map.next().id().to_owned(),
+                                    cx,
+                                );
+                            }),
+                        ),
+                    ))
+                })
                 .child(
                     div()
                         .debug_selector(|| "fleet-playground-toggle".into())
                         .child(icon_button(
                             "fleet-playground-toggle",
-                            if playground {
+                            if playground.is_some() {
                                 IconName::LayoutDashboard
                             } else {
                                 IconName::Orbit
                             },
-                            if playground {
+                            if playground.is_some() {
                                 "Show cards"
                             } else {
                                 "Show playground"

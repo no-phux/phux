@@ -194,7 +194,12 @@ pub(crate) fn panel(
         .flex()
         .flex_col()
         .overflow_hidden()
-        .child(overview::header(&agents, playground, look, cx))
+        .child(overview::header(
+            &agents,
+            playground.then(|| playground::Map::from_id(&desk.prefs.playground_map)),
+            look,
+            cx,
+        ))
         .when(playground, |panel| {
             let scene_height = (height - 300.).max(240.);
             panel.child(

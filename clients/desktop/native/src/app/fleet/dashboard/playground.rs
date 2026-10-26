@@ -25,6 +25,44 @@ use crate::app::skin::Look;
 
 /// The sprite's drawn size at scale 1.
 const GHOST: f32 = 64.;
+
+/// The maps: skins over one geometry, the same two mobile ships.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Map {
+    Office,
+    Matrix,
+}
+
+impl Map {
+    pub fn from_id(id: &str) -> Map {
+        if id == "matrix" {
+            Map::Matrix
+        } else {
+            Map::Office
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Map::Office => "office",
+            Map::Matrix => "matrix",
+        }
+    }
+
+    pub fn next(self) -> Map {
+        match self {
+            Map::Office => Map::Matrix,
+            Map::Matrix => Map::Office,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Map::Office => "Office map",
+            Map::Matrix => "Matrix map",
+        }
+    }
+}
 const SCALES: (f32, f32) = (0.45, 2.);
 
 /// Where the person is looking: an offset in scene points and a scale.
@@ -115,10 +153,15 @@ pub(crate) fn scene(
             hosts.push(agent.destination.host.clone());
         }
     }
+    // A staged inventory (fixture captures) stands in for live machines.
+    #[cfg(feature = "ui-fixtures")]
+    let staged = desk.fleet_view.fixture.is_some();
+    #[cfg(not(feature = "ui-fixtures"))]
+    let staged = false;
     let hosts = hosts
         .into_iter()
         .map(|host| {
-            let online = matches!(desk.machine_reach(host.as_deref()), Reach::Connected);
+            let online = staged || matches!(desk.machine_reach(host.as_deref()), Reach::Connected);
             (host, online)
         })
         .collect();
@@ -159,13 +202,28 @@ pub(crate) fn scene(
         })
         .collect::<Vec<_>>();
 
-    let paint = Paint {
-        floor: from_hex(&look.chrome.theme.surface),
-        wall: look.raised,
-        edge: look.border,
-        faint: look.divider,
-        shadow: from_hex(&look.chrome.theme.background).opacity(0.5),
-        lamp: from_hex(&look.chrome.theme.accent).opacity(0.05),
+    let map = Map::from_id(&desk.prefs.playground_map);
+    let accent = from_hex(&look.chrome.theme.accent);
+    let background = from_hex(&look.chrome.theme.background);
+    let paint = match map {
+        Map::Office => Paint {
+            map,
+            floor: from_hex(&look.chrome.theme.surface),
+            wall: look.raised,
+            edge: look.border,
+            faint: look.divider,
+            shadow: background.opacity(0.5),
+            lamp: accent.opacity(0.05),
+        },
+        Map::Matrix => Paint {
+            map,
+            floor: from_hex(&look.chrome.theme.surface),
+            wall: background,
+            edge: accent,
+            faint: look.divider,
+            shadow: background.opacity(0.6),
+            lamp: accent.opacity(0.18),
+        },
     };
     let labels = ghosts
         .iter()
@@ -248,7 +306,7 @@ pub(crate) fn scene(
                 |_, _, _| (),
                 move |bounds, _, window, _| {
                     window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                        paint.campus(&plan, &camera, bounds, window);
+                        paint.campus(&plan, &camera, bounds, time, window);
                         paint.ghosts(&sprites, &camera, bounds, time, window);
                     });
                 },
@@ -351,6 +409,7 @@ fn target(ghost: &Ghost, camera: &Camera, cx: &mut Context<Desk>) -> AnyElement 
 /// The painter's colours, taken from the theme once per frame.
 #[derive(Clone, Copy)]
 struct Paint {
+    map: Map,
     floor: Hsla,
     wall: Hsla,
     edge: Hsla,
@@ -360,7 +419,14 @@ struct Paint {
 }
 
 impl Paint {
-    fn campus(&self, plan: &Plan, camera: &Camera, bounds: Bounds<Pixels>, window: &mut Window) {
+    fn campus(
+        &self,
+        plan: &Plan,
+        camera: &Camera,
+        bounds: Bounds<Pixels>,
+        time: f32,
+        window: &mut Window,
+    ) {
         let at = |world: Pt| -> Point<Pixels> {
             let s = camera.screen(world);
             point(bounds.origin.x + px(s.x), bounds.origin.y + px(s.y))
@@ -386,12 +452,22 @@ impl Paint {
                     self.faint.opacity(0.3)
                 },
             );
-            if room.online && !room.agents.is_empty() {
+            if self.map == Map::Office && room.online && !room.agents.is_empty() {
                 let lamp = at(plan.place(t.mid()));
                 let halo = ellipse(lamp, 90. * camera.scale, 45. * camera.scale);
                 fill(window, &halo, self.lamp);
             }
             let edge = if room.online { self.edge } else { self.faint };
+            if self.map == Map::Matrix {
+                // The floor's own outline, and a terminal on every desk.
+                stroke(
+                    window,
+                    &floor,
+                    edge.opacity(if room.online { 0.5 } else { 0.25 }),
+                    1.,
+                );
+                self.terminals(room, plan, &at, camera.scale, time, window);
+            }
             let faces = [
                 (corner(t.x, t.max_y()), corner(t.x, t.y)),
                 (corner(t.x, t.y), corner(room.door.0, t.y)),
@@ -404,7 +480,66 @@ impl Paint {
                     &face,
                     self.wall.opacity(if room.online { 0.9 } else { 0.4 }),
                 );
+                if self.map == Map::Matrix && room.online {
+                    // A glow: a wide faint pass under the thin bright edge.
+                    stroke(window, &face, edge.opacity(0.22), 6.);
+                }
                 stroke(window, &face, edge, 1.5);
+            }
+        }
+        if self.map == Map::Matrix {
+            // One scanline sweeping the scene; still with the clock.
+            let height = bounds.size.height.as_f32().max(1.);
+            let y = bounds.origin.y + px((time * 50.).rem_euclid(height));
+            let right = bounds.origin.x + bounds.size.width;
+            let line = [
+                point(bounds.origin.x, y),
+                point(right, y),
+                point(right, y + px(2.)),
+                point(bounds.origin.x, y + px(2.)),
+            ];
+            fill(window, &line, self.lamp);
+        }
+    }
+
+    /// A terminal on every desk with a blinking cursor: the matrix map's desk.
+    fn terminals(
+        &self,
+        room: &plan::Room,
+        plan: &Plan,
+        at: &dyn Fn(Pt) -> Point<Pixels>,
+        scale: f32,
+        time: f32,
+        window: &mut Window,
+    ) {
+        let blink = time.rem_euclid(1.) < 0.5;
+        let count = room.agents.len();
+        for (index, agent) in room.agents.iter().enumerate() {
+            let id = tile_id(room.host.as_deref(), &agent.terminal);
+            let tile = plan::spot((index, count), plan::seed(&id), 0., false, room.field);
+            let foot = at(plan.place(tile));
+            let (w, h) = (px(16. * scale), px(12. * scale));
+            let origin = point(foot.x - w / 2., foot.y - px(14. * scale));
+            let screen = [
+                origin,
+                point(origin.x + w, origin.y),
+                point(origin.x + w, origin.y + h),
+                point(origin.x, origin.y + h),
+            ];
+            stroke(window, &screen, self.edge, 1.);
+            if blink {
+                let (l, r) = (origin.x + px(3. * scale), origin.x + px(7. * scale));
+                let (top, bottom) = (origin.y + px(3. * scale), origin.y + px(9. * scale));
+                fill(
+                    window,
+                    &[
+                        point(l, top),
+                        point(r, top),
+                        point(r, bottom),
+                        point(l, bottom),
+                    ],
+                    self.edge,
+                );
             }
         }
     }
