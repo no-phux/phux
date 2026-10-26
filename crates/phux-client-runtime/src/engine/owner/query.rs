@@ -118,6 +118,12 @@ impl Owner {
                             Ok(())
                         }
                     });
+                // The republish above replaces a frame the desktop has not
+                // acquired yet. Drop that unheld buffer so the next redraw
+                // still starts from an empty pool.
+                if changed {
+                    self.discard_unheld_retired(&id);
+                }
                 let _ = reply.send(result);
             }
             Query::Republish(id, reply) => {
