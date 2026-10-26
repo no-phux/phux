@@ -125,7 +125,7 @@ impl Page {
             }
             #[cfg(target_os = "macos")]
             Self::Permissions => {
-                "permissions privacy security full disk access files folders macos settings notifications accessibility screen recording drag drop"
+                "permissions privacy security full disk access files folders macos settings notifications accessibility screen recording drag drop path terminal command line local bin"
             }
             Self::Developer => {
                 "developer dev mode debug debugging telemetry socket performance hud heap rust allocation allocations counting counters profiling trace perfetto log logs diagnostics"
@@ -418,7 +418,7 @@ fn content(
         }
         Page::Connections => connections::connection_page(desk, handle),
         #[cfg(target_os = "macos")]
-        Page::Permissions => permissions::page(&desk.phux),
+        Page::Permissions => permissions::page(desk, handle),
         Page::Developer => developer::page(handle),
     }
 }

@@ -124,6 +124,19 @@ try {
   rmSync(join(home, "config/phux/config.toml"));
   await launch("repaired-config");
   assert(status().running, "Desktop did not recover after config was repaired");
+  for (const profile of [
+    ".zshrc",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+    "config/fish/conf.d/phux.fish",
+  ]) {
+    assert(!existsSync(join(home, profile)), `${profile} was written without Add to PATH`);
+  }
+  assert(
+    !existsSync(join(home, "config/phux-desktop/cli-path-dismissed")),
+    "the PATH card was dismissed without a click",
+  );
   writeFileSync(
     join(evidence, "bootstrap.json"),
     JSON.stringify(

@@ -23,6 +23,7 @@ fn copy_diagnostics_puts_a_redacted_identity_receipt_on_the_clipboard(cx: &mut T
                     quick: false,
                     dev_telemetry: false,
                     startup_error: Some("Isolated window fixture".into()),
+                    cli_install: None,
                 },
                 cx,
             )
@@ -85,6 +86,7 @@ fn copy_diagnostics_reads_identity_from_the_linked_connection(cx: &mut TestAppCo
                     quick: false,
                     dev_telemetry: false,
                     startup_error: Some("Isolated window fixture".into()),
+                    cli_install: None,
                 },
                 cx,
             )

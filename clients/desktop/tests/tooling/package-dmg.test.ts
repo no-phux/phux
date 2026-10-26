@@ -20,7 +20,9 @@ import { bundleRuntime, infoPlist } from "../../scripts/package-app.ts";
 test("drag-to-Applications instructions require no separate runtime download", () => {
   expect(installInstructions).toContain("Drag Phux.app onto Applications");
   expect(installInstructions).toContain("Apple silicon and macOS 26");
-  expect(installInstructions).toContain("No separate download or Terminal command is required");
+  expect(installInstructions).toContain("No separate download is required");
+  expect(installInstructions).toContain("Add to PATH");
+  expect(installInstructions).not.toContain("No separate download or Terminal command is required");
   expect(installInstructions).toContain("An existing CLI is never replaced");
   expect(installInstructions).toContain("Retry connection");
 });

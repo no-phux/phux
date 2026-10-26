@@ -43,6 +43,7 @@ fn main() {
                     quick: false,
                     dev_telemetry: false,
                     startup_error: Some("Settings preview: no server".into()),
+                    cli_install: None,
                 },
                 directory.clone(),
                 cx,

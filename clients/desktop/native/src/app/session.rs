@@ -104,6 +104,8 @@ pub struct Desktop {
     pub(crate) branding: Entity<super::branding::Branding>,
     pub(crate) updates: Entity<super::updates::Updater>,
     phux: PathBuf,
+    /// CLI discovery found or installed, when launch recorded one.
+    pub(crate) cli_install: Option<super::CliInstall>,
     socket: PathBuf,
     home_session: String,
     home_key: Option<SessionKey>,
@@ -166,6 +168,7 @@ impl Desktop {
             branding,
             updates,
             phux: PathBuf::new(),
+            cli_install: None,
             socket: PathBuf::new(),
             home_session: String::new(),
             home_key: None,
@@ -236,6 +239,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<WindowHandle<Root>> {
         self.phux = options.phux;
+        self.cli_install = options.cli_install;
         self.socket = options.socket;
         self.home_session = options.session.clone();
         self.home_key = None;

@@ -48,6 +48,7 @@ fn render_appearance(light: bool) {
                 quick: false,
                 dev_telemetry: false,
                 startup_error: None,
+                cli_install: None,
             },
             cx,
         )

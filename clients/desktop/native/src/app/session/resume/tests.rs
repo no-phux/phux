@@ -116,6 +116,7 @@ fn untargeted_launch_consumes_restart_once_and_explicit_launch_leaves_it_alone(
         quick: false,
         dev_telemetry: false,
         startup_error: None,
+        cli_install: None,
     };
     let store = desktop.update(cx, |desktop, cx| {
         desktop.launch(options(), cx).unwrap();
@@ -177,6 +178,7 @@ fn update_click_waits_for_the_desk_lease_before_saving(cx: &mut gpui::TestAppCon
                     quick: false,
                     dev_telemetry: false,
                     startup_error: None,
+                    cli_install: None,
                 },
                 cx,
             )
@@ -226,6 +228,7 @@ fn closing_the_last_window_keeps_its_location_for_the_staged_update(cx: &mut gpu
                     quick: false,
                     dev_telemetry: false,
                     startup_error: None,
+                    cli_install: None,
                 },
                 cx,
             )

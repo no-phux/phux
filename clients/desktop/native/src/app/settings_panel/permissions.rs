@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{div, px};
+use gpui::{WeakEntity, div, px};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::setting::SettingField;
@@ -12,18 +12,30 @@ use gpui_kit::component::{Disableable, Sizable};
 
 use super::catalog::{Content, Group, Item};
 use super::fact;
+use crate::app::desk::Desk;
+use crate::launch::shell_path;
 
 const FULL_DISK_ACCESS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
 const NOTIFICATIONS: &str = "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
 
-pub(super) fn page(phux: &Path) -> Content {
+pub(super) fn page(desk: &Desk, handle: &WeakEntity<Desk>) -> Content {
     let desktop = std::env::current_exe()
         .ok()
         .map(|path| desktop_target(&path));
     // Resolve symlinked launchers so Finder selects the executable, rather
     // than a Homebrew or user-created symlink that Settings may reject.
-    let launcher = phux.canonicalize().ok().filter(|path| path.is_file());
+    // Automatic discovery keeps the command name `phux`; the recorded install
+    // path is the file Finder should select.
+    let launcher_path = desk
+        .cli_install
+        .as_ref()
+        .map(|cli| cli.path.clone())
+        .unwrap_or_else(|| desk.phux.clone());
+    let launcher = launcher_path
+        .canonicalize()
+        .ok()
+        .filter(|path| path.is_file());
     Content::new("Permissions")
         .icon(IconName::Lock)
         .group(
@@ -77,6 +89,66 @@ pub(super) fn page(phux: &Path) -> Content {
                      control other apps or capture the screen may request separate permissions; \
                      Full Disk Access does not grant those.",
                 )),
+        )
+        .group(command_line(desk, handle))
+}
+
+fn command_line(desk: &Desk, handle: &WeakEntity<Desk>) -> Group {
+    let (description, ready) = match shell_path::profile_target() {
+        Some((profile, _)) => (
+            format!(
+                "~/.local/bin is where Desktop installs the phux command. Terminal reads {}. \
+                 Add that directory to PATH, or copy the command.",
+                shell_path::home_display(&profile)
+            ),
+            true,
+        ),
+        None => (
+            "HOME is not set, so Phux cannot update a shell profile.".to_owned(),
+            false,
+        ),
+    };
+    let detail = desk.path_prompt.message.clone().unwrap_or_else(|| {
+        "Nothing is written until you choose Add to PATH. Then open a new Terminal window."
+            .to_owned()
+    });
+    let add = handle.clone();
+    let copy = handle.clone();
+    Group::new()
+        .title("Command line")
+        .description(description)
+        .item(
+            Item::new(
+                "Terminal PATH",
+                SettingField::render(move |_, _, _| {
+                    let add = add.clone();
+                    let copy = copy.clone();
+                    div()
+                        .debug_selector(|| "settings-cli-path".into())
+                        .flex()
+                        .gap(px(8.))
+                        .child(
+                            Button::new("settings-cli-path-add")
+                                .small()
+                                .label("Add to PATH")
+                                .disabled(!ready)
+                                .on_click(move |_, _, cx| {
+                                    let _ = add.update(cx, |desk, cx| desk.add_cli_to_path(cx));
+                                }),
+                        )
+                        .child(
+                            Button::new("settings-cli-path-copy")
+                                .small()
+                                .label("Copy command")
+                                .disabled(!ready)
+                                .on_click(move |_, _, cx| {
+                                    let _ = copy.update(cx, |desk, cx| desk.copy_cli_command(cx));
+                                }),
+                        )
+                }),
+            )
+            .description(detail)
+            .keywords(["path", "terminal", "command", "zsh", "bashrc", "local bin"]),
         )
 }
 

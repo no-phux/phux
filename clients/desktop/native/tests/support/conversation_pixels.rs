@@ -104,6 +104,7 @@ pub(super) fn native_conversation_face_is_rendered() {
                 initial_terminal: None,
                 quick: false,
                 startup_error: None,
+                cli_install: None,
             },
             cx,
         )

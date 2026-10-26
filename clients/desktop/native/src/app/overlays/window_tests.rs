@@ -86,6 +86,7 @@ fn fixture(cx: &mut TestAppContext) -> Fixture {
                 quick: false,
                 dev_telemetry: false,
                 startup_error: None,
+                cli_install: None,
             },
             cx,
         )

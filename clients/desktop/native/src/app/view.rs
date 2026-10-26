@@ -223,6 +223,7 @@ fn build_overlays(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) 
         .size_full()
         .relative()
         .children(super::updates::card(desk, &look, window, cx))
+        .children(super::desk::cli_path::card(desk, &look, window, cx))
         .child(overlays::layer(desk, window, cx))
         .into_any_element()
 }
