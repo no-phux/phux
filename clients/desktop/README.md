@@ -1,8 +1,7 @@
 # phux desktop
 
 A native app for Apple silicon macOS 26+ and Linux x86_64/arm64 (X11 or
-Wayland, Vulkan). Windows: the CLI and server run in WSL 2, with PowerShell
-launchers. A native Windows desktop build is not published yet.
+Wayland, Vulkan).
 
 Rust, GPUI, and the shared client runtime; no web view.
 
