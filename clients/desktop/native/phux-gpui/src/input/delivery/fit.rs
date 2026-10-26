@@ -196,6 +196,74 @@ fn a_snapshot_before_fit_paints_the_font_pitch(cx: &mut TestAppContext) {
     assert_eq!(image_rows(&client).0, frame.images[0].rows);
 }
 
+/// A font change after the first `fit` republishes kitty rows at the new
+/// pitch on the very next frame. The settled grid resize is not involved.
+#[gpui::test]
+fn a_font_size_change_after_fit_repaints_kitty_rows_at_the_new_pitch(cx: &mut TestAppContext) {
+    let client = session_with(None, &natural_column());
+    let view = client.create_view(&terminal()).expect("view");
+    let settings = crate::terminal::Settings {
+        line_height: 2.,
+        ..crate::terminal::Settings::default()
+    };
+    let larger = crate::terminal::Settings {
+        font_size: settings.font_size * 2.,
+        ..settings.clone()
+    };
+    let (surface, cx) = cx.add_window_view(|window, cx| {
+        crate::terminal::Terminal::new(client.clone(), view, terminal(), settings, window, cx)
+    });
+    let first = cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+        surface.read(cx).painted()
+    });
+    let first_frame = first.frame.expect("the first paint has a frame");
+    let first_pitch =
+        crate::terminal::geometry::cell_px(first.geometry.cell_width, first.geometry.cell_height);
+    assert_eq!(first_frame.images[0].rows, 17.0 / f64::from(first_pitch.1));
+    assert!(resizes(&client).is_empty(), "the first fit sends no resize");
+
+    let next = cx.update(|window, cx| {
+        surface.update(cx, |terminal, cx| {
+            terminal.configure(larger, window, cx);
+        });
+        window.draw(cx).clear(cx);
+        surface.read(cx).painted()
+    });
+    assert!(
+        resizes(&client).is_empty(),
+        "a font change sends no grid resize"
+    );
+    let frame = next.frame.expect("the frame after the font change");
+    let pitch =
+        crate::terminal::geometry::cell_px(next.geometry.cell_width, next.geometry.cell_height);
+    assert_ne!(
+        pitch.1, first_pitch.1,
+        "doubling the font changes the cell height"
+    );
+    assert_eq!(frame.images.len(), 1);
+    assert_eq!(
+        (frame.images[0].image.width, frame.images[0].image.height),
+        (1, 17)
+    );
+    assert_eq!(
+        frame.images[0].rows,
+        17.0 / f64::from(pitch.1),
+        "the very next frame uses the new cell pitch"
+    );
+    assert_eq!(
+        frame.generation,
+        first_frame.generation + 1,
+        "one republish for the new pitch"
+    );
+    assert_eq!(
+        client.acquire_view(view).expect("view").generation,
+        frame.generation,
+        "fit does not publish a second size after that paint"
+    );
+    assert_eq!(image_rows(&client).0, frame.images[0].rows);
+}
+
 fn unready_fit_sizes_the_snapshot(
     owner: bool,
     image: &[u8],
