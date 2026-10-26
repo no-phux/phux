@@ -42,6 +42,26 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.48.0](https://github.com/no-phux/phux/compare/desktop-v0.47.1...desktop-v0.48.0) (2026-10-26)
+
+
+### Features
+
+* **desktop:** the agent fleet has a playground of ghosts ([75c6599](https://github.com/no-phux/phux/commit/75c659976805de33f7c955aded9608d83cca225e))
+* **desktop:** the fleet playground has a matrix map ([e740a9b](https://github.com/no-phux/phux/commit/e740a9b3d7950fbc8f513321591ff7191c7298a1))
+
+
+### Bug Fixes
+
+* **desktop:** offer to put ~/.local/bin on PATH after installing the CLI ([#1801](https://github.com/no-phux/phux/issues/1801)) ([18c52ca](https://github.com/no-phux/phux/commit/18c52caea20e071694a1c9cda1f103ca0c1b37fe))
+* **desktop:** size kitty images with real cell pixels from the first frame ([#1800](https://github.com/no-phux/phux/issues/1800)) ([ef91071](https://github.com/no-phux/phux/commit/ef91071781214bf2035ccfee1a25f15ae478a93e))
+
+
+### Documentation
+
+* restore Phux's and mark the Windows desktop unpublished ([#1805](https://github.com/no-phux/phux/issues/1805)) ([75aaec2](https://github.com/no-phux/phux/commit/75aaec21647c392f23560f6f4e3d70156eeb020f))
+* use one canonical one-liner and fix protocol and windows claims ([#1797](https://github.com/no-phux/phux/issues/1797)) ([1855dda](https://github.com/no-phux/phux/commit/1855dda8c0dc4a5dd293f7cde525f2f2a60bf97b))
+
 ## [0.47.1](https://github.com/no-phux/phux/compare/desktop-v0.47.0...desktop-v0.47.1) (2026-10-26)
 
 
