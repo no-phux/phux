@@ -13,17 +13,21 @@ curl -fsSL https://phux.sh/install-desktop | sh
 That is the phux installer with `--desktop`. It verifies the archive
 against the channel manifest and the release signature, installs
 `Phux.app` (macOS) or a tarball under `$XDG_DATA_HOME/phux-desktop` with a
-`.desktop` entry (Linux), plus a `phux-desktop` launcher, and installs the
-phux CLI if none is found. It never replaces an existing CLI or stops its
-server. The shell installer also supports older ad-hoc-signed releases,
-clearing quarantine only after verifying the release signature.
+`.desktop` entry (Linux), plus a `phux-desktop` launcher. The Mac DMG
+bundles the phux CLI and server. The Linux desktop archive does not; that
+installer adds the CLI when none is found. It never replaces an existing
+CLI or stops its server. The shell installer also supports older
+ad-hoc-signed releases, clearing quarantine only after verifying the
+release signature.
 
 ### macOS download
 
 Download the **macos-arm64.dmg** from the newest
 [Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
 open it, and drag **Phux.app** onto **Applications**. Eject the image and
-open phux from Applications. Apple silicon and macOS 26+ are required.
+open phux from Applications. Apple silicon and macOS 26.0 or later are
+required. The app and DMG are Developer ID signed, Apple-notarized, and
+stapled. The DMG bundles the phux CLI and server.
 The ZIP remains available for the installer and automatic updates.
 
 ### Windows
@@ -53,23 +57,39 @@ available for WSL checkouts. Use Git in the terminal and the in-app
 Performance Monitor instead. Automatic desktop installation is not supported
 on Windows, and the macOS bundle-swap helper is never run on Windows.
 
-The app needs the separately installed phux CLI. On a fresh Mac, install
-it once in Terminal before opening phux:
+The macOS app includes the CLI and server. On a fresh Mac, first launch installs
+the bundled CLI at `~/.local/bin/phux` and starts the server; no separate download
+or Terminal command is needed. An existing CLI is never replaced. If the CLI
+is installed while the app is open, **Retry connection** discovers it without
+restarting Desktop. Explicit `--phux` / `PHUX_BIN` paths stay pinned.
 
-```sh
-curl -fsSL https://phux.sh/install | sh
-```
-
-New stable releases require Developer ID signing and Apple notarization;
-older releases through 0.44.1 have only an ad-hoc-signed ZIP. Until the
-first notarized DMG is published, use the shell installer above. Do not
+The stable macOS app and DMG are Developer ID signed, Apple-notarized, and
+stapled. Older releases through 0.44.1 have only an ad-hoc-signed ZIP. Do not
 disable Gatekeeper to install a downloaded app.
+
+## First launch and recovery
+
+| Starting point                                            | Expected behavior                                                                                                                                             |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fresh Mac, DMG only                                       | Copy to Applications and open. The bundled CLI is installed per-user and the local server starts.                                                             |
+| CLI installed first (including Homebrew)                  | Desktop uses that CLI without replacing it; starts a stopped server or reuses a healthy one.                                                                  |
+| CLI installed while Desktop is open                       | **Retry connection** and update checks rediscover it, even with Finder's minimal `PATH`.                                                                      |
+| Previously discovered CLI moved or removed                | Automatic discovery runs again; an explicit `--phux` / `PHUX_BIN` override never silently changes.                                                            |
+| Server stopped                                            | **Retry connection** starts it and reconnects to the same existing session, never recreating a deleted session.                                               |
+| CLI/server update before the first connection             | Desktop resolves the local socket, starts the server if necessary, and opens its home after the update.                                                       |
+| Invalid configuration or unwritable CLI install directory | The window shows the actual failure beside **Retry connection**. Repair the named file/permissions, then retry. No config, credentials or sessions are reset. |
+| Offline first launch                                      | The bundled runtime needs no download. A failed release check does not prevent local terminal use.                                                            |
+
+The CLI-only shell installer does not start a daemon by itself. Opening Desktop
+or running `phux` starts the local server. Closing Desktop detaches; it does
+not stop the server or its programs. No login service or network listener is
+silently enabled by a DMG first launch.
 
 ## What it does
 
 Launched from the Dock, the app finds the installed `phux` (`~/.local/bin`,
-`/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`) and starts or reuses
-the server. It opens your intake session, the one untargeted work lands
+`/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`, then `PATH`). The macOS
+bundle supplies it when none is installed. Desktop starts or reuses the server. It opens your intake session, the one untargeted work lands
 in, or the most recent session. It never creates a session on its own.
 
 The sidebar lists every session on this machine and on each host
@@ -186,6 +206,7 @@ just doctor desktop
 just desktop-app       # build the app and `phux` from this tree, start a server, open the app
 just desktop-demo      # same, against a disposable private server and HOME
 just desktop-test      # the native crate's tests
+just desktop-bootstrap-test # real CLI/server first-launch and retry journeys (also in CI)
 just desktop-lint
 just desktop-check     # the CI gate: script typecheck, lint, qualification guards, host lock
 just desktop-package   # build the app without installing it

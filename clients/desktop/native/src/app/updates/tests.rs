@@ -77,6 +77,7 @@ fn a_combined_download_prepares_desktop_but_leaves_the_server_running() {
     // The same protocol needs no warning: phux moves with the explicit restart.
     assert!(updater.notices().is_empty());
     updater.record_runtime(Ok(updates::RuntimeInstalled {
+        socket: PathBuf::new(),
         message: String::new(),
         reconnect: true,
         retry_handoff: false,
@@ -130,12 +131,17 @@ fn a_phux_only_update_hands_off_without_a_restart() {
     assert_eq!(updater.action(), Some(UpdateAction::Phux { retry: false }));
     assert_eq!(updater.runtime_status().0, "Update ready");
     let installed = updates::RuntimeInstalled {
+        socket: PathBuf::from("/tmp/first-launch-resolved.sock"),
         message: String::new(),
         reconnect: true,
         retry_handoff: false,
     };
     assert!(updater.record_runtime(Ok(installed)));
     assert_eq!(updater.runtime_generation, 1);
+    assert_eq!(
+        updater.local_socket(),
+        PathBuf::from("/tmp/first-launch-resolved.sock")
+    );
     let runtime = updater.runtime.as_ref().unwrap();
     assert_eq!(
         (runtime.current.as_str(), runtime.available),
@@ -152,6 +158,7 @@ fn a_refused_handoff_offers_the_retry_and_keeps_the_desktop_staged() {
     updater.runtime = Some(runtime(None));
     updater.staged = Some(staged("0.4.0", &updates::own_protocol()));
     let refused = updates::RuntimeInstalled {
+        socket: PathBuf::new(),
         message: "phux installed. Server handoff: refused.".into(),
         reconnect: false,
         retry_handoff: true,

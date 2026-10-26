@@ -117,6 +117,9 @@ impl Updater {
                 return false;
             }
         };
+        if !result.socket.as_os_str().is_empty() {
+            self.socket = result.socket.clone();
+        }
         self.pending_handoff = result.retry_handoff;
         // What was the target is installed now, unless only the handoff ran.
         self.runtime = self.runtime.take().map(|runtime| RuntimeRelease {

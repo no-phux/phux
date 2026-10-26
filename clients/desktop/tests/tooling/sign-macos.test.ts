@@ -70,7 +70,7 @@ const commands: Record<string, string> = {
   fi`,
 };
 
-test.each(["none", "app", "dmg", "empty"])(
+test.each(["none", "app", "dmg", "empty", "legacy"])(
   "signing transaction handles %s outcome and removes temporary keys",
   (failure) => {
     const root = mkdtempSync(join(tmpdir(), "phux-sign-test-"));
@@ -80,7 +80,10 @@ test.each(["none", "app", "dmg", "empty"])(
       const log = join(root, "commands.log");
       const archive = join(root, "output/Phux.zip");
       mkdirSync(bin);
-      mkdirSync(join(app, "Contents"), { recursive: true });
+      mkdirSync(join(app, "Contents/MacOS"), { recursive: true });
+      if (failure !== "legacy") {
+        writeFileSync(join(app, "Contents/MacOS/phux"), "fixture CLI", { mode: 0o755 });
+      }
       writeFileSync(join(app, "Contents/Info.plist"), "fixture app");
       for (const [name, body] of Object.entries(commands)) {
         writeFileSync(
@@ -101,9 +104,16 @@ test.each(["none", "app", "dmg", "empty"])(
           TEST_FAIL: failure,
         },
       });
-      expect(result.exitCode).toBe(failure === "none" || failure === "empty" ? 0 : 1);
+      expect(result.exitCode).toBe(failure === "app" || failure === "dmg" ? 1 : 0);
       const calls = readFileSync(log, "utf8");
-      expect(calls).toContain("--options runtime --timestamp");
+      if (failure === "legacy") {
+        expect(calls).not.toContain(`${app}/Contents/MacOS/phux`);
+      } else {
+        expect(calls).toContain(`--options runtime --timestamp ${app}/Contents/MacOS/phux`);
+        expect(calls.indexOf(`--timestamp ${app}/Contents/MacOS/phux`)).toBeLessThan(
+          calls.indexOf(`--timestamp ${app}\n`),
+        );
+      }
       expect(calls).toContain("security delete-keychain");
       expect(calls).toContain(
         failure === "empty"

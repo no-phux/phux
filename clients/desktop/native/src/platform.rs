@@ -80,7 +80,7 @@ pub(crate) fn phux_command(phux: &Path) -> Command {
         command
     }
     #[cfg(not(windows))]
-    Command::new(phux)
+    Command::new(crate::launch::command_path(phux).unwrap_or_else(|_| phux.to_path_buf()))
 }
 
 pub(crate) fn validate_coordinator() -> Result<(), String> {

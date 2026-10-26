@@ -8,7 +8,15 @@ import { desktopBrand } from "./brand.ts";
  *
  * Usage: bun scripts/package-app.ts [--install]
  */
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { desktopBinary, desktopRoot, repoRoot } from "./host.ts";
@@ -20,15 +28,18 @@ const app = resolve(root, "dist/app/Phux.app");
 const contents = join(app, "Contents");
 const binary = process.env.PHUX_DESKTOP_BIN ?? desktopBinary("release");
 const fonts = resolve(root, "native/phux-gpui/assets/fonts");
+const runtime = process.env.PHUX_DESKTOP_RUNTIME_BIN ?? resolve(repo, "target/release/phux");
 
 if (import.meta.main) {
   if (!existsSync(binary)) {
     throw new Error(`Build the native host first (just desktop-native-build): ${binary}`);
   }
+  if (!existsSync(runtime)) throw new Error(`Build the bundled CLI first: ${runtime}`);
   rmSync(app, { recursive: true, force: true });
   mkdirSync(join(contents, "MacOS"), { recursive: true });
   mkdirSync(join(contents, "Resources/fonts"), { recursive: true });
   cpSync(binary, join(contents, "MacOS/phux-desktop"));
+  bundleRuntime(runtime, app);
   run(["chmod", "755", join(contents, "MacOS/phux-desktop")]);
   for (const name of [
     "PaperMono-Regular.ttf",
@@ -73,6 +84,15 @@ if (import.meta.main) {
     run(["/usr/bin/touch", target]);
     console.log(`Installed ${target}`);
   }
+}
+
+/** The app is self-contained, including its same-checkout CLI/server. */
+export function bundleRuntime(source: string, bundle: string): void {
+  if (!existsSync(source)) throw new Error(`Missing bundled phux CLI: ${source}`);
+  const destination = join(bundle, "Contents/MacOS/phux");
+  mkdirSync(join(bundle, "Contents/MacOS"), { recursive: true });
+  cpSync(source, destination);
+  chmodSync(destination, 0o755);
 }
 
 export function packageVersion(text: string): string {
@@ -137,7 +157,24 @@ export function thirdPartyNotices(target = "aarch64-apple-darwin"): string {
     "--manifest-path",
     resolve(root, "native/Cargo.toml"),
   ]);
-  return renderNotices(shippedCrates(metadata));
+  const runtimeMetadata = run([
+    "cargo",
+    "metadata",
+    "--locked",
+    "--format-version",
+    "1",
+    "--filter-platform",
+    target,
+    "--manifest-path",
+    resolve(repo, "crates/phux/Cargo.toml"),
+  ]);
+  const crates = new Map<string, ReturnType<typeof shippedCrates>[number]>();
+  for (const crate of [...shippedCrates(metadata), ...shippedCrates(runtimeMetadata)]) {
+    const key = `${crate.name}@${crate.version}`;
+    const previous = crates.get(key);
+    crates.set(key, { ...crate, buildOnly: crate.buildOnly && (previous?.buildOnly ?? true) });
+  }
+  return renderNotices([...crates.values()]);
 }
 
 function renderIcon(output: string): void {

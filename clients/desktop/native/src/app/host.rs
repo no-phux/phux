@@ -93,33 +93,15 @@ fn project_error(error: String) -> String {
 
 /// Start only the server. Reconnecting must never create a missing session.
 /// A demo supervisor is not restarted.
-pub fn start_server(phux: &Path, socket: &Path) -> Result<(), String> {
+pub fn start_server(phux: &Path, socket: &Path) -> Result<PathBuf, String> {
     if std::env::var_os("PHUX_DESKTOP_DEMO").is_some() {
         return Err(
             "The private demo server stopped. Relaunch the demo to start a new sandbox.".into(),
         );
     }
-    if phux.as_os_str().is_empty() {
-        return Err(
-            "Install the phux CLI from https://phux.sh/install so the desktop can start a server."
-                .into(),
-        );
-    }
-    restart(phux, socket)
-}
-
-fn restart(phux: &Path, socket: &Path) -> Result<(), String> {
-    crate::platform::validate_coordinator()?;
-    run(phux, socket_args(socket, &["server", "--ensure"]))?;
-    let listening = server_socket(phux, socket)?;
-    if listening != socket {
-        return Err(format!(
-            "The server listens on {}, not {}. Relaunch Phux to use it.",
-            listening.display(),
-            socket.display()
-        ));
-    }
-    Ok(())
+    let phux = crate::launch::command_path(phux).map_err(|error| format!("{error:#}"))?;
+    crate::launch::ensure_server(&phux, (!socket.as_os_str().is_empty()).then_some(socket))
+        .map_err(|error| format!("{error:#}"))
 }
 
 /// `phux new` for a server without `ORGANIZATION`; the CLI makes a session it
@@ -284,7 +266,8 @@ fn run_output(phux: &Path, args: Vec<String>) -> Result<Vec<u8>, String> {
     if phux.as_os_str().is_empty() {
         return Err(MISSING_CLI.into());
     }
-    let output = crate::platform::phux_command(phux)
+    let phux = crate::launch::command_path(phux).map_err(|error| format!("{error:#}"))?;
+    let output = crate::platform::phux_command(&phux)
         .args(&args)
         .stdin(std::process::Stdio::null())
         .output()
@@ -304,21 +287,6 @@ fn run_output(phux: &Path, args: Vec<String>) -> Result<Vec<u8>, String> {
     } else {
         detail.to_owned()
     })
-}
-
-fn server_socket(phux: &Path, socket: &Path) -> Result<PathBuf, String> {
-    let output = crate::platform::phux_command(phux)
-        .args(socket_args(socket, &["status", "--json"]))
-        .output()
-        .map_err(|error| error.to_string())?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let value: serde_json::Value = serde_json::from_str(text.trim())
-        .map_err(|_| "No running phux server after `phux server --ensure`".to_owned())?;
-    value
-        .get("socket")
-        .and_then(|socket| socket.as_str())
-        .map(PathBuf::from)
-        .ok_or_else(|| "No running phux server after `phux server --ensure`".to_owned())
 }
 
 #[cfg(test)]
