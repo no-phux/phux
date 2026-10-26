@@ -1,7 +1,9 @@
-# Phux Desktop
+# phux desktop
 
-A native app for Apple silicon macOS 26+, Linux x86_64/arm64 (X11 or
-Wayland, Vulkan), and Windows x64 (Direct3D 11, WSL 2 coordinator).
+A native app for Apple silicon macOS 26+ and Linux x86_64/arm64 (X11 or
+Wayland, Vulkan). Windows: the CLI and server run in WSL 2, with PowerShell
+launchers. A native Windows desktop build is not published yet.
+
 Rust, GPUI, and the shared client runtime; no web view.
 
 ```sh
@@ -21,12 +23,15 @@ clearing quarantine only after verifying the release signature.
 Download the **macos-arm64.dmg** from the newest
 [Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
 open it, and drag **Phux.app** onto **Applications**. Eject the image and
-open Phux from Applications. Apple silicon and macOS 26+ are required.
+open phux from Applications. Apple silicon and macOS 26+ are required.
 The ZIP remains available for the installer and automatic updates.
 
 ### Windows
 
-The Windows app is a native `.exe`, not a Linux window through WSLg.
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
+Windows desktop build is not published yet.
+
+The Windows app in this tree is a native `.exe`, not a Linux window through WSLg.
 Install the [WSL CLI and server](../../docs/install.md#windows-wsl) first.
 Shells, agents and their credentials stay in WSL; the window, clipboard,
 keyboard input and preferences are native Windows. No network listener is
@@ -45,11 +50,11 @@ shell. Closing the app detaches; the WSL processes keep running.
 
 The local Changes panel and the external Unix developer socket are not
 available for WSL checkouts. Use Git in the terminal and the in-app
-Performance Monitor instead. Desktop updates use the Windows installer;
-the macOS bundle-swap helper is never run on Windows.
+Performance Monitor instead. Automatic desktop installation is not supported
+on Windows, and the macOS bundle-swap helper is never run on Windows.
 
 The app needs the separately installed phux CLI. On a fresh Mac, install
-it once in Terminal before opening Phux:
+it once in Terminal before opening phux:
 
 ```sh
 curl -fsSL https://phux.sh/install | sh
@@ -189,7 +194,7 @@ just desktop-dmg       # local ad-hoc DMG; not a notarized public release
 
 `desktop-demo` builds the CLI and desktop executable from this checkout and
 owns a private foreground server and app. Each run gets a temporary socket,
-HOME and XDG directories; inherited Phux listener/auth settings are cleared.
+HOME and XDG directories; inherited phux listener/auth settings are cleared.
 Closing the app or interrupting the supervisor reaps both children and
 removes that state. It refuses installed or external artifacts and does not
 restart a lost server behind the supervisor.

@@ -27,18 +27,15 @@ new pane and never overwrites an existing one.
 
 ## Desktop
 
-Phux Desktop is a native app for macOS 26 or later on Apple silicon,
-Linux on x86_64 or arm64 with Vulkan, and Windows x64 with a WSL 2 server.
-On macOS and Linux, install it with:
+The phux desktop is a native app for macOS 26 or later on Apple silicon
+and Linux on x86_64 or arm64 with Vulkan. On macOS and Linux, install it with:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-The [Windows app](../clients/desktop/README.md#windows) uses native Direct3D
-rendering, input and clipboard; shells and agents stay in WSL. Its desktop
-updates use the Windows installer. WSLg is not required. The local Changes
-panel and external Unix developer socket are not available on Windows.
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
+Windows desktop build is not published yet.
 
 It shows every session on this machine and on each machine you added with
 `phux host add` or the app's **Add Machine…**, grouped by machine or by

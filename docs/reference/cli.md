@@ -14,7 +14,7 @@ One section per command, in the order `phux <command> --help` would print them. 
 
 ```text
 phux
-A terminal multiplexer you can drive by hand or script.
+A terminal multiplexer whose server you can drive from code.
 
 Run `phux` alone to attach to your session; every other verb is headless.
 

@@ -16,16 +16,15 @@ Release builds exist for three platforms:
 | Linux | x86_64                      | glibc; there is no musl build |
 | Linux | arm64                       | glibc; there is no musl build |
 
-Windows uses these Linux CLI/server builds through [WSL](#windows-wsl),
-including from PowerShell. The [Windows desktop](../clients/desktop/README.md#windows)
-is native, with its coordinator in WSL. There is no native Windows coordinator
-or Intel Mac build.
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
+Windows desktop build is not published yet. There is no native Windows
+coordinator or Intel Mac build. See [Windows (WSL)](#windows-wsl).
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
 
 ## macOS permissions
 
-In the desktop, open **Phux Settings → Permissions** (or search for
+In the desktop, open **phux Settings → Permissions** (or search for
 **Full Disk Access**). **Set up** opens macOS Full Disk Access and selects
 the running app in Finder. Drag it into the list and turn it on. Use the
 **Local shells & agents** row for the separate local `phux` executable when
@@ -38,7 +37,7 @@ a restart; save its work first, because quitting the desktop does not stop
 shells or agents. Grants on this Mac do not change permissions on a remote
 host.
 
-Full Disk Access is optional and only applies to file access. Phux's
+Full Disk Access is optional and only applies to file access. phux's
 terminal and quick-terminal shortcuts do not need Accessibility, Input
 Monitoring or Screen Recording. Tools you run may request those separately.
 Background notification permissions have their own **Open Settings** button.
@@ -47,11 +46,13 @@ for the operating system's permission boundaries.
 
 ## Windows (WSL)
 
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
+Windows desktop build is not published yet.
+
 Use Windows Terminal and WSL 2 with Ubuntu 22.04 or newer (x64 or arm64).
 The server, panes, configuration, credentials, and agent integrations live
 **inside that Linux distribution**, not in Windows. PowerShell can launch
-and control them. The terminal UI runs in WSL; the native Windows desktop
-connects to the same coordinator.
+and control them. The terminal UI runs in WSL.
 
 If you do not have WSL, run this in an administrator PowerShell, restart if
 Windows requests it, then open Ubuntu once and create your Linux user:
@@ -129,8 +130,8 @@ Re-running the installer updates the launchers and Linux programs. To
 remove the Windows entrypoints, delete only `phux.ps1` and `phux-mcp.ps1`
 from the chosen install directory and remove that directory from your user
 `PATH`. To remove the Linux programs and state, follow [Uninstall](#uninstall)
-inside WSL. Neither step removes your distribution. For a native window,
-see [Windows Desktop](../clients/desktop/README.md#windows); WSLg is not required.
+inside WSL. Neither step removes your distribution. The terminal UI runs in
+Windows Terminal, and WSLg is not required.
 
 ## Install script
 
@@ -176,7 +177,7 @@ Homebrew 6 and later ask you to trust a third-party tap before installing from i
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-This installs Phux Desktop, and the `phux` command too if you don't have it; the app uses it to reach the server. It's the same script as `install --desktop`.
+This installs the phux desktop, and the `phux` command too if you don't have it; the app uses it to reach the server. It's the same script as `install --desktop`.
 
 | OS    | Needs                                       | Installs to                                         |
 | ----- | ------------------------------------------- | --------------------------------------------------- |
