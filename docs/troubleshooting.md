@@ -95,14 +95,19 @@ Run `phux config check` again before retrying the update. This error is a
 missing file, not a macOS permission refusal.
 
 **`incompatible protocol: client offered X, server requires Y`.** The binary
-and the running server speak different protocol majors, usually because you
-updated and the old server is still running. Releases on the same major
-work together in either direction. Attaching with `phux` upgrades an older
-server automatically; a newer one is left running. From a script,
-`phux upgrade` moves the server onto the installed binary with every pane
-kept.
+and the running server speak different protocols, usually because you updated
+and an older server is still running. Stop that server, then start a fresh
+one. When its pid is known, run `kill <pid>` (or `pkill -f 'phux server'`).
+When it is not, run `pkill -f 'phux server'`. Then run `phux server --ensure`.
+Stopping the old server closes the panes it is running.
 
-**`the running server is X; this binary is Y`.** The same fix: `phux upgrade`.
+**Releases on the same protocol major.** They work together in either
+direction. Attaching with `phux` upgrades an older server in place; a newer
+one is left running. From a script, `phux upgrade` moves the server onto the
+installed binary and panes survive.
+
+**`the running server is X; this binary is Y`.** On the same protocol, the
+same fix: `phux upgrade`.
 
 ## Attaching
 

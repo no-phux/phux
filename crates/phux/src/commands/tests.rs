@@ -82,11 +82,11 @@ fn no_server_lines_name_start_commands_log_and_doctor() {
     let socket = Path::new("/tmp/phux-test.sock");
     let log = Path::new("/state/phux/server.log");
 
-    let lines = no_server_lines(&refused_io(), socket, "ls", log);
+    let lines = no_server_lines(&refused_io(), socket, "ls", log, None);
     assert_eq!(lines[0], "no server running at /tmp/phux-test.sock");
     assert_eq!(
         lines[1],
-        "start one with `phux` (attaches, auto-starting a server) or `phux server`"
+        "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`"
     );
     assert_eq!(lines[2], "server log: /state/phux/server.log");
     assert_eq!(lines[3], "run `phux doctor` for a health check");
@@ -103,6 +103,7 @@ fn no_server_unreachable_socket_names_the_path_and_reason() {
         Path::new("/tmp/s.sock"),
         "ls",
         Path::new("/state/phux/server.log"),
+        None,
     );
     assert!(
         lines[0].starts_with("ls: cannot reach the server socket /tmp/s.sock: "),
@@ -126,6 +127,7 @@ fn no_server_disconnect_arm_names_log_and_doctor() {
         Path::new("/tmp/s.sock"),
         "kill",
         Path::new("/state/phux/server.log"),
+        None,
     );
     assert_eq!(lines[0], "server closed the connection during kill");
     assert_eq!(lines[1], "server log: /state/phux/server.log");
@@ -141,6 +143,7 @@ fn no_server_fallthrough_keeps_the_error_and_adds_remedies() {
         Path::new("/tmp/s.sock"),
         "tag",
         Path::new("/log/server.log"),
+        None,
     );
     assert_eq!(
         lines[0],
@@ -158,8 +161,8 @@ fn attach_error_named_arms_stay_single_line() {
     let log = Path::new("/state/phux/client-42.log");
 
     assert_eq!(
-        attach_error_lines(&refused_io(), socket, "main", log),
-        ["no server at /tmp/a.sock. Start one with: phux server --session main"]
+        attach_error_lines(&refused_io(), socket, "main", log, None),
+        ["no server at /tmp/a.sock. Start one with: phux server --ensure"]
     );
     assert_eq!(
         attach_error_lines(
@@ -167,11 +170,12 @@ fn attach_error_named_arms_stay_single_line() {
             socket,
             "main",
             log,
+            None,
         ),
         ["server refused attach: no such session"]
     );
     assert_eq!(
-        attach_error_lines(&AttachError::NotATty, socket, "main", log),
+        attach_error_lines(&AttachError::NotATty, socket, "main", log, None),
         ["attach requires an interactive terminal (stdin is not a TTY)."]
     );
 }
@@ -187,6 +191,7 @@ fn attach_error_disconnected_arm_names_the_remedy() {
         Path::new("/tmp/a.sock"),
         "main",
         Path::new("/state/phux/client-42.log"),
+        None,
     );
     assert_eq!(lines[0], "the server closed the connection unexpectedly");
     assert_eq!(
@@ -212,6 +217,7 @@ fn attach_error_fallthrough_names_client_log_doctor_and_triple() {
         Path::new("/tmp/a.sock"),
         "main",
         Path::new("/state/phux/client-42.log"),
+        None,
     );
     assert_eq!(lines[0], "attach failed: protocol error: bad frame");
     assert_eq!(lines[1], "client log: /state/phux/client-42.log");
@@ -224,6 +230,156 @@ fn attach_error_fallthrough_names_client_log_doctor_and_triple() {
         )
     );
     assert_eq!(lines.len(), 3);
+}
+
+/// A live old server prints the stop-and-start recovery, with the pid when
+/// it is known, and never the generic doctor / upgrade / stale / remove advice.
+#[test]
+fn incompatible_lines_are_the_stop_recovery_with_and_without_a_pid() {
+    let socket = Path::new("/tmp/old.sock");
+    let log = Path::new("/state/phux/server.log");
+    let err = AttachError::IncompatibleProtocol(
+        "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
+         update the phux server so protocol major.minor match"
+            .to_owned(),
+    );
+    for pid in [Some(4242), None] {
+        let lines = no_server_lines(&err, socket, "ls", log, pid);
+        assert_eq!(
+            lines,
+            crate::commands::diagnostics::old_server_recovery_lines(socket, pid)
+        );
+        assert_eq!(
+            attach_error_lines(&err, socket, "main", log, pid),
+            lines,
+            "attach and connect print the same recovery"
+        );
+        let text = lines.join("\n");
+        if let Some(pid) = pid {
+            assert!(text.contains(&format!("`kill {pid}`")), "{text}");
+        } else {
+            assert!(!text.contains("`kill "), "{text}");
+        }
+        assert!(text.contains("pkill -f 'phux server'"), "{text}");
+        assert!(text.contains("`phux server --ensure`"), "{text}");
+        assert!(text.contains("closes the panes"), "{text}");
+        for forbidden in [
+            "stale",
+            "phux upgrade",
+            "survive",
+            "remove",
+            "run `phux doctor`",
+        ] {
+            assert!(!text.contains(forbidden), "{forbidden} in {text}");
+        }
+    }
+}
+
+/// A scripted server that refuses `HELLO` the way v0.110 (`0.9.x`) does.
+/// The client classifies it by `VERSION_INCOMPATIBLE`, and every hint names
+/// `kill <pid>` plus `phux server --ensure` without calling the live socket stale.
+#[cfg(unix)]
+#[test]
+fn a_v0_110_hello_refusal_prints_the_stop_and_start_recovery() {
+    use std::process::ExitCode;
+
+    let version = phux_protocol::PROTOCOL_VERSION;
+    let message = format!(
+        "incompatible protocol: client offered {}.{}.{}, server requires 0.9.x; \
+         update the phux server so protocol major.minor match",
+        version.major, version.minor, version.patch,
+    );
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (socket, _seen) = old_protocol_server(dir.path(), message.clone());
+
+    let pid = crate::commands::diagnostics::server_pid(&socket)
+        .expect("peer credentials name the scripted server");
+    let ours = i32::try_from(std::process::id()).expect("pid fits in i32");
+    assert_eq!(
+        pid, ours,
+        "the in-process scripted server's pid is this test"
+    );
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let state = runtime.block_on(phux_client::state::get_state(&socket));
+    let err = state.expect_err("HELLO was refused");
+    assert!(
+        matches!(&err, AttachError::IncompatibleProtocol(text) if text == &message),
+        "{err:?}"
+    );
+
+    let upgrade = crate::commands::upgrade::request_upgrade(&socket);
+    assert!(
+        matches!(&upgrade, Err(AttachError::IncompatibleProtocol(text)) if text == &message),
+        "{upgrade:?}"
+    );
+
+    let code = crate::commands::diagnostics::report_no_server(&err, &socket, "upgrade");
+    assert_eq!(code, ExitCode::FAILURE);
+
+    let log = Path::new("/state/phux/server.log");
+    for text in [
+        no_server_lines(&err, &socket, "upgrade", log, Some(pid)).join("\n"),
+        attach_error_lines(&err, &socket, "main", log, Some(pid)).join("\n"),
+    ] {
+        assert_live_old_server_hint(&text, pid);
+    }
+
+    let check = super::doctor::check_server(&socket);
+    assert_eq!(check.status, super::doctor::Status::Fail);
+    let doctor = format!("{}\n{}", check.detail, check.hint.unwrap_or_default());
+    assert_live_old_server_hint(&doctor, pid);
+    assert!(
+        !doctor.contains("remove it and start a fresh server"),
+        "{doctor}"
+    );
+}
+
+#[cfg(unix)]
+fn old_protocol_server(
+    dir: &Path,
+    message: String,
+) -> (
+    std::path::PathBuf,
+    std::sync::mpsc::Receiver<Vec<phux_protocol::wire::frame::FrameKind>>,
+) {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    let socket = dir.join("phux.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let (record, seen) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("script runtime");
+        runtime.block_on(async move {
+            let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+            loop {
+                let spec = phux_client::testkit::ScriptSpec::new()
+                    .refuse_hello(ErrorCode::VersionIncompatible, &message);
+                let frames = phux_client::testkit::ScriptedServer::accept(&listener, spec).await;
+                if record.send(frames).is_err() {
+                    return;
+                }
+            }
+        });
+    });
+    (socket, seen)
+}
+
+fn assert_live_old_server_hint(text: &str, pid: i32) {
+    assert!(text.contains(&format!("`kill {pid}`")), "{text}");
+    assert!(text.contains("pkill -f 'phux server'"), "{text}");
+    assert!(text.contains("`phux server --ensure`"), "{text}");
+    assert!(text.contains("closes the panes"), "{text}");
+    for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+        assert!(!text.contains(forbidden), "{forbidden} in {text}");
+    }
 }
 
 /// The grammar itself is tested in `phux_client::selector`; the CLI

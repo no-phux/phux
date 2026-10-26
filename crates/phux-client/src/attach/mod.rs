@@ -14,4 +14,4 @@ pub mod outcome;
 
 pub use connection::{CertTrust, Dial, QuicDial, WsDial};
 pub use input_replay::{InputReplayJournal, mint_input_operation_id};
-pub use outcome::{AttachEnd, AttachError};
+pub use outcome::{AttachEnd, AttachError, is_incompatible_protocol};

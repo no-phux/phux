@@ -190,7 +190,12 @@ pub(crate) fn report_no_server(
 /// The [`CliError`] behind [`report_no_server`]'s JSON path, also embedded
 /// by `phux status --json`.
 pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
-    let mut cli_err = connect_error(err, socket_path, verb);
+    let mut cli_err = connect_error(
+        err,
+        socket_path,
+        verb,
+        crate::commands::diagnostics::recovery_pid(err, socket_path),
+    );
     if matches!(err, AttachError::Io(_)) {
         cli_err.auto_start_error = auto_start_failure(socket_path);
         if cli_err.auto_start_error.is_some() {
@@ -205,7 +210,7 @@ pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str)
 }
 
 /// [`no_server_error`] before any auto-start context is added.
-fn connect_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
+fn connect_error(err: &AttachError, socket_path: &Path, verb: &str, pid: Option<i32>) -> CliError {
     let server_log = phux_server::telemetry::server_log_path();
     let doctor = format!(
         "server log: {}; run `phux doctor` for a health check",
@@ -235,6 +240,13 @@ fn connect_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError 
             codes::TRANSPORT,
             unreachable_socket_message(verb, io_err, socket_path),
             doctor,
+        ),
+        // Same `transport` code as any other non-connect failure. The remedy
+        // is the old-server recovery, not a new JSON code.
+        AttachError::IncompatibleProtocol(_) => CliError::new(
+            codes::TRANSPORT,
+            format!("{verb} failed: {err}"),
+            crate::commands::diagnostics::old_server_recovery_lines(socket_path, pid).join("\n"),
         ),
         other => CliError::new(codes::TRANSPORT, format!("{verb} failed: {other}"), doctor),
     }
@@ -366,6 +378,66 @@ mod tests {
 
         let gone = no_server_error(&AttachError::Disconnected, socket, "new");
         assert!(gone.auto_start_error.is_none());
+    }
+
+    /// An old-protocol server stays on the existing `transport` code. The
+    /// remedy is the stop-and-start recovery, with the pid when it is known.
+    #[test]
+    fn an_incompatible_server_keeps_transport_and_names_the_stop_recovery() {
+        let socket = Path::new("/tmp/old.sock");
+        let err = AttachError::IncompatibleProtocol(
+            "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
+             update the phux server so protocol major.minor match"
+                .to_owned(),
+        );
+        let with_pid = super::connect_error(&err, socket, "ls", Some(4242));
+        assert_eq!(with_pid.code, codes::TRANSPORT);
+        assert!(
+            with_pid.message.contains("server refused attach"),
+            "{}",
+            with_pid.message
+        );
+        assert!(with_pid.remedy.contains("kill 4242"), "{}", with_pid.remedy);
+        assert!(
+            with_pid.remedy.contains("pkill -f 'phux server'"),
+            "{}",
+            with_pid.remedy
+        );
+        assert!(
+            with_pid.remedy.contains("`phux server --ensure`"),
+            "{}",
+            with_pid.remedy
+        );
+        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+            assert!(
+                !with_pid.remedy.contains(forbidden),
+                "{forbidden}: {}",
+                with_pid.remedy
+            );
+            assert!(
+                !with_pid.message.contains(forbidden),
+                "{forbidden}: {}",
+                with_pid.message
+            );
+        }
+        let line = serde_json::to_string(&error_document(&with_pid, 1)).unwrap_or_default();
+        assert!(!line.contains('\n'), "error line must be single-line");
+
+        let unknown = super::connect_error(&err, socket, "ls", None);
+        assert_eq!(unknown.code, codes::TRANSPORT);
+        assert!(
+            unknown.remedy.contains("pkill -f 'phux server'"),
+            "{}",
+            unknown.remedy
+        );
+        assert!(!unknown.remedy.contains("`kill "), "{}", unknown.remedy);
+        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+            assert!(
+                !unknown.remedy.contains(forbidden),
+                "{forbidden}: {}",
+                unknown.remedy
+            );
+        }
     }
 
     /// The agent verbs' codes are part of the closed vocabulary frozen by

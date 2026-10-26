@@ -311,6 +311,18 @@ impl ScriptSpec {
         self
     }
 
+    /// Answer `HELLO` with `ERROR { code, message }` instead of `HELLO_OK`.
+    ///
+    /// A 0.9.x server refuses a newer client this way:
+    /// [`ErrorCode::VersionIncompatible`] and
+    /// `incompatible protocol: client offered <major>.<minor>.<patch>, server
+    /// requires <major>.<minor>.x; ...` (`v0.110` `incompatible_protocol_message`).
+    #[must_use]
+    pub fn refuse_hello(mut self, code: ErrorCode, message: &str) -> Self {
+        self.hello_error = Some((code, message.to_owned()));
+        self
+    }
+
     /// The client count a `DetachClients` command acks with. Defaults to `0`
     /// when unset, matching a real server that matched nobody.
     #[must_use]

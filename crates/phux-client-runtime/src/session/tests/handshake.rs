@@ -23,6 +23,35 @@ fn negotiation_records_the_server_and_refuses_a_second_round() {
     assert!(matches!(again, Err(SessionError::Protocol(_))), "{again:?}");
 }
 
+/// The code, not the sentence, distinguishes a live old server. The message
+/// is the one a 0.9.x server builds in `incompatible_protocol_message`.
+#[test]
+fn version_incompatible_hello_keeps_its_code() {
+    let message = "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
+        update the phux server so protocol major.minor match";
+    let (_, incompatible) = negotiate_against(|_| FrameKind::Error {
+        request_id: None,
+        code: ErrorCode::VersionIncompatible,
+        message: message.to_owned(),
+    });
+    assert!(
+        matches!(
+            &incompatible,
+            Err(SessionError::IncompatibleProtocol(text)) if text == message
+        ),
+        "{incompatible:?}"
+    );
+    let (_, refused) = negotiate_against(|_| FrameKind::Error {
+        request_id: None,
+        code: ErrorCode::PermissionDenied,
+        message: message.to_owned(),
+    });
+    assert!(
+        matches!(&refused, Err(SessionError::Refused(text)) if text == message),
+        "{refused:?}"
+    );
+}
+
 #[test]
 fn a_hello_error_is_a_refusal_and_any_other_reply_is_skew() {
     let (_, refused) = negotiate_against(|_| FrameKind::Error {
