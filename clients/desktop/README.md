@@ -13,7 +13,7 @@ curl -fsSL https://phux.sh/install-desktop | sh
 That is the phux installer with `--desktop`. It verifies the archive
 against the channel manifest and the release signature, installs
 `Phux.app` (macOS) or a tarball under `$XDG_DATA_HOME/phux-desktop` with a
-`.desktop` entry (Linux), plus a `phux-desktop` launcher. The Mac DMG
+`.desktop` entry (Linux), plus a `phux-desktop` launcher. The Mac app
 bundles the phux CLI and server. The Linux desktop archive does not; that
 installer adds the CLI when none is found. It never replaces an existing
 CLI or stops its server. The shell installer also supports older
@@ -25,9 +25,9 @@ release signature.
 Download the **macos-arm64.dmg** from the newest
 [Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
 open it, and drag **Phux.app** onto **Applications**. Eject the image and
-open phux from Applications. Apple silicon and macOS 26.0 or later are
+open Phux from Applications. Apple silicon and macOS 26.0 or later are
 required. The app and DMG are Developer ID signed, Apple-notarized, and
-stapled. The DMG bundles the phux CLI and server.
+stapled. The app bundles the phux CLI and server.
 The ZIP remains available for the installer and automatic updates.
 
 ### Windows
@@ -35,7 +35,7 @@ The ZIP remains available for the installer and automatic updates.
 Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
 Windows desktop build is not published yet.
 
-The Windows app in this tree is a native `.exe`, not a Linux window through WSLg.
+Built from source, the Windows app is a native `.exe`, not a Linux window through WSLg.
 Install the [WSL CLI and server](../../docs/install.md#windows-wsl) first.
 Shells, agents and their credentials stay in WSL; the window, clipboard,
 keyboard input and preferences are native Windows. No network listener is

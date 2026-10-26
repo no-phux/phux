@@ -24,7 +24,7 @@ The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
 
 ## macOS permissions
 
-In the desktop, open **phux Settings → Permissions** (or search for
+In the desktop, open **Phux Settings → Permissions** (or search for
 **Full Disk Access**). **Set up** opens macOS Full Disk Access and selects
 the running app in Finder. Drag it into the list and turn it on. Use the
 **Local shells & agents** row for the separate local `phux` executable when
@@ -179,7 +179,7 @@ curl -fsSL https://phux.sh/install-desktop | sh
 
 This is the same script as `install --desktop`.
 
-The Mac DMG bundles the phux CLI and server. The app and DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app requires Apple silicon and macOS 26.0 or later. The standalone CLI requires macOS 11.0 or later.
+The Mac app bundles the phux CLI and server. The app and DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app requires Apple silicon and macOS 26.0 or later. The standalone CLI requires macOS 11.0 or later.
 
 The Linux desktop archive does not include the CLI. On Linux, this script installs the CLI when none is found.
 
@@ -211,7 +211,7 @@ phux update --rollback # put the previous version back
 
 `phux upgrade` does only the restart: it moves the running server onto whatever `phux` is already installed, again without stopping your panes. Run it after updating some other way, such as `brew upgrade`.
 
-If you're upgrading from 0.110 or older, stop the old server first (`pkill phux`), then run `phux server`.
+If you're upgrading from 0.110 or older, the new CLI can't stop the old server. Stop it first, by its pid or with `pkill phux` (which also quits any open phux windows), then run `phux server`. Stopping the server ends the programs running in those sessions. The next server brings the sessions back with no program running in them.
 
 If you installed with Homebrew, Nix, or `cargo install`, `phux update` changes nothing and prints the command for that package manager instead.
 

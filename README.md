@@ -57,8 +57,7 @@ is the bundled agent distro, with isolated homes, native missions and safe
 
 ## Status
 
-The CLI and terminal UI are the parts in daily use. The desktop app is
-released and rough. The browser client is a starting point, not a product.
+The CLI and terminal UI are the parts in daily use. The desktop app (macOS, Linux) is new and changes weekly. The browser client is a starting point, not a product.
 Phone apps are in progress elsewhere. The wire protocol is `1.x`; any 1.x
 client works with any 1.x server. See [protocol](./docs/protocol.md).
 

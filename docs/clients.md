@@ -52,7 +52,7 @@ session you just left is instant. Machines you aren't looking at keep their
 data current without drawing anything. Disconnecting, forgetting a machine,
 or closing the window closes its connections.
 
-On macOS the DMG bundles the phux CLI and server. The app and DMG are
+On macOS the app bundles the phux CLI and server. The app and DMG are
 Developer ID signed, Apple-notarized, and stapled. On Linux the desktop
 archive does not include the CLI; install the CLI first, or use the desktop
 installer, which installs it when none is found. The app never creates
