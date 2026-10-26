@@ -1499,6 +1499,23 @@ fn remote_entry_point(
     (!config.connector.is_empty()).then_some("[[connector]]")
 }
 
+/// Write `[policy] mode = "paired"` into `config`, creating the file and
+/// the `[policy]` table when they are missing. Existing keys and comments
+/// stay (`phux_config::settings::write_edit`).
+///
+/// `phux service install` calls this when a unit opens a remote entry
+/// point, which is how `phux host add` settles the mode. `phux pair
+/// --enable` uses the same write.
+pub(crate) fn write_paired_mode(config: &Path) -> Result<(), String> {
+    phux_config::settings::write_edit(
+        config,
+        "policy.mode",
+        phux_config::settings::Edit::Set(toml::Value::String("paired".to_owned())),
+    )
+    .map_err(|err| format!("could not set [policy] mode in {}: {err}", config.display()))?;
+    Ok(())
+}
+
 /// A unit whose server opens a remote entry point starts only under
 /// `[policy] mode = "paired"` (ADR-0179). With no mode in `config` that is
 /// what the operator asked for by naming one, so write it, and say so;
@@ -1531,12 +1548,7 @@ fn ensure_paired_policy(
             config.display()
         )),
         None => {
-            phux_config::settings::write_edit(
-                config,
-                "policy.mode",
-                phux_config::settings::Edit::Set(toml::Value::String("paired".to_owned())),
-            )
-            .map_err(|err| format!("could not set [policy] mode in {}: {err}", config.display()))?;
+            write_paired_mode(config)?;
             info!(
                 "service: set [policy] mode = \"paired\" in {} for {entry}: the remote entry \
                  point serves only clients holding an enrolled certificate (`phux host add`, \

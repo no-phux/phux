@@ -5,12 +5,17 @@
 //! the running server which remote listeners it has bound (`GET_STATE`'s
 //! listener report) and refuses when none would accept the credential, so a
 //! token, link, or QR is only ever printed for a door that is open, and the
-//! link names the address that door is actually bound to (ADR-0141). `ls`,
-//! `prune`, `rotate`, and `revoke` only edit the store and need no server.
+//! link names the address that door is actually bound to (ADR-0141). When
+//! nothing is bound because `[policy] mode` is unset, a terminal offers to
+//! write `paired` and restart the server (`--enable` does that without
+//! asking). `ls`, `prune`, `rotate`, and `revoke` only edit the store and
+//! need no server.
 
+use std::io::{BufRead, Write as _};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use phux_config::overlay::MagicDns;
 
@@ -492,7 +497,13 @@ fn resolve_quic_endpoint(
 ///
 /// No server answers, or it has no remote listener bound.
 pub(crate) fn advertised_quic_endpoint(socket: &Path) -> Result<Option<String>, String> {
-    let live = query_live_listeners(socket)?;
+    let live = match query_live_listeners(socket) {
+        Ok(live) => live,
+        Err(ListenerQueryError::Unavailable(message)) => return Err(message),
+        Err(ListenerQueryError::Unbound { disabled }) => {
+            return Err(other_unbound_refusal(socket, &disabled));
+        }
+    };
     let overlay = phux_config::overlay::detect();
     let magic_dns = phux_config::overlay::detect_magic_dns();
     Ok(
@@ -536,18 +547,52 @@ impl LiveListeners {
     }
 }
 
-/// Ask the server on `socket` which remote listeners it has bound. `Err` is
-/// the refusal to print: no server, or a server with nothing bound, would
-/// leave a minted credential authenticating nothing.
-fn query_live_listeners(socket: &Path) -> Result<LiveListeners, String> {
+/// Why asking the server which listeners are bound did not yield one.
+#[derive(Debug)]
+enum ListenerQueryError {
+    /// `GET_STATE` could not be asked. The string is the refusal to print.
+    Unavailable(String),
+    /// The server answered, and nothing is bound. `disabled` names each
+    /// unhealthy row (`transport at addr disabled (reason)`).
+    Unbound { disabled: Vec<String> },
+}
+
+/// Ask the server on `socket` which remote listeners it has bound.
+fn query_live_listeners(socket: &Path) -> Result<LiveListeners, ListenerQueryError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|err| format!("could not build a runtime to ask the server: {err}"))?;
-    let view = runtime
-        .block_on(phux_client::state::get_state(socket))
-        .map_err(|err| no_live_server(socket, &err))?;
-    live_listeners(socket, view.snapshot().listeners())
+        .map_err(|err| {
+            ListenerQueryError::Unavailable(format!(
+                "could not build a runtime to ask the server: {err}"
+            ))
+        })?;
+    query_listeners_with(&runtime, socket, None)
+}
+
+/// [`query_live_listeners`] on a runtime the caller already holds. `timeout`
+/// bounds one `GET_STATE` while waiting out a restart.
+fn query_listeners_with(
+    runtime: &tokio::runtime::Runtime,
+    socket: &Path,
+    timeout: Option<Duration>,
+) -> Result<LiveListeners, ListenerQueryError> {
+    let asked = runtime.block_on(async {
+        let pending = phux_client::state::get_state(socket);
+        match timeout {
+            Some(limit) => match tokio::time::timeout(limit, pending).await {
+                Ok(result) => result,
+                Err(_elapsed) => Err(phux_client::attach::AttachError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timed out asking the server which listeners are bound",
+                ))),
+            },
+            None => pending.await,
+        }
+    });
+    let view =
+        asked.map_err(|err| ListenerQueryError::Unavailable(no_live_server(socket, &err)))?;
+    live_listeners(view.snapshot().listeners())
 }
 
 /// The refusal when `GET_STATE` could not be asked at all.
@@ -574,11 +619,10 @@ fn no_live_server(socket: &Path, err: &phux_client::attach::AttachError) -> Stri
 }
 
 /// The pure half of [`query_live_listeners`]: the bound rows of `report`, or
-/// the refusal naming why nothing is bound.
+/// the unbound rows that explain why nothing is bound.
 fn live_listeners(
-    socket: &Path,
     report: Option<&phux_protocol::wire::RemoteListenersReport>,
-) -> Result<LiveListeners, String> {
+) -> Result<LiveListeners, ListenerQueryError> {
     use phux_protocol::wire::RemoteListenerTransport;
 
     let bound_addr = |transport| {
@@ -614,22 +658,267 @@ fn live_listeners(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    Err(ListenerQueryError::Unbound { disabled })
+}
+
+/// The one question a terminal gets when nothing is bound because
+/// `[policy] mode` is unset. Default is no.
+const PAIRED_MODE_PROMPT: &str =
+    "phones need paired mode. turn it on and restart the server? (panes are kept) [y/N] ";
+
+/// How long to wait for the restarted server to answer, and then for an
+/// overlay listener to show up, after `phux upgrade` re-binds it.
+const REBIND_WAIT: Duration = Duration::from_secs(15);
+/// Once the restarted server is answering and still unbound, how long
+/// overlay detection gets before the refusal names `--listen` / `--quic`.
+const LISTENER_SETTLE: Duration = Duration::from_secs(3);
+/// Cadence of the post-restart listener poll.
+const REBIND_POLL: Duration = Duration::from_millis(100);
+/// One `GET_STATE` during that poll. A wedged accept must not hold the wait.
+const REBIND_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Where the paired-mode question is asked. Production reads the terminal;
+/// tests inject the answer and record whether a prompt happened.
+trait ModePrompt {
+    /// Whether stdin is a terminal, so a question has someone to answer it.
+    fn is_interactive(&self) -> bool;
+    /// Show [`PAIRED_MODE_PROMPT`]. Called only when [`Self::is_interactive`].
+    fn prompt(&mut self);
+    /// One line from the person, without a trailing requirement. `None` at EOF.
+    fn read_answer(&mut self) -> Option<String>;
+}
+
+/// The terminal [`ModePrompt`].
+struct StdinModePrompt;
+
+impl ModePrompt for StdinModePrompt {
+    fn is_interactive(&self) -> bool {
+        std::io::IsTerminal::is_terminal(&std::io::stdin())
+    }
+
+    fn prompt(&mut self) {
+        eprint!("phux: {PAIRED_MODE_PROMPT}");
+        let _ = std::io::stderr().flush();
+    }
+
+    fn read_answer(&mut self) -> Option<String> {
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        let read = stdin.lock().read_line(&mut line).ok()?;
+        (read > 0).then_some(line)
+    }
+}
+
+/// The config and the running server `phux pair` changes when turning
+/// paired mode on. Tests substitute both.
+trait ListenerSetup {
+    /// The listeners bound right now.
+    fn query(&mut self) -> Result<LiveListeners, ListenerQueryError>;
+    /// `[policy] mode` in the user's config. `Ok(None)` is unset.
+    fn policy_mode(&mut self) -> Result<Option<phux_config::PolicyMode>, String>;
+    /// Write `[policy] mode = "paired"`, preserving the rest of the file.
+    fn write_paired(&mut self) -> Result<(), String>;
+    /// Restart the server in place so the new mode binds a listener.
+    fn rebind(&mut self) -> Result<(), String>;
+}
+
+/// The real config file and the server on `socket`.
+struct LiveListenerSetup<'a> {
+    /// Server to ask and to restart.
+    socket: &'a Path,
+}
+
+impl ListenerSetup for LiveListenerSetup<'_> {
+    fn query(&mut self) -> Result<LiveListeners, ListenerQueryError> {
+        query_live_listeners(self.socket)
+    }
+
+    fn policy_mode(&mut self) -> Result<Option<phux_config::PolicyMode>, String> {
+        let path = phux_config::loader::config_path();
+        phux_config::loader::load_from(&path)
+            .map(|config| config.policy.mode)
+            .map_err(|err| format!("{}: {err}", path.display()))
+    }
+
+    fn write_paired(&mut self) -> Result<(), String> {
+        let path = phux_config::loader::config_path();
+        super::service::write_paired_mode(&path)?;
+        info!(
+            "pair: set [policy] mode = \"paired\" in {}; restarting the server (panes are kept)",
+            path.display()
+        );
+        Ok(())
+    }
+
+    fn rebind(&mut self) -> Result<(), String> {
+        rebind_server(self.socket).map_err(|err| {
+            format!(
+                "{err}; [policy] mode = \"paired\" is already in config.toml, so `phux upgrade` \
+                 binds a listener with panes intact"
+            )
+        })
+    }
+}
+
+/// `y` or `yes`, the same answers the other confirmation prompts take.
+fn is_affirmative(reply: &str) -> bool {
+    matches!(reply.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Whether to write paired mode: `--enable`, or a yes at the one prompt.
+fn accept_paired_mode(enable: bool, prompt: &mut dyn ModePrompt) -> bool {
+    if enable {
+        return true;
+    }
+    if !prompt.is_interactive() {
+        return false;
+    }
+    prompt.prompt();
+    prompt
+        .read_answer()
+        .is_some_and(|line| is_affirmative(&line))
+}
+
+/// One line when nothing is bound because `[policy] mode` is unset.
+fn mode_unset_refusal(socket: &Path) -> String {
+    format!(
+        "the server at {} {NO_BOUND_LISTENER} because [policy] mode is unset, so none was \
+         minted; run `phux pair --enable` or set `[policy] mode = \"paired\"` (`phux doctor`)",
+        socket.display()
+    )
+}
+
+/// One line when a mode is set and something else left the listener unbound.
+fn other_unbound_refusal(socket: &Path, disabled: &[String]) -> String {
     let why = if disabled.is_empty() {
         String::new()
     } else {
         format!(" ({})", disabled.join("; "))
     };
-    Err(format!(
-        "the server at {} {NO_BOUND_LISTENER}{why}, so nothing would accept a \
-         credential and none was minted.\n  \
-         give it one: first set `[policy] mode = \"paired\"` in config.toml (a remote \
-         listener serves only enrolled clients, and with no mode the server binds none), \
-         then restart it with `--listen HOST:PORT` or `--quic HOST:PORT` \
-         (`PHUX_WS_ADDR` / `PHUX_QUIC_ADDR`), or let the default-profile server auto-bind \
-         one on an overlay network (`phux upgrade` re-binds with panes intact); \
-         `phux doctor` names the cause",
+    format!(
+        "the server at {} {NO_BOUND_LISTENER}{why}, so none was minted; pass `--listen \
+         HOST:PORT` or `--quic HOST:PORT`",
         socket.display()
-    ))
+    )
+}
+
+/// The listeners a mint may use, or a printed refusal. A bound listener is
+/// returned as the server reported it. An unset `[policy] mode` is the one
+/// case that offers to write `paired` and restart; any other unbound cause
+/// is a refusal.
+fn bound_remote_listener(socket: &Path, enable: bool) -> Option<LiveListeners> {
+    ensure_remote_listener(
+        socket,
+        enable,
+        &mut StdinModePrompt,
+        &mut LiveListenerSetup { socket },
+    )
+    .inspect_err(|refusal| error!("pair: {refusal}"))
+    .ok()
+}
+
+/// The listeners a mint may use. A bound listener is returned as the server
+/// reported it. An unset `[policy] mode` is the one case that offers to
+/// write `paired` and restart; any other unbound cause is a refusal.
+fn ensure_remote_listener(
+    socket: &Path,
+    enable: bool,
+    prompt: &mut dyn ModePrompt,
+    setup: &mut dyn ListenerSetup,
+) -> Result<LiveListeners, String> {
+    let disabled = match setup.query() {
+        Ok(live) => return Ok(live),
+        Err(ListenerQueryError::Unavailable(message)) => return Err(message),
+        Err(ListenerQueryError::Unbound { disabled }) => disabled,
+    };
+    match setup.policy_mode() {
+        Err(err) => {
+            return Err(format!(
+                "the server at {} {NO_BOUND_LISTENER}, and [policy] mode could not be read ({err})",
+                socket.display()
+            ));
+        }
+        Ok(Some(_)) => return Err(other_unbound_refusal(socket, &disabled)),
+        Ok(None) => {}
+    }
+    if !accept_paired_mode(enable, prompt) {
+        return Err(mode_unset_refusal(socket));
+    }
+    setup.write_paired()?;
+    setup.rebind()?;
+    match setup.query() {
+        Ok(live) => Ok(live),
+        Err(ListenerQueryError::Unavailable(message)) => Err(message),
+        Err(ListenerQueryError::Unbound { disabled }) => {
+            Err(other_unbound_refusal(socket, &disabled))
+        }
+    }
+}
+
+/// Ask the server to re-exec so the config just written takes effect, then
+/// wait until it answers again. Panes stay attached across that re-exec
+/// (`phux upgrade`).
+fn rebind_server(socket: &Path) -> Result<(), String> {
+    let outcome = super::upgrade::LiveUpgrade::new(socket, false).and_then(|mut env| {
+        // Same consent as `phux upgrade` with no `--close-agent-sessions`:
+        // a current server re-binds without a second question. Only a
+        // server old enough to refuse while agent sessions exist asks again.
+        super::upgrade::drive(
+            &mut env,
+            super::upgrade::Consent::detect(false),
+            Some(socket),
+        )
+    });
+    match outcome {
+        Ok(super::upgrade::UpgradeAck::Upgrading) => wait_for_rebind(socket),
+        Ok(
+            super::upgrade::UpgradeAck::Refused(message)
+            | super::upgrade::UpgradeAck::Unexpected(message),
+        ) => Err(format!(
+            "could not restart the server to bind a listener: {message}"
+        )),
+        Err(err) => Err(format!(
+            "could not restart the server at {} to bind a listener: {err}",
+            socket.display()
+        )),
+    }
+}
+
+/// Poll until a listener is bound, or until the restarted server has been
+/// up long enough that overlay detection would have recorded one.
+fn wait_for_rebind(socket: &Path) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("could not build a runtime to wait for the server: {err}"))?;
+    let deadline = Instant::now() + REBIND_WAIT;
+    let mut saw_gap = false;
+    let mut up_since: Option<Instant> = None;
+    while Instant::now() < deadline {
+        match query_listeners_with(&runtime, socket, Some(REBIND_QUERY_TIMEOUT)) {
+            Ok(_) => return Ok(()),
+            Err(ListenerQueryError::Unbound { .. }) => {
+                if saw_gap {
+                    let since = up_since.get_or_insert_with(Instant::now);
+                    if since.elapsed() >= LISTENER_SETTLE {
+                        return Ok(());
+                    }
+                }
+            }
+            Err(ListenerQueryError::Unavailable(_)) => {
+                saw_gap = true;
+                up_since = None;
+            }
+        }
+        std::thread::sleep(REBIND_POLL);
+    }
+    match query_listeners_with(&runtime, socket, Some(REBIND_QUERY_TIMEOUT)) {
+        Ok(_) | Err(ListenerQueryError::Unbound { .. }) => Ok(()),
+        Err(ListenerQueryError::Unavailable(message)) => Err(format!(
+            "the server at {} did not come back after the restart: {message}",
+            socket.display()
+        )),
+    }
 }
 
 /// Refuse, before anything is minted, a link or QR that cannot work: `--host`
@@ -776,6 +1065,7 @@ pub(crate) fn run_pair(
     json: bool,
     replace_token: Option<String>,
     door: Door,
+    enable: bool,
 ) -> ExitCode {
     let tokens = tokens
         .or_else(|| std::env::var_os("PHUX_WS_TOKENS").map(PathBuf::from))
@@ -831,12 +1121,8 @@ pub(crate) fn run_pair(
             return mint_relay_link(&route, &socket, &tokens, output, replace, enroll);
         }
     };
-    let live = match query_live_listeners(&socket) {
-        Ok(live) => live,
-        Err(refusal) => {
-            error!("pair: {refusal}");
-            return ExitCode::FAILURE;
-        }
+    let Some(live) = bound_remote_listener(&socket, enable) else {
+        return ExitCode::FAILURE;
     };
     let addresses = resolve_pair_addresses(host.as_deref(), live);
     // Both explicit camera QR and a QR shown by default must enroll a new
@@ -2094,9 +2380,11 @@ fn pair_document(
 #[cfg(test)]
 mod tests {
     use super::{
-        LinkOutput, LiveListeners, MagicDns, PairAddresses, ServerPins, advertised_names,
-        build_connect_link, build_connect_link_pinned, build_relay_connect_link,
-        legacy_connect_link, link_refusal, live_listeners, pair_document, parse_connect_link,
+        LinkOutput, ListenerQueryError, ListenerSetup, LiveListeners, MagicDns, ModePrompt,
+        NO_BOUND_LISTENER, PAIRED_MODE_PROMPT, PairAddresses, ServerPins, accept_paired_mode,
+        advertised_names, build_connect_link, build_connect_link_pinned, build_relay_connect_link,
+        ensure_remote_listener, is_affirmative, legacy_connect_link, link_refusal, live_listeners,
+        mode_unset_refusal, other_unbound_refusal, pair_document, parse_connect_link,
         percent_encode, phone_enrollment_requested, resolve_quic_endpoint, resolve_server_url,
         select_relay_connector, shows_default_qr,
     };
@@ -2508,21 +2796,38 @@ mod tests {
         }
     }
 
-    /// No listener report, or one with nothing bound, is a refusal naming
-    /// the socket and each disabled row's reason; any bound row admits a mint.
+    /// No listener report, or one with nothing bound, is an unbound result;
+    /// any bound row admits a mint. The unset-mode refusal is one line that
+    /// names `--enable` and the setting; another cause names `--listen`.
     #[test]
     fn a_mint_needs_a_bound_remote_listener() {
         let socket = Path::new("/run/phux.sock");
 
-        let absent = live_listeners(socket, None).expect_err("no report, nothing bound");
+        let absent = live_listeners(None).expect_err("no report, nothing bound");
         assert!(
-            absent.contains("/run/phux.sock") && absent.contains("no remote listener bound"),
-            "{absent}"
+            matches!(absent, ListenerQueryError::Unbound { ref disabled } if disabled.is_empty()),
+            "{absent:?}"
         );
-        assert!(absent.contains("none was minted"), "{absent}");
+
+        let unset = mode_unset_refusal(socket);
+        assert!(!unset.contains('\n'), "{unset}");
+        assert!(
+            unset.contains("/run/phux.sock") && unset.contains(NO_BOUND_LISTENER),
+            "{unset}"
+        );
+        assert!(unset.contains("none was minted"), "{unset}");
+        assert!(
+            unset.contains("phux pair --enable") && unset.contains("[policy] mode = \"paired\""),
+            "{unset}"
+        );
+        assert!(unset.contains("phux doctor"), "{unset}");
+        assert!(
+            !unset.contains("PHUX_WS_ADDR") && !unset.contains("overlay network"),
+            "{unset}"
+        );
 
         let empty = RemoteListenersReport::new();
-        assert!(live_listeners(socket, Some(&empty)).is_err());
+        assert!(live_listeners(Some(&empty)).is_err());
 
         let wss_down = RemoteListenerSlot::disabled(
             RemoteListenerTransport::Wss,
@@ -2530,18 +2835,29 @@ mod tests {
             ListenerDisabledReason::BindFailed,
         );
         let disabled = RemoteListenersReport::new().with_listeners(vec![wss_down.clone()]);
-        let refusal = live_listeners(socket, Some(&disabled)).expect_err("disabled is not bound");
+        let ListenerQueryError::Unbound { disabled: rows } =
+            live_listeners(Some(&disabled)).expect_err("disabled is not bound")
+        else {
+            panic!("expected an unbound report");
+        };
+        let refusal = other_unbound_refusal(socket, &rows);
+        assert!(!refusal.contains('\n'), "{refusal}");
         assert!(
             refusal.contains("wss at 100.64.0.2:8787 disabled (bind_failed)"),
             "{refusal}"
         );
+        assert!(
+            refusal.contains("--listen HOST:PORT") && refusal.contains("--quic HOST:PORT"),
+            "{refusal}"
+        );
+        assert!(!refusal.contains("phux pair --enable"), "{refusal}");
 
         let quic_only = RemoteListenersReport::new().with_listeners(vec![
             wss_down,
             RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "0.0.0.0:8788"),
         ]);
         assert_eq!(
-            live_listeners(socket, Some(&quic_only)).expect("QUIC accepts credentials"),
+            live_listeners(Some(&quic_only)).expect("QUIC accepts credentials"),
             live(None, Some("0.0.0.0:8788"))
         );
 
@@ -2550,7 +2866,7 @@ mod tests {
             RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "100.64.0.2:8788"),
         ]);
         assert_eq!(
-            live_listeners(socket, Some(&both)).expect("bound"),
+            live_listeners(Some(&both)).expect("bound"),
             live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))
         );
     }
@@ -3042,5 +3358,302 @@ mod tests {
             select_relay_connector(two, Some("b:4433")).expect("named"),
             connector("b:4433")
         );
+    }
+
+    /// The prompt is one question, defaulting to no. `y` and `yes` accept;
+    /// anything else, including an empty line, declines.
+    #[test]
+    fn the_paired_mode_prompt_defaults_to_no() {
+        assert!(!PAIRED_MODE_PROMPT.contains('\n'));
+        assert!(PAIRED_MODE_PROMPT.contains(
+            "phones need paired mode. turn it on and restart the server? (panes are kept) [y/N] "
+        ));
+        assert!(is_affirmative("y"));
+        assert!(is_affirmative(" YES "));
+        assert!(!is_affirmative("n"));
+        assert!(!is_affirmative(""));
+        assert!(!is_affirmative("yep"));
+
+        let mut prompt = ScriptedPrompt {
+            interactive: true,
+            answer: Some("y\n".to_owned()),
+            prompted: 0,
+            reads: 0,
+        };
+        assert!(accept_paired_mode(false, &mut prompt));
+        assert_eq!((prompt.prompted, prompt.reads), (1, 1));
+
+        prompt.answer = Some("\n".to_owned());
+        assert!(!accept_paired_mode(false, &mut prompt));
+        prompt.answer = Some("n\n".to_owned());
+        assert!(!accept_paired_mode(false, &mut prompt));
+        prompt.answer = None;
+        assert!(!accept_paired_mode(false, &mut prompt));
+
+        prompt.interactive = false;
+        prompt.answer = Some("y\n".to_owned());
+        assert!(!accept_paired_mode(false, &mut prompt));
+        assert_eq!(
+            (prompt.prompted, prompt.reads),
+            (4, 4),
+            "a non-interactive run must not ask"
+        );
+
+        assert!(accept_paired_mode(true, &mut prompt));
+        assert_eq!(
+            (prompt.prompted, prompt.reads),
+            (4, 4),
+            "--enable must not ask"
+        );
+    }
+
+    /// A listener that is already bound skips the prompt, the config, and
+    /// the restart.
+    #[test]
+    fn a_bound_listener_is_left_alone() {
+        let mut prompt = ScriptedPrompt::silent();
+        let mut setup = ScriptedSetup::unbound(None);
+        setup.queries.clear();
+        setup
+            .queries
+            .push_back(Ok(live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))));
+        let found =
+            ensure_remote_listener(Path::new("/run/phux.sock"), true, &mut prompt, &mut setup)
+                .expect("bound");
+        assert_eq!(
+            found,
+            live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))
+        );
+        assert_eq!(prompt.prompted, 0);
+        assert!(!setup.wrote && !setup.rebound);
+        assert_eq!(setup.mode_reads, 0);
+    }
+
+    /// Answering yes writes paired mode and continues with the listener the
+    /// restart bound. No, and an empty answer, leave the config alone.
+    #[test]
+    fn an_unset_mode_on_a_terminal_writes_paired_mode_only_on_yes() {
+        let socket = Path::new("/run/phux.sock");
+        for answer in [Some("n\n".to_owned()), Some("\n".to_owned()), None] {
+            let mut prompt = ScriptedPrompt {
+                interactive: true,
+                answer,
+                prompted: 0,
+                reads: 0,
+            };
+            let mut setup = ScriptedSetup::unbound(None);
+            let err = ensure_remote_listener(socket, false, &mut prompt, &mut setup)
+                .expect_err("declined");
+            assert_eq!(err, mode_unset_refusal(socket));
+            assert!(!err.contains('\n'), "{err}");
+            assert_eq!(prompt.prompted, 1);
+            assert!(!setup.wrote && !setup.rebound);
+            assert_eq!(setup.queries.len(), 0, "a decline does not ask again");
+        }
+
+        let mut prompt = ScriptedPrompt {
+            interactive: true,
+            answer: Some("y\n".to_owned()),
+            prompted: 0,
+            reads: 0,
+        };
+        let mut setup = ScriptedSetup::unbound(None);
+        setup
+            .queries
+            .push_back(Ok(live(Some("100.64.0.2:8787"), None)));
+        let found =
+            ensure_remote_listener(socket, false, &mut prompt, &mut setup).expect("accepted");
+        assert_eq!(found, live(Some("100.64.0.2:8787"), None));
+        assert!(setup.wrote && setup.rebound);
+        assert_eq!(prompt.prompted, 1);
+    }
+
+    /// No terminal means no prompt and an untouched config. The refusal is
+    /// one line naming `--enable` and the setting.
+    #[test]
+    fn an_unset_mode_without_a_terminal_names_enable_and_leaves_the_config() {
+        let socket = Path::new("/tmp/phux.sock");
+        let mut prompt = ScriptedPrompt::silent();
+        let mut setup = ScriptedSetup::unbound(None);
+        let err = ensure_remote_listener(socket, false, &mut prompt, &mut setup)
+            .expect_err("no one to ask");
+        assert_eq!(err, mode_unset_refusal(socket));
+        assert!(!err.contains('\n'), "{err}");
+        assert!(
+            err.contains("phux pair --enable") && err.contains("[policy] mode = \"paired\""),
+            "{err}"
+        );
+        assert_eq!(prompt.prompted, 0);
+        assert!(!setup.wrote && !setup.rebound);
+    }
+
+    /// `--enable` is the non-interactive yes: it writes the mode and
+    /// continues, and it does not prompt even on a terminal.
+    #[test]
+    fn enable_writes_paired_mode_without_asking() {
+        let mut prompt = ScriptedPrompt {
+            interactive: true,
+            answer: Some("n\n".to_owned()),
+            prompted: 0,
+            reads: 0,
+        };
+        let mut setup = ScriptedSetup::unbound(None);
+        setup
+            .queries
+            .push_back(Ok(live(None, Some("100.64.0.2:8788"))));
+        let found =
+            ensure_remote_listener(Path::new("/run/phux.sock"), true, &mut prompt, &mut setup)
+                .expect("enabled");
+        assert_eq!(found, live(None, Some("100.64.0.2:8788")));
+        assert_eq!(prompt.prompted, 0);
+        assert!(setup.wrote && setup.rebound);
+    }
+
+    /// A mode that is already set, with nothing bound, is a different cause:
+    /// no prompt, no write, and the refusal names `--listen` / `--quic`.
+    #[test]
+    fn a_set_mode_with_nothing_bound_names_listen_and_does_not_ask() {
+        let socket = Path::new("/run/phux.sock");
+        for mode in [
+            phux_config::PolicyMode::Paired,
+            phux_config::PolicyMode::Local,
+        ] {
+            let mut prompt = ScriptedPrompt {
+                interactive: true,
+                answer: Some("y\n".to_owned()),
+                prompted: 0,
+                reads: 0,
+            };
+            let mut setup = ScriptedSetup::unbound(Some(mode));
+            setup.queries.clear();
+            setup.queries.push_back(Err(ListenerQueryError::Unbound {
+                disabled: vec!["quic at ? disabled (no_overlay_address)".to_owned()],
+            }));
+            let err = ensure_remote_listener(socket, true, &mut prompt, &mut setup)
+                .expect_err("mode is set");
+            assert!(!err.contains('\n'), "{err}");
+            assert!(
+                err.contains("--listen HOST:PORT") && err.contains("--quic HOST:PORT"),
+                "{err}"
+            );
+            assert!(err.contains("no_overlay_address"), "{err}");
+            assert!(!err.contains("phux pair --enable"), "{err}");
+            assert_eq!(prompt.prompted, 0);
+            assert!(!setup.wrote && !setup.rebound);
+        }
+    }
+
+    /// `write_paired_mode` creates a missing file and, on an existing one,
+    /// keeps every other key and comment.
+    #[test]
+    fn write_paired_mode_preserves_existing_keys_and_comments() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("config.toml");
+        let original = "\
+# header stays
+[sidebar]
+width = 30 # keep
+
+[policy]
+# chosen later
+";
+        std::fs::write(&config, original).expect("seed config");
+        super::super::service::write_paired_mode(&config).expect("set paired");
+        let written = std::fs::read_to_string(&config).expect("read config");
+        assert!(written.contains("# header stays"), "{written}");
+        assert!(written.contains("width = 30 # keep"), "{written}");
+        assert!(written.contains("# chosen later"), "{written}");
+        assert!(written.contains("mode = \"paired\""), "{written}");
+        let loaded = phux_config::loader::load_from(&config).expect("loads");
+        assert_eq!(loaded.policy.mode, Some(phux_config::PolicyMode::Paired));
+        assert_eq!(loaded.sidebar.width, 30);
+
+        let missing = dir.path().join("nested").join("config.toml");
+        super::super::service::write_paired_mode(&missing).expect("create");
+        let created = std::fs::read_to_string(&missing).expect("created");
+        assert!(created.contains("[policy]"), "{created}");
+        assert!(created.contains("mode = \"paired\""), "{created}");
+        let loaded = phux_config::loader::load_from(&missing).expect("created loads");
+        assert_eq!(loaded.policy.mode, Some(phux_config::PolicyMode::Paired));
+    }
+
+    /// A scripted yes/no. `prompt` records the question and does not print.
+    struct ScriptedPrompt {
+        interactive: bool,
+        answer: Option<String>,
+        prompted: usize,
+        reads: usize,
+    }
+
+    impl ScriptedPrompt {
+        fn silent() -> Self {
+            Self {
+                interactive: false,
+                answer: None,
+                prompted: 0,
+                reads: 0,
+            }
+        }
+    }
+
+    impl ModePrompt for ScriptedPrompt {
+        fn is_interactive(&self) -> bool {
+            self.interactive
+        }
+
+        fn prompt(&mut self) {
+            self.prompted += 1;
+        }
+
+        fn read_answer(&mut self) -> Option<String> {
+            self.reads += 1;
+            self.answer.clone()
+        }
+    }
+
+    /// A scripted listener report, policy mode, and the two side effects.
+    struct ScriptedSetup {
+        queries: std::collections::VecDeque<Result<LiveListeners, ListenerQueryError>>,
+        mode: Option<phux_config::PolicyMode>,
+        mode_reads: usize,
+        wrote: bool,
+        rebound: bool,
+    }
+
+    impl ScriptedSetup {
+        fn unbound(mode: Option<phux_config::PolicyMode>) -> Self {
+            let mut queries = std::collections::VecDeque::new();
+            queries.push_back(Err(ListenerQueryError::Unbound {
+                disabled: Vec::new(),
+            }));
+            Self {
+                queries,
+                mode,
+                mode_reads: 0,
+                wrote: false,
+                rebound: false,
+            }
+        }
+    }
+
+    impl ListenerSetup for ScriptedSetup {
+        fn query(&mut self) -> Result<LiveListeners, ListenerQueryError> {
+            self.queries.pop_front().expect("a scripted listener query")
+        }
+
+        fn policy_mode(&mut self) -> Result<Option<phux_config::PolicyMode>, String> {
+            self.mode_reads += 1;
+            Ok(self.mode)
+        }
+
+        fn write_paired(&mut self) -> Result<(), String> {
+            self.wrote = true;
+            Ok(())
+        }
+
+        fn rebind(&mut self) -> Result<(), String> {
+            self.rebound = true;
+            Ok(())
+        }
     }
 }
