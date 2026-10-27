@@ -47,6 +47,10 @@ silhouettes use their native brand interface over the selected geometry and fini
 Desktop's process-wide branding interface owns its saved choice, preview and
 platform icon. Clients keep stable asset paths and do not branch on profile names.
 
+README and DMG artwork reuse the pinned wordmark and app icon. The DMG
+packager verifies the lock and composites a Retina background and badged
+disk icon; Finder metadata sets the layout without GUI automation.
+
 ## Publishing and updates
 
 phux-brand checks the catalog's explicit public approval, generated mobile

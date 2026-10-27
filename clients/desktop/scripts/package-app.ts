@@ -13,6 +13,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -177,35 +178,37 @@ export function thirdPartyNotices(target = "aarch64-apple-darwin"): string {
   return renderNotices([...crates.values()]);
 }
 
-function renderIcon(output: string): void {
-  const work = join(tmpdir(), `phux-icon-${process.pid}`);
-  const iconset = join(work, "AppIcon.iconset");
-  mkdirSync(iconset, { recursive: true });
-  // Use canonical pixels: Quick Look adds a white background or document frame.
-  const master = desktopBrand().iconPng;
-  for (const size of [16, 32, 128, 256, 512]) {
-    run([
-      "sips",
-      "-z",
-      `${size}`,
-      `${size}`,
-      master,
-      "--out",
-      join(iconset, `icon_${size}x${size}.png`),
-    ]);
-    const double = size * 2;
-    run([
-      "sips",
-      "-z",
-      `${double}`,
-      `${double}`,
-      master,
-      "--out",
-      join(iconset, `icon_${size}x${size}@2x.png`),
-    ]);
+export function renderIcon(output: string, master = desktopBrand().iconPng): void {
+  const work = mkdtempSync(join(tmpdir(), "phux-icon-"));
+  try {
+    const iconset = join(work, "AppIcon.iconset");
+    mkdirSync(iconset, { recursive: true });
+    // Use canonical pixels: Quick Look adds a white background or document frame.
+    for (const size of [16, 32, 128, 256, 512]) {
+      run([
+        "sips",
+        "-z",
+        `${size}`,
+        `${size}`,
+        master,
+        "--out",
+        join(iconset, `icon_${size}x${size}.png`),
+      ]);
+      const double = size * 2;
+      run([
+        "sips",
+        "-z",
+        `${double}`,
+        `${double}`,
+        master,
+        "--out",
+        join(iconset, `icon_${size}x${size}@2x.png`),
+      ]);
+    }
+    run(["iconutil", "-c", "icns", iconset, "-o", output]);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
   }
-  run(["iconutil", "-c", "icns", iconset, "-o", output]);
-  rmSync(work, { recursive: true, force: true });
 }
 
 function run(command: string[]): string {

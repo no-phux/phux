@@ -53,6 +53,10 @@ was in your panes. Read it, and remove anything private, before you share
 it. phux never logs what you type or paste, and its log files are readable
 only by you.
 
+Desktop's palette has **Copy Diagnostics**; [log locations](../clients/desktop/README.md#what-it-does).
+File [an issue](https://github.com/no-phux/phux/issues) with your OS/CPU,
+CLI and desktop versions, install method, reproduction steps, and actual error.
+
 ## The server
 
 **`no server running at /tmp/phux-me/phux.sock`.** Nothing is listening on

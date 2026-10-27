@@ -29,18 +29,15 @@ required. The app and DMG are Developer ID signed, Apple-notarized, and
 stapled. The app bundles the phux CLI and server.
 The ZIP remains available for the installer and automatic updates.
 
-The macOS app includes the CLI and server. On a fresh Mac, first launch installs
-the bundled CLI at `~/.local/bin/phux` and starts the server. No separate download
-is required. If Terminal cannot find phux, choose **Add to PATH** in Phux. It appends
-one line to your shell profile (~/.zshrc for zsh, ~/.bash_profile for bash). Then open
-a new Terminal window. The same buttons are in **Phux Settings → Permissions**. An existing CLI
-is never replaced. If the CLI
-is installed while the app is open, **Retry connection** discovers it without
-restarting Desktop. Explicit `--phux` / `PHUX_BIN` paths stay pinned.
+First launch installs the bundled CLI at `~/.local/bin/phux` if none exists,
+then starts or reuses the server. If Terminal cannot find `phux`, choose
+**Add to PATH** in Phux, then open a new Terminal window. This appends one
+line to `~/.zshrc` or `~/.bash_profile`; the same control is in
+**Phux Settings → Permissions**. **Retry connection** discovers a CLI installed
+while the app is open; explicit `--phux` / `PHUX_BIN` paths stay pinned.
 
-The stable macOS app and DMG are Developer ID signed, Apple-notarized, and
-stapled. Older releases through 0.44.1 have only an ad-hoc-signed ZIP. Do not
-disable Gatekeeper to install a downloaded app.
+Older releases through 0.44.1 have only an ad-hoc-signed ZIP. Do not disable
+Gatekeeper to install a downloaded app.
 
 ### Windows
 
@@ -209,6 +206,11 @@ point a development build at the installed server.
 The native crate's layout is in [native/README.md](./native/README.md).
 The TypeScript under `scripts/` is build, packaging, and smoke tooling, run
 with the pinned Bun; it is not part of the shipped app.
+
+See [Xcode setup](../../docs/development.md#gpui-desktop) for source builds.
+DMG packaging also needs Python 3 (`venv`/`pip`) and Apple's Swift/image tools.
+It installs `packaging/dmg-requirements.txt` into a disposable environment;
+those dependencies do not ship in the app. [Brand provenance](../../docs/brand-assets.md).
 
 ## Qualification
 

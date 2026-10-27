@@ -1,6 +1,7 @@
 # Install
 
-phux is one command-line program, `phux`, plus `phux-mcp` for coding agents. Install it with the script below, then run `phux`.
+Install the CLI/terminal UI below, or choose the [desktop app](#desktop-app).
+The CLI install includes `phux` and `phux-mcp`. Run `phux` to start.
 
 ```sh
 curl -fsSL https://phux.sh/install | sh
@@ -8,7 +9,7 @@ curl -fsSL https://phux.sh/install | sh
 
 ## Requirements
 
-Release builds exist for three platforms:
+Published CLI/server builds:
 
 | OS    | Architecture          | Notes                                   |
 | ----- | --------------------- | --------------------------------------- |
@@ -21,6 +22,7 @@ Windows desktop build is not published yet. There is no native Windows
 coordinator or Intel Mac build. See [Windows (WSL)](#windows-wsl).
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
+Xcode is only needed for [source builds](./development.md#gpui-desktop).
 
 ## macOS permissions
 
@@ -173,13 +175,24 @@ Homebrew 6 and later ask you to trust a third-party tap before installing from i
 
 ## Desktop app
 
+### macOS drag-and-drop download
+
+Download **macos-arm64.dmg** from the latest
+[Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true).
+Open it, drag **Phux.app** to **Applications**, eject the image, then open
+Phux from Applications—not from the mounted image.
+
+The app and DMG are Developer ID signed, Apple-notarized, and stapled.
+The bundled CLI/server needs no separate download and never replaces an
+existing CLI. See [first launch and recovery](../clients/desktop/README.md#first-launch-and-recovery).
+
+### Shell installer (macOS and Linux)
+
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
 This is the same script as `install --desktop`.
-
-The Mac app bundles the phux CLI and server. The app and DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app requires Apple silicon and macOS 26.0 or later. The standalone CLI requires macOS 11.0 or later.
 
 The Linux desktop archive does not include the CLI. On Linux, this script installs the CLI when none is found.
 

@@ -1,5 +1,7 @@
 # phux
 
+<img src="./docs/assets/logo.png" alt="Phux fox and wordmark" width="280">
+
 A terminal multiplexer whose server you can drive from code.
 
 phux keeps your shells running in a background server and shows them in a
@@ -8,22 +10,35 @@ also a command with JSON output and an exit code, the server tracks which
 panes are running a coding agent and whether it is waiting on you, and
 another machine is one `phux host add me@mini` away, with no account.
 
-[Docs](./docs/README.md) · [Discord](https://discord.gg/dUv5rzdHp) ·
+[Docs](./docs/README.md) · [Help](#help) · [Releases](https://github.com/no-phux/phux/releases) ·
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
 
 ## Install
+
+### CLI and terminal UI
 
 ```sh
 curl -fsSL https://phux.sh/install | sh
 ```
 
-macOS on Apple silicon, Linux x86_64 and arm64. Also `brew install
-no-phux/tap/phux`. [More options](./docs/install.md), including the desktop
-app and building from source.
+Or use [Homebrew](./docs/install.md#homebrew). Run `phux` after installing.
 
-**Windows:** the CLI and server run in WSL 2, with PowerShell launchers. A
-native Windows desktop build is not published yet.
-[Install in WSL](./docs/install.md#windows-wsl).
+### Desktop app
+
+**macOS:** [download the DMG](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
+drag **Phux.app** to **Applications**, eject the image, and open Phux.
+The app includes the CLI/server and is signed and notarized.
+**Linux:** use the [desktop installer](./docs/install.md#desktop-app).
+
+### Platform support
+
+| Platform | CLI / server / terminal UI | Desktop |
+| --- | --- | --- |
+| macOS, Apple silicon | macOS 11+ | macOS 26+ |
+| Linux, x86_64 or arm64 | Native, glibc | X11 or Wayland, Vulkan driver |
+| Windows | [WSL 2 and PowerShell launchers](./docs/install.md#windows-wsl) | Not published |
+
+[Other installation options](./docs/install.md). No Intel Mac or musl builds.
 
 ## Use
 
@@ -65,6 +80,12 @@ client works with any 1.x server. See [protocol](./docs/protocol.md).
 
 [CONTRIBUTING.md](./CONTRIBUTING.md), then [development](./docs/development.md).
 phux is picky about new surface area; ask before building a feature.
+
+## Help
+
+- **Troubleshooting:** run `phux doctor`, then see [common fixes](./docs/troubleshooting.md) or [desktop recovery](./clients/desktop/README.md#first-launch-and-recovery).
+- **Questions:** [Discord](https://discord.gg/dUv5rzdHp).
+- **Bugs and proposals:** [GitHub issues](https://github.com/no-phux/phux/issues); [what to include](./docs/troubleshooting.md#reporting-a-bug).
 
 ## License
 
