@@ -107,16 +107,80 @@ function Assert-DesktopStopped([string] $Directory) {
     }
 }
 
+function Get-DesktopRegistrationPath { return 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PhuxDesktop' }
+function Get-DesktopShortcutPath { return Join-Path ([Environment]::GetFolderPath('Programs')) 'Phux Desktop.lnk' }
+
+function Open-DesktopWritableRegistryKey([string] $Path) {
+    $key = Get-Item -LiteralPath $Path
+    try { return $key.OpenSubKey('', $true) } finally { $key.Dispose() }
+}
+
+function Get-DesktopRegistrySnapshot {
+    $path = Get-DesktopRegistrationPath
+    $exists = Test-Path -LiteralPath $path
+    $values = @{}
+    if ($exists) {
+        $key = Get-Item -LiteralPath $path
+        try {
+            foreach ($name in $key.GetValueNames()) {
+                $values[$name] = @{ Value = $key.GetValue($name, $null, 'DoNotExpandEnvironmentNames'); Kind = $key.GetValueKind($name) }
+            }
+        } finally { $key.Dispose() }
+    }
+    return @{ Path = $path; Exists = $exists; Values = $values }
+}
+
+function Restore-DesktopRegistrySnapshot([hashtable] $State) {
+    if (-not $State.Exists) {
+        if (Test-Path -LiteralPath $State.Path) { Remove-Item -LiteralPath $State.Path -Recurse -Force }
+        return
+    }
+    if (-not (Test-Path -LiteralPath $State.Path)) { New-Item -Force $State.Path | Out-Null }
+    $key = Open-DesktopWritableRegistryKey $State.Path
+    try {
+        foreach ($name in $key.GetValueNames()) {
+            if (-not $State.Values.ContainsKey($name)) { $key.DeleteValue($name) }
+        }
+        foreach ($item in $State.Values.GetEnumerator()) { $key.SetValue($item.Key, $item.Value.Value, $item.Value.Kind) }
+    } finally { $key.Dispose() }
+}
+
+function Get-DesktopFileSnapshot([string] $Path) {
+    $bytes = $null
+    if (Test-Path -LiteralPath $Path) { $bytes = [IO.File]::ReadAllBytes($Path) }
+    return @{ Path = $Path; Bytes = $bytes }
+}
+
+function Restore-DesktopFileSnapshot([hashtable] $State) {
+    if ($null -ne $State.Bytes) { [IO.File]::WriteAllBytes($State.Path, $State.Bytes); return }
+    if (Test-Path -LiteralPath $State.Path) { Remove-Item -LiteralPath $State.Path -Force }
+}
+
+function Get-DesktopInstallSnapshot([string] $Directory, [bool] $Shortcut) {
+    $files = @((Get-DesktopFileSnapshot (Join-Path $Directory 'uninstall.ps1')))
+    if ($Shortcut) { $files += Get-DesktopFileSnapshot (Get-DesktopShortcutPath) }
+    return @{ Files = $files; Registry = (Get-DesktopRegistrySnapshot) }
+}
+
+function Restore-DesktopInstallSnapshot([hashtable] $State) {
+    $failures = @()
+    foreach ($file in $State.Files) {
+        try { Restore-DesktopFileSnapshot $file } catch { $failures += $_.Exception.Message }
+    }
+    try { Restore-DesktopRegistrySnapshot $State.Registry } catch { $failures += $_.Exception.Message }
+    if ($failures.Count) { throw ('Desktop rollback could not restore all registration state: ' + ($failures -join '; ')) }
+}
+
 function Set-DesktopRegistration([string] $Directory, [string] $ReleaseVersion, [bool] $Shortcut) {
-    $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PhuxDesktop'
-    New-Item -Force $registry | Out-Null
+    $registry = Get-DesktopRegistrationPath
+    if (-not (Test-Path -LiteralPath $registry)) { New-Item -Force $registry | Out-Null }
     $uninstaller = Join-Path $Directory 'uninstall.ps1'
     $command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $uninstaller + '" -Uninstall -InstallDir "' + $Directory + '"'
     foreach ($item in @{ DisplayName = 'Phux Desktop'; DisplayVersion = $ReleaseVersion; Publisher = 'no-phux'; InstallLocation = $Directory; UninstallString = $command; QuietUninstallString = $command }.GetEnumerator()) {
         Set-ItemProperty $registry -Name $item.Key -Value $item.Value
     }
     if ($Shortcut) {
-        $path = Join-Path ([Environment]::GetFolderPath('Programs')) 'Phux Desktop.lnk'
+        $path = Get-DesktopShortcutPath
         $link = (New-Object -ComObject WScript.Shell).CreateShortcut($path)
         $link.TargetPath = Join-Path $Directory 'current/phux-desktop.exe'
         $link.WorkingDirectory = Join-Path $Directory 'current'
@@ -136,6 +200,7 @@ function Install-DesktopBundle([string] $Bundle, [string] $Directory, [string] $
     $backup = Join-Path $Directory ('.previous-' + [Guid]::NewGuid().ToString('N'))
     try {
         if (Test-Path $current) { Get-DesktopBundle $current | Out-Null }
+        $state = Get-DesktopInstallSnapshot $Directory $Shortcut
         Copy-Item -LiteralPath $Bundle -Destination $stage -Recurse
         if (Test-Path $current) { Move-Item -LiteralPath $current -Destination $backup }
         try {
@@ -143,8 +208,10 @@ function Install-DesktopBundle([string] $Bundle, [string] $Directory, [string] $
             Copy-Item -LiteralPath $Installer -Destination (Join-Path $Directory 'uninstall.ps1') -Force
             Set-DesktopRegistration $Directory $release.version $Shortcut
         } catch {
-            if (Test-Path $current) { Remove-Item -LiteralPath $current -Recurse -Force }
-            if (Test-Path $backup) { Move-Item -LiteralPath $backup -Destination $current }
+            try {
+                if (Test-Path $current) { Remove-Item -LiteralPath $current -Recurse -Force }
+                if (Test-Path $backup) { Move-Item -LiteralPath $backup -Destination $current }
+            } finally { Restore-DesktopInstallSnapshot $state }
             throw
         }
         if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
@@ -162,11 +229,11 @@ function Uninstall-Desktop([string] $Directory) {
     $lock = [IO.File]::Open((Join-Path $Directory '.install.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
     try {
         Remove-Item -LiteralPath $current -Recurse -Force
-        $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PhuxDesktop'
+        $registry = Get-DesktopRegistrationPath
         $recorded = Get-ItemProperty $registry -ErrorAction SilentlyContinue
         if ($recorded.InstallLocation -eq $Directory) {
             Remove-Item $registry -Recurse -Force
-            $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Phux Desktop.lnk'
+            $shortcut = Get-DesktopShortcutPath
             if (Test-Path $shortcut) { Remove-Item -LiteralPath $shortcut -Force }
         }
         Remove-Item -LiteralPath (Join-Path $Directory 'uninstall.ps1') -Force -ErrorAction SilentlyContinue
