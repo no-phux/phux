@@ -1,0 +1,109 @@
+diff --git a/gpui-fast-windows/src/directx_devices.rs b/gpui-fast-windows/src/directx_devices.rs
+index b7e8dcb..c7601ce 100644
+--- a/gpui-fast-windows/src/directx_devices.rs
++++ b/gpui-fast-windows/src/directx_devices.rs
+@@ -14,8 +14,9 @@ use windows::Win32::{
+             D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+         },
+         Dxgi::{
+-            CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_DEBUG,
+-            DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_NOT_FOUND, IDXGIAdapter1, IDXGIFactory6,
++            CreateDXGIFactory2, DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE,
++            DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_NOT_FOUND,
++            IDXGIAdapter1, IDXGIFactory6,
+         },
+     },
+ };
+@@ -117,10 +118,12 @@ fn get_adapter(
+         let adapter = match unsafe { dxgi_factory.EnumAdapters1(adapter_index) } {
+             Ok(adapter) => adapter,
+             Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
+-            Err(error) => return Err(error).context("Enumerating DXGI hardware adapters"),
++            Err(error) => {
++                log::warn!("Enumerating DXGI adapter {adapter_index} failed: {error}; trying WARP");
++                break;
++            }
+         };
+-        let desc = unsafe { adapter.GetDesc1()? };
+-        if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
++        if !hardware_adapter_is_usable(adapter_index, unsafe { adapter.GetDesc1() }) {
+             continue;
+         }
+         if let Some(devices) = create_adapter_device(adapter, debug_layer_available).log_err() {
+@@ -131,7 +134,23 @@ fn get_adapter(
+     log::warn!("No usable hardware adapter; trying the Direct3D WARP software adapter");
+     let warp = unsafe { dxgi_factory.EnumWarpAdapter::<IDXGIAdapter1>() }
+         .context("Getting the WARP software adapter")?;
+-    create_adapter_device(warp, debug_layer_available).context("Creating the WARP device")
++    create_adapter_device(warp, debug_layer_available)
++        .context("Creating the WARP device after hardware adapter search failed")
++}
++
++fn hardware_adapter_is_usable(
++    index: u32,
++    description: windows::core::Result<DXGI_ADAPTER_DESC1>,
++) -> bool {
++    match description {
++        Ok(desc) => desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0,
++        Err(error) => {
++            log::warn!(
++                "Reading DXGI adapter {index} description failed: {error}; skipping adapter"
++            );
++            false
++        }
++    }
+ }
+ 
+ fn create_adapter_device(
+@@ -151,11 +170,16 @@ fn create_adapter_device(
+         Some(&mut feature_level),
+         debug_layer_available,
+     )?;
+-    let desc = unsafe { adapter.GetDesc1()? };
+-    log::info!(
+-        "Using GPU: {}",
+-        String::from_utf16_lossy(&desc.Description).trim_matches(char::from(0))
+-    );
++    // Naming a successfully created device is diagnostic, not a startup gate.
++    if let Some(desc) = unsafe { adapter.GetDesc1() }
++        .context("Reading the selected Direct3D adapter description")
++        .log_err()
++    {
++        log::info!(
++            "Using GPU: {}",
++            String::from_utf16_lossy(&desc.Description).trim_matches(char::from(0))
++        );
++    }
+     Ok((
+         adapter,
+         device,
+@@ -164,6 +188,29 @@ fn create_adapter_device(
+     ))
+ }
+ 
++#[cfg(test)]
++mod adapter_tests {
++    use super::{DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE, hardware_adapter_is_usable};
++    use windows::Win32::Graphics::Dxgi::DXGI_ERROR_NOT_FOUND;
++
++    #[test]
++    fn unreadable_and_software_descriptions_do_not_select_hardware() {
++        assert!(!hardware_adapter_is_usable(
++            0,
++            Err(DXGI_ERROR_NOT_FOUND.into())
++        ));
++        let software = DXGI_ADAPTER_DESC1 {
++            Flags: DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32,
++            ..Default::default()
++        };
++        assert!(!hardware_adapter_is_usable(1, Ok(software)));
++        assert!(hardware_adapter_is_usable(
++            2,
++            Ok(DXGI_ADAPTER_DESC1::default())
++        ));
++    }
++}
++
+ #[inline]
+ fn get_device(
+     adapter: &IDXGIAdapter1,

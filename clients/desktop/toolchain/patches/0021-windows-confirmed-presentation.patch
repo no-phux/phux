@@ -1,0 +1,482 @@
+diff --git a/gpui-fast-windows/src/directx_renderer.rs b/gpui-fast-windows/src/directx_renderer.rs
+index 6a414fc..d85ce54 100644
+--- a/gpui-fast-windows/src/directx_renderer.rs
++++ b/gpui-fast-windows/src/directx_renderer.rs
+@@ -1,5 +1,7 @@
+ // Modified by Longbridge for gpui-fast.
+ use std::{
++    cell::Cell,
++    rc::Rc,
+     slice,
+     sync::{Arc, OnceLock},
+ };
+@@ -201,6 +203,7 @@ pub(crate) struct FontInfo {
+ }
+ 
+ pub(crate) struct DirectXRenderer {
++    presentation_epoch: Rc<Cell<Option<u64>>>,
+     hwnd: HWND,
+     pub(crate) atlas: Arc<DirectXAtlas>,
+     pub(crate) devices: Option<DirectXRendererDevices>,
+@@ -349,6 +352,7 @@ impl DirectXRenderer {
+         };
+ 
+         Ok(DirectXRenderer {
++            presentation_epoch: Rc::new(Cell::new(Some(0))),
+             hwnd,
+             atlas,
+             devices: Some(devices),
+@@ -412,6 +416,7 @@ impl DirectXRenderer {
+ 
+     #[inline]
+     pub(crate) fn present(&mut self) -> Result<()> {
++        self.invalidate_presentation();
+         self.present_status()
+             .ok()
+             .context("Presenting swap chain failed")
+@@ -435,6 +440,7 @@ impl DirectXRenderer {
+     }
+ 
+     fn handle_device_lost_impl(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
++        self.invalidate_presentation();
+         crate::fast::layers::release_tiles(self);
+         crate::fast::composition::release(self);
+         let disable_direct_composition = self.direct_composition.is_none();
+@@ -517,15 +523,37 @@ impl DirectXRenderer {
+         &mut self,
+         scene: &Scene,
+         background_appearance: WindowBackgroundAppearance,
+-        on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++        observer: Option<crate::presentation::Observer>,
+     ) -> Result<Option<u64>> {
++        self.invalidate_presentation();
+         if self.skip_draws {
+             // skip drawing this frame, we just recovered from a device lost event
+             // and so likely do not have the textures anymore that are required for drawing
+             return Ok(None);
+         }
+         self.render(scene, background_appearance)?;
+-        report_submission(self.present_status(), on_presented)
++        let pending = observer.map(|observer| {
++            observer.prepare(
++                self.resources.as_ref().unwrap().swap_chain.clone(),
++                self.hwnd,
++                self.presentation_epoch.clone(),
++            )
++        });
++        let receipt = report_submission(self.present_status(), None)?;
++        if let (Some(id), Some(pending)) = (receipt, pending) {
++            pending.submitted(id);
++        }
++        Ok(receipt)
++    }
++
++    fn invalidate_presentation(&self) {
++        // Counter exhaustion disables confirmation rather than aliasing an
++        // old observer. Resize, recovery and unobserved presents invalidate too.
++        self.presentation_epoch.set(
++            self.presentation_epoch
++                .get()
++                .and_then(|serial| serial.checked_add(1)),
++        );
+     }
+ 
+     /// Clear the render target for `background_appearance` and encode every
+@@ -700,6 +728,7 @@ impl DirectXRenderer {
+         if self.width == width && self.height == height {
+             return Ok(());
+         }
++        self.invalidate_presentation();
+         self.width = width;
+         self.height = height;
+         crate::fast::layers::release_tiles(self);
+@@ -1497,6 +1526,7 @@ pub(crate) struct PathSprite {
+ 
+ impl Drop for DirectXRenderer {
+     fn drop(&mut self) {
++        self.invalidate_presentation();
+         #[cfg(debug_assertions)]
+         if let Some(devices) = &self.devices {
+             report_live_objects(&devices.device).ok();
+diff --git a/gpui-fast-windows/src/gpui_windows.rs b/gpui-fast-windows/src/gpui_windows.rs
+index eafd335..f931150 100644
+--- a/gpui-fast-windows/src/gpui_windows.rs
++++ b/gpui-fast-windows/src/gpui_windows.rs
+@@ -15,6 +15,7 @@ mod events;
+ mod fast;
+ mod keyboard;
+ mod platform;
++mod presentation;
+ mod system_notifications;
+ mod system_settings;
+ mod util;
+diff --git a/gpui-fast-windows/src/presentation.rs b/gpui-fast-windows/src/presentation.rs
+new file mode 100644
+index 0000000..399b30e
+--- /dev/null
++++ b/gpui-fast-windows/src/presentation.rs
+@@ -0,0 +1,286 @@
++//! Exact flip-model presentation feedback, not GPU-completion feedback.
++//!
++//! The present ID returned by GetLastPresentCount maps to the statistics'
++//! PresentCount, not to an inequality over later (possibly skipped) presents:
++//! https://learn.microsoft.com/windows/win32/direct3ddxgi/dxgi-flip-model
++//! DXGI statistics are documented as unreliable with multiple monitors and
++//! other fullscreen applications. Restrict confirmation to one monitor and
++//! our foreground window; otherwise retain a submission-only receipt.
++//!
++//! COM Send/Sync is not permission to query DXGI concurrently with the D3D11
++//! immediate context. Poll on the foreground/render executor, yielding to a
++//! timer between calls; never block that thread waiting for presentation:
++//! https://learn.microsoft.com/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro
++
++use std::{
++    cell::Cell,
++    rc::Rc,
++    time::{Duration, Instant},
++};
++
++use gpui::{BackgroundExecutor, ForegroundExecutor, NativeVisibility};
++use windows::{
++    Win32::{
++        Foundation::HWND,
++        Graphics::{
++            Direct3D11::ID3D11Device,
++            Dxgi::{DXGI_ERROR_FRAME_STATISTICS_DISJOINT, DXGI_FRAME_STATISTICS, IDXGISwapChain1},
++        },
++        UI::WindowsAndMessaging::{GetForegroundWindow, GetSystemMetrics, SM_CMONITORS},
++    },
++    core::Result,
++};
++
++use crate::window::native_window_visibility;
++
++const TIMEOUT: Duration = Duration::from_millis(500);
++const POLL_INTERVAL: Duration = Duration::from_millis(2);
++
++pub(crate) struct Observer {
++    pub(crate) executor: ForegroundExecutor,
++    pub(crate) callback: Box<dyn FnOnce(u64, bool) + Send>,
++}
++
++pub(crate) struct PendingPresent {
++    observer: Observer,
++    chain: IDXGISwapChain1,
++    hwnd: HWND,
++    epoch: Rc<Cell<Option<u64>>>,
++    serial: Option<u64>,
++    target: Option<FrameTarget>,
++}
++
++#[derive(Clone, Copy)]
++struct FrameTarget {
++    previous: DXGI_FRAME_STATISTICS,
++    count: u32,
++    deadline: Instant,
++}
++
++impl FrameTarget {
++    fn new(last: u32, previous: DXGI_FRAME_STATISTICS, deadline: Instant) -> Option<Self> {
++        if previous.PresentCount > last || previous.SyncQPCTime < 0 {
++            return None;
++        }
++        // Never associate a wrapped/restarted counter with an older frame.
++        Some(Self {
++            previous,
++            count: last.checked_add(1)?,
++            deadline,
++        })
++    }
++
++    fn matches_submission(&self, last: Result<u32>) -> bool {
++        last.ok() == Some(self.count)
++    }
++
++    fn regressed(&self, stats: &DXGI_FRAME_STATISTICS) -> bool {
++        stats.PresentCount < self.previous.PresentCount
++            || stats.PresentRefreshCount < self.previous.PresentRefreshCount
++            || stats.SyncQPCTime < self.previous.SyncQPCTime
++    }
++
++    /// None means the submitted frame has not reached the monitor yet.
++    /// Some(false) is terminal: no later sample can rehabilitate this receipt.
++    fn sample(&self, stats: Result<DXGI_FRAME_STATISTICS>, now: Instant) -> Option<bool> {
++        if now >= self.deadline {
++            return Some(false);
++        }
++        let Ok(stats) = stats else {
++            // Includes DISJOINT, device loss, unsupported/remote statistics.
++            return Some(false);
++        };
++        if self.regressed(&stats) {
++            return Some(false);
++        }
++        if stats.PresentCount < self.count {
++            return None;
++        }
++        if stats.PresentCount != self.count {
++            return Some(false); // A later present does not prove this one displayed.
++        }
++        Some(
++            stats.PresentRefreshCount > self.previous.PresentRefreshCount
++                && stats.SyncQPCTime > self.previous.SyncQPCTime
++                && stats.PresentRefreshCount != 0
++                && stats.SyncQPCTime > 0,
++        )
++    }
++}
++
++fn statistics(chain: &IDXGISwapChain1) -> Result<DXGI_FRAME_STATISTICS> {
++    let mut stats = DXGI_FRAME_STATISTICS::default();
++    unsafe { chain.GetFrameStatistics(&mut stats)? };
++    Ok(stats)
++}
++
++fn target_before_present(chain: &IDXGISwapChain1) -> Option<FrameTarget> {
++    let previous = match statistics(chain) {
++        // The first query starts a statistics sequence. Reset only BEFORE
++        // submission; a DISJOINT after submission always rejects that frame.
++        Err(error) if error.code() == DXGI_ERROR_FRAME_STATISTICS_DISJOINT => {
++            statistics(chain).ok()?
++        }
++        result => result.ok()?,
++    };
++    FrameTarget::new(
++        unsafe { chain.GetLastPresentCount().ok()? },
++        previous,
++        Instant::now() + TIMEOUT,
++    )
++}
++
++fn reliable_display(hwnd: HWND) -> bool {
++    native_window_visibility(hwnd) == NativeVisibility::Visible
++        && unsafe { GetSystemMetrics(SM_CMONITORS) } == 1
++        && unsafe { GetForegroundWindow() } == hwnd
++}
++
++impl Observer {
++    pub(crate) fn prepare(
++        self,
++        chain: IDXGISwapChain1,
++        hwnd: HWND,
++        epoch: Rc<Cell<Option<u64>>>,
++    ) -> PendingPresent {
++        let serial = epoch.get();
++        let target = if serial.is_some() && reliable_display(hwnd) {
++            target_before_present(&chain)
++        } else {
++            None
++        };
++        PendingPresent {
++            observer: self,
++            chain,
++            hwnd,
++            epoch,
++            serial,
++            target,
++        }
++    }
++}
++
++impl PendingPresent {
++    pub(crate) fn submitted(self, drawable_id: u64) {
++        let Some(target) = self.target else {
++            (self.observer.callback)(drawable_id, false);
++            return;
++        };
++        // Read immediately after this exact successful Present on the render
++        // thread, before any other present may reuse or advance the counter.
++        if !target.matches_submission(unsafe { self.chain.GetLastPresentCount() }) {
++            (self.observer.callback)(drawable_id, false);
++            return;
++        }
++        let executor = self.observer.executor.clone();
++        let timers = BackgroundExecutor::new(executor.dispatcher().clone());
++        executor
++            .spawn(async move {
++                let confirmed = self.wait_for_frame(target, timers).await;
++                (self.observer.callback)(drawable_id, confirmed);
++            })
++            .detach();
++    }
++
++    async fn wait_for_frame(&self, target: FrameTarget, timers: BackgroundExecutor) -> bool {
++        loop {
++            if Instant::now() >= target.deadline {
++                return false;
++            }
++            if let Some(confirmed) = self.poll(target) {
++                return confirmed;
++            }
++            timers.timer(POLL_INTERVAL).await;
++        }
++    }
++
++    fn poll(&self, target: FrameTarget) -> Option<bool> {
++        if self.epoch.get() != self.serial || !reliable_display(self.hwnd) {
++            return Some(false);
++        }
++        let Ok(device) = (unsafe { self.chain.GetDevice::<ID3D11Device>() }) else {
++            return Some(false);
++        };
++        if unsafe { device.GetDeviceRemovedReason() }.is_err() {
++            return Some(false);
++        }
++        if !target.matches_submission(unsafe { self.chain.GetLastPresentCount() }) {
++            return Some(false);
++        }
++        target.sample(statistics(&self.chain), Instant::now())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{FrameTarget, TIMEOUT};
++    use std::time::Instant;
++    use windows::Win32::Graphics::Dxgi::{
++        DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_FRAME_STATISTICS_DISJOINT, DXGI_ERROR_UNSUPPORTED,
++        DXGI_FRAME_STATISTICS,
++    };
++
++    fn stats(count: u32, refresh: u32, qpc: i64) -> DXGI_FRAME_STATISTICS {
++        DXGI_FRAME_STATISTICS {
++            PresentCount: count,
++            PresentRefreshCount: refresh,
++            SyncQPCTime: qpc,
++            ..Default::default()
++        }
++    }
++
++    fn target(now: Instant) -> FrameTarget {
++        FrameTarget::new(9, stats(8, 100, 200), now + TIMEOUT).unwrap()
++    }
++
++    #[test]
++    fn exact_fresh_monitor_statistics_confirm_only_the_captured_present_id() {
++        let now = Instant::now();
++        let frame = target(now);
++        assert!(frame.matches_submission(Ok(10)));
++        assert!(!frame.matches_submission(Ok(9)));
++        assert!(!frame.matches_submission(Ok(11)));
++        assert_eq!(frame.sample(Ok(stats(9, 101, 201)), now), None);
++        assert_eq!(frame.sample(Ok(stats(10, 102, 202)), now), Some(true));
++        assert_eq!(frame.sample(Ok(stats(11, 103, 203)), now), Some(false));
++    }
++
++    #[test]
++    fn stale_zero_regressed_and_timed_out_statistics_never_confirm() {
++        let now = Instant::now();
++        let frame = target(now);
++        for sample in [
++            stats(7, 102, 202),
++            stats(10, 0, 202),
++            stats(10, 102, 0),
++            stats(10, 100, 202),
++            stats(10, 102, 200),
++            stats(10, 99, 199),
++            stats(9, 99, 201),
++            stats(9, 101, 199),
++        ] {
++            assert_eq!(frame.sample(Ok(sample), now), Some(false));
++        }
++        assert_eq!(
++            frame.sample(Ok(stats(10, 102, 202)), frame.deadline),
++            Some(false)
++        );
++    }
++
++    #[test]
++    fn missing_disjoint_device_lost_and_unsupported_provenance_is_terminal() {
++        let now = Instant::now();
++        let frame = target(now);
++        for error in [
++            DXGI_ERROR_FRAME_STATISTICS_DISJOINT,
++            DXGI_ERROR_DEVICE_REMOVED,
++            DXGI_ERROR_UNSUPPORTED,
++        ] {
++            assert!(!frame.matches_submission(Err(error.into())));
++            assert_eq!(frame.sample(Err(error.into()), now), Some(false));
++        }
++        assert!(FrameTarget::new(u32::MAX, stats(1, 1, 1), now).is_none());
++        assert!(FrameTarget::new(0, stats(1, 1, 1), now).is_none());
++        assert!(FrameTarget::new(1, stats(1, 1, -1), now).is_none());
++    }
++}
+diff --git a/gpui-fast-windows/src/window.rs b/gpui-fast-windows/src/window.rs
+index 87b6d8c..ab50e9f 100644
+--- a/gpui-fast-windows/src/window.rs
++++ b/gpui-fast-windows/src/window.rs
+@@ -632,6 +632,24 @@ impl Drop for WindowsWindow {
+     }
+ }
+ 
++pub(crate) fn native_window_visibility(hwnd: HWND) -> NativeVisibility {
++    // Win32 visibility is not a full occlusion test or presentation proof.
++    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
++        return NativeVisibility::Unavailable;
++    }
++    if !unsafe { IsWindowVisible(hwnd) }.as_bool() || unsafe { IsIconic(hwnd) }.as_bool() {
++        return NativeVisibility::Obscured;
++    }
++    let mut rect = RECT::default();
++    if unsafe { GetClientRect(hwnd, &mut rect) }.is_err()
++        || rect.right <= rect.left
++        || rect.bottom <= rect.top
++    {
++        return NativeVisibility::Obscured;
++    }
++    NativeVisibility::Visible
++}
++
+ impl PlatformWindow for WindowsWindow {
+     fn bounds(&self) -> Bounds<Pixels> {
+         self.state.bounds()
+@@ -1039,23 +1057,7 @@ impl PlatformWindow for WindowsWindow {
+     }
+ 
+     fn native_visibility(&self) -> NativeVisibility {
+-        // Win32 visibility is not a full occlusion test or presentation proof.
+-        if !unsafe { IsWindow(Some(self.hwnd)) }.as_bool() {
+-            return NativeVisibility::Unavailable;
+-        }
+-        if !unsafe { IsWindowVisible(self.hwnd) }.as_bool()
+-            || unsafe { IsIconic(self.hwnd) }.as_bool()
+-        {
+-            return NativeVisibility::Obscured;
+-        }
+-        let mut rect = RECT::default();
+-        if unsafe { GetClientRect(self.hwnd, &mut rect) }.is_err()
+-            || rect.right <= rect.left
+-            || rect.bottom <= rect.top
+-        {
+-            return NativeVisibility::Obscured;
+-        }
+-        NativeVisibility::Visible
++        native_window_visibility(self.hwnd)
+     }
+ 
+     fn draw_for_presentation(
+@@ -1063,10 +1065,14 @@ impl PlatformWindow for WindowsWindow {
+         scene: &Scene,
+         on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
+     ) -> Option<u64> {
++        let observer = on_presented.map(|callback| crate::presentation::Observer {
++            executor: self.executor.clone(),
++            callback,
++        });
+         self.state
+             .renderer
+             .borrow_mut()
+-            .draw_for_presentation(scene, self.state.background_appearance.get(), on_presented)
++            .draw_for_presentation(scene, self.state.background_appearance.get(), observer)
+             .log_err()
+             .flatten()
+     }
+@@ -1097,7 +1103,6 @@ impl PlatformWindow for WindowsWindow {
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+         self.state.renderer.borrow().sprite_atlas()
+     }
+-
+     fn get_raw_handle(&self) -> HWND {
+         self.0.hwnd
+     }
