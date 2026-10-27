@@ -202,8 +202,13 @@ try {
     $bundle = Expand-DesktopArchive $Archive (Join-Path $work 'unpacked')
     $release = Get-DesktopBundle $bundle
     $expectedSha = (& git -C $repo rev-parse HEAD) -join ''
-    if ($DiagnosticBuildSha) { $expectedSha = $DiagnosticBuildSha }
     $expectedVersion = (Get-Content -Raw (Join-Path $repo 'clients/desktop/package.json') | ConvertFrom-Json).version
+    if ($DiagnosticBuildSha) {
+        $expectedSha = $DiagnosticBuildSha
+        # Retained bytes carry their own validated product version; a newer
+        # harness version must not invalidate their immutable build identity.
+        $expectedVersion = $release.version
+    }
     if ($release.sha -cne $expectedSha -or $release.version -cne $expectedVersion) { throw 'Packaged native app does not identify this same-source checkout' }
     Install-DesktopBundle $bundle $installed (Join-Path $repo 'scripts/install-desktop-windows.ps1') $true
     $uninstall = $true

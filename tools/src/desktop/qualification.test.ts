@@ -184,3 +184,26 @@ test("Windows builds native MSVC and signs only after a same-source WSL GUI jour
   ])
     expect(smokeScript).toContain(proof);
 });
+
+test("Windows policy filters cannot silently pass zero tests and diagnostics never publish products", () => {
+  const windows = workflow("windows-desktop.yml");
+  const qualify = steps(job(windows, "qualify"));
+  const policy = qualify.map(run).find((script) => script.includes("$cases =")) ?? "";
+  expect(policy).toContain("--list --format terse");
+  expect(policy).toContain('$listed.Contains("${case}: test")');
+  expect(policy).toContain("--exact");
+  expect(policy).toContain("test result: ok\\. 1 passed; 0 failed; 0 ignored;");
+  expect(qualify.map(run).join("\n")).not.toContain("-DiagnosticBuildSha");
+
+  const diagnostic = workflow("windows-desktop-diagnostic.yml");
+  expect(diagnostic.permissions).toEqual({ contents: "read", actions: "read" });
+  const diagnosticSteps = steps(job(diagnostic, "diagnose"));
+  expect(diagnosticSteps.map(run).join("\n")).toContain("-DiagnosticBuildSha");
+  expect(diagnosticSteps.some((step) => withInput(step, "name") === "desktop-windows-x64")).toBe(
+    false,
+  );
+  expect(diagnosticSteps.map(run).join("\n")).not.toContain("gh release");
+  const smoke = readFileSync(repoPath("clients/desktop/scripts/smoke-windows.ps1"), "utf8");
+  expect(smoke).toContain("$expectedVersion = $release.version");
+  expect(smoke).toContain("$env:PHUX_DIAGNOSTIC -cne 'true'");
+});

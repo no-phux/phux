@@ -195,10 +195,22 @@ jobs:
       - name: Exact manual-update argv through Windows PowerShell 5.1 and WSL
         shell: pwsh
         run: |
-          ./windows-policy/phux-desktop-policy.exe windows_runtime_ --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime read-only policy failed' }
-          ./windows-policy/phux-desktop-policy.exe --ignored --exact updates::tests::windows::powershell_51_manual_runtime_command_preserves_real_wsl_argv --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'Legacy PowerShell native argv qualification failed' }
+          $cases = @(
+            'updates::tests::windows_runtime_checks_are_read_only_and_quote_the_manual_wsl_update',
+            'updates::tests::windows_runtime_install_and_retry_refuse_before_starting_wsl',
+            'updates::tests::windows::powershell_51_manual_runtime_command_preserves_real_wsl_argv'
+          )
+          $listed = @(& ./windows-policy/phux-desktop-policy.exe --list --format terse)
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate Windows policy tests' }
+          foreach ($case in $cases) {
+            if (-not $listed.Contains("${case}: test")) { throw "Required native test is absent: $case" }
+            $arguments = @('--exact', $case, '--color', 'never', '--nocapture')
+            if ($case -like '*powershell_51_*') { $arguments += '--ignored' }
+            $result = @(& ./windows-policy/phux-desktop-policy.exe @arguments 2>&1)
+            $exitCode = $LASTEXITCODE
+            $result | ForEach-Object { Write-Output $_ }
+            if ($exitCode -ne 0 -or ($result -join "`n") -notmatch 'test result: ok\. 1 passed; 0 failed; 0 ignored;') { throw "Native policy test did not execute and pass exactly once: $case" }
+          }
       - name: Installed app, live WSL shell, native input, clipboard, resize and reconnect
         shell: pwsh
         run: |
