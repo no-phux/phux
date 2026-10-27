@@ -118,7 +118,10 @@ impl Prepared {
             window.paint_layer(bounds, |window| {
                 window.with_content_mask(Some(ContentMask { bounds: grid }), |window| {
                     for quad in scene.decorations.iter().filter(|quad| shown(quad.row)) {
-                        window.paint_quad(fill(moved(quad.bounds), quad.color));
+                        window.paint_quad(match quad.bend {
+                            None => fill(moved(quad.bounds), quad.color),
+                            Some(bend) => bent(moved(quad.bounds), bend, quad.color),
+                        });
                     }
                     for (bounds, color) in &scene.cursor_overlays {
                         window.paint_quad(fill(moved(*bounds), *color));
@@ -340,4 +343,39 @@ fn paint_glyphs(
         }
         .map_err(|error| error.to_string())
     })
+}
+
+/// A rounded box-drawing corner: the two borders meeting at `bend.corner`.
+fn bent(bounds: Bounds<Pixels>, bend: super::boxes::Bend, color: Hsla) -> gpui::PaintQuad {
+    let (zero, line, radius) = (px(0.), bend.thickness, bend.radius);
+    let (top, bottom) = if bend.corner < 2 {
+        (line, zero)
+    } else {
+        (zero, line)
+    };
+    let (left, right) = if matches!(bend.corner, 0 | 3) {
+        (line, zero)
+    } else {
+        (zero, line)
+    };
+    let mut corners = gpui::Corners::all(zero);
+    match bend.corner {
+        0 => corners.top_left = radius,
+        1 => corners.top_right = radius,
+        2 => corners.bottom_right = radius,
+        _ => corners.bottom_left = radius,
+    }
+    gpui::quad(
+        bounds,
+        corners,
+        gpui::transparent_black(),
+        gpui::Edges {
+            top,
+            right,
+            bottom,
+            left,
+        },
+        color,
+        gpui::BorderStyle::Solid,
+    )
 }

@@ -27,7 +27,10 @@ impl Builder {
             self.blank_cell(row, col);
             return;
         }
-        if cell.wide == 0 && self.prepare_block((row, col), text, bounds, colors, window) {
+        if cell.wide == 0
+            && (self.prepare_block((row, col), text, bounds, colors, window)
+                || self.prepare_box((row, col), text, bounds, colors, window))
+        {
             return;
         }
         let style = TextStyle {
@@ -69,6 +72,38 @@ impl Builder {
                 row,
                 bounds: block_bounds(bounds, region, self.scene.geometry.scale),
                 color: foreground,
+                bend: None,
+            });
+        }
+        true
+    }
+
+    /// Box drawing as quads from the cell's edges; see [`super::boxes`].
+    fn prepare_box(
+        &mut self,
+        (row, col): (u16, u16),
+        text: &[u8],
+        bounds: Bounds<Pixels>,
+        colors: CellColors,
+        window: &gpui::Window,
+    ) -> bool {
+        let Some(ch) = lone_char(text) else {
+            return false;
+        };
+        let Some(quads) = super::boxes::box_quads(ch, bounds, self.scene.geometry.scale) else {
+            return false;
+        };
+        self.flush_glyph_run(window);
+        let foreground = self
+            .glyph_foreground(row, col, colors)
+            .opacity(colors.opacity);
+        self.observe(row, col, bounds, None, foreground);
+        for (bounds, bend, coverage) in quads {
+            self.scene.decorations.push(RowQuad {
+                row,
+                bounds,
+                color: foreground.opacity(coverage),
+                bend,
             });
         }
         true
@@ -249,12 +284,16 @@ impl Builder {
         let len = text.len();
         crate::perf::SHAPED.incr();
         crate::perf::PLATFORM_SHAPED.incr();
+        let mut font = self.fonts.cell[face].clone();
+        if let Some(family) = dingbat_family(&text) {
+            font.family = family.into();
+        }
         let line = window.text_system().shape_line(
             text.into(),
             px(self.scene.settings.font_size),
             &[gpui::TextRun {
                 len,
-                font: self.fonts.cell[face].clone(),
+                font,
                 color: color.opacity(opacity),
                 ..Default::default()
             }],
@@ -342,6 +381,17 @@ fn stand_in(text: &[u8]) -> &[u8] {
         b"\xe2\x8f\xba" => "\u{25cf}".as_bytes(), // ⏺ → ●
         other => other,
     }
+}
+
+/// One face for every Dingbat. The bundled faces carry a few (`✶`, `✓`) and
+/// the system the rest, so Claude Code's spinner (`✢✳✶✻✽`) changed face, size
+/// and weight from frame to frame. Menlo has the whole block and ships with
+/// every Mac.
+fn dingbat_family(text: &str) -> Option<&'static str> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    (cfg!(target_os = "macos") && chars.next().is_none() && ('\u{2700}'..='\u{27bf}').contains(&ch))
+        .then_some("Menlo")
 }
 
 /// The single character of a cell, if it is one printable character.

@@ -68,6 +68,8 @@ pub(super) struct RowQuad {
     pub(super) row: u16,
     pub(super) bounds: Bounds<Pixels>,
     pub(super) color: Hsla,
+    /// Box drawing's rounded corners: `bounds` is bordered, not filled.
+    pub(super) bend: Option<super::boxes::Bend>,
 }
 
 /// One shaped ink tagged with its row.

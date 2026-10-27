@@ -81,6 +81,7 @@ mod tests {
             row: 2,
             bounds: origin,
             color: gpui::red(),
+            bend: None,
         });
         let height = scene.frame.rows;
         shift_scene(&mut scene, Scroll::Up(1), height);
@@ -214,11 +215,13 @@ mod tests {
             row: 1,
             bounds,
             color: gpui::red(),
+            bend: None,
         });
         scene.decorations.push(RowQuad {
             row: 1,
             bounds,
             color: gpui::blue(),
+            bend: None,
         });
         scene.glyphs.push(GlyphObservation {
             row: 1,
