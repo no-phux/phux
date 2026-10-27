@@ -7,7 +7,7 @@ use std::process::Command;
 #[cfg(windows)]
 static CLI: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 #[cfg(windows)]
-static WSL_HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+static WSL_HOME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 pub(crate) fn configure_cli(phux: &Path) {
     #[cfg(windows)]
@@ -19,23 +19,25 @@ pub(crate) fn configure_cli(phux: &Path) {
 /// Resolve once before entering GPUI; a menu command must not block on WSL.
 pub(crate) fn prepare_coordinator_home() {
     #[cfg(windows)]
-    WSL_HOME.get_or_init(|| {
-        let output = wsl_command()
-            .args(["--exec", "sh", "-c", "printf '%s' \"$HOME\""])
-            .output()
-            .ok()?;
-        output
-            .status
-            .success()
-            .then(|| parse_coordinator_home(&output.stdout))
-            .flatten()
-    });
+    if WSL_HOME.get().is_none() {
+        let home = crate::updates::run_bounded(
+            wsl_command().args(["--exec", "sh", "-c", "printf '%s' \"$HOME\""]),
+            None,
+            std::time::Duration::from_secs(10),
+            "Reading the WSL home directory timed out.",
+        )
+        .ok()
+        .and_then(|text| parse_coordinator_home(text.as_bytes()));
+        if let Some(home) = home {
+            let _ = WSL_HOME.set(home);
+        }
+    }
 }
 
 pub(crate) fn coordinator_home() -> Option<String> {
     #[cfg(windows)]
     {
-        WSL_HOME.get().cloned().flatten()
+        WSL_HOME.get().cloned()
     }
     #[cfg(not(windows))]
     {
@@ -86,20 +88,13 @@ pub(crate) fn phux_command(phux: &Path) -> Command {
 pub(crate) fn validate_coordinator() -> Result<(), String> {
     #[cfg(windows)]
     {
-        let output = wsl_command()
-            .args(["--exec", "id", "-u"])
-            .output()
-            .map_err(|error| {
-                format!(
-                    "Could not start WSL: {error}. Install WSL 2 and initialize a Linux user first."
-                )
-            })?;
-        if !output.status.success() {
-            return Err("Could not start the selected WSL distribution. Run wsl --update, initialize its non-root Linux user, then install phux inside it.".into());
-        }
-        let uid = std::str::from_utf8(&output.stdout)
-            .ok()
-            .and_then(|text| text.trim().parse::<u32>().ok());
+        let output = crate::updates::run_bounded(
+            wsl_command().args(["--exec", "id", "-u"]),
+            None,
+            std::time::Duration::from_secs(30),
+            "Starting the selected WSL distribution timed out.",
+        ).map_err(|error| format!("Could not start WSL: {error}. Run wsl --update and initialize a non-root Linux user first."))?;
+        let uid = output.trim().parse::<u32>().ok();
         if !uid.is_some_and(|uid| uid != 0) {
             return Err("Phux Desktop needs a non-root default WSL user. Initialize Ubuntu and select that user before opening the app.".into());
         }

@@ -117,6 +117,7 @@ fn run_phux(phux: &Path, socket: Option<&Path>, args: &[&str]) -> anyhow::Result
 pub(crate) fn ensure_server(phux: &Path, socket: Option<&Path>) -> anyhow::Result<PathBuf> {
     crate::platform::validate_coordinator().map_err(anyhow::Error::msg)?;
     run_phux(phux, socket, &["server", "--ensure"])?;
+    crate::platform::prepare_coordinator_home();
     if let Some(socket) = socket {
         return Ok(socket.to_owned());
     }
@@ -237,9 +238,6 @@ pub fn main() -> ExitCode {
     diag::init_logging();
     runtime::configure_explicit(options.phux.is_some() || std::env::var_os("PHUX_BIN").is_some());
     let resolved = resolve(&options);
-    if resolved.error.is_none() {
-        crate::platform::prepare_coordinator_home();
-    }
     log::info!(
         "launch socket={} session={} phux={} error={:?}",
         resolved.socket.display(),
