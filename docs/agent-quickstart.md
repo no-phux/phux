@@ -1,18 +1,20 @@
 # Using phux as an agent
 
-Install phux and drive sessions from code. Work on this repository is
-[AGENTS.md](../AGENTS.md). The long pages are [install](./install.md),
+phux is a terminal multiplexer whose server you can drive from code. Start a server, create a session running your agent, and read it back:
+
+```sh
+curl -fsSL https://phux.sh/install | sh
+phux server --ensure
+phux new --json -s agent -c "$PWD" -- claude
+```
+
+Change phux itself in [AGENTS.md](../AGENTS.md). Install options, scripting,
+agent state, and the socket are in [install](./install.md),
 [shell scripting](./scripting.md), [coding agents](./agents.md), and
 [protocol](./protocol.md).
 
-When a `phux` binary is installed, its own help matches that build:
-
-```sh
-phux skill quick
-phux --help
-phux help targets
-phux help exit-codes
-```
+`phux skill quick`, `phux --help`, `phux help targets`, and
+`phux help exit-codes` describe the binary you have installed.
 
 ## Install
 
@@ -162,10 +164,12 @@ adds N rows of history above the screen; in JSON that history is the
 `scrollback` field. Bare `--scrollback` requests the retained history.
 `--unwrap` joins soft-wrapped rows.
 
-`phux ls` does not start a server. With none running it exits non-zero.
+`phux ls` does not start a server. With none running it exits 1;
+`--json` leaves stdout empty and writes one error object to stderr.
 `phux status --json` with no server prints `"running": false` on stdout
-and exits non-zero. That is the one `--json` command that prints a
-document for "not running" instead of leaving stdout empty.
+and exits 1. `phux ls --all --json` still prints its host document,
+naming a down host `no server running`, and exits 0. `phux doctor --json`
+prints its report either way; a stopped server is a warning.
 
 ## Detach and kill
 
@@ -193,7 +197,7 @@ phux attach agent
 running, an unknown name is an error; `attach` does not create the
 session.
 
-## Example
+## Run an agent and read its output
 
 Run a coding-agent CLI in a session, send one prompt, print a JSON
 capture, and leave the session running. Replace `claude` with the agent
@@ -204,28 +208,23 @@ free session name.
 phux server --ensure
 doc=$(phux new --json -s agent -c "$PWD" -- claude)
 pane="@$(printf '%s\n' "$doc" | jq -r .terminal_id)"
+phux wait --idle 1500 --timeout 30 "$pane"
 phux send-keys "$pane" 'fix the login redirect and run the tests' Enter
 phux snapshot --json --tail 200 --unwrap "$pane"
 ```
 
-`new` returns when the pane exists, and `send-keys` does not wait for
-the program to draw a prompt. To wait for a line only that program
-prints, run `phux wait --until TEXT --timeout SECS` with the target
-after the flags. `--output-only` skips lines the shell marked as input.
-A timeout exits 124. See [waiting for output](./scripting.md#waiting-for-output).
+`new` returns when the pane exists; `wait --idle` holds until the screen
+settles. To wait for a line only that program prints, run
+`phux wait --until TEXT --timeout SECS` with the target after the flags.
+`--output-only` skips lines the shell marked as input. A timeout exits
+124. See [waiting for output](./scripting.md#waiting-for-output).
 
 To start a recognized integration in a shell pane that already exists,
 and return once phux has seen it: `phux agent start NAME --kind KIND
 --target @N`. A kind with no detection manifest is refused. `phux launch
 --list` lists integrations from enabled plugins.
 
-A person attaches later, from a terminal:
-
-```sh
-phux attach agent
-```
-
-## Drive it from code
+## Call phux from a program
 
 Pass `--json` on commands whose `--help` lists it. The document carries
 `schema_version`. On failure, stdout is empty and stderr is one JSON
@@ -273,7 +272,7 @@ phux runtime-info --json
 `phux skill` prints the guide compiled into that binary. `runtime-info`
 prints the protocol and capabilities of that binary.
 
-## Non-interactive use
+## Run without a terminal
 
 `phux` and `phux attach` require a terminal on both stdin and stdout.
 Without one they exit 1 and do not open the UI. `phux new` without
@@ -281,12 +280,9 @@ Without one they exit 1 and do not open the UI. `phux new` without
 creates the session and returns.
 
 Inside a pane, `PHUX_TERMINAL_ID` is that pane's number and `PHUX_SOCKET`
-is its server. Leave that pane's input alone. `phux`, `phux attach`, and
+is its server. Don't send keys to your own pane. `phux`, `phux attach`, and
 an attaching `phux new` refuse to attach back to that same server unless
 `PHUX_ALLOW_NESTED` is set (exit 2).
-
-`phux kill`, `phux detach`, and `phux rm` require `--yes` when stdin is
-not a terminal.
 
 Put flags for `send-keys` and `run` before the target: words after it
 are keys or the command. `phux wait` accepts flags before or after the
