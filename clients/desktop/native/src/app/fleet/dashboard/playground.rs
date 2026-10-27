@@ -126,6 +126,26 @@ pub(crate) struct View {
     pub camera: Camera,
     /// The last pointer position while the left button pans.
     pub drag: Option<Pt>,
+    /// Where the camera first landed, which a fixture film moves from.
+    #[cfg(feature = "ui-fixtures")]
+    pub film_base: Option<Camera>,
+}
+
+#[cfg(feature = "ui-fixtures")]
+impl View {
+    /// A fixture film's camera: the placed camera panned by `pan` scene
+    /// points, then zoomed by `zoom` about the centre of a `width` by
+    /// `height` scene. Nothing moves until the scene has placed the camera.
+    pub(crate) fn film_camera(&mut self, pan: (f32, f32), zoom: f32, width: f32, height: f32) {
+        if !self.camera.placed {
+            return;
+        }
+        let mut camera = *self.film_base.get_or_insert(self.camera);
+        camera.offset.x += pan.0;
+        camera.offset.y += pan.1;
+        camera.pinch(zoom - 1., width, height);
+        self.camera = camera;
+    }
 }
 
 /// One ghost's spot and loop at this moment, ready to paint and to click.

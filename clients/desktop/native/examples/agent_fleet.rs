@@ -5,8 +5,9 @@ fn main() {
     let directory = std::path::PathBuf::from(
         std::env::args_os()
             .nth(1)
-            .expect("usage: agent_fleet <output-directory>"),
+            .expect("usage: agent_fleet <output-directory> [film]"),
     );
+    let film = std::env::args().nth(2).as_deref() == Some("film");
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("disposable HOME"))
         .canonicalize()
         .expect("HOME exists");
@@ -29,7 +30,12 @@ fn main() {
         .with_assets(phux_desktop::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            phux_desktop::app::capture_fleet_fixture(
+            let capture = if film {
+                phux_desktop::app::capture_fleet_film
+            } else {
+                phux_desktop::app::capture_fleet_fixture
+            };
+            capture(
                 phux_desktop::app::AppOptions {
                     socket: home.join("absent.sock"),
                     session: "fleet-preview".into(),
