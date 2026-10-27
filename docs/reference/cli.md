@@ -2110,10 +2110,11 @@ Make every Minimal box join this hub.
 Writes the `phux` Minimal loadout, which copies a Linux phux into each box and
 starts its server, adds it to Minimal's `default_loadouts`, makes this machine's
 service a federation hub, and installs a per-user service running `phux host
-minimal watch`. On macOS the box binary is this release channel's published
-Linux phux, downloaded and signature-checked like `phux update`. Run it again to
-refresh the box binary or after the hub's QUIC port changes. The hub must run
-`[policy] mode = "paired"` with a QUIC listener on loopback or all addresses.
+minimal watch`. On macOS the box binary is this phux's own version for Linux,
+downloaded and signature-checked like `phux update`, and replaced when the
+cached copy is a different version. Run it again after the hub's QUIC port
+changes. The hub must run `[policy] mode = "paired"` with a QUIC listener on
+loopback or all addresses.
 
 Usage: phux host minimal setup [FLAGS]
 
@@ -2122,8 +2123,8 @@ Flags:
                          and the port of this server's live QUIC listener.
       --min <PATH>       The `min` CLI. Omitted: `min` on `PATH`, else
                          `~/.local/bin/min`.
-      --box-phux <PATH>  The Linux phux to copy into boxes, instead of the
-                         published one (macOS) or this binary (Linux).
+      --box-phux <PATH>  The Linux phux to copy into boxes, instead of this
+                         version's Linux build (macOS) or this binary (Linux).
       --no-service       Skip the watcher service; run `phux host minimal watch`
                          yourself.
   -h, --help             Print help

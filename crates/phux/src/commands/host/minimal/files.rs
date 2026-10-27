@@ -242,23 +242,51 @@ fn string_set(value: Option<&serde_json::Value>) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// Download, verify, and cache the published phux for `target`, replacing
-/// the cached copy, and return its path.
-pub(super) fn fetch_box_binary(target: &str) -> Result<PathBuf, String> {
-    let root = state_root();
+/// Whether `binary` is the cached phux for `tag`.
+pub(super) fn cached_box_binary(binary: &Path, version_file: &Path, tag: &str) -> bool {
+    binary.is_file() && std::fs::read_to_string(version_file).is_ok_and(|text| text.trim() == tag)
+}
+
+/// Install `tag`'s Linux phux for `target` under `root`, reusing the cache
+/// when it is already that tag. `fetch` returns a directory holding `phux`
+/// and runs only when the cache is missing or a different version.
+pub(super) fn install_box_binary(
+    root: &Path,
+    target: &str,
+    tag: &str,
+    fetch: impl FnOnce(&Path) -> Result<PathBuf, String>,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(root)
+        .map_err(|err| format!("could not create {}: {err}", root.display()))?;
+    let dest = root.join(format!("phux-{target}"));
+    let version_file = root.join(format!("phux-{target}.version"));
+    if cached_box_binary(&dest, &version_file, tag) {
+        return Ok(dest);
+    }
     let staging = root.join(format!(".download-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)
         .map_err(|err| format!("could not create {}: {err}", staging.display()))?;
-    let fetched = crate::commands::update::fetch_published(target, &staging)
-        .map_err(|err| err.to_string())
-        .and_then(|(entry, staged)| {
-            let dest = root.join(format!("phux-{target}"));
-            std::fs::rename(staged.join("phux"), &dest).map_err(|err| {
-                format!("could not move the download to {}: {err}", dest.display())
-            })?;
-            info!("box phux: {}", entry.build.tag());
-            Ok(dest)
-        });
+    let fetched = fetch(&staging).and_then(|staged| {
+        std::fs::rename(staged.join("phux"), &dest)
+            .map_err(|err| format!("could not move the download to {}: {err}", dest.display()))?;
+        write_file(&version_file, &format!("{tag}\n"))?;
+        Ok(dest)
+    });
     let _ = std::fs::remove_dir_all(&staging);
     fetched
+}
+
+/// Download, verify, and cache this hub's own phux for `target` (not the
+/// channel's later release), refreshing the cache when its version differs.
+pub(super) fn fetch_box_binary(target: &str) -> Result<PathBuf, String> {
+    let tag = crate::commands::update::own_build()
+        .map_err(|err| err.to_string())?
+        .tag();
+    install_box_binary(&state_root(), target, &tag, |staging| {
+        info!("downloading phux {tag} for {target} boxes");
+        crate::commands::update::fetch_published(target, staging)
+            .map(|(_build, staged)| staged)
+            .map_err(|err| err.to_string())
+    })
 }

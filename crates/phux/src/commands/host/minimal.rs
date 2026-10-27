@@ -60,17 +60,17 @@ pub(crate) enum MinimalAction {
     /// each box and starts its server, adds it to Minimal's
     /// `default_loadouts`, makes this machine's service a federation hub,
     /// and installs a per-user service running `phux host minimal watch`.
-    /// On macOS the box binary is this release channel's published Linux
-    /// phux, downloaded and signature-checked like `phux update`. Run it
-    /// again to refresh the box binary or after the hub's QUIC port changes.
-    /// The hub must run `[policy] mode = "paired"` with a QUIC listener on
-    /// loopback or all addresses.
+    /// On macOS the box binary is this phux's own version for Linux,
+    /// downloaded and signature-checked like `phux update`, and replaced
+    /// when the cached copy is a different version. Run it again after the
+    /// hub's QUIC port changes. The hub must run `[policy] mode = "paired"`
+    /// with a QUIC listener on loopback or all addresses.
     Setup {
         #[usage(flatten)]
         opts: MinimalOpts,
 
-        /// The Linux phux to copy into boxes, instead of the published one
-        /// (macOS) or this binary (Linux).
+        /// The Linux phux to copy into boxes, instead of this version's
+        /// Linux build (macOS) or this binary (Linux).
         #[usage(long, value_name = "PATH")]
         box_phux: Option<PathBuf>,
 
@@ -549,8 +549,8 @@ fn finish_remove(
     Ok(())
 }
 
-/// The Linux phux boxes get: `--box-phux`, this binary on Linux, else the
-/// release channel's published build for this machine's architecture.
+/// The Linux phux boxes get: `--box-phux`, this binary on Linux, else this
+/// phux's own version for the machine's architecture.
 fn box_binary(explicit: Option<&Path>) -> Result<PathBuf, CliError> {
     if let Some(path) = explicit {
         return std::path::absolute(path)
@@ -563,7 +563,6 @@ fn box_binary(explicit: Option<&Path>) -> Result<PathBuf, CliError> {
             .map_err(|err| setup_failure(format!("could not resolve this binary: {err}")));
     }
     let target = format!("{}-unknown-linux-gnu", std::env::consts::ARCH);
-    info!("downloading the published phux for {target} boxes");
     files::fetch_box_binary(&target).map_err(setup_failure)
 }
 

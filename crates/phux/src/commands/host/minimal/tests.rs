@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::os::unix::fs::PermissionsExt;
 
 use super::boxes::{BoxSession, MinCli, parse_sessions};
-use super::files::{BoxRegistry, Joined, MinimalDirs, render_loadout};
+use super::files::{
+    BoxRegistry, Joined, MinimalDirs, cached_box_binary, install_box_binary, render_loadout,
+};
 use super::satellite_name;
 use super::service::{WatchPlan, render_plist, render_systemd};
 use crate::commands::host::inbound::{self, HubFiles};
@@ -165,6 +167,32 @@ fn a_registry_without_minted_owns_the_boxes_it_already_joined() {
     let joined = BoxRegistry::at(path).load().unwrap();
     assert_eq!(joined.boxes["01a1"], "min-api");
     assert!(joined.minted.contains("min-api"));
+}
+
+#[test]
+fn a_cached_box_binary_is_reused_only_at_the_hub_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let target = "x86_64-unknown-linux-gnu";
+    let dest = root.join(format!("phux-{target}"));
+    let version = root.join(format!("phux-{target}.version"));
+    std::fs::create_dir_all(root).unwrap();
+    std::fs::write(&dest, b"cached").unwrap();
+    std::fs::write(&version, "v1.2.3\n").unwrap();
+    assert!(cached_box_binary(&dest, &version, "v1.2.3"));
+    assert!(!cached_box_binary(&dest, &version, "v9.9.9"));
+
+    let got = install_box_binary(root, target, "v1.2.3", |_| unreachable!("cache hit")).unwrap();
+    assert_eq!(std::fs::read(&got).unwrap(), b"cached");
+
+    let got = install_box_binary(root, target, "v9.9.9", |staging| {
+        std::fs::write(staging.join("phux"), b"fresh").unwrap();
+        Ok(staging.to_path_buf())
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(&got).unwrap(), b"fresh");
+    assert_eq!(std::fs::read_to_string(&version).unwrap().trim(), "v9.9.9");
+    assert!(!cached_box_binary(&dest, &version, "v1.2.3"));
 }
 
 fn plan() -> WatchPlan {
