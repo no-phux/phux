@@ -110,6 +110,60 @@ pub(crate) enum ThemeAction {
     },
 }
 
+/// Fit phux into an Omarchy desktop
+///
+/// `setup` makes phux at home on Omarchy (<https://omarchy.org>): its
+/// keys match Omarchy's tmux config (Ctrl+Space prefix, Alt+Enter splits,
+/// Alt+1..9 tabs), its colours follow the Omarchy theme and repaint when
+/// you switch, Super+Ctrl+Return opens it, Super+Ctrl+K lists its keys,
+/// and its server starts with the desktop session. `remove` undoes all of
+/// it; your own config.toml keeps winning throughout.
+#[derive(Debug, Args)]
+pub(crate) struct OmarchyArgs {
+    #[usage(subcommand)]
+    pub(crate) action: OmarchyAction,
+}
+
+/// `phux omarchy <action>` — the Omarchy desktop integration.
+#[derive(Debug, Subcommands)]
+pub(crate) enum OmarchyAction {
+    /// Put phux in place on this Omarchy desktop. Safe to run again.
+    ///
+    /// Installs a distro layer with Omarchy's tmux keys and selects it (a
+    /// distro you had selected stays underneath), follows Omarchy's
+    /// current theme unless your config already picks one, adds a theme
+    /// hook under `~/.config/omarchy/hooks/theme-set.d/`, and adds a marked
+    /// block to `~/.config/hypr/bindings.lua` and `autostart.lua` that
+    /// rebinds Super+Ctrl+Return and Super+Ctrl+K to phux and starts its
+    /// server. Text outside the marked blocks is never touched.
+    Setup {
+        /// Print what would change without writing anything.
+        #[usage(long)]
+        dry_run: bool,
+    },
+
+    /// Show which parts of the Omarchy integration are in place.
+    Status {
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Undo `setup`: restore the previous distro and theme selection and
+    /// delete the hook, the layer, and the marked Hyprland blocks.
+    Remove {
+        /// Print what would change without writing anything.
+        #[usage(long)]
+        dry_run: bool,
+    },
+
+    /// Print every key binding as `KEYS → what it does`, one per line.
+    ///
+    /// The input Omarchy's `omarchy-menu-select` takes, so Super+Ctrl+K
+    /// can show phux's keys in Omarchy's own menu.
+    Keys,
+}
+
 /// `phux plugin <action>` — local plugin registry lifecycle.
 #[derive(Debug, Subcommands)]
 pub(crate) enum PluginAction {

@@ -165,6 +165,9 @@ pub(crate) fn dispatch(
         Some(Command::Theme(commands::ThemeArgs { action })) => {
             commands::theme::run_theme(&action, socket)
         }
+        Some(Command::Omarchy(commands::OmarchyArgs { action })) => {
+            commands::omarchy::run_omarchy(&action, socket)
+        }
         Some(Command::Archive(commands::ArchiveArgs { action })) => {
             commands::archive::run_archive(&action, socket)
         }

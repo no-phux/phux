@@ -70,6 +70,7 @@ pub(crate) mod mission;
 pub(crate) mod mission_project;
 pub(crate) mod mission_start;
 pub(crate) mod new;
+pub(crate) mod omarchy;
 pub(crate) mod org;
 pub(crate) mod organize;
 pub(crate) mod pair;
@@ -187,6 +188,12 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             | ThemeAction::Show { .. }
             | ThemeAction::Install { .. }
             | ThemeAction::Remove { .. } => Some("theme"),
+        },
+        // `setup` and `remove` ring the reload doorbell.
+        Command::Omarchy(OmarchyArgs { action }) => match action {
+            OmarchyAction::Setup { .. } | OmarchyAction::Remove { .. } => None,
+            OmarchyAction::Status { .. } => Some("omarchy status"),
+            OmarchyAction::Keys => Some("omarchy keys"),
         },
         Command::Host(..) => Some("host"),
         Command::Relay(..) => Some("relay"),

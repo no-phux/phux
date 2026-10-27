@@ -18,6 +18,7 @@ Every page in the phux docs, grouped by what you're trying to do.
 - [Hooks](./hooks.md): run a command when something happens.
 - [Plugins](./plugins.md): add actions, panes, and sidebar sections.
 - [Distributions](./distros.md): switch curated defaults without replacing your config; run the Crew agent distro.
+- [Omarchy](./omarchy.md): one command to fit phux into an Omarchy desktop, with its keys, theme, and launcher.
 - [Projects](./projects.md): open a project's session from a recipe in its repository.
 
 ## Automate
