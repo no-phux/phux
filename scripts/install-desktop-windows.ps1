@@ -112,7 +112,11 @@ function Get-DesktopShortcutPath { return Join-Path ([Environment]::GetFolderPat
 
 function Open-DesktopWritableRegistryKey([string] $Path) {
     $key = Get-Item -LiteralPath $Path
-    try { return $key.OpenSubKey('', $true) } finally { $key.Dispose() }
+    try {
+        $writable = $key.OpenSubKey('', $true)
+        if ($null -eq $writable) { throw "Cannot open desktop registry key for writing: $Path" }
+        return $writable
+    } finally { $key.Dispose() }
 }
 
 function Get-DesktopRegistrySnapshot {
@@ -171,13 +175,24 @@ function Restore-DesktopInstallSnapshot([hashtable] $State) {
     if ($failures.Count) { throw ('Desktop rollback could not restore all registration state: ' + ($failures -join '; ')) }
 }
 
+function Undo-DesktopInstall([hashtable] $State, [string] $Current, [string] $Backup, $Failure) {
+    $errors = @()
+    try {
+        if (Test-Path -LiteralPath $Current) { Remove-Item -LiteralPath $Current -Recurse -Force }
+        if (Test-Path -LiteralPath $Backup) { Move-Item -LiteralPath $Backup -Destination $Current }
+    } catch { $errors += $_.Exception.Message }
+    try { Restore-DesktopInstallSnapshot $State } catch { $errors += $_.Exception.Message }
+    if ($errors.Count) { throw ("Desktop install failed: $($Failure.Exception.Message); rollback incomplete: " + ($errors -join '; ') + "; previous payload retained at $Backup when present") }
+    throw $Failure
+}
+
 function Set-DesktopRegistration([string] $Directory, [string] $ReleaseVersion, [bool] $Shortcut) {
     $registry = Get-DesktopRegistrationPath
     if (-not (Test-Path -LiteralPath $registry)) { New-Item -Force $registry | Out-Null }
     $uninstaller = Join-Path $Directory 'uninstall.ps1'
     $command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $uninstaller + '" -Uninstall -InstallDir "' + $Directory + '"'
     foreach ($item in @{ DisplayName = 'Phux Desktop'; DisplayVersion = $ReleaseVersion; Publisher = 'no-phux'; InstallLocation = $Directory; UninstallString = $command; QuietUninstallString = $command }.GetEnumerator()) {
-        Set-ItemProperty $registry -Name $item.Key -Value $item.Value
+        Set-ItemProperty -LiteralPath $registry -Name $item.Key -Value $item.Value
     }
     if ($Shortcut) {
         $path = Get-DesktopShortcutPath
@@ -208,11 +223,7 @@ function Install-DesktopBundle([string] $Bundle, [string] $Directory, [string] $
             Copy-Item -LiteralPath $Installer -Destination (Join-Path $Directory 'uninstall.ps1') -Force
             Set-DesktopRegistration $Directory $release.version $Shortcut
         } catch {
-            try {
-                if (Test-Path $current) { Remove-Item -LiteralPath $current -Recurse -Force }
-                if (Test-Path $backup) { Move-Item -LiteralPath $backup -Destination $current }
-            } finally { Restore-DesktopInstallSnapshot $state }
-            throw
+            Undo-DesktopInstall $state $current $backup $_
         }
         if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
     } finally {
@@ -230,9 +241,9 @@ function Uninstall-Desktop([string] $Directory) {
     try {
         Remove-Item -LiteralPath $current -Recurse -Force
         $registry = Get-DesktopRegistrationPath
-        $recorded = Get-ItemProperty $registry -ErrorAction SilentlyContinue
+        $recorded = Get-ItemProperty -LiteralPath $registry -ErrorAction SilentlyContinue
         if ($recorded.InstallLocation -eq $Directory) {
-            Remove-Item $registry -Recurse -Force
+            Remove-Item -LiteralPath $registry -Recurse -Force
             $shortcut = Get-DesktopShortcutPath
             if (Test-Path $shortcut) { Remove-Item -LiteralPath $shortcut -Force }
         }

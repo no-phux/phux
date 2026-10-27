@@ -81,11 +81,11 @@ function Get-DesktopTestIdentity([string] $Directory) {
     return $parts -join "`n"
 }
 
-function Assert-DesktopFailedInstall([string] $Bundle, [string] $Directory, [string] $Installer, [string] $Failure) {
+function Assert-DesktopFailedInstall([string] $Bundle, [string] $Directory, [string] $Installer, [string] $Failure, [bool] $Shortcut = $true) {
     $before = Get-DesktopTestIdentity $Directory
     $script:failRegistration = $Failure
     $expected = @{ 'partial-registry' = 'Injected failure after partial registry writes'; shortcut = 'Injected failure after shortcut creation' }
-    try { Assert-DesktopRefused { Install-DesktopBundle $Bundle $Directory $Installer $true } $expected[$Failure] }
+    try { Assert-DesktopRefused { Install-DesktopBundle $Bundle $Directory $Installer $Shortcut } $expected[$Failure] }
     finally { $script:failRegistration = $null }
     Assert-DesktopTest ((Get-DesktopTestIdentity $Directory) -ceq $before) "$Failure did not restore exact file bytes and registry values/types"
     Assert-DesktopTest (@(Get-ChildItem -LiteralPath $Directory -Force | Where-Object { $_.Name -match '^\.(stage|previous)-' }).Count -eq 0) 'Rollback left transaction payloads behind'
@@ -168,6 +168,7 @@ try {
     foreach ($failure in @('partial-registry', 'shortcut')) {
         Assert-DesktopFailedInstall $bundle $directory $installer $failure
     }
+    Assert-DesktopFailedInstall $bundle $directory $installer 'partial-registry' $false
 
     # Serve local bytes, but perform real minisign, SHA256, ZIP and identity checks.
     $publicKey = Join-Path $work 'fixture.pub'
@@ -236,6 +237,7 @@ try {
         Assert-DesktopFailedInstall $bundle $directory $installer $failure
         Assert-DesktopTest ((Get-DesktopBundle (Join-Path $directory 'current')).version -ceq '1.2.3') 'Failed replacement did not roll back'
     }
+    Assert-DesktopFailedInstall $bundle $directory $installer 'partial-registry' $false
     Assert-DesktopTest (Test-Path (Join-Path $directory 'keep.txt')) 'Install removed unrelated files'
     $oldShortcutHash = (Get-FileHash -LiteralPath (Get-DesktopShortcutPath)).Hash
     Install-DesktopBundle $bundle $directory $installer $false
@@ -246,6 +248,29 @@ try {
     Assert-DesktopTest ($registered.Values.CustomExpand.Kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) 'Successful upgrade changed an unrelated registry kind'
     Assert-DesktopTest ((Get-FileHash -LiteralPath (Get-DesktopShortcutPath)).Hash -ceq $oldShortcutHash) 'NoShortcut modified an existing shortcut'
     Assert-DesktopTest ((Get-FileHash -LiteralPath (Join-Path $directory 'uninstall.ps1')).Hash -ceq (Get-FileHash -LiteralPath $installer).Hash) 'Successful upgrade kept the old uninstaller'
+    # A locked replacement must not hide the triggering failure, skip remaining
+    # registration restoration, or destroy the previous recoverable payload.
+    & {
+        $state = Get-DesktopInstallSnapshot $directory $true
+        $prior = Get-DesktopTestIdentity $directory
+        [IO.File]::WriteAllText((Join-Path $directory 'uninstall.ps1'), 'partial uninstaller')
+        $current = Join-Path $work 'locked-replacement'
+        $backup = Join-Path $work 'recoverable-previous'
+        New-Item -ItemType Directory $current, $backup | Out-Null
+        [IO.File]::WriteAllText((Join-Path $backup 'payload'), 'previous bytes')
+        function Remove-Item {
+            [CmdletBinding()]
+            param([string] $LiteralPath, [switch] $Recurse, [switch] $Force)
+            if ($LiteralPath -ceq $current) { throw 'Injected locked replacement' }
+            Microsoft.PowerShell.Management\Remove-Item @PSBoundParameters
+        }
+        try { throw 'Injected registration failure' } catch { $cause = $_ }
+        $failure = $null
+        try { Undo-DesktopInstall $state $current $backup $cause } catch { $failure = $_.Exception.Message }
+        Assert-DesktopTest ($failure.Contains('Injected registration failure') -and $failure.Contains('Injected locked replacement') -and $failure.Contains($backup)) 'Incomplete rollback did not report both failures and the recovery location'
+        Assert-DesktopTest ((Get-DesktopTestIdentity $directory) -ceq $prior) 'Payload rollback failure skipped other registration restoration'
+        Assert-DesktopTest ([IO.File]::ReadAllText((Join-Path $backup 'payload')) -ceq 'previous bytes') 'Incomplete rollback destroyed the previous payload'
+    }
     Write-Output 'Windows desktop signed download, identity, signature rotation, tamper, traversal and full rollback contracts passed.'
 } finally {
     $DesktopReleaseKeys = $productionKeys
