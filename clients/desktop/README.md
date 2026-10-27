@@ -202,6 +202,14 @@ Closing the app or interrupting the supervisor reaps both children and
 removes that state. It refuses installed or external artifacts and does not
 restart a lost server behind the supervisor.
 
+To film the app for a demo, launch it with `PHUX_DESKTOP_FILM=DIR`. It
+writes its window to `DIR` ten times a second as PNGs named by milliseconds
+since launch. These are offscreen renders, so filming needs no
+screen-recording permission and works behind other windows. Then
+`bun scripts/film.ts DIR out.mp4` (ffmpeg) turns them into a video at their
+real timing. A release build keeps up; a debug build drops frames but keeps
+the timing.
+
 `just desktop-source` materializes the pinned, patched GPUI the crate
 builds against ([toolchain](./toolchain/README.md)); `desktop-app` runs it
 for you. Set `PHUX_SOCKET` only to use a server other than the one the

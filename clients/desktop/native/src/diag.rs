@@ -20,9 +20,13 @@
 //!   success flag: the files are the proof, and a qualification harness
 //!   checks them.
 //!
+//! - **Film.** `PHUX_DESKTOP_FILM=DIR` writes the window as timed frames
+//!   for demo videos ([`film`]).
+//!
 //! Windows never activate under `--evidence`, so qualification runs do not
 //! steal focus from the person at the machine.
 
+pub mod film;
 mod log_file;
 mod receipt;
 mod redact;

@@ -289,6 +289,7 @@ pub fn main() -> ExitCode {
             cx.set_app_identity("dev.phux.desktop", "phux");
             gpui_kit::init(cx);
             diag::install(evidence, cx);
+            diag::film::install(cx);
             crate::devtools::install(cx);
             if let Err(error) = app::open_with_restore(app_options, restore, cx) {
                 let line = format!("could not open the desktop window: {error:#}");
