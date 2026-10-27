@@ -239,6 +239,32 @@ pub(super) fn palette_recolors_ansi_and_keeps_true_color() {
     );
 }
 
+pub(super) fn truecolor_grays_are_not_quantized() {
+    // The screenshot mismatch: truecolor #181818 must stay 24, not the
+    // 256-colour approximation at index 234 (28). #262626 is exactly index 235.
+    let (client, view) = publish(
+        b"\x1b[?25l\x1b[H\x1b[48;2;24;24;24m \x1b[48;2;38;38;38m \x1b[48;5;234m \x1b[48;5;235m ",
+    );
+    let shot = paint(client, view, settings(false));
+    for (col, expected) in [(0, [24; 3]), (1, [38; 3]), (2, [28; 3]), (3, [38; 3])] {
+        let pixels = cell_pixels(&shot, 0, col);
+        let exact = pixels
+            .iter()
+            .filter(|pixel| {
+                pixel[..3]
+                    .iter()
+                    .zip(expected)
+                    .all(|(channel, expected)| channel.abs_diff(expected) <= 1)
+            })
+            .count();
+        assert!(
+            exact as f32 / pixels.len() as f32 > 0.85,
+            "column {col}: expected exact {expected:?}, got {:?}",
+            pixels[pixels.len() / 2]
+        );
+    }
+}
+
 pub(super) fn nerd_symbols_are_not_missing_glyph_boxes_in_any_face() {
     let mut payload = String::from("\u{1b}[?25l");
     for (face_row, face) in ["0", "1", "3", "1;3"].into_iter().enumerate() {

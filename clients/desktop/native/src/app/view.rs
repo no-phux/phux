@@ -40,7 +40,7 @@ use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
-    AnimationExt, AnyElement, BoxShadow, Context, CursorStyle, DispatchPhase, Entity, IntoElement,
+    AnimationExt, AnyElement, Context, CursorStyle, DispatchPhase, Entity, IntoElement,
     MouseMoveEvent, MouseUpEvent, ParentElement, StyleRefinement, Styled, WeakEntity, Window,
     canvas, div, linear_color_stop, linear_gradient, px, relative,
 };
@@ -50,11 +50,9 @@ use crate::settings::{Skin, TabPosition, TabsWhen};
 use crate::workspace::layout;
 
 use super::actions::{OpenPathDirectory, Run};
-use super::color::from_hex;
 use super::desk::{self, Desk};
 use super::overlays;
 use super::skin::Look;
-use super::ui::shadow;
 
 pub(super) use changes::width as changes_width;
 pub(super) use navigator::foldable_sessions;
@@ -124,19 +122,6 @@ pub(crate) fn content_top(desk: &Desk, skin: &Skin) -> f32 {
 /// highlights scale with it so they fade out as the glass goes opaque.
 fn gloss(skin: &Skin) -> f32 {
     (1. - skin.material.card_solid).clamp(0., 1.)
-}
-
-/// The selected tab's lift, plus a specular top edge and a faint accent glow
-/// while the skin is glassy.
-fn tab_glow(look: &Look) -> Vec<BoxShadow> {
-    let mut shadows = look.tab_shadow.clone();
-    let gloss = gloss(&look.skin);
-    if gloss > 0. && look.lit.a > 0. {
-        let accent = from_hex(&look.chrome.theme.accent);
-        shadows.push(shadow(look.lit.opacity(0.5 * gloss), 1., 0., 0., true));
-        shadows.push(shadow(accent.opacity(0.1 * gloss), 0., 12., -4., false));
-    }
-    shadows
 }
 
 /// Terminals dragged from the navigator onto a session.

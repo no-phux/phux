@@ -413,6 +413,11 @@ const FIXTURES: &[(&str, fn(), bool)] = &[
         palette_recolors_ansi_and_keeps_true_color,
         false,
     ),
+    (
+        "terminal::pixels::truecolor_grays_are_not_quantized",
+        truecolor_grays_are_not_quantized,
+        false,
+    ),
     #[cfg(feature = "terminal-fixtures")]
     (
         "app::conversation::native_face_is_rendered",

@@ -32,5 +32,5 @@ pub(crate) mod typography;
 pub(crate) use atoms::{dot, keystroke, muted, notice_card, pill, shadow, specular};
 pub(crate) use buttons::{ghost_button, ghost_icon, icon_button};
 pub(crate) use list::{row, row_icon, section_label};
-pub(crate) use status::{agent_swatch, attention_mark};
+pub(crate) use status::agent_swatch;
 pub(crate) use time::{ago, ago_wait};

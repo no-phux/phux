@@ -155,6 +155,30 @@ fn idle_panes_share_one_poller() {
     }
 }
 
+/// Service, shell and direct-command panes expose the same colour capability.
+#[test]
+fn pane_children_always_advertise_truecolor() {
+    for inherited in [None, Some(""), Some("24bit"), Some("256color")] {
+        let mut cmd = shell_command(
+            "/bin/sh",
+            "printf 'COLOR:%s TERM:%s\\n' \"$COLORTERM\" \"$TERM\"",
+            false,
+        );
+        match inherited {
+            Some(value) => cmd.env("COLORTERM", value),
+            None => cmd.env_remove("COLORTERM"),
+        };
+        let (mut rx, _, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn color probe");
+        let got = collect_until(&mut rx, |got| has_line_with(got, b"COLOR:"));
+        let _ = pty.child.wait();
+        let text = String::from_utf8_lossy(&got);
+        assert!(
+            text.contains("COLOR:truecolor TERM:xterm-256color"),
+            "{inherited:?}: {text}"
+        );
+    }
+}
+
 /// The first burst promotes the pane onto a dedicated reader.
 #[test]
 fn output_promotes_a_pane_off_the_poller() {

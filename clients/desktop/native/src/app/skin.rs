@@ -46,7 +46,6 @@ pub struct Look {
     pub pane_shadow: Vec<BoxShadow>,
     pub popover_shadow: Vec<BoxShadow>,
     pub capsule_shadow: Vec<BoxShadow>,
-    pub tab_shadow: Vec<BoxShadow>,
 }
 
 impl Look {
@@ -90,7 +89,6 @@ impl Look {
             pane_shadow: lift(&[m.pane_shadow]),
             popover_shadow: lift(&m.popover_shadow),
             capsule_shadow: lift(&[m.capsule_shadow]),
-            tab_shadow: lift(&[m.tab_shadow]),
             chrome,
         }
     }
@@ -144,7 +142,7 @@ pub enum Surface {
     /// popover shadow.
     Popover,
     /// A pane card: pane radius, terminal background, clear edge, pane
-    /// shadow. Set a focused edge with `border_color` after.
+    /// shadow. Only explicit drop targeting adds a visible perimeter.
     Pane,
     /// A floating pill of controls.
     Capsule,
@@ -160,7 +158,7 @@ pub trait Surfaced: Styled + Sized {
     fn surface(self, look: &Look, surface: Surface) -> Self {
         let shape = &look.skin.shape;
         // No radius is a pill.
-        let (radius, bg, border, shadow) = match surface {
+        let (radius, bg, border, shadow): (_, _, _, &[BoxShadow]) = match surface {
             Surface::Card => (
                 Some(shape.radius),
                 look.raised,
@@ -183,14 +181,14 @@ pub trait Surfaced: Styled + Sized {
             Surface::Tab => (
                 Some(shape.tab_radius),
                 look.active,
-                look.border,
-                &look.tab_shadow,
+                gpui::transparent_black(),
+                &[],
             ),
             Surface::SideTab => (
                 Some(super::ui::list::row_radius(&look.skin)),
                 look.active,
-                look.border,
-                &look.tab_shadow,
+                gpui::transparent_black(),
+                &[],
             ),
         };
         match radius {
@@ -200,7 +198,7 @@ pub trait Surfaced: Styled + Sized {
         .bg(bg)
         .border_1()
         .border_color(border)
-        .shadow(shadow.clone())
+        .shadow(shadow.to_vec())
     }
 }
 
@@ -288,13 +286,27 @@ mod tests {
         assert_eq!(look.sheet.a, 1.);
         assert_eq!(look.card.a, 1.);
         assert!(look.pane_shadow.is_empty());
-        // Menus and the selected tab keep the desk's lift.
+        // Menus keep their lift; tabs use only a flat selection wash.
         assert_eq!(look.popover_shadow.len(), 2);
-        assert!(!look.tab_shadow.is_empty());
         assert_eq!(
             background_appearance(TERMINAL.material.backdrop),
             WindowBackgroundAppearance::Opaque
         );
+    }
+
+    #[test]
+    fn tabs_are_flat_and_panes_have_no_default_perimeter() {
+        for colors in palettes() {
+            let look = Look::of(&GLASS, &colors, &default_display());
+            for surface in [Surface::Tab, Surface::SideTab] {
+                let mut tab = gpui::div().surface(&look, surface);
+                assert_eq!(tab.style().border_color, Some(gpui::transparent_black()));
+                assert!(tab.style().box_shadow.as_ref().unwrap().is_empty());
+                assert_eq!(tab.style().background, Some(look.active.into()));
+            }
+            let mut pane = gpui::div().surface(&look, Surface::Pane);
+            assert_eq!(pane.style().border_color, Some(gpui::transparent_black()));
+        }
     }
 
     #[test]
