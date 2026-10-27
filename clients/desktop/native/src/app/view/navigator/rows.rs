@@ -19,7 +19,7 @@ use crate::app::color::from_hex;
 use crate::app::desk::Desk;
 use crate::app::pane_identity::PaneOrigin;
 use crate::app::skin::Look;
-use crate::app::ui::list::{Emphasis, child_row, row_detail, row_label};
+use crate::app::ui::list::{Emphasis, child_row, current_mark, row_detail, row_label};
 use crate::app::ui::status::{harness_status, state_dot};
 use crate::app::ui::{ago, dot, row_icon};
 use crate::app::view::{ResourceDrag, drag_label};
@@ -103,6 +103,7 @@ pub(super) fn pane_row(
     child_row(selector.clone(), look)
         .debug_selector(move || selector.to_string())
         .when(selected || viewing, |row| row.bg(look.active))
+        .when(viewing, |row| row.child(current_mark(look)))
         .child(row_icon(glyph))
         .child(
             row_label(
