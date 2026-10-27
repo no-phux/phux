@@ -37,6 +37,11 @@ on:
 permissions:
   contents: read
 
+# Keep PR qualification latest-wins without cancelling immutable release runs.
+concurrency:
+  group: windows-desktop-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   server:
     name: Same-source WSL coordinator
