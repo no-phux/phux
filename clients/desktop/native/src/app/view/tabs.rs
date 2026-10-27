@@ -26,7 +26,9 @@ use super::super::desk::{self, Desk, Modal};
 use super::super::pane_identity::Harness;
 use super::super::skin::{Look, Surface, Surfaced};
 use super::super::ui::ghost_icon;
-use super::super::ui::list::{CHILD_INSET, ROW, ROW_GAP, ROW_INSET, row_icon, row_radius};
+use super::super::ui::list::{
+    CHILD_INSET, ROW, ROW_GAP, ROW_INSET, current_mark, row_icon, row_radius,
+};
 use super::super::ui::menu::Anchor;
 use super::super::ui::status::{harness_mark, harness_status, state_dot, strongest};
 
@@ -435,6 +437,7 @@ fn tab_button(
             .hover(move |style| style.bg(hover).opacity(1.))
         })
         .when(organizing, |tab| tab.bg(look.active))
+        .when(side && selected, |tab| tab.child(current_mark(look)))
         .block_mouse_except_scroll()
         .when(side, |tab| {
             tab.child(row_icon(side_lead(
