@@ -252,6 +252,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
     let sheen = sheen_height > 0.
         && look.sheen.a > 0.
         && (skin.chrome.sheen || desk.shift_progress().is_some());
+    let backdrop_shader = desk.backdrop_layer(cx);
 
     div()
         .id("desk")
@@ -262,6 +263,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
         .flex()
         .flex_col()
         .bg(look.sheet)
+        .children(backdrop_shader)
         .when(sheen, |sheet| {
             sheet.child(
                 div()

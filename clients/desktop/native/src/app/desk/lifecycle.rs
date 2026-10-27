@@ -135,6 +135,7 @@ impl Desk {
             hosts: Vec::new(),
             fleet: Default::default(),
             fleet_view: Default::default(),
+            backdrop_shader: Default::default(),
             add_machine: AddMachine::default(),
             drag_region: None,
             menu: None,

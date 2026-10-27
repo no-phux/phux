@@ -187,6 +187,7 @@ fn selectable_work(desk: &mut Desk, cx: &mut gpui::Context<Desk>) {
     cx.notify();
 }
 
+mod backdrop;
 mod chrome;
 mod closing;
 mod geometry;

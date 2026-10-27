@@ -288,6 +288,8 @@ pub struct Desk {
     shift: Option<Shift>,
     /// The window background last applied.
     backdrop: Option<Backdrop>,
+    /// The shader drawn behind the chrome and panes.
+    pub(crate) backdrop_shader: super::backdrop_shader::BackdropShader,
     /// The placement whose top edge, or whose pane controls, the pointer is over.
     pub(crate) chrome_hover: Option<String>,
     pub(crate) controls_hover: Option<String>,

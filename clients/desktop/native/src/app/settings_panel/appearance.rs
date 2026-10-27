@@ -169,6 +169,7 @@ pub(super) fn appearance_page(
         )
         .group(super::branding::group(desk, cx))
         .group(look_group(desk, handle, controls))
+        .group(super::backdrop::group(desk, handle, controls, cx))
 }
 
 /// Skin cards, the plain terminal switch, and motion.

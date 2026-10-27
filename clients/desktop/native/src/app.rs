@@ -6,6 +6,7 @@
 
 mod actions;
 mod approvals;
+mod backdrop_shader;
 pub(crate) mod branding;
 mod capture;
 mod changes;
@@ -30,6 +31,7 @@ mod panes;
 mod performance;
 mod session;
 mod settings_panel;
+mod shader_view;
 mod skin;
 mod tab_peek;
 mod typed;
@@ -151,6 +153,17 @@ pub fn capture_design_fixture(
     cx: &mut App,
 ) -> anyhow::Result<()> {
     view::preview::open(options, directory, cx)
+}
+
+/// Capture the desk wearing each built-in backdrop shader, in a dark and a
+/// light theme, with an embedded, server-free runtime.
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
+pub fn capture_backdrop_fixture(
+    options: AppOptions,
+    directory: PathBuf,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    view::preview::open_backdrops(options, directory, cx)
 }
 
 /// Measure native menu creation without opening visible windows.

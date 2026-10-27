@@ -87,6 +87,23 @@ impl SettingsWindow {
             cx.observe(&updates, |_, _, cx| cx.notify()),
         ];
         let controls = desk.update(cx, |desk, cx| build_controls(desk, window, cx));
+        // Redraw when a shader file appears, goes or is saved, so its card
+        // follows without a click.
+        cx.spawn(async move |settings, cx| {
+            loop {
+                cx.background_executor().timer(super::backdrop::SCAN).await;
+                let open = settings.update(cx, |settings: &mut Self, cx| {
+                    if settings.controls.gallery.folder_changed() {
+                        settings.controls.gallery.refresh();
+                        cx.notify();
+                    }
+                });
+                if open.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         Self {
             owner,
             desk,
@@ -110,6 +127,14 @@ impl SettingsWindow {
                 .update(cx, |query, cx| query.set_value("", window, cx));
         }
         window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Type `text` into the search field, for captures.
+    #[cfg(feature = "ui-fixtures")]
+    pub(crate) fn search(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.query
+            .update(cx, |query, cx| query.set_value(text.to_owned(), window, cx));
         cx.notify();
     }
 
@@ -244,7 +269,8 @@ impl gpui::Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.query.read(cx).value().to_lowercase();
         let prefs = self.desk.read(cx).prefs.clone();
-        self.controls.sync(&prefs, window, cx);
+        let shaders = self.desk.read(cx).shader_inputs(1., cx);
+        self.controls.sync(&prefs, shaders, window, cx);
         let desk = self.desk.read(cx);
         let pages: Vec<_> = Page::ALL
             .into_iter()

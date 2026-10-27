@@ -33,6 +33,7 @@ pub mod hotkeys;
 pub mod launch;
 mod platform;
 pub mod settings;
+pub mod shader;
 pub mod telemetry;
 mod updates;
 pub mod workspace;

@@ -117,6 +117,30 @@ fn the_playground_map_is_office_unless_a_known_map_is_saved() {
 }
 
 #[test]
+fn the_backdrop_shader_defaults_off_and_keeps_only_known_choices() {
+    let shipped = parse_display(&json!({}));
+    assert_eq!(shipped.backdrop_shader, "off");
+    assert_eq!(shipped.backdrop_intensity, 0.7);
+    for junk in [json!("lava"), json!(3), json!("file:../../etc.wgsl")] {
+        let parsed = parse_display(&json!({"backdropShader": junk}));
+        assert_eq!(parsed.backdrop_shader, "off", "{junk}");
+    }
+    for (saved, kept) in [(0.0, 0.1), (0.456, 0.46), (4.0, 1.0)] {
+        let parsed = parse_display(&json!({"backdropIntensity": saved}));
+        assert_eq!(parsed.backdrop_intensity, kept);
+    }
+    for choice in ["aurora", "file:mine.wgsl"] {
+        let prefs = DisplayPrefs {
+            backdrop_shader: choice.to_owned(),
+            backdrop_intensity: 0.4,
+            ..default_display()
+        };
+        assert_eq!(display_value(&prefs)["backdropShader"], choice);
+        assert_eq!(parse_display(&display_value(&prefs)), prefs);
+    }
+}
+
+#[test]
 fn tab_placement_round_trips_without_changing_other_preferences() {
     for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Side] {
         let prefs = DisplayPrefs {

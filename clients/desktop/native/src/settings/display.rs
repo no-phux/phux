@@ -159,6 +159,11 @@ pub struct DisplayPrefs {
     /// Skin motion: pane folds, skin shifts, cursor effects. macOS reduce
     /// motion also turns it off.
     pub animations: bool,
+    /// The shader drawn behind the chrome and panes: `off`, a built-in id,
+    /// or `file:NAME.wgsl` in the shader folder.
+    pub backdrop_shader: String,
+    /// How strongly the backdrop shader shows, 0.1 to 1.
+    pub backdrop_intensity: f64,
 }
 
 /// Shipped defaults.
@@ -193,6 +198,8 @@ pub fn default_display() -> DisplayPrefs {
         agent_fleet: false,
         playground_map: "office".to_owned(),
         animations: true,
+        backdrop_shader: crate::shader::library::OFF.to_owned(),
+        backdrop_intensity: 0.7,
     }
 }
 
@@ -284,6 +291,9 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
             .clamp(0.0, 64.0),
         unfocused_opacity: hundredths(display.unfocused_opacity, 1.0).clamp(0.15, 1.0),
         terminal_opacity: hundredths(display.terminal_opacity, 1.0).clamp(0.55, 1.0),
+        backdrop_shader: crate::shader::library::Choice::parse(&display.backdrop_shader).id(),
+        backdrop_intensity: hundredths(display.backdrop_intensity, fallback.backdrop_intensity)
+            .clamp(0.1, 1.0),
         skin_id: skin_by_id(&display.skin_id).id.to_owned(),
         leader_key: display
             .leader_key
@@ -364,6 +374,8 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         agent_fleet: flag("agentFleet", fallback.agent_fleet),
         playground_map: string("playgroundMap", fallback.playground_map),
         animations: flag("animations", fallback.animations),
+        backdrop_shader: string("backdropShader", fallback.backdrop_shader),
+        backdrop_intensity: number("backdropIntensity", fallback.backdrop_intensity),
     })
 }
 
@@ -400,6 +412,8 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "agentFleet": display.agent_fleet,
         "playgroundMap": display.playground_map,
         "animations": display.animations,
+        "backdropShader": display.backdrop_shader,
+        "backdropIntensity": display.backdrop_intensity,
     })
 }
 

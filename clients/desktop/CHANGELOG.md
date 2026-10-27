@@ -9,6 +9,11 @@
   pinch, and a click that opens the exact agent.
 - Add a matrix map to the fleet playground, switched from its header and
   saved with the display preferences.
+- Add backdrop shaders: live WGSL backdrops behind the panes and chrome
+  (Silk, Aurora, Nebula, Rain, Grid) drawn in the theme's colors, speeding up
+  while agents work and flaring when one needs you. Pick one from live cards
+  in Settings or cycle with **Next Backdrop Shader**; drop a `.wgsl` file in
+  the shader folder and every save redraws the window.
 
 - Render inline Kitty graphics in terminal panes and previews, including PNG,
   RGB/RGBA, chunked transfers, Unicode placeholders, cropping, transparency and

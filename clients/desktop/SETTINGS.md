@@ -38,6 +38,10 @@ Chrome uses bundled Inter with compact leading and consistent label columns.
 font dropdown previews each face, with bundled terminal fonts pinned first.
 Choose **Tokyo Night** from the **Theme** menu under **Settings > Appearance > Font & theme**.
 
+**Backdrop shader** shows a live card for each built-in WGSL backdrop and each
+`.wgsl` file in your shader folder; **Shader intensity** sets how strongly it
+shows. See [Backdrop shaders](SHADERS.md).
+
 ## Desktop leader
 
 In **Keyboard & shortcuts**, **Desktop leader** adds an optional command prefix
