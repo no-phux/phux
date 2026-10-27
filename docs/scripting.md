@@ -12,6 +12,7 @@ phux run build 'cargo build' && echo "build passed"
 phux snapshot build
 ```
 
+[Using phux as an agent](./agent-quickstart.md) is the install-and-drive loop.
 [Coding agents](./agents.md) covers what is specific to agents.
 
 ## Targets

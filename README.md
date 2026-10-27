@@ -51,11 +51,15 @@ phux wait --regex 'passed|failed' @1
 ```
 
 [Getting started](./docs/getting-started.md) ·
+[using phux as an agent](./docs/agent-quickstart.md) ·
 [driving terminals from scripts](./docs/scripting.md) ·
 [coding agents](./docs/agents.md) ·
 [remote machines](./docs/remote.md)
 
 ## For agents
+
+Install phux and drive a session from code with
+[Using phux as an agent](./docs/agent-quickstart.md).
 
 phux knows which pane runs which agent and whether it is working, idle, or
 blocked on you. Agents reach phux through plugins for Claude Code, pi, Oh
