@@ -58,7 +58,9 @@ New-Item -ItemType Directory -Force $Output | Out-Null
 $work = Join-Path ([IO.Path]::GetTempPath()) ('phux-native-smoke-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $work | Out-Null
 $linuxRoot = '/tmp/phux-desktop-ci-' + [Guid]::NewGuid().ToString('N')
-$profile = 'windows-desktop-smoke-' + [Guid]::NewGuid().ToString('N')
+# Keep the unique profile's socket segment below credential-redaction's 40
+# character threshold, so default-entry logs can prove the exact isolated path.
+$profile = 'w' + [Guid]::NewGuid().ToString('N').Substring(0, 24)
 $socket = $null
 $phux = '/home/phux-ci/.local/bin/phux'
 $session = 'windows-desktop-smoke'
