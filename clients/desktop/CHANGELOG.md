@@ -55,6 +55,25 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.49.0](https://github.com/no-phux/phux/compare/desktop-v0.48.0...desktop-v0.49.0) (2026-10-27)
+
+
+### Features
+
+* **desktop:** add Tokyo Night theme ([#1810](https://github.com/no-phux/phux/issues/1810)) ([026bdfd](https://github.com/no-phux/phux/commit/026bdfdcf61cffbbe9a43c15f00eae148c847322))
+* **desktop:** backdrop shaders play video that dims while agents work ([#1821](https://github.com/no-phux/phux/issues/1821)) ([c7a29be](https://github.com/no-phux/phux/commit/c7a29becb738c5588b7fc35f80a5c6d4ef9beb9d))
+* **desktop:** backdrop shaders that move with your agents ([#1817](https://github.com/no-phux/phux/issues/1817)) ([51e33b7](https://github.com/no-phux/phux/commit/51e33b7fc008669653f518b767e68ac32593388b))
+* **desktop:** brand installer and streamline setup help ([c20fb4f](https://github.com/no-phux/phux/commit/c20fb4f09e8f9b39972a8892954b361f42a902ef))
+* **desktop:** land Reviews with safer drafts and review targets ([#1820](https://github.com/no-phux/phux/issues/1820)) ([d7b5696](https://github.com/no-phux/phux/commit/d7b569661ff669f41f65b746782a8df7e0ab786c))
+* **desktop:** mark the terminal the window shows in the sidebar ([#1824](https://github.com/no-phux/phux/issues/1824)) ([dc3ca8a](https://github.com/no-phux/phux/commit/dc3ca8af23b81e03d655c6ac8d47022dc0ac82fd))
+* **desktop:** the Emblem Fox is the app icon and the fleet playground's piece ([#1815](https://github.com/no-phux/phux/issues/1815)) ([46ef188](https://github.com/no-phux/phux/commit/46ef18880f30429607561314f2a02fd847069412))
+
+
+### Bug Fixes
+
+* **desktop:** keep conversation switch in hover controls ([387895f](https://github.com/no-phux/phux/commit/387895f08f5222d9cc93bae1814695b6ce56e388))
+* **desktop:** quiet chrome and advertise truecolor ([461eda9](https://github.com/no-phux/phux/commit/461eda98bb2e0d04dc53db5fee9b39dfa7b56d05))
+
 ## [0.48.0](https://github.com/no-phux/phux/compare/desktop-v0.47.1...desktop-v0.48.0) (2026-10-26)
 
 
