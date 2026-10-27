@@ -37,6 +37,22 @@ pub(super) fn run_ticket(name: &str, hub: Option<&str>, minutes: i64, json: bool
     }
 }
 
+/// Mint NAME's join code for a satellite that dials `hub`, as `phux host
+/// ticket` does, for a caller that delivers it itself (`phux host
+/// minimal`): the code and the ticket id that withdraws it.
+pub(super) fn mint_code(name: &str, hub: &str, minutes: i64) -> Result<(String, String), CliError> {
+    let minted = mint(name, Some(hub), minutes)?;
+    Ok((minted.code.to_link(), minted.ticket.id))
+}
+
+/// Withdraw an unredeemed ticket `mint_code` returned.
+pub(super) fn withdraw_ticket(id: &str) -> Result<(), String> {
+    let tickets_path = tickets::tickets_path(&WorkloadPaths::from_env().registry);
+    tickets::revoke_ticket(&tickets_path, id)
+        .map(drop)
+        .map_err(|err| err.to_string())
+}
+
 /// A minted ticket and where it was registered.
 struct Minted {
     name: String,

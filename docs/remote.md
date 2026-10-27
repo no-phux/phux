@@ -240,6 +240,54 @@ An expired code stops new joins but doesn't undo one. To cut off a joined
 satellite, revoke its credential on the hub with `phux workload revoke`, and
 remove it with `phux host rm sandbox`.
 
+### Minimal boxes
+
+[Minimal](https://minimal.dev) runs coding agents in isolated boxes on your
+own machine. One command makes every box join this machine's phux:
+
+```sh
+phux host minimal setup
+min session activate          # as usual; the box shows up in phux as min-NAME
+phux ls                       # the box's sessions, under min-NAME
+```
+
+![phux host minimal setup, then a plain min session activate joins the box](assets/minimal-demo.gif)
+
+`setup` writes a `phux` Minimal loadout that copies a Linux phux into each
+box and starts its server there, adds it to Minimal's `default_loadouts`, and
+installs a per-user service that runs `phux host minimal watch`. On macOS the
+box's phux is your release channel's published Linux build, checked like
+`phux update` checks one; on Linux it is the phux you ran. Run `setup` again
+to refresh it.
+
+The watcher notices each new box within a couple of seconds, mints a
+single-use ticket for it, and hands the code to `phux host join -` inside the
+box over `min session exec`. The box dials this machine at
+`host.min.internal`, the name Minimal gives this machine's loopback inside a
+box, so this server needs `[policy] mode = "paired"` and a QUIC listener
+bound to loopback or all addresses. A box's panes then appear here as
+`min-NAME/@N`, in the terminal and in the desktop app. When a box is
+destroyed, its satellite entry goes and its credential is revoked.
+
+**The box gets no authority here.** A satellite credential opens no terminal
+on the hub; the hub drives the box, never the reverse, so an agent sealed in
+a box still can't reach your other panes.
+
+A box activated with `--no-loadouts` has no phux and is skipped. A
+`--network none` box, and an `--network own_ip` box whose egress rules don't
+admit `host.min.internal`, can't reach the hub, so they never join. The
+default `host_ip` box can.
+
+| Command | Does |
+| --- | --- |
+| `phux host minimal setup` | Loadout, default, hub, and watcher service. `--no-service` skips the service; `--box-phux PATH` picks the Linux phux boxes get. |
+| `phux host minimal sync` | One pass: join new boxes, forget destroyed ones. |
+| `phux host minimal watch` | `sync` every two seconds, as the service does. |
+| `phux host minimal remove` | Stops the watcher, removes the loadout, and forgets and revokes every box. |
+
+`--hub HOST:PORT` overrides the address boxes dial, and `--min PATH` the
+Minimal CLI, when `min` is neither on `PATH` nor in `~/.local/bin`.
+
 ## Managing credentials
 
 ```sh

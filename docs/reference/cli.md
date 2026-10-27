@@ -1805,6 +1805,7 @@ Commands:
   enable    Enable a satellite; a running local hub dials it now.
   join      Join a hub as a satellite with the code `phux host ticket` printed.
   ls        List registered machines from both registries. [aliases: list]
+  minimal   Make Minimal boxes join this hub as satellites.
   rename    Rename a registered machine without changing its route or
             credentials.
   renew     Renew a remote's workload client certificate over ssh.
@@ -2056,6 +2057,120 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal`
+
+```text
+Make Minimal boxes join this hub as satellites.
+
+A Minimal (minimal.dev) box cannot be dialed, but it reaches this machine's
+loopback as `host.min.internal`. `setup` once, then every box `min session
+activate` creates shows up here as `min-NAME`, its panes as `min-NAME/@N`, and
+leaves when it is destroyed.
+
+Usage: phux host minimal <SUBCOMMAND>
+
+Commands:
+  remove  Undo `setup`: stop the watcher, remove the loadout, forget every box.
+  setup   Make every Minimal box join this hub.
+  sync    Join each running box that has not joined, and forget destroyed ones.
+  watch   Run `sync` every few seconds until stopped; what the service runs.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal remove`
+
+```text
+Undo `setup`: stop the watcher, remove the loadout, forget every box.
+
+Running boxes keep their phux; they stop reaching this hub because their
+credentials are revoked.
+
+Usage: phux host minimal remove
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal setup`
+
+```text
+Make every Minimal box join this hub.
+
+Writes the `phux` Minimal loadout, which copies a Linux phux into each box and
+starts its server, adds it to Minimal's `default_loadouts`, makes this machine's
+service a federation hub, and installs a per-user service running `phux host
+minimal watch`. On macOS the box binary is this release channel's published
+Linux phux, downloaded and signature-checked like `phux update`. Run it again to
+refresh the box binary or after the hub's QUIC port changes. The hub must run
+`[policy] mode = "paired"` with a QUIC listener on loopback or all addresses.
+
+Usage: phux host minimal setup [FLAGS]
+
+Flags:
+      --hub <HOST:PORT>  `HOST:PORT` boxes dial. Omitted: `host.min.internal`
+                         and the port of this server's live QUIC listener.
+      --min <PATH>       The `min` CLI. Omitted: `min` on `PATH`, else
+                         `~/.local/bin/min`.
+      --box-phux <PATH>  The Linux phux to copy into boxes, instead of the
+                         published one (macOS) or this binary (Linux).
+      --no-service       Skip the watcher service; run `phux host minimal watch`
+                         yourself.
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal sync`
+
+```text
+Join each running box that has not joined, and forget destroyed ones.
+
+A box joins as satellite `min-NAME`, NAME being its Minimal session name. A box
+without phux on its `PATH` (activated without the `phux` loadout) is skipped.
+
+Usage: phux host minimal sync [--hub <HOST:PORT>] [--min <PATH>]
+
+Flags:
+      --hub <HOST:PORT>  `HOST:PORT` boxes dial. Omitted: `host.min.internal`
+                         and the port of this server's live QUIC listener.
+      --min <PATH>       The `min` CLI. Omitted: `min` on `PATH`, else
+                         `~/.local/bin/min`.
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal watch`
+
+```text
+Run `sync` every few seconds until stopped; what the service runs.
+
+Usage: phux host minimal watch [FLAGS]
+
+Flags:
+      --hub <HOST:PORT>  `HOST:PORT` boxes dial. Omitted: `host.min.internal`
+                         and the port of this server's live QUIC listener.
+      --min <PATH>       The `min` CLI. Omitted: `min` on `PATH`, else
+                         `~/.local/bin/min`.
+      --interval <SECS>  Seconds between passes.
+                         (default: 2)
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host rename`

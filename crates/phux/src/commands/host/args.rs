@@ -323,4 +323,15 @@ pub(crate) enum HostAction {
         #[usage(flatten)]
         json: JsonOpt,
     },
+
+    /// Make Minimal boxes join this hub as satellites.
+    ///
+    /// A Minimal (minimal.dev) box cannot be dialed, but it reaches this
+    /// machine's loopback as `host.min.internal`. `setup` once, then every
+    /// box `min session activate` creates shows up here as `min-NAME`, its
+    /// panes as `min-NAME/@N`, and leaves when it is destroyed.
+    Minimal {
+        #[usage(subcommand)]
+        action: super::minimal::MinimalAction,
+    },
 }
