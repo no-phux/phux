@@ -7,7 +7,9 @@ function Receive-ClipboardUpload([ValidateSet('file_path', 'image_path')][string
     Send-ControlShift 86
     $received = @{ Path = $null }
     Wait-Desktop "native clipboard upload for $Variable" {
-        $text = (Invoke-SmokeCli @('snapshot', $session)) -replace '[\r\n]', ''
+        # Default snapshots add a box around physical rows. Unwrap through the
+        # CLI's logical-row projection so a long uploaded path stays byte-exact.
+        $text = Invoke-SmokeCli @('snapshot', '--unwrap', $session)
         $match = [regex]::Match($text, [regex]::Escape($Variable + '=') + '(?<path>/[A-Za-z0-9._/-]+\.' + $Extension + ')')
         if (-not $match.Success) { return $false }
         $received.Path = $match.Groups['path'].Value

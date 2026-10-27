@@ -214,4 +214,12 @@ test("Windows policy filters cannot silently pass zero tests and diagnostics nev
   const smoke = readFileSync(repoPath("clients/desktop/scripts/smoke-windows.ps1"), "utf8");
   expect(smoke).toContain("$expectedVersion = $release.version");
   expect(smoke).toContain("$env:PHUX_DIAGNOSTIC -cne 'true'");
+  const clipboard = readFileSync(
+    repoPath("clients/desktop/scripts/smoke-windows-clipboard.ps1"),
+    "utf8",
+  );
+  expect(clipboard).toContain("@('snapshot', '--unwrap', $session)");
+  expect(clipboard).toContain("Get-FileHash -Algorithm SHA256");
+  expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetFileDropList");
+  expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetImage");
 });
