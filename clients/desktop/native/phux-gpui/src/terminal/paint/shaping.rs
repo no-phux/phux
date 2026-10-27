@@ -18,7 +18,7 @@ impl Builder {
         if matches!(cell.wide, 2 | 3) {
             return;
         }
-        let text = painted_text(frame, row, col);
+        let text = stand_in(painted_text(frame, row, col));
         let foreground = self.glyph_foreground(row, col, colors);
         if text.is_empty() || text == b" " {
             if !text.is_empty() {
@@ -331,6 +331,17 @@ pub(super) fn glyphs_match_cells(line: &ShapedLine, text: &str, fonts: &[gpui::F
         }
     }
     cells.next().is_none()
+}
+
+/// The bundled face's glyph for a symbol it lacks but draws the same. Claude
+/// Code heads tool calls with `⏺` and hangs their results on `⎿`; a system
+/// fallback face draws those thin and off the cell grid.
+fn stand_in(text: &[u8]) -> &[u8] {
+    match text {
+        b"\xe2\x8e\xbf" => "\u{2514}".as_bytes(), // ⎿ → └
+        b"\xe2\x8f\xba" => "\u{25cf}".as_bytes(), // ⏺ → ●
+        other => other,
+    }
 }
 
 /// The single character of a cell, if it is one printable character.
