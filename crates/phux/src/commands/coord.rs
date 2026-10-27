@@ -9,6 +9,9 @@
 //!
 //! Who you are: `--as`, else `$PHUX_AGENT_ADDRESS`, else this pane (`@N`
 //! from `$PHUX_TERMINAL_ID`), else `$USER`.
+//!
+//! On a host joined to a hub with `phux host join`, both use the hub's store
+//! instead, in this host's name ([`phux_client::hub_mail`]).
 
 use std::process::ExitCode;
 
@@ -28,7 +31,8 @@ const SCHEMA: &str = "phux.coord/v1";
 pub(crate) enum MailAction {
     /// Store a message for each recipient
     Send {
-        /// Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name.
+        /// Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name,
+        /// led by `SATELLITE/` or `hub/` for one on another host.
         #[usage(required, value_name = "TO")]
         to: Vec<String>,
         /// The message. `-` reads it from stdin.
@@ -268,8 +272,21 @@ pub(crate) fn run_claim(action: &ClaimAction) -> ExitCode {
     }
 }
 
+/// The hub's store when this host joined one, else this host's.
 fn store(json: bool) -> Result<phux_work::Client, ExitCode> {
-    super::mission::client(json)
+    match phux_client::hub_mail::hub_link() {
+        Ok(Some(link)) => Ok(phux_work::Client::remote(std::sync::Arc::new(link))),
+        Ok(None) => super::mission::client(json),
+        Err(message) => Err(json_err::emit(
+            json,
+            &json_err::CliError::new(
+                codes::INVALID_CONFIG,
+                message,
+                "fix the [[uplink]] entry `phux host join` wrote, or join again",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        )),
+    }
 }
 
 fn emit(document: &serde_json::Value) {

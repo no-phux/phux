@@ -170,8 +170,10 @@ pub(crate) struct MissionArgs {
 ///
 /// Mail lives in this host's work store beside `phux mission` tasks and
 /// survives restarts. An agent is addressed by its pane here, `@749`,
-/// optionally labelled, `pi@749`; anything outside a pane uses a name.
-/// `send` stores the message and nothing more: nothing is typed into a
+/// optionally labelled, `pi@749`; anything outside a pane uses a name. On a
+/// host joined to a hub with `phux host join`, mail and claims use the
+/// hub's store: the hub's panes are `hub/@749`, and on the hub this host's
+/// are `NAME/@N`. `send` stores the message and nothing more: nothing is typed into a
 /// recipient's terminal. The recipient's harness integration takes it
 /// (`wait`, `hook-context`) and puts it in the agent's conversation; an
 /// agent idle under a hook-only harness sees it at its next hook. You

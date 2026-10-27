@@ -6,7 +6,10 @@ use super::*;
 #[test]
 fn versioned_errors_and_a_used_upgrade_budget_never_trigger_a_probe() {
     let dir = tempfile::tempdir().unwrap();
-    let client = Client::new(Endpoint::new(dir.path(), dir.path()), None);
+    let client = Local {
+        endpoint: Endpoint::new(dir.path(), dir.path()),
+        launcher: None,
+    };
     for (keeper, allow_upgrade) in [(Some(BUILD.to_owned()), true), (None, false)] {
         let (stream, mut peer) = UnixStream::pair().unwrap();
         let fault = Response::Fault(Fault::BadRequest {

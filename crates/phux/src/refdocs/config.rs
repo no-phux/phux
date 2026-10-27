@@ -365,6 +365,7 @@ mod tests {
             client_cert: PathBuf::from("/state/uplinks/uplink.sandbox.pem"),
             client_key: PathBuf::from("/state/uplinks/uplink.sandbox.key"),
             enabled: true,
+            mail_only: false,
         }];
         config.remote = vec![RemoteConfigEntry {
             name: "mini".to_owned(),

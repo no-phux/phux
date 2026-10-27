@@ -304,6 +304,12 @@ pub(crate) enum HostAction {
         )]
         expires_in: i64,
 
+        /// For mail and claims only: register no `inbound://` entry, so this
+        /// hub never reaches the machine's terminals. Pair with `phux host
+        /// join --mail-only` there.
+        #[usage(long)]
+        mail_only: bool,
+
         #[usage(flatten)]
         json: JsonOpt,
     },
@@ -319,6 +325,12 @@ pub(crate) enum HostAction {
         /// The `phux://satellite?...` code from the hub, or `-` to read it
         /// from stdin and keep it out of `ps` and shell history.
         code: String,
+
+        /// For mail and claims only: `phux mail` and `phux claim` here use
+        /// the hub's store, and the server never dials the hub, so the hub
+        /// reaches no terminal here.
+        #[usage(long)]
+        mail_only: bool,
 
         #[usage(flatten)]
         json: JsonOpt,

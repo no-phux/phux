@@ -30,7 +30,8 @@
 //! on paths (ADR-0187). Those tables are additive and do not change
 //! `user_version`. A harness waits for its agent's mail with
 //! [`Client::wait_mail`]: the keeper parks the request until a message
-//! arrives or the deadline passes, then hands each message over once.
+//! arrives or the deadline passes, then hands each message over once. A
+//! hub's store also carries its satellites' mail and claims ([`federation`]).
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -49,11 +50,11 @@ mod start;
 mod store;
 mod wire;
 
-pub use client::{Client, Launcher};
+pub use client::{Client, Exchange, Launcher};
 pub use coord::{
     ADDRESS_ENV, AckMail, Address, Claim, ClaimFilter, ClaimOutcome, DEFAULT_CLAIM_SECS,
     MAX_CLAIM_SECS, MAX_WAIT_MS, Mail, ReadMail, ReleaseClaim, ReleaseMail, RenewClaim, SendMail,
-    Sent, TakeClaim, WaitMail, caller_address, claim_path, pane_address,
+    Sent, TakeClaim, WaitMail, caller_address, claim_path, federation, pane_address,
 };
 pub use error::Error;
 pub use id::{Alias, ObjectiveState, OpaqueId, OperationId, SignalKind};

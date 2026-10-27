@@ -183,6 +183,7 @@ pub async fn join(code: &JoinCode, dir: &Path) -> Result<Joined, String> {
             client_cert,
             client_key,
             enabled: true,
+            mail_only: false,
         },
         credential: issued.credential_id().to_owned(),
     })

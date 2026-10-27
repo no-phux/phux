@@ -57,6 +57,7 @@ fn plans_refuse_relative_identities_and_skip_disabled_entries() {
         client_cert: PathBuf::from(cert),
         client_key: PathBuf::from("/s/u.key"),
         enabled,
+        mail_only: false,
     };
     let plans = plan_uplinks(&[entry(true, "/s/u.pem"), entry(false, "relative")]).unwrap();
     assert_eq!(plans.len(), 1);
@@ -100,6 +101,7 @@ fn uplink_entry(name: &str, hub: &str, enabled: bool) -> UplinkConfigEntry {
         client_cert: PathBuf::from("/nonexistent/u.pem"),
         client_key: PathBuf::from("/nonexistent/u.key"),
         enabled,
+        mail_only: false,
     }
 }
 

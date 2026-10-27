@@ -28,25 +28,7 @@ pub(super) async fn admit_connection(
             return None;
         }
     };
-    if negotiated_alpn(&conn).as_deref() == Some(phux_protocol::policy::ENROLL_ALPN) {
-        // Never a phux connection: one exchange, then closed.
-        match enrollment {
-            Some(paths) => enroll::serve(&conn, &paths).await,
-            None => conn.close(AUTH_FAILED_CODE.into(), b"unauthorized"),
-        }
-        return None;
-    }
-    if negotiated_alpn(&conn).as_deref() == Some(phux_protocol::policy::SATELLITE_ALPN) {
-        // Never a consumer: the hub's link supervisor adopts it, or it is
-        // closed before any stream (ADR-0182).
-        match satellites {
-            Some((adopter, endpoint)) => {
-                crate::hub::adopt::admit(conn, endpoint, workload_registry.as_ref(), &adopter);
-            }
-            None => conn.close(AUTH_FAILED_CODE.into(), b"unauthorized"),
-        }
-        return None;
-    }
+    let conn = serve_other_alpn(conn, enrollment, workload_registry.as_ref(), satellites).await?;
 
     // One refusal for every workload failure; the peer learns only that it
     // was refused (`docs/remote.md#managing-credentials`). The handshake asked for, but did
@@ -127,6 +109,37 @@ pub(super) async fn admit_connection(
             bearer,
         },
     ))
+}
+
+/// Hand a connection that negotiated anything but the terminal ALPN to what
+/// serves it, and return only a terminal connection.
+async fn serve_other_alpn(
+    conn: quinn::Connection,
+    enrollment: Option<Arc<crate::workload::WorkloadPaths>>,
+    workload_registry: Option<&Arc<crate::workload::ReloadingWorkloadRegistry>>,
+    satellites: Option<(crate::hub::adopt::SatelliteAdopter, quinn::Endpoint)>,
+) -> Option<quinn::Connection> {
+    use phux_protocol::policy::{COORD_ALPN, ENROLL_ALPN, SATELLITE_ALPN};
+    let alpn = negotiated_alpn(&conn);
+    match (alpn.as_deref(), enrollment, satellites) {
+        // Never a phux connection: one exchange, then closed.
+        (Some(ENROLL_ALPN), Some(paths), _) => enroll::serve(&conn, &paths).await,
+        // Never a consumer: a satellite's mail and claims, answered by a hub.
+        (Some(COORD_ALPN), _, Some((adopter, _))) => {
+            crate::hub::adopt::coord::admit(conn, workload_registry, adopter.work_store());
+        }
+        // Never a consumer: the hub's link supervisor adopts it, or it is
+        // closed before any stream (ADR-0182).
+        (Some(SATELLITE_ALPN), _, Some((adopter, endpoint))) => {
+            crate::hub::adopt::admit(conn, endpoint, workload_registry, &adopter);
+        }
+        // Each of those, on a server that does not serve it.
+        (Some(ENROLL_ALPN | COORD_ALPN | SATELLITE_ALPN), _, _) => {
+            conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
+        }
+        _ => return Some(conn),
+    }
+    None
 }
 
 /// Read the token preamble and verify it against the pairing store.

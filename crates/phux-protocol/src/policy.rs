@@ -49,6 +49,15 @@ pub const ENROLL_ALPN: &[u8] = b"phux-enroll/1";
 /// never equal any other phux ALPN: the ALPN alone decides the role.
 pub const SATELLITE_ALPN: &[u8] = b"phux-satellite/1";
 
+/// ALPN protocol id for a satellite's mail and claims on its hub.
+///
+/// See `docs/agents.md#mail-and-path-claims`. The satellite dials with its
+/// satellite credential and opens one bidirectional stream per call: one
+/// work-store request line, answered with one reply line, against the hub's
+/// store and in the satellite's own name. It carries no phux frame and
+/// grants no terminal, so it MUST never equal any other phux ALPN.
+pub const COORD_ALPN: &[u8] = b"phux-coord/1";
+
 /// Transport classification for peer identity.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub enum TransportType {
@@ -80,9 +89,12 @@ mod tests {
         assert_ne!(ENROLL_ALPN, QUIC_ALPN);
         assert_ne!(ENROLL_ALPN, QUIC_RELAY_ALPN);
         assert_eq!(SATELLITE_ALPN, b"phux-satellite/1");
+        assert_eq!(COORD_ALPN, b"phux-coord/1");
         for other in [QUIC_ALPN, QUIC_RELAY_ALPN, ENROLL_ALPN] {
             assert_ne!(SATELLITE_ALPN, other);
+            assert_ne!(COORD_ALPN, other);
         }
+        assert_ne!(COORD_ALPN, SATELLITE_ALPN);
         assert_ne!(
             QUIC_ALPN, QUIC_RELAY_ALPN,
             "the relay connector leg must never reuse the consumer ALPN \

@@ -9,8 +9,10 @@
 //! runs in no pane (CI, a person at a shell) uses a bare name such as
 //! `phall`, which is its own key.
 //!
-//! Mail is local to this host's store, so an address names a pane here:
-//! `host/@749` is refused rather than read as this host's `@749`.
+//! **Hosts.** A hub's store also holds the mail and claims of its satellites
+//! ([`federation`]). There an address may lead with the satellite it lives
+//! on, `min-api/pi@3`, keyed `min-api/@3`; `hub/` names the hub itself and
+//! is dropped from the key, so `hub/@749` is `@749`.
 //!
 //! **Mail** is grouped in threads named by a short slug. A message has one
 //! sender and one or more recipients; each recipient reads and acknowledges
@@ -34,6 +36,7 @@ use crate::store::Store;
 use crate::store::timestamp;
 
 mod claims;
+pub mod federation;
 mod mail;
 pub use claims::{
     Claim, ClaimFilter, ClaimOutcome, MAX_CLAIM_SECS, ReleaseClaim, RenewClaim, TakeClaim,
@@ -96,43 +99,49 @@ pub struct Address {
 }
 
 impl Address {
-    /// Parse `pi@749`, `@749`, or `phall`.
+    /// Parse `pi@749`, `@749`, or `phall`, optionally led by the host it
+    /// lives on: `min-api/pi@3`, or `hub/@749` for the hub's own `@749`.
     ///
     /// # Errors
     ///
     /// [`Error::InvalidText`] when the text is empty, too long, has a
-    /// character outside `[A-Za-z0-9._-]` in the label, or a pane part that
-    /// is not a number, or names another host's pane (`host/@749`).
+    /// character outside `[A-Za-z0-9._-]` in the label or the host, a pane
+    /// part that is not a number, or more than one host.
     pub fn parse(text: &str) -> Result<Self, Error> {
         let text = text.trim();
         let invalid = |reason| Error::invalid_text("address", reason);
         if text.is_empty() || text.len() > MAX_ADDRESS_BYTES {
             return Err(invalid("must be 1 to 128 bytes"));
         }
-        if text.contains('/') {
+        let (host, local) = match text.split_once('/') {
+            Some((host, local)) => (Some(host), local),
+            None => (None, text),
+        };
+        if host.is_some_and(|host| host.is_empty() || !host.chars().all(name_char)) {
             return Err(invalid(
-                "mail and claims live on this host; address a pane here as `@N`",
+                "a host is a satellite name of letters, digits, `.`, `_` and `-`, as in `min-api/@3`",
             ));
         }
-        let (label, pane) = match text.rsplit_once('@') {
-            Some((label, pane)) => (label, Some(pane)),
-            None => (text, None),
-        };
-        if !label.chars().all(name_char) {
-            return Err(invalid("a name may use letters, digits, `.`, `_` and `-`"));
+        if local.contains('/') {
+            return Err(invalid(
+                "an address names at most one host, as in `min-api/@3`",
+            ));
         }
-        let key = match pane {
-            Some(pane) if !pane.is_empty() && pane.bytes().all(|byte| byte.is_ascii_digit()) => {
-                format!("@{}", pane.trim_start_matches('0'))
-            }
-            Some(_) => return Err(invalid("the part after `@` must be a pane number")),
-            None if label.is_empty() => return Err(invalid("is empty")),
-            None => label.to_owned(),
+        let local = local_key(local).map_err(invalid)?;
+        let key = match host {
+            Some(host) if host != federation::HUB => format!("{host}/{local}"),
+            _ => local,
         };
         Ok(Self {
             display: text.to_owned(),
             key,
         })
+    }
+
+    /// The satellite this address lives on, `None` for the hub's own.
+    #[must_use]
+    pub fn host(&self) -> Option<&str> {
+        self.key.split_once('/').map(|(host, _)| host)
     }
 
     /// As written, such as `pi@749`.
@@ -196,6 +205,25 @@ pub fn claim_path(path: &std::path::Path) -> Option<String> {
         }
     }
     normal.to_str().map(str::to_owned)
+}
+
+/// The key of an address with no host: `@749` for `pi@749`, or the name.
+fn local_key(text: &str) -> Result<String, &'static str> {
+    let (label, pane) = match text.rsplit_once('@') {
+        Some((label, pane)) => (label, Some(pane)),
+        None => (text, None),
+    };
+    if !label.chars().all(name_char) {
+        return Err("a name may use letters, digits, `.`, `_` and `-`");
+    }
+    match pane {
+        Some(pane) if !pane.is_empty() && pane.bytes().all(|byte| byte.is_ascii_digit()) => {
+            Ok(format!("@{}", pane.trim_start_matches('0')))
+        }
+        Some(_) => Err("the part after `@` must be a pane number"),
+        None if label.is_empty() => Err("is empty"),
+        None => Ok(label.to_owned()),
+    }
 }
 
 const fn name_char(ch: char) -> bool {
@@ -263,11 +291,19 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_on_another_host_is_refused_by_name() {
-        let Err(Error::InvalidText { reason, .. }) = Address::parse("mac/@749") else {
-            panic!("a federated address must be refused");
-        };
-        assert!(reason.contains("this host"), "{reason}");
+    fn a_satellite_pane_is_keyed_under_its_host_and_hub_is_this_host() {
+        let boxed = Address::parse("min-api/pi@03").unwrap();
+        assert_eq!(
+            (boxed.display(), boxed.key()),
+            ("min-api/pi@03", "min-api/@3")
+        );
+        assert_eq!(boxed.host(), Some("min-api"));
+        let hub = Address::parse("hub/pi@749").unwrap();
+        assert_eq!((hub.key(), hub.host()), ("@749", None));
+        assert_eq!(Address::parse("ci/phall").unwrap().key(), "ci/phall");
+        for bad in ["/@3", "a/b/@3", "a b/@3", "min-api/", "min-api/@x"] {
+            assert!(Address::parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
