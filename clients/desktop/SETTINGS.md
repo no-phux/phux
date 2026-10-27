@@ -36,6 +36,7 @@ minimal-chrome mode, not the Classic style.
 Chrome uses bundled Inter with compact leading and consistent label columns.
 **Font family** and **Font size** still change only terminal text; the searchable
 font dropdown previews each face, with bundled terminal fonts pinned first.
+Choose **Tokyo Night** from the **Theme** menu under **Settings > Appearance > Font & theme**.
 
 ## Desktop leader
 
