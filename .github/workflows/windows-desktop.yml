@@ -108,8 +108,6 @@ jobs:
           shared-key: windows-desktop-msvc
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: bun tools/main.ts desktop-source
-      - name: Build shipping native Windows executable
-        run: cargo build --locked --release --manifest-path clients/desktop/native/Cargo.toml --bin phux-desktop --target x86_64-pc-windows-msvc
       - name: Exact DXGI presentation predicate regressions
         shell: pwsh
         run: |
@@ -117,6 +115,8 @@ jobs:
           $exitCode = $LASTEXITCODE
           $feedback | ForEach-Object { Write-Output $_ }
           if ($exitCode -ne 0 -or ($feedback -join "`n") -notmatch 'test result: ok\. 3 passed; 0 failed; 0 ignored;') { throw 'All three exact-presentation predicate tests must execute and pass' }
+      - name: Build shipping native Windows executable
+        run: cargo build --locked --release --manifest-path clients/desktop/native/Cargo.toml --bin phux-desktop --target x86_64-pc-windows-msvc
       - name: Build native policy tests for execution on the WSL qualification host
         shell: pwsh
         run: |
