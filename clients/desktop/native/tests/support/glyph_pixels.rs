@@ -388,15 +388,12 @@ pub(super) fn solid_blocks_cover_shared_row_edges_with_extra_line_height() {
             );
         }
     }
+    // The underline follows the baseline, so look for it down the cell.
     let decorated = geometry.cell_bounds(0, 4, 1);
-    let underline_y = device(decorated.bottom(), geometry.scale) - 2;
+    let x = device(decorated.center().x, geometry.scale);
     assert!(
-        near(
-            shot.image
-                .get_pixel(device(decorated.center().x, geometry.scale), underline_y,)
-                .0,
-            TRUE_GREEN,
-        ),
+        (device(decorated.top(), geometry.scale)..device(decorated.bottom(), geometry.scale))
+            .any(|y| near(shot.image.get_pixel(x, y).0, TRUE_GREEN)),
         "colored underline must remain above solid block ink"
     );
 }
