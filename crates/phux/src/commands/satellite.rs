@@ -53,7 +53,11 @@ impl NewSatellite {
 }
 
 pub(crate) fn load_registry() -> Result<Vec<SatelliteEntry>, String> {
-    let cfg = config_loader::load().map_err(|err| err.to_string())?;
+    load_registry_from(&config_loader::config_path())
+}
+
+pub(crate) fn load_registry_from(path: &Path) -> Result<Vec<SatelliteEntry>, String> {
+    let cfg = config_loader::load_from(path).map_err(|err| err.to_string())?;
     toml_registry::reject_duplicate_names(
         cfg.satellites.iter().map(|s| s.name.as_str()),
         "satellite",
@@ -67,11 +71,15 @@ pub(crate) fn load_registry() -> Result<Vec<SatelliteEntry>, String> {
 }
 
 pub(crate) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String> {
+    add_or_update_at(&config_loader::config_path(), new)
+}
+
+pub(crate) fn add_or_update_at(path: &Path, new: &NewSatellite) -> Result<SatelliteEntry, String> {
     toml_registry::upsert_machine(
-        &config_loader::config_path(),
+        path,
         KEY,
         || {
-            Ok(load_registry()?
+            Ok(load_registry_from(path)?
                 .into_iter()
                 .find(|entry| entry.name == new.name)
                 .map(|entry| entry.index))
@@ -89,12 +97,11 @@ pub(crate) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String
 }
 
 pub(crate) fn remove_entry(entry: &SatelliteEntry) -> Result<(), String> {
-    toml_registry::remove_machine_entry(
-        &config_loader::config_path(),
-        KEY,
-        &entry.name,
-        &entry.endpoint,
-    )
+    remove_entry_at(&config_loader::config_path(), entry)
+}
+
+pub(crate) fn remove_entry_at(path: &Path, entry: &SatelliteEntry) -> Result<(), String> {
+    toml_registry::remove_machine_entry(path, KEY, &entry.name, &entry.endpoint)
 }
 
 fn entry_from_config(index: usize, satellite: SatelliteConfigEntry) -> SatelliteEntry {

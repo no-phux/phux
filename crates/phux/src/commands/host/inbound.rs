@@ -12,7 +12,7 @@
 //! "client_cert","client_key","server_reload"}`. Both follow the shared JSON
 //! error contract on failure.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_config::loader as config_loader;
@@ -37,17 +37,50 @@ pub(super) fn run_ticket(name: &str, hub: Option<&str>, minutes: i64, json: bool
     }
 }
 
+/// The config, workload store, and server certificate a mint or revocation
+/// uses. Tests pass a scratch copy; the process default is [`HubFiles::from_env`].
+#[derive(Debug, Clone)]
+pub(super) struct HubFiles {
+    pub(super) config: PathBuf,
+    pub(super) workload: WorkloadPaths,
+    pub(super) cert: PathBuf,
+}
+
+impl HubFiles {
+    pub(super) fn from_env() -> Self {
+        let cert = std::env::var_os("PHUX_WS_TLS_CERT").map_or_else(
+            phux_server::transport::tls::default_cert_path,
+            PathBuf::from,
+        );
+        Self {
+            config: config_loader::config_path(),
+            workload: WorkloadPaths::from_env(),
+            cert,
+        }
+    }
+}
+
 /// Mint NAME's join code for a satellite that dials `hub`, as `phux host
 /// ticket` does, for a caller that delivers it itself (`phux host
 /// minimal`): the code and the ticket id that withdraws it.
-pub(super) fn mint_code(name: &str, hub: &str, minutes: i64) -> Result<(String, String), CliError> {
-    let minted = mint(name, Some(hub), minutes)?;
+///
+/// `adopt_inbound` updates an existing `inbound://` entry. `phux host
+/// minimal` sets it only for a name it minted; anything else is refused so
+/// a box cannot take over a satellite this feature did not create.
+pub(super) fn mint_code(
+    name: &str,
+    hub: &str,
+    minutes: i64,
+    files: &HubFiles,
+    adopt_inbound: bool,
+) -> Result<(String, String), CliError> {
+    let minted = mint_in(name, Some(hub), minutes, files, adopt_inbound)?;
     Ok((minted.code.to_link(), minted.ticket.id))
 }
 
 /// Withdraw an unredeemed ticket `mint_code` returned.
-pub(super) fn withdraw_ticket(id: &str) -> Result<(), String> {
-    let tickets_path = tickets::tickets_path(&WorkloadPaths::from_env().registry);
+pub(super) fn withdraw_ticket(registry: &Path, id: &str) -> Result<(), String> {
+    let tickets_path = tickets::tickets_path(registry);
     tickets::revoke_ticket(&tickets_path, id)
         .map(drop)
         .map_err(|err| err.to_string())
@@ -67,9 +100,19 @@ struct Minted {
 /// argument or a conflicting entry leaves the store and `config.toml`
 /// untouched.
 fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError> {
+    mint_in(name, hub, minutes, &HubFiles::from_env(), true)
+}
+
+fn mint_in(
+    name: &str,
+    hub: Option<&str>,
+    minutes: i64,
+    files: &HubFiles,
+    adopt_inbound: bool,
+) -> Result<Minted, CliError> {
     let name = satellite_registry::registry_name(name).map_err(reject)?;
     phux_server::workload::validate_satellite_name(&name).map_err(|err| reject(err.to_string()))?;
-    require_paired()?;
+    require_paired(&files.config)?;
     let hub = match hub {
         Some(hub) => hub.to_owned(),
         None => live_hub_endpoint()?,
@@ -81,15 +124,8 @@ fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError>
             "pass --hub HOST:PORT, the QUIC address the satellite dials, with no scheme",
         )
     })?;
-    let ca = super::super::pair::presented_server_authority().ok_or_else(|| {
-        CliError::new(
-            codes::WORKLOAD,
-            "this server's certificate was not issued by its workload CA, so a satellite has \
-             nothing to pin",
-            "run `phux workload authority --rotate`, restart the server, and mint again",
-        )
-    })?;
-    let enabled = inbound_entry_enabled(&name)?;
+    let ca = pinned_authority(&files.cert)?;
+    let enabled = inbound_entry_enabled(&files.config, &name, adopt_inbound)?;
     let entry = satellite_registry::NewSatellite::new(
         &name,
         phux_server::hub::INBOUND_ENDPOINT,
@@ -98,8 +134,7 @@ fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError>
         None,
     )
     .map_err(reject)?;
-    let paths = WorkloadPaths::from_env();
-    let tickets_path = tickets::tickets_path(&paths.registry);
+    let tickets_path = tickets::tickets_path(&files.workload.registry);
     let ticket = tickets::mint_satellite_ticket(
         &tickets_path,
         &name,
@@ -113,7 +148,7 @@ fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError>
             "check the state directory's permissions, then rerun",
         )
     })?;
-    if let Err(err) = satellite_registry::add_or_update(&entry) {
+    if let Err(err) = satellite_registry::add_or_update_at(&files.config, &entry) {
         // Nothing points at the ticket yet; withdraw it rather than leave a
         // live secret for an entry that was never written.
         if let Err(revoke) = tickets::revoke_ticket(&tickets_path, &ticket.id) {
@@ -141,17 +176,31 @@ fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError>
 }
 
 /// Whether NAME's `inbound://` entry is enabled: `true` for a new name, the
-/// existing state for an `inbound://` entry. A name registered under any
-/// other endpoint is refused, so a ticket never silently replaces a dialed
-/// satellite or drops its auth material.
-fn inbound_entry_enabled(name: &str) -> Result<bool, CliError> {
-    let existing = satellite_registry::load_registry()
+/// existing state for an `inbound://` entry when `adopt_inbound` is set. A
+/// name registered under any other endpoint is refused, so a ticket never
+/// silently replaces a dialed satellite or drops its auth material. An
+/// `inbound://` name is refused the same way when the caller did not mint
+/// it (`phux host minimal`).
+fn inbound_entry_enabled(config: &Path, name: &str, adopt_inbound: bool) -> Result<bool, CliError> {
+    let existing = satellite_registry::load_registry_from(config)
         .map_err(registry_failure)?
         .into_iter()
         .find(|entry| entry.name == name);
     match existing {
         None => Ok(true),
-        Some(entry) if phux_server::hub::is_inbound_endpoint(&entry.endpoint) => Ok(entry.enabled),
+        Some(entry) if phux_server::hub::is_inbound_endpoint(&entry.endpoint) && adopt_inbound => {
+            Ok(entry.enabled)
+        }
+        Some(entry) if phux_server::hub::is_inbound_endpoint(&entry.endpoint) => {
+            Err(CliError::new(
+                codes::REGISTRY,
+                format!(
+                    "satellite {name:?} is already registered as inbound://, and this mint will \
+                     not adopt it"
+                ),
+                "pick another name",
+            ))
+        }
         Some(entry) => Err(CliError::new(
             codes::REGISTRY,
             format!(
@@ -164,11 +213,27 @@ fn inbound_entry_enabled(name: &str) -> Result<bool, CliError> {
     }
 }
 
+/// The workload CA fingerprint `cert` chains to.
+fn pinned_authority(cert: &Path) -> Result<String, CliError> {
+    phux_server::transport::tls::presented_authority(cert)
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            CliError::new(
+                codes::WORKLOAD,
+                "this server's certificate was not issued by its workload CA, so a satellite has \
+                 nothing to pin",
+                "run `phux workload authority --rotate`, restart the server, and mint again",
+            )
+        })
+}
+
 /// Only a hub that verifies workload certificates offers the satellite ALPN
 /// (ADR-0182), so a ticket minted for any other would enroll a satellite the
 /// hub then refuses.
-fn require_paired() -> Result<(), CliError> {
-    let config = config_loader::load().map_err(|err| registry_failure(err.to_string()))?;
+fn require_paired(config: &Path) -> Result<(), CliError> {
+    let config =
+        config_loader::load_from(config).map_err(|err| registry_failure(err.to_string()))?;
     if config.policy.mode == Some(phux_config::PolicyMode::Paired) {
         return Ok(());
     }
@@ -248,21 +313,20 @@ fn report_ticket(minted: &Minted, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Revoke every satellite credential this hub issued to `name` (`phux host
-/// rm`): how many, or `None` after warning that the registry could not be
-/// written.
-pub(super) fn revoke_satellite(name: &str) -> Option<usize> {
-    let registry = WorkloadPaths::from_env().registry;
-    match phux_server::workload::WorkloadRegistry::revoke_satellite(&registry, name) {
-        Ok(revoked) => Some(revoked),
-        Err(err) => {
-            warn!(
-                "could not revoke {name:?}'s satellite credential ({err}); revoke it with \
-                 `phux workload revoke`"
-            );
-            None
-        }
-    }
+/// Revoke every satellite credential this hub issued to `name`.
+///
+/// # Errors
+///
+/// The workload registry could not be read or written. The error is the
+/// caller's to surface: `phux host minimal` keeps the box and retries, and
+/// does not report the satellite revoked.
+pub(super) fn revoke_satellite(name: &str) -> Result<usize, String> {
+    revoke_satellite_at(&WorkloadPaths::from_env().registry, name)
+}
+
+pub(super) fn revoke_satellite_at(registry: &Path, name: &str) -> Result<usize, String> {
+    phux_server::workload::WorkloadRegistry::revoke_satellite(registry, name)
+        .map_err(|err| err.to_string())
 }
 
 /// `phux host join CODE`, or `phux host join -` to read CODE from stdin.
