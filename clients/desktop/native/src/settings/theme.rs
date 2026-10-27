@@ -137,6 +137,20 @@ fn build_themes() -> Vec<Theme> {
             ],
         ),
         (
+            "tokyo-night",
+            "Tokyo Night",
+            "dark",
+            [
+                "#1a1b26", "#c0caf5", "#16161e", "#7aa2f7", "#c0caf5", "#283457", "#f7768e",
+                "#e0af68", "#9ece6a",
+            ],
+            [
+                "#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff",
+                "#a9b1d6", "#414868", "#ff899d", "#9fe044", "#faba4a", "#8db0ff", "#c7a9ff",
+                "#a4daff", "#c0caf5",
+            ],
+        ),
+        (
             "latte",
             "Catppuccin Latte",
             "light",
@@ -350,5 +364,34 @@ mod lookup_tests {
         let mut choices = themes();
         choices[0].background = "#abcdef".into();
         assert_eq!(theme_by_id(default_theme_id(), &[]), builtin);
+    }
+
+    #[test]
+    fn the_picker_lists_tokyo_night() {
+        let theme = themes()
+            .into_iter()
+            .find(|theme| theme.id == "tokyo-night")
+            .expect("desktop picker lists tokyo-night");
+        assert_eq!(theme.name, "Tokyo Night");
+        assert_eq!(theme.appearance, "dark");
+        assert_eq!(theme.background, "#1a1b26");
+        assert_eq!(theme.foreground, "#c0caf5");
+        assert_eq!(theme.surface, "#16161e");
+        assert_eq!(theme.accent, "#7aa2f7");
+        assert_eq!(theme.cursor, "#c0caf5");
+        assert_eq!(theme.selection, "#283457");
+        assert_eq!(theme.danger, "#f7768e");
+        assert_eq!(theme.warning, "#e0af68");
+        assert_eq!(theme.success, "#9ece6a");
+        assert_eq!(
+            theme.palette.expect("ansi palette"),
+            [
+                "#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff",
+                "#a9b1d6", "#414868", "#ff899d", "#9fe044", "#faba4a", "#8db0ff", "#c7a9ff",
+                "#a4daff", "#c0caf5",
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        );
     }
 }
