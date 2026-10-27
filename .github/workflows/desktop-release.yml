@@ -356,6 +356,8 @@ jobs:
              --phux "$GITHUB_WORKSPACE/source/target/release/phux" \
              --require-backend Vulkan \
             --output "$RUNNER_TEMP/desktop-evidence"
+      - name: Exercise installer transactions
+        run: bun test ./harness/tools/src/install/desktop-linux.e2e.ts
       - name: Retain packaged Linux runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
