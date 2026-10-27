@@ -174,6 +174,8 @@ function Get-ConnectionEpoch {
 }
 
 . (Join-Path $PSScriptRoot 'smoke-windows-default-entry.ps1')
+. (Join-Path $PSScriptRoot 'smoke-windows-clipboard.ps1')
+. (Join-Path $PSScriptRoot 'smoke-windows-resize.ps1')
 
 try {
     # WSL does not normally inherit arbitrary Windows variables. Forward only
@@ -235,17 +237,8 @@ try {
     [PhuxDesktopGui]::Key(16, $true); [PhuxDesktopGui]::Key(17, $true)
     [PhuxDesktopGui]::Press(13)
     Assert-Rendered 'clipboard' 'PHUXCLIPBOARD'
-    Send-Shell 'printf ''BEFORE_%s\n'' "$(stty size)"'
-    Wait-Desktop 'initial PTY size' { (Invoke-SmokeCli @('snapshot', $session)) -match 'BEFORE_(\d+) (\d+)' }
-    $before = [regex]::Match((Invoke-SmokeCli @('snapshot', $session)), 'BEFORE_(\d+) (\d+)')
-    $screen = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-    [PhuxDesktopGui]::SetWindowPos($desktop.MainWindowHandle, [IntPtr]::Zero, 0, 0, $screen.Width - 10, $screen.Height - 10, 0x0040) | Out-Null
-    Start-Sleep -Seconds 1
-    Send-Shell 'printf ''AFTER_%s\n'' "$(stty size)"'
-    Wait-Desktop 'resized PTY' {
-        $after = [regex]::Match((Invoke-SmokeCli @('snapshot', $session)), 'AFTER_(\d+) (\d+)')
-        $after.Success -and [int] $after.Groups[1].Value -gt [int] $before.Groups[1].Value -and [int] $after.Groups[2].Value -gt [int] $before.Groups[2].Value
-    }
+    Test-NativeClipboardUploads
+    Test-NativeResize
     # Windows' reconnect binding: exercise the real action, not a CLI-only round trip.
     $epoch = Get-ConnectionEpoch
     if ($epoch -lt 0) { throw 'Native connection epoch must be observable before reconnect qualification' }
@@ -266,9 +259,10 @@ try {
     $renderer = Get-Content -Raw (Join-Path $Output 'first-launch.stderr.log')
     $gpu = [regex]::Match($renderer, 'Using GPU: ([^\r\n]+)').Groups[1].Value
     if (-not $gpu -or $renderer -notmatch 'Created device with Direct3D') { throw 'Native D3D adapter/feature-level evidence is missing' }
-    @{ ok = $true; diagnostic = [bool] $DiagnosticBuildSha; buildSha = $release.sha; harnessSha = ((& git -C $repo rev-parse HEAD) -join ''); platform = 'windows-x64'; gpu = $gpu; qualification = 'hosted native D3D GUI, not real-GPU qualification'; serverPid = $serverPid; shellPid = $shellPid; scenarios = @('visible window OCR', 'native keys', 'clipboard', 'PTY resize', 'UI reconnect', 'app crash/relaunch', 'shell persistence', 'installed shortcut default arguments', 'automatic WSL CLI/socket/home selection', 'saved Windows split restoration after crash') } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Output 'result.json') -Encoding UTF8
+    @{ ok = $true; diagnostic = [bool] $DiagnosticBuildSha; buildSha = $release.sha; harnessSha = ((& git -C $repo rev-parse HEAD) -join ''); platform = 'windows-x64'; gpu = $gpu; qualification = 'hosted native D3D GUI, not real-GPU qualification'; serverPid = $serverPid; shellPid = $shellPid; scenarios = @('visible window OCR', 'native keys', 'clipboard text', 'clipboard file upload', 'clipboard bitmap upload', 'PTY resize', 'UI reconnect', 'app crash/relaunch', 'shell persistence', 'installed shortcut default arguments', 'automatic WSL CLI/socket/home selection', 'saved Windows split restoration after crash') } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Output 'result.json') -Encoding UTF8
 } catch {
     $_ | Out-String | Set-Content (Join-Path $Output 'failure.txt') -Encoding UTF8
+    try { if ($desktop -and -not $desktop.HasExited) { Get-WindowText 'failure' | Out-Null } } catch { Write-Warning $_ }
     throw
 } finally {
     Stop-SmokeDesktop

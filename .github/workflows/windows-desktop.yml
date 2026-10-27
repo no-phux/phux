@@ -110,6 +110,13 @@ jobs:
       - run: bun tools/main.ts desktop-source
       - name: Build shipping native Windows executable
         run: cargo build --locked --release --manifest-path clients/desktop/native/Cargo.toml --bin phux-desktop --target x86_64-pc-windows-msvc
+      - name: Exact DXGI presentation predicate regressions
+        shell: pwsh
+        run: |
+          $feedback = @(& cargo test --locked --release --manifest-path clients/desktop/native/Cargo.toml -p gpui-fast-windows --lib --target x86_64-pc-windows-msvc presentation::tests -- --color never 2>&1)
+          $exitCode = $LASTEXITCODE
+          $feedback | ForEach-Object { Write-Output $_ }
+          if ($exitCode -ne 0 -or ($feedback -join "`n") -notmatch 'test result: ok\. 3 passed; 0 failed; 0 ignored;') { throw 'All three exact-presentation predicate tests must execute and pass' }
       - name: Build native policy tests for execution on the WSL qualification host
         shell: pwsh
         run: |
@@ -199,6 +206,7 @@ jobs:
             'updates::tests::windows_runtime_checks_are_read_only_and_quote_the_manual_wsl_update',
             'updates::tests::windows_runtime_install_and_retry_refuse_before_starting_wsl',
             'app::updates::tests::windows_runtime_updates_show_manual_instructions_without_an_install_action',
+            'platform::tests::wsl_attachments_use_uploads_not_windows_paths',
             'updates::tests::windows::powershell_51_manual_runtime_command_preserves_real_wsl_argv'
           )
           $listed = @(& ./windows-policy/phux-desktop-policy.exe --list --format terse)

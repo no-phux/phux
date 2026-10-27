@@ -179,10 +179,12 @@ test("Windows builds native MSVC and signs only after a same-source WSL GUI jour
     "SendInput",
     "CopyFromScreen",
     "Get-ConnectionEpoch",
-    "stty size",
     "PHUXSURVIVALAFTERCRASH",
   ])
     expect(smokeScript).toContain(proof);
+  expect(
+    readFileSync(repoPath("clients/desktop/scripts/smoke-windows-resize.ps1"), "utf8"),
+  ).toContain("stty size");
 });
 
 test("Windows policy filters cannot silently pass zero tests and diagnostics never publish products", () => {
@@ -193,6 +195,12 @@ test("Windows policy filters cannot silently pass zero tests and diagnostics nev
   expect(policy).toContain('$listed.Contains("${case}: test")');
   expect(policy).toContain("--exact");
   expect(policy).toContain("test result: ok\\. 1 passed; 0 failed; 0 ignored;");
+  const predicates =
+    steps(job(windows, "windows"))
+      .map(run)
+      .find((script) => script.includes("presentation::tests")) ?? "";
+  expect(predicates).toContain("-p gpui-fast-windows");
+  expect(predicates).toContain("test result: ok\\. 3 passed; 0 failed; 0 ignored;");
   expect(qualify.map(run).join("\n")).not.toContain("-DiagnosticBuildSha");
 
   const diagnostic = workflow("windows-desktop-diagnostic.yml");
