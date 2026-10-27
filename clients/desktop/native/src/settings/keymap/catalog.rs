@@ -42,6 +42,8 @@ const CATALOG: &str = "\
     tab-next | Next Tab | Tabs | cmd+shift+] | Switch to the next tab. |
     tab-prev | Previous Tab | Tabs | cmd+shift+[ | Switch to the previous tab. |
     tab-peek | Peek Tabs | Tabs | cmd+shift+\\ | Show live terminal miniatures without resizing your work. Escape closes; arrows browse; Enter opens. | preview thumbnails overview
+    session-next | Next Session | Tabs |  | Switch to the next session in the sidebar. | navigator sidebar
+    session-prev | Previous Session | Tabs |  | Switch to the previous session in the sidebar. | navigator sidebar
     tab-move-left | Move Tab Left | Tabs |  | Move the active tab earlier in the tab bar. | reorder
     tab-move-right | Move Tab Right | Tabs |  | Move the active tab later in the tab bar. | reorder
     rename | Rename Tab… | Tabs |  | Set a custom name for the active tab. |

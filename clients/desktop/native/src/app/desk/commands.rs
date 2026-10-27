@@ -100,6 +100,8 @@ impl Desk {
             "pane-prev" => self.workspace_call(|link| link.workspace.cycle_pane(-1)),
             "tab-next" => self.workspace_call(|link| link.workspace.step_tab(1)),
             "tab-prev" => self.workspace_call(|link| link.workspace.step_tab(-1)),
+            "session-next" => self.step_session(1, cx),
+            "session-prev" => self.step_session(-1, cx),
             "tab-move-left" => self.move_active_tab(-1),
             "tab-move-right" => self.move_active_tab(1),
             "rename" => self.rename_active(),

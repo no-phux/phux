@@ -486,3 +486,74 @@ fn the_main_menu_header_switches_to_a_session_on_any_machine(cx: &mut TestAppCon
         assert_eq!(desk.session, "remote");
     });
 }
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn command_up_and_down_step_through_the_sidebar_sessions(cx: &mut TestAppContext) {
+    use gpui::{VisualTestContext, px, size};
+    let _dial = DeterministicDial::arm();
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut VisualTestContext::from_window(*handle, cx);
+    cx.simulate_resize(size(px(1000.), px(700.)));
+    let local = || {
+        with_pane(connection(
+            1,
+            vec![session(7, "main"), session(9, "sibling")],
+        ))
+    };
+    desk.update(cx, |desk, cx| {
+        desk.prefs.sidebar_visible = true;
+        desk.prefs.sidebar_grouping = crate::settings::SidebarGrouping::Machine;
+        install(desk, local());
+        observe(&mut desk.fleet, None, local());
+        observe(
+            &mut desk.fleet,
+            Some("mini"),
+            with_pane(connection(2, vec![session(8, "main")])),
+        );
+        desk.hosts.push(super::super::host::RemoteHost {
+            name: "mini".into(),
+            endpoint: "quic://fixture.invalid:1".into(),
+        });
+        cx.notify();
+    });
+    draw(cx);
+    let active = |desk: &Desk| {
+        crate::app::view::listed_sessions(desk)
+            .into_iter()
+            .find(|destination| desk.work_is_active(destination))
+            .map(|destination| (destination.host, destination.name))
+    };
+    let at = |host: Option<&str>, name: &str| Some((host.map(str::to_owned), name.to_owned()));
+    assert_eq!(desk.read_with(cx, |desk, _| active(desk)), at(None, "main"));
+    // Top to bottom as listed, wrapping past the last back to the first.
+    for (key, host, name) in [
+        ("cmd-down", None, "sibling"),
+        ("cmd-down", Some("mini"), "main"),
+        ("cmd-down", None, "main"),
+        ("cmd-up", Some("mini"), "main"),
+        ("cmd-up", None, "sibling"),
+    ] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(
+            desk.read_with(cx, |desk, _| active(desk)),
+            at(host, name),
+            "{key}"
+        );
+        // Attach what the step asked for, as the server would.
+        desk.update(cx, |desk, cx| {
+            let topology = if desk.remote.is_some() {
+                with_pane(connection(2, vec![session(8, "main")])).topology
+            } else {
+                local().topology
+            };
+            let link = desk.link.as_mut().unwrap();
+            link.connection.topology = topology;
+            link.connection.status = Status::Attached;
+            cx.notify();
+        });
+        draw(cx);
+    }
+}

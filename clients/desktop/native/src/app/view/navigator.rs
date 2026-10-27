@@ -240,6 +240,16 @@ fn visible_work(desk: &Desk) -> Vec<Work> {
         .collect()
 }
 
+/// The online sessions in the order the list shows them.
+pub(crate) fn listed_sessions(desk: &Desk) -> Vec<super::super::fleet::Destination> {
+    group(visible_work(desk), desk.prefs.sidebar_grouping)
+        .into_iter()
+        .flat_map(|group| group.work)
+        .filter(|work| work.online)
+        .map(|work| work.destination)
+        .collect()
+}
+
 /// The disclosure keys of every listed session that has rows to show.
 pub(crate) fn foldable_sessions(desk: &Desk) -> Vec<String> {
     visible_work(desk)

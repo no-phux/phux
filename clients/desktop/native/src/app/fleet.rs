@@ -398,6 +398,22 @@ impl Desk {
         }
     }
 
+    /// Step through the sidebar's sessions, wrapping at either end.
+    pub(crate) fn step_session(&mut self, step: isize, cx: &mut Context<Self>) {
+        let sessions = super::view::listed_sessions(self);
+        let len = sessions.len() as isize;
+        if len == 0 {
+            return;
+        }
+        let next = sessions
+            .iter()
+            .position(|destination| self.work_is_active(destination))
+            .map_or(if step > 0 { 0 } else { len - 1 }, |at| {
+                (at as isize + step).rem_euclid(len)
+            });
+        self.navigate_work(sessions[next as usize].clone(), cx);
+    }
+
     /// Revalidate the catalog destination before replacing the active projection.
     pub(crate) fn navigate_work(&mut self, destination: Destination, cx: &mut Context<Self>) {
         if self.work_is_active(&destination)
