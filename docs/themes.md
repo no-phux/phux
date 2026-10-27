@@ -56,6 +56,8 @@ name = "nord"                     # an installed or plugin theme
 `file` follows any `colors.toml` on disk. Pointing it at Omarchy's current
 theme, as above, makes phux follow the Omarchy theme switcher; run
 `phux config reload` after switching to repaint.
+[`phux omarchy setup`](./omarchy.md) sets this up for you, along with a hook
+that repaints phux on every theme switch.
 
 `phux theme set NAME` and `phux theme set --file PATH` write these keys
 for you, remove the other one so exactly one selects, and signal a reload.

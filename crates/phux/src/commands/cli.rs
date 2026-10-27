@@ -270,6 +270,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Maintain", display_order = 59)]
     Theme(ThemeArgs),
 
+    #[usage(help_heading = "Maintain", display_order = 60)]
+    Omarchy(OmarchyArgs),
+
     #[usage(help_heading = "More", display_order = 65)]
     Archive(ArchiveArgs),
 
