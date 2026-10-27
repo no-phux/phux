@@ -287,6 +287,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_write_deadline_does_not_disconnect_an_idle_bridge() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
         let (mut input, mut source) = tokio::io::duplex(32);
         let (mut output, mut destination) = tokio::io::duplex(32);
         let copy = tokio::spawn(async move {
@@ -299,7 +301,6 @@ mod tests {
         });
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         assert!(!copy.is_finished(), "an idle read must not expire");
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         source.write_all(b"hello").await.unwrap();
         source.shutdown().await.unwrap();
         assert_eq!(copy.await.unwrap().unwrap(), 5);
