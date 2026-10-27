@@ -30,7 +30,9 @@ permissions:
 
 jobs:
   plan:
-    if: github.event.action != 'closed' && github.event.pull_request.draft != true
+    # Drafts skip the suite. A release-please head stays draft while it
+    # accumulates, and still needs every lane.
+    if: github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -399,7 +401,8 @@ jobs:
   ci:
     name: ci
     needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, desktop, native]
-    if: always() && github.event.action != 'closed' && github.event.pull_request.draft != true
+    # Same draft exception as plan: release-please heads always reach this gate.
+    if: always() && github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
