@@ -11,6 +11,13 @@
 * Honor `PHUX_AGENT_TRANSCRIPT=0` and opt-in `full` tool output using the shared
   Pi/OMP transcript mapper.
 
+## [0.4.1](https://github.com/no-phux/phux/compare/omp-extension-v0.4.0...omp-extension-v0.4.1) (2026-10-27)
+
+
+### Documentation
+
+* use one canonical one-liner and fix protocol and windows claims ([#1797](https://github.com/no-phux/phux/issues/1797)) ([1855dda](https://github.com/no-phux/phux/commit/1855dda8c0dc4a5dd293f7cde525f2f2a60bf97b))
+
 ## [0.4.0](https://github.com/no-phux/phux/compare/omp-extension-v0.3.1...omp-extension-v0.4.0) (2026-10-22)
 
 

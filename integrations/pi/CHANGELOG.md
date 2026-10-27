@@ -17,6 +17,13 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.8.1](https://github.com/no-phux/phux/compare/pi-extension-v0.8.0...pi-extension-v0.8.1) (2026-10-27)
+
+
+### Documentation
+
+* use one canonical one-liner and fix protocol and windows claims ([#1797](https://github.com/no-phux/phux/issues/1797)) ([1855dda](https://github.com/no-phux/phux/commit/1855dda8c0dc4a5dd293f7cde525f2f2a60bf97b))
+
 ## [0.8.0](https://github.com/no-phux/phux/compare/pi-extension-v0.7.1...pi-extension-v0.8.0) (2026-10-22)
 
 

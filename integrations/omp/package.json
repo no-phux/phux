@@ -1,6 +1,6 @@
 {
   "name": "@phux/omp",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "phux integration for Oh My Pi: terminal tools and agent status.",
   "homepage": "https://docs.phux.sh/",
   "type": "module",
