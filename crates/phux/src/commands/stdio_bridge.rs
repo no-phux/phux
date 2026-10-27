@@ -118,7 +118,12 @@ async fn bridge(stream: tokio::net::UnixStream, origin: Option<SshOrigin>) -> Ex
     // Flush what the winning (or losing) copy already buffered toward
     // the remote peer before exiting; stdout may be a pipe with bytes
     // in flight.
-    let _ = tokio::time::timeout(WRITE_TIMEOUT, stdout.flush()).await;
+    let result = match result {
+        Ok(copied) => flush_with_deadline(&mut stdout, WRITE_TIMEOUT)
+            .await
+            .map(|()| copied),
+        Err(error) => Err(error),
+    };
     match result {
         Ok(_) => ExitCode::SUCCESS,
         // A closed stdout is the normal end (the ssh client hung up), so it exits
@@ -141,20 +146,33 @@ async fn write_with_deadline<W: AsyncWrite + Unpin>(
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "stdio bridge write stalled"))?
 }
 
+async fn flush_with_deadline<W: AsyncWrite + Unpin>(
+    output: &mut W,
+    timeout: Duration,
+) -> io::Result<()> {
+    tokio::time::timeout(timeout, output.flush())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "stdio bridge flush stalled"))?
+}
+
 /// Do not time out a quiet shell; only a write with no completion is bounded.
 async fn copy_with_write_deadline<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     input: &mut R,
     output: &mut W,
     timeout: Duration,
 ) -> io::Result<u64> {
-    let mut buffer = [0; 32 * 1024];
+    let mut buffer = vec![0; 32 * 1024].into_boxed_slice();
     let mut copied = 0;
     loop {
         let count = input.read(&mut buffer).await?;
         if count == 0 {
+            flush_with_deadline(output, timeout).await?;
             return Ok(copied);
         }
         write_with_deadline(output, &buffer[..count], timeout).await?;
+        // Tokio stdout accepts writes into a blocking-worker buffer. Bound
+        // completion before returning to an unlimited idle read.
+        flush_with_deadline(output, timeout).await?;
         copied += count as u64;
     }
 }
@@ -231,6 +249,10 @@ where
         Err(err) => Err(err),
     }
 }
+
+#[cfg(test)]
+#[path = "stdio_bridge_flush_tests.rs"]
+mod flush_tests;
 
 #[cfg(test)]
 mod tests {
