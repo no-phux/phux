@@ -252,12 +252,13 @@ impl Updater {
         self.message = "Checking releases…".into();
         let prefs = self.prefs.clone();
         let phux = self.phux.clone();
+        let socket = self.socket.clone();
         let manage = prefs.manage_runtime && !self.development;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let (desktop, runtime) = smol::unblock(move || {
                 let desktop = updates::latest(prefs.desktop);
-                let runtime = manage.then(|| updates::runtime_check(&phux, prefs.runtime));
+                let runtime = manage.then(|| updates::runtime_check(&phux, &socket, prefs.runtime));
                 (desktop, runtime)
             })
             .await;

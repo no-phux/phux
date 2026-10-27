@@ -446,6 +446,8 @@ fn cancel_process_tree(pid: u32) {
 #[cfg(windows)]
 fn cancel_process_tree(pid: u32) {
     // The PID belongs to the child we spawned, never a process-name/port match.
+    // This cancels native descendants only, not Linux commands behind wsl.exe.
+    // Windows runtime operations must therefore remain read-only.
     // Bound taskkill too: cancellation must not leave the Updates UI waiting.
     let Ok(mut killer) = native_command("taskkill.exe")
         .args(["/PID", &pid.to_string(), "/T", "/F"])

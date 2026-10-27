@@ -415,9 +415,13 @@ pub(crate) fn page(
                 ))
                 .item(switch_item(
                     entity,
-                    "Update phux with Desktop",
+                    if cfg!(windows) { "Check WSL runtime releases" } else { "Update phux with Desktop" },
                     |prefs| &mut prefs.manage_runtime,
-                    "The same click installs phux on this computer and hands its live server off, so both stay on one version. Never touches remote hosts. Off leaves phux and its server alone.",
+                    if cfg!(windows) {
+                        "Checks releases in the selected WSL distribution. Desktop never installs WSL updates or retries server handoff. Use the manual PowerShell command in update details."
+                    } else {
+                        "The same click installs phux on this computer and hands its live server off, so both stay on one version. Never touches remote hosts. Off leaves phux and its server alone."
+                    },
                 )),
         )
         .group(
