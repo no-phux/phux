@@ -36,6 +36,34 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
     parse_opened_project(&output)
 }
 
+/// `phux worktree new`: a linked worktree of `repo` on `branch` (created at
+/// `from` when it does not exist yet) and its session, with the CLI's hooks.
+pub fn new_worktree(
+    phux: &Path,
+    socket: &Path,
+    repo: &Path,
+    branch: &str,
+    from: &str,
+) -> Result<OpenedProject, String> {
+    let repo = repo
+        .to_str()
+        .ok_or_else(|| "The checkout has a non-UTF-8 path.".to_owned())?;
+    if branch.starts_with('-') || from.starts_with('-') {
+        return Err(format!("{branch} is not a branch name the CLI can take."));
+    }
+    let output = run_output(
+        phux,
+        socket_args(
+            socket,
+            &[
+                "worktree", "new", branch, "--from", from, "--repo", repo, "--json",
+            ],
+        ),
+    )
+    .map_err(project_error)?;
+    parse_opened_project(&output)
+}
+
 fn parse_opened_project(output: &[u8]) -> Result<OpenedProject, String> {
     let result: serde_json::Value = serde_json::from_slice(output)
         .map_err(|_| "Project open returned an invalid response.".to_owned())?;

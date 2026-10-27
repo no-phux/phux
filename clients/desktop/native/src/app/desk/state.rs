@@ -122,7 +122,7 @@ impl Desk {
         self.placements().find(|placement| placement.id == id)
     }
 
-    pub(super) fn placement_of(&self, terminal: &ResourceId) -> Option<&Placement> {
+    pub(crate) fn placement_of(&self, terminal: &ResourceId) -> Option<&Placement> {
         self.placements()
             .find(|placement| placement.terminal_id.as_ref() == Some(terminal))
     }

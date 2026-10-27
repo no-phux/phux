@@ -245,6 +245,8 @@ pub struct Desk {
     pub(crate) capture: super::capture::State,
     /// The Changes panel beside the panes.
     pub(crate) changes: super::changes::Changes,
+    /// The Reviews surface, in the panes' place while open.
+    pub(crate) reviews: super::reviews::Reviews,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.

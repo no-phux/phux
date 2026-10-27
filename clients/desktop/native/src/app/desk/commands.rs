@@ -59,6 +59,15 @@ impl Desk {
     }
 
     pub(super) fn run_catalog(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reviews.open {
+            // The hidden terminal must not take a copy, paste or selection.
+            if matches!(id, "copy" | "paste" | "select-all") {
+                return;
+            }
+            if super::super::reviews::hides_reviews(id) {
+                self.close_reviews(window, cx);
+            }
+        }
         match id {
             // A pending approval is server state, not a message: it leaves
             // the Inbox when it is decided, expires, or is withdrawn.
@@ -108,6 +117,7 @@ impl Desk {
             "native-agents" => self.toggle_native_agents(window, cx),
             "conversation" => self.toggle_focused_conversation(window, cx),
             "changes" => self.toggle_changes(cx),
+            "reviews" => self.toggle_reviews(window, cx),
             "sidebar" => {
                 self.update_prefs(|prefs| prefs.sidebar_visible = !prefs.sidebar_visible, cx)
             }
@@ -260,6 +270,10 @@ impl Desk {
     /// else the find bar that holds the keys, and otherwise reaches the terminal.
     pub fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.tab_peek_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
+        if self.reviews_key(event, window, cx) {
             cx.stop_propagation();
             return;
         }

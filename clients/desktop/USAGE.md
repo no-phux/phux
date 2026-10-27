@@ -148,6 +148,7 @@ another window, or a capture started in the background, stays out.
 | ⌘K               | Clear the screen                                                            |
 | ⇧⌘I              | Insert Path: browse or search paths on the focused terminal's host          |
 | ⇧⌘R              | Reconnect, first restarting the server if it has stopped                    |
+| ⌥⌘G / ⌥⌘R        | Toggle [Changes](../../docs/desktop-changes.md) / [Reviews](../../docs/desktop-reviews.md) |
 | ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                |
 
 ### Leader navigation

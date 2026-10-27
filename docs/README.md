@@ -38,6 +38,7 @@ Every page in the phux docs, grouped by what you're trying to do.
 - [Clients](./clients.md): the terminal UI, the desktop app, the browser client, and phones.
 - [Desktop Quick Capture](./desktop-capture.md): start an agent from a thought without leaving what you're doing.
 - [Desktop Changes panel](./desktop-changes.md): review, stage, and commit the focused checkout.
+- [Desktop Reviews](./desktop-reviews.md): review, comment on, and merge your open GitHub pull requests.
 - [Desktop agent panes](./desktop-panes.md): how the desktop app shows agent panes.
 
 ## Help

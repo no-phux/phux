@@ -18,7 +18,8 @@
 
 mod actions;
 mod checkout;
-use checkout::{expand_home, read_checkout};
+pub(crate) use checkout::expand_home;
+use checkout::read_checkout;
 mod navigate;
 pub(crate) mod review;
 pub(crate) mod tree;

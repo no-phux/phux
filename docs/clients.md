@@ -73,6 +73,8 @@ For `icat`, use `kitten icat --transfer-mode=stream image.png`
   terminal.
 - The [Changes panel](./desktop-changes.md) reviews and stages Git changes
   beside your panes.
+- [Reviews](./desktop-reviews.md) lists your open GitHub pull requests and
+  reviews, merges or checks out each one.
 - [Agent panes](./desktop-panes.md) explains how panes an agent drives look.
 
 The desktop app has its own version and release notes. The macOS app and

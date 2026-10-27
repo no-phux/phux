@@ -46,6 +46,10 @@ gpui_kit::assets::icon_assets!(
         Rows2,
         List,
         Send,
+        // The Reviews surface.
+        GitPullRequest,
+        GitMerge,
+        MessageSquare,
         // Native conversation rows and controls.
         Brain,
         Wrench,

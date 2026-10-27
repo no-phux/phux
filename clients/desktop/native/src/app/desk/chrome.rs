@@ -54,6 +54,11 @@ impl Desk {
         matches!(self.drag, Some(Drag::Changes))
     }
 
+    /// Whether the window is wide enough for the optional titlebar buttons.
+    pub(crate) fn wide_titlebar(&self) -> bool {
+        self.viewport.width >= gpui::px(900.)
+    }
+
     pub fn set_viewport(&mut self, size: gpui::Size<gpui::Pixels>) {
         // Use the last painted strip, not a newly toggled panel's desired
         // placement, so every responsive move retires an old drag.
