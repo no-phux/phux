@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use phux_config::UplinkConfigEntry;
+use phux_config::uplink::split_host_port;
 use phux_dial::{CertTrust, QuicDial, TlsClientIdentity};
 use phux_protocol::policy::SATELLITE_ALPN;
 use tokio_util::sync::CancellationToken;
@@ -82,7 +83,8 @@ impl UplinkSpec {
     }
 }
 
-/// Validate every enabled entry (no DNS, no file I/O).
+/// Validate every enabled entry the server dials (no DNS, no file I/O); a
+/// mail-only entry has no link.
 ///
 /// # Errors
 ///
@@ -90,7 +92,7 @@ impl UplinkSpec {
 pub fn plan_uplinks(entries: &[UplinkConfigEntry]) -> Result<Vec<UplinkSpec>, UplinkError> {
     entries
         .iter()
-        .filter(|entry| entry.enabled)
+        .filter(|entry| entry.enabled && !entry.mail_only)
         .map(plan_uplink)
         .collect()
 }
@@ -131,22 +133,6 @@ fn plan_uplink(entry: &UplinkConfigEntry) -> Result<UplinkSpec, UplinkError> {
 /// Wording naming the malformed endpoint.
 pub fn validate_hub_endpoint(hub: &str) -> Result<(), String> {
     split_host_port(hub).map(drop)
-}
-
-/// Split `HOST:PORT` (IPv6 bracketed), refusing an empty host or port 0.
-fn split_host_port(hub: &str) -> Result<(String, u16), String> {
-    let malformed = || format!("{hub:?} is not HOST:PORT");
-    let (host, port) = match hub.strip_prefix('[') {
-        Some(rest) => rest.split_once("]:").ok_or_else(malformed)?,
-        None => hub.rsplit_once(':').ok_or_else(malformed)?,
-    };
-    let port = port.parse::<u16>().ok().filter(|port| *port != 0);
-    match port {
-        Some(port) if !host.is_empty() && !host.contains(['/', '[', ']']) => {
-            Ok((host.to_owned(), port))
-        }
-        _ => Err(malformed()),
-    }
 }
 
 async fn resolve(host: &str, port: u16) -> Result<SocketAddr, String> {

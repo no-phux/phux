@@ -143,9 +143,14 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             name,
             hub,
             expires_in,
+            mail_only,
             json,
-        } => inbound::run_ticket(name, hub.as_deref(), *expires_in, json.json),
-        HostAction::Join { code, json } => inbound::run_join(code, json.json),
+        } => inbound::run_ticket(name, hub.as_deref(), *expires_in, *mail_only, json.json),
+        HostAction::Join {
+            code,
+            mail_only,
+            json,
+        } => inbound::run_join(code, *mail_only, json.json),
         HostAction::Minimal { action } => minimal::run(action),
     }
 }

@@ -91,6 +91,11 @@ pub struct ServerConfig {
     /// [`crate::OrgStoreLocation::for_socket`]; in-process servers default
     /// to memory so no test opens a shared store.
     pub org_store: crate::OrgStoreLocation,
+    /// The work store this server answers its satellites' mail and claims
+    /// from (`docs/agents.md#mail-across-a-hub`). `phux server` uses this
+    /// user's; in-process servers default to none, so no test opens a shared
+    /// store, and a satellite's mail is refused.
+    pub work_store: Option<Box<phux_work::Client>>,
     /// Direct guardian executable override for isolated fixtures; otherwise
     /// the running server executable, never a PATH-resolved installed phux.
     pub native_host_executable: Option<PathBuf>,
@@ -157,6 +162,7 @@ impl ServerConfig {
             exit_after_idle: None,
             env: ServerEnv::default(),
             org_store: crate::OrgStoreLocation::Memory,
+            work_store: None,
             native_host_executable: None,
         }
     }

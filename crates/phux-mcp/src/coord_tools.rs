@@ -3,8 +3,9 @@
 //! `phux_claim_renew`, `phux_claim_release`, and `phux_claim_list`.
 //!
 //! Each calls this host's work store in-process through
-//! [`phux_work::Client`] and returns the same `phux.coord/v1` document as the
-//! CLI verb it mirrors. The adapter runs in the agent's pane, so it speaks as
+//! [`phux_work::Client`], or its hub's when this host joined one
+//! ([`phux_client::hub_mail`]), and returns the same `phux.coord/v1`
+//! document as the CLI verb it mirrors. The adapter runs in the agent's pane, so it speaks as
 //! that pane unless `as` says otherwise ([`phux_work::caller_address`]).
 
 use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
@@ -47,15 +48,21 @@ pub(crate) fn owns(name: &str) -> bool {
 /// the CLI's `phux.coord/v1` error document.
 pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
     let operation = Operation::parse(name, args)?;
-    let client = store();
+    let client = store()?;
     tokio::task::spawn_blocking(move || operation.run(&client))
         .await
         .map_err(|err| ToolError::new(format!("work store call did not finish: {err}")))?
 }
 
-/// This host's work store, starting its keeper with the `phux` binary when
-/// none answers, exactly as the CLI does.
-fn store() -> Client {
+/// The hub's work store when this host joined one, else this host's,
+/// starting its keeper with the `phux` binary when none answers, exactly as
+/// the CLI does.
+fn store() -> Result<Client, ToolError> {
+    match phux_client::hub_mail::hub_link() {
+        Ok(Some(link)) => return Ok(Client::remote(std::sync::Arc::new(link))),
+        Ok(None) => {}
+        Err(err) => return Err(ToolError::new(err)),
+    }
     let endpoint = Endpoint::new(
         &phux_config::instance::state_dir(),
         &phux_config::instance::runtime_dir(),
@@ -66,7 +73,7 @@ fn store() -> Client {
         args: vec!["mission".into(), "keeper".into()],
         log,
     };
-    Client::new(endpoint, Some(launcher))
+    Ok(Client::new(endpoint, Some(launcher)))
 }
 
 /// One validated call, ready to run against the store.

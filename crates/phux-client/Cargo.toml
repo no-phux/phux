@@ -36,13 +36,17 @@ tracing.workspace = true
 tokio.workspace = true
 # `server_pid` asks whether a health-record pid is still alive (`kill` with
 # signal 0). Already in the workspace via the `phux` crate.
-rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "process", "event"] }
 bytes.workspace = true
 phux-perf.workspace = true
 serde = { workspace = true }
 # The dial plan types `attach::connection` re-exports (`QuicDial`, `WsDial`,
 # `CertTrust`); the dialing itself is the runtime's.
 phux-dial.workspace = true
+# `hub_mail`: a satellite's mail and claims, one QUIC stream per work-store
+# call to its hub.
+phux-work.workspace = true
+quinn.workspace = true
 # The one transport (ADR-0171): `Connection` is a facade over its one-shot
 # session, and reconnect policy (ADR-0133).
 phux-client-runtime.workspace = true

@@ -5,7 +5,8 @@ use serde_json::{Value, json};
 use crate::cli_tools::schema;
 
 const ADDRESS_DESC: &str = "Speak as this address instead of this pane. An address is a pane \
-    (`@749`), a labelled pane (`pi@749`), or a bare name for something outside a pane.";
+    (`@749`), a labelled pane (`pi@749`), or a bare name for something outside a pane. On a host \
+    joined to a hub, `hub/@749` is the hub's pane; on a hub, `min-api/@3` is a satellite's.";
 
 /// Every schema in this family, in catalog order.
 #[must_use]
@@ -43,11 +44,12 @@ fn path_list(description: &str) -> Value {
 fn mail_send_schema() -> Value {
     schema(
         "phux_mail_send",
-        "Send a message to other agents on this host. Mail is stored in the host's work store \
-         and survives restarts. Nothing is typed into a recipient's terminal: its harness \
+        "Send a message to other agents on this host, or across its hub. Mail is stored in the \
+         host's work store, the hub's when this host joined one, and survives restarts. Nothing is typed into a recipient's terminal: its harness \
          integration puts the mail in the agent's conversation, at once for Pi, OMP and \
          OpenCode, at the agent's next hook for Claude Code and Grok. Address agents by pane \
-         (`@749`) or labelled pane (`pi@749`); find them with phux_agent_list. You speak as \
+         (`@749`) or labelled pane (`pi@749`), led by `hub/` or a satellite name such as \
+         `min-api/` for one on another host; find them with phux_agent_list. You speak as \
          your own pane. Reply in the same `thread`. Result: `{schema: \"phux.coord/v1\", mail: \
          {id, thread, from, to, body, created_at}, operation_id, scope, replayed}`. \
          Supply operation_id for durable identical retries in this work store. It is separate \

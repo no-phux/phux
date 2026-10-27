@@ -515,15 +515,30 @@ fn hook_context_prints_one_hook_reply_or_nothing() {
 }
 
 #[test]
-fn another_hosts_pane_is_not_a_mail_address_here() {
+fn a_satellite_pane_is_an_address_on_its_hub() {
     let cli = CliStore::new();
+    let sent = cli.json(
+        "@749",
+        &[
+            "mail",
+            "send",
+            "min-api/pi@3",
+            "-t",
+            "t",
+            "-m",
+            "hi",
+            "--json",
+        ],
+        0,
+    );
+    assert_eq!(sent["mail"]["to"][0], "min-api/pi@3", "{sent}");
     let refused = cli.json(
         "@749",
         &[
             "mail",
             "wait",
             "--as",
-            "mac/@730",
+            "a/b/@730",
             "--timeout",
             "0",
             "--json",
@@ -534,7 +549,7 @@ fn another_hosts_pane_is_not_a_mail_address_here() {
         refused["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("this host"),
+            .contains("at most one host"),
         "{refused}"
     );
 }

@@ -6,6 +6,11 @@
 //! `join` enrolls a key it generates with that code, records `[[uplink]]`,
 //! and rings the local server, which dials the hub at once.
 //!
+//! With `--mail-only` on both, `ticket` registers no entry and `join` records
+//! `mail-only = true`, which the server never dials: the joined machine's
+//! `phux mail` and `phux claim` use the hub's store, and the hub reaches
+//! none of its terminals.
+//!
 //! `host ticket --json` emits `{"schema_version":1,"satellite","ticket_id",
 //! "expires_at","hub","ca_fingerprint","join_code","enabled","hub_reload"}`; `host join
 //! --json` emits `{"schema_version":1,"satellite","hub","credential_id",
@@ -30,8 +35,14 @@ use super::hub::{HubReload, add_hub_reload, reload_local_hub};
 const UPLINK_KEY: &str = "uplink";
 
 /// `phux host ticket NAME`.
-pub(super) fn run_ticket(name: &str, hub: Option<&str>, minutes: i64, json: bool) -> ExitCode {
-    match mint(name, hub, minutes) {
+pub(super) fn run_ticket(
+    name: &str,
+    hub: Option<&str>,
+    minutes: i64,
+    mail_only: bool,
+    json: bool,
+) -> ExitCode {
+    match mint(name, hub, minutes, mail_only) {
         Ok(minted) => report_ticket(&minted, json),
         Err(err) => json_err::emit(json, &err, 1),
     }
@@ -74,7 +85,7 @@ pub(super) fn mint_code(
     files: &HubFiles,
     adopt_inbound: bool,
 ) -> Result<(String, String), CliError> {
-    let minted = mint_in(name, Some(hub), minutes, files, adopt_inbound)?;
+    let minted = mint_in(name, Some(hub), minutes, files, adopt_inbound, false)?;
     Ok((minted.code.to_link(), minted.ticket.id))
 }
 
@@ -93,14 +104,16 @@ struct Minted {
     code: JoinCode,
     /// The entry's enabled state, kept from an existing `inbound://` entry.
     enabled: bool,
+    /// No entry was registered: the code joins for mail and claims only.
+    mail_only: bool,
     reload: HubReload,
 }
 
 /// Validate everything, mint the ticket, then register the entry: a bad
 /// argument or a conflicting entry leaves the store and `config.toml`
 /// untouched.
-fn mint(name: &str, hub: Option<&str>, minutes: i64) -> Result<Minted, CliError> {
-    mint_in(name, hub, minutes, &HubFiles::from_env(), true)
+fn mint(name: &str, hub: Option<&str>, minutes: i64, mail_only: bool) -> Result<Minted, CliError> {
+    mint_in(name, hub, minutes, &HubFiles::from_env(), true, mail_only)
 }
 
 fn mint_in(
@@ -109,6 +122,7 @@ fn mint_in(
     minutes: i64,
     files: &HubFiles,
     adopt_inbound: bool,
+    mail_only: bool,
 ) -> Result<Minted, CliError> {
     let name = satellite_registry::registry_name(name).map_err(reject)?;
     phux_server::workload::validate_satellite_name(&name).map_err(|err| reject(err.to_string()))?;
@@ -148,7 +162,12 @@ fn mint_in(
             "check the state directory's permissions, then rerun",
         )
     })?;
-    if let Err(err) = satellite_registry::add_or_update_at(&files.config, &entry) {
+    let registered = if mail_only {
+        Ok(())
+    } else {
+        satellite_registry::add_or_update_at(&files.config, &entry).map(drop)
+    };
+    if let Err(err) = registered {
         // Nothing points at the ticket yet; withdraw it rather than leave a
         // live secret for an entry that was never written.
         if let Err(revoke) = tickets::revoke_ticket(&tickets_path, &ticket.id) {
@@ -171,6 +190,7 @@ fn mint_in(
         ticket,
         code,
         enabled,
+        mail_only,
         reload: reload_local_hub(),
     })
 }
@@ -282,16 +302,26 @@ fn report_ticket(minted: &Minted, json: bool) -> ExitCode {
             "ca_fingerprint": minted.code.ca,
             "join_code": link,
             "enabled": minted.enabled,
+            "mail_only": minted.mail_only,
         });
         add_hub_reload(&mut doc, Some(&minted.reload));
         return crate::output::json(&doc);
     }
-    outln!(
-        "Satellite {:?} registered as inbound://; ticket {} (single use) expires {expires}.",
-        minted.name,
-        minted.ticket.id
-    );
-    outln!("  {}", minted.reload.describe());
+    if minted.mail_only {
+        outln!(
+            "Mail-only satellite {:?}: ticket {} (single use) expires {expires}. It reaches \
+             this hub's mail and claims, and this hub reaches none of its terminals.",
+            minted.name,
+            minted.ticket.id
+        );
+    } else {
+        outln!(
+            "Satellite {:?} registered as inbound://; ticket {} (single use) expires {expires}.",
+            minted.name,
+            minted.ticket.id
+        );
+        outln!("  {}", minted.reload.describe());
+    }
     if !minted.enabled {
         outln!(
             "  {:?} is disabled here; run `phux host enable {}` before it joins.",
@@ -300,7 +330,10 @@ fn report_ticket(minted: &Minted, json: bool) -> ExitCode {
         );
     }
     outln!();
-    outln!("On the satellite, run `phux host join -` and paste this code:");
+    outln!(
+        "On the satellite, run `phux host join{} -` and paste this code:",
+        if minted.mail_only { " --mail-only" } else { "" }
+    );
     outln!("  {link}");
     outln!(
         "(Passing the code as an argument also works, but leaves it in `ps` and shell history.)"
@@ -330,7 +363,7 @@ pub(super) fn revoke_satellite_at(registry: &Path, name: &str) -> Result<usize, 
 }
 
 /// `phux host join CODE`, or `phux host join -` to read CODE from stdin.
-pub(super) fn run_join(code: &str, json: bool) -> ExitCode {
+pub(super) fn run_join(code: &str, mail_only: bool, json: bool) -> ExitCode {
     let code = match read_code(code).and_then(|code| JoinCode::parse(&code)) {
         Ok(code) => code,
         Err(err) => {
@@ -347,7 +380,7 @@ pub(super) fn run_join(code: &str, json: bool) -> ExitCode {
         Ok(rt) => rt.block_on(phux_server::uplink::join(&code, &dir)),
         Err(exit) => return exit,
     };
-    let joined = match joined {
+    let mut joined = match joined {
         Ok(joined) => joined,
         Err(err) => {
             let err = CliError::new(
@@ -359,6 +392,7 @@ pub(super) fn run_join(code: &str, json: bool) -> ExitCode {
             return json_err::emit(json, &err, 1);
         }
     };
+    joined.entry.mail_only = mail_only;
     if let Err(err) = record_uplink(&joined, &dir) {
         return json_err::emit(json, &unrecorded_uplink(&joined, &err), 1);
     }
@@ -450,6 +484,11 @@ fn fill_uplink(table: &mut Table, entry: &phux_config::UplinkConfigEntry) {
     );
     table.insert("client-key", value(entry.client_key.display().to_string()));
     table.insert("enabled", value(entry.enabled));
+    if entry.mail_only {
+        table.insert("mail-only", value(true));
+    } else {
+        table.remove("mail-only");
+    }
 }
 
 fn report_joined(joined: &Joined, reload: &HubReload, json: bool) -> ExitCode {
@@ -462,6 +501,7 @@ fn report_joined(joined: &Joined, reload: &HubReload, json: bool) -> ExitCode {
             "credential_id": joined.credential,
             "client_cert": entry.client_cert,
             "client_key": entry.client_key,
+            "mail_only": entry.mail_only,
             "server_reload": reload.as_json_str(),
         });
         return crate::output::json(&doc);
@@ -473,6 +513,13 @@ fn report_joined(joined: &Joined, reload: &HubReload, json: bool) -> ExitCode {
         joined.credential
     );
     outln!("  identity: {}", entry.client_cert.display());
+    if entry.mail_only {
+        outln!(
+            "  mail only: `phux mail` and `phux claim` here use the hub's store; the hub \
+             reaches no terminal here"
+        );
+        return ExitCode::SUCCESS;
+    }
     outln!(
         "  {}",
         match reload {

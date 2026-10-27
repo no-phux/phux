@@ -2021,13 +2021,16 @@ dial the hub. The server keeps that connection up, redialing after any drop, and
 needs no listener of its own: the hub reaches this machine's terminals through
 it.
 
-Usage: phux host join [--json] <CODE>
+Usage: phux host join [--mail-only] [--json] <CODE>
 
 Arguments:
   <CODE>  The `phux://satellite?...` code from the hub, or `-` to read it from
           stdin and keep it out of `ps` and shell history.
 
 Flags:
+      --mail-only      For mail and claims only: `phux mail` and `phux claim`
+                       here use the hub's store, and the server never dials the
+                       hub, so the hub reaches no terminal here.
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
@@ -2300,6 +2303,10 @@ Flags:
                               advertises it.
       --expires-in <MINUTES>  Minutes the code stays redeemable.
                               (default: 10)
+      --mail-only             For mail and claims only: register no `inbound://`
+                              entry, so this hub never reaches the machine's
+                              terminals. Pair with `phux host join --mail-only`
+                              there.
       --json                  Emit stable, versioned JSON on stdout instead of
                               the human view. On failure, stdout stays empty and
                               stderr carries one JSON error object.
@@ -2619,8 +2626,10 @@ Send, read and acknowledge mail between agents
 
 Mail lives in this host's work store beside `phux mission` tasks and survives
 restarts. An agent is addressed by its pane here, `@749`, optionally labelled,
-`pi@749`; anything outside a pane uses a name. `send` stores the message and
-nothing more: nothing is typed into a recipient's terminal. The recipient's
+`pi@749`; anything outside a pane uses a name. On a host joined to a hub with
+`phux host join`, mail and claims use the hub's store: the hub's panes are
+`hub/@749`, and on the hub this host's are `NAME/@N`. `send` stores the message
+and nothing more: nothing is typed into a recipient's terminal. The recipient's
 harness integration takes it (`wait`, `hook-context`) and puts it in the agent's
 conversation; an agent idle under a hook-only harness sees it at its next hook.
 You speak as `--as`, else `$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`.
@@ -2745,7 +2754,8 @@ Store a message for each recipient
 Usage: phux mail send <FLAGS> <TO>…
 
 Arguments:
-  <TO>…  Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name.
+  <TO>…  Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name, led
+         by `SATELLITE/` or `hub/` for one on another host.
 
 Flags:
   -m, --message <TEXT>      The message. `-` reads it from stdin.

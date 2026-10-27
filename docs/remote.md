@@ -289,6 +289,11 @@ destroyed, its satellite entry goes and its credential is revoked.
 on the hub; the hub drives the box, never the reverse, so an agent sealed in
 a box still can't reach your other panes.
 
+Agents in a box can still talk to yours. `phux mail` and `phux claim` in a
+box use this machine's store, in the box's name, so an agent there writes
+`phux mail send hub/@749 ...` and the agent in your pane `@749` gets it as
+mail from `min-NAME/@N` ([Mail across a hub](./agents.md#mail-across-a-hub)).
+
 A box activated with `--no-loadouts` has no phux and is skipped. A
 `--network none` box, and an `--network own_ip` box whose egress rules don't
 admit `host.min.internal`, can't reach the hub, so they never join. The
