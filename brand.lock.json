@@ -3,51 +3,51 @@
   "files": {
     "desktop/AppIcon.png": {
       "destination": "clients/desktop/packaging/AppIcon.png",
-      "sha256": "61c7392e49a5507458aeceeed692a1b0215e902841117c689d5a31f6a4aa8733"
+      "sha256": "3a02b69904509332d21714d2835b39024b3f2d753df85c78cc9cc0fad7a6aa99"
     },
     "desktop/AppIcon.svg": {
       "destination": "clients/desktop/packaging/AppIcon.svg",
-      "sha256": "86d4b248a40c4dbe33689669f8e862b1c7628804867996671ba227e1d18bf7db"
+      "sha256": "a3f51b813da499d90a99932120d3fc19b5e270e1c1dff52d5f02ae251d1495ac"
     },
     "identity/profile.json": {
       "destination": "clients/desktop/packaging/brand-profile.json",
-      "sha256": "a6da7ab1b9c46cc2e2f835d2370433edf13b1fd0cce7b244f3fb95ea4479f9fa"
+      "sha256": "72fef4e697a5e7dece601664d4565b6829e681f8fae94ab9dd46cd2876f9454a"
     },
     "logos/docs-wordmark.png": {
       "destination": "docs/assets/logo.png",
-      "sha256": "598dfff8d1ccc982db864bdfb97bcc2db85d75b2234779dbaacee276fa9d743c"
+      "sha256": "cb98b384bc38c309edcff441d845fd2232bf3d0e9ae66cf528c21808c4f51a18"
     },
     "logos/docs-wordmark.svg": {
       "destination": "docs/assets/logo.svg",
-      "sha256": "9cda166900ba0be12aecfb1378515d3173d5b57704e29e20f81a5100a9cc0c01"
+      "sha256": "6bc7d8192283ea1dfb9dc9ab9da82af5846cfdb18b77770924304311b4694c59"
     },
-    "playground/ghost/atlas.json": {
-      "destination": "clients/desktop/native/assets/playground/ghost/atlas.json",
-      "sha256": "cd22d7036455081fc7134171d2b66af66cf436d3ab47bf09e936747af71bf584"
+    "playground/fox/atlas.json": {
+      "destination": "clients/desktop/native/assets/playground/fox/atlas.json",
+      "sha256": "1746458a63b8e058164a95357aa06e65ee679e957df608ff3c84bc9fb87af20a"
     },
-    "playground/ghost/celebrate.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/celebrate.png",
-      "sha256": "69b1d33c69e6c9f04c10895be709ce7a2f72fc1b69939b4d0e01971e6c3ab24c"
+    "playground/fox/celebrate.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/celebrate.png",
+      "sha256": "a79bc727667ad713251c249e3715cc5a1a029688280a93e05f8687ed7ff33133"
     },
-    "playground/ghost/dash.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/dash.png",
-      "sha256": "b6c7424371f3f660b0975332b92aa5dd1bd67e438cda08107486247f7560f3c6"
+    "playground/fox/dash.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/dash.png",
+      "sha256": "8a002bd86c3a61bad58852206d37b2c5a70d3e61fabc37275cf1bc55ca2bd3fb"
     },
-    "playground/ghost/idle.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/idle.png",
-      "sha256": "407597091bdbd6b38a05e3987667e412c27859744a587a05d2bff9c75af288ea"
+    "playground/fox/idle.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/idle.png",
+      "sha256": "285d5f94618f0e4bb4a52926dfa49e786dfe3d42018379f63db0c18c82f44f9e"
     },
-    "playground/ghost/sleep.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/sleep.png",
-      "sha256": "e7471c03b669f6ba1139aa222e38b4ccde193cf42f1218ba461ec61d6cd14810"
+    "playground/fox/sleep.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/sleep.png",
+      "sha256": "bd8ff0baed270e9f69c7c48a1c55ce778fed0c166f98512533ed55fe18a24973"
     },
-    "playground/ghost/still.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/still.png",
-      "sha256": "ee20864533ac4e7bafb6d85a691f3e1584d9e736d7ff8005dfe01de974f4e146"
+    "playground/fox/still.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/still.png",
+      "sha256": "6656ece802cb23de95e4559c9fed7a3796edc6b2f57459938a0fa2d5f7c366e7"
     },
     "runtime/desktop/profiles.json": {
       "destination": "clients/desktop/packaging/brand-profiles.json",
-      "sha256": "052466379489c77edda7b8a25783a63e8c59c83dbdb80078b2de06c7568ba6b6"
+      "sha256": "48e670fd24a81322c6b0003d8f925ac462e15c23a5db9384e0479b224da969e2"
     },
     "tooling/brand.py": {
       "destination": "scripts/brand.py",
@@ -55,8 +55,8 @@
     }
   },
   "schema": 1,
-  "sha256": "eb2dfb66cc1ce14f92697ef00f00ca38035ce694ad7575bf62be06dfe421ded3",
-  "source_revision": "5b044a9e0ac0fa9957d7abdfbeefc17be60a3f82",
+  "sha256": "ef7deb4f2554ca116c806023a88a445141dabd02d519aeff51be458460836222",
+  "source_revision": "3e159189345403efc6a6f248f17952abbd4bd77d",
   "url": "https://phux.sh/brand/releases/1.4.0/phux-brand.zip",
   "version": "1.4.0"
 }

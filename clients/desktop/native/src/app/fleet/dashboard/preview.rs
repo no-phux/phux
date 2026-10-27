@@ -119,6 +119,15 @@ pub(crate) fn capture(
                 true,
                 "matrix",
             ),
+            (
+                "fleet-playground-mint",
+                1280.,
+                900.,
+                false,
+                false,
+                true,
+                "office",
+            ),
         ] {
             root.update(cx, |root, window, cx| {
                 let desk = root.view().clone().downcast::<Desk>().expect("desk");
@@ -136,6 +145,12 @@ pub(crate) fn capture(
                             prefs.animations = false;
                             prefs.theme_id = theme;
                             prefs.playground_map = map.to_owned();
+                            prefs.playground_scheme = if name.ends_with("mint") {
+                                "mint"
+                            } else {
+                                "theme"
+                            }
+                            .to_owned();
                         },
                         cx,
                     );

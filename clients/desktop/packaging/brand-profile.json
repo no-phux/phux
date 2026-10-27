@@ -1,10 +1,15 @@
 {
   "schema": 1,
-  "id": "flat-fox",
-  "name": "Flat Fox",
+  "id": "emblem-fox",
+  "name": "Emblem Fox",
   "finish": "flat",
   "ink": "text",
   "available": [
+    {
+      "id": "emblem-fox",
+      "name": "Emblem Fox",
+      "finish": "flat"
+    },
     {
       "id": "flat-fox",
       "name": "Flat Fox",

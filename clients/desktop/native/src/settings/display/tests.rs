@@ -141,6 +141,23 @@ fn the_backdrop_shader_defaults_off_and_keeps_only_known_choices() {
 }
 
 #[test]
+fn the_playground_scheme_is_theme_unless_a_known_scheme_is_saved() {
+    for value in [
+        json!({}),
+        json!({"playgroundScheme": "plaid"}),
+        json!({"playgroundScheme": 1}),
+    ] {
+        assert_eq!(parse_display(&value).playground_scheme, "theme");
+    }
+    let mint = DisplayPrefs {
+        playground_scheme: "mint".to_owned(),
+        ..default_display()
+    };
+    assert_eq!(display_value(&mint)["playgroundScheme"], "mint");
+    assert_eq!(parse_display(&display_value(&mint)), mint);
+}
+
+#[test]
 fn tab_placement_round_trips_without_changing_other_preferences() {
     for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Side] {
         let prefs = DisplayPrefs {

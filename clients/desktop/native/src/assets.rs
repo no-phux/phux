@@ -23,6 +23,8 @@ gpui_kit::assets::icon_assets!(
         Clock,
         FolderPlus,
         Layers,
+        // The fleet playground's colour scheme button.
+        Palette,
         ListTree,
         // Sidebar view: Collapse All Sessions (Expand uses Kit's ChevronsUpDown).
         ChevronsDownUp,

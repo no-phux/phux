@@ -156,6 +156,8 @@ pub struct DisplayPrefs {
     pub agent_fleet: bool,
     /// The fleet playground's map: `office` or `matrix`.
     pub playground_map: String,
+    /// The playground piece's colour scheme, by id (`theme` unless known).
+    pub playground_scheme: String,
     /// Skin motion: pane folds, skin shifts, cursor effects. macOS reduce
     /// motion also turns it off.
     pub animations: bool,
@@ -197,6 +199,7 @@ pub fn default_display() -> DisplayPrefs {
         native_agents: false,
         agent_fleet: false,
         playground_map: "office".to_owned(),
+        playground_scheme: "theme".to_owned(),
         animations: true,
         backdrop_shader: crate::shader::library::OFF.to_owned(),
         backdrop_intensity: 0.7,
@@ -277,6 +280,14 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
             display.playground_map.clone()
         } else {
             fallback.playground_map
+        },
+        playground_scheme: if matches!(
+            display.playground_scheme.as_str(),
+            "theme" | "gold" | "silver" | "mint" | "rose" | "aurora" | "ember" | "matrix"
+        ) {
+            display.playground_scheme.clone()
+        } else {
+            fallback.playground_scheme
         },
         sidebar_width: finite(display.sidebar_width, fallback.sidebar_width)
             .round()
@@ -373,6 +384,7 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         native_agents: flag("nativeAgents", fallback.native_agents),
         agent_fleet: flag("agentFleet", fallback.agent_fleet),
         playground_map: string("playgroundMap", fallback.playground_map),
+        playground_scheme: string("playgroundScheme", fallback.playground_scheme),
         animations: flag("animations", fallback.animations),
         backdrop_shader: string("backdropShader", fallback.backdrop_shader),
         backdrop_intensity: number("backdropIntensity", fallback.backdrop_intensity),
@@ -411,6 +423,7 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "nativeAgents": display.native_agents,
         "agentFleet": display.agent_fleet,
         "playgroundMap": display.playground_map,
+        "playgroundScheme": display.playground_scheme,
         "animations": display.animations,
         "backdropShader": display.backdrop_shader,
         "backdropIntensity": display.backdrop_intensity,

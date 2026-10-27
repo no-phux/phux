@@ -196,7 +196,12 @@ pub(crate) fn panel(
         .overflow_hidden()
         .child(overview::header(
             &agents,
-            playground.then(|| playground::Map::from_id(&desk.prefs.playground_map)),
+            playground.then(|| {
+                (
+                    playground::Map::from_id(&desk.prefs.playground_map),
+                    playground::Scheme::from_id(&desk.prefs.playground_scheme),
+                )
+            }),
             look,
             cx,
         ))

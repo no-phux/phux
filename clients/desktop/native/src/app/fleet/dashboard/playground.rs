@@ -5,7 +5,10 @@
 //! labels and the click targets, so they cannot drift apart.
 
 mod plan;
+mod scheme;
 mod sprites;
+
+pub(crate) use self::scheme::Scheme;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -203,11 +206,20 @@ pub(crate) fn scene(
         .collect::<Vec<_>>();
 
     let map = Map::from_id(&desk.prefs.playground_map);
+    let scheme = Scheme::from_id(&desk.prefs.playground_scheme);
+    let hex =
+        |text: &str| u32::from_str_radix(text.trim_start_matches('#'), 16).unwrap_or(0xE7E2DA);
+    let ramp = scheme.ramp(scheme::theme_ramp([
+        hex(&look.chrome.muted),
+        hex(&look.chrome.subtext),
+        hex(&look.chrome.theme.foreground),
+    ]));
     let accent = from_hex(&look.chrome.theme.accent);
     let background = from_hex(&look.chrome.theme.background);
     let paint = match map {
         Map::Office => Paint {
             map,
+            ramp,
             floor: from_hex(&look.chrome.theme.surface),
             wall: look.raised,
             edge: look.border,
@@ -217,6 +229,7 @@ pub(crate) fn scene(
         },
         Map::Matrix => Paint {
             map,
+            ramp,
             floor: from_hex(&look.chrome.theme.surface),
             wall: background,
             edge: accent,
@@ -410,6 +423,7 @@ fn target(ghost: &Ghost, camera: &Camera, cx: &mut Context<Desk>) -> AnyElement 
 #[derive(Clone, Copy)]
 struct Paint {
     map: Map,
+    ramp: scheme::Ramp,
     floor: Hsla,
     wall: Hsla,
     edge: Hsla,
@@ -560,7 +574,7 @@ impl Paint {
             let centre = point(bounds.origin.x + px(s.x), bounds.origin.y + px(s.y));
             let shadow = ellipse(centre, 22. * camera.scale, 7. * camera.scale);
             fill(window, &shadow, self.shadow);
-            let Some(sheet) = sprites::sheet() else {
+            let Some(sheet) = sprites::sheet(self.ramp) else {
                 continue;
             };
             let (image, frame) = sheet.frame(*strip, time);

@@ -4,6 +4,10 @@
 
 ### Features
 
+- Make the Emblem Fox the app icon and the fleet playground's piece; the
+  piece follows the window theme by default, and a palette button cycles
+  fixed colour schemes and saves the choice.
+
 - Add a playground to the Agent Fleet: every agent as a ghost in its
   machine's room on an isometric campus, with a camera to drag, scroll and
   pinch, and a click that opens the exact agent.

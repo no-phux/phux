@@ -1,20 +1,23 @@
-//! The ghost strips released through phux-brand (`playground/ghost`, pinned
-//! by brand.lock.json), decoded once and cut into frames. The atlas names
-//! each loop's length; the product owns when a loop plays.
+//! The fox strips released through phux-brand (`playground/fox`, pinned by
+//! brand.lock.json), decoded and cut into frames once per colour scheme. The
+//! atlas names each loop's length; the product owns when a loop plays and
+//! what colour it wears.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use gpui::RenderImage;
 use serde::Deserialize;
 
 use super::plan::Strip;
+use super::scheme::{Ramp, recolor};
 
-const ATLAS: &str = include_str!("../../../../../assets/playground/ghost/atlas.json");
+const ATLAS: &str = include_str!("../../../../../assets/playground/fox/atlas.json");
 const STRIPS: [&[u8]; 4] = [
-    include_bytes!("../../../../../assets/playground/ghost/idle.png"),
-    include_bytes!("../../../../../assets/playground/ghost/celebrate.png"),
-    include_bytes!("../../../../../assets/playground/ghost/dash.png"),
-    include_bytes!("../../../../../assets/playground/ghost/sleep.png"),
+    include_bytes!("../../../../../assets/playground/fox/idle.png"),
+    include_bytes!("../../../../../assets/playground/fox/celebrate.png"),
+    include_bytes!("../../../../../assets/playground/fox/dash.png"),
+    include_bytes!("../../../../../assets/playground/fox/sleep.png"),
 ];
 
 #[derive(Deserialize)]
@@ -42,13 +45,21 @@ impl Sheet {
     }
 }
 
-/// The sheet, decoded on first use; None when the art does not decode.
-pub(crate) fn sheet() -> Option<&'static Sheet> {
-    static SHEET: OnceLock<Option<Sheet>> = OnceLock::new();
-    SHEET.get_or_init(load).as_ref()
+/// The sheet on `ramp`, decoded on first use; None when the art does not
+/// decode. A ramp nobody picks is never decoded. ponytail: each ramp's
+/// sheet lives for the process, bounded by the themes and schemes shown.
+pub(crate) fn sheet(ramp: Ramp) -> Option<&'static Sheet> {
+    static SHEETS: Mutex<Option<HashMap<Ramp, Option<&'static Sheet>>>> = Mutex::new(None);
+    let mut sheets = SHEETS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *sheets
+        .get_or_insert_with(HashMap::new)
+        .entry(ramp)
+        .or_insert_with(|| load(ramp).map(|sheet| &*Box::leak(Box::new(sheet))))
 }
 
-fn load() -> Option<Sheet> {
+fn load(ramp: Ramp) -> Option<Sheet> {
     let atlas: Atlas = serde_json::from_str(ATLAS).ok()?;
     let frames = atlas.frame_count.max(1);
     let mut strips = Vec::with_capacity(4);
@@ -64,9 +75,12 @@ fn load() -> Option<Sheet> {
                 let mut buffer =
                     image::imageops::crop_imm(&rgba, index as u32 * width, 0, width, height)
                         .to_image();
-                // GPUI's atlas takes straight-alpha BGRA.
+                // Recolour, then GPUI's atlas takes straight-alpha BGRA.
                 for pixel in buffer.as_chunks_mut::<4>().0 {
-                    pixel.swap(0, 2);
+                    if pixel[3] > 0 {
+                        let [red, green, blue] = recolor(ramp, [pixel[0], pixel[1], pixel[2]]);
+                        *pixel = [blue, green, red, pixel[3]];
+                    }
                 }
                 image::Frame::new(buffer)
             })
@@ -93,7 +107,10 @@ mod tests {
 
     #[test]
     fn the_released_art_decodes_into_eight_frame_loops() {
-        let sheet = sheet().expect("the brand exports decode");
+        let ramp = [0x333333, 0x999999, 0xEEEEEE];
+        let sheet = sheet(ramp).expect("the brand exports decode");
+        let again = super::sheet(ramp).expect("cached");
+        assert!(std::ptr::eq(sheet, again), "one decode per ramp");
         assert_eq!(sheet.frames, 8);
         let (_, first) = sheet.frame(Strip::Dash, 0.);
         let (_, last) = sheet.frame(Strip::Dash, 0.53);
