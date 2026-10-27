@@ -50,6 +50,6 @@
     "patches/0021-windows-confirmed-presentation.patch": "7356011c163a20866da5ce2d6964e4e1c2692f5aa992b4be5e5ba2a973461d5c",
     "patches/0022-windows-adapter-error-fallback.patch": "1b5f64e010b010e72f06364d88cfb178d49373161643bc6304c989238a1c88bf",
     "patches/0023-windows-test-fixture-path.patch": "ad2bb99f90806c26d09bbbfceb4ca16ed2e07faa2f9bddf2e431850f4b4a2dbc",
-    "patches/0024-windows-input-message-order.patch": "df0bb1d4a54a4f3eecac6cfbe3f2378fda43fc9d343e59fcb59c74485be9cd12"
+    "patches/0024-windows-input-message-order.patch": "60960299386c07b73297bc55a0381db968f015788b10c2effa1bf7c74c4d8d8f"
   }
 }

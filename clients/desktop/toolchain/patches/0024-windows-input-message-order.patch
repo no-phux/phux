@@ -65,14 +65,14 @@ index 0000000..b406bf1
 +mod tests;
 diff --git a/gpui-fast-windows/src/fast/input_order_tests.rs b/gpui-fast-windows/src/fast/input_order_tests.rs
 new file mode 100644
-index 0000000..79a54d6
+index 0000000..9a749c5
 --- /dev/null
 +++ b/gpui-fast-windows/src/fast/input_order_tests.rs
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,197 @@
 +use super::*;
 +use std::cell::RefCell;
 +use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-+use windows::Win32::UI::Input::KeyboardAndMouse::{VK_PACKET, VK_RETURN};
++use windows::Win32::UI::Input::KeyboardAndMouse::{SetKeyboardState, VK_RETURN, VK_SPACE};
 +use windows::Win32::UI::WindowsAndMessaging::*;
 +use windows::core::PCWSTR;
 +
@@ -178,14 +178,17 @@ index 0000000..79a54d6
 +}
 +
 +#[test]
-+fn translate_message_packet_text_precedes_the_next_enter() {
++fn translate_message_space_text_precedes_the_next_enter() {
 +    with_window(|window| {
 +        unsafe {
++            // VK_PACKET needs metadata supplied by SendInput, not a synthetic
++            // lParam. Space translates without a layout-specific letter map.
++            SetKeyboardState(&[0; 256]).unwrap();
 +            PostMessageW(
 +                Some(window),
 +                WM_KEYDOWN,
-+                WPARAM(VK_PACKET.0 as usize),
-+                LPARAM(1 | ((b'D' as isize) << 16)),
++                WPARAM(VK_SPACE.0 as usize),
++                LPARAM(1 | (0x39 << 16)),
 +            )
 +            .unwrap();
 +        }
@@ -200,7 +203,7 @@ index 0000000..79a54d6
 +        RECEIVED.with(|received| {
 +            assert_eq!(
 +                *received.borrow(),
-+                vec![(WM_CHAR, b'D' as usize), (WM_KEYDOWN, VK_RETURN.0 as usize)]
++                vec![(WM_CHAR, b' ' as usize), (WM_KEYDOWN, VK_RETURN.0 as usize)]
 +            )
 +        });
 +    });
@@ -221,6 +224,7 @@ index 0000000..79a54d6
 +#[test]
 +fn text_translated_inside_input_dispatch_precedes_a_consumed_enter() {
 +    with_window(|window| {
++        unsafe { SetKeyboardState(&[0; 256]).unwrap() };
 +        let mut calls = 0;
 +        let mut dispatch = |message: &MSG| {
 +            calls += 1;
@@ -233,17 +237,17 @@ index 0000000..79a54d6
 +                DispatchMessageW(message);
 +            }
 +        };
-+        let packet = MSG {
++        let space = MSG {
 +            hwnd: window,
 +            message: WM_KEYDOWN,
-+            wParam: WPARAM(VK_PACKET.0 as usize),
-+            lParam: LPARAM(1 | ((b'D' as isize) << 16)),
++            wParam: WPARAM(VK_SPACE.0 as usize),
++            lParam: LPARAM(1 | (0x39 << 16)),
 +            ..Default::default()
 +        };
-+        assert!(dispatch_input_message(&packet, &mut dispatch));
++        assert!(dispatch_input_message(&space, &mut dispatch));
 +        let enter = MSG {
 +            wParam: WPARAM(VK_RETURN.0 as usize),
-+            ..packet
++            ..space
 +        };
 +        assert!(dispatch_input_message(&enter, &mut dispatch));
 +        assert_eq!(
@@ -254,8 +258,8 @@ index 0000000..79a54d6
 +            assert_eq!(
 +                *received.borrow(),
 +                vec![
-+                    (WM_KEYDOWN, VK_PACKET.0 as usize),
-+                    (WM_CHAR, b'D' as usize),
++                    (WM_KEYDOWN, VK_SPACE.0 as usize),
++                    (WM_CHAR, b' ' as usize),
 +                    (WM_KEYDOWN, VK_RETURN.0 as usize),
 +                ]
 +            )
