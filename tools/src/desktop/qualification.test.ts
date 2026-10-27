@@ -184,7 +184,7 @@ test("Windows builds native MSVC and signs only after a same-source WSL GUI jour
     expect(smokeScript).toContain(proof);
   expect(
     readFileSync(repoPath("clients/desktop/scripts/smoke-windows-resize.ps1"), "utf8"),
-  ).toContain("stty size");
+  ).toContain("stty -F /proc/$shellPid/fd/0 size");
 });
 
 test("Windows policy filters cannot silently pass zero tests and diagnostics never publish products", () => {

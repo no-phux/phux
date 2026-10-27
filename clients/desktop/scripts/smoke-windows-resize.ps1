@@ -2,12 +2,13 @@
 if ($MyInvocation.InvocationName -ne '.') { throw 'Dot-source from the disposable Windows smoke harness' }
 
 function Test-NativeResize {
-    $beforeFile = ConvertTo-DesktopShellLiteral "$linuxRoot/size-before"
-    $afterFile = ConvertTo-DesktopShellLiteral "$linuxRoot/size-after"
-    Send-Shell ("stty size > $beforeFile")
+    if ($shellPid -cnotmatch '^[1-9][0-9]*$') { throw 'PTY measurement requires the recorded shell PID' }
+    # Observe the original shell's actual tty without typing during a geometry
+    # transition or attaching a second client that might cast a resize vote.
+    $measure = "stty -F /proc/$shellPid/fd/0 size"
     $sizes = @{ Before = ''; After = '' }
     Wait-Desktop 'initial PTY size' {
-        $sizes.Before = Invoke-DesktopWsl ("cat $beforeFile")
+        $sizes.Before = Invoke-DesktopWsl $measure
         $sizes.Before -match '^\d+ \d+$'
     }
     $before = [regex]::Match($sizes.Before, '^(\d+) (\d+)$')
@@ -15,11 +16,8 @@ function Test-NativeResize {
     $cols = [int] $before.Groups[2].Value
     $screen = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     if (-not [PhuxDesktopGui]::SetWindowPos($desktop.MainWindowHandle, [IntPtr]::Zero, 0, 0, $screen.Width - 10, $screen.Height - 10, 0x0040)) { throw 'Native window resize failed' }
-    # Sample the real PTY until the asynchronous native fit reaches it. Send
-    # this bounded command once; scrollback/OCR cannot substitute for stty.
-    Send-Shell ("i=0; while [ " + '"$i"' + " -lt 50 ]; do set -- `$(stty size); if [ " + '"$1"' + " -gt $rows ] && [ " + '"$2"' + " -gt $cols ]; then printf '%s %s\n' " + '"$1" "$2"' + " > $afterFile; break; fi; i=`$((i+1)); sleep 0.2; done")
     Wait-Desktop 'resized PTY' {
-        $sizes.After = Invoke-DesktopWsl ("cat $afterFile")
+        $sizes.After = Invoke-DesktopWsl $measure
         $after = [regex]::Match($sizes.After, '^(\d+) (\d+)$')
         $after.Success -and [int] $after.Groups[1].Value -gt $rows -and [int] $after.Groups[2].Value -gt $cols
     }
