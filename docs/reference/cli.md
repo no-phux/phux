@@ -2142,8 +2142,10 @@ Global flags:
 ```text
 Join each running box that has not joined, and forget destroyed ones.
 
-A box joins as satellite `min-NAME`, NAME being its Minimal session name. A box
-without phux on its `PATH` (activated without the `phux` loadout) is skipped.
+A box joins as satellite `min-NAME`, NAME being its Minimal session name, and
+gets session `min-NAME` here: one pane running `min session attach` into the
+box, ending when the box is destroyed. A box without phux on its `PATH`
+(activated without the `phux` loadout) is skipped.
 
 Usage: phux host minimal sync [--hub <HOST:PORT>] [--min <PATH>]
 

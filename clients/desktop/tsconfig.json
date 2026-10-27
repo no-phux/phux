@@ -27,7 +27,8 @@
     "tests/framework/process.test.ts",
     "tests/desktop-demo.test.ts",
     "oxlint.config.ts",
-    "tests/tooling/brand.test.ts"
+    "tests/tooling/brand.test.ts",
+    "tests/tooling/film.test.ts"
   ],
   "exclude": ["node_modules", "toolchain", "native", "dist"]
 }

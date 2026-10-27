@@ -12,27 +12,31 @@
 //! file or an argv. A destroyed box's satellite entry and credential go with
 //! it. Minimal has no host-side hook, which is why the hub watches.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use usage::{Args, Subcommands};
 
 use super::super::json_err::{self, CliError, codes};
 use super::super::satellite as satellite_registry;
-use super::hub::reload_local_hub;
 use super::inbound;
 
 mod boxes;
 mod files;
+mod forget;
 mod hub;
+mod memory;
 mod service;
+mod session;
 #[cfg(test)]
 mod tests;
 
 use boxes::{BoxSession, MinCli};
 use files::{BoxRegistry, Joined, MinimalDirs};
+use forget::forget_box;
+use memory::Memory;
 
 /// The loadout `setup` writes and adds to `default_loadouts`.
 const LOADOUT: &str = "phux";
@@ -43,13 +47,6 @@ const SATELLITE_PREFIX: &str = "min-";
 /// Minutes a join code minted for a box stays redeemable; it is spent within
 /// seconds, so this only bounds a failed delivery.
 const TICKET_MINUTES: i64 = 5;
-
-/// How long `watch` waits before trying a box whose join failed again.
-const RETRY_AFTER: Duration = Duration::from_secs(30);
-
-/// How long `watch` waits before probing a box that had no phux again: one
-/// probed while still activating may not have its loadout's files yet.
-const REPROBE_AFTER: Duration = Duration::from_secs(5);
 
 /// `phux host minimal <action>`.
 #[derive(Debug, Subcommands)]
@@ -82,8 +79,9 @@ pub(crate) enum MinimalAction {
     /// Join each running box that has not joined, and forget destroyed ones.
     ///
     /// A box joins as satellite `min-NAME`, NAME being its Minimal session
-    /// name. A box without phux on its `PATH` (activated without the `phux`
-    /// loadout) is skipped.
+    /// name, and gets session `min-NAME` here: one pane running `min session
+    /// attach` into the box, ending when the box is destroyed. A box without
+    /// phux on its `PATH` (activated without the `phux` loadout) is skipped.
     Sync {
         #[usage(flatten)]
         opts: MinimalOpts,
@@ -221,7 +219,7 @@ impl Context {
             }
             return Ok(());
         }
-        memory.no_phux.remove(&session.id);
+        memory.found_phux(&session.id);
         let taken: BTreeSet<&str> = joined.boxes.values().map(String::as_str).collect();
         let satellite = satellite_name(session, &taken);
         if let Err(reason) = self.join(session, &satellite, joined) {
@@ -230,10 +228,14 @@ impl Context {
             }
             return Ok(());
         }
-        memory.failed.remove(&session.id);
+        memory.joined(&session.id);
         joined.boxes.insert(session.id.clone(), satellite.clone());
         self.registry.save(joined).map_err(state_failure)?;
         outln!("{satellite}: joined (panes appear as {satellite}/@N)");
+        match session::open(&self.min, session, &satellite) {
+            Ok(()) => outln!("{satellite}: session {satellite} is a shell in the box"),
+            Err(reason) => warn!("{satellite}: could not open its session here: {reason}"),
+        }
         Ok(())
     }
 
@@ -322,47 +324,6 @@ impl Context {
     }
 }
 
-/// What `watch` remembers between passes.
-#[derive(Debug, Default)]
-struct Memory {
-    /// Boxes that had no phux, and when they were last probed.
-    no_phux: BTreeMap<String, Instant>,
-    /// Boxes whose last join failed: when, and why.
-    failed: BTreeMap<String, (Instant, String)>,
-}
-
-impl Memory {
-    /// Whether this pass leaves box `id` alone.
-    fn waits_on(&self, id: &str) -> bool {
-        self.no_phux
-            .get(id)
-            .is_some_and(|at| at.elapsed() < REPROBE_AFTER)
-            || self
-                .failed
-                .get(id)
-                .is_some_and(|(at, _)| at.elapsed() < RETRY_AFTER)
-    }
-
-    /// Record a probe that found no phux; `true` the first time, the one
-    /// worth reporting.
-    fn lacks_phux(&mut self, id: &str) -> bool {
-        self.no_phux.insert(id.to_owned(), Instant::now()).is_none()
-    }
-
-    /// Record a failed join; `true` when `reason` is new and worth reporting.
-    fn fail(&mut self, id: &str, reason: &str) -> bool {
-        let previous = self
-            .failed
-            .insert(id.to_owned(), (Instant::now(), reason.to_owned()));
-        previous.is_none_or(|(_, old)| old != reason)
-    }
-
-    fn forget_gone(&mut self, live: &BTreeSet<&str>) {
-        self.no_phux.retain(|id, _| live.contains(id.as_str()));
-        self.failed.retain(|id, _| live.contains(id.as_str()));
-    }
-}
-
 /// `min-NAME` for a box, NAME being its session name (else its id's first
 /// eight characters) with each character a satellite name refuses replaced.
 /// A name `taken` by another box gets the id prefix appended.
@@ -388,58 +349,6 @@ fn satellite_name(session: &BoxSession, taken: &BTreeSet<&str>) -> String {
         format!("{name}-{short_id}")
     } else {
         name
-    }
-}
-
-/// Remove `satellite`'s `inbound://` entry and revoke its credentials.
-///
-/// Revocation is always attempted for a name this feature minted, even when
-/// the satellite registry cannot be read. Any failure is returned so the
-/// caller keeps the box and retries; this function never reports the
-/// satellite revoked. A name `minted` does not contain is left untouched.
-fn forget_box(
-    satellite: &str,
-    minted: &BTreeSet<String>,
-    files: &inbound::HubFiles,
-) -> Result<(), CliError> {
-    if !minted.contains(satellite) {
-        return Err(CliError::new(
-            codes::REGISTRY,
-            format!("satellite {satellite} was not minted by `phux host minimal`; leaving it"),
-            "remove that satellite with `phux host rm` if it should go",
-        ));
-    }
-    let loaded = satellite_registry::load_registry_from(&files.config);
-    let revoked = inbound::revoke_satellite_at(&files.workload.registry, satellite);
-    let removed = loaded.as_ref().map_or(Ok(()), |entries| {
-        entries
-            .iter()
-            .find(|entry| {
-                entry.name == satellite && phux_server::hub::is_inbound_endpoint(&entry.endpoint)
-            })
-            .map_or(Ok(()), |entry| {
-                satellite_registry::remove_entry_at(&files.config, entry)
-            })
-    });
-    let _ = reload_local_hub();
-    let mut problems = Vec::new();
-    if let Err(err) = &loaded {
-        problems.push(format!("could not read the satellite registry ({err})"));
-    }
-    if let Err(err) = removed {
-        problems.push(format!("could not remove its satellite entry ({err})"));
-    }
-    if let Err(err) = revoked {
-        problems.push(format!("could not revoke its credential ({err})"));
-    }
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(CliError::new(
-            codes::WORKLOAD,
-            format!("could not forget {satellite}: {}", problems.join("; ")),
-            "the box stays recorded so the next sync can retry",
-        ))
     }
 }
 
