@@ -25,18 +25,6 @@ phux: warn: no failures, 1 warning(s)
 0, because a stopped server is normal. `--json` prints the same checks as a
 document.
 
-## Find the right help
-
-| Problem | Start here |
-| --- | --- |
-| Download, supported OS, or CPU | [Install requirements](./install.md#requirements) |
-| macOS DMG or Gatekeeper | [macOS download](./install.md#macos-drag-and-drop-download); use the current notarized stable release |
-| Desktop will not connect | [First launch and recovery](../clients/desktop/README.md#first-launch-and-recovery); repair the error shown, then **Retry connection** |
-| macOS protected folders | [Permissions setup](./install.md#macos-permissions) |
-| Windows or WSL | [Windows setup](./install.md#windows-wsl) |
-| Source build or Xcode/Metal | [Development setup](./development.md#gpui-desktop) |
-| A question rather than a bug | [Discord](https://discord.gg/dUv5rzdHp) |
-
 ## Inspecting state
 
 ```sh
@@ -65,15 +53,9 @@ was in your panes. Read it, and remove anything private, before you share
 it. phux never logs what you type or paste, and its log files are readable
 only by you.
 
-In Desktop, open the command palette and choose **Copy Diagnostics** for
-versions, server identity, host, and recent errors without terminal content.
-Desktop log locations are listed in its [guide](../clients/desktop/README.md#what-it-does).
-
-Search [existing issues](https://github.com/no-phux/phux/issues) first, then
-file a bug with your OS/CPU, CLI and desktop versions (they are versioned
-separately), how you installed, exact steps, expected behavior, and the
-actual error. Include only the relevant, reviewed diagnostics. For a feature,
-describe the problem and current workaround before proposing a new interface.
+Desktop's palette has **Copy Diagnostics**; [log locations](../clients/desktop/README.md#what-it-does).
+File [an issue](https://github.com/no-phux/phux/issues) with your OS/CPU,
+CLI and desktop versions, install method, reproduction steps, and actual error.
 
 ## The server
 
@@ -117,14 +99,19 @@ Run `phux config check` again before retrying the update. This error is a
 missing file, not a macOS permission refusal.
 
 **`incompatible protocol: client offered X, server requires Y`.** The binary
-and the running server speak different protocol majors, usually because you
-updated and the old server is still running. Releases on the same major
-work together in either direction. Attaching with `phux` upgrades an older
-server automatically; a newer one is left running. From a script,
-`phux upgrade` moves the server onto the installed binary with every pane
-kept.
+and the running server speak different protocols, usually because you updated
+and an older server is still running. Stop that server, then start a fresh
+one. When its pid is known, run `kill <pid>` (or `pkill -f 'phux server'`).
+When it is not, run `pkill -f 'phux server'`. Then run `phux server --ensure`.
+Stopping the old server closes the panes it is running.
 
-**`the running server is X; this binary is Y`.** The same fix: `phux upgrade`.
+**Releases on the same protocol major.** They work together in either
+direction. Attaching with `phux` upgrades an older server in place; a newer
+one is left running. From a script, `phux upgrade` moves the server onto the
+installed binary and panes survive.
+
+**`the running server is X; this binary is Y`.** On the same protocol, the
+same fix: `phux upgrade`.
 
 ## Attaching
 

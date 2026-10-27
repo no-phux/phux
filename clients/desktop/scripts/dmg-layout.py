@@ -5,7 +5,7 @@ from pathlib import Path
 from ds_store import DSStore
 from mac_alias import Alias
 
-mount = Path(sys.argv[1])
+mount = Path(sys.argv[1]).resolve()
 with DSStore.open(str(mount / ".DS_Store"), "w+") as store:
     store["."]["vSrn"] = ("long", 1)
     store["."]["icvl"] = ("type", b"icnv")

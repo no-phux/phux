@@ -34,6 +34,9 @@ libghostty-vt.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
+# `server_pid` asks whether a health-record pid is still alive (`kill` with
+# signal 0). Already in the workspace via the `phux` crate.
+rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
 bytes.workspace = true
 phux-perf.workspace = true
 serde = { workspace = true }

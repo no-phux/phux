@@ -4,9 +4,72 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use phux_client::attach::AttachError;
+use phux_client::attach::{AttachError, is_incompatible_protocol};
 
 use crate::commands::json_err;
+
+/// Hint for a socket file with nothing listening.
+pub(crate) const STALE_SOCKET_HINT: &str =
+    "the socket may be stale — remove it and start a fresh server";
+
+/// Hint when a socket answered, or failed, for a reason that is not a dead
+/// socket and not an old protocol. Never calls the socket stale.
+pub(crate) const UNANSWERED_SOCKET_HINT: &str = "see the server log for why this request failed";
+
+/// How a socket probe failed, for `phux doctor`.
+pub(crate) enum SocketFailure {
+    /// A live server from an older release. `lines` is the recovery.
+    Incompatible(Vec<String>),
+    /// `ConnectionRefused` or `NotFound`: nothing is listening.
+    Dead,
+    /// Any other failure. Not a dead socket.
+    Other,
+}
+
+/// Classify `err` for doctor. A live incompatible server is never [`SocketFailure::Dead`].
+pub(crate) fn socket_failure(socket: &Path, err: &AttachError, pid: Option<i32>) -> SocketFailure {
+    if is_incompatible_protocol(err) {
+        SocketFailure::Incompatible(old_server_recovery_lines(socket, pid))
+    } else if is_dead_socket(err) {
+        SocketFailure::Dead
+    } else {
+        SocketFailure::Other
+    }
+}
+
+/// The recovery for a live server that does not speak this binary's protocol.
+///
+/// Shared with MCP through `phux_client::explain::old_server_recovery_lines`.
+pub(crate) fn old_server_recovery_lines(socket: &Path, pid: Option<i32>) -> Vec<String> {
+    phux_client::explain::old_server_recovery_lines(socket, pid)
+}
+
+/// The server pid when `err` is an incompatible protocol, otherwise `None`.
+pub(crate) fn recovery_pid(err: &AttachError, socket: &Path) -> Option<i32> {
+    is_incompatible_protocol(err)
+        .then(|| server_pid(socket))
+        .flatten()
+}
+
+/// Peer credentials on `socket`, then the latest [`phux_server::health`]
+/// record when that pid is alive and owned by this user.
+pub(crate) fn server_pid(socket: &Path) -> Option<i32> {
+    phux_client::explain::peer_pid(socket).or_else(|| {
+        let raw = phux_server::health::running_pid()?;
+        let pid = i32::try_from(raw).ok()?;
+        phux_client::explain::owned_live_pid(pid)
+    })
+}
+
+fn is_dead_socket(err: &AttachError) -> bool {
+    matches!(
+        err,
+        AttachError::Io(io) if matches!(
+            io.kind(),
+            std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound,
+        )
+    )
+}
 
 /// Print a "no server" diagnostic for a connect-time error, or a generic
 /// one otherwise. Returns the failure exit code for the caller to bubble.
@@ -22,6 +85,7 @@ pub(crate) fn report_no_server(err: &AttachError, socket_path: &Path, verb: &str
             socket_path,
             verb,
             &phux_server::telemetry::server_log_path(),
+            recovery_pid(err, socket_path),
         )
         .iter()
         .map(String::as_str),
@@ -39,6 +103,7 @@ pub(super) fn no_server_lines(
     socket_path: &Path,
     verb: &str,
     server_log: &Path,
+    pid: Option<i32>,
 ) -> Vec<String> {
     let mut lines = match err {
         AttachError::Io(io_err)
@@ -49,7 +114,7 @@ pub(super) fn no_server_lines(
         {
             vec![
                 format!("no server running at {}", socket_path.display()),
-                "start one with `phux` (attaches, auto-starting a server) or `phux server`"
+                "start one with `phux` (attaches, auto-starting a server) or `phux server --ensure`"
                     .to_owned(),
             ]
         }
@@ -61,6 +126,9 @@ pub(super) fn no_server_lines(
             io_err,
             socket_path,
         )],
+        AttachError::IncompatibleProtocol(_) => {
+            return old_server_recovery_lines(socket_path, pid);
+        }
         other => vec![format!("{verb} failed: {other}")],
     };
     lines.push(format!("server log: {}", server_log.display()));
@@ -72,8 +140,9 @@ pub(super) fn no_server_lines(
 ///
 /// `phux-roz` (5): the previous output was `attach failed: connection
 /// refused` — accurate but useless. The new shape names the socket and
-/// suggests the exact `phux server --session …` invocation, so the
-/// user can copy-paste their way out of the failure mode.
+/// `phux server --ensure`, so the user can copy-paste their way out of
+/// the failure mode. A bare `phux server` stays in the foreground and
+/// dies with the terminal. `--ensure` conflicts with `--session`.
 pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session: &str) {
     crate::output::error_block(
         attach_error_lines(
@@ -81,6 +150,7 @@ pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session:
             socket_path,
             session,
             &phux_server::telemetry::default_client_log_path(),
+            recovery_pid(err, socket_path),
         )
         .iter()
         .map(String::as_str),
@@ -101,8 +171,9 @@ pub(crate) fn print_attach_error(err: &AttachError, socket_path: &Path, session:
 pub(super) fn attach_error_lines(
     err: &AttachError,
     socket_path: &Path,
-    session: &str,
+    _session: &str,
     client_log: &Path,
+    pid: Option<i32>,
 ) -> Vec<String> {
     match err {
         AttachError::Io(io_err)
@@ -112,7 +183,7 @@ pub(super) fn attach_error_lines(
             ) =>
         {
             vec![format!(
-                "no server at {}. Start one with: phux server --session {session}",
+                "no server at {}. Start one with: phux server --ensure",
                 socket_path.display()
             )]
         }
@@ -136,6 +207,7 @@ pub(super) fn attach_error_lines(
             ),
             "run `phux doctor` for a health check".to_owned(),
         ],
+        AttachError::IncompatibleProtocol(_) => old_server_recovery_lines(socket_path, pid),
         other => {
             let version = phux_protocol::PROTOCOL_VERSION;
             vec![

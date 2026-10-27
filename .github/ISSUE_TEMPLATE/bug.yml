@@ -1,0 +1,37 @@
+name: Bug report
+description: Something in phux did not do what it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What went wrong, and the steps that got you there.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What you expected phux to do instead.
+  - type: input
+    id: version
+    attributes:
+      label: "`phux --version`"
+      description: Paste the output of `phux --version`.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and terminal
+      description: Operating system, architecture, and the terminal you ran phux in.
+      placeholder: Linux x86_64, ghostty
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`phux doctor` output"
+      description: Paste the output of `phux doctor`.
+      render: text

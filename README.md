@@ -25,30 +25,20 @@ Or use [Homebrew](./docs/install.md#homebrew). Run `phux` after installing.
 
 ### Desktop app
 
-**macOS:** download the **macos-arm64.dmg** from the latest
-[Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true).
-Drag **Phux.app** to **Applications**, eject the image, and open Phux.
-Stable downloads are Developer ID signed and Apple notarized. The app includes
-the CLI/server for first launch; an existing CLI is never replaced.
-
-**macOS or Linux:** prefer a shell installer?
-
-```sh
-curl -fsSL https://phux.sh/install-desktop | sh
-```
+**macOS:** [download the DMG](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
+drag **Phux.app** to **Applications**, eject the image, and open Phux.
+The app includes the CLI/server and is signed and notarized.
+**Linux:** use the [desktop installer](./docs/install.md#desktop-app).
 
 ### Platform support
 
 | Platform | CLI / server / terminal UI | Desktop |
 | --- | --- | --- |
-| macOS, Apple silicon | Native | macOS 26+; no Xcode needed to install |
+| macOS, Apple silicon | macOS 11+ | macOS 26+ |
 | Linux, x86_64 or arm64 | Native, glibc | X11 or Wayland, Vulkan driver |
-| Windows | WSL 2; optional PowerShell launchers | Native x64 source build, WSL 2 coordinator |
+| Windows | [WSL 2 and PowerShell launchers](./docs/install.md#windows-wsl) | Not published |
 
-No Intel Mac build, musl build, or native Windows server is published.
-See [installation options and requirements](./docs/install.md#requirements),
-[Windows setup](./docs/install.md#windows-wsl), and
-[desktop setup](./clients/desktop/README.md).
+[Other installation options](./docs/install.md). No Intel Mac or musl builds.
 
 ## Use
 
@@ -82,10 +72,9 @@ is the bundled agent distro, with isolated homes, native missions and safe
 
 ## Status
 
-The CLI and terminal UI are the parts in daily use. The desktop app is
-released and rough. The browser client is a starting point, not a product.
-Phone apps are in progress elsewhere. The wire protocol is `0.x` and
-changes additively; see [protocol](./docs/protocol.md).
+The CLI and terminal UI are the parts in daily use. The desktop app (macOS, Linux) is new and changes weekly. The browser client is a starting point, not a product.
+Phone apps are in progress elsewhere. The wire protocol is `1.x`; any 1.x
+client works with any 1.x server. See [protocol](./docs/protocol.md).
 
 ## Contributing
 
@@ -94,11 +83,9 @@ phux is picky about new surface area; ask before building a feature.
 
 ## Help
 
-- **Something broken?** Run `phux doctor`, then see [troubleshooting](./docs/troubleshooting.md).
-- **Desktop startup?** See [first launch and recovery](./clients/desktop/README.md#first-launch-and-recovery); the palette's **Copy Diagnostics** gathers useful details.
-- **Questions and setup help:** [Discord](https://discord.gg/dUv5rzdHp).
-- **Reproducible bug or feature proposal:** [GitHub issues](https://github.com/no-phux/phux/issues). See [what to include](./docs/troubleshooting.md#reporting-a-bug); review logs for secrets first.
-- **Building from source:** [development setup](./docs/development.md#gpui-desktop), including macOS 26+ / Xcode 26+.
+- **Troubleshooting:** run `phux doctor`, then see [common fixes](./docs/troubleshooting.md) or [desktop recovery](./clients/desktop/README.md#first-launch-and-recovery).
+- **Questions:** [Discord](https://discord.gg/dUv5rzdHp).
+- **Bugs and proposals:** [GitHub issues](https://github.com/no-phux/phux/issues); [what to include](./docs/troubleshooting.md#reporting-a-bug).
 
 ## License
 

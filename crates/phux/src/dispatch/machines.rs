@@ -151,6 +151,7 @@ pub(super) fn pair(args: commands::PairArgs, socket: Option<PathBuf>) -> ExitCod
         relay_route,
         relay,
         enroll,
+        enable,
     } = args;
     commands::pair::run_pair(
         action,
@@ -171,5 +172,6 @@ pub(super) fn pair(args: commands::PairArgs, socket: Option<PathBuf>) -> ExitCod
                 enroll,
             }
         }),
+        enable,
     )
 }

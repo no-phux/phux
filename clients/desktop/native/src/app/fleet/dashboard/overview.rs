@@ -12,7 +12,12 @@ use crate::app::skin::Look;
 use crate::app::ui::{agent_swatch, dot, icon_button, muted};
 use crate::connection::AgentState;
 
-pub(super) fn header(agents: &[Agent], look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+pub(super) fn header(
+    agents: &[Agent],
+    playground: Option<super::playground::Map>,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -48,6 +53,44 @@ pub(super) fn header(agents: &[Agent], look: &Look, cx: &mut Context<Desk>) -> i
                                 .child("Agent fleet"),
                         )
                         .child(muted(look, "Every agent. One vantage point.").mt(px(4.))),
+                )
+                .when_some(playground, |row, map| {
+                    row.child(div().debug_selector(|| "fleet-map-toggle".into()).child(
+                        icon_button(
+                            "fleet-map-toggle",
+                            IconName::Layers,
+                            map.next().label(),
+                            None,
+                            cx.listener(move |desk, _, _, cx| {
+                                desk.update_prefs(
+                                    |prefs| prefs.playground_map = map.next().id().to_owned(),
+                                    cx,
+                                );
+                            }),
+                        ),
+                    ))
+                })
+                .child(
+                    div()
+                        .debug_selector(|| "fleet-playground-toggle".into())
+                        .child(icon_button(
+                            "fleet-playground-toggle",
+                            if playground.is_some() {
+                                IconName::LayoutDashboard
+                            } else {
+                                IconName::Orbit
+                            },
+                            if playground.is_some() {
+                                "Show cards"
+                            } else {
+                                "Show playground"
+                            },
+                            None,
+                            cx.listener(|desk, _, _, cx| {
+                                desk.fleet_view.playground.on = !desk.fleet_view.playground.on;
+                                cx.notify();
+                            }),
+                        )),
                 )
                 .child(icon_button(
                     "fleet-refresh",

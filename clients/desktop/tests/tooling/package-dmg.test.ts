@@ -7,6 +7,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +23,11 @@ import { bundleRuntime, infoPlist, renderIcon } from "../../scripts/package-app.
 test("drag-to-Applications instructions require no separate runtime download", () => {
   expect(installInstructions).toContain("Drag Phux.app onto Applications");
   expect(installInstructions).toContain("Apple silicon and macOS 26");
-  expect(installInstructions).toContain("No separate download or Terminal command is required");
+  expect(installInstructions).toContain("No separate download is required");
+  expect(installInstructions).toContain("choose Add to PATH in Phux");
+  expect(installInstructions).toContain("~/.zshrc for the default zsh");
+  expect(installInstructions).not.toContain("No separate download or Terminal command is required");
+  expect(installInstructions).not.toContain("copy the command it shows");
   expect(installInstructions).toContain("An existing CLI is never replaced");
   expect(installInstructions).toContain("Retry connection");
 });
@@ -71,7 +76,23 @@ for (const bundled of [false, true]) {
         expect(Bun.spawnSync(["codesign", "--force", "--deep", "--sign", "-", app]).exitCode).toBe(
           0,
         );
-        packageDmg(app, image);
+        // macOS temporary paths can contain symlinks, including /var itself.
+        const scratch = join(root, "scratch");
+        const linkedScratch = join(root, "linked scratch");
+        mkdirSync(scratch);
+        symlinkSync(scratch, linkedScratch);
+        const packaged = Bun.spawnSync(
+          [
+            process.execPath,
+            join(import.meta.dir, "../../scripts/package-dmg.ts"),
+            "--app",
+            app,
+            "--output",
+            image,
+          ],
+          { env: { ...process.env, TMPDIR: linkedScratch } },
+        );
+        expect(packaged.exitCode, packaged.stderr.toString()).toBe(0);
         expect(() => packageDmg(app, image)).toThrow("Refusing to overwrite");
         const result = Bun.spawnSync([
           "hdiutil",
@@ -106,7 +127,7 @@ for (const bundled of [false, true]) {
           mount,
           alias,
         ]);
-        expect(resolved.exitCode).toBe(0);
+        expect(resolved.exitCode, resolved.stderr.toString()).toBe(0);
         const retina = Bun.spawnSync(["tiffutil", "-info", join(mount, ".background.tiff")]);
         expect(retina.exitCode).toBe(0);
         expect(retina.stdout.toString() + retina.stderr.toString()).toContain("1440");

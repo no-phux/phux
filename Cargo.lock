@@ -2674,6 +2674,7 @@ dependencies = [
  "phux-server",
  "quinn",
  "regex",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

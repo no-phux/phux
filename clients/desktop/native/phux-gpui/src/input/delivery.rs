@@ -59,6 +59,12 @@ fn open_session(client: &Client, generation: u64) {
 }
 
 fn open_session_with(client: &Client, generation: u64, output: &[u8]) {
+    let attach_id = negotiate(client);
+    let _ = bootstrap_output(client, attach_id, generation, 20, 4, output);
+}
+
+/// `HELLO_OK` and the engine, before any terminal snapshot.
+fn negotiate(client: &Client) -> u32 {
     client.with_control(ControlPlane::connection_opened);
     let _ = client.take_outbound();
     client
@@ -73,14 +79,24 @@ fn open_session_with(client: &Client, generation: u64, output: &[u8]) {
             bootstrap_limits: BootstrapLimits::default(),
         })
         .expect("hello");
-    let attach_id = client
+    client
         .take_outbound()
         .iter()
         .find_map(|bytes| match FrameKind::decode(bytes).expect("decode").0 {
             FrameKind::Attach { attach_id, .. } => Some(attach_id),
             _ => None,
         })
-        .expect("attach request");
+        .expect("attach request")
+}
+
+fn bootstrap_output(
+    client: &Client,
+    attach_id: u32,
+    generation: u64,
+    cols: u16,
+    rows: u16,
+    output: &[u8],
+) -> Vec<(u16, u16)> {
     let stream_id = StreamId::new(generation).unwrap();
     let bootstrap_id = BootstrapId::new(generation).unwrap();
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal())
@@ -90,7 +106,12 @@ fn open_session_with(client: &Client, generation: u64, output: &[u8]) {
             SessionId::new(1),
             "shell",
         )])
-        .with_resources(vec![ResourceInfo::new(terminal(), WindowId::new(1), 20, 4)]);
+        .with_resources(vec![ResourceInfo::new(
+            terminal(),
+            WindowId::new(1),
+            cols,
+            rows,
+        )]);
     for frame in [
         FrameKind::Attached {
             attach_id,
@@ -102,8 +123,8 @@ fn open_session_with(client: &Client, generation: u64, output: &[u8]) {
             stream_id,
             bootstrap_id,
             profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 20,
-            rows: 4,
+            cols,
+            rows,
             base_seq: 0,
         },
         FrameKind::BootstrapChunk {
@@ -123,8 +144,9 @@ fn open_session_with(client: &Client, generation: u64, output: &[u8]) {
     ] {
         client.feed(frame).expect("bootstrap");
     }
-    let _ = client.take_outbound();
+    let sent = resizes(client);
     let _ = client.take_events();
+    sent
 }
 
 fn fence(client: &Client) -> Option<phux_client_runtime::control::ProjectionFence> {

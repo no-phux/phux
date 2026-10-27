@@ -31,12 +31,26 @@ fn resolve_command(requested: &Path, explicit: bool) -> anyhow::Result<PathBuf> 
     }
 }
 
-pub(super) fn find(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+/// Where automatic discovery got the CLI. `installed` is set only when this
+/// call copied the bundled CLI into place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Located {
+    pub path: PathBuf,
+    pub installed: bool,
+}
+
+pub(super) fn locate(explicit: Option<PathBuf>) -> anyhow::Result<Located> {
     if let Some(path) = explicit.or_else(|| std::env::var_os("PHUX_BIN").map(PathBuf::from)) {
-        return Ok(path);
+        return Ok(Located {
+            path,
+            installed: false,
+        });
     }
     #[cfg(windows)]
-    return Ok(PathBuf::from("phux"));
+    return Ok(Located {
+        path: PathBuf::from("phux"),
+        installed: false,
+    });
     #[cfg(not(windows))]
     {
         let home = std::env::var_os("HOME")
@@ -52,7 +66,7 @@ pub(super) fn find(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
             candidates.extend(std::env::split_paths(&path).map(|dir| dir.join("phux")));
         }
         let executable = std::env::current_exe().ok();
-        resolve_candidates(
+        locate_candidates(
             &candidates,
             executable.as_deref(),
             &home.join(".local/bin/phux"),
@@ -60,18 +74,37 @@ pub(super) fn find(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     }
 }
 
-#[cfg(not(windows))]
+pub(super) fn find(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    locate(explicit).map(|located| located.path)
+}
+
+#[cfg(all(test, not(windows)))]
 fn resolve_candidates(
     candidates: &[PathBuf],
     executable: Option<&Path>,
     destination: &Path,
 ) -> anyhow::Result<PathBuf> {
+    locate_candidates(candidates, executable, destination).map(|located| located.path)
+}
+
+#[cfg(not(windows))]
+fn locate_candidates(
+    candidates: &[PathBuf],
+    executable: Option<&Path>,
+    destination: &Path,
+) -> anyhow::Result<Located> {
     if let Some(found) = candidates.iter().find(|path| executable_file(path)) {
-        return Ok(found.clone());
+        return Ok(Located {
+            path: found.clone(),
+            installed: false,
+        });
     }
     let source = executable.and_then(bundled_cli).context(MISSING)?;
     install_bundled(&source, destination)?;
-    Ok(destination.to_path_buf())
+    Ok(Located {
+        path: destination.to_path_buf(),
+        installed: true,
+    })
 }
 
 #[cfg(not(windows))]
@@ -243,5 +276,21 @@ mod tests {
         let destination = fixture.0.join("bin/phux");
         assert!(resolve_candidates(&[], Some(&app), &destination).is_err());
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn bootstrap_reports_installed_and_an_existing_cli_reports_found() {
+        let fixture = Fixture::new();
+        let app = fixture.file("Phux.app/Contents/MacOS/phux-desktop", "desktop");
+        fixture.file("Phux.app/Contents/MacOS/phux", "bundled runtime");
+        let destination = fixture.0.join("home/.local/bin/phux");
+        let installed = locate_candidates(&[], Some(&app), &destination).unwrap();
+        assert!(installed.installed);
+        assert_eq!(installed.path, destination);
+        let found = locate_candidates(std::slice::from_ref(&destination), Some(&app), &destination)
+            .unwrap();
+        assert!(!found.installed);
+        assert_eq!(found.path, destination);
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "bundled runtime");
     }
 }

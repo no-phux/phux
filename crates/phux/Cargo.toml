@@ -1,6 +1,6 @@
 [package]
 name = "phux"
-description = "phux — a terminal multiplexer built on libghostty-vt."
+description = "A terminal multiplexer whose server you can drive from code."
 publish = false
 version.workspace = true
 edition.workspace = true

@@ -87,11 +87,38 @@ pub(crate) fn capture(
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(&directory)?;
     cx.spawn(async move |cx| {
-        for (name, width, height, light, empty) in [
-            ("fleet-dark", 1280., 900., false, false),
-            ("fleet-light", 1280., 900., true, false),
-            ("fleet-narrow", 520., 780., false, false),
-            ("fleet-empty", 900., 700., false, true),
+        for (name, width, height, light, empty, playground, map) in [
+            ("fleet-dark", 1280., 900., false, false, false, "office"),
+            ("fleet-light", 1280., 900., true, false, false, "office"),
+            ("fleet-narrow", 520., 780., false, false, false, "office"),
+            ("fleet-empty", 900., 700., false, true, false, "office"),
+            (
+                "fleet-playground",
+                1280.,
+                900.,
+                false,
+                false,
+                true,
+                "office",
+            ),
+            (
+                "fleet-playground-light",
+                1280.,
+                900.,
+                true,
+                false,
+                true,
+                "office",
+            ),
+            (
+                "fleet-playground-matrix",
+                1280.,
+                900.,
+                false,
+                false,
+                true,
+                "matrix",
+            ),
         ] {
             root.update(cx, |root, window, cx| {
                 let desk = root.view().clone().downcast::<Desk>().expect("desk");
@@ -108,10 +135,12 @@ pub(crate) fn capture(
                             prefs.agent_fleet = true;
                             prefs.animations = false;
                             prefs.theme_id = theme;
+                            prefs.playground_map = map.to_owned();
                         },
                         cx,
                     );
                     desk.fleet_view.open();
+                    desk.fleet_view.playground.on = playground;
                     desk.fleet_view.fixture = Some(if empty { Vec::new() } else { inventory() });
                     desk.modal = Modal::AgentFleet;
                     cx.notify();

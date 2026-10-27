@@ -327,6 +327,8 @@ pub(crate) async fn attach_default_with_fallback(
     .await
     {
         Ok(end) => Ok(end),
+        // A live old server will not grow a session if asked again.
+        Err(err) if phux_client::attach::is_incompatible_protocol(&err) => Err(err),
         Err(AttachError::Refused(message)) => {
             warn!(
                 "server could not resolve the last session ({message}); trying existing `{default_name}`"
@@ -370,6 +372,8 @@ async fn attach_default_with_connection_fallback(
     .await
     {
         Ok(end) => Ok(end),
+        // A live old server will not grow a session if asked again.
+        Err(err) if phux_client::attach::is_incompatible_protocol(&err) => Err(err),
         Err(AttachError::Refused(message)) => {
             warn!(
                 "server could not resolve the last session ({message}); trying existing `{default_name}`"

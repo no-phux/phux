@@ -1,7 +1,7 @@
 //! `HELLO` probes: the version and feature words a server advertised.
 
 use phux_protocol::caps::ClientCapabilities;
-use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
@@ -81,10 +81,20 @@ async fn raw_hello(conn: &mut Connection) -> Result<FrameKind, AttachError> {
     .await?;
     match conn.recv().await? {
         ok @ FrameKind::HelloOk { .. } => Ok(ok),
-        FrameKind::Error { message, .. } => Err(AttachError::Refused(message)),
+        FrameKind::Error { code, message, .. } => Err(hello_refusal(code, message)),
         // Version skew, not a frame worth dumping.
         _ => Err(AttachError::Protocol(crate::explain::unexpected_reply(
             "HELLO",
         ))),
+    }
+}
+
+/// `VERSION_INCOMPATIBLE` is a live server from another protocol major.
+/// Every other `ERROR` on `HELLO` stays a plain refusal.
+fn hello_refusal(code: ErrorCode, message: String) -> AttachError {
+    if code == ErrorCode::VersionIncompatible {
+        AttachError::IncompatibleProtocol(message)
+    } else {
+        AttachError::Refused(message)
     }
 }

@@ -40,6 +40,7 @@ fn main() {
                     quick: false,
                     dev_telemetry: false,
                     startup_error: Some("Isolated design fixture".into()),
+                    cli_install: None,
                 },
                 directory.clone(),
                 cx,

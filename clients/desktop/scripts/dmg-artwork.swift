@@ -35,9 +35,7 @@ for scale in [1, 2] {
         NSRect(x: 0, y: 0, width: 720, height: 460).fill()
         ink.setFill()
         NSRect(x: 0, y: 318, width: 720, height: 142).fill()
-        wordmark.draw(in: NSRect(x: 30, y: 350, width: 216, height: 78))
-        text("Your terminals. Your agents. Your machine.", x: 286, y: 383, size: 15,
-            color: NSColor(calibratedWhite: 0.85, alpha: 1))
+        wordmark.draw(in: NSRect(x: 252, y: 350, width: 216, height: 78))
         text("Drag Phux to Applications", x: 248, y: 278, size: 18, color: ink)
         let arrow = NSBezierPath()
         arrow.move(to: NSPoint(x: 320, y: 212)); arrow.line(to: NSPoint(x: 400, y: 212))

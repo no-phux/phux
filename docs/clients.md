@@ -27,19 +27,15 @@ new pane and never overwrites an existing one.
 
 ## Desktop
 
-Phux Desktop is a native app for macOS 26 or later on Apple silicon,
-Linux on x86_64 or arm64 with Vulkan, and Windows x64 with a WSL 2 server.
-On macOS and Linux, install it with:
+The phux desktop is a native app for macOS 26.0 or later on Apple silicon
+and Linux on x86_64 or arm64 with Vulkan. On macOS and Linux, install it with:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-The [Windows app](../clients/desktop/README.md#windows) is currently a source
-build, not a published stable installer. It uses native Direct3D
-rendering, input and clipboard; shells and agents stay in WSL. Its desktop
-updates use the Windows installer. WSLg is not required. The local Changes
-panel and external Unix developer socket are not available on Windows.
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
+Windows desktop build is not published yet.
 
 It shows every session on this machine and on each machine you added with
 `phux host add` or the app's **Add Machine…**, grouped by machine or by
@@ -56,12 +52,9 @@ session you just left is instant. Machines you aren't looking at keep their
 data current without drawing anything. Disconnecting, forgetting a machine,
 or closing the window closes its connections.
 
-The app starts or reaches the server through the installed `phux` command.
-The macOS app bundles it and installs it on first launch if none is found;
-the Linux installer supplies it, while Windows needs the WSL CLI first. An
-existing CLI is not replaced by desktop installation. The
-app never creates sessions on its own and never stops the server. Quitting
-it detaches.
+On macOS the app bundles the CLI/server. On Linux, install the CLI first
+or use the desktop installer, which supplies it when none is found.
+The app never creates sessions on its own or stops the server. Quitting detaches.
 
 Terminal panes and previews render inline Kitty graphics: PNG and raw RGB/RGBA,
 chunked transfers, classic placements and Unicode placeholders, cropping,
@@ -82,11 +75,10 @@ For `icat`, use `kitten icat --transfer-mode=stream image.png`
   beside your panes.
 - [Agent panes](./desktop-panes.md) explains how panes an agent drives look.
 
-The desktop app has its own version and release notes. Current stable macOS
-downloads are Developer ID signed and Apple notarized; the
-[DMG installation guide](./install.md#macos-drag-and-drop-download) needs no
-Terminal command. Local development packages are still ad-hoc signed.
-Expect rough edges: the terminal UI is ahead of it.
+The desktop app has its own version and release notes. The macOS app and
+DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app
+requires macOS 26.0; the standalone CLI requires macOS 11.0. Expect rough
+edges: the terminal UI is ahead of the desktop.
 
 ## Browser
 

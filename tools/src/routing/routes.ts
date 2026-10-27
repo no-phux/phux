@@ -43,6 +43,8 @@ const ROUTES: Record<string, Surface[]> = {
   // Commit-message policy is enforced by commitlint, not product builds.
   "commitlint.config.mjs": [],
   ".github/cockpit-history-tip": [],
+  // Issue forms are GitHub metadata, not a product input.
+  ".github/ISSUE_TEMPLATE/**": [],
   ".github/workflows/ci.yml": [...SURFACES],
   ".github/actions/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],

@@ -4,6 +4,12 @@
 
 ### Features
 
+- Add a playground to the Agent Fleet: every agent as a ghost in its
+  machine's room on an isometric campus, with a camera to drag, scroll and
+  pinch, and a click that opens the exact agent.
+- Add a matrix map to the fleet playground, switched from its header and
+  saved with the display preferences.
+
 - Render inline Kitty graphics in terminal panes and previews, including PNG,
   RGB/RGBA, chunked transfers, Unicode placeholders, cropping, transparency and
   z-order. Preserve resident images across attach and reconnect.
@@ -36,6 +42,26 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.48.0](https://github.com/no-phux/phux/compare/desktop-v0.47.1...desktop-v0.48.0) (2026-10-26)
+
+
+### Features
+
+* **desktop:** the agent fleet has a playground of ghosts ([75c6599](https://github.com/no-phux/phux/commit/75c659976805de33f7c955aded9608d83cca225e))
+* **desktop:** the fleet playground has a matrix map ([e740a9b](https://github.com/no-phux/phux/commit/e740a9b3d7950fbc8f513321591ff7191c7298a1))
+
+
+### Bug Fixes
+
+* **desktop:** offer to put ~/.local/bin on PATH after installing the CLI ([#1801](https://github.com/no-phux/phux/issues/1801)) ([18c52ca](https://github.com/no-phux/phux/commit/18c52caea20e071694a1c9cda1f103ca0c1b37fe))
+* **desktop:** size kitty images with real cell pixels from the first frame ([#1800](https://github.com/no-phux/phux/issues/1800)) ([ef91071](https://github.com/no-phux/phux/commit/ef91071781214bf2035ccfee1a25f15ae478a93e))
+
+
+### Documentation
+
+* restore Phux's and mark the Windows desktop unpublished ([#1805](https://github.com/no-phux/phux/issues/1805)) ([75aaec2](https://github.com/no-phux/phux/commit/75aaec21647c392f23560f6f4e3d70156eeb020f))
+* use one canonical one-liner and fix protocol and windows claims ([#1797](https://github.com/no-phux/phux/issues/1797)) ([1855dda](https://github.com/no-phux/phux/commit/1855dda8c0dc4a5dd293f7cde525f2f2a60bf97b))
+
 ## [0.47.1](https://github.com/no-phux/phux/compare/desktop-v0.47.0...desktop-v0.47.1) (2026-10-26)
 
 
@@ -53,7 +79,7 @@
 * **brand:** use one profile interface for desktop branding ([#1787](https://github.com/no-phux/phux/issues/1787)) ([0b98573](https://github.com/no-phux/phux/commit/0b9857386b380d1b7b59b73c2387ac0d6a34263b))
 * **desktop:** add macOS permission setup ([#1783](https://github.com/no-phux/phux/issues/1783)) ([d5c9516](https://github.com/no-phux/phux/commit/d5c9516eac156f24624b0dc2234a4dae835cea50))
 * **desktop:** add saved brand profiles in Appearance settings ([#1789](https://github.com/no-phux/phux/issues/1789)) ([55f11ef](https://github.com/no-phux/phux/commit/55f11eff5e728ade431f9e53a4335b447f242f1d))
-* **desktop:** ship a native Windows client backed by WSL ([#1788](https://github.com/no-phux/phux/issues/1788)) ([d536b5d](https://github.com/no-phux/phux/commit/d536b5dd1206deea6a6fd16abc4186d8b8268224))
+* **desktop:** ship a native Windows client backed by WSL ([#1788](https://github.com/no-phux/phux/issues/1788)) (not published yet) ([d536b5d](https://github.com/no-phux/phux/commit/d536b5dd1206deea6a6fd16abc4186d8b8268224))
 
 
 ### Bug Fixes

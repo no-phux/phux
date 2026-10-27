@@ -1,7 +1,8 @@
-# Phux Desktop
+# phux desktop
 
-A native app for Apple silicon macOS 26+, Linux x86_64/arm64 (X11 or
-Wayland, Vulkan), and Windows x64 (Direct3D 11, WSL 2 coordinator).
+A native app for Apple silicon macOS 26+ and Linux x86_64/arm64 (X11 or
+Wayland, Vulkan).
+
 Rust, GPUI, and the shared client runtime; no web view.
 
 ```sh
@@ -11,68 +12,51 @@ curl -fsSL https://phux.sh/install-desktop | sh
 That is the phux installer with `--desktop`. It verifies the archive
 against the channel manifest and the release signature, installs
 `Phux.app` (macOS) or a tarball under `$XDG_DATA_HOME/phux-desktop` with a
-`.desktop` entry (Linux), plus a `phux-desktop` launcher, and installs the
-phux CLI if none is found. It never replaces an existing CLI or stops its
-server. The shell installer also supports older ad-hoc-signed releases,
-clearing quarantine only after verifying the release signature.
+`.desktop` entry (Linux), plus a `phux-desktop` launcher. The Mac app
+bundles the phux CLI and server. The Linux desktop archive does not; that
+installer adds the CLI when none is found. It never replaces an existing
+CLI or stops its server. The shell installer also supports older
+ad-hoc-signed releases, clearing quarantine only after verifying the
+release signature.
 
 ### macOS download
 
 Download the **macos-arm64.dmg** from the newest
 [Desktop release](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
 open it, and drag **Phux.app** onto **Applications**. Eject the image and
-open Phux from Applications. Apple silicon and macOS 26+ are required.
+open Phux from Applications. Apple silicon and macOS 26.0 or later are
+required. The app and DMG are Developer ID signed, Apple-notarized, and
+stapled. The app bundles the phux CLI and server.
 The ZIP remains available for the installer and automatic updates.
 
-Current stable downloads are Developer ID signed and Apple notarized. No
-Xcode is needed to install them. Older releases through 0.44.1 have only an
-ad-hoc-signed ZIP; prefer the latest stable release and do not disable
-Gatekeeper to install a downloaded app.
+First launch installs the bundled CLI at `~/.local/bin/phux` if none exists,
+then starts or reuses the server. If Terminal cannot find `phux`, choose
+**Add to PATH** in Phux, then open a new Terminal window. This appends one
+line to `~/.zshrc` or `~/.bash_profile`; the same control is in
+**Phux Settings → Permissions**. **Retry connection** discovers a CLI installed
+while the app is open; explicit `--phux` / `PHUX_BIN` paths stay pinned.
 
-The macOS app includes the CLI and server. On a fresh Mac, first launch installs
-the bundled CLI at `~/.local/bin/phux` and starts the server; no separate download
-or Terminal command is needed. An existing CLI is never replaced. If the CLI
-is installed while the app is open, **Retry connection** discovers it without
-restarting Desktop. Explicit `--phux` / `PHUX_BIN` paths stay pinned.
+Older releases through 0.44.1 have only an ad-hoc-signed ZIP. Do not disable
+Gatekeeper to install a downloaded app.
 
 ### Windows
 
-The Windows app is a native `.exe`, not a Linux window through WSLg.
-It is currently a source build; stable Desktop releases publish macOS and
-Linux downloads, not a Windows installer.
-Install the [WSL CLI and server](../../docs/install.md#windows-wsl) first.
-Shells, agents and their credentials stay in WSL; the window, clipboard,
-keyboard input and preferences are native Windows. No network listener is
-needed: the app connects through `wsl.exe` and phux's binary stdio bridge.
-
-The default WSL distribution is used unless `PHUX_WSL_DISTRO` names another.
-`--phux` and `PHUX_BIN` name a **Linux** CLI path in that distribution;
-`--socket` is likewise a Linux socket path. Native folder-picker paths are
-translated with `wslpath`. Dropped files and clipboard images are uploaded
-to the coordinator before their Linux paths are pasted.
-
-Windows uses `Ctrl-Shift-P/T/W/F` for palette, new terminal, close pane and
-find, `Ctrl-Shift-C/V` for copy/paste, `Ctrl-Shift-D` / `Ctrl-Alt-D` for
-splits, and `Ctrl-Shift-R` to reconnect. Plain `Ctrl-C/Z/D` stay with the
-shell. Closing the app detaches; the WSL processes keep running.
-
-The local Changes panel and the external Unix developer socket are not
-available for WSL checkouts. Use Git in the terminal and the in-app
-Performance Monitor instead. Desktop updates use the Windows installer;
-the macOS bundle-swap helper is never run on Windows.
+On Windows today, the CLI and terminal UI run in WSL 2, with PowerShell
+launchers. A native Windows desktop build is not published yet.
+[Install in WSL](../../docs/install.md#windows-wsl).
 
 ## First launch and recovery
 
-| Starting point                                            | Expected behavior                                                                                                                                             |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fresh Mac, DMG only                                       | Copy to Applications and open. The bundled CLI is installed per-user and the local server starts.                                                             |
-| CLI installed first (including Homebrew)                  | Desktop uses that CLI without replacing it; starts a stopped server or reuses a healthy one.                                                                  |
-| CLI installed while Desktop is open                       | **Retry connection** and update checks rediscover it, even with Finder's minimal `PATH`.                                                                      |
-| Previously discovered CLI moved or removed                | Automatic discovery runs again; an explicit `--phux` / `PHUX_BIN` override never silently changes.                                                            |
-| Server stopped                                            | **Retry connection** starts it and reconnects to the same existing session, never recreating a deleted session.                                               |
-| CLI/server update before the first connection             | Desktop resolves the local socket, starts the server if necessary, and opens its home after the update.                                                       |
-| Invalid configuration or unwritable CLI install directory | The window shows the actual failure beside **Retry connection**. Repair the named file/permissions, then retry. No config, credentials or sessions are reset. |
-| Offline first launch                                      | The bundled runtime needs no download. A failed release check does not prevent local terminal use.                                                            |
+| Starting point                                            | Expected behavior                                                                                                                                                                                                                                                                          |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Fresh Mac, DMG only                                       | Copy to Applications and open. The bundled CLI is installed per-user and the local server starts. If Terminal cannot find `phux`, choose **Add to PATH** in Phux. It appends one line to your shell profile (~/.zshrc for zsh, ~/.bash_profile for bash). Then open a new Terminal window. |
+| CLI installed first (including Homebrew)                  | Desktop uses that CLI without replacing it; starts a stopped server or reuses a healthy one.                                                                                                                                                                                               |
+| CLI installed while Desktop is open                       | **Retry connection** and update checks rediscover it, even with Finder's minimal `PATH`.                                                                                                                                                                                                   |
+| Previously discovered CLI moved or removed                | Automatic discovery runs again; an explicit `--phux` / `PHUX_BIN` override never silently changes.                                                                                                                                                                                         |
+| Server stopped                                            | **Retry connection** starts it and reconnects to the same existing session, never recreating a deleted session.                                                                                                                                                                            |
+| CLI/server update before the first connection             | Desktop resolves the local socket, starts the server if necessary, and opens its home after the update.                                                                                                                                                                                    |
+| Invalid configuration or unwritable CLI install directory | The window shows the actual failure beside **Retry connection**. Repair the named file/permissions, then retry. No config, credentials or sessions are reset.                                                                                                                              |
+| Offline first launch                                      | The bundled runtime needs no download. A failed release check does not prevent local terminal use.                                                                                                                                                                                         |
 
 The CLI-only shell installer does not start a daemon by itself. Opening Desktop
 or running `phux` starts the local server. Closing Desktop detaches; it does
@@ -154,9 +138,8 @@ window back to the front. Explicit launch targets take priority over this
 one-time restoration. **Update phux with Desktop** (on by
 default) turns the phux half off. Linux desktop updates rerun the installer.
 
-Logs: `~/Library/Logs/phux-desktop.log` on macOS,
-`$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, and
-`%LOCALAPPDATA%\phux-desktop\logs\desktop.log` on Windows, redacted and rotated.
+Logs: `~/Library/Logs/phux-desktop.log` on macOS and
+`$XDG_STATE_HOME/phux-desktop/desktop.log` on Linux, redacted and rotated.
 **Copy Diagnostics** in the palette copies versions, server id, host, and
 recent errors, without terminal content. **Settings > Developer** gathers
 these with Developer mode, profiling and traces
@@ -209,7 +192,7 @@ just desktop-dmg       # local ad-hoc DMG; not a notarized public release
 
 `desktop-demo` builds the CLI and desktop executable from this checkout and
 owns a private foreground server and app. Each run gets a temporary socket,
-HOME and XDG directories; inherited Phux listener/auth settings are cleared.
+HOME and XDG directories; inherited phux listener/auth settings are cleared.
 Closing the app or interrupting the supervisor reaps both children and
 removes that state. It refuses installed or external artifacts and does not
 restart a lost server behind the supervisor.
@@ -224,14 +207,10 @@ The native crate's layout is in [native/README.md](./native/README.md).
 The TypeScript under `scripts/` is build, packaging, and smoke tooling, run
 with the pinned Bun; it is not part of the shipped app.
 
-macOS source builds need full Xcode 26+ compatible with the host OS; see
-[toolchain setup](../../docs/development.md#gpui-desktop). DMG packaging also
-uses Python 3 with `venv`/`pip` and Apple's Swift, `sips`, `iconutil`, and
-`tiffutil`. It installs the two hash-pinned Finder metadata libraries from
-`packaging/dmg-requirements.txt` into a disposable environment; neither Python
-nor those libraries ship in the app. No Finder automation permission is needed.
-The [pinned brand release](../../docs/brand-assets.md) supplies the unmodified
-logo and wordmark for the Retina background and badged disk icon.
+See [Xcode setup](../../docs/development.md#gpui-desktop) for source builds.
+DMG packaging also needs Python 3 (`venv`/`pip`) and Apple's Swift/image tools.
+It installs `packaging/dmg-requirements.txt` into a disposable environment;
+those dependencies do not ship in the app. [Brand provenance](../../docs/brand-assets.md).
 
 ## Qualification
 

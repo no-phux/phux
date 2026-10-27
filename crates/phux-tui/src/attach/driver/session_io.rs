@@ -7,7 +7,7 @@ use phux_protocol::caps::{
     BootstrapLimits, ClientCapabilities, Layer, LayerSet, detect_color_support,
 };
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
+use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
 
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
@@ -159,8 +159,11 @@ async fn send_attach_with_viewport(
     Ok(attach_id)
 }
 
-/// Read frames until `ATTACHED`, mapping `ERROR` to `AttachError::Refused`
-/// and anything else to `Protocol`. Runs on the cooked terminal.
+/// Read frames until `ATTACHED`. An `ERROR` is `AttachError::Refused`,
+/// except `VERSION_INCOMPATIBLE`, which stays
+/// [`AttachError::IncompatibleProtocol`] so the caller can print the
+/// old-server recovery. Anything else is `Protocol`. Runs on the cooked
+/// terminal.
 pub(super) async fn wait_for_attached(
     conn: &mut Connection,
     expected_attach_id: u32,
@@ -171,9 +174,11 @@ pub(super) async fn wait_for_attached(
         FrameKind::Attached { attach_id, .. } => Err(AttachError::Protocol(format!(
             "ATTACHED attach_id mismatch: sent {expected_attach_id}, received {attach_id}",
         ))),
-        FrameKind::Error {
-            code: _, message, ..
-        } => Err(AttachError::Refused(message)),
+        FrameKind::Error { code, message, .. } => Err(if code == ErrorCode::VersionIncompatible {
+            AttachError::IncompatibleProtocol(message)
+        } else {
+            AttachError::Refused(message)
+        }),
         _ => {
             // ATTACH must be answered with ATTACHED or ERROR.
             Err(AttachError::Protocol(

@@ -20,6 +20,8 @@ with DSStore.open(str(mount / ".DS_Store"), "r") as store:
     alias = Alias.from_bytes(view["backgroundImageAlias"])
     Path(sys.argv[2]).write_bytes(view["backgroundImageAlias"])
     assert alias.target.filename == ".background.tiff"
+    assert alias.target.posix_path == "/.background.tiff"
+    assert alias.target.carbon_path == b"Phux:.background.tiff"
     assert alias.volume.name == "Phux"
     assert store["Phux.app"]["Iloc"] == (180, 248)
     assert store["Applications"]["Iloc"] == (540, 248)

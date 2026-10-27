@@ -21,6 +21,13 @@ use super::{OrgFixture, ScriptSpec};
 pub(super) fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
     match frame {
         FrameKind::Hello { client_caps, .. } => {
+            if let Some((code, message)) = spec.hello_error.clone() {
+                return vec![FrameKind::Error {
+                    request_id: None,
+                    code,
+                    message,
+                }];
+            }
             let (selected_profile, bootstrap_limits) =
                 select_bootstrap_profile(client_caps, &BootstrapCapabilities::new())
                     .expect("default scripted server and client share a bootstrap profile");

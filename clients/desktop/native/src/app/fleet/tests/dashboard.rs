@@ -244,3 +244,47 @@ fn fleet_click_revalidates_the_agent_and_pins_the_remote_incarnation(cx: &mut Te
         );
     });
 }
+
+#[gpui::test]
+fn the_playground_shows_every_ghost_as_the_same_tile_a_card_is(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    desk.update_in(cx, |desk, window, cx| {
+        desk.prefs.agent_fleet = true;
+        install(desk, connection(1, vec![session(7, "main")]));
+        let remote = with_agent(
+            with_agent(
+                connection(2, vec![session(8, "remote")]),
+                9,
+                AgentState::Working,
+            ),
+            10,
+            AgentState::Blocked,
+        );
+        observe(&mut desk.fleet, Some("mini"), remote);
+        desk.execute("agent-fleet", window, cx);
+    });
+    draw(cx);
+    assert!(!shown(cx, "fleet-playground"), "cards come first");
+    click_on(cx, "fleet-playground-toggle");
+    assert!(shown(cx, "fleet-playground"));
+    assert!(!shown(cx, "fleet-grid"), "one view at a time");
+    let panel = cx.debug_bounds("agent-fleet-panel").unwrap();
+    let scene = cx.debug_bounds("fleet-playground").unwrap();
+    assert!(panel.contains(&scene.origin) && scene.right() <= panel.right());
+    let ghost = cx.debug_bounds("fleet-agent-remote-mini-@10").unwrap();
+    assert!(
+        scene.contains(&ghost.center()),
+        "a ghost stands inside its scene"
+    );
+    click_on(cx, "fleet-agent-remote-mini-@10");
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(
+            desk.fleet_view.pending.as_ref().map(|a| a.terminal.clone()),
+            Some(ResourceId::local(10))
+        );
+        assert_eq!(desk.remote.as_deref(), Some("mini"));
+    });
+}

@@ -67,7 +67,7 @@ use std::collections::VecDeque;
 use bytes::{Bytes, BytesMut};
 use phux_protocol::caps::{BootstrapLimits, ClientCapabilities, Layer, LayerSet, ServerFeature};
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{FrameKind, RolePolicy};
+use phux_protocol::wire::frame::{ErrorCode, FrameKind, RolePolicy};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
@@ -202,9 +202,10 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// [`SessionError::Refused`] when the server answers with an `ERROR`;
-    /// [`SessionError::Protocol`] for a second negotiation, a `HELLO_OK`
-    /// outside the offer, or any other reply.
+    /// [`SessionError::IncompatibleProtocol`] when the server answers with
+    /// `VERSION_INCOMPATIBLE`; [`SessionError::Refused`] for any other
+    /// `ERROR`; [`SessionError::Protocol`] for a second negotiation, a
+    /// `HELLO_OK` outside the offer, or any other reply.
     pub async fn negotiate(
         &mut self,
         client_name: String,
@@ -425,7 +426,7 @@ fn accept_hello_reply(
         }
         .accept(offered)
         .map_err(|error| SessionError::Protocol(error.to_string())),
-        FrameKind::Error { message, .. } => Err(SessionError::Refused(message)),
+        FrameKind::Error { code, message, .. } => Err(hello_refusal(code, message)),
         _ => Err(SessionError::Protocol(unexpected_reply("HELLO"))),
     }
 }
@@ -441,6 +442,16 @@ fn refuse_production_socket(dial: &Dial) -> Result<(), SessionError> {
             refusal,
         ))
     })
+}
+
+/// `VERSION_INCOMPATIBLE` is a live server from another protocol major.
+/// Every other `ERROR` on `HELLO` stays a plain refusal.
+fn hello_refusal(code: ErrorCode, message: String) -> SessionError {
+    if code == ErrorCode::VersionIncompatible {
+        SessionError::IncompatibleProtocol(message)
+    } else {
+        SessionError::Refused(message)
+    }
 }
 
 fn dial_timed_out() -> SessionError {

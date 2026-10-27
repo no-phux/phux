@@ -1,7 +1,8 @@
 {
   "name": "@phux/opencode",
   "version": "0.7.0",
-  "description": "OpenCode V2 plugin: phux owns the terminals, OpenCode owns the session",
+  "description": "phux integration for OpenCode: terminal tools and agent status.",
+  "homepage": "https://docs.phux.sh/",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {

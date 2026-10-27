@@ -118,6 +118,13 @@ impl Owner {
                             Ok(())
                         }
                     });
+                // Exists only to keep desktop-perf-budget's buffer_fresh count
+                // stable after a pitch republish. The real fix is to not
+                // republish render_views before any consumer has acquired a
+                // frame, then drop this. Tracked in PHUX-557.
+                if changed {
+                    self.discard_unheld_retired(&id);
+                }
                 let _ = reply.send(result);
             }
             Query::Republish(id, reply) => {

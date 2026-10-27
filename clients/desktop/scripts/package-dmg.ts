@@ -25,7 +25,9 @@ Eject this disk image after copying. Do not run Phux from the disk image.
 Requires Apple silicon and macOS 26 or later.
 Phux includes its CLI and server. On first launch it installs the bundled CLI
 in ~/.local/bin/phux if no CLI is already installed, then starts or reuses
-your local server. No separate download or Terminal command is required.
+your local server. No separate download is required. If Terminal cannot find
+phux, choose Add to PATH in Phux. It appends one line to your shell profile
+(~/.zshrc for the default zsh). Then open a new Terminal window.
 An existing CLI is never replaced, and running sessions are not restarted.
 If startup fails, the window explains why and offers Retry connection.
 

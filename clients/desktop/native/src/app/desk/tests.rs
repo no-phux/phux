@@ -61,6 +61,7 @@ fn pane_reveal_waits_for_attachment_and_layout_restoration(cx: &mut gpui::TestAp
                     quick: false,
                     dev_telemetry: false,
                     startup_error: Some("isolated test".into()),
+                    cli_install: None,
                 },
                 cx,
             )

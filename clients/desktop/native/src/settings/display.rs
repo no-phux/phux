@@ -154,6 +154,8 @@ pub struct DisplayPrefs {
     pub native_agents: bool,
     /// Experimental tiled agent overview, enabled from Layout settings.
     pub agent_fleet: bool,
+    /// The fleet playground's map: `office` or `matrix`.
+    pub playground_map: String,
     /// Skin motion: pane folds, skin shifts, cursor effects. macOS reduce
     /// motion also turns it off.
     pub animations: bool,
@@ -189,6 +191,7 @@ pub fn default_display() -> DisplayPrefs {
         plain: false,
         native_agents: false,
         agent_fleet: false,
+        playground_map: "office".to_owned(),
         animations: true,
     }
 }
@@ -262,6 +265,11 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
             display.theme_id.clone()
         } else {
             fallback.theme_id
+        },
+        playground_map: if matches!(display.playground_map.as_str(), "office" | "matrix") {
+            display.playground_map.clone()
+        } else {
+            fallback.playground_map
         },
         sidebar_width: finite(display.sidebar_width, fallback.sidebar_width)
             .round()
@@ -354,6 +362,7 @@ pub fn parse_display(value: &Value) -> DisplayPrefs {
         plain: flag("plainTerminal", fallback.plain),
         native_agents: flag("nativeAgents", fallback.native_agents),
         agent_fleet: flag("agentFleet", fallback.agent_fleet),
+        playground_map: string("playgroundMap", fallback.playground_map),
         animations: flag("animations", fallback.animations),
     })
 }
@@ -389,6 +398,7 @@ pub fn display_value(display: &DisplayPrefs) -> Value {
         "plainTerminal": display.plain,
         "nativeAgents": display.native_agents,
         "agentFleet": display.agent_fleet,
+        "playgroundMap": display.playground_map,
         "animations": display.animations,
     })
 }

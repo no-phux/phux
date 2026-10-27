@@ -100,6 +100,23 @@ fn agent_fleet_is_opt_in_and_round_trips_without_coercion() {
 }
 
 #[test]
+fn the_playground_map_is_office_unless_a_known_map_is_saved() {
+    for value in [
+        json!({}),
+        json!({"playgroundMap": "lava"}),
+        json!({"playgroundMap": 3}),
+    ] {
+        assert_eq!(parse_display(&value).playground_map, "office");
+    }
+    let matrix = DisplayPrefs {
+        playground_map: "matrix".to_owned(),
+        ..default_display()
+    };
+    assert_eq!(display_value(&matrix)["playgroundMap"], "matrix");
+    assert_eq!(parse_display(&display_value(&matrix)), matrix);
+}
+
+#[test]
 fn tab_placement_round_trips_without_changing_other_preferences() {
     for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Side] {
         let prefs = DisplayPrefs {

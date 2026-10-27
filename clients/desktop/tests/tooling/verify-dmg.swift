@@ -7,7 +7,7 @@ let bookmark = CFURLCreateBookmarkDataFromAliasRecord(nil, alias as CFData)!.tak
 var stale = false
 let resolved = try URL(resolvingBookmarkData: bookmark as Data,
     options: [.withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale)
-precondition(resolved.standardizedFileURL == mount.appendingPathComponent(".background.tiff").standardizedFileURL)
+precondition(resolved.resolvingSymlinksInPath() == mount.appendingPathComponent(".background.tiff").resolvingSymlinksInPath())
 let background = NSImage(contentsOf: resolved)!
 precondition(background.size == NSSize(width: 720, height: 460))
 precondition(Set(background.representations.map { $0.pixelsWide }) == Set([720, 1440]))

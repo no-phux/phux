@@ -46,6 +46,7 @@ fn fixture(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Desk>, PathBuf) 
                 quick: false,
                 dev_telemetry: false,
                 startup_error: None,
+                cli_install: None,
             },
             cx,
         )

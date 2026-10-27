@@ -104,6 +104,9 @@ pub struct ScriptSpec {
     /// When set, every `UPGRADE` is refused with this message. See
     /// [`ScriptSpec::refuse_upgrade`].
     upgrade_error: Option<String>,
+    /// When set, `HELLO` is answered with this `ERROR` instead of `HELLO_OK`.
+    /// See [`ScriptSpec::refuse_hello`].
+    hello_error: Option<(ErrorCode, String)>,
     /// The `RESOURCE_MOVED` payload a `MOVE_RESOURCE` is answered with.
     move_result: Option<MoveResult>,
     /// The client count a `DetachClients` command acks with (default `0`).

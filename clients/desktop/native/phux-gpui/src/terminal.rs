@@ -76,6 +76,10 @@ pub struct Terminal {
     was_focused: bool,
     /// Epoch, input readiness and native focus last reported to the runtime.
     reported_focus: Option<(u64, bool, bool)>,
+    /// Window scale the replica's cell pitch was measured at. Empty after a
+    /// font change or a replaced presentation, so the next render stores the
+    /// pitch before it acquires the frame it paints.
+    pitch_scale: Option<f32>,
     _focus_subscriptions: Vec<Subscription>,
 }
 
@@ -128,6 +132,7 @@ impl Terminal {
             rebind: Arc::new(AtomicBool::new(false)),
             was_focused: false,
             reported_focus: None,
+            pitch_scale: None,
             _focus_subscriptions: focus_subscriptions,
         }
     }
@@ -167,6 +172,11 @@ impl Terminal {
         // Notifying here would acquire and prepare the terminal again.
         if self.settings == settings {
             return;
+        }
+        // The next render paints with these metrics. The replica must already
+        // be dividing image pixels by them, which `fit` only does after paint.
+        if !same_cell_metrics(&self.settings, &settings) {
+            self.pitch_scale = None;
         }
         self.settings = settings;
         cx.notify();
@@ -233,6 +243,41 @@ impl Terminal {
         input.update(cx, |state, _| state.set_window_remote(remote));
         (self.input, self._input_notices) = (input, notices);
     }
+
+    /// Store this font's cell pitch on the replica before the frame is acquired.
+    ///
+    /// Kitty rows are natural pixels divided by that pitch, and the painter
+    /// multiplies them by the same pitch. `fit` runs only after the frame has
+    /// been painted, so a snapshot that arrives first would otherwise draw one
+    /// frame at the replica's 8×16 fallback. An unchanged pitch is not sent
+    /// again. Nothing here is a server message.
+    fn install_cell_pitch(&mut self, window: &Window) {
+        let scale = window.scale_factor();
+        if self.pitch_scale == Some(scale) {
+            return;
+        }
+        let measured =
+            geometry::Geometry::measure(&self.settings, gpui::Bounds::default(), 1, 1, window);
+        let (width, height) = geometry::cell_px(measured.cell_width, measured.cell_height);
+        let stored = self.client.with_control(|control| {
+            if control.engine().is_none() {
+                return false;
+            }
+            control.set_local_cell_pixels(&self.terminal, width, height);
+            true
+        });
+        if stored {
+            self.pitch_scale = Some(scale);
+        }
+    }
+}
+
+fn same_cell_metrics(left: &Settings, right: &Settings) -> bool {
+    left.font == right.font
+        && left.font_size == right.font_size
+        && left.line_height == right.line_height
+        && left.cell_width_scale == right.cell_width_scale
+        && left.cell_height_scale == right.cell_height_scale
 }
 
 impl Render for Terminal {
@@ -246,6 +291,9 @@ impl Render for Terminal {
             // A replaced presentation (re-attach, re-bootstrap) may have
             // cleared the runtime's focus; the next report asserts it again.
             self.reported_focus = None;
+            // The replacement replica is born at 8×16 unless this pitch is
+            // stored again before the snapshot's frame is acquired.
+            self.pitch_scale = None;
         }
         let has_focus = self.focus.is_focused(window);
         match focus_step(self.settings.focused, self.was_focused, rebound, has_focus) {
@@ -258,6 +306,7 @@ impl Render for Terminal {
         }
         self.was_focused = self.settings.focused;
         self.report_focus(window);
+        self.install_cell_pitch(window);
 
         let (frame, recovery) = self.painted_frame(window);
         let fraction = frame

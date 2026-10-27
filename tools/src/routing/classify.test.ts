@@ -95,6 +95,8 @@ test.each<[string[], Surface[]]>([
   [[".github/workflows/release.yml"], []],
   [["commitlint.config.mjs"], []],
   [[".github/cockpit-history-tip"], []],
+  [[".github/ISSUE_TEMPLATE/bug.yml"], []],
+  [[".github/ISSUE_TEMPLATE/config.yml"], []],
   [["commitlint.config.mjs", "clients/desktop/native/src/main.rs"], ["desktop"]],
   [["scripts/doctor.sh"], ["native"]],
   [["just/gates.just"], ["phux"]],

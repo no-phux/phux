@@ -45,7 +45,7 @@ TARGETS
 
 /// Deliberately small `phux -h` start-here view. `phux --help` owns the full
 /// inventory; keeping the two surfaces distinct makes the first one useful.
-pub(crate) const SHORT_HELP: &str = "A terminal multiplexer you can drive by hand or script.\n\n\
+pub(crate) const SHORT_HELP: &str = "A terminal multiplexer whose server you can drive from code.\n\n\
 Usage: phux [OPTIONS] [COMMAND]\n\n\
 Start here:\n  \
   phux                     Attach to your session (starts phux if needed)\n  \

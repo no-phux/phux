@@ -42,6 +42,7 @@ use super::typed::typed_keys;
 
 mod activity;
 mod chrome;
+pub(crate) mod cli_path;
 mod clipboard;
 mod commands;
 mod input;
@@ -172,6 +173,9 @@ pub struct Desk {
     home_key: Option<SessionKey>,
     expected_authority: Option<phux_protocol::ids::AuthorityId>,
     pub phux: PathBuf,
+    /// CLI discovery found or installed. `phux` may still be the command name.
+    pub(crate) cli_install: Option<super::CliInstall>,
+    pub(crate) path_prompt: cli_path::Prompt,
     pub focus: FocusHandle,
     pub prefs: DisplayPrefs,
     pub ghostty_found: bool,

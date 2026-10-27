@@ -1,0 +1,30 @@
+{
+  "format": "horizontal-strip",
+  "frameCount": 8,
+  "frameWidth": 256,
+  "frameHeight": 256,
+  "durationMs": {
+    "idle": 1000,
+    "celebrate": 680,
+    "dash": 540,
+    "sleep": 1350
+  },
+  "animationNames": [
+    "idle",
+    "celebrate",
+    "dash",
+    "sleep"
+  ],
+  "files": {
+    "idle": "idle-256x8.png",
+    "celebrate": "celebrate-256x8.png",
+    "dash": "dash-256x8.png",
+    "sleep": "sleep-256x8.png"
+  },
+  "transparent": true,
+  "pivot": {
+    "x": 0.5,
+    "y": 0.55
+  },
+  "note": "Each file is 8 frames horizontally; use frame width 256 and height 256."
+}

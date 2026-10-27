@@ -1,10 +1,84 @@
-use phux_protocol::ids::ResourceId;
+//! Pure, I/O-free edits of a handle-space [`ArrangementDoc`], shared by the
+//! CLI's headless layout operations and the mobile bindings.
 
-use crate::layout::{
+use phux_protocol::ResourceId;
+use thiserror::Error;
+
+use super::{
     ArrangementDoc, LayoutError, LayoutNode, SplitDir, kill_pane, leaves, repair_focus, split_at,
 };
 
-use super::{LayoutMutation, LayoutOpsError};
+/// One pure mutation of a decoded [`ArrangementDoc`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayoutMutation {
+    /// Insert `new_pane` beside `target`.
+    Split {
+        /// Existing pane whose leaf is replaced by a split.
+        target: ResourceId,
+        /// Already-created pane to insert.
+        new_pane: ResourceId,
+        /// Split axis.
+        dir: SplitDir,
+        /// Fraction assigned to the existing target, in `(0, 1)`.
+        ratio: f32,
+    },
+    /// [`Self::Split`] without changing the serialized active window or focus,
+    /// so headless spawn placement cannot publish shared focus.
+    SplitPreservingFocus {
+        /// Existing pane whose leaf is replaced by a split.
+        target: ResourceId,
+        /// Already-created pane to insert.
+        new_pane: ResourceId,
+        /// Split axis.
+        dir: SplitDir,
+        /// Fraction assigned to the existing target, in `(0, 1)`.
+        ratio: f32,
+    },
+    /// Remove `source` from its old parent (collapsing it), then insert it
+    /// beside `target`.
+    Move {
+        /// Existing pane to relocate.
+        source: ResourceId,
+        /// Existing destination pane.
+        target: ResourceId,
+        /// Destination split axis.
+        dir: SplitDir,
+        /// Fraction assigned to `target`, in `(0, 1)`.
+        ratio: f32,
+    },
+    /// Exchange two leaf positions without changing split geometry.
+    Swap {
+        /// First existing pane.
+        first: ResourceId,
+        /// Second existing pane.
+        second: ResourceId,
+    },
+    /// Remove `target`, collapsing its parent split (never the final pane).
+    Close {
+        /// Existing pane to remove.
+        target: ResourceId,
+    },
+}
+
+/// Why [`apply_mutation`] refused.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum MutationError {
+    /// An existing tree operation rejected the request.
+    #[error(transparent)]
+    Layout(#[from] LayoutError),
+    /// A mutation named a pane outside this workspace.
+    #[error("pane is not in this session layout: {0:?}")]
+    ForeignTarget(ResourceId),
+    /// A split tried to insert an id already present in the workspace.
+    #[error("pane is already in this session layout: {0:?}")]
+    DuplicatePane(ResourceId),
+    /// A two-target operation named the same pane twice.
+    #[error("layout operation requires two distinct panes")]
+    SamePane,
+    /// Closing the final pane would produce an unencodable empty workspace.
+    #[error("cannot close the final pane in a persisted layout")]
+    LastPane,
+}
 
 /// Apply one mutation without doing I/O.
 ///
@@ -15,7 +89,7 @@ use super::{LayoutMutation, LayoutOpsError};
 pub fn apply_mutation(
     workspace: &mut ArrangementDoc,
     mutation: &LayoutMutation,
-) -> Result<(), LayoutOpsError> {
+) -> Result<(), MutationError> {
     match mutation {
         LayoutMutation::Split {
             target,
@@ -46,20 +120,17 @@ fn window_tree<'a>(
     workspace: &'a ArrangementDoc,
     index: usize,
     blame: &ResourceId,
-) -> Result<&'a LayoutNode, LayoutOpsError> {
+) -> Result<&'a LayoutNode, MutationError> {
     workspace.groups[index]
         .state
         .tree
         .as_ref()
-        .ok_or_else(|| LayoutOpsError::ForeignTarget(blame.clone()))
+        .ok_or_else(|| MutationError::ForeignTarget(blame.clone()))
 }
 
-/// The index of the window holding `target`, or [`LayoutOpsError::ForeignTarget`].
-fn require_window(
-    workspace: &ArrangementDoc,
-    target: &ResourceId,
-) -> Result<usize, LayoutOpsError> {
-    find_window(workspace, target).ok_or_else(|| LayoutOpsError::ForeignTarget(target.clone()))
+/// The index of the window holding `target`, or [`MutationError::ForeignTarget`].
+fn require_window(workspace: &ArrangementDoc, target: &ResourceId) -> Result<usize, MutationError> {
+    find_window(workspace, target).ok_or_else(|| MutationError::ForeignTarget(target.clone()))
 }
 
 /// Split `target` to make room for `new_pane`, moving focus to the new pane
@@ -71,9 +142,9 @@ fn apply_split(
     dir: SplitDir,
     ratio: f32,
     focus_new_pane: bool,
-) -> Result<(), LayoutOpsError> {
+) -> Result<(), MutationError> {
     if find_window(workspace, new_pane).is_some() {
-        return Err(LayoutOpsError::DuplicatePane(new_pane.clone()));
+        return Err(MutationError::DuplicatePane(new_pane.clone()));
     }
     let index = require_window(workspace, target)?;
     let tree = window_tree(workspace, index, target)?;
@@ -90,15 +161,15 @@ fn apply_swap(
     workspace: &mut ArrangementDoc,
     first: &ResourceId,
     second: &ResourceId,
-) -> Result<(), LayoutOpsError> {
+) -> Result<(), MutationError> {
     if first == second {
-        return Err(LayoutOpsError::SamePane);
+        return Err(MutationError::SamePane);
     }
     require_window(workspace, first)?;
     require_window(workspace, second)?;
     for window in &mut workspace.groups {
         if let Some(tree) = window.state.tree.as_ref() {
-            window.state.tree = Some(swap_leaves(tree, first, second)?);
+            window.state.tree = Some(swap_leaves(tree, first, second));
         }
     }
     // Focus follows Terminal identity, not physical leaf position.
@@ -106,11 +177,11 @@ fn apply_swap(
 }
 
 /// Remove `target`, refusing to close the workspace's final pane.
-fn apply_close(workspace: &mut ArrangementDoc, target: &ResourceId) -> Result<(), LayoutOpsError> {
+fn apply_close(workspace: &mut ArrangementDoc, target: &ResourceId) -> Result<(), MutationError> {
     workspace.close_pane(target).map_err(|err| match err {
-        LayoutError::LastPane => LayoutOpsError::LastPane,
-        LayoutError::PaneNotInLayout(id) => LayoutOpsError::ForeignTarget(id),
-        err @ LayoutError::InvalidRatio(_) => LayoutOpsError::Layout(err),
+        LayoutError::LastPane => MutationError::LastPane,
+        LayoutError::PaneNotInLayout(id) => MutationError::ForeignTarget(id),
+        err @ LayoutError::InvalidRatio(_) => MutationError::Layout(err),
     })
 }
 
@@ -120,9 +191,9 @@ fn apply_move(
     target: &ResourceId,
     dir: SplitDir,
     ratio: f32,
-) -> Result<(), LayoutOpsError> {
+) -> Result<(), MutationError> {
     if source == target {
-        return Err(LayoutOpsError::SamePane);
+        return Err(MutationError::SamePane);
     }
     let source_index = require_window(workspace, source)?;
     let target_index = require_window(workspace, target)?;
@@ -154,9 +225,9 @@ fn move_within_window(
     target: &ResourceId,
     dir: SplitDir,
     ratio: f32,
-) -> Result<(), LayoutOpsError> {
+) -> Result<(), MutationError> {
     let tree = window_tree(workspace, index, source)?;
-    let collapsed = kill_pane(tree, source)?.ok_or(LayoutOpsError::LastPane)?;
+    let collapsed = kill_pane(tree, source)?.ok_or(MutationError::LastPane)?;
     let moved = split_at(&collapsed, target, source, dir, ratio)?;
     workspace.groups[index].state.tree = Some(moved);
     workspace.groups[index].state.focus = Some(source.clone());
@@ -173,7 +244,7 @@ fn move_across_windows(
     target: &ResourceId,
     dir: SplitDir,
     ratio: f32,
-) -> Result<(), LayoutOpsError> {
+) -> Result<(), MutationError> {
     let source_tree = window_tree(workspace, source_index, source)?;
     workspace.groups[source_index].state.tree = kill_pane(source_tree, source)?;
     repair_focus(&mut workspace.groups[source_index].state);
@@ -189,7 +260,7 @@ fn move_across_windows(
 
 /// Append each group of `fallback` none of whose panes `workspace` arranges
 /// yet. Leaves `active` alone unless `workspace` had no groups.
-pub(super) fn adopt_unarranged_groups(workspace: &mut ArrangementDoc, fallback: &ArrangementDoc) {
+pub fn adopt_unarranged_groups(workspace: &mut ArrangementDoc, fallback: &ArrangementDoc) {
     let was_empty = workspace.groups.is_empty();
     for group in &fallback.groups {
         let Some(tree) = group.state.tree.as_ref() else {
@@ -219,25 +290,21 @@ fn find_window(workspace: &ArrangementDoc, target: &ResourceId) -> Option<usize>
     })
 }
 
-fn swap_leaves(
-    node: &LayoutNode,
-    first: &ResourceId,
-    second: &ResourceId,
-) -> Result<LayoutNode, LayoutOpsError> {
+fn swap_leaves(node: &LayoutNode, first: &ResourceId, second: &ResourceId) -> LayoutNode {
     match node {
-        LayoutNode::Leaf(id) if id == first => Ok(LayoutNode::Leaf(second.clone())),
-        LayoutNode::Leaf(id) if id == second => Ok(LayoutNode::Leaf(first.clone())),
-        LayoutNode::Leaf(id) => Ok(LayoutNode::Leaf(id.clone())),
+        LayoutNode::Leaf(id) if id == first => LayoutNode::Leaf(second.clone()),
+        LayoutNode::Leaf(id) if id == second => LayoutNode::Leaf(first.clone()),
+        LayoutNode::Leaf(id) => LayoutNode::Leaf(id.clone()),
         LayoutNode::Split {
             dir,
             ratio,
             left,
             right,
-        } => Ok(LayoutNode::Split {
+        } => LayoutNode::Split {
             dir: *dir,
             ratio: *ratio,
-            left: Box::new(swap_leaves(left, first, second)?),
-            right: Box::new(swap_leaves(right, first, second)?),
-        }),
+            left: Box::new(swap_leaves(left, first, second)),
+            right: Box::new(swap_leaves(right, first, second)),
+        },
     }
 }

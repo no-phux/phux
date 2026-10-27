@@ -103,7 +103,7 @@ unicode-segmentation = "1"
 global-hotkey = "=0.8.0"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["socket", "user"] }
+nix = { version = "0.31", features = ["process", "socket", "user"] }
 
 # GPUI Kit pins gpui-pre; the compatibility crates under `toolchain/compat`
 # carry those names and re-export gpui-fast, so Kit and this host share one

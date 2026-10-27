@@ -37,6 +37,19 @@ impl RetiredFrames {
             .ok()
             .map(|frame| frame.buffer)
     }
+
+    /// Drop retired frames no consumer holds.
+    ///
+    /// A cell-pitch republish runs before the first acquire, so the frame it
+    /// replaces has no holder. Leaving it here would let the next projection
+    /// reuse it. That projection is the first frame of a cold redraw, which
+    /// is budgeted as one fresh buffer (`runtime.buffer_fresh` on the
+    /// headless sparse, wide-redraw, and window-stream phases). A frame a
+    /// painter still holds stays, and becomes reusable once the painter
+    /// drops it.
+    pub(super) fn discard_unheld(&mut self) {
+        self.0.retain(|frame| Arc::strong_count(frame) > 1);
+    }
 }
 
 impl Owner {
@@ -162,5 +175,47 @@ impl Owner {
             self.presentation_mut(id)?.retired.retire(previous);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::publication::{Cursor, FrameColors};
+
+    fn frame() -> Arc<GridFrame> {
+        Arc::new(GridFrame {
+            terminal_id: ResourceId::local(1),
+            generation: 1,
+            stream_id: 1,
+            bootstrap_id: 1,
+            last_seq: 0,
+            cols: 1,
+            rows: 1,
+            cursor: Cursor::default(),
+            scrollbar: Scrollbar::default(),
+            colors: FrameColors::default(),
+            images: Vec::new(),
+            damage: GridDamage::Full,
+            buffer: GridBuffer::default(),
+        })
+    }
+
+    #[test]
+    fn discard_unheld_keeps_only_frames_a_consumer_holds() {
+        let mut retired = RetiredFrames::default();
+        let held = frame();
+        retired.retire(Arc::clone(&held));
+        retired.retire(frame());
+        retired.discard_unheld();
+        assert!(
+            retired.reuse().is_none(),
+            "an unheld pitch frame must not satisfy the next redraw"
+        );
+        drop(held);
+        assert!(
+            retired.reuse().is_some(),
+            "a frame the painter released stays reusable"
+        );
     }
 }

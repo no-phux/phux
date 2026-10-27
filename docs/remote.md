@@ -284,8 +284,13 @@ there. Open the port, or use a relay.
 The error names the machine and says to run `phux host add NAME` again.
 
 **`incompatible protocol`.** The two machines run releases too far apart. The
-error names both versions. `ssh HOST phux update` updates the remote binary,
-and `ssh HOST phux upgrade` moves its running server onto the binary already
-installed there.
+error names both versions. Stop the remote server, then start a fresh one:
+`ssh HOST kill <pid>` when its pid is known, otherwise
+`ssh HOST pkill -f 'phux server'`, then `ssh HOST phux server --ensure`. Stopping it
+closes the panes it is running.
+
+**Same protocol major, older remote server.** `ssh HOST phux update` updates
+the remote binary, and `ssh HOST phux upgrade` moves its running server onto
+the binary already installed there. Panes survive that hand-over.
 
 More in [Troubleshooting](./troubleshooting.md).

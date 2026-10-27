@@ -340,7 +340,26 @@ pub(crate) fn run_bounded(
     timeout: Duration,
     timed_out: &str,
 ) -> anyhow::Result<String> {
-    run_bounded_with_progress(command, input, timeout, timed_out, None)
+    run_bounded_with_progress(command, input, timeout, timed_out, None, None, false)
+}
+
+/// Like [`run_bounded`], but the child calls `setsid` and captured stdout stops
+/// at `max_stdout`. A timeout still kills that session's process group.
+pub(crate) fn run_bounded_session(
+    command: &mut Command,
+    timeout: Duration,
+    timed_out: &str,
+    max_stdout: usize,
+) -> anyhow::Result<String> {
+    run_bounded_with_progress(
+        command,
+        None,
+        timeout,
+        timed_out,
+        None,
+        Some(max_stdout),
+        true,
+    )
 }
 
 fn run_bounded_with_progress(
@@ -349,9 +368,13 @@ fn run_bounded_with_progress(
     timeout: Duration,
     timed_out: &str,
     progress: Option<std::sync::mpsc::Sender<StageProgress>>,
+    max_stdout: Option<usize>,
+    new_session: bool,
 ) -> anyhow::Result<String> {
     #[cfg(unix)]
-    {
+    if new_session {
+        detach_session(command);
+    } else {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
@@ -378,7 +401,7 @@ fn run_bounded_with_progress(
     let stderr = std::thread::spawn(move || progress::read_stderr(stderr, progress));
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
-        let result = collect_output(&mut child, stderr);
+        let result = collect_output(&mut child, stderr, max_stdout);
         // Retain the Windows process handle through cancellation or receipt.
         // An exited child's PID must not be reused before taskkill sees it.
         let _ = tx.send((result, child));
@@ -390,6 +413,24 @@ fn run_bounded_with_progress(
             let _ = rx.recv_timeout(Duration::from_secs(2));
             bail!("{timed_out}")
         }
+    }
+}
+
+/// `setsid` in the forked child, before exec, so the probe shell is a session
+/// and process-group leader. Do not also `setpgid`: a session leader cannot
+/// change its process group, and spawn would fail.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn detach_session(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs only in the forked child, before any non-safe
+    // allocation and before exec. `setsid` is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            nix::unistd::setsid()
+                .map(|_| ())
+                .map_err(std::io::Error::from)
+        });
     }
 }
 
@@ -428,11 +469,31 @@ fn cancel_process_tree(pid: u32) {
 fn collect_output(
     child: &mut std::process::Child,
     stderr: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    max_stdout: Option<usize>,
 ) -> std::io::Result<std::process::Output> {
     use std::io::Read;
     let mut stdout = Vec::new();
     if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut stdout)?;
+        if let Some(max) = max_stdout {
+            // Keep the cap, but keep reading so a noisy shell does not block
+            // on a full pipe or die from SIGPIPE before it exits.
+            let mut buf = [0u8; 8192];
+            loop {
+                match pipe.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        if stdout.len() < max {
+                            let room = max - stdout.len();
+                            stdout.extend_from_slice(&buf[..read.min(room)]);
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(err) => return Err(err),
+                }
+            }
+        } else {
+            pipe.read_to_end(&mut stdout)?;
+        }
     }
     let stderr = stderr
         .join()
