@@ -201,6 +201,12 @@ test("Windows policy filters cannot silently pass zero tests and diagnostics nev
       .find((script) => script.includes("presentation::tests")) ?? "";
   expect(predicates).toContain("-p gpui-fast-windows");
   expect(predicates).toContain("test result: ok\\. 3 passed; 0 failed; 0 ignored;");
+  const ordering =
+    steps(job(windows, "windows"))
+      .map(run)
+      .find((script) => script.includes("fast::input_order::tests")) ?? "";
+  expect(ordering).toContain("test result: ok\\. 5 passed; 0 failed; 0 ignored;");
+  expect(ordering).toContain("$exitCode -ne 0");
   expect(qualify.map(run).join("\n")).not.toContain("-DiagnosticBuildSha");
 
   const diagnostic = workflow("windows-desktop-diagnostic.yml");

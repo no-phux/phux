@@ -1,0 +1,290 @@
+diff --git a/gpui-fast-windows/src/fast/input_order.rs b/gpui-fast-windows/src/fast/input_order.rs
+new file mode 100644
+index 0000000..b406bf1
+--- /dev/null
++++ b/gpui-fast-windows/src/fast/input_order.rs
+@@ -0,0 +1,59 @@
++//! Keep translated text ahead of later accelerators in the input-only pump.
++
++use windows::Win32::UI::WindowsAndMessaging::{
++    MSG, PM_QS_INPUT, PM_QS_POSTMESSAGE, PM_REMOVE, PeekMessageW, PostQuitMessage, WM_KEYFIRST,
++    WM_KEYLAST, WM_QUIT,
++};
++
++pub(crate) fn drain_input_messages(mut dispatch: impl FnMut(&MSG)) {
++    // A foreground wake may have preceded text already posted by the outer
++    // loop. Drain that text even if the next key is a consumed accelerator.
++    if !drain_posted_keyboard_messages(&mut dispatch) {
++        return;
++    }
++    let mut message = MSG::default();
++    while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE | PM_QS_INPUT).as_bool() } {
++        if !dispatch_input_message(&message, &mut dispatch) {
++            return;
++        }
++    }
++}
++
++fn dispatch_input_message(message: &MSG, dispatch: &mut impl FnMut(&MSG)) -> bool {
++    if message.message == WM_QUIT {
++        unsafe { PostQuitMessage(message.wParam.0 as i32) };
++        return false;
++    }
++    dispatch(message);
++    drain_posted_keyboard_messages(dispatch)
++}
++
++fn drain_posted_keyboard_messages(dispatch: &mut impl FnMut(&MSG)) -> bool {
++    let mut message = MSG::default();
++    // TranslateMessage posts WM_CHAR (including UTF-16 surrogate halves).
++    // PM_QS_INPUT alone leaves it behind while Enter can run synchronously.
++    // Restrict the range to keyboard messages: unrelated GPUI task wakes must
++    // remain queued, not recursively enter the foreground-task pump.
++    while unsafe {
++        PeekMessageW(
++            &mut message,
++            None,
++            WM_KEYFIRST,
++            WM_KEYLAST,
++            PM_REMOVE | PM_QS_POSTMESSAGE,
++        )
++        .as_bool()
++    } {
++        // PeekMessage returns WM_QUIT even outside the requested range.
++        if message.message == WM_QUIT {
++            unsafe { PostQuitMessage(message.wParam.0 as i32) };
++            return false;
++        }
++        dispatch(&message);
++    }
++    true
++}
++
++#[cfg(test)]
++#[path = "input_order_tests.rs"]
++mod tests;
+diff --git a/gpui-fast-windows/src/fast/input_order_tests.rs b/gpui-fast-windows/src/fast/input_order_tests.rs
+new file mode 100644
+index 0000000..79a54d6
+--- /dev/null
++++ b/gpui-fast-windows/src/fast/input_order_tests.rs
+@@ -0,0 +1,193 @@
++use super::*;
++use std::cell::RefCell;
++use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
++use windows::Win32::UI::Input::KeyboardAndMouse::{VK_PACKET, VK_RETURN};
++use windows::Win32::UI::WindowsAndMessaging::*;
++use windows::core::PCWSTR;
++
++thread_local! {
++    static RECEIVED: RefCell<Vec<(u32, usize)>> = const { RefCell::new(Vec::new()) };
++}
++
++unsafe extern "system" fn record(hwnd: HWND, message: u32, word: WPARAM, long: LPARAM) -> LRESULT {
++    if (WM_KEYFIRST..=WM_KEYLAST).contains(&message) || message == WM_APP {
++        RECEIVED.with(|received| received.borrow_mut().push((message, word.0)));
++    }
++    unsafe { DefWindowProcW(hwnd, message, word, long) }
++}
++
++fn with_window(test: impl FnOnce(HWND) + Send + 'static) {
++    std::thread::spawn(move || {
++        let name: Vec<u16> = format!("PhuxInputOrder-{:?}\0", std::thread::current().id())
++            .encode_utf16()
++            .collect();
++        let class = WNDCLASSW {
++            lpfnWndProc: Some(record),
++            lpszClassName: PCWSTR(name.as_ptr()),
++            ..Default::default()
++        };
++        assert_ne!(unsafe { RegisterClassW(&class) }, 0);
++        let window = unsafe {
++            CreateWindowExW(
++                WINDOW_EX_STYLE(0),
++                class.lpszClassName,
++                None,
++                WINDOW_STYLE(0),
++                0,
++                0,
++                0,
++                0,
++                Some(HWND_MESSAGE),
++                None,
++                None,
++                None,
++            )
++            .unwrap()
++        };
++        test(window);
++        unsafe {
++            DestroyWindow(window).unwrap();
++            UnregisterClassW(class.lpszClassName, None).unwrap();
++        }
++    })
++    .join()
++    .unwrap();
++}
++
++fn enter(window: HWND) {
++    unsafe { SendMessageW(window, WM_KEYDOWN, Some(WPARAM(VK_RETURN.0 as usize)), None) };
++}
++
++fn drain() {
++    drain_input_messages(|message| {
++        unsafe { DispatchMessageW(message) };
++    });
++}
++
++#[test]
++fn pending_text_precedes_a_consumed_enter_without_dispatching_task_wakes() {
++    with_window(|window| {
++        unsafe {
++            PostMessageW(Some(window), WM_APP, WPARAM(0), LPARAM(0)).unwrap();
++            PostMessageW(Some(window), WM_CHAR, WPARAM(b'D' as usize), LPARAM(0)).unwrap();
++        }
++        let mut message = MSG::default();
++        assert!(
++            !unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE | PM_QS_INPUT) }.as_bool()
++        );
++        drain();
++        enter(window);
++        RECEIVED.with(|received| {
++            assert_eq!(
++                *received.borrow(),
++                vec![(WM_CHAR, b'D' as usize), (WM_KEYDOWN, VK_RETURN.0 as usize)]
++            )
++        });
++        assert!(unsafe { PeekMessageW(&mut message, None, WM_APP, WM_APP, PM_REMOVE) }.as_bool());
++        assert_eq!(message.message, WM_APP);
++    });
++}
++
++#[test]
++fn surrogate_and_system_characters_keep_their_posted_order() {
++    with_window(|window| {
++        let expected = vec![
++            (WM_CHAR, 0xd83d),
++            (WM_CHAR, 0xde00),
++            (WM_DEADCHAR, 0x60),
++            (WM_SYSCHAR, b'x' as usize),
++            (WM_SYSDEADCHAR, 0x5e),
++        ];
++        for &(kind, word) in &expected {
++            unsafe { PostMessageW(Some(window), kind, WPARAM(word), LPARAM(0)).unwrap() };
++        }
++        drain();
++        RECEIVED.with(|received| assert_eq!(*received.borrow(), expected));
++    });
++}
++
++#[test]
++fn translate_message_packet_text_precedes_the_next_enter() {
++    with_window(|window| {
++        unsafe {
++            PostMessageW(
++                Some(window),
++                WM_KEYDOWN,
++                WPARAM(VK_PACKET.0 as usize),
++                LPARAM(1 | ((b'D' as isize) << 16)),
++            )
++            .unwrap();
++        }
++        let mut message = MSG::default();
++        assert!(
++            unsafe { PeekMessageW(&mut message, None, WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE) }
++                .as_bool()
++        );
++        assert!(unsafe { TranslateMessage(&message) }.as_bool());
++        drain();
++        enter(window);
++        RECEIVED.with(|received| {
++            assert_eq!(
++                *received.borrow(),
++                vec![(WM_CHAR, b'D' as usize), (WM_KEYDOWN, VK_RETURN.0 as usize)]
++            )
++        });
++    });
++}
++
++#[test]
++fn quit_remains_observable_with_its_original_exit_code() {
++    with_window(|_| {
++        unsafe { PostQuitMessage(37) };
++        drain();
++        let mut message = MSG::default();
++        assert!(unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool());
++        assert_eq!(message.message, WM_QUIT);
++        assert_eq!(message.wParam.0, 37);
++    });
++}
++
++#[test]
++fn text_translated_inside_input_dispatch_precedes_a_consumed_enter() {
++    with_window(|window| {
++        let mut calls = 0;
++        let mut dispatch = |message: &MSG| {
++            calls += 1;
++            if message.message == WM_KEYDOWN && message.wParam.0 == VK_RETURN.0 as usize {
++                enter(window);
++                return; // Exactly like a consumed accelerator: no TranslateMessage.
++            }
++            unsafe {
++                _ = TranslateMessage(message);
++                DispatchMessageW(message);
++            }
++        };
++        let packet = MSG {
++            hwnd: window,
++            message: WM_KEYDOWN,
++            wParam: WPARAM(VK_PACKET.0 as usize),
++            lParam: LPARAM(1 | ((b'D' as isize) << 16)),
++            ..Default::default()
++        };
++        assert!(dispatch_input_message(&packet, &mut dispatch));
++        let enter = MSG {
++            wParam: WPARAM(VK_RETURN.0 as usize),
++            ..packet
++        };
++        assert!(dispatch_input_message(&enter, &mut dispatch));
++        assert_eq!(
++            calls, 3,
++            "translated text must use the same dispatch callback"
++        );
++        RECEIVED.with(|received| {
++            assert_eq!(
++                *received.borrow(),
++                vec![
++                    (WM_KEYDOWN, VK_PACKET.0 as usize),
++                    (WM_CHAR, b'D' as usize),
++                    (WM_KEYDOWN, VK_RETURN.0 as usize),
++                ]
++            )
++        });
++    });
++}
+diff --git a/gpui-fast-windows/src/fast/mod.rs b/gpui-fast-windows/src/fast/mod.rs
+index 07dd9c7..03e8658 100644
+--- a/gpui-fast-windows/src/fast/mod.rs
++++ b/gpui-fast-windows/src/fast/mod.rs
+@@ -13,5 +13,6 @@ pub(crate) mod composition;
+ pub(crate) mod draw_state;
+ pub(crate) mod frame;
+ pub(crate) mod globals;
++pub(crate) mod input_order;
+ pub(crate) mod layers;
+ pub(crate) mod rounded_clip;
+diff --git a/gpui-fast-windows/src/platform.rs b/gpui-fast-windows/src/platform.rs
+index fa5195f..3235af7 100644
+--- a/gpui-fast-windows/src/platform.rs
++++ b/gpui-fast-windows/src/platform.rs
+@@ -1347,9 +1347,7 @@ impl WindowsPlatformInner {
+                     if peek_msg(&mut msg, PM_QS_PAINT) {
+                         process_message(&msg);
+                     }
+-                    while peek_msg(&mut msg, PM_QS_INPUT) {
+-                        process_message(&msg);
+-                    }
++                    crate::fast::input_order::drain_input_messages(process_message);
+                     // Allow the main loop to process other gpui events before going back into `run_foreground_task`
+                     unsafe {
+                         if let Err(_) = PostMessageW(
