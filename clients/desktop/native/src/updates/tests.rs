@@ -261,13 +261,26 @@ fn windows_runtime_checks_are_read_only_and_quote_the_manual_wsl_update() {
         !readonly.mutable,
         "a Linux updater must never be started by Desktop on Windows"
     );
+    let remedy = readonly.native_command.unwrap();
+    assert!(remedy.starts_with("& 'wsl.exe' '--distribution' 'Team''s Ubuntu λ $(unsafe)' '--exec' 'sh' '-c' 'IFS=;set -f;eval $(printf %s "));
+    assert!(
+        !remedy.contains('"'),
+        "PowerShell 5.1 must not lose nested shell quotes"
+    );
+    let encoded = remedy
+        .split("printf %s ")
+        .nth(1)
+        .unwrap()
+        .split('|')
+        .next()
+        .unwrap();
+    use base64::Engine as _;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .unwrap();
     assert_eq!(
-        readonly.native_command.as_deref(),
-        Some(concat!(
-            "& 'wsl.exe' '--distribution' 'Team''s Ubuntu λ $(unsafe)' ",
-            "'--exec' '/home/person''s bin/phux' '--socket' ",
-            "'/run/person''s coordinator.sock' 'update' '--channel' 'next'",
-        ))
+        String::from_utf8(decoded).unwrap(),
+        "exec '/home/person'\\''s bin/phux' '--socket' '/run/person'\\''s coordinator.sock' 'update' '--channel' 'next'"
     );
 }
 
@@ -282,13 +295,10 @@ fn windows_runtime_install_and_retry_refuse_before_starting_wsl() {
         .to_string();
     let retry = runtime_retry(phux, socket).err().unwrap().to_string();
     assert!(install.starts_with("Automatic runtime updates are disabled on Windows"));
-    assert!(install.contains("'update' '--channel' 'next'"));
     assert!(retry.starts_with("Automatic server handoff is disabled on Windows"));
-    assert!(retry.contains("'upgrade'"));
     for remedy in [&install, &retry] {
         assert!(remedy.contains("'wsl.exe'"));
-        assert!(remedy.contains("'/nonexistent/person''s bin/phux'"));
-        assert!(remedy.contains("'--socket' '/nonexistent/person''s coordinator.sock'"));
+        assert!(remedy.contains("'--exec' 'sh' '-c' 'IFS=;set -f;eval $(printf %s "));
         if let Some(distro) = std::env::var_os("PHUX_WSL_DISTRO").filter(|name| !name.is_empty()) {
             assert!(remedy.contains(&format!(
                 "'--distribution' '{}'",
@@ -296,6 +306,41 @@ fn windows_runtime_install_and_retry_refuse_before_starting_wsl() {
             )));
         }
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn manual_wsl_wrapper_preserves_nested_quotes_and_argument_boundaries() {
+    let mut command = Command::new("wsl.exe");
+    command.args([
+        "--exec",
+        "sh",
+        "-c",
+        "exec \"$@\"",
+        "phux-desktop",
+        "/usr/bin/printf",
+        "<%s>",
+        "a 'quote' $(never-executed) λ",
+        "two words",
+    ]);
+    let remedy = runtime::powershell_command(&command);
+    assert!(!remedy.contains('"'));
+    let script = remedy
+        .split("'sh' '-c' '")
+        .nth(1)
+        .unwrap()
+        .strip_suffix('\'')
+        .unwrap();
+    let output = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(script)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "<a 'quote' $(never-executed) λ><two words>"
+    );
 }
 
 #[test]

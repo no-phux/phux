@@ -75,14 +75,41 @@ pub(super) fn manual_runtime_update(
 }
 
 /// PowerShell single-quoted literals keep distro names, CLI paths and sockets
-/// as arguments, including apostrophes and shell-looking user data.
+/// as arguments, including apostrophes and shell-looking user data. Encode the
+/// Linux argv so PowerShell 5.1 cannot strip quotes inside the `sh -c` wrapper.
 #[cfg(any(windows, test))]
 pub(super) fn powershell_command(command: &Command) -> String {
-    let arguments = std::iter::once(command.get_program())
-        .chain(command.get_args())
-        .map(|argument| format!("'{}'", argument.to_string_lossy().replace('\'', "''")))
+    let arguments = manual_wsl_arguments(command);
+    let arguments = std::iter::once(command.get_program().to_string_lossy().into_owned())
+        .chain(arguments)
+        .map(|argument| format!("'{}'", argument.replace('\'', "''")))
         .collect::<Vec<_>>();
     format!("& {}", arguments.join(" "))
+}
+
+#[cfg(any(windows, test))]
+fn manual_wsl_arguments(command: &Command) -> Vec<String> {
+    use base64::Engine as _;
+    let mut arguments = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let Some(exec) = arguments.iter().position(|arg| arg == "--exec") else {
+        return arguments;
+    };
+    let script = arguments[exec + 1..]
+        .iter()
+        .map(|arg| format!("'{}'", arg.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(format!("exec {script}"));
+    arguments.truncate(exec + 1);
+    arguments.extend([
+        "sh".into(),
+        "-c".into(),
+        format!("IFS=;set -f;eval $(printf %s {encoded}|base64 -d)"),
+    ]);
+    arguments
 }
 
 pub fn runtime_release(value: &Value) -> anyhow::Result<RuntimeRelease> {
