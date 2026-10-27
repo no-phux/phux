@@ -189,14 +189,14 @@ pub(super) fn catalog_record_row(
 }
 
 /// Identity never depends on selection. Keep the harness visible while its
-/// corner pip reports state; a badge without a known harness still gets a dot.
+/// corner pip reports attention; an alert without a known harness still gets a dot.
 fn pane_mark(origin: PaneOrigin, agent: Option<&AgentInfo>, look: &Look) -> AnyElement {
     let state = agent.map(|info| info.state);
     let attention = agent.filter(|info| info.needs_you()).map(|info| info.state);
     if let Some(harness) = origin.harness() {
         return harness_status(harness, state, attention, 12., look).into_any_element();
     }
-    if let Some(info) = agent {
+    if let Some(info) = agent.filter(|info| info.needs_you()) {
         return state_dot(info.needs_you().then_some(info.state), state).into_any_element();
     }
     terminal_glyph(look).into_any_element()

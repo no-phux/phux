@@ -1,9 +1,9 @@
 //! One tab renderer and one set of tab actions: a compact strip in the
 //! titlebar or below the workspace, or rows in the navigator's fixed tab
 //! shelf (or, in the plain terminal, which has no sidebar, a rail of its own). A tab whose agent needs a person wears that state itself: a
-//! wash and a mark on its corner, not an entry in a separate list. A tab
+//! single small pip on its harness, not a wash or a second corner badge. A tab
 //! leads with its agent's harness mark, and one only agents drive sits back
-//! (shorter and fainter) until it is selected or hovered.
+//! (fainter) until it is selected or hovered, without changing size.
 
 pub(super) mod hover;
 mod map;
@@ -25,13 +25,10 @@ use super::super::color::from_hex;
 use super::super::desk::{self, Desk, Modal};
 use super::super::pane_identity::Harness;
 use super::super::skin::{Look, Surface, Surfaced};
+use super::super::ui::ghost_icon;
 use super::super::ui::list::{CHILD_INSET, ROW, ROW_GAP, ROW_INSET, row_icon, row_radius};
 use super::super::ui::menu::Anchor;
-use super::super::ui::status::{
-    attention_wash, harness_mark, harness_status, state_dot, strongest,
-};
-use super::super::ui::{attention_mark, ghost_icon};
-use super::tab_glow;
+use super::super::ui::status::{harness_mark, harness_status, state_dot, strongest};
 
 /// Both selected and inactive tabs reserve the surface's one-point rim.
 const TAB_RIM: f32 = 1.;
@@ -164,7 +161,7 @@ pub(super) fn tab_attention(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
     )
 }
 
-/// The calmer state an agent in `tab` is in, for a quiet leading dot.
+/// The strongest lifecycle state among agents in `tab`.
 pub(super) fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
     strongest(
         layout::placements(&tab.root)
@@ -176,7 +173,7 @@ pub(super) fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
 }
 
 /// A tab keeps its harness identity through attention and selection changes;
-/// the harness's pip carries state. Unclassified agents use a state dot.
+/// the harness's pip carries attention. Unclassified agents use an attention dot.
 pub(super) fn side_lead(
     attention: Option<AgentState>,
     agent: Option<AgentState>,
@@ -187,7 +184,7 @@ pub(super) fn side_lead(
     if let Some(harness) = harness {
         return harness_status(harness, agent, attention, 13., look).into_any_element();
     }
-    if attention.is_some() || agent.is_some() {
+    if attention.is_some() {
         return state_dot(attention, agent).into_any_element();
     }
     Icon::new(IconName::SquareTerminal)
@@ -389,7 +386,6 @@ fn tab_button(
     } else {
         1.
     };
-    let sunk = if recessed { depth.inset } else { 0. };
     let (drag_id, rename_id, middle_id, menu_id) = (
         tab.id.clone(),
         tab.id.clone(),
@@ -415,7 +411,7 @@ fn tab_button(
                 .pr(px(ROW_INSET - TAB_RIM))
         })
         .when(!side, |tab| {
-            tab.h(px(height - sunk))
+            tab.h(px(height))
                 .min_w(px(100.))
                 .max_w(px(TAB_MAX))
                 .flex_1()
@@ -426,7 +422,6 @@ fn tab_button(
         .gap(px(if side { ROW_GAP } else { 6. }))
         .when(selected, |tab| {
             tab.surface(look, if side { Surface::SideTab } else { Surface::Tab })
-                .shadow(tab_glow(look))
         })
         .when(!selected, |tab| {
             tab.rounded(px(if side {
@@ -438,9 +433,6 @@ fn tab_button(
             .border_color(gpui::transparent_black())
             .when(fade < 1., |tab| tab.opacity(fade))
             .hover(move |style| style.bg(hover).opacity(1.))
-        })
-        .when_some(attention.filter(|_| !selected), |tab, state| {
-            tab.bg(attention_wash(state))
         })
         .when(organizing, |tab| tab.bg(look.active))
         .block_mouse_except_scroll()
@@ -467,11 +459,6 @@ fn tab_button(
         .child(tab_label(desk, tab, selected, look))
         .children(map)
         .child(tab_actions(desk, tab, side, selected, look, cx))
-        .children(
-            attention
-                .filter(|_| !side)
-                .map(|state| attention_mark(state, look)),
-        )
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {

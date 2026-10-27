@@ -59,7 +59,9 @@ phux sets two variables in every local pane's environment:
 A program that finds both is running in a phux pane and MAY call the `phux`
 command line with target `@$PHUX_TERMINAL_ID`. phux does not set
 `TERM_PROGRAM`, `PHUX`, or `PHUX_PANE`. `TERM` is `xterm-256color` unless
-the user configures `defaults.term`.
+the user configures `defaults.term`. Every newly spawned pane also gets
+`COLORTERM=truecolor`: truecolor support does not depend on the environment
+inherited by a terminal-, service-, or GUI-launched server.
 
 A program that only writes OSC 7501 needs none of this; it can use
 [feature detection](#feature-detection) or send reports without asking.

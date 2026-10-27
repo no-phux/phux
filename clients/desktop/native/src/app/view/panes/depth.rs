@@ -1,24 +1,6 @@
 //! A pane's depth: how far back an agent-driven card sits.
 
-use gpui::BoxShadow;
-
 use crate::app::skin::Look;
-use crate::app::ui::shadow;
-use crate::app::view::gloss;
-
-/// A pane card's shadow plus a faint inner rim while the skin is glassy,
-/// `depth` of the way back: the lift lowers, a well sinks in under the top
-/// edge, and the rim catches half the light.
-pub(super) fn pane_shadows(look: &Look, depth: f32) -> Vec<BoxShadow> {
-    let mut shadows = look.pane_depth_shadows(depth);
-    let rim = look
-        .rim
-        .opacity(0.6 * gloss(&look.skin) * (1. - 0.5 * depth));
-    if rim.a > 0. {
-        shadows.push(shadow(rim, 0., 0., 1., true));
-    }
-    shadows
-}
 
 /// One veil from two: `a` then `b` laid over the same content.
 pub(super) fn veils(a: f32, b: f32) -> f32 {

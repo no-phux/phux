@@ -101,6 +101,49 @@ fn harness_marks_survive_attention_and_inactive_tabs_in_every_placement(cx: &mut
 }
 
 #[gpui::test]
+fn routine_states_have_no_pip_and_attention_never_resizes_tabs(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, selectable_work);
+    for position in ["tabs-top", "tabs-bottom", "tabs-side"] {
+        run(&desk, position, cx);
+        let mut bounds = None;
+        for state in [
+            AgentState::Working,
+            AgentState::Idle,
+            AgentState::Blocked,
+            AgentState::Done,
+        ] {
+            desk.update(cx, |desk, cx| {
+                let link = desk.link.as_mut().unwrap();
+                link.workspace.active_id = "fixture-c".into();
+                link.connection.agents.insert(
+                    ResourceId::local(1),
+                    AgentInfo {
+                        name: "reviewer".into(),
+                        kind: Some("opencode".into()),
+                        state,
+                        attention: AgentAttention::None,
+                        changed_at_ms: 0,
+                    },
+                );
+                cx.notify();
+            });
+            draw(cx);
+            let tab = cx.debug_bounds("tab-fixture-a").unwrap();
+            assert_eq!(*bounds.get_or_insert(tab), tab, "{position}, {state:?}");
+            assert_eq!(
+                cx.debug_bounds("harness-attention").is_some(),
+                matches!(state, AgentState::Blocked | AgentState::Done),
+                "{position}, {state:?}"
+            );
+            assert!(cx.debug_bounds("harness-mark-OpenCode").is_some());
+        }
+    }
+}
+
+#[gpui::test]
 fn layered_mosaics_preserve_split_ratios_and_survive_selection_and_zoom(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = fixture(cx);

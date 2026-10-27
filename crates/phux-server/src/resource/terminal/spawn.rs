@@ -115,6 +115,9 @@ pub(crate) fn spawn_pty(
 
     clear_upgrade_handoff_env(&mut cmd);
     clear_agent_host_env(&mut cmd);
+    // TERM retains the ncurses-compatible terminfo choice. Truecolor is a
+    // separate capability, independent of how the daemon was launched.
+    cmd.env("COLORTERM", "truecolor");
     let child = super::fd_shrink::spawn_pane_child(&*pair.slave, &*pair.master, cmd)
         .map_err(|reason| TerminalActorError::Spawn(spawn_failure_reason(&reason)))?;
     // Our slave copy would prevent EOF on the master after the child exits.

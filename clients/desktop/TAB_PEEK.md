@@ -30,6 +30,19 @@ Hover a tab to see its title, panes, current folders and agent states without
 switching to it. The context card floats over your work on every tab placement;
 large splits show a compact list and a “+N more” count.
 
+## Identity and attention
+
+Split tabs show a layered mosaic of their pane layout. The focused pane remains
+lit on inactive tabs, and zoom dims hidden panes without removing their cells.
+Agent harness marks stay visible in unselected sessions, including on other
+machines; selecting work is not required to identify it.
+
+Only work needing you gets a small attention pip without a glow. Routine
+working/idle state remains in hover details, not another dot. Harness marks
+keep their identity when agents need attention; urgency keeps the pip even
+when the agent's lifecycle state is unknown. Tabs use one flat selection wash;
+attention does not outline a terminal or resize a tab.
+
 ## Peek tabs
 
 Click the **selected tab** to peek at all open tabs as live native terminal
@@ -43,12 +56,6 @@ Left/Right browse; Enter opens; Escape or a click on the displaced work closes
 the peek, as does the close button beside the keyboard hints below the previews.
 Selecting an inactive tab still switches directly, and dragging,
 modifier-selection and double-click rename keep their usual behavior.
-
-Split tabs show a layered mosaic of their pane layout. The focused pane remains
-lit on inactive tabs, and zoom dims hidden panes without removing their cells.
-Harness marks keep their identity when agents need attention; the corner pip
-reports state instead of replacing the mark.
-Urgent attention lights the pip even when the agent's lifecycle state is unknown.
 
 Peeking slides the full-size workspace down and clips its bottom: terminal
 dimensions never change, so programs do not reflow. Miniatures use the native
