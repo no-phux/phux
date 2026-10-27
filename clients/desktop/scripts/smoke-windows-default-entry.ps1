@@ -3,7 +3,7 @@
 # GUI primitives, same-source coordinator and isolated Windows state.
 if ($MyInvocation.InvocationName -ne '.') { throw 'Dot-source this helper from smoke-windows.ps1; it is not a standalone qualification entry' }
 
-function Send-ControlShift([ushort] $Key) {
+function Send-ControlShift([System.UInt16] $Key) {
     [PhuxDesktopGui]::Key(17, $false); [PhuxDesktopGui]::Key(16, $false)
     try { [PhuxDesktopGui]::Press($Key) }
     finally { [PhuxDesktopGui]::Key(16, $true); [PhuxDesktopGui]::Key(17, $true) }
