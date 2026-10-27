@@ -198,6 +198,7 @@ jobs:
           $cases = @(
             'updates::tests::windows_runtime_checks_are_read_only_and_quote_the_manual_wsl_update',
             'updates::tests::windows_runtime_install_and_retry_refuse_before_starting_wsl',
+            'app::updates::tests::windows_runtime_updates_show_manual_instructions_without_an_install_action',
             'updates::tests::windows::powershell_51_manual_runtime_command_preserves_real_wsl_argv'
           )
           $listed = @(& ./windows-policy/phux-desktop-policy.exe --list --format terse)
