@@ -17,12 +17,12 @@ const PAGE: usize = 100;
 const OWNERS: &str =
     "query { viewer { login organizations(first: 100) { nodes { login viewerCanAdminister } } } }";
 
-const QUERY: &str = r"
-query($mine: String!, $asked: String!, $owned: String!, $first: Int!) {
-  mine: search(type: ISSUE, query: $mine, first: $first) { issueCount nodes { ...pr } }
-  asked: search(type: ISSUE, query: $asked, first: $first) { issueCount nodes { ...pr } }
-  owned: search(type: ISSUE, query: $owned, first: $first) { issueCount nodes { ...pr } }
-}
+/// GitHub refuses a search query longer than this.
+const MAX_QUERY: usize = 256;
+/// Searches for owned accounts, at most; more accounts are left out.
+const MAX_OWNED_SEARCHES: usize = 6;
+
+const FRAGMENT: &str = r"
 fragment pr on PullRequest {
   id number title url isDraft updatedAt createdAt
   author { login }
@@ -103,68 +103,128 @@ pub fn owners() -> Result<Vec<String>> {
         .collect())
 }
 
-/// The three searches for `owners` (the first is the viewer).
-pub(crate) fn queries(owners: &[String]) -> [String; 3] {
+/// Which reason a search records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Authored,
+    Requested,
+    Owned,
+}
+
+/// One aliased search of the inbox document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Search {
+    pub alias: String,
+    pub query: String,
+    pub kind: Kind,
+}
+
+/// The inbox's searches for `owners` (the first is the viewer): authored,
+/// requested, then the owned accounts split so each query fits GitHub's limit.
+/// The flag says accounts were left out.
+pub(crate) fn searches(owners: &[String]) -> (Vec<Search>, bool) {
     const OPEN: &str = "is:pr is:open archived:false sort:updated-desc";
-    let accounts: Vec<String> = owners
+    let search = |alias: String, query: String, kind| Search { alias, query, kind };
+    let mut searches = vec![
+        search("mine".into(), format!("{OPEN} author:@me"), Kind::Authored),
+        search(
+            "asked".into(),
+            format!("{OPEN} review-requested:@me"),
+            Kind::Requested,
+        ),
+    ];
+    let mut query = String::new();
+    let mut chunks = Vec::new();
+    for (ix, owner) in owners.iter().enumerate() {
+        let account = if ix == 0 {
+            format!("user:{owner}")
+        } else {
+            format!("org:{owner}")
+        };
+        if !query.is_empty() && OPEN.len() + query.len() + 1 + account.len() + 1 > MAX_QUERY {
+            chunks.push(std::mem::take(&mut query));
+        }
+        if !query.is_empty() {
+            query.push(' ');
+        }
+        query.push_str(&account);
+    }
+    if !query.is_empty() {
+        chunks.push(query);
+    }
+    let left_out = chunks.len() > MAX_OWNED_SEARCHES;
+    for (ix, accounts) in chunks.into_iter().take(MAX_OWNED_SEARCHES).enumerate() {
+        searches.push(search(
+            format!("owned{ix}"),
+            format!("{OPEN} {accounts}"),
+            Kind::Owned,
+        ));
+    }
+    (searches, left_out)
+}
+
+/// One GraphQL document asking every search at once.
+fn document(searches: &[Search]) -> String {
+    let variables: Vec<String> = searches
         .iter()
-        .enumerate()
-        .map(|(ix, owner)| {
-            if ix == 0 {
-                format!("user:{owner}")
-            } else {
-                format!("org:{owner}")
-            }
+        .map(|s| format!("${}: String!", s.alias))
+        .collect();
+    let fields: Vec<String> = searches
+        .iter()
+        .map(|s| {
+            format!(
+                "  {0}: search(type: ISSUE, query: ${0}, first: $first) {{ issueCount nodes {{ ...pr }} }}",
+                s.alias
+            )
         })
         .collect();
-    [
-        format!("{OPEN} author:@me"),
-        format!("{OPEN} review-requested:@me"),
-        format!("{OPEN} {}", accounts.join(" ")),
-    ]
+    format!(
+        "query({}, $first: Int!) {{\n{}\n}}{FRAGMENT}",
+        variables.join(", "),
+        fields.join("\n")
+    )
 }
 
 /// Read the inbox for `owners`, as [`owners`] returned them.
 pub fn fetch(owners: &[String]) -> Result<Inbox> {
-    let [mine, asked, owned] = queries(owners);
-    let owned = if owners.is_empty() {
-        mine.clone()
-    } else {
-        owned
-    };
-    let variables = json!({ "mine": mine, "asked": asked, "owned": owned, "first": PAGE });
-    parse(&gh::graphql(QUERY, &variables)?)
+    let (searches, left_out) = searches(owners);
+    let mut variables = serde_json::Map::new();
+    for search in &searches {
+        variables.insert(search.alias.clone(), Value::String(search.query.clone()));
+    }
+    variables.insert("first".into(), json!(PAGE));
+    let data = gh::graphql(&document(&searches), &Value::Object(variables))?;
+    let mut inbox = parse(&data, &searches)?;
+    inbox.truncated |= left_out;
+    Ok(inbox)
 }
 
-/// Records one search's reason on a pull request it found.
-type Mark = fn(&mut Reasons);
-
 #[derive(Deserialize)]
-struct Search {
+struct Found {
     #[serde(rename = "issueCount", default)]
     count: usize,
     #[serde(default)]
     nodes: Vec<Value>,
 }
 
-/// Merge the three searches into one list, by pull request.
-pub(crate) fn parse(data: &Value) -> Result<Inbox> {
+/// Merge the searches into one list, by pull request.
+pub(crate) fn parse(data: &Value, searches: &[Search]) -> Result<Inbox> {
     let mut by_id: HashMap<String, InboxPull> = HashMap::new();
     let mut truncated = false;
-    let buckets: [(&str, Mark); 3] = [
-        ("mine", |reasons| reasons.authored = true),
-        ("asked", |reasons| reasons.requested = true),
-        ("owned", |reasons| reasons.owned = true),
-    ];
-    for (bucket, mark) in buckets {
-        let search: Search = serde_json::from_value(data[bucket].clone()).map_err(|error| {
-            GhError::Failed(format!("GitHub answered an unreadable search: {error}"))
-        })?;
-        truncated |= search.count > search.nodes.len();
-        for node in &search.nodes {
+    for search in searches {
+        let found: Found =
+            serde_json::from_value(data[&search.alias].clone()).map_err(|error| {
+                GhError::Failed(format!("GitHub answered an unreadable search: {error}"))
+            })?;
+        truncated |= found.count > found.nodes.len();
+        for node in &found.nodes {
             let Some(pull) = pull(node) else { continue };
-            let entry = by_id.entry(pull.id.clone()).or_insert(pull);
-            mark(&mut entry.reasons);
+            let reasons = &mut by_id.entry(pull.id.clone()).or_insert(pull).reasons;
+            match search.kind {
+                Kind::Authored => reasons.authored = true,
+                Kind::Requested => reasons.requested = true,
+                Kind::Owned => reasons.owned = true,
+            }
         }
     }
     let mut pulls: Vec<InboxPull> = by_id.into_values().collect();
@@ -252,9 +312,10 @@ mod tests {
         let data = json!({
             "mine": {"issueCount": 1, "nodes": [node("A", "2026-01-02T00:00:00Z")]},
             "asked": {"issueCount": 0, "nodes": []},
-            "owned": {"issueCount": 4, "nodes": [node("B", "2026-01-03T00:00:00Z"), node("A", "2026-01-02T00:00:00Z"), {}]},
+            "owned0": {"issueCount": 4, "nodes": [node("B", "2026-01-03T00:00:00Z"), node("A", "2026-01-02T00:00:00Z"), {}]},
         });
-        let inbox = parse(&data).unwrap();
+        let (searches, _) = searches(&["me".into()]);
+        let inbox = parse(&data, &searches).unwrap();
         let ids: Vec<_> = inbox.pulls.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["B", "A"]);
         assert!(inbox.truncated);
@@ -274,10 +335,51 @@ mod tests {
     }
 
     #[test]
-    fn owned_accounts_are_one_search() {
-        let [mine, asked, owned] = queries(&["me".into(), "acme".into()]);
-        assert!(mine.ends_with("author:@me"));
-        assert!(asked.ends_with("review-requested:@me"));
-        assert!(owned.ends_with("user:me org:acme"));
+    fn owned_accounts_share_searches_that_fit_githubs_limit() {
+        let (few, left_out) = searches(&["me".into(), "acme".into()]);
+        let queries: Vec<_> = few.iter().map(|s| (s.alias.as_str(), s.kind)).collect();
+        assert_eq!(
+            queries,
+            [
+                ("mine", Kind::Authored),
+                ("asked", Kind::Requested),
+                ("owned0", Kind::Owned)
+            ]
+        );
+        assert!(few[2].query.ends_with("user:me org:acme") && !left_out);
+
+        let many: Vec<String> = (0..40)
+            .map(|n| format!("organization-number-{n:02}"))
+            .collect();
+        let (split, _) = searches(&many);
+        assert!(split.len() > 3);
+        assert!(
+            split.iter().all(|s| s.query.len() <= MAX_QUERY),
+            "{split:?}"
+        );
+        let named = split
+            .iter()
+            .filter(|s| s.kind == Kind::Owned)
+            .map(|s| s.query.matches(":organization").count())
+            .sum::<usize>();
+        assert_eq!(named, 40);
+
+        let (_, left_out) = searches(
+            &(0..400)
+                .map(|n| format!("org{n:03}-long-name-here"))
+                .collect::<Vec<_>>(),
+        );
+        assert!(left_out);
+    }
+
+    #[test]
+    fn the_document_asks_every_search() {
+        let (searches, _) = searches(&["me".into()]);
+        let document = document(&searches);
+        assert!(document.starts_with(
+            "query($mine: String!, $asked: String!, $owned0: String!, $first: Int!) {"
+        ));
+        assert!(document.contains("owned0: search(type: ISSUE, query: $owned0, first: $first)"));
+        assert!(document.contains("fragment pr on PullRequest"));
     }
 }

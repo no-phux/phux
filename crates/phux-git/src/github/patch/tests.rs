@@ -65,7 +65,7 @@ fn hosted(name: &str) -> (PathBuf, String, String) {
     sh(&work, &["add", "."]);
     sh(&work, &["commit", "-qm", "later"]);
     let base = sh(&work, &["rev-parse", "HEAD"]);
-    sh(&root, &["init", "-q", "--bare", "hub.git"]);
+    sh(&root, &["init", "-q", "--bare", "-b", "main", "hub.git"]);
     let url = hub.to_string_lossy().into_owned();
     sh(
         &work,
@@ -128,6 +128,94 @@ fn a_head_the_remote_lacks_is_an_error() {
         head_oid: missing,
     };
     assert!(local(&clone, "origin", &range, 3).is_err());
+}
+
+#[test]
+fn a_merge_fast_forwards_a_clean_base_and_spares_a_dirty_one() {
+    let (root, _, _) = hosted("forward");
+    let clone = root.join("clone");
+    sh(&root, &["clone", "-q", "--no-local", "hub.git", "clone"]);
+    let hub = root.join("hub.git").to_string_lossy().into_owned();
+    // The pull request lands on the hub's main.
+    let work = root.join("work");
+    sh(&work, &["merge", "-q", "--no-edit", "feat"]);
+    sh(&work, &["push", "-q", &hub, "main"]);
+    let head = sh(&work, &["rev-parse", "HEAD"]);
+
+    std::fs::write(clone.join("a.txt"), "dirty\n").unwrap();
+    let said = fast_forward(&clone, "origin", "main").unwrap();
+    assert!(said.contains("uncommitted"), "{said}");
+    assert_ne!(sh(&clone, &["rev-parse", "main"]), head);
+
+    sh(&clone, &["checkout", "-q", "--", "a.txt"]);
+    assert_eq!(
+        fast_forward(&clone, "origin", "main").unwrap(),
+        "main fast-forwarded."
+    );
+    assert_eq!(sh(&clone, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn a_base_not_checked_out_moves_only_forward() {
+    let (root, _, _) = hosted("refmove");
+    let clone = root.join("clone");
+    sh(&root, &["clone", "-q", "--no-local", "hub.git", "clone"]);
+    sh(&clone, &["checkout", "-q", "-b", "elsewhere"]);
+    let hub = root.join("hub.git").to_string_lossy().into_owned();
+    let work = root.join("work");
+    sh(&work, &["merge", "-q", "--no-edit", "feat"]);
+    sh(&work, &["push", "-q", &hub, "main"]);
+    let merged = sh(&work, &["rev-parse", "HEAD"]);
+
+    assert_eq!(
+        fast_forward(&clone, "origin", "main").unwrap(),
+        "main fast-forwarded."
+    );
+    assert_eq!(sh(&clone, &["rev-parse", "main"]), merged);
+
+    // A main with its own commit is not moved.
+    sh(&clone, &["checkout", "-q", "main"]);
+    std::fs::write(clone.join("mine.txt"), "mine\n").unwrap();
+    sh(&clone, &["add", "mine.txt"]);
+    sh(&clone, &["commit", "-qm", "mine"]);
+    let mine = sh(&clone, &["rev-parse", "main"]);
+    sh(&clone, &["checkout", "-q", "elsewhere"]);
+    std::fs::write(work.join("more.txt"), "more\n").unwrap();
+    sh(&work, &["add", "more.txt"]);
+    sh(&work, &["commit", "-qm", "more"]);
+    sh(&work, &["push", "-q", &hub, "main"]);
+    let said = fast_forward(&clone, "origin", "main").unwrap();
+    assert!(said.contains("its own commits"), "{said}");
+    assert_eq!(sh(&clone, &["rev-parse", "main"]), mine);
+}
+
+#[test]
+fn only_object_names_reach_git_as_revisions() {
+    let (root, base, _) = hosted("oids");
+    let range = Range {
+        number: 7,
+        base_ref: "main",
+        base_oid: &base,
+        head_oid: "--output=/tmp/x",
+    };
+    assert!(fetch_commits(&root.join("work"), "origin", &range).is_err());
+}
+
+#[test]
+fn the_worktree_on_a_branch_is_found() {
+    let (root, _, _) = hosted("worktree");
+    let work = root.join("work");
+    let linked = root.join("linked");
+    sh(
+        &work,
+        &["worktree", "add", "-q", linked.to_str().unwrap(), "feat"],
+    );
+    let found = worktree_on(&work, "feat").unwrap();
+    assert_eq!(
+        found.canonicalize().unwrap(),
+        linked.canonicalize().unwrap()
+    );
+    assert_eq!(worktree_on(&work, "absent"), None);
 }
 
 #[test]

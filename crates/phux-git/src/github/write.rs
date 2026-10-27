@@ -7,8 +7,9 @@ use super::gh::{self, GhError, Result};
 use super::types::{LineSide, MergeMethod};
 
 /// A review's verdict.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ReviewEvent {
+    #[default]
     Comment,
     Approve,
     RequestChanges,
@@ -146,34 +147,6 @@ pub fn ready_for_review(pull_id: &str) -> Result<()> {
     .map(drop)
 }
 
-/// Delete `branch` on `repo` after its merge.
-pub fn delete_branch(repo: &str, branch: &str) -> Result<()> {
-    if super::split_repo(repo).is_none() || branch.is_empty() || branch.starts_with('-') {
-        return Err(GhError::Failed(format!(
-            "Cannot delete {branch:?} on {repo:?}."
-        )));
-    }
-    let endpoint = format!("repos/{repo}/git/refs/heads/{}", escape_path(branch));
-    gh::run(
-        &std::env::temp_dir(),
-        &["api", "--method", "DELETE", &endpoint],
-        None,
-    )
-    .map(drop)
-}
-
-/// Percent-encode everything in a ref but unreserved characters and `/`.
-fn escape_path(raw: &str) -> String {
-    raw.bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                char::from(byte).to_string()
-            }
-            _ => format!("%{byte:02X}"),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,11 +180,6 @@ mod tests {
             (wire["startSide"].as_str(), wire["startLine"].as_u64()),
             (Some("LEFT"), Some(7))
         );
-    }
-
-    #[test]
-    fn branch_paths_escape_what_a_url_would_misread() {
-        assert_eq!(escape_path("feat/a#b c%"), "feat/a%23b%20c%25");
     }
 
     #[test]

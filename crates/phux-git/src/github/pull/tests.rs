@@ -89,6 +89,18 @@ fn only_actions_checks_have_a_job_log() {
 }
 
 #[test]
+fn a_deleted_fork_is_still_a_fork() {
+    let mut data = sample();
+    let pull_node = &mut data["repository"]["pullRequest"];
+    pull_node["headRepository"] = Value::Null;
+    pull_node["isCrossRepository"] = json!(false);
+    assert!(parse("o/r", &data).unwrap().is_fork());
+    let pull_node = &mut data["repository"]["pullRequest"];
+    pull_node["headRepository"] = json!({"nameWithOwner": "o/r"});
+    assert!(!parse("o/r", &data).unwrap().is_fork());
+}
+
+#[test]
 fn a_missing_pull_request_is_refused() {
     let error = parse("o/r", &json!({"repository": {"pullRequest": null}})).unwrap_err();
     assert_eq!(
