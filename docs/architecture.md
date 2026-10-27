@@ -64,7 +64,7 @@ Cargo manifests define the actual edges.
 | `phux-core`           | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O                                                 |
 | `phux-config-core`    | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths                                                        |
 | `phux-perf`           | lock-free histograms and counters behind `GET_PERF` and `phux perf`                                                                                   |
-| `phux-git`            | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging; shared by the desktop Changes panel and `CHECKOUT` |
+| `phux-git`            | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and GitHub pull request review; shared by the desktop Changes panel, desktop Reviews and `CHECKOUT` |
 | `phux-agent-rules`    | agent detection manifests: regions, rules, `phux agent explain`                                                                                       |
 | `phux-crash`          | fatal-signal handler that restores the terminal before re-raising                                                                                     |
 | `portable-pty-adopt`  | rebuild portable-pty handles from inherited fds after `execve`                                                                                        |
