@@ -71,14 +71,17 @@ fn a_theme_without_a_palette_gets_the_default_ansi_colors() {
 
 #[test]
 fn an_error_posts_once_until_the_shader_compiles_again() {
-    let label = "phux-test-report.wgsl";
-    assert!(first_report(label, Some("1:1: nope")).is_some());
-    assert_eq!(first_report(label, Some("1:1: nope")), None);
-    assert!(first_report(label, Some("2:1: other")).is_some());
-    assert_eq!(first_report(label, None), None);
+    let (id, label) = ("file:Silk.wgsl", "Silk");
+    assert!(first_report(id, label, Some("1:1: nope")).is_some());
+    assert_eq!(first_report(id, label, Some("1:1: nope")), None);
+    // The built-in of the same name compiling does not forget the file's error.
+    assert_eq!(first_report("silk", label, None), None);
+    assert_eq!(first_report(id, label, Some("1:1: nope")), None);
+    assert!(first_report(id, label, Some("2:1: other")).is_some());
+    assert_eq!(first_report(id, label, None), None);
     assert_eq!(
-        first_report(label, Some("2:1: other")).as_deref(),
-        Some("phux-test-report.wgsl: 2:1: other")
+        first_report(id, label, Some("2:1: other")).as_deref(),
+        Some("Silk: 2:1: other")
     );
-    first_report(label, None);
+    first_report(id, label, None);
 }

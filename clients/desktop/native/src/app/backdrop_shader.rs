@@ -129,13 +129,14 @@ pub(crate) fn fleet_of<'a>(agents: impl IntoIterator<Item = &'a AgentInfo>) -> F
 /// windows wearing one broken file, or a file saved broken twice, post once.
 static REPORTED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
-/// The notification body for `label`'s `failure` when it is news; a clean
-/// compile forgets the last one, so breaking it again posts again.
-fn first_report(label: &str, failure: Option<&str>) -> Option<String> {
+/// The notification body for the `failure` of the shader `id` (shown as
+/// `label`) when it is news; a clean compile forgets the last one, so
+/// breaking it again posts again.
+fn first_report(id: &str, label: &str, failure: Option<&str>) -> Option<String> {
     let mut reported = REPORTED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let known = reported.iter().position(|(name, _)| name == label);
+    let known = reported.iter().position(|(name, _)| name == id);
     let Some(error) = failure else {
         if let Some(at) = known {
             reported.swap_remove(at);
@@ -149,7 +150,7 @@ fn first_report(label: &str, failure: Option<&str>) -> Option<String> {
             Some(format!("{label}: {error}"))
         }
         None => {
-            reported.push((label.to_owned(), error.to_owned()));
+            reported.push((id.to_owned(), error.to_owned()));
             Some(format!("{label}: {error}"))
         }
     }
@@ -281,8 +282,12 @@ impl Desk {
             }) => Some(error.to_string()),
             _ => None,
         };
-        let label = state.choice.as_ref().map(Choice::label).unwrap_or_default();
-        if let Some(body) = first_report(&label, failure.as_deref()) {
+        let (id, label) = state
+            .choice
+            .as_ref()
+            .map(|choice| (choice.id(), choice.label()))
+            .unwrap_or_default();
+        if let Some(body) = first_report(&id, &label, failure.as_deref()) {
             self.post(Kind::Error, "Backdrop shader did not compile", Some(body));
         }
         cx.notify();

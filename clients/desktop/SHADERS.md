@@ -97,12 +97,15 @@ Shaders render on the platform's own GPU API (Metal, Vulkan or Direct3D 12)
 through wgpu, offscreen at up to one pixel per point (at most 1024 pixels on
 the long side and 512 on the short one), and the window shows the result as
 an image. An animated shader renders up to 30 frames a second while its
-window is key and 6 while it is not. Only a shader on screen renders: the
-clock stops while the platform is not presenting the window (on macOS, while
-it is covered, minimized or on a sleeping display), and a card on a hidden
-Settings page renders nothing.
+window is key and 6 while it is not. The clock runs only for a shader on
+screen: it stops while the platform is not presenting the window (on macOS,
+while it is covered, minimized or on a sleeping display) and for a card on a
+hidden Settings page. A changed theme, size or agent count still renders one
+frame, so a window shown again is current.
 
 The GPU device opens the first time a shader is shown, in a window or on a
 Settings card, and stays open until you quit. A frame that takes longer than
-two seconds is abandoned and tried again after a pause, so a shader that
-loops for too long shows its last good frame rather than stalling the window.
+two seconds is abandoned and tried again after 1, 5, then 30 seconds; the
+backdrop keeps its last good frame meanwhile. The abandoned work still runs
+to completion on the GPU, so a shader that loops for seconds slows the
+whole window.

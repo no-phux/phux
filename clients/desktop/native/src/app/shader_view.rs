@@ -211,6 +211,11 @@ impl ShaderView {
         if self.program.is_none() {
             self.replaced.extend(self.image.take());
         }
+        // A new program starts clean; other inputs wait out a failure's retry.
+        if self.failed.take().is_some() {
+            self.next = None;
+        }
+        self.retries = 0;
         self.invalidate(cx);
     }
 
@@ -251,10 +256,6 @@ impl ShaderView {
 
     fn invalidate(&mut self, cx: &mut Context<Self>) {
         self.stale = true;
-        if self.failed.take().is_some() {
-            self.next = None;
-        }
-        self.retries = 0;
         cx.notify();
     }
 
@@ -325,10 +326,10 @@ impl ShaderView {
         let uniforms = Uniforms {
             size: [size.0, size.1],
             pointer,
-            // An hour's wrap keeps f32 seconds fine-grained in a window
-            // left open for days.
+            // A day's wrap keeps f32 seconds fine-grained in a window left
+            // open for weeks.
             time: if self.motion {
-                (self.started.elapsed().as_secs_f64() % 3600.) as f32
+                (self.started.elapsed().as_secs_f64() % 86_400.) as f32
             } else {
                 STILL_TIME
             },
