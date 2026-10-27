@@ -4,10 +4,12 @@
 param(
     [Parameter(Mandatory = $true)][string] $Archive,
     [Parameter(Mandatory = $true)][string] $ServerBinary,
-    [Parameter(Mandatory = $true)][string] $Output
+    [Parameter(Mandatory = $true)][string] $Output,
+    [ValidatePattern('^[0-9a-f]{40}$')][string] $DiagnosticBuildSha
 )
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Run GUI qualification on a disposable Windows CI runner, not your installed desktop' }
+if ($DiagnosticBuildSha -and $env:PHUX_DIAGNOSTIC -cne 'true') { throw 'A foreign build revision is permitted only in a diagnostic run, never qualification' }
 if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PhuxDesktop') { throw 'Qualification refuses an existing desktop installation' }
 if (-not [Environment]::UserInteractive) { throw 'Native GUI qualification requires an interactive desktop; it cannot be skipped' }
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
@@ -94,7 +96,9 @@ function Start-SmokeDesktop([string] $Label, [switch] $DefaultEntry) {
     $evidence = Join-Path $Output $Label
     New-Item -ItemType Directory -Force $evidence | Out-Null
     $executable = Join-Path $installed 'current/phux-desktop.exe'
-    $arguments = @('--socket', $socket, '--phux', $phux, '--session', $session, '--fresh', '--evidence', ('"' + $evidence + '"'))
+    # Reattach the seeded shell. --fresh deliberately creates another terminal
+    # and cannot prove that the seeded process survives crash/relaunch.
+    $arguments = @('--socket', $socket, '--phux', $phux, '--session', $session, '--evidence', ('"' + $evidence + '"'))
     $launch = @{ FilePath = $executable; PassThru = $true; RedirectStandardOutput = (Join-Path $Output "$Label.stdout.log"); RedirectStandardError = (Join-Path $Output "$Label.stderr.log") }
     if (-not $DefaultEntry) { $launch.ArgumentList = $arguments }
     $script:desktop = Start-Process @launch
@@ -190,6 +194,7 @@ try {
     $bundle = Expand-DesktopArchive $Archive (Join-Path $work 'unpacked')
     $release = Get-DesktopBundle $bundle
     $expectedSha = (& git -C $repo rev-parse HEAD) -join ''
+    if ($DiagnosticBuildSha) { $expectedSha = $DiagnosticBuildSha }
     $expectedVersion = (Get-Content -Raw (Join-Path $repo 'clients/desktop/package.json') | ConvertFrom-Json).version
     if ($release.sha -cne $expectedSha -or $release.version -cne $expectedVersion) { throw 'Packaged native app does not identify this same-source checkout' }
     Install-DesktopBundle $bundle $installed (Join-Path $repo 'scripts/install-desktop-windows.ps1') $true
@@ -248,7 +253,7 @@ try {
     $renderer = Get-Content -Raw (Join-Path $Output 'first-launch.stderr.log')
     $gpu = [regex]::Match($renderer, 'Using GPU: ([^\r\n]+)').Groups[1].Value
     if (-not $gpu -or $renderer -notmatch 'Created device with Direct3D') { throw 'Native D3D adapter/feature-level evidence is missing' }
-    @{ ok = $true; platform = 'windows-x64'; gpu = $gpu; qualification = 'hosted native D3D GUI, not real-GPU qualification'; serverPid = $serverPid; shellPid = $shellPid; scenarios = @('visible window OCR', 'native keys', 'clipboard', 'PTY resize', 'UI reconnect', 'app crash/relaunch', 'shell persistence', 'installed shortcut default arguments', 'automatic WSL CLI/socket/home selection', 'saved Windows split restoration after crash') } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Output 'result.json') -Encoding UTF8
+    @{ ok = $true; diagnostic = [bool] $DiagnosticBuildSha; buildSha = $release.sha; harnessSha = ((& git -C $repo rev-parse HEAD) -join ''); platform = 'windows-x64'; gpu = $gpu; qualification = 'hosted native D3D GUI, not real-GPU qualification'; serverPid = $serverPid; shellPid = $shellPid; scenarios = @('visible window OCR', 'native keys', 'clipboard', 'PTY resize', 'UI reconnect', 'app crash/relaunch', 'shell persistence', 'installed shortcut default arguments', 'automatic WSL CLI/socket/home selection', 'saved Windows split restoration after crash') } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Output 'result.json') -Encoding UTF8
 } catch {
     $_ | Out-String | Set-Content (Join-Path $Output 'failure.txt') -Encoding UTF8
     throw
@@ -256,6 +261,9 @@ try {
     Stop-SmokeDesktop
     try {
         if ($started) { Invoke-SmokeCli @('kill', '--server') | Out-Null }
+        # Shell-folder discovery must see the same real Windows user profile
+        # used during registration, not the app's disposable preferences home.
+        foreach ($name in @('USERPROFILE', 'HOME', 'LOCALAPPDATA', 'APPDATA')) { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process') }
         if ($uninstall) { Uninstall-Desktop $installed }
         if ($copiedCli) { Invoke-DesktopWsl ('rm -f ' + (ConvertTo-DesktopShellLiteral $phux)) | Out-Null }
         Invoke-DesktopWsl ('rm -rf ' + (ConvertTo-DesktopShellLiteral $linuxRoot)) | Out-Null
