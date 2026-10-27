@@ -20,6 +20,21 @@ fn windows_shortcuts_do_not_intercept_shell_signals() {
     assert_eq!(super::display_chord("cmd+t"), "Win+T");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn mac_command_arrows_walk_tabs_and_sessions() {
+    let chords = default_chords();
+    for (key, action) in [
+        ("cmd+left", "tab-prev"),
+        ("cmd+right", "tab-next"),
+        ("cmd+up", "session-prev"),
+        ("cmd+down", "session-next"),
+    ] {
+        let bound: Vec<_> = chords.iter().filter(|(chord, _)| chord == key).collect();
+        assert_eq!(bound, [&(key.to_owned(), action.to_owned())]);
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_shortcuts_leave_shell_control_keys_alone() {

@@ -149,6 +149,21 @@ pub fn default_chords() -> Vec<(String, String)> {
             chords.push(((*alias).to_owned(), command.id.to_owned()));
         }
     }
+    // On a Mac, Command+arrows walk the work: sideways through tabs, up and
+    // down through the sidebar's sessions.
+    #[cfg(target_os = "macos")]
+    {
+        chords.retain(|(chord, _)| chord != "cmd+up" && chord != "cmd+down");
+        chords.extend(
+            [
+                ("cmd+left", "tab-prev"),
+                ("cmd+right", "tab-next"),
+                ("cmd+up", "session-prev"),
+                ("cmd+down", "session-next"),
+            ]
+            .map(|(chord, id)| (chord.to_owned(), id.to_owned())),
+        );
+    }
     chords
 }
 
@@ -492,7 +507,10 @@ pub fn text_field_has_keys(
 /// Select All and Ghostty text/esc binds stay with a text field.
 #[must_use]
 pub fn yields_to_text_field(command_id: &str) -> bool {
-    command_id == "select-all" || command_id.starts_with("send:")
+    matches!(
+        command_id,
+        "select-all" | "tab-prev" | "tab-next" | "session-prev" | "session-next"
+    ) || command_id.starts_with("send:")
 }
 
 /// The key with shifted punctuation folded to its base key, and whether the
