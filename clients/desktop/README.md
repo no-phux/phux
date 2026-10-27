@@ -42,8 +42,37 @@ Gatekeeper to install a downloaded app.
 ### Windows
 
 On Windows today, the CLI and terminal UI run in WSL 2, with PowerShell
-launchers. A native Windows desktop build is not published yet.
-[Install in WSL](../../docs/install.md#windows-wsl).
+launchers. The native x64 desktop connects to that same coordinator through
+`wsl.exe` and the binary stdio bridge; WSLg and a network listener are not required.
+[Install the WSL CLI/server](../../docs/install.md#windows-wsl) first, then
+install a Windows-capable desktop release from PowerShell:
+
+```powershell
+$installer = Join-Path $env:TEMP 'install-phux-desktop.ps1'
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/no-phux/phux/main/scripts/install-desktop-windows.ps1 -OutFile $installer
+& $installer
+```
+
+The installer refuses channels without a Windows artifact. It verifies
+release-key-signed checksums, installs per user under `%LOCALAPPDATA%\Phux`,
+and adds a Start Menu shortcut and Apps uninstall entry. Signature verification
+uses `minisign.exe` on Windows or `minisign` in WSL (`sudo apt-get install minisign`).
+It never replaces the WSL CLI or stops its server. Close the app and rerun
+the installer to update; `-Channel next` selects preview builds, `-Version VERSION`
+pins a stable version, and `-Uninstall` preserves preferences and WSL shells.
+
+`PHUX_WSL_DISTRO` selects a distribution instead of WSL's default.
+`--phux` / `PHUX_BIN` and `--socket` name **Linux** executable/socket paths.
+Native file drops and clipboard images upload to WSL before their Linux paths
+are pasted. Windows preferences and logs stay in `%LOCALAPPDATA%\phux-desktop`.
+
+Windows uses `Ctrl-Shift-P/T/W/F` for palette/new/close/find, `Ctrl-Shift-C/V`
+for copy/paste, `Ctrl-Shift-D` / `Ctrl-Alt-D` for splits and `Ctrl-Shift-R`
+to reconnect. Plain `Ctrl-C/Z/D` stay with the shell.
+The local Changes panel and external Unix developer socket are unavailable;
+use terminal Git and the in-app Performance Monitor. Runtime updates are manual:
+**Settings → Updates → Manual in WSL** provides a command preserving your selected
+distribution and CLI. Desktop never starts a Linux updater it cannot reliably cancel.
 
 ## First launch and recovery
 

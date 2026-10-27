@@ -17,8 +17,9 @@ Published CLI/server builds:
 | Linux | x86_64                | glibc; there is no musl build           |
 | Linux | arm64                 | glibc; there is no musl build           |
 
-Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
-Windows desktop build is not published yet. There is no native Windows
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. The
+[native Windows desktop installer](../clients/desktop/README.md#windows)
+requires a release containing the Windows x64 artifact. There is no native Windows
 coordinator or Intel Mac build. See [Windows (WSL)](#windows-wsl).
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
@@ -48,8 +49,9 @@ for the operating system's permission boundaries.
 
 ## Windows (WSL)
 
-Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
-Windows desktop build is not published yet.
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. The
+[native Windows desktop](../clients/desktop/README.md#windows) uses the same
+coordinator; install it only after initializing your non-root WSL user.
 
 Use Windows Terminal and WSL 2 with Ubuntu 22.04 or newer (x64 or arm64).
 The server, panes, configuration, credentials, and agent integrations live

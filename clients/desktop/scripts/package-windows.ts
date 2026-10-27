@@ -82,12 +82,14 @@ export function createWindowsBundle(options: BundleOptions): string {
 export function archiveWindowsBundle(output: string, archive: string): void {
   // GNU tar cannot write ZIP. Host tooling tests use zip on Linux and the
   // system bsdtar on macOS; shipping Windows always uses its native bsdtar.
-  const tar = process.platform === "win32"
-    ? join(process.env.SystemRoot ?? "C:\\Windows", "System32/tar.exe")
-    : "/usr/bin/tar";
-  const zip = process.platform === "linux"
-    ? Bun.spawnSync(["zip", "-qr", resolve(archive), "phux-desktop"], { cwd: output })
-    : Bun.spawnSync([tar, "--format=zip", "-cf", archive, "-C", output, "phux-desktop"]);
+  const tar =
+    process.platform === "win32"
+      ? join(process.env.SystemRoot ?? "C:\\Windows", "System32/tar.exe")
+      : "/usr/bin/tar";
+  const zip =
+    process.platform === "linux"
+      ? Bun.spawnSync(["zip", "-qr", resolve(archive), "phux-desktop"], { cwd: output })
+      : Bun.spawnSync([tar, "--format=zip", "-cf", archive, "-C", output, "phux-desktop"]);
   if (zip.exitCode !== 0) throw new Error(zip.stderr.toString());
 }
 

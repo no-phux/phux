@@ -10,7 +10,7 @@ explains itself at the top.
 | Product                                                      | Tag                                          | From                                     |
 | ------------------------------------------------------------ | -------------------------------------------- | ---------------------------------------- |
 | `phux` + `phux-mcp` (macOS arm64, Linux x86_64, Linux arm64) | `vX.Y.Z`                                     | `release.yml` → `build-cli.yml`          |
-| Phux Desktop (macOS arm64, Linux x64 and arm64)              | `desktop-vX.Y.Z`                             | `desktop-release.yml`                    |
+| Phux Desktop (macOS arm64, Linux x64/arm64, Windows x64)     | `desktop-vX.Y.Z`                             | `desktop-release.yml`                    |
 | mobile FFI (xcframework, Android)                            | attached to `vX.Y.Z`                         | `ffi-xcframework.yml`, `ffi-android.yml` |
 | `@phux/pi`, `@phux/opencode`, `@phux/omp` on npm             | `<component>-vX.Y.Z`                         | `agent-integration-release.yml`          |
 | Claude and Grok plugins                                      | `claude-plugin-vX.Y.Z`, `grok-plugin-vX.Y.Z` | same; GitHub release only                |
@@ -94,6 +94,16 @@ The desktop is qualified before upload: `smoke-app.ts` on macOS, and
 `smoke-linux.ts` under Xvfb and lavapipe on Linux, against an isolated
 server built from the same checkout.
 
+Windows builds with MSVC and the pinned GPUI Direct3D/DirectWrite backend.
+`windows-desktop.yml` packages the executable with the app-local CRT and
+licenses, installs it per user, and requires native-window OCR, real keyboard
+input, clipboard, PTY resize, reconnect and crash/relaunch against the
+same-source WSL coordinator. Diagnostic build artifacts are not qualified
+release artifacts. A failed GUI run blocks checksum signing and publication.
+Hosted D3D/software-adapter evidence is not real-GPU qualification. The
+installer verifies minisign-signed checksums; that is not Authenticode signing
+or a claim of SmartScreen reputation. A native Windows coordinator is not shipped.
+
 ### macOS desktop signing
 
 Stable macOS releases contain a drag-to-Applications **DMG** and an updater
@@ -142,8 +152,8 @@ exceptions are needed for the native GPUI executable.
 The workflow checks Gatekeeper acceptance of both the copied app and image,
 mounts the image read-only, and smoke-tests its copied app on an isolated
 same-checkout server. It checksums only the final stapled bytes, uploads and
-downloads them again, and signs all four desktop checksum sidecars (two
-macOS, two Linux) before making the draft public. Apple submission receipts
+downloads them again, and signs all five desktop checksum sidecars (two
+macOS, two Linux, one Windows) before making the draft public. Apple submission receipts
 and runtime evidence are retained as Actions artifacts. A failure leaves the
 release in draft. The `next` channel remains the existing ad-hoc ZIP path.
 
