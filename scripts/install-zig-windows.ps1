@@ -3,6 +3,20 @@
 [CmdletBinding()]
 param([Parameter(Mandatory = $true)][string] $Directory)
 $ErrorActionPreference = 'Stop'
+
+# Windows' loader and Defender can briefly retain a handle after `zig version`
+# exits. Retry only that recoverable I/O failure, never replace an existing pin.
+function Move-ZigCompiler([string] $Source, [string] $Destination) {
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        try {
+            Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+            return
+        } catch [IO.IOException] {
+            if ($attempt -eq 9) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
 $pin = Get-Content -Raw (Join-Path $PSScriptRoot '../.config/zig-toolchain.json') | ConvertFrom-Json
 $archive = $pin.archives.'x86_64-windows'
 if (-not $archive -or $archive.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Missing audited Windows Zig pin' }
@@ -25,7 +39,7 @@ try {
     Expand-Archive -LiteralPath $zip -DestinationPath $stage
     $unpacked = Join-Path $stage ([IO.Path]::GetFileNameWithoutExtension($archive.archive))
     if ((& (Join-Path $unpacked 'zig.exe') version) -cne $pin.version) { throw 'Zig version mismatch' }
-    Move-Item -LiteralPath $unpacked -Destination $destination
+    Move-ZigCompiler $unpacked $destination
     Write-Output $destination
 } finally {
     Remove-Item -LiteralPath $stage -Recurse -Force
