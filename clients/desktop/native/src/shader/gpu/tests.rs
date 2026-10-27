@@ -68,3 +68,47 @@ fn a_new_program_or_size_replaces_the_pipeline_and_target() {
     assert_eq!((frame.width, frame.height), (MAX_SIDE, 3));
     assert_eq!(pixel(&frame, MAX_SIDE - 1, 2), [0, 0, 0, 0]);
 }
+
+/// A program's media reaches `phux_media` once its feed decodes a frame.
+#[test]
+fn a_programs_media_is_sampled_once_it_decodes() {
+    let Some(mut renderer) = renderer() else {
+        return;
+    };
+    let Some(ffmpeg) = media::tool("ffmpeg") else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("phux-gpu-media-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let clip = dir.join("red.mp4");
+    let made = std::process::Command::new(ffmpeg)
+        .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+        .arg("color=c=red:size=64x36:rate=30:duration=1")
+        .args(["-pix_fmt", "yuv420p"])
+        .arg(&clip)
+        .status()
+        .expect("runs ffmpeg");
+    assert!(made.success());
+    let source = format!(
+        "// phux:media {}\nfn shade(uv: vec2f) -> vec4f {{\n    return vec4f(phux_media(phux_media_cover(uv)).rgb, phux.media);\n}}\n",
+        clip.display()
+    );
+    let program = Program::compile("red", &source).expect("compiles");
+    let uniforms = Uniforms::default();
+    let blank = renderer
+        .render(&program, &uniforms, 16, 9)
+        .expect("renders");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut frame = blank;
+    while pixel(&frame, 8, 4)[3] == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        frame = renderer
+            .render(&program, &uniforms, 16, 9)
+            .expect("renders");
+    }
+    let [b, g, r, a] = pixel(&frame, 8, 4);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(a, 255, "a frame is bound");
+    assert!(r > 200 && g < 60 && b < 60, "the clip is red: {r} {g} {b}");
+}

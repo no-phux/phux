@@ -84,12 +84,48 @@ The `phux` uniform block:
 | `working`, `blocked`, `done`, `idle`, `agents`                                                         | `f32`              | Agent counts.                                                                      |
 | `background`, `foreground`, `surface`, `accent`, `cursor`, `selection`, `danger`, `warning`, `success` | `vec4f`            | The theme.                                                                         |
 | `ansi`                                                                                                 | `array<vec4f, 16>` | The theme's terminal palette.                                                      |
+| `media`, `media_size`                                                                                  | `f32`, `vec2f`     | `1` while a video frame is bound, and its size in pixels. See below.               |
 
 `phux_hash(p)` and `phux_noise(p)` return 0 to 1 for a `vec2f`, and
 `phux_fbm(p)` layers five octaves of noise.
 
 A shader whose text never mentions `phux.time` or `phux.frame` renders only
 when the window's size, theme, intensity or agents change.
+
+## Video
+
+A line `// phux:media <source>` plays a video under the shader. The source is
+a file (`~/` and paths relative to the shader folder work; a file loops) or an
+`http(s)` URL. With [yt-dlp](https://github.com/yt-dlp/yt-dlp) installed a
+page link such as a YouTube video or a live stream plays too; without it the
+URL goes to `ffmpeg` as is. Playing video needs `ffmpeg` on `PATH` or in
+`/opt/homebrew/bin`, `/usr/local/bin` or `~/.local/bin`.
+
+`phux_media(uv)` samples the newest frame, and `phux_media_cover(uv)` maps a
+window `uv` to the frame so it fills the window without stretching. Until the
+first frame decodes, or when the source fails, `phux.media` is `0` and
+`phux_media` returns transparent black, so a shader can draw something else
+meanwhile. A failure is logged and retried after 1, 5, then 30 seconds.
+
+```wgsl
+// phux:media https://www.youtube.com/watch?v=aqz-KE-bpKQ
+fn shade(uv: vec2f) -> vec4f {
+    let video = phux_media(phux_media_cover(uv)).rgb;
+    // Dim the picture while agents work; bring it back when they stop.
+    let color = mix(phux.background.rgb, video, mix(1.0, 0.3, phux.energy));
+    return vec4f(color, phux.media);
+}
+```
+
+[`cinema.wgsl`](shaders/cinema.wgsl) does this with a vignette, a pointer
+that peeks through the dimming, and a flash when an agent needs you. Copy it
+into the shader folder and point its media line at your video.
+
+Video is decoded at up to 960 pixels on its longest side and 30 frames a
+second, without sound. Every window and Settings card showing the same source shares one
+decoder, which stops when the last of them switches to another shader or
+closes. The decoder keeps running while its window is hidden or motion is
+off.
 
 ## Cost
 

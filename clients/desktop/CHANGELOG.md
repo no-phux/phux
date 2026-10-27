@@ -14,6 +14,10 @@
   while agents work and flaring when one needs you. Pick one from live cards
   in Settings or cycle with **Next Backdrop Shader**; drop a `.wgsl` file in
   the shader folder and every save redraws the window.
+- Let a backdrop shader play video: a `// phux:media` line names a file or
+  an http(s) URL (YouTube and friends through `yt-dlp`), `ffmpeg` decodes
+  it, and `phux_media(uv)` samples the frame. The `cinema.wgsl` example
+  dims the video while agents work and flashes it back when one needs you.
 
 - Render inline Kitty graphics in terminal panes and previews, including PNG,
   RGB/RGBA, chunked transfers, Unicode placeholders, cropping, transparency and

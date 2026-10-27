@@ -142,6 +142,8 @@ fn the_packed_block_matches_the_wgsl_layout() {
             ansi[15] = [41., 42., 43., 44.];
             ansi
         },
+        media_size: [51., 52.],
+        media: 53.,
         ..Uniforms::default()
     };
     let bytes = uniforms.pack();
@@ -156,6 +158,20 @@ fn the_packed_block_matches_the_wgsl_layout() {
     assert_eq!(at(offset("background") + 12), 24.);
     assert_eq!(at(offset("success")), 31.);
     assert_eq!(at(offset("ansi") + 15 * 16 + 8), 43.);
+    assert_eq!(at(offset("media_size") + 4), 52.);
+    assert_eq!(at(offset("media")), 53.);
+}
+
+#[test]
+fn a_media_line_names_the_source_and_animates() {
+    let source = "// A movie.\n  // phux:media   ~/Movies/loop.mp4  \n// phux:media second.mp4\nfn shade(uv: vec2f) -> vec4f {\n    return phux_media(phux_media_cover(uv)) * phux.media;\n}\n";
+    let program = Program::compile("movie", source).expect("compiles");
+    assert_eq!(program.media.as_deref(), Some("~/Movies/loop.mp4"));
+    assert!(program.animated);
+    let plain = Program::compile("flat", FLAT).expect("compiles");
+    assert_eq!(plain.media, None);
+    let empty = Program::compile("empty", &format!("// phux:media \n{FLAT}")).expect("compiles");
+    assert_eq!(empty.media, None);
 }
 
 #[test]
@@ -166,4 +182,11 @@ fn every_builtin_and_the_starter_compile() {
         assert!(program.animated, "{} should move", builtin.name);
     }
     Program::compile("starter", crate::shader::library::STARTER).expect("starter compiles");
+}
+
+#[test]
+fn the_cinema_example_compiles_and_names_its_video() {
+    let source = include_str!("../../../../shaders/cinema.wgsl");
+    let program = Program::compile("cinema", source).expect("compiles");
+    assert_eq!(program.media.as_deref(), Some("~/Movies/backdrop.mp4"));
 }
