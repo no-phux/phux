@@ -449,4 +449,43 @@ fn a_full_update_installs_verifies_and_hands_off() {
     );
 }
 
+#[test]
+fn fetch_build_downloads_that_build_not_the_channel_latest() {
+    let work = tempfile::tempdir().unwrap();
+    let mut fake = FakeReleases::new("v9.9.9");
+    let old = version("0.1.0");
+    let (artifact, _) = publish_artifact(&mut fake, work.path(), &Build::Stable(old), "v0.1.0");
+    assert!(artifact.url.contains("v0.1.0"), "{}", artifact.url);
+    let into = work.path().join("into");
+    fs::create_dir_all(&into).unwrap();
+    let key = TestKey::new(RELEASE_SEED).public();
+    let staged = super::fetch_build(&fake, &[&key], &Build::Stable(old), target(), &into).unwrap();
+    assert_eq!(
+        fs::read_to_string(staged.join("phux")).unwrap(),
+        "phux v0.1.0"
+    );
+    let urls = fake.downloads.borrow().clone();
+    assert!(
+        urls.iter().any(|url| url.contains("v0.1.0")),
+        "downloads the hub's own version: {urls:?}"
+    );
+    assert!(
+        urls.iter()
+            .all(|url| !url.contains("9.9.9") && !url.contains("channels/")),
+        "does not fetch the channel's latest manifest or artifact: {urls:?}"
+    );
+}
+
+#[test]
+fn own_build_is_this_binary() {
+    let build = super::own_build().unwrap();
+    match channel::of_build() {
+        Channel::Stable => assert_eq!(build, Build::Stable(current_version().unwrap())),
+        Channel::Next => {
+            let sha = channel::build_sha().unwrap();
+            assert_eq!(build.tag(), format!("next.{sha}"));
+        }
+    }
+}
+
 mod releases;

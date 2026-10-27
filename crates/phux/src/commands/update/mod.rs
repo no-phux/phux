@@ -224,35 +224,70 @@ fn signed_digest(
     )
 }
 
-/// Download this build's release channel's published phux for `target` into
-/// `into` and unpack it after the same signature and digest gate `phux
-/// update` installs through, returning the published entry and the staged
-/// directory holding `phux`. `phux host minimal` uses it to put a Linux phux
-/// into boxes on a macOS host.
+/// The build this process is: its stable version, or the next commit it was
+/// compiled from. Boxes take this build, not a later one the channel has
+/// published since.
+pub(crate) fn own_build() -> Result<Build, UpdateError> {
+    match channel::of_build() {
+        Channel::Stable => Ok(Build::Stable(release::current_version()?)),
+        Channel::Next => {
+            let sha = channel::build_sha().ok_or_else(|| {
+                UpdateError::Install(
+                    "this next build has no commit sha, so its Linux box binary cannot be \
+                     downloaded"
+                        .to_owned(),
+                )
+            })?;
+            let lowercase_hex = sha.len() == 40
+                && sha
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+            if !lowercase_hex {
+                return Err(UpdateError::Install(format!(
+                    "this next build's commit sha `{sha}` is not 40 lowercase hex digits"
+                )));
+            }
+            Ok(Build::Next(sha.to_owned()))
+        }
+    }
+}
+
+/// Download this process's own phux for `target` into `into` and unpack it
+/// after the same signature and digest gate `phux update` installs through.
+/// The channel manifest names the channel's latest build, which may be newer
+/// than the hub the box has to speak to, so it is not consulted: the signed
+/// digest of this build's asset is the gate. Returns the build and the
+/// staged directory holding `phux`.
 pub(crate) fn fetch_published(
     target: &str,
     into: &std::path::Path,
-) -> Result<(Entry, PathBuf), UpdateError> {
-    let releases = release::NetworkReleaseSource;
-    let channel = channel::of_build();
-    let entry = releases
-        .manifest(channel)
-        .and_then(|body| release::published(&body, channel, target))?;
-    let artifact = shared::asset(Product::Phux, &entry.build, target);
+) -> Result<(Build, PathBuf), UpdateError> {
+    let build = own_build()?;
+    let staged = fetch_build(
+        &release::NetworkReleaseSource,
+        signature::RELEASE_KEYS,
+        &build,
+        target,
+        into,
+    )?;
+    Ok((build, staged))
+}
+
+/// Download and verify `build` for `target` from `releases`. `release_keys`
+/// are the minisign keys that may have signed its digest.
+fn fetch_build(
+    releases: &dyn ReleaseSource,
+    release_keys: &[&str],
+    build: &Build,
+    target: &str,
+    into: &std::path::Path,
+) -> Result<PathBuf, UpdateError> {
+    let artifact = shared::asset(Product::Phux, build, target);
     let archive = into.join(&artifact.name);
     releases.download(&artifact.url, &archive)?;
-    let expected = signed_digest(&releases, signature::RELEASE_KEYS, &artifact, into)?;
-    if entry.sha256 != expected {
-        return Err(UpdateError::Signature(format!(
-            "the {} release manifest publishes {} for {}, but the signed checksum is {expected}",
-            channel.as_str(),
-            entry.sha256,
-            artifact.name
-        )));
-    }
+    let expected = signed_digest(releases, release_keys, &artifact, into)?;
     apply::verify_digest(&archive, &expected, &artifact.name)?;
-    let staged = apply::unpack_verified(&archive, &artifact.stem, into)?;
-    Ok((entry, staged))
+    apply::unpack_verified(&archive, &artifact.stem, into)
 }
 
 /// Restore the binaries saved by the previous update. The handoff runs here
