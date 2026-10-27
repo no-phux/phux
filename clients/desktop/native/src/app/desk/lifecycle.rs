@@ -92,6 +92,7 @@ impl Desk {
             recent_projects,
             link: None,
             connect_error: None,
+            reconnect_home: None,
             layout_blocked: blocked,
             persist_writes: request.role != WindowRole::Fresh && !blocked,
             store,

@@ -197,6 +197,8 @@ pub struct Desk {
     pub(crate) recent_projects: Vec<PathBuf>,
     pub link: Option<Link>,
     pub connect_error: Option<String>,
+    /// One home probe at a time, including while its blocking worker finishes.
+    reconnect_home: Option<Task<()>>,
     pub layout_blocked: bool,
     pub persist_writes: bool,
     store: FileLayoutStore,
