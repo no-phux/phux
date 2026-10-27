@@ -207,6 +207,14 @@ impl ShaderView {
         if same {
             return;
         }
+        let media = |program: &Option<Arc<Program>>| {
+            program.as_ref().and_then(|program| program.media.clone())
+        };
+        if media(&self.program).is_some() && media(&self.program) != media(&program) {
+            // The renderer holds the old program's video feed; letting it go
+            // stops the decoder once no other view shows that video.
+            self.renderer = Arc::default();
+        }
         self.program = program;
         if self.program.is_none() {
             self.replaced.extend(self.image.take());

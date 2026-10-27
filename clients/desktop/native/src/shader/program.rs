@@ -5,6 +5,9 @@
 //! sRGB with alpha. Phux declares the `phux` uniform block above it and the
 //! entry points below it, so a program may not declare bindings or entry
 //! points of its own. Errors are reported against the program's own lines.
+//!
+//! A line `// phux:media <source>` names a video file or URL whose frames
+//! the program samples with `phux_media(uv)`; [`super::media`] decodes it.
 
 use std::hash::{Hash, Hasher};
 
@@ -39,8 +42,26 @@ struct Phux {
     warning: vec4f,
     success: vec4f,
     ansi: array<vec4f, 16>,
+    media_size: vec2f,
+    media: f32,
 }
 @group(0) @binding(0) var<uniform> phux: Phux;
+@group(0) @binding(1) var phux_media_texture: texture_2d<f32>;
+@group(0) @binding(2) var phux_media_sampler: sampler;
+fn phux_media(uv: vec2f) -> vec4f {
+    return textureSampleLevel(phux_media_texture, phux_media_sampler, uv, 0.0);
+}
+fn phux_media_cover(uv: vec2f) -> vec2f {
+    let window = phux.size.x / max(phux.size.y, 1.0);
+    let media = phux.media_size.x / max(phux.media_size.y, 1.0);
+    var fit = vec2f(1.0);
+    if window > media {
+        fit.y = media / window;
+    } else {
+        fit.x = window / media;
+    }
+    return (uv - 0.5) * fit + 0.5;
+}
 fn phux_hash(p: vec2f) -> f32 {
     var q = fract(p * vec2f(123.34, 456.21));
     q += dot(q, q + 45.32);
@@ -93,7 +114,13 @@ pub const VERTEX_ENTRY: &str = "phux_vertex";
 pub const FRAGMENT_ENTRY: &str = "phux_fragment";
 
 /// Size of the `phux` block in bytes.
-pub const UNIFORM_BYTES: usize = 464;
+pub const UNIFORM_BYTES: usize = 480;
+
+/// The globals the contract binds; a program may read but not declare them.
+const BOUND: [&str; 3] = ["phux", "phux_media_texture", "phux_media_sampler"];
+
+/// The line that names a program's media.
+const MEDIA_DIRECTIVE: &str = "// phux:media ";
 
 /// Why a program was refused, against the program's own source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +161,8 @@ pub struct Program {
     pub animated: bool,
     /// Identity of `wgsl`, for pipeline caches.
     pub hash: u64,
+    /// The video file or URL a `// phux:media` line names.
+    pub media: Option<String>,
 }
 
 impl Program {
@@ -167,10 +196,13 @@ impl Program {
         })?;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         wgsl.hash(&mut hasher);
+        let media = media_source(source);
         Ok(Self {
             name: name.to_owned(),
-            animated: reads_clock(source),
+            // Media frames arrive on their own clock.
+            animated: media.is_some() || reads_clock(source),
             hash: hasher.finish(),
+            media,
             wgsl,
         })
     }
@@ -307,10 +339,10 @@ fn sandbox(module: &naga::Module) -> Result<(), ShaderError> {
         .iter()
         .filter(|(_, global)| global.binding.is_some())
         .filter_map(|(_, global)| global.name.as_deref())
-        .find(|name| *name != "phux");
+        .find(|name| !BOUND.contains(name));
     if let Some(name) = bound {
         return Err(ShaderError::new(format!(
-            "`{name}` declares a binding; a shader reads only `phux`"
+            "`{name}` declares a binding; a shader reads only `phux` and `phux_media`"
         )));
     }
     let workgroup = module
@@ -335,6 +367,16 @@ fn closing_paren(text: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// The first `// phux:media <source>` line's source.
+fn media_source(source: &str) -> Option<String> {
+    source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(MEDIA_DIRECTIVE))
+        .map(str::trim)
+        .find(|media| !media.is_empty())
+        .map(str::to_owned)
 }
 
 fn line_count(text: &str) -> u32 {
@@ -416,6 +458,10 @@ pub struct Uniforms {
     pub warning: Rgba,
     pub success: Rgba,
     pub ansi: [Rgba; 16],
+    /// The media frame in pixels, `[0, 0]` without one.
+    pub media_size: [f32; 2],
+    /// 1 while a media frame is bound, 0 otherwise.
+    pub media: f32,
 }
 
 impl Default for Uniforms {
@@ -446,6 +492,8 @@ impl Default for Uniforms {
             warning: [0.95, 0.75, 0.3, 1.],
             success: [0.4, 0.85, 0.5, 1.],
             ansi: [gray(0.5); 16],
+            media_size: [0., 0.],
+            media: 0.,
         }
     }
 }
@@ -487,6 +535,8 @@ impl Uniforms {
         {
             floats.extend_from_slice(color);
         }
+        floats.extend_from_slice(&self.media_size);
+        floats.push(self.media);
         let mut bytes = [0; UNIFORM_BYTES];
         for (slot, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(floats) {
             slot.copy_from_slice(&value.to_ne_bytes());

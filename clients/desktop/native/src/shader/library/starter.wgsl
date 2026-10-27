@@ -16,6 +16,10 @@
 //   background, foreground, surface, accent, cursor, selection,
 //   danger, warning, success               vec4f  the theme
 //   ansi            array<vec4f, 16>       the terminal palette
+//   media, media_size f32, vec2f           1 while a video frame is bound
+//
+// A line starting `// phux:media` followed by a video file or URL plays it:
+// phux_media(phux_media_cover(uv)) samples the frame, filling the window.
 //
 // Helpers: phux_hash(p) and phux_noise(p) return 0..1; phux_fbm(p) layers
 // five octaves of noise. Names beginning with `phux` belong to phux.
