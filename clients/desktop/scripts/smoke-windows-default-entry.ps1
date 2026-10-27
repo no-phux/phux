@@ -37,6 +37,10 @@ function Assert-DefaultDiscovery {
 function Test-DefaultEntry {
     Stop-SmokeDesktop
     Assert-DefaultDiscovery
+    # The explicit-target phase has its own saved workspace. Start this phase
+    # with no prior layouts so a stale file cannot satisfy the split assertions.
+    $state = Join-Path $env:LOCALAPPDATA 'phux-desktop/wsl'
+    if (Test-Path -LiteralPath $state) { Remove-Item -LiteralPath $state -Recurse -Force }
     # Exactly the installed shortcut's target and empty argument list, not the
     # qualification-only --phux/--socket/--session/--fresh/--evidence entry.
     Start-SmokeDesktop 'default-entry' -DefaultEntry

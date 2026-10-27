@@ -17,6 +17,7 @@ on:
       - 'scripts/setup-rust.sh'
       - 'scripts/install-zig.sh'
       - 'scripts/*windows*.ps1'
+      - 'scripts/test-windows-bridge-fixture.py'
       - 'tools/src/desktop/**'
   workflow_dispatch:
   workflow_call:
@@ -149,7 +150,7 @@ jobs:
           distribution: Ubuntu-24.04
           wsl-version: 2
           wsl-shell-user: phux-ci
-          additional-packages: ca-certificates minisign
+          additional-packages: ca-certificates minisign python3
           use-cache: 'false'
       - name: Disposable WSL user's default and OCR
         shell: pwsh
@@ -174,6 +175,11 @@ jobs:
           $archive = (Get-ChildItem windows-package/phux-desktop-*-windows-x64.zip).FullName
           powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File clients/desktop/scripts/smoke-windows.ps1 -Archive $archive -ServerBinary "$env:GITHUB_WORKSPACE/wsl-server/phux" -Output "$env:RUNNER_TEMP/desktop-evidence"
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows GUI qualification failed' }
+      - name: Backpressured Linux bridge exits after native launcher death
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows-bridge-teardown.ps1 -ServerBinary "$env:GITHUB_WORKSPACE/wsl-server/phux" -Output "$env:RUNNER_TEMP/desktop-evidence"
+          if ($LASTEXITCODE -ne 0) { throw 'Native WSL bridge teardown qualification failed' }
       - name: Hand only GUI-qualified bytes to release publication
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
