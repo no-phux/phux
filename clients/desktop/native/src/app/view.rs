@@ -23,6 +23,7 @@
 mod changes;
 mod navigator;
 mod panes;
+mod reviews;
 mod status;
 mod tab_peek;
 mod tabs;
@@ -33,6 +34,8 @@ pub(super) mod preview;
 
 #[cfg(test)]
 mod changes_tests;
+#[cfg(test)]
+mod reviews_tests;
 #[cfg(test)]
 mod tab_tests;
 
@@ -160,6 +163,7 @@ pub(super) struct ChromeCache {
     tab_rail: Option<Entity<CachedChrome>>,
     sidebar: Option<Entity<CachedChrome>>,
     changes: Option<Entity<CachedChrome>>,
+    reviews: Option<Entity<CachedChrome>>,
     overlays: Option<Entity<CachedChrome>>,
 }
 
@@ -225,6 +229,7 @@ pub fn render(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> i
     }
     desk.sync_title(window);
     desk.settle_focus(window, cx);
+    desk.settle_reviews_focus(window, cx);
     desk.drive_skin(window, cx);
     desk.ensure_clock(cx);
     desk.flush_system(cx);
@@ -324,6 +329,14 @@ fn workspace_row(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let skin = &look.skin;
+    if desk.reviews.open && !quick(desk) {
+        return div().flex_1().flex().min_h_0().child(chrome_slot(
+            &mut desk.chrome.reviews,
+            reviews::build,
+            StyleRefinement::default().flex_1().h_full(),
+            cx,
+        ));
+    }
     let presence = skin.chrome.sidebar.clamp(0., 1.);
     let wanted = navigator::wanted(desk);
     let sidebar =

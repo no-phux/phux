@@ -62,6 +62,7 @@ const CATALOG: &str = "\
     sidebar | Toggle Sidebar | View | cmd+b | Show or hide the navigation sidebar. |
     changes | Toggle Changes | View | cmd+alt+g | Show the focused terminal's Git changes beside the panes: diffs, staging and commit. | git diff stage commit status branch review
     backdrop-shader-next | Next Backdrop Shader | View |  | Cycle the shader behind your panes: off, the built-ins, then your own files. | shader wgsl background wallpaper animated aurora nebula rain grid silk
+    reviews | Toggle Reviews | View | cmd+alt+r | Review your open GitHub pull requests: diffs, comments, checks and merge. | github pr pull request inbox merge ci checks approve
     plain-terminal | Toggle Plain Terminal | View | cmd+ctrl+t | Switch between the glass desk and a plain terminal window. | skin minimal ghostty chrome glass
     tabs-top | Tabs on Top | View |  | Place workspace tabs in the titlebar. | layout horizontal placement
     tabs-bottom | Tabs on Bottom | View |  | Place workspace tabs below your work, including in plain terminal mode. | layout horizontal placement

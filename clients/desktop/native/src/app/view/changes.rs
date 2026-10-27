@@ -195,7 +195,7 @@ fn branch_detail(status: &Status) -> String {
 }
 
 /// The layout button's icon and tooltip: what it shows, and what a click does.
-fn layout_control(layout: Layout) -> (IconName, &'static str) {
+pub(super) fn layout_control(layout: Layout) -> (IconName, &'static str) {
     match layout {
         Layout::Auto => (
             IconName::Columns2,

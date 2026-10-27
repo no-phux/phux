@@ -1,6 +1,6 @@
 [package]
 name = "phux-git"
-description = "Std-only Git over the user's own `git`: checkout status, diffs, history, branches, files and index writes, shared by the desktop Changes panel and the server's checkout methods."
+description = "Std-only Git over the user's own `git` and `gh`: checkout status, diffs, history, branches, files and index writes, and GitHub pull request review, shared by the desktop and the server's checkout methods."
 publish = false
 version.workspace = true
 edition.workspace = true
