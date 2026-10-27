@@ -146,6 +146,17 @@ pub fn capture_fleet_fixture(
     fleet::dashboard::preview::capture(root, directory, cx)
 }
 
+/// Open a desk and render the scripted fleet film into `directory`, then quit.
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
+pub fn capture_fleet_film(
+    options: AppOptions,
+    directory: PathBuf,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let root = open(options, cx)?;
+    fleet::dashboard::preview::film(root, directory, cx)
+}
+
 /// Capture the real desktop layouts with an embedded, server-free runtime.
 #[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn capture_design_fixture(
