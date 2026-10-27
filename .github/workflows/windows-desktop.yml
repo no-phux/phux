@@ -105,6 +105,20 @@ jobs:
       - run: bun tools/main.ts desktop-source
       - name: Build shipping native Windows executable
         run: cargo build --locked --release --manifest-path clients/desktop/native/Cargo.toml --bin phux-desktop --target x86_64-pc-windows-msvc
+      - name: Build native policy tests for execution on the WSL qualification host
+        shell: pwsh
+        run: |
+          cargo test --locked --release --manifest-path clients/desktop/native/Cargo.toml -p phux-desktop --lib --no-run --target x86_64-pc-windows-msvc --message-format=json > "$env:RUNNER_TEMP/policy-build.jsonl"
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows policy tests did not compile' }
+          $tests = Get-Content "$env:RUNNER_TEMP/policy-build.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'phux_desktop' -and $_.executable }
+          if (@($tests).Count -ne 1) { throw 'Expected one desktop policy test executable' }
+          New-Item -ItemType Directory windows-policy | Out-Null
+          Copy-Item -LiteralPath $tests.executable windows-policy/phux-desktop-policy.exe
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-policy-windows-x64
+          path: windows-policy/phux-desktop-policy.exe
+          if-no-files-found: error
       - name: Package native executable, notices, installer and MSVC runtime
         shell: pwsh
         run: |
@@ -145,6 +159,10 @@ jobs:
         with:
           name: windows-desktop-wsl-server
           path: wsl-server
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: desktop-policy-windows-x64
+          path: windows-policy
       - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7
         with:
           distribution: Ubuntu-24.04
@@ -169,6 +187,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell installer contracts failed' }
           pwsh -NoProfile -File scripts/test-install-desktop-windows.ps1
           if ($LASTEXITCODE -ne 0) { throw 'PowerShell 7 installer contracts failed' }
+      - name: Exact manual-update argv through Windows PowerShell 5.1 and WSL
+        shell: pwsh
+        run: |
+          ./windows-policy/phux-desktop-policy.exe windows_runtime_ --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Windows runtime read-only policy failed' }
+          ./windows-policy/phux-desktop-policy.exe --ignored --exact updates::tests::windows::powershell_51_manual_runtime_command_preserves_real_wsl_argv --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Legacy PowerShell native argv qualification failed' }
       - name: Installed app, live WSL shell, native input, clipboard, resize and reconnect
         shell: pwsh
         run: |

@@ -3,6 +3,9 @@ use super::*;
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(windows)]
+mod windows;
+
 const STABLE: &str = include_str!("../../../../../scripts/fixtures/release-manifest/stable.json");
 const NEXT: &str = include_str!("../../../../../scripts/fixtures/release-manifest/next.json");
 
