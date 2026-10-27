@@ -254,6 +254,8 @@ try {
         $state = Get-DesktopInstallSnapshot $directory $true
         $prior = Get-DesktopTestIdentity $directory
         [IO.File]::WriteAllText((Join-Path $directory 'uninstall.ps1'), 'partial uninstaller')
+        [IO.File]::WriteAllText((Get-DesktopShortcutPath), 'partial shortcut')
+        Set-DesktopTestRegistryValue 'DisplayVersion' 'partial registration'
         $current = Join-Path $work 'locked-replacement'
         $backup = Join-Path $work 'recoverable-previous'
         New-Item -ItemType Directory $current, $backup | Out-Null
