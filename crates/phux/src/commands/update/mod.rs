@@ -139,7 +139,7 @@ fn install_release(
 
     // The gate: nothing below runs unless a release key signed the digest
     // and the bytes match it.
-    let expected = signed_digest(env, &artifact, staging.path())?;
+    let expected = signed_digest(env.releases, env.release_keys, &artifact, staging.path())?;
     if let Some(entry) = plan.vouched()
         && entry.sha256 != expected
     {
@@ -194,15 +194,15 @@ fn install_release(
 /// fetched refuses like one that does not verify: an unsigned release is
 /// never installed.
 fn signed_digest(
-    env: &UpdateEnv<'_>,
+    releases: &dyn ReleaseSource,
+    release_keys: &[&str],
     artifact: &Asset,
     staging: &std::path::Path,
 ) -> Result<String, UpdateError> {
     let sidecar_path = staging.join(format!("{}.sha256", artifact.name));
-    env.releases
-        .download(&artifact.sidecar_url(), &sidecar_path)?;
+    releases.download(&artifact.sidecar_url(), &sidecar_path)?;
     let signature_path = staging.join(format!("{}.sha256.minisig", artifact.name));
-    env.releases
+    releases
         .download(&artifact.signature_url(), &signature_path)
         .map_err(|err| {
             UpdateError::Signature(format!(
@@ -220,8 +220,39 @@ fn signed_digest(
         &read(&sidecar_path)?,
         &read(&signature_path)?,
         &artifact.name,
-        env.release_keys,
+        release_keys,
     )
+}
+
+/// Download this build's release channel's published phux for `target` into
+/// `into` and unpack it after the same signature and digest gate `phux
+/// update` installs through, returning the published entry and the staged
+/// directory holding `phux`. `phux host minimal` uses it to put a Linux phux
+/// into boxes on a macOS host.
+pub(crate) fn fetch_published(
+    target: &str,
+    into: &std::path::Path,
+) -> Result<(Entry, PathBuf), UpdateError> {
+    let releases = release::NetworkReleaseSource;
+    let channel = channel::of_build();
+    let entry = releases
+        .manifest(channel)
+        .and_then(|body| release::published(&body, channel, target))?;
+    let artifact = shared::asset(Product::Phux, &entry.build, target);
+    let archive = into.join(&artifact.name);
+    releases.download(&artifact.url, &archive)?;
+    let expected = signed_digest(&releases, signature::RELEASE_KEYS, &artifact, into)?;
+    if entry.sha256 != expected {
+        return Err(UpdateError::Signature(format!(
+            "the {} release manifest publishes {} for {}, but the signed checksum is {expected}",
+            channel.as_str(),
+            entry.sha256,
+            artifact.name
+        )));
+    }
+    apply::verify_digest(&archive, &expected, &artifact.name)?;
+    let staged = apply::unpack_verified(&archive, &artifact.stem, into)?;
+    Ok((entry, staged))
 }
 
 /// Restore the binaries saved by the previous update. The handoff runs here

@@ -62,6 +62,7 @@ mod enrollment;
 mod hub;
 mod list;
 mod manage;
+mod minimal;
 mod renew;
 #[cfg(test)]
 mod tests;
@@ -145,5 +146,6 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             json,
         } => inbound::run_ticket(name, hub.as_deref(), *expires_in, json.json),
         HostAction::Join { code, json } => inbound::run_join(code, json.json),
+        HostAction::Minimal { action } => minimal::run(action),
     }
 }
