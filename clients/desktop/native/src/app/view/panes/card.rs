@@ -17,7 +17,7 @@ use super::super::super::overlays;
 use super::super::super::pane_identity::{PaneKind, PaneOrigin};
 use super::super::super::skin::{Look, Surface, Surfaced};
 use super::super::super::ui::status::harness_mark;
-use super::super::super::ui::{ghost_button, pill, specular};
+use super::super::super::ui::{pill, specular};
 use super::super::gloss;
 use super::controls::{Offer, drop_hint, pane_controls};
 use super::depth::{depth_inset, veils};
@@ -161,7 +161,7 @@ pub(super) fn pane_view(
     };
     let shine = focus_shine(&look, focused, shared, depth, presence);
     let controls_bar = controls.then(|| controls_bar(desk, placement, zoomed, behind, &look, cx));
-    let corner = pane_corner(desk, placement, depth, controls, &look, cx);
+    let corner = pane_corner(desk, placement, depth, controls, &look);
     let card = div()
         .id(SharedString::from(format!("pane-card-{id}")))
         .debug_selector({
@@ -337,19 +337,17 @@ fn controls_visible(desk: &Desk, id: &str, finding: bool, dropping: bool, leavin
         || desk.pane_menu_open.as_deref() == Some(id)
 }
 
-/// Identity, recovery and the conversation action live in one quiet corner.
+/// Only recessed identity and input-recovery notices occupy the corner.
 fn pane_corner(
     desk: &Desk,
     placement: &Placement,
     depth: f32,
     controls: bool,
     look: &Look,
-    cx: &Context<Desk>,
 ) -> Option<gpui::Div> {
     if controls {
         return None;
     }
-    let id = &placement.id;
     let corner_mark = desk
         .pane_identity(placement)
         .origin
@@ -361,14 +359,14 @@ fn pane_corner(
             .as_ref()
             .is_some_and(|link| link.connection.fenced(id))
     });
-    let conversation_toggle = desk.conversation_eligible(id) && !desk.conversation_visible(id);
-    if corner_mark.is_none() && !fenced && !conversation_toggle {
+    if corner_mark.is_none() && !fenced {
         return None;
     }
-    let conversation_id = id.clone();
+    let id = placement.id.clone();
     let warning = &look.chrome.theme.warning;
     Some(
         div()
+            .debug_selector(move || format!("pane-corner-{id}"))
             .absolute()
             .top(px(8.))
             .right(px(10.))
@@ -383,15 +381,6 @@ fn pane_corner(
                     warning,
                     look,
                 ))
-            })
-            .when(conversation_toggle, |corner| {
-                corner.child(
-                    ghost_button(format!("conversation-open-{id}"), "Conversation").on_click(
-                        cx.listener(move |desk, _, window, cx| {
-                            desk.toggle_conversation(&conversation_id, window, cx);
-                        }),
-                    ),
-                )
             }),
     )
 }

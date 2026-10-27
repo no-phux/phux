@@ -167,7 +167,7 @@ fn pane_children_always_advertise_truecolor() {
         match inherited {
             Some(value) => cmd.env("COLORTERM", value),
             None => cmd.env_remove("COLORTERM"),
-        };
+        }
         let (mut rx, _, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn color probe");
         let got = collect_until(&mut rx, |got| has_line_with(got, b"COLOR:"));
         let _ = pty.child.wait();
