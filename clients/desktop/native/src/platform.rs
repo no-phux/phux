@@ -21,7 +21,7 @@ pub(crate) fn prepare_coordinator_home() {
     #[cfg(windows)]
     WSL_HOME.get_or_init(|| {
         let output = wsl_command()
-            .args(["--exec", "sh", "-lc", "printf '%s' \"$HOME\""])
+            .args(["--exec", "sh", "-c", "printf '%s' \"$HOME\""])
             .output()
             .ok()?;
         output
@@ -72,7 +72,7 @@ pub(crate) fn phux_command(phux: &Path) -> Command {
             .args([
                 "--exec",
                 "sh",
-                "-lc",
+                "-c",
                 "export PATH=\"$HOME/.local/bin:$PATH\"; exec \"$@\"",
                 "phux-desktop",
             ])
