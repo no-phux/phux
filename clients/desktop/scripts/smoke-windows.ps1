@@ -250,7 +250,7 @@ try {
     Stop-SmokeDesktop
     $afterCrash = 'printf "\033[2J\033[H    %s%s\n    %s%s\n    %s%s\n" "$PHUX_SMOKE_VALUE" AFTERCRASH "$PHUX_SMOKE_VALUE" AFTERCRASH "$PHUX_SMOKE_VALUE" AFTERCRASH; printf "%s\n" "$$" > ' + "$linuxRoot/after.pid"
     Invoke-SmokeCli @('send-keys', $session, $afterCrash, 'Enter') | Out-Null
-    Wait-Desktop 'surviving shell after Windows app death' { (Invoke-SmokeCli @('snapshot', $session)).Contains('PHUXSURVIVALAFTERCRASH') }
+    Wait-Desktop 'surviving shell after Windows app death' { (Invoke-DesktopWsl ('cat ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/after.pid"))) -ceq $shellPid }
     if ((Invoke-DesktopWsl ('cat ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/after.pid"))) -cne $shellPid) { throw 'The original shell did not survive' }
     if ((Invoke-SmokeCli @('status', '--json') | ConvertFrom-Json).pid -ne $serverPid) { throw 'The original server did not survive' }
     Start-SmokeDesktop 'after-crash'
@@ -262,6 +262,7 @@ try {
     @{ ok = $true; diagnostic = [bool] $DiagnosticBuildSha; buildSha = $release.sha; harnessSha = ((& git -C $repo rev-parse HEAD) -join ''); platform = 'windows-x64'; gpu = $gpu; qualification = 'hosted native D3D GUI, not real-GPU qualification'; serverPid = $serverPid; shellPid = $shellPid; scenarios = @('visible window OCR', 'native keys', 'clipboard text', 'clipboard file upload', 'clipboard bitmap upload', 'PTY resize', 'UI reconnect', 'app crash/relaunch', 'shell persistence', 'installed shortcut default arguments', 'automatic WSL CLI/socket/home selection', 'saved Windows split restoration after crash') } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Output 'result.json') -Encoding UTF8
 } catch {
     $_ | Out-String | Set-Content (Join-Path $Output 'failure.txt') -Encoding UTF8
+    try { Invoke-SmokeCli @('snapshot', '--unwrap', $session) | Set-Content (Join-Path $Output 'failure.shell.txt') -Encoding UTF8 } catch { Write-Warning $_ }
     try { if ($desktop -and -not $desktop.HasExited) { Get-WindowText 'failure' | Out-Null } } catch { Write-Warning $_ }
     throw
 } finally {
