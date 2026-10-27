@@ -48,6 +48,7 @@
     "patches/0019-windows-image-source-sampling.patch": "b0d2204c0652ca8c092506866e76781b709685d4d6a1cd857e89da9076cc2011",
     "patches/0020-runtime-application-icon.patch": "9b570139c8a11c8140a000de2ef4a655016591ed6fbbe78a05566092cda8b155",
     "patches/0021-windows-confirmed-presentation.patch": "7356011c163a20866da5ce2d6964e4e1c2692f5aa992b4be5e5ba2a973461d5c",
-    "patches/0022-windows-adapter-error-fallback.patch": "1b5f64e010b010e72f06364d88cfb178d49373161643bc6304c989238a1c88bf"
+    "patches/0022-windows-adapter-error-fallback.patch": "1b5f64e010b010e72f06364d88cfb178d49373161643bc6304c989238a1c88bf",
+    "patches/0023-windows-test-fixture-path.patch": "ad2bb99f90806c26d09bbbfceb4ca16ed2e07faa2f9bddf2e431850f4b4a2dbc"
   }
 }
