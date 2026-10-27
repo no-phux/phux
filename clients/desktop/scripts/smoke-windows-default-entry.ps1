@@ -70,9 +70,11 @@ function Test-DefaultEntry {
     $saved.Layout | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $Output 'default-entry.saved-layout.json') -Encoding UTF8
     $expectedTabs = $saved.Layout.tabs | ConvertTo-Json -Depth 30 -Compress
     $right = $saved.Tab.focusedTerminal
+    if ($right -cnotmatch '^local:([1-9][0-9]*)$') { throw 'Default split must identify a local terminal' }
+    $rightTarget = '@' + $Matches[1] # Saved-layout identities are not CLI selectors.
     $rightPid = Invoke-DesktopWsl ('cat ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/default-right.pid"))
     Stop-SmokeDesktop # Forced native death: no graceful on-close save can rescue it.
-    Invoke-SmokeCli @('send-keys', $right, ('printf "\033[2J\033[H    %s\n    %s\n    %s\n" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-after.pid"), 'Enter') | Out-Null
+    Invoke-SmokeCli @('send-keys', $rightTarget, ('printf "\033[2J\033[H    %s\n    %s\n    %s\n" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-after.pid"), 'Enter') | Out-Null
     Wait-Desktop 'default-entry shell survives app crash' { (Invoke-DesktopWsl ('test -s ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/default-after.pid") + ' && cat ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/default-after.pid"))) -ceq $rightPid }
     Start-SmokeDesktop 'default-relaunch' -DefaultEntry
     if ((Assert-DefaultLaunch 'default-relaunch') -cne $homeSession) { throw 'Default relaunch selected a different home session' }
