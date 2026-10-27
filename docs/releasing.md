@@ -95,6 +95,8 @@ The desktop is qualified before upload: `smoke-app.ts` on macOS, and
 server built from the same checkout.
 
 Windows builds with MSVC and the pinned GPUI Direct3D/DirectWrite backend.
+Windows is mandatory from Desktop 0.50.0 onward and on next; older stable
+desktop releases retain their original macOS/Linux target set.
 `windows-desktop.yml` packages the executable with the app-local CRT and
 licenses, installs it per user, and requires native-window OCR, real keyboard
 input, clipboard, PTY resize, reconnect and crash/relaunch against the

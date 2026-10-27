@@ -49,6 +49,7 @@ const ROUTES: Record<string, Surface[]> = {
   ".github/actions/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],
   "scripts/ci/prune-build-cache.sh": [],
+  "scripts/ci/publish-desktop-release.sh": [],
   // The separate Windows WSL workflow exercises PowerShell and real WSL;
   // these distribution scripts do not change the Unix Rust build.
   "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],

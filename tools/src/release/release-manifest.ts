@@ -104,7 +104,10 @@ export function assetDigests(
     return valid(DIGEST, value.slice("sha256:".length), `${name} sha256`);
   };
   return Object.fromEntries(
-    targets(product).map((target) => [target, digest(assetName(product, channel, id, target))]),
+    targets(product, channel, id).map((target) => [
+      target,
+      digest(assetName(product, channel, id, target)),
+    ]),
   );
 }
 

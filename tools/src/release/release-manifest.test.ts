@@ -31,6 +31,26 @@ describe("manifest", () => {
     expect(targets("desktop")).toContain("x86_64-pc-windows-msvc");
     expect(targets("phux")).not.toContain("x86_64-pc-windows-msvc");
   });
+  test("historical stable desktop releases retain Unix targets, while new releases and next require Windows", () => {
+    const legacy = digests("d");
+    expect(targets("desktop", "stable", "0.49.0")).toEqual(targets("phux"));
+    expect(targets("desktop", "stable", "0.49.99")).toEqual(targets("phux"));
+    expect(targets("desktop", "stable", "0.50.0")).toContain("x86_64-pc-windows-msvc");
+    expect(targets("desktop", "stable", "1.0.0")).toContain("x86_64-pc-windows-msvc");
+    expect(targets("desktop", "next", "0.49.0")).toContain("x86_64-pc-windows-msvc");
+    expect(
+      Object.keys(
+        table(entry("desktop", "stable", "0.49.0", "a".repeat(40), "0.9", legacy)["artifacts"]),
+      ),
+    ).toEqual(targets("phux"));
+    expect(() => entry("desktop", "stable", "0.50.0", "a".repeat(40), "0.9", legacy)).toThrow(
+      "needs digests",
+    );
+    expect(() => entry("desktop", "next", "0.49.0", "a".repeat(40), "0.9", legacy)).toThrow(
+      "needs digests",
+    );
+    expect(() => targets("desktop", "stable", "0.050.0")).toThrow("not valid");
+  });
   test("fixtures are current and line-parseable", () => {
     expect(fixtures(true)).toBe(0);
     for (const channel of CHANNELS) {
@@ -83,6 +103,15 @@ describe("manifest", () => {
 });
 
 describe("stable", () => {
+  test("legacy published assets rebuild a stable entry without inventing Windows", () => {
+    const assets = targets("phux").map((target) => ({
+      name: assetName("desktop", "stable", "0.49.0", target),
+      digest: `sha256:${"d".repeat(64)}`,
+    }));
+    const found = assetDigests(assets, "desktop", "stable", "0.49.0");
+    expect(found).toEqual(digests("d"));
+    expect(() => assetDigests(assets, "desktop", "stable", "0.50.0")).toThrow("not published");
+  });
   test("digests come from GitHub and must exist for every asset", () => {
     const names = targets("desktop").map((target) =>
       assetName("desktop", "stable", "1.2.3", target),
@@ -160,12 +189,14 @@ test("bad arguments are usage errors before any I/O", () => {
 test("the stable desktop signer waits for every platform and signs all sidecars", () => {
   const release = readFileSync(join(ROOT, ".github/workflows/desktop-release.yml"), "utf8");
   const signer = release.split("\n  sign:\n")[1] ?? "";
+  expect(signer).toContain("needs: [capabilities, macos, linux, windows]");
+  expect(signer).toContain("pattern: desktop-sidecar-*");
+  expect(signer).toContain("bash scripts/ci/publish-desktop-release.sh");
+  const publication = readFileSync(join(ROOT, "scripts/ci/publish-desktop-release.sh"), "utf8");
   for (const needle of [
-    "needs: [macos, linux, windows]",
-    "pattern: desktop-sidecar-*",
-    'test "${#sidecars[@]}" -eq 5',
+    'test "${#sidecars[@]}" -eq "$EXPECTED_DESKTOP_SIDECARS"',
     'bash scripts/ci/sign-release.sh "${sidecars[@]}"',
   ]) {
-    expect(signer).toContain(needle);
+    expect(publication).toContain(needle);
   }
 });

@@ -23,8 +23,14 @@ export const TARGETS = [
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",
 ];
-export function targets(product: Product): string[] {
-  return product === "desktop" ? Object.keys(DESKTOP_ARCHIVES) : TARGETS;
+export function targets(product: Product, channel: Channel = "next", version = ""): string[] {
+  if (product === "phux") return TARGETS;
+  if (channel === "next") return Object.keys(DESKTOP_ARCHIVES);
+  // Do not retroactively demand a Windows asset from an immutable historical
+  // release. Every new stable desktop (0.50.0 onward) must carry it.
+  valid(VERSION, version, "desktop version");
+  const [major = 0, minor = 0] = version.split(".").map(Number);
+  return major > 0 || minor >= 50 ? Object.keys(DESKTOP_ARCHIVES) : TARGETS;
 }
 const FIXTURES = "scripts/fixtures/release-manifest";
 
@@ -71,7 +77,7 @@ export function entry(
   digests: Record<string, string>,
 ): Table {
   const given = Object.keys(digests);
-  const required = targets(product);
+  const required = targets(product, channel, version);
   if (given.length !== required.length || !required.every((target) => target in digests)) {
     throw new Failure(`${product} needs digests for exactly ${required.join(", ")}`);
   }

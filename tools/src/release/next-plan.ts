@@ -21,6 +21,8 @@ const BUILDERS: Record<Product, string[]> = {
     ".github/workflows/desktop-release.yml",
     ".github/workflows/windows-desktop.yml",
     "scripts/{install-desktop-windows,test-install-desktop-windows,install-zig-windows}.ps1",
+    "scripts/test-windows-bridge-{teardown.ps1,fixture.py}",
+    "scripts/ci/publish-desktop-release.sh",
   ],
 };
 

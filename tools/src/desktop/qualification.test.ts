@@ -223,3 +223,44 @@ test("Windows policy filters cannot silently pass zero tests and diagnostics nev
   expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetFileDropList");
   expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetImage");
 });
+
+test("desktop release workflows preserve legacy targets and require Windows at the cutover", () => {
+  const release = workflow("desktop-release.yml");
+  const select = steps(job(release, "capabilities")).find((step) => step["id"] === "targets");
+  expect(select).toBeDefined();
+  const root = mkdtempSync(join(tmpdir(), "phux-desktop-capabilities-"));
+  try {
+    for (const [channel, tag, expected] of [
+      ["stable", "desktop-v0.49.0", "windows=false\nsidecars=4\n"],
+      ["stable", "desktop-v0.50.0", "windows=true\nsidecars=5\n"],
+      ["stable", "desktop-v1.0.0", "windows=true\nsidecars=5\n"],
+      ["next", "next", "windows=true\nsidecars=5\n"],
+    ] as const) {
+      const output = join(root, `${channel}-${tag}`);
+      const result = Bun.spawnSync(["bash", "-e", "-c", run(select ?? {})], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: output,
+          RELEASE_CHANNEL: channel,
+          RELEASE_TAG: tag,
+          RELEASE_SHA: "a".repeat(40),
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe(expected);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(job(release, "windows")["if"]).toBe("needs.capabilities.outputs.windows == 'true'");
+  expect(job(release, "sign")["if"]).toContain("needs.windows.result == 'success'");
+  expect(job(release, "sign")["if"]).toContain("needs.capabilities.outputs.windows == 'false'");
+  expect(job(release, "sign")["if"]).toContain("needs.windows.result == 'skipped'");
+  expect(steps(job(release, "sign")).map(run).join("\n")).toContain(
+    "bash scripts/ci/publish-desktop-release.sh",
+  );
+  expect(readFileSync(repoPath("scripts/ci/publish-desktop-release.sh"), "utf8")).toContain(
+    '"$EXPECTED_DESKTOP_SIDECARS"',
+  );
+});
