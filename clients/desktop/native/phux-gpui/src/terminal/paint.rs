@@ -20,6 +20,7 @@ use phux_client_runtime::publication::{Cell, CellMetadata, CursorStyle, GridDama
 
 mod appearance;
 mod ascii;
+mod boxes;
 mod builder;
 mod damage;
 mod decorations;

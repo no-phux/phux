@@ -206,6 +206,15 @@ fn gpu() -> HeadlessAppContext {
 }
 
 fn paint(client: Arc<Client>, view: ViewId, settings: Settings) -> Shot {
+    paint_sized(client, view, settings, size(px(480.), px(200.)))
+}
+
+fn paint_sized(
+    client: Arc<Client>,
+    view: ViewId,
+    settings: Settings,
+    window_size: gpui::Size<Pixels>,
+) -> Shot {
     // Keep one `Arc` until after the GPUI context drops. The terminal's own
     // clone must not be the last: dropping a `Client` on the UI thread joins
     // the runtime driver.
@@ -213,7 +222,7 @@ fn paint(client: Arc<Client>, view: ViewId, settings: Settings) -> Shot {
     let mut cx = gpu();
     let terminal_id = terminal();
     let window = cx
-        .open_window(size(px(480.), px(200.)), move |window, cx| {
+        .open_window(window_size, move |window, cx| {
             cx.new(|cx| Terminal::new(client, view, terminal_id, settings, window, cx))
         })
         .expect("offscreen window");
@@ -396,8 +405,18 @@ const FIXTURES: &[(&str, fn(), bool)] = &[
         false,
     ),
     (
+        "terminal::pixels::text_gallery",
+        tool_line_pixels::text_gallery,
+        true,
+    ),
+    (
         "terminal::pixels::claude_code_tool_lines_sit_on_the_grid",
         tool_line_pixels::claude_code_tool_lines_sit_on_the_grid,
+        false,
+    ),
+    (
+        "terminal::pixels::lines_join_across_tall_rows",
+        tool_line_pixels::lines_join_across_tall_rows,
         false,
     ),
     (

@@ -36,6 +36,7 @@ impl Builder {
                 row: run.row,
                 bounds,
                 color: run.color,
+                bend: None,
             });
         }
     }
@@ -49,8 +50,17 @@ impl Builder {
     ) {
         colors.foreground = colors.foreground.opacity(colors.opacity);
         colors.underline = colors.underline.opacity(colors.opacity);
-        let thickness = px(1. / self.scene.geometry.scale);
-        let bottom = bounds.bottom() - thickness * 2.;
+        // Rules follow the bundled faces' metrics from the baseline, not the
+        // cell's edges, so a taller cell does not float them off the text:
+        // 0.05 em thick, the underline 0.1 em below the baseline and the
+        // strikethrough's top 0.31 em above it, on whole device pixels.
+        let geometry = self.scene.geometry;
+        let em = self.scene.settings.font_size;
+        let snap = |logical: f32| px((logical * geometry.scale).round() / geometry.scale);
+        let thickness = snap((0.05 * em).max(1. / geometry.scale));
+        let baseline = f32::from(bounds.top() + geometry.baseline);
+        // A double underline needs room for two rules and the gap between.
+        let bottom = snap(baseline + 0.1 * em).min(bounds.bottom() - thickness * 3.);
         match cell.underline {
             1 => self.rule(row, bounds, bottom, thickness, colors.underline),
             2 => {
@@ -58,7 +68,7 @@ impl Builder {
                 self.rule(
                     row,
                     bounds,
-                    bottom - thickness * 2.,
+                    bottom + thickness * 2.,
                     thickness,
                     colors.underline,
                 );
@@ -77,7 +87,7 @@ impl Builder {
             self.rule(
                 row,
                 bounds,
-                bounds.top() + bounds.size.height * 0.55,
+                snap(baseline - 0.31 * em),
                 thickness,
                 colors.foreground,
             );
@@ -99,6 +109,7 @@ impl Builder {
             row,
             bounds: Bounds::new(point(bounds.left(), y), size(bounds.size.width, thickness)),
             color,
+            bend: None,
         });
     }
 
@@ -132,6 +143,7 @@ impl Builder {
                     size(width.min(bounds.size.width - x), thickness),
                 ),
                 color,
+                bend: None,
             });
             x += thickness * step;
             index += 1;

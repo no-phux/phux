@@ -105,6 +105,7 @@ mod tests {
             row,
             bounds: Bounds::default(),
             color,
+            bend: None,
         };
         let fresh = quad(1, gpui::red());
         let merged = merge_rows(
