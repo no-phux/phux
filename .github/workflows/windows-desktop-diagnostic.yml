@@ -2,6 +2,14 @@
 # second MSVC build. This workflow cannot upload qualified products or publish.
 name: Windows Desktop Diagnostic
 on:
+  workflow_call:
+    inputs:
+      build-run:
+        required: true
+        type: string
+      build-sha:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       build-run:
