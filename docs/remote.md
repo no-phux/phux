@@ -281,9 +281,12 @@ single-use ticket for it, and hands the code to `phux host join -` inside the
 box over `min session exec`. The box dials this machine at
 `host.min.internal`, the name Minimal gives this machine's loopback inside a
 box, so this server needs `[policy] mode = "paired"` and a QUIC listener
-bound to loopback or all addresses. A box's panes then appear here as
-`min-NAME/@N`, in the terminal and in the desktop app. When a box is
-destroyed, its satellite entry goes and its credential is revoked.
+bound to loopback or all addresses. A box's panes are then addressable here
+as `min-NAME/@N`. The box also gets a session here, `min-NAME`, whose pane
+is a shell in the box (`min session attach`), so it shows up in `phux ls`,
+`phux attach` and the desktop app without anything else to run. When a box
+is destroyed, that session ends, its satellite entry goes, and its
+credential is revoked.
 
 **The box gets no authority here.** A satellite credential opens no terminal
 on the hub; the hub drives the box, never the reverse, so an agent sealed in

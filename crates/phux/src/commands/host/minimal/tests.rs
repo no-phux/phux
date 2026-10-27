@@ -16,19 +16,19 @@ fn sessions_parse_from_min_ls_json_and_skip_idless_rows() {
     let body = r#"{
         "resource_pool": {"cpu_cores": 2},
         "sessions": [
-            {"id": "01a17b22-a257", "name": "api", "status": "active", "git": null},
-            {"id": "01a17b27-877d", "name": "", "status": "stopped"},
+            {"id": "01a17b22-a257", "name": "api", "status": "active", "git": null,
+             "project_path": "/src/api"},
+            {"id": "01a17b27-877d", "name": "", "status": "stopped", "project_path": ""},
             {"name": "ghost", "status": "active"}
         ],
         "daemon_version": "0.7.1"
     }"#;
     let sessions = parse_sessions(body).unwrap();
+    let mut api = BoxSession::new("01a17b22-a257", Some("api"), "active");
+    api.project = Some(PathBuf::from("/src/api"));
     assert_eq!(
         sessions,
-        vec![
-            BoxSession::new("01a17b22-a257", Some("api"), "active"),
-            BoxSession::new("01a17b27-877d", None, "stopped"),
-        ]
+        vec![api, BoxSession::new("01a17b27-877d", None, "stopped")]
     );
     assert!(sessions[0].is_active());
     assert!(!sessions[1].is_active());
@@ -493,4 +493,40 @@ fn remove_stops_when_the_watcher_cannot_be_uninstalled() {
     assert_eq!(registry.load().unwrap(), joined);
     assert!(!credential_revoked(&files, "min-api"));
     assert!(!loadout.exists());
+}
+
+#[test]
+fn a_box_session_is_an_ephemeral_attach_with_mins_path() {
+    let args = super::session::new_args(
+        Path::new("/opt/min/bin/min"),
+        Some("/opt/min/bin:/usr/bin".into()),
+        Some(Path::new("/src/api")),
+        "01a17b22-a257",
+        "min-api",
+    );
+    let args: Vec<_> = args.iter().map(|arg| arg.to_str().unwrap()).collect();
+    assert_eq!(
+        args,
+        [
+            "new",
+            "--json",
+            "--ephemeral",
+            "-s",
+            "min-api",
+            "-c",
+            "/src/api",
+            "-e",
+            "PATH=/opt/min/bin:/usr/bin",
+            "--",
+            "/opt/min/bin/min",
+            "session",
+            "attach",
+            "01a17b22-a257",
+        ]
+    );
+    let bare = super::session::new_args(Path::new("min"), None, None, "01a1", "min-x");
+    assert!(
+        !bare.iter().any(|arg| arg == "-e" || arg == "-c"),
+        "{bare:?}"
+    );
 }

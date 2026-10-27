@@ -1,5 +1,6 @@
 //! The `min` CLI: list sessions, probe a box, and redeem a join code in one.
 
+use std::ffi::OsString;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -21,6 +22,8 @@ pub(super) struct BoxSession {
     pub(super) id: String,
     pub(super) name: Option<String>,
     status: String,
+    /// The directory on this machine the box was activated from.
+    pub(super) project: Option<PathBuf>,
 }
 
 impl BoxSession {
@@ -30,6 +33,7 @@ impl BoxSession {
             id: id.to_owned(),
             name: name.map(str::to_owned),
             status: status.to_owned(),
+            project: None,
         }
     }
 
@@ -135,18 +139,19 @@ impl MinCli {
             .to_owned())
     }
 
-    /// `min` with its own directory first on `PATH`: it starts its VM
-    /// daemon (`minvmd`) from there, and a service's `PATH` rarely has it.
+    /// `PATH` with `min`'s own directory first: it starts its VM daemon
+    /// (`minvmd`) from there, and a service's `PATH` rarely has it.
+    pub(super) fn search_path(&self) -> Option<OsString> {
+        let dir = self.program.parent()?;
+        let rest = std::env::var_os("PATH").unwrap_or_default();
+        std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&rest)))
+            .ok()
+    }
+
     fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
-        if let Some(dir) = self.program.parent() {
-            let rest = std::env::var_os("PATH").unwrap_or_default();
-            let path = std::env::join_paths(
-                std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&rest)),
-            );
-            if let Ok(path) = path {
-                command.env("PATH", path);
-            }
+        if let Some(path) = self.search_path() {
+            command.env("PATH", path);
         }
         command
     }
@@ -207,8 +212,9 @@ fn finish(mut child: Child, limit: Duration, what: &str) -> Result<Output, Strin
     })
 }
 
-/// Parse `min session list --json`: `{"sessions":[{"id","name","status"}]}`.
-/// Unknown fields are ignored; a session without an id is skipped.
+/// Parse `min session list --json`:
+/// `{"sessions":[{"id","name","status","project_path"}]}`. Unknown fields are
+/// ignored; a session without an id is skipped.
 pub(super) fn parse_sessions(body: &str) -> Result<Vec<BoxSession>, String> {
     let doc: serde_json::Value = serde_json::from_str(body)
         .map_err(|err| format!("`min session list --json` printed something else: {err}"))?;
@@ -229,6 +235,9 @@ pub(super) fn parse_sessions(body: &str) -> Result<Vec<BoxSession>, String> {
                 id: text("id").filter(|id| !id.is_empty())?,
                 name: text("name").filter(|name| !name.is_empty()),
                 status: text("status").unwrap_or_default(),
+                project: text("project_path")
+                    .filter(|path| !path.is_empty())
+                    .map(PathBuf::from),
             })
         })
         .collect())
