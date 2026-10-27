@@ -52,10 +52,18 @@ function Test-DefaultEntry {
         $created = Get-SavedTab 'leaf'
         $null -ne $created -and $created.Tab.id -cne $initialTab
     }
+    # Persistence can precede the first native frame. As at HWND startup, let
+    # the newly focused surface paint before sending a command exactly once.
+    Start-Sleep -Milliseconds 500
     Send-Shell ('PHUX_DEFAULT_VALUE=PHUX"LEFT"; printf "\033[2J\033[H    %s\n    %s\n    %s\n" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-left.pid")
     Assert-Rendered 'default-left' 'PHUXLEFT'
+    $left = (Get-SavedTab 'leaf').Tab.focusedTerminal
     Send-ControlShift 68 # Windows Split Right, a local presentation to restore.
-    Wait-Desktop 'native split attached and saved' { $null -ne (Get-SavedTab 'split') }
+    Wait-Desktop 'native split attached and saved' {
+        $split = Get-SavedTab 'split'
+        $null -ne $split -and $split.Tab.focusedTerminal -and $split.Tab.focusedTerminal -cne $left
+    }
+    Start-Sleep -Milliseconds 500
     Send-Shell ('PHUX_DEFAULT_VALUE=PHUX"RIGHT"; printf "\033[2J\033[H    %s\n    %s\n    %s\n" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-right.pid")
     Assert-Rendered 'default-right' 'PHUXRIGHT'
     $saved = Get-SavedTab 'split'
