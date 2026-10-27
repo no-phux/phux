@@ -45,8 +45,13 @@ function Test-DefaultEntry {
     # qualification-only --phux/--socket/--session/--fresh/--evidence entry.
     Start-SmokeDesktop 'default-entry' -DefaultEntry
     $homeSession = Assert-DefaultLaunch 'default-entry'
+    Wait-Desktop 'default home layout saved' { $null -ne (Get-SavedTab 'leaf') }
+    $initialTab = (Get-SavedTab 'leaf').Tab.id
     Send-ControlShift 84 # New terminal in the automatically selected home.
-    Wait-Desktop 'new terminal attached and saved' { $null -ne (Get-SavedTab 'leaf') }
+    Wait-Desktop 'new terminal attached and saved' {
+        $created = Get-SavedTab 'leaf'
+        $null -ne $created -and $created.Tab.id -cne $initialTab
+    }
     Send-Shell ('PHUX_DEFAULT_VALUE=PHUX"LEFT"; printf "\033[2J\033[H    %s\n    %s\n    %s\n" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-left.pid")
     Assert-Rendered 'default-left' 'PHUXLEFT'
     Send-ControlShift 68 # Windows Split Right, a local presentation to restore.
