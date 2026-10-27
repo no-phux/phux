@@ -89,6 +89,11 @@ fn update_reopens_the_current_session_and_fresh_window_without_spawning(cx: &mut
         desktop.save_restart(cx).unwrap();
         expected
     });
+    // The ordinary window can also show terminals opened by the fresh one.
+    // Count the captured presentation, not an assumed number of distinct PTYs.
+    let expected_placements = placement_count(&main, cx) + placement_count(&fresh, cx);
+    let before: serde_json::Value =
+        serde_json::from_slice(&server.output(&["ls", "--json"], b"")).unwrap();
     for handle in handles {
         cx.update_window(handle, |_, window, _| window.remove_window())
             .unwrap();
@@ -130,7 +135,7 @@ fn update_reopens_the_current_session_and_fresh_window_without_spawning(cx: &mut
                 .iter()
                 .map(|desk| placement_count(desk, cx))
                 .sum::<usize>()
-                == 5
+                == expected_placements
     });
     let main = restored
         .iter()
@@ -149,6 +154,13 @@ fn update_reopens_the_current_session_and_fresh_window_without_spawning(cx: &mut
     let actual = snapshot(fresh, cx);
     assert_eq!(actual.tabs, expected_fresh.tabs);
     assert_eq!(actual.active_tab, expected_fresh.active_tab);
+    let after: serde_json::Value =
+        serde_json::from_slice(&server.output(&["ls", "--json"], b"")).unwrap();
+    assert_eq!(
+        after["terminals"].as_array().unwrap(),
+        before["terminals"].as_array().unwrap(),
+        "restart must not spawn terminals"
+    );
     for desk in restored {
         desk.update(cx, |desk, cx| desk.prepare_close(cx));
     }
