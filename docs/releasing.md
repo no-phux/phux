@@ -104,6 +104,12 @@ Hosted D3D/software-adapter evidence is not real-GPU qualification. The
 installer verifies minisign-signed checksums; that is not Authenticode signing
 or a claim of SmartScreen reputation. A native Windows coordinator is not shipped.
 
+For GUI harness iteration without rebuilding MSVC, dispatch **Windows WSL**
+with `desktop-build-run` and `desktop-build-sha` from a retained Windows build.
+Use its logged `PHUX_BUILD_SHA` (a PR merge revision can differ from its head).
+This diagnostic records both product and harness revisions and cannot hand
+assets to publication. The normal same-source Windows Desktop gate is still required.
+
 ### macOS desktop signing
 
 Stable macOS releases contain a drag-to-Applications **DMG** and an updater
