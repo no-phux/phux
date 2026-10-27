@@ -151,6 +151,12 @@ function Send-Shell([string] $Text) {
     [PhuxDesktopGui]::Press(13)
 }
 
+function Get-MarkerCommand([ValidatePattern('^[A-Z]+$')][string] $Suffix) {
+    # A cursor/selection can cover cells of one row. Keep exact OCR matching,
+    # never accepting command echo: the full marker is assembled only by printf.
+    return "printf '    %s%s\n    %s%s\n    %s%s\n' PHUX $Suffix PHUX $Suffix PHUX $Suffix"
+}
+
 function Stop-SmokeDesktop {
     if ($script:desktop -and -not $script:desktop.HasExited) {
         # Exactly the child this harness started, never a process name or port.
@@ -187,7 +193,7 @@ try {
     if (-not $socket.StartsWith('/') -or -not $socket.Contains($profile)) { throw 'CLI default socket is not scoped to the unique qualification profile' }
     Invoke-SmokeCli @('new', '--json', '--session', $session) | Out-Null
     $serverPid = (Invoke-SmokeCli @('status', '--json') | ConvertFrom-Json).pid
-    $initialize = 'PHUX_SMOKE_VALUE=PHUXSURVIVAL; printf "\033[2J\033[H%s\n" "$PHUX_SMOKE_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/shell.pid"
+    $initialize = 'PHUX_SMOKE_VALUE=PHUX"SURVIVAL"; printf "\033[2J\033[H    %s\n    %s\n    %s\n" "$PHUX_SMOKE_VALUE" "$PHUX_SMOKE_VALUE" "$PHUX_SMOKE_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/shell.pid"
     Invoke-SmokeCli @('send-keys', $session, $initialize, 'Enter') | Out-Null
     Wait-Desktop 'initial WSL shell marker' { (Invoke-SmokeCli @('snapshot', $session)).Contains('PHUXSURVIVAL') }
     $shellPid = Invoke-DesktopWsl ('cat ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/shell.pid"))
@@ -215,10 +221,10 @@ try {
     $env:PHUX_DESKTOP_LOG_LEVEL = 'trace'
     Start-SmokeDesktop 'first-launch'
     Assert-Rendered 'first-launch' 'PHUXSURVIVAL'
-    Send-Shell "printf '%s%s\n' PHUX NATIVEKEYS"
+    Send-Shell (Get-MarkerCommand 'NATIVEKEYS')
     Assert-Rendered 'native-keys' 'PHUXNATIVEKEYS'
     if (-not (Invoke-SmokeCli @('snapshot', $session)).Contains('PHUXNATIVEKEYS')) { throw 'Native keys did not reach the WSL shell' }
-    Set-Clipboard -Value "printf '%s%s\n' PHUX CLIPBOARD"
+    Set-Clipboard -Value (Get-MarkerCommand 'CLIPBOARD')
     [PhuxDesktopGui]::Key(17, $false); [PhuxDesktopGui]::Key(16, $false)
     [PhuxDesktopGui]::Press(86)
     [PhuxDesktopGui]::Key(16, $true); [PhuxDesktopGui]::Key(17, $true)
@@ -241,13 +247,10 @@ try {
     [PhuxDesktopGui]::Key(17, $false); [PhuxDesktopGui]::Key(16, $false); [PhuxDesktopGui]::Press(82)
     [PhuxDesktopGui]::Key(16, $true); [PhuxDesktopGui]::Key(17, $true)
     Wait-Desktop 'UI reconnect attached a new epoch' { (Get-ConnectionEpoch) -gt $epoch }
-    # A cursor/selection can cover the first cells of one output row. Require
-    # the exact marker, but print independent padded rows so OCR never needs
-    # fuzzy matching or a command-echo substitute for visible output.
-    Send-Shell "printf '    %s%s\n    %s%s\n    %s%s\n' PHUX RECONNECTED PHUX RECONNECTED PHUX RECONNECTED"
+    Send-Shell (Get-MarkerCommand 'RECONNECTED')
     Assert-Rendered 'reconnected' 'PHUXRECONNECTED'
     Stop-SmokeDesktop
-    $afterCrash = 'printf "\033[2J\033[H%s%s\n" "$PHUX_SMOKE_VALUE" AFTERCRASH; printf "%s\n" "$$" > ' + "$linuxRoot/after.pid"
+    $afterCrash = 'printf "\033[2J\033[H    %s%s\n    %s%s\n    %s%s\n" "$PHUX_SMOKE_VALUE" AFTERCRASH "$PHUX_SMOKE_VALUE" AFTERCRASH "$PHUX_SMOKE_VALUE" AFTERCRASH; printf "%s\n" "$$" > ' + "$linuxRoot/after.pid"
     Invoke-SmokeCli @('send-keys', $session, $afterCrash, 'Enter') | Out-Null
     Wait-Desktop 'surviving shell after Windows app death' { (Invoke-SmokeCli @('snapshot', $session)).Contains('PHUXSURVIVALAFTERCRASH') }
     if ((Invoke-DesktopWsl ('cat ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/after.pid"))) -cne $shellPid) { throw 'The original shell did not survive' }

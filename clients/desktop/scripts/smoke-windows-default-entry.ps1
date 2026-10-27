@@ -47,11 +47,11 @@ function Test-DefaultEntry {
     $homeSession = Assert-DefaultLaunch 'default-entry'
     Send-ControlShift 84 # New terminal in the automatically selected home.
     Wait-Desktop 'new terminal attached and saved' { $null -ne (Get-SavedTab 'leaf') }
-    Send-Shell ('PHUX_DEFAULT_VALUE=PHUXLEFT; printf "\033[2J\033[H%s\n" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-left.pid")
+    Send-Shell ('PHUX_DEFAULT_VALUE=PHUX"LEFT"; printf "\033[2J\033[H    %s\n    %s\n    %s\n" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-left.pid")
     Assert-Rendered 'default-left' 'PHUXLEFT'
     Send-ControlShift 68 # Windows Split Right, a local presentation to restore.
     Wait-Desktop 'native split attached and saved' { $null -ne (Get-SavedTab 'split') }
-    Send-Shell ('PHUX_DEFAULT_VALUE=PHUXRIGHT; printf "\033[2J\033[H%s\n" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-right.pid")
+    Send-Shell ('PHUX_DEFAULT_VALUE=PHUX"RIGHT"; printf "\033[2J\033[H    %s\n    %s\n    %s\n" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-right.pid")
     Assert-Rendered 'default-right' 'PHUXRIGHT'
     $saved = Get-SavedTab 'split'
     $saved.Layout | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $Output 'default-entry.saved-layout.json') -Encoding UTF8
@@ -59,7 +59,7 @@ function Test-DefaultEntry {
     $right = $saved.Tab.focusedTerminal
     $rightPid = Invoke-DesktopWsl ('cat ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/default-right.pid"))
     Stop-SmokeDesktop # Forced native death: no graceful on-close save can rescue it.
-    Invoke-SmokeCli @('send-keys', $right, ('printf "\033[2J\033[H%s\n" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-after.pid"), 'Enter') | Out-Null
+    Invoke-SmokeCli @('send-keys', $right, ('printf "\033[2J\033[H    %s\n    %s\n    %s\n" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE" "$PHUX_DEFAULT_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/default-after.pid"), 'Enter') | Out-Null
     Wait-Desktop 'default-entry shell survives app crash' { (Invoke-DesktopWsl ('test -s ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/default-after.pid") + ' && cat ' + (ConvertTo-DesktopShellLiteral "$linuxRoot/default-after.pid"))) -ceq $rightPid }
     Start-SmokeDesktop 'default-relaunch' -DefaultEntry
     if ((Assert-DefaultLaunch 'default-relaunch') -cne $homeSession) { throw 'Default relaunch selected a different home session' }
