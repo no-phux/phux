@@ -228,6 +228,15 @@ test("Windows policy filters cannot silently pass zero tests and diagnostics nev
   expect(clipboard).toContain("Get-FileHash -Algorithm SHA256");
   expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetFileDropList");
   expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetImage");
+  const connected = smoke.indexOf("(Get-ConnectionEpoch) -gt $epoch");
+  const ready = smoke.indexOf("Assert-Rendered 'reconnect-ready' 'PHUXRECONNECTREADY'");
+  const typed = smoke.indexOf("Send-Shell (Get-MarkerCommand 'RECONNECTED')");
+  expect(connected).toBeGreaterThan(0);
+  expect(ready).toBeGreaterThan(connected);
+  expect(typed).toBeGreaterThan(ready);
+  expect(smoke).toContain(
+    "@('send-keys', $session, (Get-MarkerCommand 'RECONNECTREADY'), 'Enter')",
+  );
 });
 
 test("desktop release workflows preserve legacy targets and require Windows at the cutover", () => {
