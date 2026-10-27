@@ -50,6 +50,8 @@ mod hub;
 mod kitty_pixels;
 #[path = "support/stream_pixels.rs"]
 mod stream_pixels;
+#[path = "support/tool_line_pixels.rs"]
+mod tool_line_pixels;
 #[path = "support/window_perf.rs"]
 mod window_perf;
 
@@ -391,6 +393,16 @@ const FIXTURES: &[(&str, fn(), bool)] = &[
     (
         "terminal::pixels::faint_text_and_box_drawing_keep_their_columns",
         faint_text_and_box_drawing_keep_their_columns,
+        false,
+    ),
+    (
+        "terminal::pixels::claude_code_tool_lines_sit_on_the_grid",
+        tool_line_pixels::claude_code_tool_lines_sit_on_the_grid,
+        false,
+    ),
+    (
+        "terminal::pixels::repeated_glyphs_keep_uniform_spacing",
+        tool_line_pixels::repeated_glyphs_keep_uniform_spacing,
         false,
     ),
     (

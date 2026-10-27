@@ -281,20 +281,24 @@ pub(super) fn each_glyph(
             {
                 span = spans.next();
             }
+            // A run is one glyph per cell. GPUI's forced width only snaps a
+            // glyph that drifted over a pixel, so a face whose advance is not
+            // the cell width would sawtooth; every glyph starts on its column.
+            let column = (f32::from(glyph.position.x) / f32::from(geometry.cell_width)).round();
+            let x = if clip_cells {
+                geometry.cell_width * column
+            } else {
+                glyph.position.x
+            };
             let clip = (clip_cells && text.get(glyph.index).is_some_and(|byte| *byte >= 0x80))
                 .then(|| {
-                    let column =
-                        (f32::from(glyph.position.x) / f32::from(geometry.cell_width)).round();
                     Bounds::new(
-                        point(bounds.left() + geometry.cell_width * column, bounds.top()),
+                        point(bounds.left() + x, bounds.top()),
                         size(geometry.cell_width, bounds.size.height),
                     )
                 });
             visit(PlacedGlyph {
-                origin: point(
-                    bounds.left() + glyph.position.x,
-                    baseline + glyph.position.y,
-                ),
+                origin: point(bounds.left() + x, baseline + glyph.position.y),
                 font_id: run.font_id,
                 id: glyph.id,
                 color: span.map_or_else(gpui::black, |&(_, color)| color),
