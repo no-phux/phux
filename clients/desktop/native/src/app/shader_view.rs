@@ -1,11 +1,16 @@
 //! A view whose box a shader program draws.
 //!
 //! The view owns a [`Renderer`] that draws on a background thread and reads
-//! the pixels back; each finished frame becomes the one GPUI image the view
-//! paints, and the frame before it leaves the atlas. A program that reads the
-//! clock renders at the view's frame rate while its window is key and at a
-//! slower one while it is not; a still program renders only when its inputs
-//! or size change. Without motion the clock stops at [`STILL_TIME`].
+//! the pixels back; each finished frame becomes the GPUI image the view
+//! paints, and the frame before it leaves the atlas once the new one has
+//! been painted beside it. A program that reads the clock renders at the
+//! view's frame rate while its window is key and at a slower one while it is
+//! not; a still program renders only when its inputs or size change. Without
+//! motion the clock stops at [`STILL_TIME`].
+//!
+//! Only rendering the view arranges its next frame, so a view that is not
+//! on screen (a hidden page, a closed palette, a window the platform is not
+//! presenting) renders nothing until it is drawn again.
 //!
 //! The fleet's counts arrive through [`ShaderView::set_fleet`]; the view eases
 //! them into `phux.energy` and fires `phux.pulse` when more agents need you.
@@ -47,7 +52,7 @@ pub struct Signals {
 
 /// How long energy takes to cover most of a change, and the pulse to fade.
 const ENERGY_EASE: f32 = 1.2;
-const PULSE_FADE: f32 = 0.55;
+const PULSE_FADE: f32 = 0.4;
 
 impl Signals {
     /// The energy `working` agents settle toward: one agent is a third of
@@ -89,12 +94,27 @@ impl Signals {
     }
 }
 
+/// The longest and shortest sides a frame may have. GPUI's atlas textures
+/// are 1024 square, so two frames (the painted one and the next) share one
+/// texture and the atlas never frees and reallocates it between frames.
+pub const MAX_LONG: f32 = 1024.;
+pub const MAX_SHORT: f32 = 512.;
+
+/// How long a failed frame waits before trying again, by attempt.
+const RETRY: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(5),
+    Duration::from_secs(30),
+];
+
 /// The pixel size to render a `points` box at `density` pixels per point,
-/// shrunk to fit `max` on its longer side.
+/// shrunk to fit [`MAX_LONG`] by [`MAX_SHORT`].
 #[must_use]
-pub fn pixels(points: (f32, f32), density: f32, max: u32) -> (u32, u32) {
+pub fn pixels(points: (f32, f32), density: f32) -> (u32, u32) {
     let (width, height) = (points.0.max(1.) * density, points.1.max(1.) * density);
-    let fit = (max as f32 / width.max(height)).min(1.);
+    let fit = (MAX_LONG / width.max(height))
+        .min(MAX_SHORT / width.min(height))
+        .min(1.);
     (
         (width * fit).round().max(1.) as u32,
         (height * fit).round().max(1.) as u32,
@@ -126,11 +146,16 @@ pub struct ShaderView {
     measured: Rc<Cell<Option<Bounds<Pixels>>>>,
     renderer: Arc<Mutex<Option<Renderer>>>,
     image: Option<Arc<RenderImage>>,
+    /// Frames replaced since the last render, and those replaced before it:
+    /// the second group leaves the atlas once its successor has painted.
+    replaced: Vec<Arc<RenderImage>>,
+    retiring: Vec<Arc<RenderImage>>,
     in_flight: bool,
     /// An input changed since the last frame started.
     stale: bool,
-    /// The last frame failed; wait for a new input before trying again.
+    /// The last frame failed; a new input or the retry clears it.
     failed: Option<String>,
+    retries: usize,
     next: Option<Task<()>>,
     /// Wakes the clock when the window is shown again.
     visibility: Option<gpui::Subscription>,
@@ -139,7 +164,11 @@ pub struct ShaderView {
 impl ShaderView {
     pub fn new(pace: Pace, cx: &mut Context<Self>) -> Self {
         cx.on_release(|view: &mut Self, cx| {
-            if let Some(image) = view.image.take() {
+            let images = view.image.take().into_iter();
+            for image in images
+                .chain(view.replaced.drain(..))
+                .chain(view.retiring.drain(..))
+            {
                 cx.drop_image(image, None);
             }
         })
@@ -157,9 +186,12 @@ impl ShaderView {
             measured: Rc::default(),
             renderer: Arc::default(),
             image: None,
+            replaced: Vec::new(),
+            retiring: Vec::new(),
             in_flight: false,
             stale: true,
             failed: None,
+            retries: 0,
             next: None,
             visibility: None,
         }
@@ -176,10 +208,8 @@ impl ShaderView {
             return;
         }
         self.program = program;
-        if self.program.is_none()
-            && let Some(image) = self.image.take()
-        {
-            cx.drop_image(image, None);
+        if self.program.is_none() {
+            self.replaced.extend(self.image.take());
         }
         self.invalidate(cx);
     }
@@ -221,7 +251,10 @@ impl ShaderView {
 
     fn invalidate(&mut self, cx: &mut Context<Self>) {
         self.stale = true;
-        self.failed = None;
+        if self.failed.take().is_some() {
+            self.next = None;
+        }
+        self.retries = 0;
         cx.notify();
     }
 
@@ -233,10 +266,9 @@ impl ShaderView {
         self.motion && (animated || self.signals.settling(self.fleet))
     }
 
-    /// Arrange the next tick, if anything wants one. A changed input always
-    /// renders, so a window shown again never starts stale; the clock runs
-    /// only while the platform presents the window (not covered, minimized
-    /// or on a sleeping display).
+    /// Arrange the next tick, if anything wants one. A changed input renders
+    /// even in a window the platform is not presenting, so it is current when
+    /// shown; the clock runs only while the window is presented.
     fn schedule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.next.is_some() || self.in_flight || self.failed.is_some() || self.program.is_none()
         {
@@ -279,7 +311,7 @@ impl ShaderView {
         self.last_tick = Some(now);
         self.signals.advance(self.fleet, dt, self.motion);
         let size = (bounds.size.width.as_f32(), bounds.size.height.as_f32());
-        let (width, height) = pixels(size, self.pace.density, crate::shader::gpu::MAX_SIDE);
+        let (width, height) = pixels(size, self.pace.density);
         let mouse = window.mouse_position();
         let pointer = if bounds.contains(&mouse) {
             [
@@ -293,8 +325,10 @@ impl ShaderView {
         let uniforms = Uniforms {
             size: [size.0, size.1],
             pointer,
+            // An hour's wrap keeps f32 seconds fine-grained in a window
+            // left open for days.
             time: if self.motion {
-                self.started.elapsed().as_secs_f32()
+                (self.started.elapsed().as_secs_f64() % 3600.) as f32
             } else {
                 STILL_TIME
             },
@@ -306,7 +340,7 @@ impl ShaderView {
             done: fleet.done as f32,
             idle: fleet.idle as f32,
             agents: fleet.agents as f32,
-            frame: self.frames as f32,
+            frame: (self.frames % (1 << 24)) as f32,
             ..self.base
         };
         self.frames = self.frames.wrapping_add(1);
@@ -331,23 +365,37 @@ impl ShaderView {
     ) {
         self.in_flight = false;
         match frame.and_then(image) {
+            Ok(image) if self.program.is_none() => cx.drop_image(image, Some(window)),
             Ok(image) => {
-                if self.program.is_none() {
-                    cx.drop_image(image, Some(window));
-                } else if let Some(old) = self.image.replace(image) {
-                    cx.drop_image(old, Some(window));
-                }
+                self.retries = 0;
+                self.replaced.extend(self.image.replace(image));
             }
             Err(error) => {
                 if self.failed.as_deref() != Some(&error) {
                     log::warn!("shader frame failed: {error}");
                 }
                 self.failed = Some(error);
+                self.retry(window, cx);
             }
         }
-        // The clock does not wait for the window to draw this frame.
-        self.schedule(window, cx);
         cx.notify();
+    }
+
+    /// Try a failed frame again after a growing pause: a lost device or a
+    /// slow frame clears up, and a backdrop may have no other input to wake it.
+    fn retry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pause = RETRY[self.retries.min(RETRY.len() - 1)];
+        self.retries += 1;
+        let timer = cx.background_executor().timer(pause);
+        self.next = Some(cx.spawn_in(window, async move |view, cx| {
+            timer.await;
+            let _ = view.update(cx, |view, cx| {
+                view.next = None;
+                view.failed = None;
+                view.stale = true;
+                cx.notify();
+            });
+        }));
     }
 }
 
@@ -381,6 +429,12 @@ impl Render for ShaderView {
             self.visibility = Some(window.observe_window_visibility(move |_, _, cx| {
                 let _ = view.update(cx, |_, cx| cx.notify());
             }));
+        }
+        // Frames replaced before the last render have been painted over.
+        let painted_over =
+            std::mem::replace(&mut self.retiring, std::mem::take(&mut self.replaced));
+        for image in painted_over {
+            cx.drop_image(image, Some(window));
         }
         self.schedule(window, cx);
         let image = self.image.clone();

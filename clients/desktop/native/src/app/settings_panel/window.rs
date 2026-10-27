@@ -87,6 +87,23 @@ impl SettingsWindow {
             cx.observe(&updates, |_, _, cx| cx.notify()),
         ];
         let controls = desk.update(cx, |desk, cx| build_controls(desk, window, cx));
+        // Redraw when a shader file appears, goes or is saved, so its card
+        // follows without a click.
+        cx.spawn(async move |settings, cx| {
+            loop {
+                cx.background_executor().timer(super::backdrop::SCAN).await;
+                let open = settings.update(cx, |settings: &mut Self, cx| {
+                    if settings.controls.gallery.folder_changed() {
+                        settings.controls.gallery.refresh();
+                        cx.notify();
+                    }
+                });
+                if open.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         Self {
             owner,
             desk,

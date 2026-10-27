@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::program::{Program, ShaderError};
+use super::program::{MAX_SOURCE_BYTES, Program, ShaderError};
 
 /// A shader that ships with the app.
 #[derive(Debug, PartialEq, Eq)]
@@ -136,19 +136,38 @@ pub fn load(choice: &Choice) -> Option<Loaded> {
 
 fn load_file(path: &Path, name: &str) -> Loaded {
     let modified = modified(path);
-    let program = std::fs::read(path)
-        .map_err(|error| ShaderError {
-            at: None,
-            message: format!("could not read {}: {error}", path.display()),
-        })
-        .and_then(|bytes| {
-            String::from_utf8(bytes).map_err(|_| ShaderError {
-                at: None,
-                message: format!("{name} is not UTF-8 text"),
-            })
-        })
-        .and_then(|source| Program::compile(name, &source));
+    let program = read_source(path, name).and_then(|source| Program::compile(name, &source));
     Loaded { program, modified }
+}
+
+/// A regular file's text, refusing anything larger than a program may be
+/// before reading it: the read runs on the main thread, and a FIFO or a
+/// device behind the name must not stall or flood it.
+fn read_source(path: &Path, name: &str) -> Result<String, ShaderError> {
+    let refuse = |message: String| ShaderError { at: None, message };
+    let unreadable =
+        |error: std::io::Error| refuse(format!("could not read {}: {error}", path.display()));
+    let meta = std::fs::metadata(path).map_err(unreadable)?;
+    if !meta.is_file() {
+        return Err(refuse(format!("{name} is not a regular file")));
+    }
+    if meta.len() > MAX_SOURCE_BYTES as u64 {
+        return Err(refuse(format!(
+            "{name} is {} KiB; the limit is {} KiB",
+            meta.len() / 1024,
+            MAX_SOURCE_BYTES / 1024
+        )));
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    std::fs::File::open(path)
+        .and_then(|file| {
+            std::io::Read::read_to_end(
+                &mut std::io::Read::take(file, MAX_SOURCE_BYTES as u64 + 1),
+                &mut bytes,
+            )
+        })
+        .map_err(unreadable)?;
+    String::from_utf8(bytes).map_err(|_| refuse(format!("{name} is not UTF-8 text")))
 }
 
 /// When `path` last changed, if it exists.
@@ -165,14 +184,14 @@ pub fn folder() -> PathBuf {
     crate::updates::config_dir().join("shaders")
 }
 
-/// A bare `.wgsl` file name: no directories, not hidden.
+/// A bare `.wgsl` file name: no directories, drives or streams, not hidden.
 #[must_use]
 pub fn valid_file_name(name: &str) -> bool {
     name.len() > ".wgsl".len()
         && name.len() <= 128
         && name.ends_with(".wgsl")
         && !name.starts_with('.')
-        && !name.contains(['/', '\\', '\0'])
+        && !name.contains(['/', '\\', ':', '\0'])
 }
 
 /// The `.wgsl` files in `dir`, sorted. A missing folder lists nothing.
@@ -183,7 +202,8 @@ pub fn files_in(dir: &Path) -> Vec<String> {
     };
     let mut names: Vec<String> = entries
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        // Follows links, as loading does: dotfile managers link shaders in.
+        .filter(|entry| std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_file()))
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| valid_file_name(name))
         .collect();

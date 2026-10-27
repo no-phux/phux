@@ -55,9 +55,11 @@ fn without_motion_energy_lands_and_nothing_flashes() {
 }
 
 #[test]
-fn pixels_keep_the_aspect_inside_the_cap() {
-    assert_eq!(pixels((800., 500.), 1., 1024), (800, 500));
-    assert_eq!(pixels((1600., 1000.), 1., 1024), (1024, 640));
-    assert_eq!(pixels((168., 88.), 2., 1024), (336, 176));
-    assert_eq!(pixels((0., 0.), 1., 1024), (1, 1));
+fn pixels_keep_the_aspect_and_two_frames_fit_one_atlas_texture() {
+    assert_eq!(pixels((800., 500.), 1.), (800, 500));
+    assert_eq!(pixels((1600., 1000.), 1.), (819, 512));
+    assert_eq!(pixels((2560., 1000.), 1.), (1024, 400));
+    assert_eq!(pixels((600., 1400.), 1.), (439, 1024));
+    assert_eq!(pixels((128., 76.), 2.), (256, 152));
+    assert_eq!(pixels((0., 0.), 1.), (1, 1));
 }

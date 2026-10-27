@@ -18,6 +18,7 @@ fn choices_round_trip_and_junk_is_off() {
         "lava",
         "file:",
         "file:../escape.wgsl",
+        "file:C:x.wgsl",
         "file:.hidden.wgsl",
         "file:a/b.wgsl",
         "file:notes.txt",
@@ -58,6 +59,18 @@ fn the_folder_lists_shaders_and_new_starters_never_overwrite() {
     assert!(loaded.modified.is_some());
     let broken = load_file(&dir.join("Zed.wgsl"), "Zed.wgsl");
     assert!(broken.program.is_err());
+    let huge = dir.join("huge.wgsl");
+    std::fs::write(&huge, vec![b' '; MAX_SOURCE_BYTES + 1]).expect("writes");
+    let refused = load_file(&huge, "huge.wgsl").program.expect_err("too big");
+    assert!(refused.message.contains("limit"), "{refused}");
+    std::fs::remove_file(&huge).expect("removes");
+    #[cfg(unix)]
+    {
+        let linked = dir.join("linked.wgsl");
+        std::os::unix::fs::symlink(dir.join(&first), &linked).expect("links");
+        assert!(files_in(&dir).contains(&"linked.wgsl".to_owned()));
+        std::fs::remove_file(&linked).expect("unlinks");
+    }
     let missing = load_file(&dir.join("gone.wgsl"), "gone.wgsl");
     assert!(
         missing

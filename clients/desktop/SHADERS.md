@@ -41,7 +41,7 @@ Every shader is fed the agents on every connected machine:
 - **Energy** rises as agents start working and settles as they stop. The
   built-ins flow, fall and roll faster with it.
 - **Pulse** flashes when one more agent starts needing you (blocked, finished
-  or asking loudly) and fades over two seconds. The built-ins warm toward the
+  or asking loudly) and fades over about two seconds. The built-ins warm toward the
   theme's warning color; **Rain** sends a flash down the window and burns
   amber columns for blocked agents.
 
@@ -88,16 +88,21 @@ The `phux` uniform block:
 `phux_hash(p)` and `phux_noise(p)` return 0 to 1 for a `vec2f`, and
 `phux_fbm(p)` layers five octaves of noise.
 
-A shader that never reads `phux.time` or `phux.frame` renders only when the
-window's size, theme, intensity or agents change.
+A shader whose text never mentions `phux.time` or `phux.frame` renders only
+when the window's size, theme, intensity or agents change.
 
 ## Cost
 
 Shaders render on the platform's own GPU API (Metal, Vulkan or Direct3D 12)
-through wgpu, offscreen at one pixel per point, at most 1024 pixels on the
-long side, and the window shows the result as an image. An animated shader
-renders up to 30 frames a second while its window is key and 6 while it is
-not, and only while the window is drawing frames: on macOS a covered,
-hidden or minimized window renders nothing. Off, the default, opens no GPU device at all. A shader runs
-on your GPU without a time limit: a loop that never ends can stall the
-window's backdrop until the system resets the GPU.
+through wgpu, offscreen at up to one pixel per point (at most 1024 pixels on
+the long side and 512 on the short one), and the window shows the result as
+an image. An animated shader renders up to 30 frames a second while its
+window is key and 6 while it is not. Only a shader on screen renders: the
+clock stops while the platform is not presenting the window (on macOS, while
+it is covered, minimized or on a sleeping display), and a card on a hidden
+Settings page renders nothing.
+
+The GPU device opens the first time a shader is shown, in a window or on a
+Settings card, and stays open until you quit. A frame that takes longer than
+two seconds is abandoned and tried again after a pause, so a shader that
+loops for too long shows its last good frame rather than stalling the window.

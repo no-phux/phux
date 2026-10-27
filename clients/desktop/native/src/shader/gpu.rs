@@ -12,9 +12,8 @@ use std::time::Duration;
 
 use super::program::{FRAGMENT_ENTRY, Program, UNIFORM_BYTES, Uniforms, VERTEX_ENTRY};
 
-/// Largest side rendered, in pixels. Backdrops are soft and the GPUI atlas
-/// keeps images up to 1024 in one shared texture, so a frame never needs a
-/// texture of its own.
+/// Largest side rendered, in pixels: the size of a GPUI atlas texture, so a
+/// frame never needs a texture of its own.
 pub const MAX_SIDE: u32 = 1024;
 
 /// A frame in GPUI's image byte order: tight BGRA rows, straight alpha.
@@ -263,6 +262,16 @@ impl Renderer {
         {
             self.target = Some(self.target(width, height));
         }
+        let frame = self.draw(uniforms, width, height);
+        if frame.is_err() {
+            // A frame that timed out may still map its buffer later; never
+            // reuse a target whose read-back did not finish.
+            self.target = None;
+        }
+        frame
+    }
+
+    fn draw(&self, uniforms: &Uniforms, width: u32, height: u32) -> Result<Frame, String> {
         let (Some((_, pipeline)), Some(target)) = (&self.pipeline, &self.target) else {
             return Err("renderer not prepared".into());
         };

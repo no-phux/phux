@@ -29,7 +29,7 @@ const PREVIEW: Pace = Pace {
 const CARD_WIDTH: f32 = 128.;
 const CARD_HEIGHT: f32 = 76.;
 /// How often an open Settings looks for new or saved shader files.
-const SCAN: Duration = Duration::from_secs(1);
+pub(super) const SCAN: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 struct Card {
@@ -67,6 +67,27 @@ impl Gallery {
                 view.set_motion(preview.motion, cx);
             });
         }
+    }
+
+    /// Whether the shader folder gained, lost or saved a file since the
+    /// cards were built; the Settings window polls this to redraw.
+    pub(super) fn folder_changed(&self) -> bool {
+        let folder = library::folder();
+        let files = library::files_in(&folder);
+        let known = self
+            .cards
+            .iter()
+            .filter(|card| matches!(card.choice, Choice::File(_)));
+        known.clone().count() != files.len()
+            || known.zip(&files).any(|(card, name)| {
+                card.choice != Choice::File(name.clone())
+                    || card.modified != library::modified(&folder.join(name))
+            })
+    }
+
+    /// Rescan on the next sync.
+    pub(super) fn refresh(&mut self) {
+        self.scanned = None;
     }
 
     fn rescan(&mut self, cx: &mut App) {

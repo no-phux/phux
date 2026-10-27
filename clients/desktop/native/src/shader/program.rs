@@ -397,7 +397,7 @@ pub struct Uniforms {
     pub dark: f32,
     /// How busy the fleet is, eased: 0 idle, toward 1 with many agents working.
     pub energy: f32,
-    /// 1 the moment an agent starts needing you, decaying to 0 in two seconds.
+    /// 1 the moment an agent starts needing you, decaying to 0 in about two seconds.
     pub pulse: f32,
     pub working: f32,
     pub blocked: f32,

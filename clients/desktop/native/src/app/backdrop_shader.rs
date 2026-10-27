@@ -43,8 +43,6 @@ pub(crate) struct BackdropShader {
     program: Option<Arc<Program>>,
     view: Option<Entity<ShaderView>>,
     watch: Option<Task<()>>,
-    /// The error last posted, so a file saved broken twice posts once.
-    reported: Option<String>,
     /// The theme block for the paint it was built from; a terminal frame
     /// redraws the desk without changing either.
     theme: Option<(Rc<Paint>, Uniforms)>,
@@ -125,6 +123,36 @@ pub(crate) fn fleet_of<'a>(agents: impl IntoIterator<Item = &'a AgentInfo>) -> F
         }
     }
     fleet
+}
+
+/// The error last posted for each shader, across every window, so several
+/// windows wearing one broken file, or a file saved broken twice, post once.
+static REPORTED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// The notification body for `label`'s `failure` when it is news; a clean
+/// compile forgets the last one, so breaking it again posts again.
+fn first_report(label: &str, failure: Option<&str>) -> Option<String> {
+    let mut reported = REPORTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let known = reported.iter().position(|(name, _)| name == label);
+    let Some(error) = failure else {
+        if let Some(at) = known {
+            reported.swap_remove(at);
+        }
+        return None;
+    };
+    match known {
+        Some(at) if reported[at].1 == error => None,
+        Some(at) => {
+            reported[at].1 = error.to_owned();
+            Some(format!("{label}: {error}"))
+        }
+        None => {
+            reported.push((label.to_owned(), error.to_owned()));
+            Some(format!("{label}: {error}"))
+        }
+    }
 }
 
 /// What every shader view in a window is fed.
@@ -233,7 +261,6 @@ impl Desk {
             })
         });
         self.backdrop_shader.choice = Some(choice);
-        self.backdrop_shader.reported = None;
         self.load_backdrop(cx);
     }
 
@@ -254,16 +281,9 @@ impl Desk {
             }) => Some(error.to_string()),
             _ => None,
         };
-        if failure.is_some() && failure != state.reported {
-            let label = state.choice.as_ref().map(Choice::label).unwrap_or_default();
-            state.reported.clone_from(&failure);
-            self.post(
-                Kind::Error,
-                "Backdrop shader did not compile",
-                failure.map(|error| format!("{label}: {error}")),
-            );
-        } else if failure.is_none() {
-            state.reported = None;
+        let label = state.choice.as_ref().map(Choice::label).unwrap_or_default();
+        if let Some(body) = first_report(&label, failure.as_deref()) {
+            self.post(Kind::Error, "Backdrop shader did not compile", Some(body));
         }
         cx.notify();
     }
