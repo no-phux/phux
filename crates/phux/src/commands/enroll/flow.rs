@@ -164,10 +164,9 @@ pub(super) fn first_answering_route(
 /// Enrollment grants no authority ssh did not already grant, and an operator
 /// who can run `phux` over ssh there already holds all of it.
 ///
-/// It is also what marks the credential a person's device (ADR-0163 §6):
-/// `add-key` is not told `--principal human`, so a far host running an
-/// older `phux` still enrolls, and the far host infers a human principal
-/// from exactly this ceiling.
+/// Pairing records a human principal explicitly, independently of the
+/// spelled-out ceiling as the permission vocabulary grows. An older host
+/// that cannot enroll it reports its refusal; we never retry with less scope.
 pub(crate) const HOST_ADD_WORKLOAD_SCOPE: &str = phux_server::workload::PAIRED_DEVICE_SCOPE;
 
 /// The workload identity to register: the previous one when its bearer

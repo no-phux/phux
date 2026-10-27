@@ -128,6 +128,22 @@ Certificates from `phux host add` last 90 days. Attaching warns, and
 `phux doctor` reports, when one is within two weeks of expiring.
 `phux host renew mini` replaces it.
 
+### A paired phone can see panes but cannot close or organize them
+
+Older pairing enrolled devices without the newer `organize` and `terminate`
+permissions. Update phux on the server, find the phone's credential with
+`phux workload list`, then explicitly repair that device on the server:
+
+```sh
+phux workload repair-paired sha256:DEVICE_CREDENTIAL_ID
+```
+
+Reconnect the phone afterwards. Its certificate, key and expiry stay the
+same; no server restart or re-pair is needed. Repair accepts only an active
+human device with exactly the old full-control pairing ceiling, not custom
+scopes or automation. New pairings include all terminal permissions. Loading
+a credential or marking it `human` never silently adds permissions.
+
 ## Who can do what
 
 **A machine you add with `phux host add` can do everything you can do on the

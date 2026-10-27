@@ -218,7 +218,11 @@ impl WorkloadRegistry {
 
     /// Advance the generation and atomically replace the file. `held` is the
     /// caller's registry lock.
-    fn commit(&mut self, path: &Path, held: &store::HeldLock<'_>) -> Result<(), WorkloadError> {
+    pub(super) fn commit(
+        &mut self,
+        path: &Path,
+        held: &store::HeldLock<'_>,
+    ) -> Result<(), WorkloadError> {
         if self.instance.is_none() {
             self.instance = Some(Self::fresh_instance_id()?);
         }

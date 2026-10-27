@@ -237,6 +237,7 @@ fn await_success(dir: &Path, args: &[&str], extra: &[(&str, &Path)]) -> Output {
 // Lexical shards retain test paths and private helper access without widening
 // visibility. Keep whole items (including docs and attributes) together.
 include!("workload_e2e/authority.rs");
+include!("workload_e2e/paired_repair.rs");
 include!("workload_e2e/pairing.rs");
 include!("workload_e2e/secrets_and_startup.rs");
 include!("workload_e2e/approvals.rs");

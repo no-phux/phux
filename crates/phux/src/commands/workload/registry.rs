@@ -1,5 +1,5 @@
 //! The authority and registry verbs of `phux workload`: `authority
-//! [--init|--rotate]`, `list`, and `revoke`.
+//! [--init|--rotate]`, `list`, `repair-paired`, and `revoke`.
 
 use std::path::PathBuf;
 
@@ -183,6 +183,33 @@ fn credential_document(
         document["satellite"] = json!(name);
     }
     document
+}
+
+pub(super) fn repair_paired(
+    paths: &WorkloadPaths,
+    credential_id: &str,
+) -> Result<Report, CliError> {
+    let outcome = WorkloadRegistry::repair_paired_device(&paths.registry, credential_id)
+        .map_err(|error| cli_error(&error))?;
+    let status = if outcome.updated {
+        "Repaired"
+    } else {
+        "Already repaired"
+    };
+    Ok(Report {
+        document: json!({
+            "schema_version": 1,
+            "credential_id": credential_id,
+            "registry_generation": outcome.generation,
+            "updated": outcome.updated,
+            "scopes": [workload::PAIRED_DEVICE_SCOPE],
+        }),
+        prose: vec![
+            format!("{status}: {credential_id} (registry generation {}).", outcome.generation),
+            "Reconnect the device to use full control. Its key and expiry are unchanged; no re-pair or server restart is needed.".to_owned(),
+        ],
+        payload: None,
+    })
 }
 
 pub(super) fn revoke(paths: &WorkloadPaths, credential_id: &str) -> Result<Report, CliError> {

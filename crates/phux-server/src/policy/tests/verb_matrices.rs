@@ -327,3 +327,20 @@ fn the_owner_grant_admits_every_sample() {
         assert!(admits(&world, &owner, frame), "{frame:?}");
     }
 }
+
+/// Pairing is full terminal-endpoint control, not the owner's socket. Its
+/// spelled-out default must match all verbs without admitting owner-only rows.
+#[test]
+fn paired_device_default_matches_all_scoped_verbs_on_every_sample() {
+    let mut world = world();
+    let agent = agent_child(&mut world);
+    let paired = scoped(&[crate::workload::PAIRED_DEVICE_SCOPE]);
+    let all = scoped(&["*@global"]);
+    for frame in &samples(&world, &agent) {
+        assert_eq!(
+            admits(&world, &paired, frame),
+            admits(&world, &all, frame),
+            "{frame:?}"
+        );
+    }
+}

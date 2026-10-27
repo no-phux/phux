@@ -1,7 +1,7 @@
 //! `phux workload` — the mTLS workload authority (ADR-0116,
 //! `docs/remote.md#who-can-connect`): `authority [--init|--rotate]`, `add-key` (enroll a
 //! certificate or sign a CSR, read from stdin or `--file`, never argv), `list`,
-//! and `revoke`. Like `phux pair` these write the state directory directly;
+//! `repair-paired`, and `revoke`. Like `phux pair` these write the state directory directly;
 //! a running server sees the new registry generation on its next connection.
 //! Nothing here reads or prints a private key, the CA key's path, or any
 //! user-supplied path (a mis-pasted value could be key material).
@@ -19,7 +19,7 @@ mod add_key;
 mod registry;
 
 use self::add_key::{AddKey, IssuedTo, add_key};
-use self::registry::{authority, list, revoke, rotate};
+use self::registry::{authority, list, repair_paired, revoke, rotate};
 
 /// Default credential lifetime: 90 days.
 const DEFAULT_EXPIRY_SECONDS: i64 = 90 * 24 * 60 * 60;
@@ -117,9 +117,9 @@ pub(crate) enum WorkloadAction {
 
         /// Who the credential is for: `human` (a device a person uses) or
         /// `automation`. Decides input-lease precedence, never scope.
-        /// Omitted, the credential is a person's device when its ceiling is
-        /// exactly the one `phux host add` and `phux pair --enroll` grant,
-        /// and an automation otherwise.
+        /// Omitted, the legacy six-verb pairing ceiling infers a person's
+        /// device; other ceilings infer automation. Pairing records `human`
+        /// explicitly. This flag never adds permissions.
         #[usage(long, value_enum)]
         principal: Option<Principal>,
     },
@@ -128,6 +128,19 @@ pub(crate) enum WorkloadAction {
         /// Also print each credential's public key (hex DER).
         #[usage(long)]
         public_keys: bool,
+    },
+    /// Restore full control to a device enrolled with the old pairing ceiling.
+    ///
+    /// Adds organize and terminate only to the named active human device
+    /// whose ceiling is exactly the legacy full-control pairing grant.
+    /// Custom scopes, automation, expired and revoked credentials are refused.
+    /// Keeps its key and expiry; no re-pair or server restart is needed.
+    /// Reconnect the device afterwards to use the new permissions. Repeating
+    /// this for an already repaired device changes nothing.
+    RepairPaired {
+        /// The device's `sha256:...` id from `phux workload list`.
+        #[usage(value_name = "CREDENTIAL_ID")]
+        credential_id: String,
     },
     /// Revoke a credential: new connections are refused and live ones end.
     ///
@@ -181,6 +194,7 @@ pub(crate) fn run(action: WorkloadAction, json: bool) -> ExitCode {
             },
         ),
         WorkloadAction::List { public_keys } => list(&paths, public_keys),
+        WorkloadAction::RepairPaired { credential_id } => repair_paired(&paths, &credential_id),
         WorkloadAction::Revoke { credential_id } => revoke(&paths, &credential_id),
     };
     match outcome {
