@@ -8,8 +8,8 @@ phux server --ensure
 phux new --json -s agent -c "$PWD" -- claude
 ```
 
-Change phux itself in [AGENTS.md](../AGENTS.md). Install options, scripting,
-agent state, and the socket are in [install](./install.md),
+To work on phux itself, read [AGENTS.md](../AGENTS.md). Install options,
+scripting, agent state, and the socket are in [install](./install.md),
 [shell scripting](./scripting.md), [coding agents](./agents.md), and
 [protocol](./protocol.md).
 
@@ -228,7 +228,8 @@ and return once phux has seen it: `phux agent start NAME --kind KIND
 
 Pass `--json` on commands whose `--help` lists it. The document carries
 `schema_version`. On failure, stdout is empty and stderr is one JSON
-object; branch on `error.code`. See
+object; branch on `error.code` (except `status`, `ls --all` and
+`doctor`; see above). See
 [JSON output and errors](./scripting.md#json-output-and-errors).
 
 Exit codes, from `phux help exit-codes`: `0` success, `1` failure (no
