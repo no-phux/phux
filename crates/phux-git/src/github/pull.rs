@@ -23,7 +23,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       author { login }
       headRefName baseRefName headRefOid baseRefOid isCrossRepository
       headRepository { nameWithOwner }
-      mergeable mergeStateStatus reviewDecision viewerDidAuthor viewerCanUpdate
+      mergeable mergeStateStatus reviewDecision viewerDidAuthor
       autoMergeRequest { mergeMethod }
       additions deletions changedFiles
       files(first: 100) { pageInfo { hasNextPage endCursor } nodes { ...file } }
@@ -148,11 +148,12 @@ pub struct Pull {
     pub base_oid: String,
     /// `owner/name` of the head when it is a fork.
     pub head_repo: Option<String>,
+    /// GitHub says the head is in another repository.
+    pub cross_repository: bool,
     pub mergeable: Mergeability,
     pub merge_state: MergeState,
     pub review_decision: Option<ReviewDecision>,
     pub viewer_authored: bool,
-    pub viewer_can_update: bool,
     pub auto_merge: Option<MergeMethod>,
     pub methods: MergeMethods,
     pub additions: u64,
@@ -169,9 +170,8 @@ impl Pull {
     /// Whether the head lives in another repository.
     #[must_use]
     pub fn is_fork(&self) -> bool {
-        self.head_repo
-            .as_deref()
-            .is_some_and(|head| head != self.repo)
+        // A deleted fork has no head repository left; it is still a fork.
+        self.cross_repository || self.head_repo.as_deref() != Some(self.repo.as_str())
     }
 }
 
@@ -188,6 +188,7 @@ pub fn fetch(repo: &str, number: u64) -> Result<Pull> {
         variables["after"] = page["endCursor"].clone();
         let data = gh::graphql(FILES, &variables)?;
         let files = &data["repository"]["pullRequest"]["files"];
+        let before = pull.files.len();
         pull.files.extend(
             files["nodes"]
                 .as_array()
@@ -195,6 +196,10 @@ pub fn fetch(repo: &str, number: u64) -> Result<Pull> {
                 .flatten()
                 .filter_map(file),
         );
+        // A page that adds nothing would page forever.
+        if pull.files.len() == before {
+            break;
+        }
         page = files["pageInfo"].clone();
     }
     Ok(pull)
@@ -248,6 +253,7 @@ pub(crate) fn parse(repo: &str, data: &Value) -> Result<Pull> {
         base_ref: text(node, "baseRefName"),
         head_oid: text(node, "headRefOid"),
         base_oid: text(node, "baseRefOid"),
+        cross_repository: node["isCrossRepository"] == true,
         head_repo: node["headRepository"]["nameWithOwner"]
             .as_str()
             .map(str::to_owned),
@@ -255,7 +261,6 @@ pub(crate) fn parse(repo: &str, data: &Value) -> Result<Pull> {
         merge_state: MergeState::parse(node["mergeStateStatus"].as_str()),
         review_decision: review_decision(node["reviewDecision"].as_str()),
         viewer_authored: node["viewerDidAuthor"] == true,
-        viewer_can_update: node["viewerCanUpdate"] == true,
         auto_merge: MergeMethod::parse(node["autoMergeRequest"]["mergeMethod"].as_str()),
         methods: methods(repository),
         additions: node["additions"].as_u64().unwrap_or_default(),

@@ -74,6 +74,12 @@ pub(crate) fn exec(child: Child<'_>) -> Result<Finished, Failure> {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
     let mut command = Command::new(child.program);
+    // As on Unix: a repository the app runs in must not steer `git`.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
     command
         .current_dir(child.dir)
         .args(child.args)
