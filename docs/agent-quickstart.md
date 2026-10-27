@@ -232,10 +232,11 @@ Pass `--json` on commands whose `--help` lists it. The document carries
 object; branch on `error.code`. See
 [JSON output and errors](./scripting.md#json-output-and-errors).
 
-Exit codes: `0` success, `1` failure, `2` a usage error or a refused
-request, `3` a linked machine did not answer, `124` a wait timed out,
-`125` `phux run` timed out. `phux help exit-codes` prints the same table
-as [exit codes](./reference/exit-codes.md).
+Exit codes, from `phux help exit-codes`: `0` success, `1` failure (no
+server, no such target, or the command failed), `2` a usage error or a
+refused request, `3` the selector was resolved against a partial view of
+the fleet, `124` a wait timed out, `125` `phux run` timed out. The same
+table is [exit codes](./reference/exit-codes.md).
 
 Clients on this machine dial a Unix socket: `--socket`, else
 `$PHUX_SOCKET`, else the path in [socket](./reference/files.md#socket).
@@ -257,9 +258,12 @@ MCP over stdio, same machine:
 phux mcp --schema
 ```
 
-`phux mcp` forwards its arguments to the `phux-mcp` binary. Register the
-stdio server as `phux mcp`. Each tool mirrors a CLI command. See
-[MCP](./agents.md#mcp) and [parity](./reference/parity.md).
+`phux mcp` forwards its arguments to a `phux-mcp` binary beside `phux`
+or on `PATH`. The install script, Homebrew, and both `cargo install`
+lines above install that binary. When it is missing, `phux mcp` exits
+127 and prints `could not find the bundled phux-mcp executable`.
+Register the stdio server as `phux mcp`. Each tool mirrors a CLI
+command. See [MCP](./agents.md#mcp) and [parity](./reference/parity.md).
 
 ```sh
 phux skill
@@ -284,6 +288,9 @@ an attaching `phux new` refuse to attach back to that same server unless
 `phux kill`, `phux detach`, and `phux rm` require `--yes` when stdin is
 not a terminal.
 
-Put flags before the target. `send-keys`, `paste`, `detach`, `kill`, and
-`attach` do not accept `--json`. `phux ls` and `phux spawn` leave the
-server unstarted. `phux server --ensure` and `phux new` start one.
+Put flags for `send-keys` and `run` before the target: words after it
+are keys or the command. `phux wait` accepts flags before or after the
+target; spell a bare `--tail` out (`--tail 80`) when the target follows
+it. `send-keys`, `paste`, `detach`, `kill`, and `attach` do not accept
+`--json`. `phux ls` and `phux spawn` leave the server unstarted.
+`phux server --ensure` and `phux new` start one.
