@@ -83,6 +83,7 @@ impl Desk {
             paint: RefCell::new(None),
             capture: super::super::capture::State::default(),
             changes: Default::default(),
+            reviews: Default::default(),
             modal: Modal::None,
             prepared: Modal::None,
             find: None,

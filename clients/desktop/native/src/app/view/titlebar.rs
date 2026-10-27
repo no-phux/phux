@@ -246,19 +246,37 @@ fn action_buttons(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) ->
                     .when(
                         desk.role != super::super::desk::WindowRole::Quick,
                         |actions| {
-                            actions.child(icon_button(
-                                "changes",
-                                IconName::GitBranch,
-                                if desk.changes.open {
-                                    "Hide Changes"
-                                } else {
-                                    "Show Changes"
-                                },
-                                desk.shown_chord("changes"),
-                                cx.listener(|desk, _, window, cx| {
-                                    desk.execute("changes", window, cx)
-                                }),
-                            ))
+                            actions
+                                .child(icon_button(
+                                    "changes",
+                                    IconName::GitBranch,
+                                    if desk.changes.open {
+                                        "Hide Changes"
+                                    } else {
+                                        "Show Changes"
+                                    },
+                                    desk.shown_chord("changes"),
+                                    cx.listener(|desk, _, window, cx| {
+                                        desk.execute("changes", window, cx)
+                                    }),
+                                ))
+                                // A narrow bar keeps its room for tabs;
+                                // Reviews stays in the View menu and palette.
+                                .when(desk.reviews.open || desk.wide_titlebar(), |actions| {
+                                    actions.child(icon_button(
+                                        "reviews",
+                                        IconName::GitPullRequest,
+                                        if desk.reviews.open {
+                                            "Hide Reviews"
+                                        } else {
+                                            "Show Reviews"
+                                        },
+                                        desk.shown_chord("reviews"),
+                                        cx.listener(|desk, _, window, cx| {
+                                            desk.execute("reviews", window, cx)
+                                        }),
+                                    ))
+                                })
                         },
                     )
                     .when(desk.native_agents_offered(), |actions| {

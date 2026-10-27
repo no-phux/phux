@@ -201,7 +201,7 @@ impl Desk {
     /// Insert Path, a dropped file, Send Notes), so it is trusted like
     /// Command-V: the server brackets it for the program and does not refuse
     /// a line break, which an untrusted paste would drop on the floor.
-    pub(super) fn queue_paste(&self, terminal: &ResourceId, text: &str) -> Option<bool> {
+    pub(crate) fn queue_paste(&self, terminal: &ResourceId, text: &str) -> Option<bool> {
         let client = self.client()?;
         let queued = client.with_control(|control| {
             if crate::input::native_owned(control, terminal) || !control.input_ready(terminal) {

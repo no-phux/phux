@@ -28,6 +28,7 @@ mod overlays;
 mod pane_identity;
 mod panes;
 mod performance;
+mod reviews;
 mod session;
 mod settings_panel;
 mod skin;

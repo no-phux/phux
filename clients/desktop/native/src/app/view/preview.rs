@@ -213,6 +213,10 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                 ("work", "goto", 1280., true),
                 ("notifications", "notifications", 1280., true),
                 ("changes", "changes", 1280., true),
+                ("reviews", "reviews", 1440., true),
+                ("reviews-narrow", "reviews", 1100., true),
+                ("reviews-conversation", "reviews", 1440., true),
+                ("reviews-checks", "reviews", 1440., true),
                 ("settings-appearance", "settings", 1280., true),
                 ("settings-interface", "settings-interface", 1280., true),
                 ("conversation", "tabs-side", 1280., true),
@@ -237,6 +241,7 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                         desk.tab_peek.close();
                         desk.modal = crate::app::Modal::None;
                         desk.changes.open = false;
+                        desk.reviews.open = false;
                         crate::app::conversation::preview::scene(desk, name);
                         desk.update_prefs(
                             |prefs| scene_preferences(prefs, name, theme, sidebar),
@@ -248,6 +253,13 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                                 window,
                                 cx,
                             );
+                        } else if command == "reviews" {
+                            let tab = match name {
+                                "reviews-conversation" => crate::app::reviews::Tab::Conversation,
+                                "reviews-checks" => crate::app::reviews::Tab::Checks,
+                                _ => crate::app::reviews::Tab::Files,
+                            };
+                            desk.seed_reviews_fixture(tab, window, cx);
                         } else if command != "main-menu" {
                             desk.execute(command, window, cx);
                         }

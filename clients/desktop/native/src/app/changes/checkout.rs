@@ -31,7 +31,7 @@ pub(super) fn read_checkout(
 }
 
 /// `~/x` as an absolute path, for a shell that reported its folder that way.
-pub(super) fn expand_home(cwd: &str) -> PathBuf {
+pub(crate) fn expand_home(cwd: &str) -> PathBuf {
     match (cwd.strip_prefix('~'), std::env::var_os("HOME")) {
         (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
             PathBuf::from(home).join(rest.trim_start_matches('/'))

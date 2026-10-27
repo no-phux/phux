@@ -398,7 +398,7 @@ impl Desk {
 
     /// Why a CLI-backed action cannot run here: the CLI drives the local
     /// server's socket, not a registered host.
-    pub(super) fn local_only(&self) -> Option<String> {
+    pub(crate) fn local_only(&self) -> Option<String> {
         self.remote.as_deref().map(|host| {
             format!("This window is on {host}. Run it there with `phux attach {host}`.")
         })
