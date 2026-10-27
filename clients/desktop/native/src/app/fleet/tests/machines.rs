@@ -81,8 +81,17 @@ fn this_windows_own_route_reports_its_link_and_reconnects_from_open(cx: &mut Tes
         desk.open_machine(None, cx);
         let titles: Vec<_> = desk.feed.items().map(|entry| entry.title.clone()).collect();
         assert!(titles.iter().any(|title| title == "Reconnecting Local"));
-        assert!(titles.iter().any(|title| title == "Could not reconnect"));
         assert!(!titles.iter().any(|title| title.starts_with("Retrying")));
+    });
+    // Reconnect preparation is deliberately off the UI thread. Let its failed
+    // fixture probe complete before asserting the resulting notification.
+    cx.run_until_parked();
+    desk.update(cx, |desk, _| {
+        assert!(
+            desk.feed
+                .items()
+                .any(|entry| entry.title == "Could not reconnect")
+        );
 
         desk.link = None;
         desk.connect_error = Some("socket missing".into());

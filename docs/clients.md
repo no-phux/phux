@@ -34,8 +34,12 @@ and Linux on x86_64 or arm64 with Vulkan. On macOS and Linux, install it with:
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
-Windows: the CLI and server run in WSL 2, with PowerShell launchers. A native
-Windows desktop build is not published yet.
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. The
+[native x64 desktop](../clients/desktop/README.md#windows) uses Direct3D 11,
+Windows input/clipboard, and the same WSL coordinator. Its installer requires
+a Windows-capable desktop release; WSLg is not needed. Updates are manual on
+Windows, and the local Changes panel and external Unix developer socket are
+unavailable there.
 
 It shows every session on this machine and on each machine you added with
 `phux host add` or the app's **Add Machine…**, grouped by machine or by

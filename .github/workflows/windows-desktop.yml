@@ -1,0 +1,312 @@
+# Native Windows UI, separate from the WSL CLI distribution's ConPTY tests.
+name: Windows Desktop
+
+on:
+  pull_request:
+    paths:
+      - 'clients/desktop/**'
+      - 'crates/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - '.config/zig-toolchain.json'
+      - '.github/workflows/windows-desktop.yml'
+      - '.github/workflows/desktop-release.yml'
+      - '.github/workflows/next.yml'
+      - '.github/actions/setup-bun/**'
+      - 'mise.toml'
+      - 'scripts/setup-rust.sh'
+      - 'scripts/install-zig.sh'
+      - 'scripts/*windows*.ps1'
+      - 'scripts/test-windows-bridge-fixture.py'
+      - 'tools/src/desktop/**'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Immutable product revision or release tag
+        type: string
+        default: ''
+      channel:
+        type: string
+        default: stable
+      release-tag:
+        description: Existing desktop draft (or next); empty in standalone CI
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# Keep PR qualification latest-wins without cancelling immutable release runs.
+concurrency:
+  group: windows-desktop-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  server:
+    name: Same-source WSL coordinator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LIBGHOSTTY_VT_SYS_CPU: baseline
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config mold curl xz-utils
+      - run: bash scripts/setup-rust.sh native
+      - run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: windows-desktop-wsl-server
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --locked --release -p phux
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-desktop-wsl-server
+          path: target/release/phux
+          if-no-files-found: error
+
+  windows:
+    name: Native MSVC portable package
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      LIBGHOSTTY_VT_SYS_CPU: baseline
+      PHUX_BUILD_CHANNEL: ${{ inputs.channel || 'stable' }}
+      PHUX_CHANNEL: ${{ inputs.channel || 'stable' }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/clients/desktop/native/target
+      PHUX_WSL_DISTRO: Ubuntu-24.04
+    steps:
+      # Patch/archive digests are byte pins; checkout must not rewrite LF.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Pinned Rust, Zig, Windows SDK shaders and app-local MSVC runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rust = (Select-String '^channel = "([^"]+)"' rust-toolchain.toml).Matches.Groups[1].Value
+          rustup toolchain install $rust --profile minimal --component rustfmt,clippy --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust installation failed' }
+          "RUSTUP_TOOLCHAIN=$rust" >> $env:GITHUB_ENV
+          ./scripts/install-zig-windows.ps1 -Directory "$env:RUNNER_TEMP/phux-toolchains" >> $env:GITHUB_PATH
+          $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $crt = Get-ChildItem "$vs/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT" -Directory | Sort-Object FullName -Descending | Select-Object -First 1
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $crt -or -not $fxc) { throw 'Native MSVC redistributable or Windows SDK fxc.exe is missing' }
+          "PHUX_MSVC_RUNTIME_DIR=$($crt.FullName)" >> $env:GITHUB_ENV
+          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+          "PHUX_BUILD_SHA=$(git rev-parse HEAD)" >> $env:GITHUB_ENV
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: clients/desktop/native -> target
+          shared-key: windows-desktop-msvc
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: bun tools/main.ts desktop-source
+      - name: Exact DXGI presentation predicate regressions
+        shell: pwsh
+        run: |
+          $feedback = @(& cargo test --locked --release --manifest-path clients/desktop/native/Cargo.toml -p gpui-fast-windows --lib --target x86_64-pc-windows-msvc presentation::tests -- --color never 2>&1)
+          $exitCode = $LASTEXITCODE
+          $feedback | ForEach-Object { Write-Output $_ }
+          if ($exitCode -ne 0 -or ($feedback -join "`n") -notmatch 'test result: ok\. 3 passed; 0 failed; 0 ignored;') { throw 'All three exact-presentation predicate tests must execute and pass' }
+      - name: Native Win32 text and accelerator ordering regressions
+        shell: pwsh
+        run: |
+          $feedback = @(& cargo test --locked --release --manifest-path clients/desktop/native/Cargo.toml -p gpui-fast-windows --lib --target x86_64-pc-windows-msvc fast::input_order::tests -- --color never 2>&1)
+          $exitCode = $LASTEXITCODE
+          $feedback | Write-Output
+          if ($exitCode -ne 0 -or ($feedback -join "`n") -notmatch 'test result: ok\. 5 passed; 0 failed; 0 ignored;') { throw 'All five real Win32 input-ordering regressions must execute and pass' }
+      - name: Build shipping native Windows executable
+        run: cargo build --locked --release --manifest-path clients/desktop/native/Cargo.toml --bin phux-desktop --target x86_64-pc-windows-msvc
+      - name: Build native policy tests for execution on the WSL qualification host
+        shell: pwsh
+        run: |
+          cargo test --locked --release --manifest-path clients/desktop/native/Cargo.toml -p phux-desktop --lib --no-run --target x86_64-pc-windows-msvc --message-format=json > "$env:RUNNER_TEMP/policy-build.jsonl"
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows policy tests did not compile' }
+          $tests = Get-Content "$env:RUNNER_TEMP/policy-build.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'phux_desktop' -and $_.executable }
+          if (@($tests).Count -ne 1) { throw 'Expected one desktop policy test executable' }
+          New-Item -ItemType Directory windows-policy | Out-Null
+          Copy-Item -LiteralPath $tests.executable windows-policy/phux-desktop-policy.exe
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-policy-windows-x64
+          path: windows-policy/phux-desktop-policy.exe
+          if-no-files-found: error
+      - name: Package native executable, notices, installer and MSVC runtime
+        shell: pwsh
+        run: |
+          bun clients/desktop/scripts/package-windows.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+          $archive = Get-ChildItem clients/desktop/dist/phux-desktop-*-windows-x64.zip
+          if (@($archive).Count -ne 1) { throw 'Expected one Windows desktop archive' }
+          $digest = (Get-FileHash -Algorithm SHA256 $archive.FullName).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(($archive.FullName + '.sha256'), "$digest  $($archive.Name)`n", [Text.UTF8Encoding]::new($false))
+      # Retain build products even if qualification fails, for native iteration.
+      # A red qualification still prevents the caller's signing/publication gate.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-build-windows-x64
+          path: |
+            clients/desktop/dist/phux-desktop-*-windows-x64.zip
+            clients/desktop/dist/phux-desktop-*-windows-x64.zip.sha256
+          if-no-files-found: error
+
+  qualify:
+    name: Installed native GUI against WSL
+    needs: [server, windows]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      PHUX_WSL_DISTRO: Ubuntu-24.04
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: desktop-build-windows-x64
+          path: windows-package
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-desktop-wsl-server
+          path: wsl-server
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: desktop-policy-windows-x64
+          path: windows-policy
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          wsl-shell-user: phux-ci
+          additional-packages: ca-certificates minisign python3
+          use-cache: 'false'
+      - name: Disposable WSL user's default and OCR
+        shell: pwsh
+        run: |
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec sh -c "printf '[user]\ndefault=phux-ci\n' >> /etc/wsl.conf"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot configure disposable WSL user' }
+          wsl.exe --terminate Ubuntu-24.04
+          $uid = (& wsl.exe --distribution Ubuntu-24.04 --exec id -u) -join ''
+          if ($LASTEXITCODE -ne 0 -or $uid -notmatch '^[1-9][0-9]*$') { throw 'Native desktop qualification requires the selected non-root WSL default user' }
+          choco install tesseract --version=5.5.0.20241111 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'OCR installation failed' }
+      - name: Installer contracts under both PowerShell hosts
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-install-desktop-windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell installer contracts failed' }
+          pwsh -NoProfile -File scripts/test-install-desktop-windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 7 installer contracts failed' }
+      - name: Exact manual-update argv through Windows PowerShell 5.1 and WSL
+        shell: pwsh
+        run: |
+          $cases = @(
+            'updates::tests::windows_runtime_checks_are_read_only_and_quote_the_manual_wsl_update',
+            'updates::tests::windows_runtime_install_and_retry_refuse_before_starting_wsl',
+            'app::updates::tests::windows_runtime_updates_show_manual_instructions_without_an_install_action',
+            'platform::tests::wsl_attachments_use_uploads_not_windows_paths',
+            'updates::tests::windows::powershell_51_manual_runtime_command_preserves_real_wsl_argv'
+          )
+          $listed = @(& ./windows-policy/phux-desktop-policy.exe --list --format terse)
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate Windows policy tests' }
+          foreach ($case in $cases) {
+            if (-not $listed.Contains("${case}: test")) { throw "Required native test is absent: $case" }
+            $arguments = @('--exact', $case, '--color', 'never', '--nocapture')
+            if ($case -like '*powershell_51_*') { $arguments += '--ignored' }
+            $result = @(& ./windows-policy/phux-desktop-policy.exe @arguments 2>&1)
+            $exitCode = $LASTEXITCODE
+            $result | ForEach-Object { Write-Output $_ }
+            if ($exitCode -ne 0 -or ($result -join "`n") -notmatch 'test result: ok\. 1 passed; 0 failed; 0 ignored;') { throw "Native policy test did not execute and pass exactly once: $case" }
+          }
+      - name: Installed app, live WSL shell, native input, clipboard, resize and reconnect
+        shell: pwsh
+        run: |
+          $archive = (Get-ChildItem windows-package/phux-desktop-*-windows-x64.zip).FullName
+          powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File clients/desktop/scripts/smoke-windows.ps1 -Archive $archive -ServerBinary "$env:GITHUB_WORKSPACE/wsl-server/phux" -Output "$env:RUNNER_TEMP/desktop-evidence"
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows GUI qualification failed' }
+      - name: Backpressured Linux bridge exits after native launcher death
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows-bridge-teardown.ps1 -ServerBinary "$env:GITHUB_WORKSPACE/wsl-server/phux" -Output "$env:RUNNER_TEMP/desktop-evidence"
+          if ($LASTEXITCODE -ne 0) { throw 'Native WSL bridge teardown qualification failed' }
+      - name: Hand only GUI-qualified bytes to release publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-windows-x64
+          path: |
+            windows-package/*.zip
+            windows-package/*.zip.sha256
+          if-no-files-found: error
+      - name: Retain native runtime evidence, also on failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-runtime-windows-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  publish:
+    name: Verify and publish qualified Windows x64
+    needs: qualify
+    if: inputs.release-tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.release-tag }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: desktop-windows-x64
+          path: ${{ runner.temp }}/desktop-windows
+      - name: Verify the qualified product's immutable name and checksum
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/desktop-windows"
+          archives=(phux-desktop-*-windows-x64.zip)
+          test "${#archives[@]}" -eq 1
+          if [[ "$CHANNEL" == next ]]; then
+            test "$RELEASE_TAG" = next
+            [[ "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]
+            test "${archives[0]}" = "phux-desktop-next.$SOURCE_REF-windows-x64.zip"
+          else
+            test "$CHANNEL" = stable
+            [[ "$RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            test "$SOURCE_REF" = "$RELEASE_TAG"
+            test "${archives[0]}" = "phux-desktop-${RELEASE_TAG#desktop-v}-windows-x64.zip"
+          fi
+          sha256sum -c "${archives[0]}.sha256"
+      - name: Upload stable to its existing draft and verify downloaded bytes
+        if: inputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP"/desktop-windows/*.zip "$RUNNER_TEMP"/desktop-windows/*.zip.sha256 --clobber
+          gh release download "$RELEASE_TAG" --pattern '*-windows-x64.zip' --pattern '*-windows-x64.zip.sha256' --dir "$RUNNER_TEMP/desktop-windows-download"
+          cd "$RUNNER_TEMP/desktop-windows-download"
+          cmp ./*.sha256 "$RUNNER_TEMP"/desktop-windows/*.sha256
+          sha256sum -c ./*.sha256
+      - name: Hand the stable checksum to the isolated signer
+        if: inputs.channel == 'stable'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-sidecar-windows-x64
+          path: ${{ runner.temp }}/desktop-windows/*.zip.sha256
+          if-no-files-found: error

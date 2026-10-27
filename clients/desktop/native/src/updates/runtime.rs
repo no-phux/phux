@@ -24,7 +24,11 @@ pub struct RuntimeRelease {
     pub protocol_target: Option<String>,
 }
 
-pub fn runtime_check(phux: &Path, channel: Channel) -> anyhow::Result<RuntimeRelease> {
+pub fn runtime_check(
+    phux: &Path,
+    socket: &Path,
+    channel: Channel,
+) -> anyhow::Result<RuntimeRelease> {
     let phux = crate::launch::command_path(phux)?;
     let text = run_bounded(
         phux_command(&phux).args(["update", "--check", "--channel", channel.as_str(), "--json"]),
@@ -32,7 +36,80 @@ pub fn runtime_check(phux: &Path, channel: Channel) -> anyhow::Result<RuntimeRel
         CHECK_TIMEOUT,
         "phux release check timed out. Nothing was installed; try Check now again.",
     )?;
-    runtime_release(&serde_json::from_str(&text)?)
+    let runtime = runtime_release(&serde_json::from_str(&text)?)?;
+    #[cfg(windows)]
+    {
+        let command = manual_runtime_update(phux_command(&phux), socket, channel);
+        Ok(windows_runtime_policy(runtime, &command))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = socket;
+        Ok(runtime)
+    }
+}
+
+/// Cancelling native wsl.exe does not prove its Linux updater stopped. Until
+/// coordinator-side cancellation exists, Desktop only checks WSL releases.
+#[cfg(any(windows, test))]
+pub(super) fn windows_runtime_policy(
+    mut runtime: RuntimeRelease,
+    command: &Command,
+) -> RuntimeRelease {
+    runtime.mutable = false;
+    runtime.native_command = Some(powershell_command(command));
+    runtime
+}
+
+#[cfg(any(windows, test))]
+pub(super) fn manual_runtime_update(
+    mut command: Command,
+    socket: &Path,
+    channel: Channel,
+) -> Command {
+    command
+        .arg("--socket")
+        .arg(socket)
+        .args(["update", "--channel", channel.as_str()]);
+    command
+}
+
+/// PowerShell single-quoted literals keep distro names, CLI paths and sockets
+/// as arguments, including apostrophes and shell-looking user data. Encode the
+/// Linux argv so PowerShell 5.1 cannot strip quotes inside the `sh -c` wrapper.
+#[cfg(any(windows, test))]
+pub(super) fn powershell_command(command: &Command) -> String {
+    let arguments = manual_wsl_arguments(command);
+    let arguments = std::iter::once(command.get_program().to_string_lossy().into_owned())
+        .chain(arguments)
+        .map(|argument| format!("'{}'", argument.replace('\'', "''")))
+        .collect::<Vec<_>>();
+    format!("& {}", arguments.join(" "))
+}
+
+#[cfg(any(windows, test))]
+fn manual_wsl_arguments(command: &Command) -> Vec<String> {
+    use base64::Engine as _;
+    let mut arguments = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let Some(exec) = arguments.iter().position(|arg| arg == "--exec") else {
+        return arguments;
+    };
+    let script = arguments[exec + 1..]
+        .iter()
+        .map(|arg| format!("'{}'", arg.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(format!("exec {script}"));
+    arguments.truncate(exec + 1);
+    arguments.extend([
+        "sh".into(),
+        "-c".into(),
+        format!("IFS=;set -f;eval $(printf %s {encoded}|base64 -d)"),
+    ]);
+    arguments
 }
 
 pub fn runtime_release(value: &Value) -> anyhow::Result<RuntimeRelease> {
@@ -68,6 +145,7 @@ pub struct RuntimeInstalled {
     pub retry_handoff: bool,
 }
 
+#[cfg(any(not(windows), test))]
 pub fn runtime_result(value: &Value) -> anyhow::Result<RuntimeInstalled> {
     if value["schema_version"] != 1 && value["schema_version"] != 2 {
         bail!("Unsupported phux update response");
@@ -86,6 +164,20 @@ pub fn runtime_result(value: &Value) -> anyhow::Result<RuntimeInstalled> {
     })
 }
 
+#[cfg(windows)]
+pub fn runtime_install(
+    phux: &Path,
+    socket: &Path,
+    channel: Channel,
+) -> anyhow::Result<RuntimeInstalled> {
+    let command = manual_runtime_update(phux_command(phux), socket, channel);
+    bail!(
+        "Automatic runtime updates are disabled on Windows: cancelling wsl.exe cannot guarantee the Linux updater stopped. Run manually in PowerShell: {}",
+        powershell_command(&command)
+    );
+}
+
+#[cfg(not(windows))]
 pub fn runtime_install(
     phux: &Path,
     socket: &Path,
@@ -102,11 +194,7 @@ pub fn runtime_install(
         ]),
         None,
         STAGE_TIMEOUT,
-        if cfg!(windows) {
-            "phux update timed out. Check the installed version in WSL before retrying; Desktop did not close any agent sessions."
-        } else {
-            "phux update timed out. The previous binaries stay in place; try again."
-        },
+        "phux update timed out. The previous binaries stay in place; try again.",
     )?;
     let value: Value = serde_json::from_str(&text)?;
     let mut result = runtime_result(&value)?;
@@ -124,11 +212,6 @@ pub fn runtime_install(
         .context("phux was installed but the server could not start")?;
     }
     if !result.reconnect {
-        #[cfg(windows)]
-        result.message.push_str(
-            " Use Retry server handoff in Desktop to retry in the selected WSL distribution. No agent sessions were closed.",
-        );
-        #[cfg(not(windows))]
         result.message.push_str(&format!(
             " Retry the handoff with {} --socket {} upgrade. No agent sessions were closed.",
             crate::attach::quote_paths(std::slice::from_ref(&phux)),
@@ -138,6 +221,7 @@ pub fn runtime_install(
     Ok(result)
 }
 
+#[cfg(not(windows))]
 fn runtime_socket(phux: &Path, socket: &Path) -> anyhow::Result<PathBuf> {
     if socket.as_os_str().is_empty() {
         crate::launch::ensure_server(phux, None)
@@ -146,6 +230,17 @@ fn runtime_socket(phux: &Path, socket: &Path) -> anyhow::Result<PathBuf> {
     }
 }
 
+#[cfg(windows)]
+pub fn runtime_retry(phux: &Path, socket: &Path) -> anyhow::Result<RuntimeInstalled> {
+    let mut command = phux_command(phux);
+    command.arg("--socket").arg(socket).arg("upgrade");
+    bail!(
+        "Automatic server handoff is disabled on Windows: cancelling wsl.exe cannot guarantee the Linux command stopped. Run manually in PowerShell: {}",
+        powershell_command(&command)
+    );
+}
+
+#[cfg(not(windows))]
 pub fn runtime_retry(phux: &Path, socket: &Path) -> anyhow::Result<RuntimeInstalled> {
     let phux = crate::launch::command_path(phux)?;
     let socket = runtime_socket(&phux, socket)?;

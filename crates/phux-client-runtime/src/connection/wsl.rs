@@ -43,7 +43,7 @@ fn command(
     command.args([
         "--exec",
         "sh",
-        "-lc",
+        "-c",
         "export PATH=\"$HOME/.local/bin:$PATH\"; exec \"$@\"",
         "phux-desktop",
     ]);
@@ -96,7 +96,7 @@ mod tests {
                 "Ubuntu Test",
                 "--exec",
                 "sh",
-                "-lc",
+                "-c",
                 "export PATH=\"$HOME/.local/bin:$PATH\"; exec \"$@\"",
                 "phux-desktop",
                 "/a b/phux",
@@ -140,6 +140,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join(".profile"),
+            "echo LOGIN_BANNER_MUST_NOT_REACH_PROTOCOL\n",
+        )
+        .expect("noisy login profile");
         let phux = dir.path().join("custom phux 'binary");
         std::fs::write(&phux, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").expect("fixture");
         std::fs::set_permissions(&phux, std::fs::Permissions::from_mode(0o700))
@@ -150,6 +155,7 @@ mod tests {
         // Run the exact argv after WSL's --exec using the host's POSIX shell.
         let output = tokio::process::Command::new(args[1])
             .args(&args[2..])
+            .env("HOME", dir.path())
             .output()
             .await
             .expect("shell wrapper");

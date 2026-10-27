@@ -3,6 +3,9 @@ use super::*;
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(windows)]
+mod windows;
+
 const STABLE: &str = include_str!("../../../../../scripts/fixtures/release-manifest/stable.json");
 const NEXT: &str = include_str!("../../../../../scripts/fixtures/release-manifest/next.json");
 
@@ -237,6 +240,113 @@ fn runtime_protocol_is_optional() {
 }
 
 #[test]
+fn windows_runtime_checks_are_read_only_and_quote_the_manual_wsl_update() {
+    let mut wsl = Command::new("wsl.exe");
+    wsl.args([
+        "--distribution",
+        "Team's Ubuntu λ $(unsafe)",
+        "--exec",
+        "/home/person's bin/phux",
+    ]);
+    let command = runtime::manual_runtime_update(
+        wsl,
+        Path::new("/run/person's coordinator.sock"),
+        Channel::Next,
+    );
+    let release = runtime_release(&json!({
+        "schema_version":2, "current_version":"1.0.0", "target_version":"2.0.0",
+        "update_available":true, "install":{"mutable":true},
+    }))
+    .unwrap();
+    let readonly = runtime::windows_runtime_policy(release, &command);
+    assert!(readonly.available);
+    assert!(
+        !readonly.mutable,
+        "a Linux updater must never be started by Desktop on Windows"
+    );
+    let remedy = readonly.native_command.unwrap();
+    assert!(remedy.starts_with("& 'wsl.exe' '--distribution' 'Team''s Ubuntu λ $(unsafe)' '--exec' 'sh' '-c' 'IFS=;set -f;eval $(printf %s "));
+    assert!(
+        !remedy.contains('"'),
+        "PowerShell 5.1 must not lose nested shell quotes"
+    );
+    let encoded = remedy
+        .split("printf %s ")
+        .nth(1)
+        .unwrap()
+        .split('|')
+        .next()
+        .unwrap();
+    use base64::Engine as _;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(decoded).unwrap(),
+        "exec '/home/person'\\''s bin/phux' '--socket' '/run/person'\\''s coordinator.sock' 'update' '--channel' 'next'"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_runtime_install_and_retry_refuse_before_starting_wsl() {
+    let phux = Path::new("/nonexistent/person's bin/phux");
+    let socket = Path::new("/nonexistent/person's coordinator.sock");
+    let install = runtime_install(phux, socket, Channel::Next)
+        .err()
+        .unwrap()
+        .to_string();
+    let retry = runtime_retry(phux, socket).err().unwrap().to_string();
+    assert!(install.starts_with("Automatic runtime updates are disabled on Windows"));
+    assert!(retry.starts_with("Automatic server handoff is disabled on Windows"));
+    for remedy in [&install, &retry] {
+        assert!(remedy.contains("'wsl.exe'"));
+        assert!(remedy.contains("'--exec' 'sh' '-c' 'IFS=;set -f;eval $(printf %s "));
+        if let Some(distro) = std::env::var_os("PHUX_WSL_DISTRO").filter(|name| !name.is_empty()) {
+            assert!(remedy.contains(&format!(
+                "'--distribution' '{}'",
+                distro.to_string_lossy().replace('\'', "''")
+            )));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn manual_wsl_wrapper_preserves_nested_quotes_and_argument_boundaries() {
+    let mut command = Command::new("wsl.exe");
+    command.args([
+        "--exec",
+        "sh",
+        "-c",
+        "exec \"$@\"",
+        "phux-desktop",
+        "/usr/bin/printf",
+        "<%s>",
+        "a 'quote' $(never-executed) λ",
+        "two words",
+    ]);
+    let remedy = runtime::powershell_command(&command);
+    assert!(!remedy.contains('"'));
+    let script = remedy
+        .split("'sh' '-c' '")
+        .nth(1)
+        .unwrap()
+        .strip_suffix('\'')
+        .unwrap();
+    let output = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(script)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "<a 'quote' $(never-executed) λ><two words>"
+    );
+}
+
+#[test]
 fn structured_failure_has_readable_remedy() {
     assert_eq!(
         failure_message(
@@ -394,7 +504,11 @@ fn runtime_commands_use_explicit_socket_and_never_close_agents() {
     )
     .unwrap();
     std::fs::set_permissions(&phux, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert!(runtime_check(&phux, Channel::Next).unwrap().available);
+    assert!(
+        runtime_check(&phux, &dir.join("isolated.sock"), Channel::Next)
+            .unwrap()
+            .available
+    );
     assert_eq!(
         std::fs::read_to_string(&record).unwrap(),
         "update\n--check\n--channel\nnext\n--json\n"

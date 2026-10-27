@@ -21,12 +21,31 @@ on:
       - scripts/test-windows-terminal.py
       - .github/workflows/windows-wsl.yml
   workflow_dispatch:
+    inputs:
+      desktop-build-run:
+        description: Optional retained native desktop run for GUI diagnostics only
+        type: string
+        default: ''
+      desktop-build-sha:
+        description: Exact product SHA for that retained diagnostic build
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
+  desktop-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.desktop-build-run != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/windows-desktop-diagnostic.yml
+    with:
+      build-run: ${{ inputs.desktop-build-run }}
+      build-sha: ${{ inputs.desktop-build-sha }}
   windows:
+    if: inputs.desktop-build-run == ''
     runs-on: windows-2025
     timeout-minutes: 30
     steps:

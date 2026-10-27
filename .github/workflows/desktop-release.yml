@@ -1,5 +1,5 @@
 # Release Please owns the immutable tag and draft; release.yml is the only door.
-# Stable: notarized Apple silicon DMG + updater ZIP, and Linux x64/arm64.
+# Stable: notarized Apple silicon DMG + ZIP, Linux x64/arm64, and native Windows x64 ZIP.
 name: Release Desktop
 
 on:
@@ -42,7 +42,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  capabilities:
+    name: Select the tagged desktop target set
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      windows: ${{ steps.targets.outputs.windows }}
+      sidecars: ${{ steps.targets.outputs.sidecars }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - id: targets
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          RELEASE_SHA: ${{ inputs.sha }}
+        run: |
+          bun - <<'JS'
+            import { appendFileSync } from "node:fs";
+            import { targets, VERSION, SHA } from "./tools/src/release/manifest.ts";
+            const { RELEASE_TAG: tag, RELEASE_CHANNEL: channel, RELEASE_SHA: sha, GITHUB_OUTPUT: output } = process.env;
+            const version = channel === "stable" ? tag.slice("desktop-v".length) : "0.0.0";
+            if (channel !== "stable" && channel !== "next") throw new Error("Invalid desktop channel");
+            if (channel === "stable" && (!VERSION.test(version) || tag !== `desktop-v${version}`)) throw new Error("Invalid desktop tag");
+            if (channel === "next" && (tag !== "next" || !SHA.test(sha))) throw new Error("Invalid next source");
+            const required = targets("desktop", channel, version);
+            appendFileSync(output, `windows=${required.includes("x86_64-pc-windows-msvc")}\nsidecars=${required.length + 1}\n`);
+          JS
   macos:
+    needs: capabilities
     name: Qualify and publish macOS arm64
     # Build on the oldest supported host/SDK; PRs also qualify Xcode 27.
     runs-on: macos-26
@@ -200,6 +233,7 @@ jobs:
           if-no-files-found: error
 
   linux:
+    needs: capabilities
     name: Qualify and publish Linux ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -359,18 +393,35 @@ jobs:
             ${{ runner.temp }}/desktop-release/*.tar.gz.sha256
           if-no-files-found: error
 
+  windows:
+    name: Qualify and publish native Windows desktop
+    needs: capabilities
+    if: needs.capabilities.outputs.windows == 'true'
+    uses: ./.github/workflows/windows-desktop.yml
+    with:
+      ref: ${{ inputs.sha || inputs.tag }}
+      channel: ${{ inputs.channel }}
+      release-tag: ${{ inputs.tag }}
+
   # Minisign is isolated from build hosts (ADR-0178). Apple signs on macOS.
   # All three platforms
   # must qualify before any signature is issued or the draft is published.
   sign:
     name: Sign and publish stable
-    needs: [macos, linux]
-    if: inputs.channel == 'stable'
+    needs: [capabilities, macos, linux, windows]
+    if: >-
+      always() && inputs.channel == 'stable' &&
+      needs.capabilities.result == 'success' &&
+      needs.macos.result == 'success' && needs.linux.result == 'success' &&
+      (needs.windows.result == 'success' ||
+       (needs.capabilities.outputs.windows == 'false' && needs.windows.result == 'skipped'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       GH_REPO: ${{ github.repository }}
+      EXPECTED_DESKTOP_SIDECARS: ${{ needs.capabilities.outputs.sidecars }}
+      WINDOWS_DESKTOP: ${{ needs.capabilities.outputs.windows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -381,35 +432,8 @@ jobs:
           pattern: desktop-sidecar-*
           merge-multiple: true
           path: ${{ runner.temp }}/desktop-sidecar
-      - name: Sign the checksum and attach the signature
+      - name: Sign matching checksums and publish stable, never latest
         env:
           GH_TOKEN: ${{ github.token }}
           PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
-        run: |
-          set -euo pipefail
-          sidecars=("$RUNNER_TEMP"/desktop-sidecar/phux-desktop-*.sha256)
-          test "${#sidecars[@]}" -eq 4
-          test -f "$RUNNER_TEMP/desktop-sidecar/phux-desktop-${RELEASE_TAG#desktop-v}-macos-arm64.dmg.sha256"
-          for sidecar in "${sidecars[@]}"; do
-            name="$(basename "$sidecar")"
-            # Sign only the checksum the draft actually carries.
-            gh release download "$RELEASE_TAG" --pattern "$name" --dir "$RUNNER_TEMP/desktop-draft"
-            cmp "$sidecar" "$RUNNER_TEMP/desktop-draft/$name"
-          done
-          cat "${sidecars[@]}" > "$RUNNER_TEMP/desktop-sidecar/SHA256SUMS"
-          bash scripts/ci/sign-release.sh "${sidecars[@]}"
-          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP"/desktop-sidecar/*.minisig \
-            "$RUNNER_TEMP/desktop-sidecar/SHA256SUMS" --clobber
-      - name: Publish as stable, never latest
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          notes="$RUNNER_TEMP/desktop-release-notes"
-          gh release view "$RELEASE_TAG" --json body --jq '.body // ""' > "$notes"
-          marker='Desktop: Developer ID signed and Apple-notarized.'
-          if ! grep -Fq "$marker" "$notes"; then
-            printf '\n%s\n\nmacOS: download phux-desktop-%s-macos-arm64.dmg, open it, and drag Phux.app onto Applications. The ZIP is for automatic updates. Apple silicon macOS 26 or later; Ubuntu 24.04 GNU/Linux x64 and arm64 (X11 and Wayland; release qualification uses X11 with lavapipe). Recent DMGs include the phux CLI and server; older releases may require the separate CLI installer (https://phux.sh/install). Existing CLIs and running sessions are not replaced.\n' "$marker" "${RELEASE_TAG#desktop-v}" >> "$notes"
-          fi
-          gh release edit "$RELEASE_TAG" --notes-file "$notes" \
-            --draft=false --latest=false
+        run: bash scripts/ci/publish-desktop-release.sh

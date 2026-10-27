@@ -3,6 +3,22 @@
 
 use super::*;
 
+const EXTERNAL_RUNTIME_STATUS: &str = if cfg!(windows) {
+    "Manual in WSL"
+} else {
+    "Package managed"
+};
+const EXTERNAL_RUNTIME_DETAIL: &str = if cfg!(windows) {
+    "Desktop only checks WSL releases. Update phux manually using the PowerShell command below; Desktop never starts a WSL install or server handoff."
+} else {
+    "phux is managed outside Desktop. Use its package manager to update."
+};
+const EXTERNAL_RUNTIME_NOTICE: &str = if cfg!(windows) {
+    "WSL runtime updates are manual. Desktop did not start an install or server handoff. Run in PowerShell:"
+} else {
+    "phux came from a package manager, so update it there:"
+};
+
 impl Updater {
     /// The incoming protocol change this update will not resolve: phux is not
     /// managed here, has nothing to install, or lands on another protocol.
@@ -103,7 +119,7 @@ impl Updater {
             .as_ref()
             .is_some_and(|runtime| runtime.available)
         {
-            ("Package managed", Tone::Quiet)
+            (EXTERNAL_RUNTIME_STATUS, Tone::Quiet)
         } else if self.runtime.is_some() {
             ("Up to date", Tone::Good)
         } else {
@@ -170,9 +186,7 @@ impl Updater {
             return Some("Your sessions keep running. No Desktop restart is needed.".to_owned());
         }
         if self.runtime_attention() {
-            return Some(
-                "phux is managed outside Desktop. Use its package manager to update.".to_owned(),
-            );
+            return Some(EXTERNAL_RUNTIME_DETAIL.to_owned());
         }
         self.target.as_ref()?;
         Some(
@@ -290,10 +304,7 @@ impl Updater {
             .as_ref()
             .filter(|runtime| self.prefs.manage_runtime && runtime.available && !runtime.mutable);
         if let Some(command) = packaged.and_then(|runtime| runtime.native_command.as_deref()) {
-            notices.push((
-                format!("phux came from a package manager, so update it there: {command}"),
-                false,
-            ));
+            notices.push((format!("{EXTERNAL_RUNTIME_NOTICE} {command}"), false));
         }
         if updates::manual_desktop_install() && self.desktop_available() {
             notices.push((

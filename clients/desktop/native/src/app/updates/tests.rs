@@ -256,13 +256,45 @@ fn a_package_managed_phux_names_its_own_command() {
     packaged.native_command = Some("brew upgrade phux".into());
     updater.runtime = Some(packaged);
     assert_eq!(updater.action(), None);
-    assert_eq!(updater.runtime_status().0, "Package managed");
+    assert_eq!(
+        updater.runtime_status().0,
+        if cfg!(windows) {
+            "Manual in WSL"
+        } else {
+            "Package managed"
+        }
+    );
     assert!(
         updater
             .notices()
             .iter()
             .any(|(text, failed)| !failed && text.ends_with("brew upgrade phux"))
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_runtime_updates_show_manual_instructions_without_an_install_action() {
+    let mut updater = installed("0.3.0");
+    let mut readonly = runtime(None);
+    readonly.mutable = false;
+    readonly.native_command = Some("& 'wsl.exe' '--distribution' 'Ubuntu' '--exec' 'phux' '--socket' '/run/phux.sock' 'update' '--channel' 'stable'".into());
+    updater.record_check(
+        Ok(release("0.3.0", &updates::own_protocol())),
+        Some(Ok(readonly)),
+    );
+    assert_eq!(updater.action(), None);
+    assert!(!updater.phux_due());
+    assert_eq!(updater.runtime_status().0, "Manual in WSL");
+    assert!(
+        updater
+            .summary_detail()
+            .unwrap()
+            .contains("never starts a WSL install or server handoff")
+    );
+    assert!(updater.notices().iter().any(|(text, failed)| !failed
+        && text.contains("Desktop did not start an install or server handoff")
+        && text.contains("'--distribution' 'Ubuntu'")));
 }
 
 #[test]

@@ -145,3 +145,128 @@ test("only stable macOS receives Apple credentials, before upload and after pack
   expect(qualification).toContain("hdiutil attach -readonly -nobrowse");
   expect(qualification).toContain("spctl --assess --type execute");
 });
+
+test("Windows builds native MSVC and signs only after a same-source WSL GUI journey", () => {
+  const windows = workflow("windows-desktop.yml");
+  expect(job(windows, "windows")["runs-on"]).toBe("windows-2025");
+  expect(job(windows, "windows")["needs"]).toBeUndefined();
+  const build = steps(job(windows, "windows"));
+  expect(build.some((step) => run(step).includes("--target x86_64-pc-windows-msvc"))).toBe(true);
+  expect(build.some((step) => run(step).includes("rust-toolchain.toml"))).toBe(true);
+  expect(build.some((step) => run(step).includes("install-zig-windows.ps1"))).toBe(true);
+  expect(build.some((step) => withInput(step, "name") === "desktop-build-windows-x64")).toBe(true);
+  expect(build.some((step) => withInput(step, "name") === "desktop-windows-x64")).toBe(false);
+  const qualified = steps(job(windows, "qualify"));
+  const smoke = qualified.findIndex((step) => run(step).includes("smoke-windows.ps1"));
+  const product = qualified.findIndex((step) => withInput(step, "name") === "desktop-windows-x64");
+  expect(smoke).toBeGreaterThan(0);
+  expect(product).toBeGreaterThan(smoke);
+  expect(qualified[product]?.["if"]).toBeUndefined();
+  expect(
+    steps(job(windows, "server")).some(
+      (step) => run(step) === "cargo build --locked --release -p phux",
+    ),
+  ).toBe(true);
+  const installer = readFileSync(repoPath("scripts/install-desktop-windows.ps1"), "utf8");
+  const keys =
+    readFileSync(repoPath("crates/phux-client-runtime/src/release/signature.rs"), "utf8").match(
+      /"RW[A-Za-z0-9+/=]+"/g,
+    ) ?? [];
+  expect(keys).toHaveLength(2);
+  for (const key of keys) expect(installer).toContain(key.slice(1, -1));
+  const smokeScript = readFileSync(repoPath("clients/desktop/scripts/smoke-windows.ps1"), "utf8");
+  for (const proof of [
+    "SendInput",
+    "CopyFromScreen",
+    "Get-ConnectionEpoch",
+    "PHUXSURVIVALAFTERCRASH",
+  ])
+    expect(smokeScript).toContain(proof);
+  expect(
+    readFileSync(repoPath("clients/desktop/scripts/smoke-windows-resize.ps1"), "utf8"),
+  ).toContain("stty -F /proc/$shellPid/fd/0 size");
+});
+
+test("Windows policy filters cannot silently pass zero tests and diagnostics never publish products", () => {
+  const windows = workflow("windows-desktop.yml");
+  const qualify = steps(job(windows, "qualify"));
+  const policy = qualify.map(run).find((script) => script.includes("$cases =")) ?? "";
+  expect(policy).toContain("--list --format terse");
+  expect(policy).toContain('$listed.Contains("${case}: test")');
+  expect(policy).toContain("--exact");
+  expect(policy).toContain("test result: ok\\. 1 passed; 0 failed; 0 ignored;");
+  const predicates =
+    steps(job(windows, "windows"))
+      .map(run)
+      .find((script) => script.includes("presentation::tests")) ?? "";
+  expect(predicates).toContain("-p gpui-fast-windows");
+  expect(predicates).toContain("test result: ok\\. 3 passed; 0 failed; 0 ignored;");
+  const ordering =
+    steps(job(windows, "windows"))
+      .map(run)
+      .find((script) => script.includes("fast::input_order::tests")) ?? "";
+  expect(ordering).toContain("test result: ok\\. 5 passed; 0 failed; 0 ignored;");
+  expect(ordering).toContain("$exitCode -ne 0");
+  expect(qualify.map(run).join("\n")).not.toContain("-DiagnosticBuildSha");
+
+  const diagnostic = workflow("windows-desktop-diagnostic.yml");
+  expect(diagnostic.permissions).toEqual({ contents: "read", actions: "read" });
+  const diagnosticSteps = steps(job(diagnostic, "diagnose"));
+  expect(diagnosticSteps.map(run).join("\n")).toContain("-DiagnosticBuildSha");
+  expect(diagnosticSteps.some((step) => withInput(step, "name") === "desktop-windows-x64")).toBe(
+    false,
+  );
+  expect(diagnosticSteps.map(run).join("\n")).not.toContain("gh release");
+  const smoke = readFileSync(repoPath("clients/desktop/scripts/smoke-windows.ps1"), "utf8");
+  expect(smoke).toContain("$expectedVersion = $release.version");
+  expect(smoke).toContain("$env:PHUX_DIAGNOSTIC -cne 'true'");
+  const clipboard = readFileSync(
+    repoPath("clients/desktop/scripts/smoke-windows-clipboard.ps1"),
+    "utf8",
+  );
+  expect(clipboard).toContain("@('snapshot', '--unwrap', $session)");
+  expect(clipboard).toContain("Get-FileHash -Algorithm SHA256");
+  expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetFileDropList");
+  expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetImage");
+});
+
+test("desktop release workflows preserve legacy targets and require Windows at the cutover", () => {
+  const release = workflow("desktop-release.yml");
+  const select = steps(job(release, "capabilities")).find((step) => step["id"] === "targets");
+  expect(select).toBeDefined();
+  const root = mkdtempSync(join(tmpdir(), "phux-desktop-capabilities-"));
+  try {
+    for (const [channel, tag, expected] of [
+      ["stable", "desktop-v0.49.0", "windows=false\nsidecars=4\n"],
+      ["stable", "desktop-v0.50.0", "windows=true\nsidecars=5\n"],
+      ["stable", "desktop-v1.0.0", "windows=true\nsidecars=5\n"],
+      ["next", "next", "windows=true\nsidecars=5\n"],
+    ] as const) {
+      const output = join(root, `${channel}-${tag}`);
+      const result = Bun.spawnSync(["bash", "-e", "-c", run(select ?? {})], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: output,
+          RELEASE_CHANNEL: channel,
+          RELEASE_TAG: tag,
+          RELEASE_SHA: "a".repeat(40),
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe(expected);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(job(release, "windows")["if"]).toBe("needs.capabilities.outputs.windows == 'true'");
+  expect(job(release, "sign")["if"]).toContain("needs.windows.result == 'success'");
+  expect(job(release, "sign")["if"]).toContain("needs.capabilities.outputs.windows == 'false'");
+  expect(job(release, "sign")["if"]).toContain("needs.windows.result == 'skipped'");
+  expect(steps(job(release, "sign")).map(run).join("\n")).toContain(
+    "bash scripts/ci/publish-desktop-release.sh",
+  );
+  expect(readFileSync(repoPath("scripts/ci/publish-desktop-release.sh"), "utf8")).toContain(
+    '"$EXPECTED_DESKTOP_SIDECARS"',
+  );
+});
