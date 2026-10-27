@@ -29,7 +29,7 @@ impl Builder {
         }
         if cell.wide == 0
             && (self.prepare_block((row, col), text, bounds, colors, window)
-                || self.prepare_box((row, col), text, bounds, colors, window))
+                || self.prepare_box((row, col), text, bounds, colors))
         {
             return;
         }
@@ -85,7 +85,6 @@ impl Builder {
         text: &[u8],
         bounds: Bounds<Pixels>,
         colors: CellColors,
-        window: &gpui::Window,
     ) -> bool {
         let Some(ch) = lone_char(text) else {
             return false;
@@ -93,7 +92,9 @@ impl Builder {
         let Some(quads) = super::boxes::box_quads(ch, bounds, self.scene.geometry.scale) else {
             return false;
         };
-        self.flush_glyph_run(window);
+        // No ink of its own in the run: the text either side stays one
+        // shaped run, as it was when the face drew this cell.
+        self.blank_cell(row, col);
         let foreground = self
             .glyph_foreground(row, col, colors)
             .opacity(colors.opacity);
