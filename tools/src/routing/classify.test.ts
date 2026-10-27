@@ -77,6 +77,8 @@ test.each<[string[], Surface[]]>([
   [["scripts/install-desktop-windows.ps1"], []],
   [["scripts/test-install-desktop-windows.ps1"], []],
   [["scripts/install-zig-windows.ps1"], []],
+  [["scripts/test-windows-bridge-teardown.ps1"], []],
+  [["scripts/test-windows-bridge-fixture.py"], []],
   [["clients/desktop/scripts/package-windows.ts"], ["desktop"]],
   [[".github/workflows/windows-wsl.yml"], []],
   [["clients/desktop/native/Cargo.lock"], ["desktop"]],

@@ -239,7 +239,10 @@ try {
     [PhuxDesktopGui]::Key(17, $false); [PhuxDesktopGui]::Key(16, $false); [PhuxDesktopGui]::Press(82)
     [PhuxDesktopGui]::Key(16, $true); [PhuxDesktopGui]::Key(17, $true)
     Wait-Desktop 'UI reconnect attached a new epoch' { (Get-ConnectionEpoch) -gt $epoch }
-    Send-Shell "printf '%s%s\n' PHUX RECONNECTED"
+    # A cursor/selection can cover the first cells of one output row. Require
+    # the exact marker, but print independent padded rows so OCR never needs
+    # fuzzy matching or a command-echo substitute for visible output.
+    Send-Shell "printf '    %s%s\n    %s%s\n    %s%s\n' PHUX RECONNECTED PHUX RECONNECTED PHUX RECONNECTED"
     Assert-Rendered 'reconnected' 'PHUXRECONNECTED'
     Stop-SmokeDesktop
     $afterCrash = 'printf "\033[2J\033[H%s%s\n" "$PHUX_SMOKE_VALUE" AFTERCRASH; printf "%s\n" "$$" > ' + "$linuxRoot/after.pid"

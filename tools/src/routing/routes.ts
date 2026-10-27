@@ -56,6 +56,7 @@ const ROUTES: Record<string, Surface[]> = {
   "scripts/test-windows-terminal.py": [],
   // Native Windows distribution contracts have their own hosted GUI workflow.
   "scripts/{install-desktop-windows,test-install-desktop-windows,install-zig-windows}.ps1": [],
+  "scripts/test-windows-bridge-{teardown.ps1,fixture.py}": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
   // Passive maintainer task exports/configuration are not product inputs.
