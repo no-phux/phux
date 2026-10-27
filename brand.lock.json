@@ -21,29 +21,29 @@
       "destination": "docs/assets/logo.svg",
       "sha256": "9cda166900ba0be12aecfb1378515d3173d5b57704e29e20f81a5100a9cc0c01"
     },
-    "playground/ghost/atlas.json": {
-      "destination": "clients/desktop/native/assets/playground/ghost/atlas.json",
-      "sha256": "cd22d7036455081fc7134171d2b66af66cf436d3ab47bf09e936747af71bf584"
+    "playground/fox/atlas.json": {
+      "destination": "clients/desktop/native/assets/playground/fox/atlas.json",
+      "sha256": "1746458a63b8e058164a95357aa06e65ee679e957df608ff3c84bc9fb87af20a"
     },
-    "playground/ghost/celebrate.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/celebrate.png",
-      "sha256": "69b1d33c69e6c9f04c10895be709ce7a2f72fc1b69939b4d0e01971e6c3ab24c"
+    "playground/fox/celebrate.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/celebrate.png",
+      "sha256": "2cf42623c1e30eebdc58564c49d4997ca028eb063233907ecd5d15d11a49b0b1"
     },
-    "playground/ghost/dash.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/dash.png",
-      "sha256": "b6c7424371f3f660b0975332b92aa5dd1bd67e438cda08107486247f7560f3c6"
+    "playground/fox/dash.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/dash.png",
+      "sha256": "ddfbcf85e5116d02de26160ad3fb8ed5e8d6e1b38b06bb5c43e0874b3e848adf"
     },
-    "playground/ghost/idle.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/idle.png",
-      "sha256": "407597091bdbd6b38a05e3987667e412c27859744a587a05d2bff9c75af288ea"
+    "playground/fox/idle.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/idle.png",
+      "sha256": "4fab817c42f6d88319d813eaad6118a4e281fd689dd34cf937fb90ca0499ebf9"
     },
-    "playground/ghost/sleep.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/sleep.png",
-      "sha256": "e7471c03b669f6ba1139aa222e38b4ccde193cf42f1218ba461ec61d6cd14810"
+    "playground/fox/sleep.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/sleep.png",
+      "sha256": "c8ad13983df7e4397b841d984bb864fe6653f34f654bd121b695593fc3c6fc23"
     },
-    "playground/ghost/still.png": {
-      "destination": "clients/desktop/native/assets/playground/ghost/still.png",
-      "sha256": "ee20864533ac4e7bafb6d85a691f3e1584d9e736d7ff8005dfe01de974f4e146"
+    "playground/fox/still.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/still.png",
+      "sha256": "e22fafc6b8b96d12a8bea12a6143167e9ba9cbb2652b1616e2bf01bf0d97277f"
     },
     "runtime/desktop/profiles.json": {
       "destination": "clients/desktop/packaging/brand-profiles.json",
@@ -55,8 +55,8 @@
     }
   },
   "schema": 1,
-  "sha256": "eb2dfb66cc1ce14f92697ef00f00ca38035ce694ad7575bf62be06dfe421ded3",
-  "source_revision": "5b044a9e0ac0fa9957d7abdfbeefc17be60a3f82",
+  "sha256": "30dbc63d22facd1236bfd9dade2e66d36c9ba075f6569f48f72165327681836a",
+  "source_revision": "9f25febeba013ef81a12005478504829f5b63bcd",
   "url": "https://phux.sh/brand/releases/1.4.0/phux-brand.zip",
   "version": "1.4.0"
 }

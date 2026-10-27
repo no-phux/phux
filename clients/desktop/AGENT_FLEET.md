@@ -1,7 +1,7 @@
 ---
 audience: humans
 stability: experimental
-last-reviewed: 2026-10-26
+last-reviewed: 2026-10-27
 ---
 
 # Agent fleet
@@ -38,21 +38,23 @@ off removes its titlebar and palette entry; terminals keep running.
 
 ## Playground
 
-The header's playground button swaps the cards for the same agents as ghosts
-on an isometric campus: a room per machine, Local first, with a door, a desk
+The header's playground button swaps the cards for the same agents as fox
+pieces on an isometric campus: a room per machine, Local first, with a door, a desk
 per agent and a dimmed empty room for a machine that is not connected. A
-working ghost roams its room, a blocked one bobs at its desk, an idle one
+working piece roams its room, a blocked one bobs at its desk, an idle one
 sleeps, a fresh finish celebrates; the name and the same status word as the
-card sit under each ghost. Drag to pan, scroll to pan, pinch to zoom. The
-camera opens on the first room that needs you. Clicking a ghost opens that
+card sit under each piece. Drag to pan, scroll to pan, pinch to zoom. The
+camera opens on the first room that needs you. Clicking a piece opens that
 exact agent, as a card does, and the keyboard path is unchanged. The map
 button beside it switches the skin between office and matrix, the same two
 maps the phone has; the choice is saved with this window's display
-preferences. A ghost
+preferences. A piece
 never leaves its machine's room. The scene draws about twelve frames a
 second while it is open; **Appearance > Animations** off or system **Reduce
-Motion** leaves every ghost on a still frame. The ghost artwork is a
-phux-brand export for this surface only; it is not the PHUX mark.
+Motion** leaves every piece on a still frame. The palette button cycles the
+piece's colour scheme (gold, silver, mint, rose, aurora, ember, matrix),
+saved with the display preferences. The piece is the PHUX fox, animated
+from a phux-brand export; it is recoloured only here.
 
 See the [desktop README](README.md) for installation and development, and
 [desktop usage](USAGE.md) for the rest of the app.

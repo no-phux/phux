@@ -14,7 +14,7 @@ use crate::connection::AgentState;
 
 pub(super) fn header(
     agents: &[Agent],
-    playground: Option<super::playground::Map>,
+    playground: Option<(super::playground::Map, super::playground::Scheme)>,
     look: &Look,
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
@@ -54,7 +54,25 @@ pub(super) fn header(
                         )
                         .child(muted(look, "Every agent. One vantage point.").mt(px(4.))),
                 )
-                .when_some(playground, |row, map| {
+                .when_some(playground, |row, (_, scheme)| {
+                    row.child(div().debug_selector(|| "fleet-scheme-toggle".into()).child(
+                        icon_button(
+                            "fleet-scheme-toggle",
+                            IconName::Palette,
+                            scheme.next().label(),
+                            None,
+                            cx.listener(move |desk, _, _, cx| {
+                                desk.update_prefs(
+                                    |prefs| {
+                                        prefs.playground_scheme = scheme.next().id().to_owned();
+                                    },
+                                    cx,
+                                );
+                            }),
+                        ),
+                    ))
+                })
+                .when_some(playground, |row, (map, _)| {
                     row.child(div().debug_selector(|| "fleet-map-toggle".into()).child(
                         icon_button(
                             "fleet-map-toggle",

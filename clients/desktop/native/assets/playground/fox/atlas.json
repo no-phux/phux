@@ -1,0 +1,21 @@
+{
+  "format": "horizontal-strip",
+  "frameCount": 8,
+  "frameWidth": 256,
+  "frameHeight": 256,
+  "durationMs": {
+    "idle": 1400,
+    "celebrate": 720,
+    "dash": 560,
+    "sleep": 1800
+  },
+  "animationNames": ["idle", "celebrate", "dash", "sleep"],
+  "files": {
+    "idle": "idle.png",
+    "celebrate": "celebrate.png",
+    "dash": "dash.png",
+    "sleep": "sleep.png"
+  },
+  "transparent": true,
+  "pivot": { "x": 0.5, "y": 0.55 }
+}
