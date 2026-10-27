@@ -89,7 +89,17 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.reviews.opened.is_none() {
+        let Some(opened) = self.reviews.opened.as_ref() else {
+            return;
+        };
+        if let Some(draft) = &opened.draft {
+            draft.input.update(cx, |input, cx| input.focus(window, cx));
+            self.post(
+                Kind::Refusal,
+                "Finish your comment first",
+                Some("Keep, post or cancel the open comment before starting another.".into()),
+            );
+            cx.notify();
             return;
         }
         let (input, subscription) =
@@ -130,18 +140,14 @@ impl Desk {
             }
             DraftFor::Reply(thread) => {
                 let replied = DraftFor::Reply(thread.clone());
+                let sent_body = body.clone();
                 self.review_write(
                     "Replying",
                     move || write::reply(&thread, &body),
-                    move |desk, result, current, _| match result {
+                    move |desk, result, current, cx| match result {
                         Ok(()) if current => {
-                            let opened = desk.reviews.opened.as_mut();
-                            if let Some(opened) = opened.filter(|o| {
-                                o.draft
-                                    .as_ref()
-                                    .is_some_and(|draft| draft.target == replied)
-                            }) {
-                                opened.draft = None;
+                            if let Some(opened) = desk.reviews.opened.as_mut() {
+                                opened.finish_reply(&replied, &sent_body, cx);
                             }
                         }
                         Ok(()) => {}

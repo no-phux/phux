@@ -26,6 +26,13 @@ impl Desk {
         let Some(opened) = self.reviews.opened.as_mut() else {
             return;
         };
+        // Never substitute the newest API head for a diff that was not read.
+        let Some(reviewed) = opened.patch.data.as_ref().map(|patch| patch.head.clone()) else {
+            return;
+        };
+        if opened.revision_changed() {
+            return;
+        }
         if !opened.confirm_merge {
             opened.confirm_merge = true;
             cx.notify();
@@ -36,16 +43,12 @@ impl Desk {
             return;
         };
         // A push since makes GitHub refuse rather than merge unseen commits.
-        let reviewed = opened
-            .patch
-            .data
-            .as_ref()
-            .map_or_else(|| pull.head_oid.clone(), |patch| patch.head.clone());
         let clone = opened.place.clone.clone();
         let label = opened.key.label();
         self.review_write(
             "Merging",
             move || {
+                super::verify_review_base(&pull)?;
                 write::merge(&pull.id, method, &reviewed)?;
                 let Some((root, remote)) = clone else {
                     return Ok(String::new());

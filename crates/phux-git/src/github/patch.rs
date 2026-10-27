@@ -43,7 +43,12 @@ fn git(root: &Path, args: &[&str], timeout: Duration, max: usize) -> Result<Vec<
         "core.fsmonitor=false",
     ];
     full.extend_from_slice(args);
-    let out = process::exec(Child {
+    let exec = if matches!(args.first(), Some(&"fetch" | &"merge" | &"update-ref")) {
+        process::exec_write
+    } else {
+        process::exec
+    };
+    let out = exec(Child {
         program: "git",
         dir: root,
         args: &full,
@@ -77,6 +82,13 @@ fn has_commit(root: &Path, oid: &str) -> bool {
 /// The remote in `root` whose URL names `repo` (`owner/name`), `origin` first.
 #[must_use]
 pub fn remote_for(root: &Path, repo: &str) -> Option<String> {
+    remote_for_host(root, repo, "github.com")
+}
+
+/// The remote naming `repo` on `host`, `origin` first. Hosts are compared
+/// independently of the repository path, so another forge cannot match.
+#[must_use]
+pub fn remote_for_host(root: &Path, repo: &str, host: &str) -> Option<String> {
     let out = git(root, &["remote", "-v"], READ_TIMEOUT, 1024 * 1024).ok()?;
     let out = String::from_utf8_lossy(&out);
     let mut matches: Vec<&str> = out
@@ -84,13 +96,22 @@ pub fn remote_for(root: &Path, repo: &str) -> Option<String> {
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let (name, url) = (fields.next()?, fields.next()?);
-            repo_of_url(url)
-                .is_some_and(|named| named.eq_ignore_ascii_case(repo))
-                .then_some(name)
+            let same_repo = repo_of_url(url).is_some_and(|named| named.eq_ignore_ascii_case(repo));
+            let same_host = host_of_url(url).is_some_and(|named| named.eq_ignore_ascii_case(host));
+            (same_repo && same_host).then_some(name)
         })
         .collect();
     matches.sort_by_key(|name| *name != "origin");
     matches.first().map(|name| (*name).to_owned())
+}
+
+fn host_of_url(url: &str) -> Option<&str> {
+    let authority = match url.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?.0,
+        None => url.split_once(':')?.0,
+    };
+    let host = authority.rsplit('@').next()?.split(':').next()?;
+    (!host.is_empty()).then_some(host)
 }
 
 /// `owner/name` of a GitHub remote URL in any of Git's spellings.
@@ -327,6 +348,62 @@ pub fn remote(repo: &str, number: u64) -> GhResult<PatchText> {
         text: String::from_utf8_lossy(&out).into_owned(),
         reduced: false,
     })
+}
+
+/// Read GitHub's diff only while its head and base match the expected range.
+///
+/// A push or retarget during the read is refused rather than labelling a
+/// different diff with the expected commits. `repo` may include a gh host.
+pub fn remote_anchored(repo: &str, range: &Range<'_>) -> GhResult<PatchText> {
+    remote_anchored_with(repo, range, gh::run)
+}
+
+fn remote_anchored_with(
+    repo: &str,
+    range: &Range<'_>,
+    mut run: impl FnMut(&Path, &[&str], Option<&[u8]>) -> GhResult<Vec<u8>>,
+) -> GhResult<PatchText> {
+    let number = range.number.to_string();
+    let dir = std::env::temp_dir();
+    let args = [
+        "pr",
+        "view",
+        &number,
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid,baseRefName,baseRefOid",
+    ];
+    check_remote_range(&run(&dir, &args, None)?, range)?;
+    let out = run(
+        &dir,
+        &["pr", "diff", &number, "--repo", repo, "--color=never"],
+        None,
+    )?;
+    check_remote_range(&run(&dir, &args, None)?, range)?;
+    if out.len() > MAX_PATCH_BYTES {
+        return Err(GhError::Failed(
+            "This pull request's diff is too large to show here.".into(),
+        ));
+    }
+    Ok(PatchText {
+        text: String::from_utf8_lossy(&out).into_owned(),
+        reduced: false,
+    })
+}
+
+fn check_remote_range(out: &[u8], range: &Range<'_>) -> GhResult<()> {
+    let state: serde_json::Value = serde_json::from_slice(out)
+        .map_err(|error| GhError::Failed(format!("GitHub answered unreadable JSON: {error}")))?;
+    if state["headRefOid"].as_str() != Some(range.head_oid)
+        || state["baseRefName"].as_str() != Some(range.base_ref)
+        || state["baseRefOid"].as_str() != Some(range.base_oid)
+    {
+        return Err(GhError::Failed(
+            "The pull request's head or base changed while reading its diff; refresh and try again.".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

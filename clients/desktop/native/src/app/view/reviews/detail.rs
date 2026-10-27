@@ -13,7 +13,7 @@ use crate::git::github::{CheckState, MergeState, Mergeability, Pull, ReviewDecis
 
 use super::super::super::color::from_hex;
 use super::super::super::desk::Desk;
-use super::super::super::reviews::{Opened, Tab};
+use super::super::super::reviews::{DraftFor, Opened, Tab};
 use super::super::super::skin::Look;
 use super::super::super::ui::segmented::{Segment, segmented};
 use super::super::super::ui::{ghost_button, muted};
@@ -41,6 +41,22 @@ pub(super) fn column(
             .flex()
             .flex_col()
             .child(header(desk, opened, pull, look, cx))
+            .children(opened.pull.error.as_ref().map(|error| {
+                muted(look, format!("Refresh failed; showing the last result. {error}"))
+                    .px(px(16.)).py(px(6.))
+                    .text_color(from_hex(&look.chrome.theme.warning))
+            }))
+            .when(opened.revision_changed(), |column| {
+                column.child(
+                    muted(look, if opened.base_changed() {
+                        "The base changed. Remove pending line comments and refresh to review the new target."
+                    } else {
+                        "New commits arrived. Your notes stay on the previous diff until submitted or removed."
+                    })
+                        .px(px(16.)).py(px(6.))
+                        .text_color(from_hex(&look.chrome.theme.warning)),
+                )
+            })
             .child(tabs(opened, pull, look, cx))
             .child(match opened.tab {
                 Tab::Files => super::files::files(desk, opened, window, look, cx),
@@ -233,6 +249,17 @@ fn header(
         )
 }
 
+fn merge_blocked(opened: &Opened, pull: &Pull) -> bool {
+    opened.patch.data.is_none()
+        || opened.revision_changed()
+        || pull.is_draft
+        || pull.mergeable == Mergeability::Conflicting
+        || matches!(
+            pull.merge_state,
+            MergeState::Dirty | MergeState::Blocked | MergeState::Behind
+        )
+}
+
 fn merge_controls(
     opened: &Opened,
     pull: &Pull,
@@ -241,12 +268,7 @@ fn merge_controls(
 ) -> impl IntoElement {
     let busy = opened.busy.is_some();
     let method = opened.merge_method();
-    let blocked = pull.is_draft
-        || pull.mergeable == Mergeability::Conflicting
-        || matches!(
-            pull.merge_state,
-            MergeState::Dirty | MergeState::Blocked | MergeState::Behind
-        );
+    let blocked = merge_blocked(opened, pull);
     let handle = cx.weak_entity();
     let methods = (pull.methods.allowed.len() > 1).then(|| {
         segmented(
@@ -365,6 +387,45 @@ fn tabs(opened: &Opened, pull: &Pull, look: &Look, cx: &mut Context<Desk>) -> im
         .child(tab("reviews-tab-checks", checks, Tab::Checks))
 }
 
+/// Keep an unfinished composer accessible when its inline location is absent.
+fn fallback_draft(opened: &Opened, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    let Some(draft) = opened.draft.as_ref().filter(|_| opened.draft_needs_bar()) else {
+        return div().into_any_element();
+    };
+    let label = match draft.target {
+        DraftFor::Reply(_) => "Post Reply",
+        DraftFor::Lines(_) => "Add to Review",
+    };
+    div()
+        .debug_selector(|| "reviews-fallback-draft".into())
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(muted(look, "Unfinished comment"))
+        .child(
+            Textarea::new(&draft.input)
+                .aria_label("Unfinished comment")
+                .w_full(),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(6.))
+                .child(
+                    ghost_button("reviews-fallback-cancel", "Cancel Comment")
+                        .xsmall()
+                        .on_click(cx.listener(|desk, _, _, cx| desk.cancel_review_draft(cx))),
+                )
+                .child(
+                    ghost_button("reviews-fallback-save", label)
+                        .xsmall()
+                        .disabled(opened.busy.is_some())
+                        .on_click(cx.listener(|desk, _, _, cx| desk.save_review_draft(cx))),
+                ),
+        )
+        .into_any_element()
+}
+
 /// Kept comments, the summary, the verdict, and the submit button.
 fn review_bar(
     opened: &Opened,
@@ -418,6 +479,7 @@ fn review_bar(
         .py(px(8.))
         .border_t_1()
         .border_color(look.divider)
+        .child(fallback_draft(opened, look, cx))
         .children(opened.summary.as_ref().map(|(input, _)| {
             Textarea::new(input).aria_label("Review summary").w_full()
         }))

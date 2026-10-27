@@ -41,7 +41,7 @@ use std::time::Duration;
 use gpui::{Context, Entity, FocusHandle, Focusable, Task, Window};
 use gpui_kit::component::input::TextareaState;
 
-use crate::git::github::{Inbox, InboxPull, Pull, ReviewEvent};
+use crate::git::github::{Inbox, InboxPull, Pull};
 
 use super::desk::Desk;
 
@@ -49,6 +49,25 @@ use super::desk::Desk;
 const INBOX_POLL: Duration = Duration::from_secs(90);
 /// How often an open pull request re-reads; a push reloads its diff.
 const PULL_POLL: Duration = Duration::from_secs(30);
+
+/// GitHub guards the head atomically, but offers no expected-base field.
+/// Recheck the base immediately before a verdict or merge, not just on polls.
+fn verify_review_base(pull: &Pull) -> crate::git::github::gh::Result<()> {
+    verify_review_base_with(pull, crate::git::github::pull::fetch)
+}
+
+fn verify_review_base_with(
+    pull: &Pull,
+    read: impl FnOnce(&str, u64) -> crate::git::github::gh::Result<Pull>,
+) -> crate::git::github::gh::Result<()> {
+    let current = read(&pull.repo, pull.number)?;
+    if current.base_ref != pull.base_ref || current.base_oid != pull.base_oid {
+        return Err(crate::git::github::GhError::Failed(
+            "The base changed. Refresh and review the new diff before continuing.".into(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Default)]
 pub(crate) struct Reviews {
@@ -319,25 +338,26 @@ impl Desk {
     /// Show `key` in full. The unsent review of the one it replaces is kept,
     /// and `key`'s own comes back.
     pub(crate) fn open_pull(&mut self, key: Key, cx: &mut Context<Self>) {
-        self.reviews.cursor = Some(key.clone());
         if self.reviews.opened_key() == Some(&key) {
             cx.notify();
             return;
         }
+        if let Some(running) = self.reviews.opened.as_ref().and_then(|opened| opened.busy) {
+            self.post(
+                super::Kind::Refusal,
+                "Review is still working",
+                Some(format!(
+                    "Wait for {running} to finish before changing pull requests."
+                )),
+            );
+            cx.notify();
+            return;
+        }
+        self.reviews.cursor = Some(key.clone());
         if let Some(previous) = self.reviews.opened.take() {
-            let summary = previous.summary_text(cx);
-            if !previous.pending.is_empty()
-                || !summary.is_empty()
-                || previous.event != ReviewEvent::Comment
-            {
-                let kept = Kept {
-                    pending: previous.pending,
-                    next_pending: previous.next_pending,
-                    summary,
-                    event: previous.event,
-                    to_agent: previous.to_agent,
-                };
-                self.reviews.kept.insert(previous.key, kept);
+            let key = previous.key.clone();
+            if let Some(kept) = previous.keep(cx) {
+                self.reviews.kept.insert(key, kept);
             }
         }
         self.reviews.generation += 1;
@@ -348,8 +368,11 @@ impl Desk {
             opened.kept_summary = kept.summary;
             opened.event = kept.event;
             opened.to_agent = kept.to_agent;
+            opened.draft = kept.draft;
+            opened.patch.data = kept.patch;
         }
         self.reviews.opened = Some(opened);
+        self.show_review_diff(cx);
         self.read_pull(&key, cx);
         cx.notify();
     }

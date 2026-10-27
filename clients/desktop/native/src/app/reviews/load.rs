@@ -119,22 +119,8 @@ impl Desk {
                     opened.place = place;
                 }
                 opened.pull.finish(result);
-                // A reread confirms or replaces marks set here.
-                // A mark set here stays until GitHub agrees with it, so a
-                // reread racing the write does not flip it back.
-                if let Some(pull) = opened.pull.data.as_ref() {
-                    opened.viewed.retain(|path, viewed| {
-                        let on_github = pull.files.iter().any(|file| {
-                            &file.path == path
-                                && file.viewed == crate::git::github::ViewedState::Viewed
-                        });
-                        on_github != *viewed
-                    });
-                }
-                let head = opened.pull.data.as_ref().map(|pull| pull.head_oid.clone());
-                let stale = head.is_some()
-                    && opened.patch.data.as_ref().map(|patch| &patch.head) != head.as_ref();
-                if stale && !opened.patch.loading {
+                opened.reconcile_viewed();
+                if opened.needs_patch() {
                     desk.read_patch(cx);
                 }
                 if !unchanged {
@@ -159,10 +145,18 @@ impl Desk {
         let clone = opened.place.clone.clone();
         cx.spawn(async move |this, cx| {
             let head = pull.head_oid.clone();
+            let base_ref = pull.base_ref.clone();
+            let base_oid = pull.base_oid.clone();
             let result = smol::unblock(move || {
                 let (from, text) = patch_text(&pull, clone)?;
                 let loaded = Loaded::parse(text, Vec::new());
-                Ok::<_, String>(Patch { from, loaded, head })
+                Ok::<_, String>(Patch {
+                    from,
+                    loaded,
+                    head,
+                    base_ref,
+                    base_oid,
+                })
             })
             .await;
             let _ = this.update(cx, |desk, cx| {
@@ -174,12 +168,15 @@ impl Desk {
                 else {
                     return;
                 };
-                let before = opened.patch.data.as_ref().map(|patch| patch.head.clone());
+                // Notes may have been added while this read was in flight.
+                if opened.has_line_notes() && opened.patch.data.is_some() {
+                    opened.patch.loading = false;
+                    cx.notify();
+                    return;
+                }
                 opened.patch.finish(result);
                 // Merge is armed for what was on screen; a new head disarms it.
-                if opened.patch.data.as_ref().map(|patch| &patch.head) != before.as_ref() {
-                    opened.confirm_merge = false;
-                }
+                opened.confirm_merge = false;
                 desk.show_review_diff(cx);
                 cx.notify();
             });
@@ -296,9 +293,12 @@ impl Desk {
 
 /// Where `pull` lives on this Mac, and the agent on its branch.
 fn place(repo: &str, pull: &Pull, candidates: &[Candidate], host: &str) -> Place {
-    let found = local::find(repo, candidates, host);
+    let Some(forge) = forge_host(&pull.url) else {
+        return Place::default();
+    };
+    let found = local::find(repo, candidates, host, forge);
     let clone = local::clone_of(&found).and_then(|each| {
-        let remote = patch::remote_for(&each.root, repo)?;
+        let remote = patch::remote_for_host(&each.root, repo, forge)?;
         Some((each.root.clone(), remote))
     });
     let branch = local::on_branch(&found, &pull.head_ref).filter(|_| !pull.is_fork());
@@ -318,6 +318,12 @@ fn place(repo: &str, pull: &Pull, candidates: &[Candidate], host: &str) -> Place
                 title: pane.title,
             }),
     }
+}
+
+/// GitHub's canonical PR URL carries the forge identity, unlike owner/name.
+fn forge_host(url: &str) -> Option<&str> {
+    let host = url.strip_prefix("https://")?.split('/').next()?;
+    (!host.is_empty()).then_some(host)
 }
 
 /// The patch from the clone with every line of context, else GitHub's.
@@ -341,6 +347,12 @@ fn patch_text(
             ),
         }
     }
-    let text = patch::remote(&pull.repo, pull.number).map_err(|error| error.to_string())?;
+    let range = patch::Range {
+        number: pull.number,
+        base_ref: &pull.base_ref,
+        base_oid: &pull.base_oid,
+        head_oid: &pull.head_oid,
+    };
+    let text = patch::remote_anchored(&pull.repo, &range).map_err(|error| error.to_string())?;
     Ok((PatchFrom::GitHub, text))
 }

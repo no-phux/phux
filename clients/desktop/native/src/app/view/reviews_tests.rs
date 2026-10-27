@@ -186,3 +186,165 @@ fn escape_in_the_summary_leaves_the_field_not_the_surface(cx: &mut TestAppContex
     draw(cx);
     desk.read_with(cx, |desk, _| assert!(!desk.reviews.open));
 }
+
+#[gpui::test]
+fn unfinished_comments_and_their_diff_survive_navigation(cx: &mut TestAppContext) {
+    use crate::app::reviews::DraftFor;
+    use gpui_kit::component::diff::{DiffLineRange, DiffSide};
+
+    let _dial = DeterministicDial::arm();
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    seed(&desk, Tab::Files, cx);
+    let first = desk.read_with(cx, |desk, _| desk.reviews.opened_key().cloned().unwrap());
+    let range = DiffLineRange::new(
+        "crates/phux-git/src/github/inbox.rs",
+        DiffSide::Modified,
+        7,
+        7,
+    );
+    cx.update(|window, cx| {
+        desk.update(cx, |desk, cx| {
+            desk.start_review_comment(range.clone(), window, cx);
+            let input = desk
+                .reviews
+                .opened
+                .as_ref()
+                .unwrap()
+                .draft
+                .as_ref()
+                .unwrap()
+                .input
+                .clone();
+            input.update(cx, |input, cx| {
+                input.set_value("Do not lose this unfinished note", window, cx)
+            });
+            // Starting another draft must not silently replace the first one.
+            desk.start_reply("another-thread".into(), window, cx);
+            desk.step_review(1, cx);
+            desk.open_pull(first.clone(), cx);
+        })
+    });
+    draw(cx);
+    desk.read_with(cx, |desk, cx| {
+        let opened = desk.reviews.opened.as_ref().unwrap();
+        let draft = opened
+            .draft
+            .as_ref()
+            .expect("the unfinished comment is back");
+        assert_eq!(draft.target, DraftFor::Lines(range));
+        assert_eq!(
+            draft.input.read(cx).value(),
+            "Do not lose this unfinished note"
+        );
+        assert!(
+            opened.patch.data.is_some(),
+            "notes retain their original diff"
+        );
+        assert!(opened.diff.is_some());
+    });
+}
+
+#[gpui::test]
+fn rapid_navigation_keeps_a_summary_before_the_next_draw(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    seed(&desk, Tab::Files, cx);
+    cx.update(|window, cx| {
+        desk.update(cx, |desk, cx| {
+            let input = desk
+                .reviews
+                .opened
+                .as_ref()
+                .unwrap()
+                .summary
+                .as_ref()
+                .unwrap()
+                .0
+                .clone();
+            input.update(cx, |input, cx| {
+                input.set_value("Keep this summary", window, cx)
+            });
+            desk.step_review(1, cx);
+            desk.step_review(-1, cx);
+            desk.step_review(1, cx);
+            desk.step_review(-1, cx);
+        })
+    });
+    draw(cx);
+    desk.read_with(cx, |desk, cx| {
+        assert_eq!(
+            desk.reviews.opened.as_ref().unwrap().summary_text(cx),
+            "Keep this summary"
+        );
+    });
+}
+
+#[gpui::test]
+fn navigation_waits_for_an_in_flight_review_write(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    seed(&desk, Tab::Files, cx);
+    desk.update(cx, |desk, cx| {
+        let first = desk.reviews.opened_key().cloned().unwrap();
+        desk.reviews.opened.as_mut().unwrap().busy = Some("Submitting");
+        desk.step_review(1, cx);
+        assert_eq!(desk.reviews.opened_key(), Some(&first));
+        assert_eq!(desk.reviews.cursor.as_ref(), Some(&first));
+    });
+}
+
+#[gpui::test]
+fn a_reply_to_a_removed_file_remains_editable_in_the_review_bar(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    seed(&desk, Tab::Files, cx);
+    cx.update(|window, cx| {
+        desk.update(cx, |desk, cx| {
+            desk.start_reply("T1".into(), window, cx);
+            let opened = desk.reviews.opened.as_mut().unwrap();
+            opened.pull.data.as_mut().unwrap().threads[0].path = "removed.rs".into();
+            assert!(opened.draft_needs_bar());
+            cx.notify();
+        })
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("reviews-fallback-draft").is_some());
+    cx.update(|_, cx| desk.update(cx, |desk, cx| desk.cancel_review_draft(cx)));
+    draw(cx);
+    assert!(cx.debug_bounds("reviews-fallback-draft").is_none());
+}
+
+#[gpui::test]
+fn accepted_writes_do_not_erase_newer_reply_or_summary_text(cx: &mut TestAppContext) {
+    use crate::app::reviews::DraftFor;
+    use crate::git::github::ReviewEvent;
+
+    let _dial = DeterministicDial::arm();
+    let (handle, desk) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    seed(&desk, Tab::Files, cx);
+    cx.update(|window, cx| {
+        desk.update(cx, |desk, cx| {
+            desk.start_reply("T1".into(), window, cx);
+            let opened = desk.reviews.opened.as_mut().unwrap();
+            let reply = opened.draft.as_ref().unwrap().input.clone();
+            reply.update(cx, |input, cx| input.set_value("new reply", window, cx));
+            opened.finish_reply(&DraftFor::Reply("T1".into()), "sent reply", cx);
+            assert!(opened.draft.is_some());
+            opened.finish_reply(&DraftFor::Reply("T1".into()), "new reply", cx);
+            assert!(opened.draft.is_none());
+
+            let summary = opened.summary.as_ref().unwrap().0.clone();
+            summary.update(cx, |input, cx| input.set_value("new summary", window, cx));
+            opened.finish_submission(&[1], ReviewEvent::Comment, "sent summary", cx);
+            assert!(opened.pending.is_empty());
+            assert_eq!(opened.summary_text(cx), "new summary");
+            opened.finish_submission(&[], ReviewEvent::Comment, "new summary", cx);
+            assert_eq!(opened.summary_text(cx), "");
+        })
+    });
+}

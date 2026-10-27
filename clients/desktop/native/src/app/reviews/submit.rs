@@ -9,12 +9,46 @@ use crate::git::github::{NewThread, ReviewEvent, write};
 
 use super::super::Kind;
 use super::super::desk::Desk;
+use super::Opened;
 use super::lines::new_thread;
 use super::prompt;
 
 /// How long a paste waits for a terminal shown in another session to attach.
 const PASTE_WAIT: Duration = Duration::from_secs(10);
 const PASTE_STEP: Duration = Duration::from_millis(100);
+
+impl Opened {
+    fn submission_refusal(&self, cx: &gpui::App) -> Option<(&'static str, &'static str)> {
+        if self.draft.is_some() {
+            return Some((
+                "Finish your comment first",
+                "Keep or cancel the open comment before submitting your review.",
+            ));
+        }
+        if self.base_changed() {
+            return Some((
+                "The review target changed",
+                "Remove pending line comments and refresh to review the new base before submitting.",
+            ));
+        }
+        if self.event != ReviewEvent::Comment && self.patch.data.is_none() {
+            return Some((
+                "The diff is not ready",
+                "Wait for the diff to load before submitting a verdict.",
+            ));
+        }
+        if self.event == ReviewEvent::Comment
+            && self.summary_text(cx).is_empty()
+            && self.pending.is_empty()
+        {
+            return Some((
+                "Nothing to submit",
+                "Comment on some lines or write a summary first.",
+            ));
+        }
+        None
+    }
+}
 
 impl Desk {
     /// What the agent gets for the opened review.
@@ -54,10 +88,16 @@ impl Desk {
         let Some(opened) = self.reviews.opened.as_ref() else {
             return;
         };
+        if let Some((title, detail)) = opened.submission_refusal(cx) {
+            self.post(Kind::Refusal, title, Some(detail.into()));
+            cx.notify();
+            return;
+        }
         let Some(pull) = opened.pull.data.as_ref() else {
             return;
         };
         let pull_id = pull.id.clone();
+        let reviewed_pull = pull.clone();
         let head = opened
             .patch
             .data
@@ -81,15 +121,7 @@ impl Desk {
             .collect();
         let event = opened.event;
         let body = opened.summary_text(cx);
-        if event == ReviewEvent::Comment && body.is_empty() && threads.is_empty() {
-            self.post(
-                Kind::Refusal,
-                "Nothing to submit",
-                Some("Comment on some lines or write a summary first.".into()),
-            );
-            cx.notify();
-            return;
-        }
+        let sent_body = body.clone();
         let agent = opened.place.agent.clone().filter(|_| opened.to_agent);
         let prompt = agent.as_ref().and_then(|_| self.review_prompt(cx));
         let sent = opened
@@ -99,16 +131,17 @@ impl Desk {
             .collect::<Vec<_>>();
         self.review_write(
             "Submitting",
-            move || write::submit_review(&pull_id, &head, event, &body, &threads),
+            move || {
+                super::verify_review_base(&reviewed_pull)?;
+                write::submit_review(&pull_id, &head, event, &body, &threads)
+            },
             move |desk, result, current, cx| {
                 if let Err(error) = result {
                     desk.post(Kind::Error, "Could not submit the review", Some(error));
                     return;
                 }
                 if current && let Some(opened) = desk.reviews.opened.as_mut() {
-                    opened.pending.retain(|pending| !sent.contains(&pending.id));
-                    opened.event = ReviewEvent::Comment;
-                    opened.summary = None;
+                    opened.finish_submission(&sent, event, &sent_body, cx);
                 }
                 match (agent, prompt) {
                     (Some(agent), Some(prompt)) => desk.paste_to_agent(agent.terminal, prompt, cx),
@@ -138,10 +171,8 @@ impl Desk {
             cx.notify();
             return;
         };
-        if let Some(opened) = self.reviews.opened.as_mut() {
-            opened.pending.clear();
-            opened.summary = None;
-        }
+        // Agent handoff is not a GitHub submission. Keep the review here,
+        // including when the pane disappears or cannot accept the paste.
         self.paste_to_agent(agent.terminal, prompt, cx);
     }
 

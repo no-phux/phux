@@ -76,7 +76,10 @@ pub(super) fn slots(opened: &Opened) -> Vec<(DiffAnnotation, Slot)> {
         }
         let id = ElementId::from(SharedString::from(format!("thread-{}", thread.id)));
         // An outdated thread's lines are gone; it sits under the file header.
-        let annotation = match thread.line.filter(|_| !thread.outdated) {
+        let annotation = match thread
+            .line
+            .filter(|_| !thread.outdated && !opened.revision_changed())
+        {
             Some(line) => DiffAnnotation::line(
                 id,
                 DiffLinePosition::new(thread.path.clone(), kit_side(thread.side), line as usize),

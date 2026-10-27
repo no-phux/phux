@@ -50,8 +50,10 @@ The header shows the title, `repository#number`, author and branches, checks
 and review decision. It also says where the pull request stands, such as
 **Ready to merge**, **Blocked by required checks or reviews** or **Conflicts
 with the base**, and names the agent working on the branch when one runs on
-this Mac. The opened pull request rereads every 30 seconds; a new push
-reloads its diff.
+this Mac. The opened pull request rereads every 30 seconds. A new push
+reloads its diff unless you have unfinished line comments; those keep the
+original diff and commit until submitted or removed. A banner says when the
+review target changed. A changed base must be reviewed again before submitting.
 
 ### Files
 
@@ -73,7 +75,8 @@ Automatic splits once the diff is about 1100 points wide. **N** and **P**
 jump between changes.
 
 Moving to another pull request keeps the review you were writing: its kept
-comments, summary and verdict come back when you return to it.
+comments, unfinished comment field, summary and verdict come back when you
+return to it. Switching waits for an in-flight submission or reply to finish.
 
 **Viewed** in a file header, or the eye in the file list, marks the file
 viewed on GitHub too and folds it. GitHub's own marks fold files when the pull
@@ -102,7 +105,8 @@ When an agent works on the pull request's branch, **Also paste into** sends
 the same review to it after GitHub takes it: Reviews shows the agent's pane
 and pastes the notes, numbered with file and line, along with any thread
 still open on GitHub. Nothing is submitted to the agent: press **Enter**
-there. **Agent Only** pastes the notes without posting to GitHub.
+there. **Agent Only** pastes the notes without posting to GitHub, and keeps
+your review so a failed handoff cannot lose your notes.
 
 An agent is found by its pane: a pane with an agent, whose folder is a
 checkout of the repository on the pull request's branch.
@@ -118,7 +122,8 @@ error, without timestamps or color codes. The arrow opens a check on GitHub.
 
 The header offers the merge methods the repository allows, preferring the one
 you last used. Click **Merge** (named for the method) once to arm it and
-again to merge. Escape disarms it, and so does a new push. The merge is of the
+again to merge. Escape disarms it, and so does a changed diff. Merge stays
+disabled until the current diff has loaded. The merge is of the
 head you reviewed: if someone pushed since, GitHub refuses and the diff
 reloads. The repository's own setting decides whether the branch is deleted;
 GitHub then retargets any pull request based on it. After merging, Reviews

@@ -262,3 +262,142 @@ fn remote_urls_name_their_repository() {
     }
     assert_eq!(repo_of_url("/local/path"), None);
 }
+
+#[test]
+fn remote_selection_does_not_cross_hosts() {
+    let root = fresh("remote-host");
+    sh(&root, &["init", "-q"]);
+    sh(
+        &root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@ghe.example.com:acme/widget.git",
+        ],
+    );
+    sh(
+        &root,
+        &[
+            "remote",
+            "add",
+            "public",
+            "https://github.com/acme/widget.git",
+        ],
+    );
+    assert_eq!(remote_for(&root, "acme/widget").as_deref(), Some("public"));
+    assert_eq!(
+        remote_for_host(&root, "ACME/widget", "GHE.EXAMPLE.COM").as_deref(),
+        Some("origin")
+    );
+    assert_eq!(
+        remote_for_host(&root, "acme/widget", "elsewhere.example"),
+        None
+    );
+    assert_eq!(
+        host_of_url("ssh://git@ghe.example.com:2222/acme/widget"),
+        Some("ghe.example.com")
+    );
+}
+
+fn remote_state() -> serde_json::Value {
+    serde_json::json!({"headRefOid": "head", "baseRefName": "main", "baseRefOid": "base"})
+}
+
+fn anchored_read(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+) -> (GhResult<PatchText>, usize) {
+    let range = Range {
+        number: 7,
+        head_oid: "head",
+        base_ref: "main",
+        base_oid: "base",
+    };
+    let mut calls = 0;
+    let result = remote_anchored_with("ghe.example.com/acme/widget", &range, |_, args, _| {
+        calls += 1;
+        assert_eq!(args[4], "ghe.example.com/acme/widget");
+        match calls {
+            1 => {
+                assert_eq!(args[1], "view");
+                Ok(serde_json::to_vec(before).unwrap())
+            }
+            2 => {
+                assert_eq!(args[1], "diff");
+                Ok(b"expected diff".to_vec())
+            }
+            3 => {
+                assert_eq!(args[1], "view");
+                Ok(serde_json::to_vec(after).unwrap())
+            }
+            _ => panic!("unexpected gh invocation"),
+        }
+    });
+    (result, calls)
+}
+
+#[test]
+fn an_unchanged_remote_range_returns_the_patch() {
+    let (result, calls) = anchored_read(&remote_state(), &remote_state());
+    assert_eq!(calls, 3);
+    assert_eq!(result.unwrap().text, "expected diff");
+}
+
+#[test]
+fn a_remote_range_mismatch_refuses_before_reading_the_patch() {
+    for key in ["headRefOid", "baseRefName", "baseRefOid"] {
+        let mut changed = remote_state();
+        changed[key] = serde_json::json!("changed");
+        let (result, calls) = anchored_read(&changed, &remote_state());
+        assert!(result.is_err(), "{key}");
+        assert_eq!(calls, 1, "{key}");
+    }
+}
+
+#[test]
+fn a_push_or_retarget_during_the_patch_read_is_refused() {
+    for key in ["headRefOid", "baseRefName", "baseRefOid"] {
+        let mut changed = remote_state();
+        changed[key] = serde_json::json!("changed");
+        let (result, calls) = anchored_read(&remote_state(), &changed);
+        assert!(result.is_err(), "{key}");
+        assert_eq!(calls, 3, "{key}");
+    }
+}
+
+#[test]
+fn a_missing_remote_anchor_is_not_accepted() {
+    let (result, calls) = anchored_read(&serde_json::json!({}), &remote_state());
+    assert!(result.is_err());
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn an_unreadable_remote_anchor_is_refused() {
+    let range = Range {
+        number: 7,
+        head_oid: "head",
+        base_ref: "main",
+        base_oid: "base",
+    };
+    assert!(check_remote_range(b"not JSON", &range).is_err());
+}
+
+#[test]
+fn an_anchored_remote_patch_still_obeys_the_size_cap() {
+    let range = Range {
+        number: 7,
+        head_oid: "head",
+        base_ref: "main",
+        base_oid: "base",
+    };
+    let result = remote_anchored_with("acme/widget", &range, |_, args, _| {
+        if args[1] == "diff" {
+            Ok(vec![b'x'; MAX_PATCH_BYTES + 1])
+        } else {
+            Ok(serde_json::to_vec(&remote_state()).unwrap())
+        }
+    });
+    assert!(matches!(result, Err(GhError::Failed(message)) if message.contains("too large")));
+}

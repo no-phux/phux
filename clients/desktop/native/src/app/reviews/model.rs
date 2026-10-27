@@ -116,6 +116,16 @@ pub(crate) struct Patch {
     pub loaded: Loaded,
     /// The head it was read at.
     pub head: String,
+    pub base_ref: String,
+    pub base_oid: String,
+}
+
+impl Patch {
+    pub(super) fn matches(&self, pull: &Pull) -> bool {
+        self.head == pull.head_oid
+            && self.base_ref == pull.base_ref
+            && self.base_oid == pull.base_oid
+    }
 }
 
 /// A line comment kept for the review, not yet on GitHub.
@@ -166,13 +176,14 @@ pub(crate) struct Log {
 }
 
 /// An unsent review, kept while another pull request is open.
-#[derive(Clone, Debug, Default)]
 pub(crate) struct Kept {
     pub(super) pending: Vec<Pending>,
     pub(super) next_pending: u64,
     pub(super) summary: String,
     pub(super) event: ReviewEvent,
     pub(super) to_agent: bool,
+    pub(super) draft: Option<Draft>,
+    pub(super) patch: Option<Patch>,
 }
 
 /// The pull request shown in full.
@@ -273,7 +284,124 @@ impl Opened {
         self.summary
             .as_ref()
             .map(|(input, _)| input.read(cx).value().trim().to_owned())
-            .unwrap_or_default()
+            .unwrap_or_else(|| self.kept_summary.clone())
+    }
+
+    /// An accepted write clears only the snapshot sent, never newer edits.
+    pub(crate) fn finish_reply(&mut self, target: &DraftFor, body: &str, cx: &gpui::App) {
+        let unchanged = self.draft.as_ref().is_some_and(|draft| {
+            &draft.target == target && draft.input.read(cx).value().trim() == body
+        });
+        if unchanged {
+            self.draft = None;
+        }
+    }
+
+    pub(crate) fn finish_submission(
+        &mut self,
+        sent: &[u64],
+        event: ReviewEvent,
+        body: &str,
+        cx: &gpui::App,
+    ) {
+        self.pending.retain(|pending| !sent.contains(&pending.id));
+        if self.event == event {
+            self.event = ReviewEvent::Comment;
+        }
+        if self.summary_text(cx) == body {
+            self.summary = None;
+            self.kept_summary.clear();
+        }
+    }
+
+    /// Line notes stay attached to the exact diff they were written on.
+    pub(super) fn has_line_notes(&self) -> bool {
+        !self.pending.is_empty()
+            || self
+                .draft
+                .as_ref()
+                .is_some_and(|draft| matches!(draft.target, DraftFor::Lines(_)))
+    }
+
+    /// A reply's file can disappear after a push. Keep its composer reachable
+    /// in the review bar when it cannot be drawn inline (or on another tab).
+    pub(crate) fn draft_needs_bar(&self) -> bool {
+        let Some(draft) = &self.draft else {
+            return false;
+        };
+        if self.tab != Tab::Files {
+            return true;
+        }
+        let DraftFor::Reply(id) = &draft.target else {
+            return false;
+        };
+        let path = self.pull.data.as_ref().and_then(|pull| {
+            pull.threads
+                .iter()
+                .find(|thread| &thread.id == id)
+                .map(|thread| &thread.path)
+        });
+        !self.patch.data.as_ref().is_some_and(|patch| {
+            patch
+                .loaded
+                .files
+                .iter()
+                .any(|file| Some(file.path().as_ref()) == path.map(String::as_str))
+        })
+    }
+
+    pub(crate) fn revision_changed(&self) -> bool {
+        matches!((&self.pull.data, &self.patch.data), (Some(pull), Some(patch)) if !patch.matches(pull))
+    }
+
+    pub(crate) fn base_changed(&self) -> bool {
+        matches!((&self.pull.data, &self.patch.data), (Some(pull), Some(patch)) if patch.base_ref != pull.base_ref || patch.base_oid != pull.base_oid)
+    }
+
+    /// Polling may refresh status, but must not move lines under unsent notes.
+    pub(super) fn needs_patch(&self) -> bool {
+        if self.patch.loading || self.has_line_notes() {
+            return false;
+        }
+        self.pull.data.as_ref().is_some_and(|pull| {
+            self.patch
+                .data
+                .as_ref()
+                .is_none_or(|patch| !patch.matches(pull))
+        })
+    }
+
+    /// Keep optimistic marks until GitHub confirms them, even if a read raced
+    /// their write. The next poll then owns the value again.
+    pub(super) fn reconcile_viewed(&mut self) {
+        let Some(pull) = &self.pull.data else { return };
+        self.viewed.retain(|path, viewed| {
+            let on_github = pull
+                .files
+                .iter()
+                .any(|file| &file.path == path && file.viewed == ViewedState::Viewed);
+            on_github != *viewed
+        });
+    }
+
+    pub(super) fn keep(self, cx: &gpui::App) -> Option<Kept> {
+        let summary = self.summary_text(cx);
+        if self.pending.is_empty()
+            && self.draft.is_none()
+            && summary.is_empty()
+            && self.event == ReviewEvent::Comment
+        {
+            return None;
+        }
+        Some(Kept {
+            patch: self.has_line_notes().then_some(self.patch.data).flatten(),
+            pending: self.pending,
+            next_pending: self.next_pending,
+            summary,
+            event: self.event,
+            to_agent: self.to_agent,
+            draft: self.draft,
+        })
     }
 
     /// The merge method shown: the one picked here, else the repository's.

@@ -56,3 +56,74 @@ fn pane_commands_close_reviews_and_window_ones_do_not() {
     assert!(!hides_reviews("reviews"));
     assert!(!hides_reviews("palette"));
 }
+
+fn reviewed() -> Opened {
+    let pull = super::fixture::pull();
+    let mut opened = Opened::new(
+        Key {
+            repo: pull.repo.clone(),
+            number: pull.number,
+        },
+        1,
+    );
+    opened.patch.data = Some(Patch {
+        from: PatchFrom::GitHub,
+        loaded: super::super::changes::review::Loaded::parse(
+            crate::git::PatchText {
+                text: SECTION.into(),
+                reduced: false,
+            },
+            Vec::new(),
+        ),
+        head: pull.head_oid.clone(),
+        base_ref: pull.base_ref.clone(),
+        base_oid: pull.base_oid.clone(),
+    });
+    opened.pull.data = Some(pull);
+    opened
+}
+
+#[test]
+fn line_notes_pin_the_diff_until_they_are_submitted_or_removed() {
+    let mut opened = reviewed();
+    opened.pending.push(Pending {
+        id: 1,
+        range: DiffLineRange::new("a.rs", DiffSide::Modified, 2, 2),
+        body: "Keep this on the original head".into(),
+    });
+    opened.pull.data.as_mut().unwrap().head_oid = "new-head".into();
+    assert!(opened.revision_changed());
+    assert!(!opened.needs_patch());
+    opened.pending.clear();
+    assert!(opened.needs_patch());
+}
+
+#[test]
+fn retargeting_or_advancing_the_base_invalidates_the_reviewed_patch() {
+    let mut opened = reviewed();
+    assert!(!opened.needs_patch());
+    opened.pull.data.as_mut().unwrap().base_ref = "release".into();
+    assert!(opened.revision_changed());
+    assert!(opened.base_changed());
+    assert!(opened.needs_patch());
+    opened.pull.data.as_mut().unwrap().base_ref = "main".into();
+    opened.pull.data.as_mut().unwrap().base_oid = "new-base".into();
+    assert!(opened.base_changed());
+    assert!(opened.needs_patch());
+}
+
+#[test]
+fn a_retarget_between_polls_is_refused_before_the_write() {
+    let cached = super::fixture::pull();
+    let mut remote = cached.clone();
+    remote.base_ref = "release".into();
+    assert!(
+        super::verify_review_base_with(&cached, |repo, number| {
+            assert_eq!(repo, cached.repo);
+            assert_eq!(number, cached.number);
+            Ok(remote)
+        })
+        .is_err()
+    );
+    assert!(super::verify_review_base_with(&cached, |_, _| Ok(cached.clone())).is_ok());
+}

@@ -154,7 +154,7 @@ fn note(id: &str, author: &str, body: &str, at: &str) -> Note {
     }
 }
 
-fn pull() -> Pull {
+pub(super) fn pull() -> Pull {
     Pull {
         id: "PR_1812".into(),
         repo: "no-phux/phux".into(),
@@ -253,6 +253,8 @@ impl Desk {
             from: PatchFrom::Local("/Users/you/src/phux".into()),
             loaded: Loaded::parse(text, Vec::new()),
             head: "h".into(),
+            base_ref: "main".into(),
+            base_oid: "b".into(),
         });
         opened.place = Place {
             clone: Some(("/Users/you/src/phux".into(), "origin".into())),

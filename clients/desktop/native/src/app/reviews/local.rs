@@ -62,8 +62,8 @@ pub(crate) fn conventional(home: &Path, repo: &str) -> Vec<PathBuf> {
 }
 
 /// Every candidate checkout of `repo` (`owner/name`, any case).
-pub(crate) fn find(repo: &str, candidates: &[Candidate], host: &str) -> Vec<Found> {
-    let want = format!("github.com/{}", repo.to_ascii_lowercase());
+pub(crate) fn find(repo: &str, candidates: &[Candidate], host: &str, forge: &str) -> Vec<Found> {
+    let want = format!("{forge}/{repo}").to_ascii_lowercase();
     let mut found: Vec<Found> = Vec::new();
     for candidate in candidates {
         if !candidate.dir.is_dir() {
@@ -119,4 +119,40 @@ pub(crate) fn on_branch<'a>(found: &'a [Found], branch: &str) -> Option<&'a Foun
         .filter(on)
         .find(|each| each.pane.as_ref().is_some_and(|pane| pane.agent))
         .or_else(|| found.iter().find(on))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_named_public_clone_is_not_an_enterprise_checkout() {
+        let root = std::env::temp_dir().join(format!("phux-reviews-forge-{}", std::process::id()));
+        let git = root.join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            git.join("config"),
+            "[remote \"origin\"]\nurl = git@github.com:no-phux/phux.git\n",
+        )
+        .unwrap();
+        let candidates = [Candidate {
+            dir: root.clone(),
+            pane: None,
+        }];
+        assert_eq!(
+            find("no-phux/phux", &candidates, "this-mac", "github.com").len(),
+            1
+        );
+        assert!(
+            find(
+                "no-phux/phux",
+                &candidates,
+                "this-mac",
+                "github.example.com"
+            )
+            .is_empty()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
