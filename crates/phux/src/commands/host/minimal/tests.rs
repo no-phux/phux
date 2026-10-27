@@ -1,10 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use super::boxes::{BoxSession, parse_sessions};
-use super::files::{BoxRegistry, MinimalDirs, render_loadout};
+use std::os::unix::fs::PermissionsExt;
+
+use super::boxes::{BoxSession, MinCli, parse_sessions};
+use super::files::{BoxRegistry, Joined, MinimalDirs, render_loadout};
 use super::satellite_name;
 use super::service::{WatchPlan, render_plist, render_systemd};
+use crate::commands::host::inbound::{self, HubFiles};
 
 #[test]
 fn sessions_parse_from_min_ls_json_and_skip_idless_rows() {
@@ -141,10 +144,27 @@ fn a_flat_loadout_of_the_same_name_is_refused() {
 fn the_box_registry_round_trips_and_starts_empty() {
     let dir = tempfile::tempdir().unwrap();
     let registry = BoxRegistry::at(dir.path().join("state/boxes.json"));
-    assert!(registry.load().unwrap().is_empty());
-    let boxes = BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]);
-    registry.save(&boxes).unwrap();
-    assert_eq!(registry.load().unwrap(), boxes);
+    assert_eq!(registry.load().unwrap(), Joined::default());
+    let joined = Joined {
+        boxes: BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]),
+        minted: BTreeSet::from(["min-api".to_owned()]),
+    };
+    registry.save(&joined).unwrap();
+    assert_eq!(registry.load().unwrap(), joined);
+}
+
+#[test]
+fn a_registry_without_minted_owns_the_boxes_it_already_joined() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("boxes.json");
+    std::fs::write(
+        &path,
+        "{\"schema_version\":1,\"boxes\":{\"01a1\":\"min-api\"}}\n",
+    )
+    .unwrap();
+    let joined = BoxRegistry::at(path).load().unwrap();
+    assert_eq!(joined.boxes["01a1"], "min-api");
+    assert!(joined.minted.contains("min-api"));
 }
 
 fn plan() -> WatchPlan {
@@ -180,4 +200,269 @@ fn the_systemd_unit_runs_watch_and_quotes_its_words() {
     ));
     assert!(unit.contains("Environment=\"PHUX_SOCKET=/tmp/a&b $$x.sock\"\n"));
     assert!(unit.contains("WantedBy=default.target"));
+}
+
+fn owner_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
+fn hub_files(dir: &std::path::Path) -> HubFiles {
+    let config = dir.join("config.toml");
+    let cert = dir.join("remote-cert.pem");
+    HubFiles {
+        config,
+        workload: phux_server::workload::WorkloadPaths::with_overrides(
+            Some(dir.join("workload-ca.pem")),
+            Some(dir.join("workload-ca.key")),
+            Some(dir.join("workload-keys")),
+        ),
+        cert,
+    }
+}
+
+fn write_paired(files: &HubFiles) {
+    std::fs::write(&files.config, "[policy]\nmode = \"paired\"\n").unwrap();
+}
+
+fn issue_server_cert(files: &HubFiles) {
+    let issued =
+        phux_server::workload::issue_server_identity(&files.workload, &["localhost".to_owned()])
+            .unwrap();
+    std::fs::write(&files.cert, issued.chain_pem()).unwrap();
+}
+
+fn register_satellite(files: &HubFiles, name: &str) {
+    let expires = chrono::Utc::now().timestamp() + 3600;
+    phux_server::workload::WorkloadRegistry::register_satellite(
+        &files.workload.registry,
+        b"minimal-test-key",
+        name,
+        expires,
+    )
+    .unwrap();
+}
+
+fn credential_revoked(files: &HubFiles, name: &str) -> bool {
+    let text = std::fs::read_to_string(&files.workload.registry).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    doc["credentials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|credential| credential["satellite"] == name)
+        .is_some_and(|credential| !credential["revoked_at"].is_null())
+}
+
+fn ticket_revoked(files: &HubFiles, id: &str) -> bool {
+    let path = files.workload.registry.with_file_name("enrollment-tickets");
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    doc["tickets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ticket| ticket["id"] == id)
+        .is_some_and(|ticket| !ticket["revoked_at"].is_null())
+}
+
+fn dummy_min(dir: &std::path::Path) -> MinCli {
+    let path = dir.join("min");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\ncat >/dev/null\necho join refused >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    MinCli::resolve(Some(&path)).unwrap()
+}
+
+fn context(dir: &std::path::Path, files: HubFiles) -> super::Context {
+    super::Context {
+        min: dummy_min(dir),
+        hub: "host.min.internal:8788".to_owned(),
+        registry: BoxRegistry::at(dir.join("boxes.json")),
+        files,
+    }
+}
+
+#[test]
+fn minting_is_refused_without_paired_mode_or_a_ca_pin() {
+    let dir = owner_dir();
+    let files = hub_files(dir.path());
+    let err =
+        inbound::mint_code("min-api", "host.min.internal:8788", 5, &files, false).unwrap_err();
+    assert!(
+        err.message.contains("paired"),
+        "unpaired hub must be refused: {}",
+        err.message
+    );
+
+    write_paired(&files);
+    let err =
+        inbound::mint_code("min-api", "host.min.internal:8788", 5, &files, false).unwrap_err();
+    assert!(
+        err.message.contains("workload CA"),
+        "a certificate with no CA pin must be refused: {}",
+        err.message
+    );
+}
+
+#[test]
+fn a_failed_join_withdraws_the_ticket() {
+    let dir = owner_dir();
+    let files = hub_files(dir.path());
+    write_paired(&files);
+    issue_server_cert(&files);
+    let ctx = context(dir.path(), files.clone());
+    let session = BoxSession::new("01a17b22-a257", Some("api"), "active");
+    let mut joined = Joined::default();
+    let err = ctx.join(&session, "min-api", &mut joined).unwrap_err();
+    assert!(!err.is_empty(), "{err}");
+    let tickets =
+        std::fs::read_to_string(files.workload.registry.with_file_name("enrollment-tickets"))
+            .unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&tickets).unwrap();
+    let id = doc["tickets"][0]["id"].as_str().unwrap();
+    assert!(
+        ticket_revoked(&files, id),
+        "the minted ticket must be withdrawn: {tickets}"
+    );
+    let config = std::fs::read_to_string(&files.config).unwrap();
+    assert!(
+        !config.contains("min-api"),
+        "the failed join's satellite entry must be removed: {config}"
+    );
+}
+
+#[test]
+fn a_failed_revoke_keeps_the_box_and_does_not_report_it_revoked() {
+    let dir = owner_dir();
+    let files = hub_files(dir.path());
+    write_paired(&files);
+    register_satellite(&files, "min-api");
+    let ctx = context(dir.path(), files.clone());
+    let joined = Joined {
+        boxes: BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]),
+        minted: BTreeSet::from(["min-api".to_owned()]),
+    };
+    ctx.registry.save(&joined).unwrap();
+    // Owner-only access is required to revoke; drop write so the revoke fails
+    // and the recorded box has to stay.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let mut recorded = joined.clone();
+    let err = ctx.prune(&mut recorded, &BTreeSet::new()).unwrap_err();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        !err.message.contains("revoked"),
+        "a failed revoke must not be reported as done: {}",
+        err.message
+    );
+    assert_eq!(ctx.registry.load().unwrap(), joined);
+    assert!(
+        !credential_revoked(&files, "min-api"),
+        "the credential stays until a revoke succeeds"
+    );
+}
+
+#[test]
+fn a_registry_read_failure_still_revokes_and_returns_the_error() {
+    let dir = owner_dir();
+    let mut files = hub_files(dir.path());
+    write_paired(&files);
+    register_satellite(&files, "min-api");
+    let blocked = dir.path().join("not-config");
+    std::fs::create_dir(&blocked).unwrap();
+    files.config = blocked;
+    let ctx = context(dir.path(), files.clone());
+    let joined = Joined {
+        boxes: BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]),
+        minted: BTreeSet::from(["min-api".to_owned()]),
+    };
+    ctx.registry.save(&joined).unwrap();
+    let mut recorded = joined.clone();
+    let err = ctx.prune(&mut recorded, &BTreeSet::new()).unwrap_err();
+    assert!(
+        err.message
+            .contains("could not read the satellite registry"),
+        "{}",
+        err.message
+    );
+    assert!(
+        !err.message.contains("revoked"),
+        "the failure must not claim the satellite was revoked: {}",
+        err.message
+    );
+    assert_eq!(ctx.registry.load().unwrap(), joined);
+    assert!(
+        credential_revoked(&files, "min-api"),
+        "revoke is attempted even when the registry cannot be read"
+    );
+}
+
+#[test]
+fn an_existing_satellite_minimal_did_not_mint_is_refused_and_not_revoked() {
+    let dir = owner_dir();
+    let files = hub_files(dir.path());
+    write_paired(&files);
+    issue_server_cert(&files);
+    std::fs::write(
+        &files.config,
+        "[policy]\nmode = \"paired\"\n\n[[satellites]]\nname = \"min-api\"\nendpoint = \"ssh://kept\"\nenabled = true\n",
+    )
+    .unwrap();
+    register_satellite(&files, "min-api");
+    let ctx = context(dir.path(), files.clone());
+    let session = BoxSession::new("01a17b22-a257", Some("api"), "active");
+    let mut joined = Joined::default();
+    let err = ctx.join(&session, "min-api", &mut joined).unwrap_err();
+    assert!(
+        err.contains("was not minted"),
+        "an existing name must be refused: {err}"
+    );
+    let config = std::fs::read_to_string(&files.config).unwrap();
+    assert!(
+        config.contains("ssh://kept"),
+        "the existing satellite must not be adopted: {config}"
+    );
+    assert!(!config.contains("inbound://"), "{config}");
+    assert!(!credential_revoked(&files, "min-api"));
+    let forget = super::forget_box("min-api", &joined.minted, &files).unwrap_err();
+    assert!(
+        forget.message.contains("was not minted"),
+        "{}",
+        forget.message
+    );
+    assert!(!credential_revoked(&files, "min-api"));
+}
+
+#[test]
+fn remove_stops_when_the_watcher_cannot_be_uninstalled() {
+    let dir = owner_dir();
+    let files = hub_files(dir.path());
+    register_satellite(&files, "min-api");
+    let registry = BoxRegistry::at(dir.path().join("boxes.json"));
+    let joined = Joined {
+        boxes: BTreeMap::from([("01a1".to_owned(), "min-api".to_owned())]),
+        minted: BTreeSet::from(["min-api".to_owned()]),
+    };
+    registry.save(&joined).unwrap();
+    let loadout = dir.path().join("minimal");
+    let err = super::finish_remove(
+        Err("launchctl: permission denied".into()),
+        || unreachable!("uninstall failure must stop remove"),
+        &registry,
+        &files,
+    )
+    .unwrap_err();
+    assert!(
+        err.message.contains("launchctl: permission denied"),
+        "{}",
+        err.message
+    );
+    assert!(err.message.contains("watcher"), "{}", err.message);
+    assert_eq!(registry.load().unwrap(), joined);
+    assert!(!credential_revoked(&files, "min-api"));
+    assert!(!loadout.exists());
 }

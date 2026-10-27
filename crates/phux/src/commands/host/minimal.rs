@@ -32,7 +32,7 @@ mod service;
 mod tests;
 
 use boxes::{BoxSession, MinCli};
-use files::{BoxRegistry, MinimalDirs};
+use files::{BoxRegistry, Joined, MinimalDirs};
 
 /// The loadout `setup` writes and adds to `default_loadouts`.
 const LOADOUT: &str = "phux";
@@ -153,6 +153,7 @@ struct Context {
     min: MinCli,
     hub: String,
     registry: BoxRegistry,
+    files: inbound::HubFiles,
 }
 
 impl Context {
@@ -161,6 +162,7 @@ impl Context {
             min: MinCli::resolve(opts.min.as_deref()).map_err(no_min)?,
             hub: hub::endpoint(opts.hub.as_deref())?,
             registry: BoxRegistry::at(files::registry_path()),
+            files: inbound::HubFiles::from_env(),
         })
     }
 
@@ -173,29 +175,30 @@ impl Context {
         memory.forget_gone(&live);
         self.prune(&mut joined, &live)?;
         for session in sessions.iter().filter(|s| s.is_active()) {
-            if !joined.contains_key(&session.id) && !memory.waits_on(&session.id) {
+            if !joined.boxes.contains_key(&session.id) && !memory.waits_on(&session.id) {
                 self.admit(session, &mut joined, memory)?;
             }
         }
         Ok(())
     }
 
-    /// Forget every joined box that is no longer `live`.
-    fn prune(
-        &self,
-        joined: &mut BTreeMap<String, String>,
-        live: &BTreeSet<&str>,
-    ) -> Result<(), CliError> {
+    /// Forget every joined box that is no longer `live`. A revocation that
+    /// fails leaves that box recorded, so the next pass retries it, and is
+    /// not described as revoked.
+    fn prune(&self, joined: &mut Joined, live: &BTreeSet<&str>) -> Result<(), CliError> {
         let gone: Vec<String> = joined
+            .boxes
             .keys()
             .filter(|id| !live.contains(id.as_str()))
             .cloned()
             .collect();
         for id in gone {
-            let Some(satellite) = joined.remove(&id) else {
+            let Some(satellite) = joined.boxes.get(&id).cloned() else {
                 continue;
             };
-            forget_box(&satellite);
+            forget_box(&satellite, &joined.minted, &self.files)?;
+            joined.boxes.remove(&id);
+            joined.minted.remove(&satellite);
             self.registry.save(joined).map_err(state_failure)?;
             outln!("{satellite}: box destroyed; removed it and revoked its credential");
         }
@@ -206,7 +209,7 @@ impl Context {
     fn admit(
         &self,
         session: &BoxSession,
-        joined: &mut BTreeMap<String, String>,
+        joined: &mut Joined,
         memory: &mut Memory,
     ) -> Result<(), CliError> {
         if !self.min.has_phux(&session.id) {
@@ -219,32 +222,80 @@ impl Context {
             return Ok(());
         }
         memory.no_phux.remove(&session.id);
-        let taken: BTreeSet<&str> = joined.values().map(String::as_str).collect();
+        let taken: BTreeSet<&str> = joined.boxes.values().map(String::as_str).collect();
         let satellite = satellite_name(session, &taken);
-        if let Err(reason) = self.join(session, &satellite) {
+        if let Err(reason) = self.join(session, &satellite, joined) {
             if memory.fail(&session.id, &reason) {
                 warn!("{satellite}: could not join (retrying every 30s): {reason}");
             }
             return Ok(());
         }
         memory.failed.remove(&session.id);
-        joined.insert(session.id.clone(), satellite.clone());
+        joined.boxes.insert(session.id.clone(), satellite.clone());
         self.registry.save(joined).map_err(state_failure)?;
         outln!("{satellite}: joined (panes appear as {satellite}/@N)");
         Ok(())
     }
 
-    /// Mint `satellite`'s code and redeem it inside `session`'s box; a failed
-    /// delivery withdraws the ticket and the entry it registered.
-    fn join(&self, session: &BoxSession, satellite: &str) -> Result<(), String> {
+    /// Mint `satellite`'s code and redeem it inside `session`'s box. A name
+    /// already in the satellite registry is refused unless this feature
+    /// minted it. A failed delivery withdraws the ticket and the entry it
+    /// registered.
+    fn join(
+        &self,
+        session: &BoxSession,
+        satellite: &str,
+        joined: &mut Joined,
+    ) -> Result<(), String> {
+        self.refuse_foreign(satellite, joined)?;
+        let adopt = joined.minted.contains(satellite);
         let (code, ticket) =
-            inbound::mint_code(satellite, &self.hub, TICKET_MINUTES).map_err(|err| err.message)?;
+            inbound::mint_code(satellite, &self.hub, TICKET_MINUTES, &self.files, adopt)
+                .map_err(|err| err.message)?;
+        joined.minted.insert(satellite.to_owned());
+        if let Err(err) = self.registry.save(joined) {
+            self.withdraw_failed_join(&ticket, satellite, joined);
+            return Err(err);
+        }
         self.min.join(&session.id, &code).inspect_err(|_| {
-            if let Err(err) = inbound::withdraw_ticket(&ticket) {
-                warn!("{satellite}: could not withdraw ticket {ticket} ({err})");
-            }
-            forget_box(satellite);
+            self.withdraw_failed_join(&ticket, satellite, joined);
         })
+    }
+
+    /// A satellite this feature did not mint is left alone.
+    fn refuse_foreign(&self, satellite: &str, joined: &Joined) -> Result<(), String> {
+        if joined.minted.contains(satellite) {
+            return Ok(());
+        }
+        let entries = satellite_registry::load_registry_from(&self.files.config)?;
+        if let Some(entry) = entries.into_iter().find(|entry| entry.name == satellite) {
+            return Err(format!(
+                "satellite {satellite} already exists at {} and was not minted by `phux host minimal`",
+                entry.endpoint
+            ));
+        }
+        Ok(())
+    }
+
+    /// Withdraw the ticket and the entry a failed delivery registered. The
+    /// name stays minted when that cleanup itself fails, so the next pass
+    /// retries it and does not treat the name as someone else's.
+    fn withdraw_failed_join(&self, ticket: &str, satellite: &str, joined: &mut Joined) {
+        if let Err(err) = inbound::withdraw_ticket(&self.files.workload.registry, ticket) {
+            warn!("{satellite}: could not withdraw ticket {ticket} ({err})");
+        }
+        match forget_box(satellite, &joined.minted, &self.files) {
+            Ok(()) => {
+                joined.minted.remove(satellite);
+                if let Err(err) = self.registry.save(joined) {
+                    warn!("{satellite}: could not record that its join was withdrawn ({err})");
+                }
+            }
+            Err(err) => warn!(
+                "{satellite}: could not forget the failed join ({})",
+                err.message
+            ),
+        }
     }
 
     fn watch(&self, interval: Duration) -> Result<(), CliError> {
@@ -340,24 +391,56 @@ fn satellite_name(session: &BoxSession, taken: &BTreeSet<&str>) -> String {
     }
 }
 
-/// Remove `satellite`'s `inbound://` entry and revoke its credentials. An
-/// entry this integration did not register (any other endpoint) is left.
-fn forget_box(satellite: &str) {
-    let entries = match satellite_registry::load_registry() {
-        Ok(entries) => entries,
-        Err(err) => {
-            warn!("{satellite}: could not read the satellite registry ({err})");
-            return;
-        }
-    };
-    if let Some(entry) = entries.iter().find(|entry| {
-        entry.name == satellite && phux_server::hub::is_inbound_endpoint(&entry.endpoint)
-    }) && let Err(err) = satellite_registry::remove_entry(entry)
-    {
-        warn!("{satellite}: could not remove its satellite entry ({err})");
+/// Remove `satellite`'s `inbound://` entry and revoke its credentials.
+///
+/// Revocation is always attempted for a name this feature minted, even when
+/// the satellite registry cannot be read. Any failure is returned so the
+/// caller keeps the box and retries; this function never reports the
+/// satellite revoked. A name `minted` does not contain is left untouched.
+fn forget_box(
+    satellite: &str,
+    minted: &BTreeSet<String>,
+    files: &inbound::HubFiles,
+) -> Result<(), CliError> {
+    if !minted.contains(satellite) {
+        return Err(CliError::new(
+            codes::REGISTRY,
+            format!("satellite {satellite} was not minted by `phux host minimal`; leaving it"),
+            "remove that satellite with `phux host rm` if it should go",
+        ));
     }
-    inbound::revoke_satellite(satellite);
+    let loaded = satellite_registry::load_registry_from(&files.config);
+    let revoked = inbound::revoke_satellite_at(&files.workload.registry, satellite);
+    let removed = loaded.as_ref().map_or(Ok(()), |entries| {
+        entries
+            .iter()
+            .find(|entry| {
+                entry.name == satellite && phux_server::hub::is_inbound_endpoint(&entry.endpoint)
+            })
+            .map_or(Ok(()), |entry| {
+                satellite_registry::remove_entry_at(&files.config, entry)
+            })
+    });
     let _ = reload_local_hub();
+    let mut problems = Vec::new();
+    if let Err(err) = &loaded {
+        problems.push(format!("could not read the satellite registry ({err})"));
+    }
+    if let Err(err) = removed {
+        problems.push(format!("could not remove its satellite entry ({err})"));
+    }
+    if let Err(err) = revoked {
+        problems.push(format!("could not revoke its credential ({err})"));
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::new(
+            codes::WORKLOAD,
+            format!("could not forget {satellite}: {}", problems.join("; ")),
+            "the box stays recorded so the next sync can retry",
+        ))
+    }
 }
 
 fn setup(opts: &MinimalOpts, box_phux: Option<&Path>, no_service: bool) -> Result<(), CliError> {
@@ -424,22 +507,46 @@ fn report_local_hub(hub: &super::super::service::LocalHub) {
 }
 
 fn remove() -> Result<(), CliError> {
-    match service::uninstall() {
+    finish_remove(
+        service::uninstall(),
+        MinimalDirs::from_env,
+        &BoxRegistry::at(files::registry_path()),
+        &inbound::HubFiles::from_env(),
+    )
+}
+
+/// Undo the watcher, the loadout, and every minted satellite. An uninstall
+/// failure stops the rest: the loadout and the credentials stay until a
+/// later `remove` can finish.
+fn finish_remove(
+    uninstalled: Result<Option<PathBuf>, String>,
+    dirs: impl FnOnce() -> Result<MinimalDirs, String>,
+    registry: &BoxRegistry,
+    files: &inbound::HubFiles,
+) -> Result<(), CliError> {
+    match uninstalled {
         Ok(Some(unit)) => outln!("Removed the watcher service {}", shown(&unit)),
         Ok(None) => {}
-        Err(err) => warn!("could not remove the watcher service: {err}"),
+        Err(err) => {
+            return Err(setup_failure(format!(
+                "could not remove the watcher service: {err}"
+            )));
+        }
     }
-    let dirs = MinimalDirs::from_env().map_err(setup_failure)?;
+    let dirs = dirs().map_err(setup_failure)?;
     if dirs.remove_loadout(LOADOUT).map_err(setup_failure)? {
         outln!("Removed the `{LOADOUT}` Minimal loadout and its default_loadouts entry");
     }
-    let registry = BoxRegistry::at(files::registry_path());
-    let joined = registry.load().map_err(state_failure)?;
-    for satellite in joined.values() {
-        forget_box(satellite);
+    let mut joined = registry.load().map_err(state_failure)?;
+    let names: Vec<String> = joined.minted.iter().cloned().collect();
+    for satellite in names {
+        forget_box(&satellite, &joined.minted, files)?;
+        joined.boxes.retain(|_, name| name != &satellite);
+        joined.minted.remove(&satellite);
+        registry.save(&joined).map_err(state_failure)?;
         outln!("{satellite}: removed and revoked");
     }
-    registry.save(&BTreeMap::new()).map_err(state_failure)
+    Ok(())
 }
 
 /// The Linux phux boxes get: `--box-phux`, this binary on Linux, else the

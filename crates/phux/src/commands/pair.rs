@@ -512,14 +512,6 @@ pub(crate) fn advertised_quic_endpoint(socket: &Path) -> Result<Option<String>, 
     )
 }
 
-/// The workload CA this server's certificate chains to (ADR-0153), what a
-/// machine joining it pins; `None` for a certificate no CA issued.
-pub(crate) fn presented_server_authority() -> Option<String> {
-    phux_server::transport::tls::presented_authority(&resolve_certificate_paths(None).cert)
-        .ok()
-        .flatten()
-}
-
 /// The words of the refusal when the server has no remote listener bound.
 /// `phux host add` recognizes them to restart a server that disabled its
 /// listeners at boot, so they are a contract with that caller.
