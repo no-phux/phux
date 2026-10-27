@@ -21,6 +21,7 @@ use std::process::{Command, Output, Stdio};
 mod bounded;
 #[cfg(unix)]
 pub mod checkout;
+pub mod github;
 mod patch;
 mod stage;
 
