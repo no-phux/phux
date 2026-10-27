@@ -5845,18 +5845,23 @@ Manage the mTLS workload authority
 The workload CA and the registry of client credentials it admits over mutual
 TLS. `authority` prints the CA fingerprint (`--init` creates the CA); `add-key`
 enrolls a client certificate or signs a CSR read from stdin or `--file`, never
-from the command line; `list` and `revoke` show and retire credentials. These
-write the state directory directly and never contact a server; a running server
-applies each change on its next connection, with no restart.
+from the command line; `list` and `revoke` show and retire credentials.
+`repair-paired` explicitly restores the permissions missing from an old
+full-control paired device. These write the state directory directly and never
+contact a server; a running server applies each change on its next connection,
+with no restart.
 
 Usage: phux workload [--json] <SUBCOMMAND>
 
 Commands:
-  add-key    Enroll a client certificate, or sign a CSR into one.
-  authority  Print the workload CA fingerprint.
-  list       List enrolled credentials.
-  revoke     Revoke a credential: new connections are refused and live ones end.
-  help       Print this message or the help of the given subcommand(s)
+  add-key        Enroll a client certificate, or sign a CSR into one.
+  authority      Print the workload CA fingerprint.
+  list           List enrolled credentials.
+  repair-paired  Restore full control to a device enrolled with the old pairing
+                 ceiling.
+  revoke         Revoke a credential: new connections are refused and live ones
+                 end.
+  help           Print this message or the help of the given subcommand(s)
 
 Flags:
       --json           Emit the result as JSON on stdout.
@@ -5913,10 +5918,10 @@ Flags:
       --principal <PRINCIPAL>    Who the credential is for: `human` (a device a
                                  person uses) or `automation`. Decides
                                  input-lease precedence, never scope. Omitted,
-                                 the credential is a person's device when its
-                                 ceiling is exactly the one `phux host add` and
-                                 `phux pair --enroll` grant, and an automation
-                                 otherwise.
+                                 the legacy six-verb pairing ceiling infers a
+                                 person's device; other ceilings infer
+                                 automation. Pairing records `human` explicitly.
+                                 This flag never adds permissions.
                                  [possible values: human, automation]
   -h, --help                     Print help
 
@@ -5960,6 +5965,30 @@ Usage: phux workload list [--public-keys]
 
 Flags:
       --public-keys    Also print each credential's public key (hex DER).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload repair-paired`
+
+```text
+Restore full control to a device enrolled with the old pairing ceiling.
+
+Adds organize and terminate only to the named active human device whose ceiling
+is exactly the legacy full-control pairing grant. Custom scopes, automation,
+expired and revoked credentials are refused. Keeps its key and expiry; no
+re-pair or server restart is needed. Reconnect the device afterwards to use the
+new permissions. Repeating this for an already repaired device changes nothing.
+
+Usage: phux workload repair-paired <CREDENTIAL_ID>
+
+Arguments:
+  <CREDENTIAL_ID>  The device's `sha256:...` id from `phux workload list`.
+
+Flags:
   -h, --help           Print help
 
 Global flags:

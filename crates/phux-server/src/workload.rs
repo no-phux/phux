@@ -216,7 +216,13 @@ impl WorkloadPaths {
 /// `phux host add` enrolls it over ssh and a `phux pair --enroll` ticket
 /// carries it. Enrollment grants no authority ssh did not already grant. Spelled out
 /// rather than `*`, which a far host's shell would glob.
-pub const PAIRED_DEVICE_SCOPE: &str = "inventory,observe,create,bind,input,signal@global";
+pub const PAIRED_DEVICE_SCOPE: &str =
+    "inventory,observe,create,bind,input,signal,organize,terminate@global";
+
+/// The original pairing ceiling, retained only for legacy principal
+/// inference and an explicit owner-requested repair. Loading it never adds verbs.
+pub(crate) const LEGACY_PAIRED_DEVICE_SCOPE: &str =
+    "inventory,observe,create,bind,input,signal@global";
 
 /// Who a registry credential was enrolled for (ADR-0163 §6,
 /// `docs/remote.md#who-can-connect`): a person's paired device, or an automation.
@@ -241,12 +247,13 @@ impl EnrolledFor {
     }
 
     /// Who a credential recorded without the field was enrolled for, by its
-    /// enrollment origin. Pairing (`phux host add`, a `phux pair --enroll`
-    /// ticket) is the path that enrolls exactly [`PAIRED_DEVICE_SCOPE`], so
-    /// that ceiling is a person's device; any other is an automation.
+    /// enrollment origin. Before pairing recorded the principal explicitly,
+    /// it used exactly the legacy six-verb pairing ceiling. Do not compare
+    /// against today's full ceiling: that would reclassify old wildcard
+    /// automation as human when the verb vocabulary grows.
     #[must_use]
     pub fn by_ceiling(scopes: &[String]) -> Self {
-        let paired = parse_ceiling(&[PAIRED_DEVICE_SCOPE.to_owned()]).ok();
+        let paired = parse_ceiling(&[LEGACY_PAIRED_DEVICE_SCOPE.to_owned()]).ok();
         if paired.is_some() && parse_ceiling(scopes).ok() == paired {
             Self::Human
         } else {

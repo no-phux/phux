@@ -368,7 +368,7 @@ fn paired_policy_grants_act_as_the_principal_the_record_was_enrolled_for() {
         .id
     };
     let phone = enroll(b"phone", "observe,input@host", Some(EnrolledFor::Human));
-    let laptop = enroll(b"laptop", PAIRED_DEVICE_SCOPE, None);
+    let laptop = enroll(b"laptop", PAIRED_DEVICE_SCOPE, Some(EnrolledFor::Human));
     let bot = enroll(b"bot", "*@global", Some(EnrolledFor::Automation));
     let legacy_bot = enroll(b"legacy-bot", "*@global", None);
     let policy = super::paired_policy(&path);

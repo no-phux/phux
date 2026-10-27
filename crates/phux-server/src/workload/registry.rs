@@ -13,7 +13,17 @@ use super::{
     subject_public_key_info, validate_satellite_name, validate_scopes,
 };
 
+mod paired;
 mod registration;
+
+/// Result of an explicit legacy paired-device permission repair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairedDeviceRepair {
+    /// Registry generation after the operation.
+    pub generation: u64,
+    /// Whether the legacy ceiling was replaced; false on a repeat.
+    pub updated: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

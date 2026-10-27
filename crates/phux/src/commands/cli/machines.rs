@@ -180,7 +180,8 @@ pub(crate) struct PairArgs {
 /// mutual TLS. `authority` prints the CA fingerprint (`--init` creates
 /// the CA); `add-key` enrolls a client certificate or signs a CSR read
 /// from stdin or `--file`, never from the command line; `list` and
-/// `revoke` show and retire credentials. These write the state directory
+/// `revoke` show and retire credentials. `repair-paired` explicitly restores
+/// the permissions missing from an old full-control paired device. These write the state directory
 /// directly and never contact a server; a running server applies each
 /// change on its next connection, with no restart.
 #[derive(Debug, Args)]

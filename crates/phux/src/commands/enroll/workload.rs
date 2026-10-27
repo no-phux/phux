@@ -113,6 +113,8 @@ pub(crate) fn enroll_client_certificate(
         "--cert-stdout",
         "--scope",
         HOST_ADD_WORKLOAD_SCOPE,
+        "--principal",
+        "human",
     ];
     let added = ssh_run_with_stdin(ssh_host, &argv, request.csr_pem().as_bytes())?;
     if !added.status.success() {
