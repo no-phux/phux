@@ -57,7 +57,11 @@ test("Windows packaging checks PE architecture and ships app-local runtime and p
     const archive = join(root, "desktop.zip");
     archiveWindowsBundle(output, archive);
     expect(readFileSync(archive).toString("ascii", 0, 2)).toBe("PK");
-    const listing = Bun.spawnSync(["tar", "-tf", archive]);
+    const listing = Bun.spawnSync(
+      process.platform === "linux"
+        ? ["unzip", "-Z1", archive]
+        : [process.platform === "darwin" ? "/usr/bin/tar" : "tar", "-tf", archive],
+    );
     expect(listing.exitCode).toBe(0);
     expect(listing.stdout.toString()).toContain("phux-desktop/install.ps1");
     expect(listing.stdout.toString()).toContain("phux-desktop/share/phux-desktop/release.json");
