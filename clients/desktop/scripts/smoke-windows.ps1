@@ -56,50 +56,63 @@ New-Item -ItemType Directory -Force $Output | Out-Null
 $work = Join-Path ([IO.Path]::GetTempPath()) ('phux-native-smoke-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $work | Out-Null
 $linuxRoot = '/tmp/phux-desktop-ci-' + [Guid]::NewGuid().ToString('N')
-$socket = "$linuxRoot/server.sock"
-$phux = "$linuxRoot/phux"
+$profile = 'windows-desktop-smoke-' + [Guid]::NewGuid().ToString('N')
+$socket = $null
+$phux = '/home/phux-ci/.local/bin/phux'
 $session = 'windows-desktop-smoke'
 $installed = Join-Path $work 'installed'
 $desktop = $null
 $started = $false
 $uninstall = $false
+$copiedCli = $false
+$savedEnvironment = @{}
+foreach ($name in @('USERPROFILE', 'HOME', 'LOCALAPPDATA', 'APPDATA', 'WSLENV', 'PHUX_BIN', 'PHUX_SESSION', 'PHUX_SOCKET', 'PHUX_PROFILE', 'PHUX_WS_TOKENS', 'PHUX_WS_TLS_CERT', 'PHUX_WS_TLS_KEY', 'PHUX_DESKTOP_BACKGROUND', 'PHUX_DESKTOP_LOG', 'PHUX_DESKTOP_LOG_LEVEL')) {
+    $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
 $tesseract = Join-Path $env:ProgramFiles 'Tesseract-OCR/tesseract.exe'
 if (-not (Test-Path $tesseract)) { throw 'Tesseract OCR is required to prove native terminal rendering' }
 
-function Wait-Desktop([string] $Label, [scriptblock] $Condition) {
+function Wait-Desktop([string] $Description, [scriptblock] $Condition) {
     $deadline = [DateTime]::UtcNow.AddSeconds(60)
     $last = ''
     while ([DateTime]::UtcNow -lt $deadline) {
-        if ($script:desktop -and $script:desktop.HasExited) { throw "Desktop exited while waiting for $Label (exit $($script:desktop.ExitCode))" }
+        if ($script:desktop -and $script:desktop.HasExited) { throw "Desktop exited while waiting for $Description (exit $($script:desktop.ExitCode))" }
         try { if (& $Condition) { return } } catch { $last = $_.Exception.Message }
         Start-Sleep -Milliseconds 200
     }
-    throw "Timed out waiting for ${Label}: $last"
+    throw "Timed out waiting for ${Description}: $last"
 }
 
 function Invoke-SmokeCli([string[]] $Arguments) {
-    $words = @($phux, '--socket', $socket) + $Arguments
+    $words = @($phux) + $Arguments
     $quoted = @($words | ForEach-Object { ConvertTo-DesktopShellLiteral $_ }) -join ' '
-    $environment = 'unset PHUX_SOCKET PHUX_WS_TOKENS PHUX_WS_TLS_CERT PHUX_WS_TLS_KEY; export HOME=' + (ConvertTo-DesktopShellLiteral $linuxRoot) + ' XDG_CONFIG_HOME=' + (ConvertTo-DesktopShellLiteral "$linuxRoot/config") + ' XDG_STATE_HOME=' + (ConvertTo-DesktopShellLiteral "$linuxRoot/state") + ' PHUX_PROFILE=windows-desktop-smoke SHELL=/bin/sh; '
+    $environment = 'unset PHUX_SOCKET PHUX_BIN PHUX_SESSION PHUX_WS_TOKENS PHUX_WS_TLS_CERT PHUX_WS_TLS_KEY; export PHUX_PROFILE=' + (ConvertTo-DesktopShellLiteral $profile) + ' SHELL=/bin/sh; '
     return Invoke-DesktopWsl ($environment + $quoted)
 }
 
-function Start-SmokeDesktop([string] $Label) {
+function Start-SmokeDesktop([string] $Label, [switch] $DefaultEntry) {
     $evidence = Join-Path $Output $Label
     New-Item -ItemType Directory -Force $evidence | Out-Null
     $executable = Join-Path $installed 'current/phux-desktop.exe'
     $arguments = @('--socket', $socket, '--phux', $phux, '--session', $session, '--fresh', '--evidence', ('"' + $evidence + '"'))
-    $script:desktop = Start-Process -FilePath $executable -ArgumentList $arguments -PassThru -RedirectStandardOutput (Join-Path $Output "$Label.stdout.log") -RedirectStandardError (Join-Path $Output "$Label.stderr.log")
+    $launch = @{ FilePath = $executable; PassThru = $true; RedirectStandardOutput = (Join-Path $Output "$Label.stdout.log"); RedirectStandardError = (Join-Path $Output "$Label.stderr.log") }
+    if (-not $DefaultEntry) { $launch.ArgumentList = $arguments }
+    $script:desktop = Start-Process @launch
     Wait-Desktop 'native HWND' { $script:desktop.Refresh(); $script:desktop.MainWindowHandle -ne [IntPtr]::Zero }
     $window = $script:desktop.MainWindowHandle
     [PhuxDesktopGui]::ShowWindow($window, 9) | Out-Null
     [PhuxDesktopGui]::SetWindowPos($window, [IntPtr]::Zero, 10, 10, 760, 520, 0x0040) | Out-Null
     if (-not [PhuxDesktopGui]::SetForegroundWindow($window)) { throw 'Could not activate the real native window' }
     Start-Sleep -Milliseconds 500
+    if ($DefaultEntry) { return }
     [PhuxDesktopGui]::Click(500, 320)
-    Wait-Desktop 'native submission receipt' { Test-Path (Join-Path $evidence 'interaction.json') }
-    $layout = Get-Content -Raw (Join-Path $evidence 'layout.json') | ConvertFrom-Json
-    $interaction = Get-Content -Raw (Join-Path $evidence 'interaction.json') | ConvertFrom-Json
+    Assert-FrameReceipt $evidence
+}
+
+function Assert-FrameReceipt([string] $Evidence) {
+    Wait-Desktop 'native submission receipt' { Test-Path (Join-Path $Evidence 'interaction.json') }
+    $layout = Get-Content -Raw (Join-Path $Evidence 'layout.json') | ConvertFrom-Json
+    $interaction = Get-Content -Raw (Join-Path $Evidence 'interaction.json') | ConvertFrom-Json
     if ($layout.session -cne $session -or $layout.generation -le 0 -or -not ($layout.presented -or $layout.submitted)) { throw 'Native frame has no truthful presentation/submission receipt' }
     if (-not $interaction.visible -or $interaction.clipped -or $interaction.presentedGeneration -ne $layout.generation) { throw 'Native capture and visible layout generations disagree' }
 }
@@ -148,11 +161,24 @@ function Get-ConnectionEpoch {
     return [long] $epochs[$epochs.Count - 1].Groups[1].Value
 }
 
+. (Join-Path $PSScriptRoot 'smoke-windows-default-entry.ps1')
+
 try {
+    # WSL does not normally inherit arbitrary Windows variables. Forward only
+    # this run's unique profile, never Windows HOME or inherited production sockets.
+    foreach ($name in @('PHUX_BIN', 'PHUX_SESSION', 'PHUX_SOCKET', 'PHUX_WS_TOKENS', 'PHUX_WS_TLS_CERT', 'PHUX_WS_TLS_KEY', 'PHUX_DESKTOP_BACKGROUND', 'PHUX_DESKTOP_LOG')) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+    $env:PHUX_PROFILE = $profile
+    $env:WSLENV = 'PHUX_PROFILE/u'
+    $identity = Invoke-DesktopWsl 'printf "%s:%s:%s" "$(id -un)" "$(id -u)" "$HOME"'
+    if ($identity -cnotmatch '^phux-ci:[1-9][0-9]*:/home/phux-ci$') { throw 'Qualification requires the disposable phux-ci default WSL user and its real home' }
+    if ((Invoke-DesktopWsl 'printf "%s" "$PHUX_PROFILE"') -cne $profile) { throw 'WSL did not inherit the isolated qualification profile' }
     $hostBinary = ConvertTo-DesktopShellLiteral ([IO.Path]::GetFullPath($ServerBinary))
-    Invoke-DesktopWsl ('set -eu; mkdir -m 700 ' + (ConvertTo-DesktopShellLiteral $linuxRoot) + '; cp "$(wslpath -a -u ' + $hostBinary + ')" ' + (ConvertTo-DesktopShellLiteral $phux) + '; chmod 755 ' + (ConvertTo-DesktopShellLiteral $phux)) | Out-Null
+    Invoke-DesktopWsl ('set -eu; test ! -e ' + (ConvertTo-DesktopShellLiteral $phux) + '; test ! -L ' + (ConvertTo-DesktopShellLiteral $phux) + '; mkdir -m 700 ' + (ConvertTo-DesktopShellLiteral $linuxRoot) + '; mkdir -p "$HOME/.local/bin"; cp -n "$(wslpath -a -u ' + $hostBinary + ')" ' + (ConvertTo-DesktopShellLiteral $phux) + '; chmod 755 ' + (ConvertTo-DesktopShellLiteral $phux)) | Out-Null
+    $copiedCli = $true
     Invoke-SmokeCli @('server', '--ensure') | Out-Null
     $started = $true
+    $socket = (Invoke-SmokeCli @('status', '--json') | ConvertFrom-Json).socket
+    if (-not $socket.StartsWith('/') -or -not $socket.Contains($profile)) { throw 'CLI default socket is not scoped to the unique qualification profile' }
     Invoke-SmokeCli @('new', '--json', '--session', $session) | Out-Null
     $serverPid = (Invoke-SmokeCli @('status', '--json') | ConvertFrom-Json).pid
     $initialize = 'PHUX_SMOKE_VALUE=PHUXSURVIVAL; printf "\033[2J\033[H%s\n" "$PHUX_SMOKE_VALUE"; printf "%s\n" "$$" > ' + "$linuxRoot/shell.pid"
@@ -173,13 +199,13 @@ try {
     $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Phux Desktop.lnk'
     $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
     if ($link.TargetPath -ine (Join-Path $installed 'current/phux-desktop.exe')) { throw 'Start Menu shortcut does not launch the installed native executable' }
+    if ($link.Arguments) { throw 'Installed shortcut must use the normal empty argument list' }
     $env:USERPROFILE = Join-Path $work 'home'
     $env:HOME = $env:USERPROFILE
     $env:LOCALAPPDATA = Join-Path $work 'local'
     $env:APPDATA = Join-Path $work 'roaming'
     foreach ($directory in @($env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA)) { New-Item -ItemType Directory -Force $directory | Out-Null }
     $env:PHUX_DESKTOP_LOG_LEVEL = 'trace'
-    foreach ($name in @('PHUX_SOCKET', 'PHUX_PROFILE', 'PHUX_WS_TOKENS', 'PHUX_WS_TLS_CERT', 'PHUX_WS_TLS_KEY', 'PHUX_DESKTOP_BACKGROUND')) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
     Start-SmokeDesktop 'first-launch'
     Assert-Rendered 'first-launch' 'PHUXSURVIVAL'
     Send-Shell "printf '%s%s\n' PHUX NATIVEKEYS"
@@ -218,16 +244,22 @@ try {
     if ((Invoke-SmokeCli @('status', '--json') | ConvertFrom-Json).pid -ne $serverPid) { throw 'The original server did not survive' }
     Start-SmokeDesktop 'after-crash'
     Assert-Rendered 'after-crash' 'PHUXSURVIVALAFTERCRASH'
+    Test-DefaultEntry
     $renderer = Get-Content -Raw (Join-Path $Output 'first-launch.stderr.log')
     $gpu = [regex]::Match($renderer, 'Using GPU: ([^\r\n]+)').Groups[1].Value
     if (-not $gpu -or $renderer -notmatch 'Created device with Direct3D') { throw 'Native D3D adapter/feature-level evidence is missing' }
-    @{ ok = $true; platform = 'windows-x64'; gpu = $gpu; qualification = 'hosted native D3D GUI, not real-GPU qualification'; serverPid = $serverPid; shellPid = $shellPid; scenarios = @('visible window OCR', 'native keys', 'clipboard', 'PTY resize', 'UI reconnect', 'app crash/relaunch', 'shell persistence') } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Output 'result.json') -Encoding UTF8
+    @{ ok = $true; platform = 'windows-x64'; gpu = $gpu; qualification = 'hosted native D3D GUI, not real-GPU qualification'; serverPid = $serverPid; shellPid = $shellPid; scenarios = @('visible window OCR', 'native keys', 'clipboard', 'PTY resize', 'UI reconnect', 'app crash/relaunch', 'shell persistence', 'installed shortcut default arguments', 'automatic WSL CLI/socket/home selection', 'saved Windows split restoration after crash') } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Output 'result.json') -Encoding UTF8
 } catch {
     $_ | Out-String | Set-Content (Join-Path $Output 'failure.txt') -Encoding UTF8
     throw
 } finally {
     Stop-SmokeDesktop
-    if ($started) { Invoke-SmokeCli @('kill', '--server') | Out-Null }
-    if ($uninstall) { Uninstall-Desktop $installed }
-    Invoke-DesktopWsl ('rm -rf ' + (ConvertTo-DesktopShellLiteral $linuxRoot)) | Out-Null
+    try {
+        if ($started) { Invoke-SmokeCli @('kill', '--server') | Out-Null }
+        if ($uninstall) { Uninstall-Desktop $installed }
+        if ($copiedCli) { Invoke-DesktopWsl ('rm -f ' + (ConvertTo-DesktopShellLiteral $phux)) | Out-Null }
+        Invoke-DesktopWsl ('rm -rf ' + (ConvertTo-DesktopShellLiteral $linuxRoot)) | Out-Null
+    } finally {
+        foreach ($item in $savedEnvironment.GetEnumerator()) { [Environment]::SetEnvironmentVariable($item.Key, $item.Value, 'Process') }
+    }
 }
