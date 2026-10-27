@@ -272,9 +272,9 @@ phux ls                       # the box's sessions, under min-NAME
 `setup` writes a `phux` Minimal loadout that copies a Linux phux into each
 box and starts its server there, adds it to Minimal's `default_loadouts`, and
 installs a per-user service that runs `phux host minimal watch`. On macOS the
-box's phux is your release channel's published Linux build, checked like
-`phux update` checks one; on Linux it is the phux you ran. Run `setup` again
-to refresh it.
+box's phux is this phux's own version for Linux, checked like `phux update`
+checks one, and refreshed when that version changes; on Linux it is the phux
+you ran. Run `setup` again after the hub's QUIC port changes.
 
 The watcher notices each new box within a couple of seconds, mints a
 single-use ticket for it, and hands the code to `phux host join -` inside the

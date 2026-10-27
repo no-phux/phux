@@ -389,10 +389,22 @@ pub(super) fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> Exit
         return json_err::emit(json, &registry_failure(err), 1);
     }
     // A satellite that dialed in holds a credential this hub issued; removing
-    // it revokes that credential too (ADR-0182).
-    let revoked = (resolved == HostRole::Satellite)
-        .then(|| inbound::revoke_satellite(name))
-        .flatten();
+    // it revokes that credential too (ADR-0182). A registry that cannot be
+    // written is reported and does not undo the removal.
+    let revoked = if resolved == HostRole::Satellite {
+        match inbound::revoke_satellite(name) {
+            Ok(count) => Some(count),
+            Err(err) => {
+                warn!(
+                    "could not revoke {name:?}'s satellite credential ({err}); revoke it with \
+                     `phux workload revoke`"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let reload = (resolved == HostRole::Satellite).then(reload_local_hub);
 
     if json {

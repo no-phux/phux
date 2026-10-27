@@ -54,7 +54,7 @@ fn no_listener(detail: String) -> CliError {
     CliError::new(
         codes::NO_SERVER,
         detail,
-        "run the hub with a QUIC listener (`phux host add` sets one up, or `phux server --hub \
-         --quic 0.0.0.0:8788`), or pass --hub HOST:PORT",
+        "run the hub with a QUIC listener on loopback (`phux server --hub --quic \
+         127.0.0.1:8788`, or `0.0.0.0:8788`), or pass --hub HOST:PORT",
     )
 }
