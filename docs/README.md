@@ -22,6 +22,7 @@ Every page in the phux docs, grouped by what you're trying to do.
 
 ## Automate
 
+- [Using phux as an agent](./agent-quickstart.md): install phux and drive sessions, panes, input, and scrollback from code.
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
