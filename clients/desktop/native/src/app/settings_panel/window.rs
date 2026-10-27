@@ -113,6 +113,14 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Type `text` into the search field, for captures.
+    #[cfg(feature = "ui-fixtures")]
+    pub(crate) fn search(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.query
+            .update(cx, |query, cx| query.set_value(text.to_owned(), window, cx));
+        cx.notify();
+    }
+
     fn escape(&mut self, _: &EscapeSettings, window: &mut Window, cx: &mut Context<Self>) {
         if self.query.read(cx).value().is_empty() {
             window.remove_window();
@@ -244,7 +252,8 @@ impl gpui::Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.query.read(cx).value().to_lowercase();
         let prefs = self.desk.read(cx).prefs.clone();
-        self.controls.sync(&prefs, window, cx);
+        let shaders = self.desk.read(cx).shader_inputs(1., cx);
+        self.controls.sync(&prefs, shaders, window, cx);
         let desk = self.desk.read(cx);
         let pages: Vec<_> = Page::ALL
             .into_iter()

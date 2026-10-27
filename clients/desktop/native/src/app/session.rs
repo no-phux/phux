@@ -68,6 +68,7 @@ const MENU_BAR: &[(&str, &[&str])] = &[
             "sidebar",
             "plain-terminal",
             "native-agents",
+            "backdrop-shader-next",
             "quick-terminal",
             MENU_SEPARATOR,
             "font-up",

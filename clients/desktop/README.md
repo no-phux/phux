@@ -176,6 +176,11 @@ See [Native agents](USAGE.md#native-agents).
 See [Agent fleet](AGENT_FLEET.md) for the opt-in live overview, navigation,
 and animation controls.
 
+### Backdrop shaders
+
+See [Backdrop shaders](SHADERS.md) for the live WGSL backdrops that follow your
+theme and your agents, and for writing your own.
+
 ## Development
 
 ```sh

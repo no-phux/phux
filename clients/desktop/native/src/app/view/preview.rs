@@ -21,6 +21,9 @@ use crate::app::{AppOptions, Desk, desk::Link};
 use crate::connection::Connection;
 use crate::workspace::{Workspace, WorkspaceOptions};
 
+mod backdrops;
+pub(crate) use backdrops::open_backdrops;
+
 const SESSION: &str = "phux";
 const TITLES: [&str; 3] = [
     "Refine desktop composition",

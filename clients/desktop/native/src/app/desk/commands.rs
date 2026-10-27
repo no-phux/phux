@@ -111,6 +111,7 @@ impl Desk {
             "sidebar" => {
                 self.update_prefs(|prefs| prefs.sidebar_visible = !prefs.sidebar_visible, cx)
             }
+            "backdrop-shader-next" => self.cycle_backdrop(cx),
             "plain-terminal" => self.update_prefs(|prefs| prefs.plain = !prefs.plain, cx),
             "tabs-top" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Top, cx),
             "tabs-bottom" => {

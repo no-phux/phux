@@ -4984,6 +4984,7 @@ dependencies = [
  "gpui-pre-platform",
  "image",
  "log",
+ "naga",
  "nix",
  "phux-client-core",
  "phux-client-ffi",
@@ -4997,6 +4998,7 @@ dependencies = [
  "serde_json",
  "smol",
  "unicode-segmentation",
+ "wgpu",
 ]
 
 [[package]]

@@ -3,6 +3,7 @@
 //! Settings stays open, and every control moves both ways with a reset.
 
 mod appearance;
+mod backdrop;
 mod branding;
 pub(super) mod catalog;
 mod connections;
@@ -90,7 +91,7 @@ impl Page {
     }
     pub fn description(self) -> &'static str {
         match self {
-            Self::Appearance => "Theme, font, skin and plain terminal",
+            Self::Appearance => "Theme, font, skin, plain terminal and backdrop shader",
             Self::Layout => "Tabs, sidebar, blur, glass and agent alerts",
             Self::Keyboard => "Input behavior and every shortcut",
             Self::Spacing => "Line height, cell width, padding and dimming",
@@ -170,6 +171,7 @@ pub(crate) struct SettingsControls {
     fonts: Vec<SharedString>,
     leader: Entity<InputState>,
     leader_saved: Option<String>,
+    gallery: backdrop::Gallery,
     _subs: Vec<Subscription>,
 }
 
@@ -214,6 +216,12 @@ impl Knob {
         range: (55., 100., 5.),
         percent: true,
         pref: |prefs| &mut prefs.terminal_opacity,
+    };
+    const BACKDROP: Self = Self {
+        title: "Shader intensity",
+        range: (10., 100., 5.),
+        percent: true,
+        pref: |prefs| &mut prefs.backdrop_intensity,
     };
 
     fn scale(self) -> f64 {
@@ -285,6 +293,7 @@ fn build_controls(desk: &Desk, window: &mut Window, cx: &mut Context<Desk>) -> S
         Knob::CELL_WIDTH,
         Knob::UNFOCUSED,
         Knob::GLASS,
+        Knob::BACKDROP,
     ] {
         let (min, max, step) = knob.range;
         let value = knob.shown(&desk.prefs);
@@ -349,20 +358,29 @@ fn build_controls(desk: &Desk, window: &mut Window, cx: &mut Context<Desk>) -> S
         fonts,
         leader,
         leader_saved: desk.prefs.leader_key.clone(),
+        gallery: backdrop::Gallery::default(),
         _subs: subs,
     }
 }
 
 /// Chords, resets and imports move the visible controls without rebuilding them.
 fn sync_controls(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
+    let inputs = desk.shader_inputs(1., cx);
     let Some(controls) = desk.settings_controls.as_mut() else {
         return;
     };
-    controls.sync(&desk.prefs, window, cx);
+    controls.sync(&desk.prefs, inputs, window, cx);
 }
 
 impl SettingsControls {
-    fn sync(&mut self, prefs: &DisplayPrefs, window: &mut Window, cx: &mut App) {
+    fn sync(
+        &mut self,
+        prefs: &DisplayPrefs,
+        shaders: crate::app::backdrop_shader::Inputs,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.gallery.sync(shaders, cx);
         let controls = self;
         if controls.leader_saved != prefs.leader_key {
             controls.leader_saved.clone_from(&prefs.leader_key);

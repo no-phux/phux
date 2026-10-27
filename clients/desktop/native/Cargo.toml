@@ -52,6 +52,10 @@ required-features = ["ui-fixtures"]
 name = "agent_fleet"
 required-features = ["ui-fixtures"]
 
+[[example]]
+name = "backdrop_preview"
+required-features = ["ui-fixtures"]
+
 [dependencies]
 phux-client-core = { path = "../../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
@@ -101,6 +105,12 @@ unicode-segmentation = "1"
 # Quick terminal: system-wide hotkeys without Accessibility permission or
 # handwritten Carbon FFI (the host denies unsafe code).
 global-hotkey = "=0.8.0"
+# Backdrop shaders (`shader`): WGSL rendered offscreen on the platform's
+# primary GPU API and shown as a GPUI image. The same wgpu and naga the Linux
+# and Windows renderers already resolve, so the lock gains no packages; only
+# the native backend for each OS is compiled.
+wgpu = { version = "29.0", default-features = false, features = ["std", "parking_lot", "wgsl", "metal", "vulkan", "dx12"] }
+naga = { version = "29.0", features = ["wgsl-in"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["process", "socket", "user"] }
