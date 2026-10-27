@@ -148,7 +148,7 @@ pub(crate) fn capture(
                             prefs.playground_scheme = if name.ends_with("mint") {
                                 "mint"
                             } else {
-                                "gold"
+                                "theme"
                             }
                             .to_owned();
                         },

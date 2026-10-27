@@ -141,13 +141,13 @@ fn the_backdrop_shader_defaults_off_and_keeps_only_known_choices() {
 }
 
 #[test]
-fn the_playground_scheme_is_gold_unless_a_known_scheme_is_saved() {
+fn the_playground_scheme_is_theme_unless_a_known_scheme_is_saved() {
     for value in [
         json!({}),
         json!({"playgroundScheme": "plaid"}),
         json!({"playgroundScheme": 1}),
     ] {
-        assert_eq!(parse_display(&value).playground_scheme, "gold");
+        assert_eq!(parse_display(&value).playground_scheme, "theme");
     }
     let mint = DisplayPrefs {
         playground_scheme: "mint".to_owned(),

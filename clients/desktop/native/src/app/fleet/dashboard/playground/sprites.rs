@@ -3,13 +3,14 @@
 //! atlas names each loop's length; the product owns when a loop plays and
 //! what colour it wears.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use gpui::RenderImage;
 use serde::Deserialize;
 
 use super::plan::Strip;
-use super::scheme::Scheme;
+use super::scheme::{Ramp, recolor};
 
 const ATLAS: &str = include_str!("../../../../../assets/playground/fox/atlas.json");
 const STRIPS: [&[u8]; 4] = [
@@ -44,15 +45,21 @@ impl Sheet {
     }
 }
 
-/// The sheet in `scheme`, decoded on first use; None when the art does not
-/// decode. A scheme nobody picks is never decoded.
-pub(crate) fn sheet(scheme: Scheme) -> Option<&'static Sheet> {
-    static SHEETS: [OnceLock<Option<Sheet>>; Scheme::ALL.len()] =
-        [const { OnceLock::new() }; Scheme::ALL.len()];
-    SHEETS[scheme.index()].get_or_init(|| load(scheme)).as_ref()
+/// The sheet on `ramp`, decoded on first use; None when the art does not
+/// decode. A ramp nobody picks is never decoded. ponytail: each ramp's
+/// sheet lives for the process, bounded by the themes and schemes shown.
+pub(crate) fn sheet(ramp: Ramp) -> Option<&'static Sheet> {
+    static SHEETS: Mutex<Option<HashMap<Ramp, Option<&'static Sheet>>>> = Mutex::new(None);
+    let mut sheets = SHEETS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *sheets
+        .get_or_insert_with(HashMap::new)
+        .entry(ramp)
+        .or_insert_with(|| load(ramp).map(|sheet| &*Box::leak(Box::new(sheet))))
 }
 
-fn load(scheme: Scheme) -> Option<Sheet> {
+fn load(ramp: Ramp) -> Option<Sheet> {
     let atlas: Atlas = serde_json::from_str(ATLAS).ok()?;
     let frames = atlas.frame_count.max(1);
     let mut strips = Vec::with_capacity(4);
@@ -71,7 +78,7 @@ fn load(scheme: Scheme) -> Option<Sheet> {
                 // Recolour, then GPUI's atlas takes straight-alpha BGRA.
                 for pixel in buffer.as_chunks_mut::<4>().0 {
                     if pixel[3] > 0 {
-                        let [red, green, blue] = scheme.recolor([pixel[0], pixel[1], pixel[2]]);
+                        let [red, green, blue] = recolor(ramp, [pixel[0], pixel[1], pixel[2]]);
                         *pixel = [blue, green, red, pixel[3]];
                     }
                 }
@@ -100,12 +107,10 @@ mod tests {
 
     #[test]
     fn the_released_art_decodes_into_eight_frame_loops() {
-        let sheet = sheet(Scheme::Gold).expect("the brand exports decode");
-        assert!(
-            Scheme::ALL
-                .iter()
-                .all(|scheme| super::sheet(*scheme).is_some())
-        );
+        let ramp = [0x333333, 0x999999, 0xEEEEEE];
+        let sheet = sheet(ramp).expect("the brand exports decode");
+        let again = super::sheet(ramp).expect("cached");
+        assert!(std::ptr::eq(sheet, again), "one decode per ramp");
         assert_eq!(sheet.frames, 8);
         let (_, first) = sheet.frame(Strip::Dash, 0.);
         let (_, last) = sheet.frame(Strip::Dash, 0.53);

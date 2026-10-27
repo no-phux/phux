@@ -52,9 +52,11 @@ preferences. A piece
 never leaves its machine's room. The scene draws about twelve frames a
 second while it is open; **Appearance > Animations** off or system **Reduce
 Motion** leaves every piece on a still frame. The palette button cycles the
-piece's colour scheme (gold, silver, mint, rose, aurora, ember, matrix),
-saved with the display preferences. The piece is the PHUX fox, animated
-from a phux-brand export; it is recoloured only here.
+piece's colours: theme (the default, the fox in the window theme's text
+colours, light on dark themes and dark on light ones), then gold, silver,
+mint, rose, aurora, ember and matrix; the choice is saved with the display
+preferences. The piece is the Emblem Fox, the PHUX mark, animated from a
+phux-brand export; it is recoloured only here.
 
 See the [desktop README](README.md) for installation and development, and
 [desktop usage](USAGE.md) for the rest of the app.

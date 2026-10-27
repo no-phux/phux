@@ -156,7 +156,7 @@ pub struct DisplayPrefs {
     pub agent_fleet: bool,
     /// The fleet playground's map: `office` or `matrix`.
     pub playground_map: String,
-    /// The playground piece's colour scheme, by id (`gold` unless known).
+    /// The playground piece's colour scheme, by id (`theme` unless known).
     pub playground_scheme: String,
     /// Skin motion: pane folds, skin shifts, cursor effects. macOS reduce
     /// motion also turns it off.
@@ -199,7 +199,7 @@ pub fn default_display() -> DisplayPrefs {
         native_agents: false,
         agent_fleet: false,
         playground_map: "office".to_owned(),
-        playground_scheme: "gold".to_owned(),
+        playground_scheme: "theme".to_owned(),
         animations: true,
         backdrop_shader: crate::shader::library::OFF.to_owned(),
         backdrop_intensity: 0.7,
@@ -283,7 +283,7 @@ pub fn sanitize_display(display: &DisplayPrefs) -> DisplayPrefs {
         },
         playground_scheme: if matches!(
             display.playground_scheme.as_str(),
-            "gold" | "silver" | "mint" | "rose" | "aurora" | "ember" | "matrix"
+            "theme" | "gold" | "silver" | "mint" | "rose" | "aurora" | "ember" | "matrix"
         ) {
             display.playground_scheme.clone()
         } else {
