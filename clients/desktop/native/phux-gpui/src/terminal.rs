@@ -197,6 +197,12 @@ impl Terminal {
         &self.focus
     }
 
+    /// The cursor cell as last painted, in window coordinates, for a popup
+    /// that opens at the cursor.
+    pub fn cursor_bounds(&self, cx: &gpui::App) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.input.read(cx).cursor_bounds()
+    }
+
     /// The last paint. Glyph positions are filled only with `terminal-fixtures`.
     pub fn painted(&self) -> paint::Observation {
         self.observation

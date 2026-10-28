@@ -133,7 +133,7 @@ first, then ends all its processes and deletes the session.
 | ⇧⌘A              | jump to the agent that most needs you                    |
 | ⌘B, ⌘,           | sidebar, settings                                        |
 | ⌘N, ⌥⌘N          | new window; move the focused pane to its own window      |
-| ⇧⌘I              | insert a path from the focused terminal's host           |
+| ⇧⌘I or ⌥;        | insert a path from the focused terminal's host           |
 | ⇧⌘R              | reconnect, restarting the server if it stopped           |
 | ⌘-click          | open the link under the pointer                          |
 

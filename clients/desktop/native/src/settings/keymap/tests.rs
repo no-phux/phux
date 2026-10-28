@@ -161,3 +161,14 @@ fn clear_and_built_in_restores_drop_earlier_binds() {
     assert_eq!(config.binds.len(), 1);
     assert_eq!(config.binds[0].origin.line, 3);
 }
+
+#[test]
+fn option_semicolon_opens_the_path_picker_at_the_cursor() {
+    let chords = default_chords();
+    let bound: Vec<&str> = chords
+        .iter()
+        .filter(|(chord, _)| chord == "alt+;")
+        .map(|(_, id)| id.as_str())
+        .collect();
+    assert_eq!(bound, ["insert-path"]);
+}
