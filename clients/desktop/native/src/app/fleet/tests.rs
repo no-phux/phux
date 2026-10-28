@@ -256,5 +256,6 @@ mod dashboard;
 mod disclosure;
 mod machines;
 mod navigation;
+mod search;
 mod sidebar;
 mod switcher;
