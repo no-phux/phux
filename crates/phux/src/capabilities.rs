@@ -8,6 +8,8 @@ use phux_protocol::kinds::{
 };
 use serde_json::{Value, json};
 
+mod error_codes;
+
 const CAPABILITIES_SCHEMA_VERSION: u8 = 1;
 
 /// The build-time kind catalog (ADR-0125): the server-level and substrate
@@ -187,6 +189,7 @@ fn document(meta: &usage::spec::CommandMeta<'_>, mcp: Option<&Path>) -> Value {
             "default_scope": "full"
         },
         "json_contracts": schema_contracts(),
+        "error_codes": error_codes::catalogue(),
         "kinds": kinds_catalog(),
         "mcp": {
             "available": available,
