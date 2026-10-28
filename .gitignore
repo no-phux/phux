@@ -27,6 +27,15 @@ flamegraph.svg
 .beads.gate.lock
 # Local import-cache stamp (source size + mtime), never meant to be tracked.
 .beads/.auto-import-issues.jsonl
+# Machine-local beads data. Hooks, README, and config.yaml stay tracked.
+.beads/issues.jsonl
+.beads/interactions.jsonl
+.beads/dolt-backup.json
+.beads/dolt-config.log
+.beads/hooks.log
+.beads/identity.toml
+.beads/routes.jsonl
+.beads/metadata.json
 
 # bv (beads viewer) local config and caches
 .bv/
