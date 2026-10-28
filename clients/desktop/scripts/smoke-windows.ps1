@@ -245,6 +245,11 @@ try {
     [PhuxDesktopGui]::Key(17, $false); [PhuxDesktopGui]::Key(16, $false); [PhuxDesktopGui]::Press(82)
     [PhuxDesktopGui]::Key(16, $true); [PhuxDesktopGui]::Key(17, $true)
     Wait-Desktop 'UI reconnect attached a new epoch' { (Get-ConnectionEpoch) -gt $epoch }
+    # Attached is a control-plane event, not proof the replacement view has
+    # painted and bound its input epoch. Print a fresh marker through the CLI;
+    # seeing it in the real window proves that first frame reached the screen.
+    Invoke-SmokeCli @('send-keys', $session, (Get-MarkerCommand 'RECONNECTREADY'), 'Enter') | Out-Null
+    Assert-Rendered 'reconnect-ready' 'PHUXRECONNECTREADY'
     Send-Shell (Get-MarkerCommand 'RECONNECTED')
     Assert-Rendered 'reconnected' 'PHUXRECONNECTED'
     Stop-SmokeDesktop

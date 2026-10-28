@@ -195,6 +195,15 @@ test("Windows policy filters cannot silently pass zero tests and diagnostics nev
   expect(policy).toContain('$listed.Contains("${case}: test")');
   expect(policy).toContain("--exact");
   expect(policy).toContain("test result: ok\\. 1 passed; 0 failed; 0 ignored;");
+  expect(policy).toContain(
+    "connection::home::probe_tests::topology_before_seed_cannot_select_the_recent_session_as_home",
+  );
+  expect(policy).toContain(
+    "connection::home::probe_tests::an_old_refusal_cannot_release_a_reconnected_probe_before_its_seed",
+  );
+  expect(policy).toContain(
+    "connection::home::probe_tests::a_not_ready_probe_rearms_the_wake_for_its_seed",
+  );
   const predicates =
     steps(job(windows, "windows"))
       .map(run)
@@ -228,6 +237,16 @@ test("Windows policy filters cannot silently pass zero tests and diagnostics nev
   expect(clipboard).toContain("Get-FileHash -Algorithm SHA256");
   expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetFileDropList");
   expect(clipboard).toContain("[Windows.Forms.Clipboard]::SetImage");
+  const connected = smoke.indexOf("(Get-ConnectionEpoch) -gt $epoch");
+  const injected = smoke.indexOf(
+    "@('send-keys', $session, (Get-MarkerCommand 'RECONNECTREADY'), 'Enter')",
+  );
+  const ready = smoke.indexOf("Assert-Rendered 'reconnect-ready' 'PHUXRECONNECTREADY'");
+  const typed = smoke.indexOf("Send-Shell (Get-MarkerCommand 'RECONNECTED')");
+  expect(connected).toBeGreaterThan(0);
+  expect(injected).toBeGreaterThan(connected);
+  expect(ready).toBeGreaterThan(injected);
+  expect(typed).toBeGreaterThan(ready);
 });
 
 test("desktop release workflows preserve legacy targets and require Windows at the cutover", () => {
