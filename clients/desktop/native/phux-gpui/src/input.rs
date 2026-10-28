@@ -168,6 +168,9 @@ pub struct TerminalInput {
     /// OSC 8 and row URLs for the frame last painted, plus a Command-click
     /// captured from that frame.
     painted_links: link::PaintedLinks,
+    /// Where the pointer last rested over the grid, and whether Command was
+    /// held: a link under it is underlined while Command is down.
+    hover: Option<(Point<Pixels>, bool)>,
     /// The cell the last motion event already delivered. A later move inside
     /// that cell is not a new event.
     last_motion_cell: Option<(u16, u16)>,
@@ -225,6 +228,7 @@ impl TerminalInput {
             autoscroll_run: 0,
             reported_button: None,
             painted_links: link::PaintedLinks::default(),
+            hover: None,
             last_motion_cell: None,
             scroll_remainder: 0.0,
             scroll_fraction: None,

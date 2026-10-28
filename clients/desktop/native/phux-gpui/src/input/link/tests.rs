@@ -1,6 +1,6 @@
 use super::{
     Identity, LINK_REFUSED, LinkAdmit, PaintedLinks, admit_path, admit_url, allowed, link_in,
-    url_around,
+    link_span, url_around,
 };
 use phux_client_core::grid::{Cell, CellMetadata, GridBuffer, GridDamage};
 use phux_client_runtime::publication::{Cursor, FrameColors, GridFrame, Scrollbar};
@@ -26,6 +26,24 @@ fn keeps_balanced_parentheses_and_rejects_bare_schemes() {
         Some("https://en.wikipedia.org/wiki/Rust_(language)")
     );
     assert_eq!(url_around("https:// nothing", 3), None);
+}
+
+#[test]
+fn a_link_spans_exactly_the_cells_command_would_open() {
+    let text = text_frame(&["see https://phux.dev/docs, now"], 1, 0);
+    assert_eq!(
+        link_span(&text, 0, 10),
+        Some((4, 25)),
+        "the URL, not its comma"
+    );
+    assert_eq!(link_span(&text, 0, 1), None, "prose is not a link");
+    let osc8 = osc8_frame("https://phux.dev", 1);
+    assert_eq!(
+        link_span(&osc8, 0, 0),
+        Some((0, 1)),
+        "only the linked cells"
+    );
+    assert_eq!(link_span(&osc8, 0, 1), None);
 }
 
 #[test]

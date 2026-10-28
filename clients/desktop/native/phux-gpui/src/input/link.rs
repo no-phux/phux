@@ -59,8 +59,42 @@ fn row_text(frame: &GridFrame, row: u16) -> (String, Vec<usize>) {
     (text, starts)
 }
 
+/// The columns `[start, end)` the link under `row`/`col` covers, for drawing
+/// it: an OSC 8 run of cells naming the same target, else a URL's span in
+/// the row's text.
+pub fn link_span(frame: &GridFrame, row: u16, col: u16) -> Option<(u16, u16)> {
+    if let Some(uri) = hyperlink(frame, row, col) {
+        if !allowed(&uri) {
+            return None;
+        }
+        let same = |at: u16| hyperlink(frame, row, at).as_deref() == Some(uri.as_str());
+        let mut start = col;
+        while start > 0 && same(start - 1) {
+            start -= 1;
+        }
+        let mut end = col + 1;
+        while end < frame.cols && same(end) {
+            end += 1;
+        }
+        return Some((start, end));
+    }
+    let (text, starts) = row_text(frame, row);
+    let (from, to) = url_span(&text, *starts.get(usize::from(col))?)?;
+    let start = starts.iter().position(|&at| at >= from)?;
+    let end = starts
+        .iter()
+        .position(|&at| at >= to)
+        .unwrap_or(starts.len());
+    Some((u16::try_from(start).ok()?, u16::try_from(end).ok()?))
+}
+
 /// The URL whose span contains byte offset `at`.
 pub fn url_around(text: &str, at: usize) -> Option<String> {
+    url_span(text, at).map(|(start, end)| text[start..end].to_owned())
+}
+
+/// The byte range of the URL containing byte offset `at`.
+fn url_span(text: &str, at: usize) -> Option<(usize, usize)> {
     for scheme in SCHEMES {
         for (start, _) in text.match_indices(scheme) {
             if start > at {
@@ -70,7 +104,7 @@ pub fn url_around(text: &str, at: usize) -> Option<String> {
             let len = rest.find(STOP).unwrap_or(rest.len());
             let url = tidy(&rest[..len]);
             if at < start + url.len() && url.len() > scheme.len() {
-                return Some(url.to_owned());
+                return Some((start, start + url.len()));
             }
         }
     }
@@ -351,6 +385,12 @@ impl PaintedLinks {
         let (stamp, frame) = self.painted.as_ref()?;
         let viewport = (*stamp, frame.cols, frame.rows, frame.scrollbar.offset);
         Some((link_in(frame, row, col)?, viewport))
+    }
+
+    /// The columns the painted link under `(row, col)` covers.
+    pub(super) fn span(&self, row: u16, col: u16) -> Option<(u16, u16)> {
+        let (_, frame) = self.painted.as_ref()?;
+        link_span(frame, row, col)
     }
 
     /// Capture the painted link under `(row, col)`.
