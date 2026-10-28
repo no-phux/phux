@@ -57,6 +57,18 @@ pub struct ControlOptions {
     pub image_protocols: ImageProtocolSet,
     /// Where the connection driver puts an inbound frame.
     pub deliver_inbound: InboundDelivery,
+    /// How predictive echo is drawn. Applied to every engine this plane starts.
+    pub prediction_style: PredictionStyle,
+}
+
+/// How a guess at what the server will echo is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PredictionStyle {
+    /// Underlined, as a terminal client marks a guess.
+    #[default]
+    Underline,
+    /// Plain text, for a client that would rather typing read as typed.
+    Plain,
 }
 
 /// Who re-establishes session and terminal admission after transport loss.
@@ -111,6 +123,7 @@ impl Default for ControlOptions {
             bootstrap_limits: BootstrapLimits::default(),
             image_protocols: ImageProtocolSet::new(),
             deliver_inbound: InboundDelivery::Fed,
+            prediction_style: PredictionStyle::Underline,
         }
     }
 }

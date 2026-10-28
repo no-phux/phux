@@ -154,7 +154,10 @@ impl Owner {
         if full {
             frame.buffer.row_dirty.fill(true);
         }
-        self.presentation_mut(id)?.predictor.apply(
+        let underline = self.prediction_underline;
+        let presentation = self.presentation_mut(id)?;
+        presentation.predictor.set_underline(underline);
+        presentation.predictor.apply(
             frame.cols,
             frame.rows,
             alternate,

@@ -262,6 +262,13 @@ impl EngineHandle {
         self.request(|reply| Command::Query(Query::PredictText(terminal_id.clone(), text, reply)))?
     }
 
+    /// Draw predictive echo underlined (the default) or as plain text. Takes
+    /// effect from the next publication of each terminal.
+    #[cfg(feature = "engine")]
+    pub fn set_prediction_underline(&self, underline: bool) -> Result<(), EngineError> {
+        self.request(|reply| Command::Query(Query::PredictionUnderline(underline, reply)))
+    }
+
     /// Clear local predictive presentation and republish authority.
     #[cfg(feature = "engine")]
     pub fn clear_predictions(&self, terminal_id: &ResourceId) -> Result<bool, EngineError> {

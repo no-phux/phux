@@ -16,6 +16,9 @@ pub struct Predictor {
     viewport: (u16, u16),
     /// Rows overlaid in the last publication; restoring their base grid is damage too.
     displayed_rows: Vec<u16>,
+    /// Whether guesses are drawn underlined, as a terminal client marks them,
+    /// or as plain text for a client that would rather they read as typed.
+    underline: bool,
 }
 
 impl Predictor {
@@ -27,7 +30,13 @@ impl Predictor {
             state: PredictionState::new(PredictiveConfig::enabled(), viewport.0, viewport.1),
             viewport,
             displayed_rows: Vec::new(),
+            underline: true,
         }
+    }
+
+    /// Draw guesses underlined (the default) or as plain text.
+    pub const fn set_underline(&mut self, underline: bool) {
+        self.underline = underline;
     }
 
     /// Resize the viewport ahead of the next [`Self::apply`].
@@ -100,7 +109,7 @@ impl Predictor {
         }
         let predictions = self.state.displayable(now_ms).cloned().collect::<Vec<_>>();
         for prediction in &predictions {
-            overlay(prediction, cols, buffer);
+            overlay(prediction, cols, buffer, self.underline);
             if let Some(dirty) = buffer.row_dirty.get_mut(usize::from(prediction.row)) {
                 *dirty = true;
                 self.displayed_rows.push(prediction.row);
@@ -151,7 +160,7 @@ fn cell_text(cell: &Cell, arena: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn overlay(prediction: &Prediction, cols: u16, buffer: &mut GridBuffer) {
+fn overlay(prediction: &Prediction, cols: u16, buffer: &mut GridBuffer, underline: bool) {
     if prediction.width == 0 {
         return;
     }
@@ -167,7 +176,9 @@ fn overlay(prediction: &Prediction, cols: u16, buffer: &mut GridBuffer) {
     if let Some(cell) = buffer.cells.get_mut(index) {
         cell.utf8_offset = offset;
         cell.utf8_len = len;
-        cell.underline = libghostty_vt::style::Underline::Single as u8;
+        if underline {
+            cell.underline = libghostty_vt::style::Underline::Single as u8;
+        }
     }
     if prediction.width == 2
         && let Some(tail) = buffer.cells.get_mut(index + 1)
@@ -205,6 +216,26 @@ mod tests {
         assert!(!cursor.visible);
         assert!(buffer.cells.is_empty());
         assert!(buffer.utf8.is_empty());
+    }
+
+    #[test]
+    fn guesses_are_underlined_unless_a_client_asks_for_plain_text() {
+        let guess = |underline: bool| {
+            let mut predictor = Predictor::new(4, 2);
+            predictor.set_underline(underline);
+            predictor.predict_text("Z", (0, 0), false, 1);
+            let mut cursor = Cursor::default();
+            let mut buffer = GridBuffer {
+                cells: vec![Cell::default(); 8],
+                row_dirty: vec![false; 2],
+                ..GridBuffer::default()
+            };
+            predictor.apply(4, 2, false, &mut cursor, &mut buffer, 1);
+            assert_eq!(buffer.cell_text(0), b"Z");
+            buffer.cells[0].underline
+        };
+        assert_eq!(guess(true), libghostty_vt::style::Underline::Single as u8);
+        assert_eq!(guess(false), 0);
     }
 
     #[test]

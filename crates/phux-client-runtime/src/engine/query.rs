@@ -40,6 +40,8 @@ pub(super) enum Query {
     #[cfg(feature = "engine")]
     ClearPredictions(ResourceId, Sender<Result<bool, EngineError>>),
     #[cfg(feature = "engine")]
+    PredictionUnderline(bool, Sender<()>),
+    #[cfg(feature = "engine")]
     Republish(ResourceId, Sender<Result<bool, EngineError>>),
     #[cfg(feature = "engine")]
     ReplicaInfo(ResourceId, Sender<Result<ReplicaInfo, EngineError>>),
