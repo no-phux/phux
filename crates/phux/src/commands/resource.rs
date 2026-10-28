@@ -114,8 +114,15 @@ fn run_wait(
             Some(Ok(id)) => id,
             Some(Err(code)) => return code,
             None => {
-                error!("resource wait timed out resolving {target}");
-                return ExitCode::from(EXIT_WAIT_TIMEOUT);
+                return json_err::emit(
+                    json,
+                    &CliError::new(
+                        codes::TIMED_OUT,
+                        format!("resource wait timed out resolving {target}"),
+                        "raise `--timeout`, or check the server with `phux status`",
+                    ),
+                    EXIT_WAIT_TIMEOUT,
+                );
             }
         };
         let wait =

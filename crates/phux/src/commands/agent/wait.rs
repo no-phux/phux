@@ -265,11 +265,15 @@ async fn report_any(socket_path: &Path, result: &FleetAgentWaitResult, json: boo
     if result.satisfied() {
         ExitCode::SUCCESS
     } else {
-        error!(
-            "agent wait --any timed out; {} agent(s) were tracked and no matching transition was observed",
-            result.agents,
-        );
-        ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
+        timed_out(
+            json,
+            format!(
+                "agent wait --any timed out; {} agent(s) were tracked and no matching \
+                 transition was observed",
+                result.agents,
+            ),
+            "raise `--timeout`, or read each agent's level with `phux agent list`",
+        )
     }
 }
 
@@ -341,23 +345,37 @@ fn report(
     }
     // A pane already resting in a target state times out by design; say so.
     if result.baseline == result.last {
-        error!(
-            "agent wait timed out; {label} held '{}' for the whole wait and never \
-             transitioned ({} pushes, {} polls). A level read is `phux agent show` — this \
-             verb reports transitions, so that a crashed agent resting at 'idle' cannot \
-             pass for a finished one.",
-            result.last.as_str(),
-            result.pushes,
-            result.polls,
+        return timed_out(
+            json,
+            format!(
+                "agent wait timed out; {label} held '{}' for the whole wait and never \
+                 transitioned ({} pushes, {} polls)",
+                result.last.as_str(),
+                result.pushes,
+                result.polls,
+            ),
+            "a level read is `phux agent show`: this verb reports transitions, so that a \
+             crashed agent resting at 'idle' cannot pass for a finished one",
         );
-    } else {
-        error!(
+    }
+    timed_out(
+        json,
+        format!(
             "agent wait timed out; {label} last observed '{}' after {} transition(s)",
             result.last.as_str(),
             result.edges,
-        );
-    }
-    ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
+        ),
+        "raise `--timeout`, or read the agent's level with `phux agent show`",
+    )
+}
+
+/// A wait that ran out of budget: `timed_out` under `--json`, prose otherwise.
+pub(super) fn timed_out(json: bool, message: String, remedy: &str) -> ExitCode {
+    json_err::emit(
+        json,
+        &json_err::CliError::new(json_err::codes::TIMED_OUT, message, remedy),
+        crate::exit_codes::EXIT_WAIT_TIMEOUT,
+    )
 }
 
 /// The detector's report for `terminal`, with `record` folded in as the

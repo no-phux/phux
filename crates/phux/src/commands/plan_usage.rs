@@ -96,7 +96,11 @@ pub(crate) fn run_usage(
     }
     drop(store);
     if json {
-        outln!("{}", serde_json::to_string(&snapshot).unwrap_or_default());
+        // `schema` names the published snapshot format; `schema_version` is the
+        // CLI document version every `--json` verb carries.
+        let mut document = serde_json::json!(snapshot);
+        document["schema_version"] = 1.into();
+        outln!("{document}");
     } else {
         out!("{}", phux_usage::render_text(&snapshot, now_ms));
     }

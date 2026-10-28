@@ -34,6 +34,25 @@ fn only_the_workload_verb_refuses_key_material_before_the_separator() {
     assert_eq!(redacted, "error: unexpected argument '<redacted>'");
 }
 
+/// A JSON usage error names the missing argument in `message`, not only in
+/// the remedy, and plain headers pass through untouched.
+#[test]
+fn json_usage_message_names_the_listed_subject() {
+    let (message, rest) = crate::parse_error::complete_failure_header(
+        "the following required arguments were not provided:",
+        "  <TARGET>\n  <KEYS>\n\nUsage: phux tag ls <TARGET>\n",
+    );
+    assert_eq!(
+        message,
+        "the following required arguments were not provided: <TARGET>, <KEYS>"
+    );
+    assert_eq!(rest, "\nUsage: phux tag ls <TARGET>\n");
+    let (message, rest) =
+        crate::parse_error::complete_failure_header("unexpected argument 'x' found", "\nUsage\n");
+    assert_eq!(message, "unexpected argument 'x' found");
+    assert_eq!(rest, "\nUsage\n");
+}
+
 /// Key material on a command line is caught by its PEM markers before
 /// anything parses, and a bare base64 line is redacted from usage errors
 /// without mangling the usage text around it.

@@ -232,15 +232,19 @@ fn report(label: &str, outcome: &PromptOutcome, elapsed_ms: u64, json: bool) -> 
         .wait
         .as_ref()
         .map_or(outcome.pre_submit_state, |wait| wait.last);
-    error!(
-        "prompt delivered to {label} (operation {}), but no transition into a target \
-         state was observed before the timeout; it last held '{}'. A level read is `phux \
-         agent show` — this gate requires a transition, so an agent that crashed while \
-         resting at 'idle' cannot pass for one that finished. Read the pane with `phux \
-         agent explain {label}` before resending: an acknowledged prompt is in the tty \
-         input queue, and resending is a duplicate turn.",
-        outcome.operation_id,
-        last.as_str(),
-    );
-    ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
+    super::wait::timed_out(
+        json,
+        format!(
+            "prompt delivered to {label} (operation {}), but no transition into a target \
+             state was observed before the timeout; it last held '{}'",
+            outcome.operation_id,
+            last.as_str(),
+        ),
+        &format!(
+            "read the pane with `phux agent explain {label}` before resending: an \
+             acknowledged prompt is in the tty input queue, and resending is a duplicate \
+             turn. A level read is `phux agent show`; this gate requires a transition, so \
+             an agent that crashed while resting at 'idle' cannot pass for one that finished"
+        ),
+    )
 }

@@ -308,3 +308,7 @@ pub(crate) const MISSION_START_FAILED: &str = "mission_start_failed";
 pub(crate) const MAIL_NOT_FOUND: &str = "mail_not_found";
 /// Renewal named an expired, foreign or superseded lease. Exit 1.
 pub(crate) const CLAIM_NOT_FOUND: &str = "claim_not_found";
+/// A bounded `run`, `wait`, `watch`, or `agent wait` gave up before its
+/// condition held. Exit 124, or 125 for `run`; `error.recovery` says what a
+/// timed-out `run` delivered.
+pub(crate) const TIMED_OUT: &str = "timed_out";

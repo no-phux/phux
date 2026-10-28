@@ -131,6 +131,28 @@ fn flush_base64_run(out: &mut String, run: &mut String) {
     run.clear();
 }
 
+/// A parser header that ends in `:` lists its subject on the indented lines
+/// after it ("required arguments were not provided:\n  <TARGET>"). A JSON
+/// `message` is one line, so fold that list into it and out of the context.
+pub(crate) fn complete_failure_header<'a>(header: &str, context: &'a str) -> (String, &'a str) {
+    let Some(stem) = header.strip_suffix(':') else {
+        return (header.to_owned(), context);
+    };
+    let mut items = Vec::new();
+    let mut rest = context;
+    while let Some(line) = rest.lines().next() {
+        if !line.starts_with(char::is_whitespace) || line.trim().is_empty() {
+            break;
+        }
+        items.push(line.trim());
+        rest = rest.get(line.len() + 1..).unwrap_or("");
+    }
+    if items.is_empty() {
+        return (header.to_owned(), context);
+    }
+    (format!("{stem}: {}", items.join(", ")), rest)
+}
+
 pub(crate) fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_, '_>) -> ExitCode {
     let words: Vec<String> = argv
         .iter()
@@ -156,17 +178,18 @@ pub(crate) fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_
             let (header, context) = rendered.split_once('\n').unwrap_or((&rendered, ""));
             let message = header.strip_prefix("error: ").unwrap_or(header);
             let hint = misplaced_flag_hint(&err, &words);
+            let (json_message, json_context) = complete_failure_header(message, context);
             if json_output_requested() {
                 return commands::json_err::emit(
                     true,
                     &commands::json_err::CliError::new(
                         commands::json_err::codes::USAGE_ERROR,
-                        message,
+                        json_message,
                         hint.as_deref().unwrap_or_else(|| {
-                            if context.trim().is_empty() {
+                            if json_context.trim().is_empty() {
                                 "run `phux --help` for usage"
                             } else {
-                                context.trim()
+                                json_context.trim()
                             }
                         }),
                     ),
