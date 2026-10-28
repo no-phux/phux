@@ -249,13 +249,6 @@ condition never held. A timed-out `run` carries `error.recovery`:
 `not_applied` means nothing reached the pane; otherwise the command may
 still be running, so read the pane instead of sending it again.
 
-A bounded `run`, `wait`, `watch`, `resource wait`, or `agent wait` that
-runs out of time reports `timed_out` with exit 124 (125 for `run`). `wait`
-still prints the pane's last screen on stdout, so you can see why the
-condition never held. A timed-out `run` carries `error.recovery`:
-`not_applied` means nothing reached the pane; otherwise the command may
-still be running, so read the pane instead of sending it again.
-
 Mutation failures can also carry additive `error.recovery` facts:
 
 ```json
