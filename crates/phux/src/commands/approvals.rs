@@ -47,25 +47,37 @@ pub(crate) fn run_approvals(json: bool, socket: Option<PathBuf>) -> ExitCode {
 }
 
 /// `phux approve ID [--yes]`: release one held action.
-pub(crate) fn run_approve(id: &str, yes: bool, socket: Option<PathBuf>) -> ExitCode {
-    run_decision(id, Decision::Approve, yes, socket)
+pub(crate) fn run_approve(id: &str, yes: bool, json: bool, socket: Option<PathBuf>) -> ExitCode {
+    run_decision(id, Decision::Approve, yes, json, socket)
 }
 
 /// `phux deny ID`: refuse one held action. Denying releases nothing, so it
 /// never asks.
-pub(crate) fn run_deny(id: &str, socket: Option<PathBuf>) -> ExitCode {
-    run_decision(id, Decision::Deny, true, socket)
+pub(crate) fn run_deny(id: &str, json: bool, socket: Option<PathBuf>) -> ExitCode {
+    run_decision(id, Decision::Deny, true, json, socket)
 }
 
-fn run_decision(id: &str, decision: Decision, yes: bool, socket: Option<PathBuf>) -> ExitCode {
+fn run_decision(
+    id: &str,
+    decision: Decision,
+    yes: bool,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
     let verb = decision.as_str();
     let Some(approval) = ApprovalId::parse(id) else {
-        error!(
-            "{verb}: {id:?} is not an approval id (32 lowercase hex digits; see `phux approvals`)"
+        return json_err::emit(
+            json,
+            &CliError::new(
+                codes::USAGE_ERROR,
+                format!("{verb}: {id:?} is not an approval id (32 lowercase hex digits)"),
+                "`phux approvals` lists the pending ids",
+            ),
+            2,
         );
-        return ExitCode::from(2);
     };
-    if let Err(code) = confirm::confirmed(yes, &format!("approve held action {approval}")) {
+    if let Err(code) = confirm::confirmed_for(json, yes, &format!("approve held action {approval}"))
+    {
         return code;
     }
     let socket_path = socket.unwrap_or_else(default_socket_path);
@@ -77,15 +89,20 @@ fn run_decision(id: &str, decision: Decision, yes: bool, socket: Option<PathBuf>
     rt.block_on(async {
         let mut conn = match target.connect().await {
             Ok(conn) => conn,
-            Err(err) => return target.report_unreachable(false, &err, verb),
+            Err(err) => return target.report_unreachable(json, &err, verb),
         };
         match phux_client::approvals::decide(&mut conn, approval, decision).await {
+            Ok(()) if json => crate::output::json(&serde_json::json!({
+                "schema_version": 1,
+                "approval": approval.to_string(),
+                "decision": verb,
+            })),
             Ok(()) => {
                 outln!("phux: {}d {approval}", verb.trim_end_matches('e'));
                 ExitCode::SUCCESS
             }
-            Err(ApprovalError::Transport(err)) => target.report_unreachable(false, &err, verb),
-            Err(err) => json_err::emit(false, &approval_error(verb, &err), 2),
+            Err(ApprovalError::Transport(err)) => target.report_unreachable(json, &err, verb),
+            Err(err) => json_err::emit(json, &approval_error(verb, &err), 2),
         }
     })
 }
@@ -177,14 +194,17 @@ mod tests {
 
     #[test]
     fn a_malformed_id_is_a_usage_error_before_any_dial() {
-        assert_eq!(
-            run_decision(
-                "nope",
-                Decision::Deny,
-                true,
-                Some(PathBuf::from("/nonexistent/phux.sock"))
-            ),
-            ExitCode::from(2)
-        );
+        for json in [false, true] {
+            assert_eq!(
+                run_decision(
+                    "nope",
+                    Decision::Deny,
+                    true,
+                    json,
+                    Some(PathBuf::from("/nonexistent/phux.sock"))
+                ),
+                ExitCode::from(2)
+            );
+        }
     }
 }

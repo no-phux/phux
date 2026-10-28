@@ -8,6 +8,7 @@ use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
 use phux_server::runtime::default_socket_path;
 
+use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use crate::commands::{cli_runtime, report_no_server, warn_interleaved_degradation};
 use crate::commands::{confirm, partial};
@@ -28,6 +29,7 @@ pub(crate) fn run(
     stop_server: bool,
     key: Option<IdempotencyKey>,
     yes: bool,
+    json: bool,
     server: ServerSpec,
 ) -> ExitCode {
     if stop_server {
@@ -36,8 +38,8 @@ pub(crate) fn run(
     // No target and no `--server` is unreachable: TARGET is
     // `required_unless = "--server"`, so the parser refuses it first.
     target.map_or(ExitCode::FAILURE, |target| {
-        run_kill(&target, key, server, |action| {
-            confirm::confirmed(yes, action)
+        run_kill_reporting(&target, key, json, server, |action| {
+            confirm::confirmed_for(json, yes, action)
         })
     })
 }
@@ -166,21 +168,39 @@ pub(crate) fn run_kill(
     server: ServerSpec,
     confirm: impl FnOnce(&str) -> Result<(), ExitCode>,
 ) -> ExitCode {
+    run_kill_reporting(target, key, false, server, confirm)
+}
+
+/// [`run_kill`] reporting on `--json`'s channels under `json`.
+pub(crate) fn run_kill_reporting(
+    target: &str,
+    key: Option<IdempotencyKey>,
+    json: bool,
+    server: ServerSpec,
+    confirm: impl FnOnce(&str) -> Result<(), ExitCode>,
+) -> ExitCode {
     let selector = match selector::parse(target) {
         Ok(sel) => sel,
         Err(err) => {
-            error!("invalid target '{target}': {err}");
-            return ExitCode::FAILURE;
+            return json_err::emit(
+                json,
+                &CliError::new(
+                    codes::INVALID_SELECTOR,
+                    format!("invalid target '{target}': {err}"),
+                    "see `phux help targets` for the selector grammar",
+                ),
+                crate::exit_codes::EXIT_FAILURE,
+            );
         }
     };
-    let (rt, server) = match server.prepare("kill", false) {
+    let (rt, server) = match server.prepare("kill", json) {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
     if let Err(code) = confirm(&format!("kill {target}")) {
         return code;
     }
-    rt.block_on(kill_selected(target, &selector, key, &server))
+    rt.block_on(kill_selected(target, &selector, key, json, &server))
 }
 
 /// Resolve `selector` against a fresh snapshot of `server` and kill what it
@@ -189,16 +209,17 @@ async fn kill_selected(
     target: &str,
     selector: &selector::Selector,
     key: Option<IdempotencyKey>,
+    json: bool,
     server: &ServerTarget,
 ) -> ExitCode {
     let mut conn = match server.connect().await {
         Ok(conn) => conn,
-        Err(err) => return server.report_unreachable(false, &err, "kill"),
+        Err(err) => return server.report_unreachable(json, &err, "kill"),
     };
     let mut notices = Vec::new();
     let result = phux_client::kill::selected(&mut conn, selector, target, key, &mut notices).await;
     drop(conn);
-    report_selected(result, &notices, server, target)
+    report_selected(result, &notices, server, target, json)
 }
 
 /// Print snapshot and interleaved notices, then map [`KillError`] onto the
@@ -208,6 +229,7 @@ fn report_selected(
     notices: &[String],
     server: &ServerTarget,
     target: &str,
+    json: bool,
 ) -> ExitCode {
     for notice in notices {
         warn!("{} saw only part of the fleet — {notice}", "kill");
@@ -217,6 +239,13 @@ fn report_selected(
             for message in done.interleaved {
                 warn!("partial results — {message}");
             }
+            if json {
+                return crate::output::json(&serde_json::json!({
+                    "schema_version": KILL_SCHEMA_VERSION,
+                    "target": target,
+                    "killed": done.killed,
+                }));
+            }
             if let Some(killed) = done.killed {
                 out!("{}", summary_line(killed, target));
             }
@@ -225,6 +254,9 @@ fn report_selected(
         Err(err) => {
             for message in err.interleaved() {
                 warn!("partial results — {message}");
+            }
+            if json {
+                return report_kill_error_json(err, server, target);
             }
             match err {
                 KillError::UnsupportedKeyedSignal => {
@@ -268,6 +300,62 @@ fn report_selected(
                 KillError::Attach(err) => server.report_unreachable(false, &err, "kill"),
             }
         }
+    }
+}
+
+/// Version of the `kill --json` document. Additive fields do not bump it.
+pub(crate) const KILL_SCHEMA_VERSION: u8 = 1;
+
+/// [`report_selected`]'s failure under `--json`: one error document whose
+/// code names the class, with the server's reason in the message.
+fn report_kill_error_json(err: KillError, server: &ServerTarget, target: &str) -> ExitCode {
+    let refused = |code: &'static str, message: String, remedy: &str| {
+        json_err::emit(true, &CliError::new(code, message, remedy), 2)
+    };
+    match err {
+        KillError::UnsupportedKeyedSignal => {
+            crate::commands::spawn::unsupported_server(true, ServerFeature::KeyedSignal)
+        }
+        KillError::NoSuchTarget { target } => json_err::emit(
+            true,
+            &CliError::new(
+                codes::NO_SUCH_TARGET,
+                format!("no such target: {target}"),
+                "run `phux ls` to see live sessions and panes",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
+        KillError::Unresolved {
+            target,
+            degradation,
+        } => partial::report_target_miss_for(true, Some(&target), &degradation),
+        KillError::Refused { label, message, .. } => refused(
+            "server_error",
+            format!("kill refused for {label}: {message}"),
+            "run `phux ls` to see the current state",
+        ),
+        KillError::Unexpected { label, message, .. } => refused(
+            "unexpected_reply",
+            format!("{label}: {message}"),
+            "run `phux ls` to see what was killed",
+        ),
+        KillError::PaneRefusals { messages, .. } => refused(
+            "server_error",
+            messages.join("; "),
+            "run `phux ls` to see which panes are still running",
+        ),
+        err @ KillError::EmptySessionUnsupported { .. } => refused(
+            codes::SERVER_TOO_OLD,
+            err.to_string(),
+            "upgrade the server, or kill its panes instead",
+        ),
+        KillError::Org(err) => refused(
+            err.code(),
+            format!("kill {target}: {err}"),
+            "run `phux ls` to see the current state",
+        ),
+        KillError::Agent(err) => crate::commands::report_agent_resolve_error(true, &err, false),
+        KillError::Attach(err) => server.report_unreachable(true, &err, "kill"),
     }
 }
 
@@ -323,7 +411,7 @@ mod tests {
             remote: Some("mini".to_owned()),
         };
         assert_eq!(
-            run(None, true, None, false, spec),
+            run(None, true, None, false, false, spec),
             std::process::ExitCode::from(2)
         );
         assert!(REMOTE_SHUTDOWN_REFUSAL.contains("local-socket only"));
