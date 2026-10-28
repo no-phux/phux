@@ -47,9 +47,9 @@ A binary run from `target/` uses the `dev` profile and its own socket.
 `cargo install` puts `phux` on `PATH` under the `default` profile. See
 [build from source](./install.md#build-from-source).
 
-On Windows, the CLI, server, and terminal UI run under WSL 2 only. A
-native Windows build is not published, including the desktop app.
-PowerShell launchers call into that WSL install. See
+On Windows, the CLI, server, and terminal UI run under WSL 2 only.
+PowerShell launchers call into that WSL install. Desktop 0.50.0 and later
+also provide a native Windows app, backed by the WSL coordinator. See
 [Windows (WSL)](./install.md#windows-wsl) and
 [requirements](./install.md#requirements).
 
