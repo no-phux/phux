@@ -174,7 +174,13 @@ pub(crate) fn state_dir() -> PathBuf {
 }
 
 pub(crate) fn local_machine_label() -> &'static str {
-    if cfg!(windows) { "WSL" } else { "This Mac" }
+    if cfg!(windows) {
+        "WSL"
+    } else if cfg!(target_os = "macos") {
+        "This Mac"
+    } else {
+        "This Computer"
+    }
 }
 
 /// WSL owns a different filesystem even when its server is this app's home.

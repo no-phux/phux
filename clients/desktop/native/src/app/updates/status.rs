@@ -207,6 +207,9 @@ impl Updater {
             UpdateAction::Both => {
                 "Downloads and verifies Desktop. The local server updates when you choose to restart. Sessions keep running."
             }
+            UpdateAction::Desktop { staged: true } if cfg!(target_os = "linux") => {
+                "Installed. Restart now, or it opens the next time you launch. Sessions keep running."
+            }
             UpdateAction::Desktop { staged: true } => {
                 "Restart now, or it installs the next time you quit. Sessions keep running."
             }

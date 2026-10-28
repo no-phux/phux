@@ -151,19 +151,19 @@ fn windows_bundle_requires_its_layout_identity_and_msvc_target() {
 
 #[test]
 fn windows_manual_update_names_the_signed_installer_and_quotes_the_destination() {
-    let remedy = windows_install_remedy(Channel::Next, None);
+    let remedy = install_remedy(Channel::Next, None);
     assert!(remedy.contains("not supported on Windows"));
     assert!(remedy.contains("PowerShell"));
     assert!(remedy.contains("minisign"));
     assert!(remedy.contains("verifies release signatures"));
     assert!(remedy.contains("main/scripts/install-desktop-windows.ps1"));
     assert!(remedy.ends_with("-Channel next"));
-    let remedy = windows_install_remedy(
+    let remedy = install_remedy(
         Channel::Stable,
         Some(Path::new("C:/custom apps/person's desktop/phux-desktop")),
     );
     assert!(remedy.ends_with("-InstallDir 'C:/custom apps/person''s desktop/phux-desktop'"));
-    let remedy = windows_install_remedy(
+    let remedy = install_remedy(
         Channel::Stable,
         Some(Path::new("C:/custom apps/person's desktop/current")),
     );
@@ -183,35 +183,20 @@ fn windows_never_runs_the_macos_swap_or_staging_installer() {
     clear_stale_stage(path);
 }
 
-#[test]
-fn linux_manual_update_requires_release_signatures() {
-    let remedy = linux_install_remedy(Channel::Next, None);
-    assert!(remedy.contains("PHUX_REQUIRE_SIGNATURE=1"));
-    assert!(remedy.contains("--desktop --channel next"));
-    assert!(remedy.contains("minisign"));
-    let bundle = Path::new("/custom apps/person's desktop/phux-desktop");
-    let remedy = linux_install_remedy(Channel::Stable, Some(bundle));
-    let expected = crate::attach::quote_paths(&[bundle.parent().unwrap().to_path_buf()]);
-    assert!(remedy.ends_with(&format!("--applications-dir {expected}")));
-}
-
 #[cfg(target_os = "linux")]
 #[test]
-fn linux_never_runs_the_macos_swap_or_staging_installer() {
-    let path = Path::new("/does-not-exist/phux-desktop");
+fn linux_installs_in_place_and_never_runs_the_macos_swap() {
+    assert!(!manual_desktop_install());
+    let bundle = Path::new("/apps/phux-desktop");
+    let command = stage_command(bundle, &Release::default()).unwrap();
+    let args: Vec<_> = command.get_args().collect();
     assert!(
-        stage(path, &Release::default(), std::sync::mpsc::channel().0)
-            .unwrap_err()
-            .to_string()
-            .contains("PHUX_REQUIRE_SIGNATURE=1")
+        args.windows(2)
+            .any(|pair| pair == ["--applications-dir", "/apps"])
     );
-    assert!(
-        apply_on_exit(path, path, true)
-            .unwrap_err()
-            .to_string()
-            .contains("not supported on Linux")
-    );
-    clear_stale_stage(path);
+    assert!(!args.contains(&std::ffi::OsStr::new("--stage-dir")));
+    apply_on_exit(Path::new("/does-not-exist/phux-desktop"), bundle, false).unwrap();
+    clear_stale_stage(bundle);
 }
 
 #[test]

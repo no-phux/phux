@@ -30,10 +30,16 @@ pub(super) fn lock_file(bundle: &Path) -> anyhow::Result<PathBuf> {
 
 pub(super) fn stage_command(bundle: &Path, target: &Release) -> anyhow::Result<Command> {
     let mut command = Command::new("/bin/sh");
-    command
-        .args(["-s", "--", "--desktop", "--stage-dir"])
-        .arg(staging_dir(bundle)?)
-        .args(["--channel", target.channel.as_str()]);
+    command.args(["-s", "--", "--desktop"]);
+    if cfg!(target_os = "linux") {
+        // Linux publishes in place: the running binary keeps its unlinked inode.
+        command
+            .arg("--applications-dir")
+            .arg(applications_dir(bundle)?);
+    } else {
+        command.arg("--stage-dir").arg(staging_dir(bundle)?);
+    }
+    command.args(["--channel", target.channel.as_str()]);
     match target.channel {
         Channel::Stable => command.args(["--version", &target.version]),
         Channel::Next => command.args(["--revision", &target.revision]),
@@ -63,18 +69,10 @@ pub fn stage(
 
 /// Platforms whose first release uses an explicit, signature-verifying installer.
 pub const fn manual_desktop_install() -> bool {
-    cfg!(any(target_os = "linux", windows))
+    cfg!(windows)
 }
 
 pub fn install_remedy(channel: Channel, bundle: Option<&Path>) -> String {
-    if cfg!(windows) {
-        windows_install_remedy(channel, bundle)
-    } else {
-        linux_install_remedy(channel, bundle)
-    }
-}
-
-pub fn windows_install_remedy(channel: Channel, bundle: Option<&Path>) -> String {
     // The per-user installer replaces <InstallDir>/current, not InstallDir itself.
     let root = bundle.and_then(|bundle| {
         if bundle.file_name().is_some_and(|name| name == "current") {
@@ -95,23 +93,6 @@ pub fn windows_install_remedy(channel: Channel, bundle: Option<&Path>) -> String
          & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing \
          -Uri 'https://raw.githubusercontent.com/no-phux/phux/main/scripts/install-desktop-windows.ps1' \
          -ErrorAction Stop).Content)) -Channel {}{destination}",
-        channel.as_str(),
-    )
-}
-
-pub fn linux_install_remedy(channel: Channel, bundle: Option<&Path>) -> String {
-    let destination = bundle
-        .and_then(Path::parent)
-        .map_or_else(String::new, |directory| {
-            format!(
-                " --applications-dir {}",
-                crate::attach::quote_paths(&[directory.to_path_buf()])
-            )
-        });
-    format!(
-        "Automatic Desktop installation is not supported on Linux. With minisign on PATH, quit Phux and run: \
-         curl -fsSL https://phux.sh/install | PHUX_REQUIRE_SIGNATURE=1 sh -s -- \
-         --desktop --channel {}{destination}",
         channel.as_str(),
     )
 }
@@ -206,6 +187,10 @@ pub(super) fn stage_with_progress(
         None,
         false,
     )?;
+    if cfg!(target_os = "linux") {
+        verify_staged_release(bundle, target)?;
+        return Ok(bundle.to_path_buf());
+    }
     let staged = staged_path(&text, &staging_dir(bundle)?)?;
     verify_staged_release(&staged, target)?;
     Ok(staged)
@@ -351,6 +336,13 @@ pub fn apply_on_exit(bundle: &Path, staged: &Path, relaunch: bool) -> anyhow::Re
     if manual_desktop_install() {
         bail!("{}", install_remedy(Channel::Stable, Some(bundle)));
     }
+    if cfg!(target_os = "linux") {
+        return if relaunch {
+            relaunch_after_exit(bundle)
+        } else {
+            Ok(())
+        };
+    }
     let mut command = apply_command(
         bundle,
         staged,
@@ -372,10 +364,35 @@ pub fn apply_on_exit(bundle: &Path, staged: &Path, relaunch: bool) -> anyhow::Re
     Ok(())
 }
 
+/// Linux installed the update in place already; reopen it once this process exits.
+fn relaunch_after_exit(bundle: &Path) -> anyhow::Result<()> {
+    let mut command = Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec "$2""#,
+            "phux-relaunch",
+            &std::process::id().to_string(),
+        ])
+        .arg(bundle.join("bin/phux-desktop"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Could not relaunch Phux Desktop")?;
+    Ok(())
+}
+
 /// A staged bundle from an earlier session is discarded at launch, but only
-/// when no helper holds the installer lock.
+/// when no helper holds the installer lock. Linux never stages.
 pub fn clear_stale_stage(bundle: &Path) {
-    if manual_desktop_install() {
+    if manual_desktop_install() || cfg!(target_os = "linux") {
         return;
     }
     let (Ok(dir), Ok(lock)) = (staging_dir(bundle), lock_file(bundle)) else {
