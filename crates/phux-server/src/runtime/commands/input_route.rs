@@ -35,7 +35,7 @@ pub(crate) fn with_route_input_destination<R>(
             Resolved::Remote(_) => {
                 return Err(CommandResult::Error {
                     code: ErrorCode::UnsupportedSatelliteRoute,
-                    message: format!("ROUTE_INPUT to satellite route unsupported: {terminal_id:?}"),
+                    message: format!("ROUTE_INPUT to satellite route unsupported: {terminal_id}"),
                 });
             }
             Resolved::Unknown => {

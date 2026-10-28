@@ -147,7 +147,7 @@ fn no_server_fallthrough_keeps_the_error_and_adds_remedies() {
     );
     assert_eq!(
         lines[0],
-        "tag failed: server refused attach: policy said no"
+        "tag failed: server refused the request: policy said no"
     );
     assert_eq!(lines[1], "server log: /log/server.log");
     assert_eq!(lines[2], "run `phux doctor` for a health check");

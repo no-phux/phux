@@ -393,7 +393,7 @@ mod tests {
         let with_pid = super::connect_error(&err, socket, "ls", Some(4242));
         assert_eq!(with_pid.code, codes::TRANSPORT);
         assert!(
-            with_pid.message.contains("server refused attach"),
+            with_pid.message.contains("server refused the request"),
             "{}",
             with_pid.message
         );
