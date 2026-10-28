@@ -98,6 +98,9 @@ pub(crate) struct TakeArgs {
         validate_error = "must be at most 4294967 seconds (ttl_ms is a u32)"
     )]
     pub(crate) ttl: Option<u32>,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
 }
 
 /// Give back input control taken with `take`
@@ -108,6 +111,9 @@ pub(crate) struct TakeArgs {
 pub(crate) struct GiveArgs {
     /// Target selector (resolves to one pane).
     pub(crate) target: String,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
 }
 
 /// Signal a pane's process group.
@@ -144,6 +150,9 @@ pub(crate) struct SignalArgs {
     /// `resume`, the reversible brake, never ask.
     #[usage(long)]
     pub(crate) yes: bool,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
 }
 
 /// Track tasks in the local work store
@@ -234,6 +243,9 @@ pub(crate) struct ApproveArgs {
     /// Approve without asking.
     #[usage(long)]
     pub(crate) yes: bool,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
 }
 
 /// Deny a held action
@@ -244,6 +256,9 @@ pub(crate) struct ApproveArgs {
 pub(crate) struct DenyArgs {
     /// The approval id `phux approvals` lists.
     pub(crate) id: String,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
 }
 
 /// Report that an agent in a pane is waiting on a human answer.

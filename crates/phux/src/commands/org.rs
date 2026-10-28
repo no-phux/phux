@@ -87,7 +87,7 @@ where
 /// `phux rm TARGET`: remove a resource whose execution has ended, or delete
 /// a session with no members. Asks first unless `yes`.
 pub(crate) fn run_rm(target: &str, yes: bool, json: bool, socket: Option<PathBuf>) -> ExitCode {
-    if let Err(code) = confirm::confirmed(yes, &format!("remove {target}")) {
+    if let Err(code) = confirm::confirmed_for(json, yes, &format!("remove {target}")) {
         return code;
     }
     run_on(socket, "rm", json, async |_, conn| {
@@ -501,35 +501,45 @@ pub(crate) fn names_resource(target: &str) -> bool {
 }
 
 /// `phux rename PANE NEW_NAME`: set a resource's label.
-pub(crate) fn run_rename_resource(target: &str, new_name: &str, server: ServerSpec) -> ExitCode {
-    let (rt, server) = match server.prepare("rename", false) {
+pub(crate) fn run_rename_resource(
+    target: &str,
+    new_name: &str,
+    json: bool,
+    server: ServerSpec,
+) -> ExitCode {
+    let (rt, server) = match server.prepare("rename", json) {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
     rt.block_on(async {
-        let mut conn = match connect(&server, false, "rename").await {
+        let mut conn = match connect(&server, json, "rename").await {
             Ok(conn) => conn,
             Err(code) => return code,
         };
         let inventory = match records(&mut conn, "rename").await {
             Ok(inventory) => inventory,
-            Err(failure) => return failure.emit(false),
+            Err(failure) => return failure.emit(json),
         };
         let record = match resolve(&mut conn, &inventory, target, "rename").await {
             Ok(Target::Resource(record)) => record,
             Ok(Target::Session(record)) => {
                 // A key prefix can name a session: rename it as one.
                 drop(conn);
-                return crate::commands::rename::run_rename_on(&server, &record.name, new_name)
-                    .await;
+                return crate::commands::rename::run_rename_on(
+                    &server,
+                    &record.name,
+                    new_name,
+                    json,
+                )
+                .await;
             }
-            Err(failure) => return failure.emit(false),
+            Err(failure) => return failure.emit(json),
         };
         let key = key_text(&inventory, *record.key.as_bytes());
         let result = org::rename_resource(&mut conn, record.key, Some(new_name)).await;
         drop(conn);
         finish(
-            false,
+            json,
             "rename",
             target,
             &key,

@@ -1,6 +1,6 @@
 //! The `Sessions` verbs that attach to and detach from a session.
 
-use crate::commands::{RecOpts, RemoteOpt};
+use crate::commands::{JsonOpt, RecOpts, RemoteOpt};
 use usage::Args;
 
 /// Attach to a session, here or on a registered host
@@ -195,6 +195,9 @@ pub(crate) struct DetachArgs {
     /// not one it refuses with exit 2 having sent nothing.
     #[usage(long)]
     pub(crate) yes: bool,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
 
     #[usage(flatten)]
     pub(crate) remote: RemoteOpt,

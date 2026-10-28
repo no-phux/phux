@@ -222,8 +222,14 @@ phux rm --yes @7               # forget a pane whose process ended
 
 **`kill` and `rm` ask first.** On a terminal they ask for confirmation. With
 no terminal they refuse with exit 2 and send nothing, so a script passes
-`--yes` to say what it means. Quote `#tag` targets, because `#` starts a
+`--yes` to say what it means. Under `--json` that refusal is the
+`confirmation_required` error. `signal interrupt|terminate|kill`, `detach`,
+and `approve` ask the same way. Quote `#tag` targets, because `#` starts a
 comment in the shell.
+
+Every verb that changes state takes `--json`: `kill`, `rm`, `rename`,
+`signal`, `take`, `give`, `detach`, `approve`, and `deny` print a versioned
+result, and fail with the JSON error below.
 
 ## JSON output and errors
 

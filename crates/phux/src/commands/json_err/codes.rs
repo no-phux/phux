@@ -2,6 +2,9 @@
 
 /// The command line was refused before a command could run. Exit 2.
 pub(crate) const USAGE_ERROR: &str = "usage_error";
+/// A dangerous verb was not confirmed: no `--yes`, and no terminal to ask,
+/// or the answer was no. Nothing was sent. Exit 2.
+pub(crate) const CONFIRMATION_REQUIRED: &str = "confirmation_required";
 /// No server is listening at the socket (connection refused / not found).
 pub(crate) const NO_SERVER: &str = "no_server";
 /// The server was there and closed the connection mid-command.

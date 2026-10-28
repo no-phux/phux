@@ -174,6 +174,10 @@ pub(crate) struct KillArgs {
     /// never asks.
     #[usage(long)]
     pub(crate) yes: bool,
+    /// Emit a schema-versioned JSON result or error: `target`, and
+    /// `killed`, the members a session kill ended (`null` for a pane kill).
+    #[usage(long, conflicts("--server"))]
+    pub(crate) json: bool,
 
     #[usage(flatten)]
     pub(crate) remote: RemoteOpt,
@@ -194,6 +198,9 @@ pub(crate) struct RenameArgs {
 
     /// New name.
     pub(crate) new_name: String,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
 
     #[usage(flatten)]
     pub(crate) remote: RemoteOpt,
