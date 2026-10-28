@@ -102,8 +102,8 @@ pub(crate) fn dispatch(
             remote,
         })) => commands::rename::run_rename(&target, &new_name, remote.with_socket(socket)),
         Some(Command::Snapshot(args)) => panes::snapshot(args, socket),
-        Some(Command::SendKeys(commands::SendKeysArgs { target, keys })) => {
-            commands::send_keys::run_send_keys(&target, &keys, socket)
+        Some(Command::SendKeys(commands::SendKeysArgs { target, keys, json })) => {
+            commands::send_keys::run_send_keys(&target, &keys, json.json, socket)
         }
         Some(Command::Upload(args)) => panes::upload(args, socket),
         Some(Command::Download(args)) => machines::download(args, socket),
@@ -111,7 +111,8 @@ pub(crate) fn dispatch(
             target,
             text,
             untrusted,
-        })) => commands::paste::run_paste(&target, text, untrusted, socket),
+            json,
+        })) => commands::paste::run_paste(&target, text, untrusted, json.json, socket),
         Some(Command::Wait(args)) => panes::wait(args, socket),
         Some(Command::Watch(args)) => panes::watch(args, socket),
         Some(Command::Resource(commands::ResourceArgs { action })) => {
