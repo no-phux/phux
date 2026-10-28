@@ -26,6 +26,9 @@ use mail::{ack, read, send};
 
 /// Schema of every `phux mail` and `phux claim` JSON document.
 const SCHEMA: &str = "phux.coord/v1";
+/// The `schema_version` every coordination document carries beside `schema`,
+/// as every other `--json` document does.
+pub(crate) const SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum MailAction {
@@ -290,7 +293,9 @@ fn store(json: bool) -> Result<phux_work::Client, ExitCode> {
 }
 
 fn emit(document: &serde_json::Value) {
-    match serde_json::to_string(document) {
+    let mut document = document.clone();
+    document["schema_version"] = SCHEMA_VERSION.into();
+    match serde_json::to_string(&document) {
         Ok(line) => outln!("{line}"),
         Err(err) => error!("could not encode the result: {err}"),
     }
