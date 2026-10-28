@@ -130,6 +130,8 @@ pub enum Modal {
         target: Option<SessionRenameTarget>,
     },
     WindowSession,
+    /// Switch this window to a session on any machine, or create one by name.
+    Sessions,
     /// Every open native window, its session, host and tabs.
     Windows,
     Terminate {
@@ -516,6 +518,7 @@ fn listed_modal(id: &str) -> Option<Modal> {
         "capture" => Modal::Capture,
         "goto" => Modal::Goto,
         "windows" => Modal::Windows,
+        "switch-session" => Modal::Sessions,
         "notifications" => Modal::Notifications,
         "agent-fleet" => Modal::AgentFleet,
         _ => return None,

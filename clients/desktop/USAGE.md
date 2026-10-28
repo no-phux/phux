@@ -125,32 +125,33 @@ selected session gets a tab without a click: one started elsewhere (an agent,
 `phux spawn`) joins the tab list behind the current tab. A terminal moved to
 another window, or a capture started in the background, stays out.
 
-| Keys             | Action                                                                      |
-| ---------------- | --------------------------------------------------------------------------- |
-| ⇧⌘P / ⌘P         | Command palette / go to a terminal, agent or tab (`>` switches to commands) |
-| ⌘T, ⌘O           | New terminal in the focused pane's folder; open a folder                    |
-| ⌘D / ⇧⌘D         | Split right / down (a new terminal)                                         |
-| ⌥⌘D              | Another view of the focused terminal                                        |
-| ⌘W / ⇧⌘W         | Close pane / tab (ends the processes and removes their views)               |
-| ⌥⌘ arrows, ⌘[ ⌘] | Focus the pane in a direction, cycle panes                                  |
-| ⇧⌘↩              | Zoom the focused pane                                                       |
-| ⌘1–⌘9, ⇧⌘[ ⇧⌘]   | Select a tab                                                                |
-| ⌘F, ⌘G / ⇧⌘G     | Find in the terminal, next / previous match                                 |
-| ⌘E               | Find the selected text                                                      |
-| ⌘L               | Scroll back to live output                                                  |
-| ⌘↑ / ⌘↓          | Jump to the previous / next shell prompt (needs OSC 133 prompt marks)       |
-| ⌘C / ⌘V          | Copy the selection / paste (a copied file or image pastes as its path)      |
-| ⌘A               | Select everything, scrollback included                                      |
-| ⇧⌘A              | Jump to the agent that most needs you                                       |
-| ⌘B, ⌘,           | Toggle the sidebar, open Settings                                           |
-| ⌘= ⌘- ⌘0         | Font size                                                                   |
-| ⌘N               | New window, with its own connection and a fresh terminal                    |
-| ⌥⌘N              | Move the focused pane into a new window of its own                          |
-| ⌘K               | Clear the screen                                                            |
-| ⇧⌘I or ⌥;        | Insert Path: a list at the cursor of paths on the focused terminal's host   |
-| ⇧⌘R              | Reconnect, first restarting the server if it has stopped                    |
-| ⌥⌘G / ⌥⌘R        | Toggle the Changes panel / Reviews (GitHub pull requests)                   |
-| ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                |
+| Keys             | Action                                                                            |
+| ---------------- | --------------------------------------------------------------------------------- |
+| ⇧⌘P / ⌘P         | Command palette / go to a terminal, agent or tab (`>` switches to commands)       |
+| ⌘T, ⌘O           | New terminal in the focused pane's folder; open a folder                          |
+| ⌘D / ⇧⌘D         | Split right / down (a new terminal)                                               |
+| ⌥⌘D              | Another view of the focused terminal                                              |
+| ⌘W / ⇧⌘W         | Close pane / tab (ends the processes and removes their views)                     |
+| ⌥⌘ arrows, ⌘[ ⌘] | Focus the pane in a direction, cycle panes                                        |
+| ⇧⌘↩              | Zoom the focused pane                                                             |
+| ⌘1–⌘9, ⇧⌘[ ⇧⌘]   | Select a tab                                                                      |
+| ⌘F, ⌘G / ⇧⌘G     | Find in the terminal, next / previous match                                       |
+| ⌘E               | Find the selected text                                                            |
+| ⌘L               | Scroll back to live output                                                        |
+| ⌘↑ / ⌘↓          | Jump to the previous / next shell prompt (needs OSC 133 prompt marks)             |
+| ⌘C / ⌘V          | Copy the selection / paste (a copied file or image pastes as its path)            |
+| ⌘A               | Select everything, scrollback included                                            |
+| ⇧⌘A              | Jump to the agent that most needs you                                             |
+| ⇧⌘S              | Switch Session: filter every machine's sessions, or type a new name to create one |
+| ⌘B, ⌘,           | Toggle the sidebar, open Settings                                                 |
+| ⌘= ⌘- ⌘0         | Font size                                                                         |
+| ⌘N               | New window, with its own connection and a fresh terminal                          |
+| ⌥⌘N              | Move the focused pane into a new window of its own                                |
+| ⌘K               | Clear the screen                                                                  |
+| ⇧⌘I or ⌥;        | Insert Path: a list at the cursor of paths on the focused terminal's host         |
+| ⇧⌘R              | Reconnect, first restarting the server if it has stopped                          |
+| ⌥⌘G / ⌥⌘R        | Toggle the Changes panel / Reviews (GitHub pull requests)                         |
+| ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                      |
 
 ### Leader navigation
 

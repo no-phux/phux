@@ -99,6 +99,9 @@ pub(super) fn header(state: &Header, colors: &Palette, handle: &WeakEntity<Desk>
         .when(modal == Modal::WindowSession, |modes| {
             modes.child(div().px(px(4.)).child("Sessions"))
         })
+        .when(modal == Modal::Sessions, |modes| {
+            modes.child(div().px(px(4.)).child("Switch session"))
+        })
         .when(modal == Modal::MoveResources, |modes| {
             modes.child(div().px(px(4.)).child("Move to"))
         })

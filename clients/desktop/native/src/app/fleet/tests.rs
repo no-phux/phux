@@ -257,3 +257,4 @@ mod disclosure;
 mod machines;
 mod navigation;
 mod sidebar;
+mod switcher;

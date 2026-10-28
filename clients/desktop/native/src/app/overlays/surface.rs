@@ -22,6 +22,13 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         Modal::None => return div().into_any_element(),
         Modal::Capture => crate::app::capture::panel(desk, &look, window, cx),
         Modal::AgentFleet => crate::app::fleet::dashboard::panel(desk, &look, window, cx),
+        Modal::Sessions => {
+            let panel = launcher::palette(desk, colors, window, cx);
+            return match desk.anchors.get(crate::app::menus::MAIN) {
+                Some(rail) => drop_from(rail, window, cx, panel),
+                None => backdrop(colors, window, cx, panel),
+            };
+        }
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
@@ -229,6 +236,39 @@ pub(super) fn cursor_spot(
         Edge::Bottom(viewport.height - cursor.top() + px(4.))
     };
     Spot { left, edge }
+}
+
+/// A panel dropped from a trigger at the window's leading edge, its left
+/// edge on the trigger's and kept inside the window; no dimming, and a click
+/// outside closes it.
+pub(super) fn drop_from(
+    trigger: gpui::Bounds<gpui::Pixels>,
+    window: &Window,
+    cx: &mut Context<Desk>,
+    card: impl IntoElement,
+) -> AnyElement {
+    let viewport = window.viewport_size();
+    div()
+        .id("modal-backdrop")
+        .absolute()
+        .inset_0()
+        .size_full()
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)),
+        )
+        .child(
+            div()
+                .absolute()
+                .debug_selector(|| "session-switcher".into())
+                .top(trigger.bottom() + px(6.))
+                .left(trigger.left().max(px(SHEET_GUTTER / 2.)))
+                .max_w(viewport.width - px(SHEET_GUTTER))
+                .max_h(viewport.height - trigger.bottom() - px(SHEET_GUTTER))
+                .child(card),
+        )
+        .into_any_element()
 }
 
 /// A dialog or palette card. The skin decides how much it lifts; the backing
