@@ -87,7 +87,12 @@ test("keystrokes translate to phux key specs, and app shortcuts stay with the ap
   expect(keyAction(key("ArrowUp"))).toEqual({ kind: "key", spec: "Up" });
   expect(keyAction(key("c", { code: "KeyC", ctrlKey: true }))).toEqual({ kind: "key", spec: "C-c" });
   expect(keyAction(key("[", { code: "BracketLeft", ctrlKey: true }))).toEqual({ kind: "key", spec: "Escape" });
-  expect(keyAction(key("å", { code: "KeyA", altKey: true }))).toEqual({ kind: "key", spec: "M-a" });
+  expect(keyAction(key("a", { code: "KeyA", altKey: true }))).toEqual({ kind: "key", spec: "M-a" });
+  // An Option character is text: å on US layouts, @ with Option-L on German ones.
+  expect(keyAction(key("å", { code: "KeyA", altKey: true }))).toEqual({ kind: "text", text: "å" });
+  expect(keyAction(key("@", { code: "KeyL", altKey: true }))).toEqual({ kind: "text", text: "@" });
+  // Control follows the layout's letter, not the physical key.
+  expect(keyAction(key("c", { code: "KeyI", ctrlKey: true }))).toEqual({ kind: "key", spec: "C-c" });
   expect(keyAction(key("Enter", { altKey: true }))).toEqual({ kind: "key", spec: "\u001b\r" });
   expect(keyAction(key("Tab", { shiftKey: true }))).toEqual({ kind: "key", spec: "\u001b[Z" });
   expect(keyAction(key("Delete"))).toEqual({ kind: "key", spec: "\u001b[3~" });
@@ -116,6 +121,9 @@ test("paths under a home directory shorten to ~", () => {
   expect(shortPath(null)).toBe("");
 });
 
-test("Control-Tab stays with the app", () => {
+test("Control-Tab and paste shortcuts stay with the app", () => {
   expect(keyAction(key("Tab", { ctrlKey: true }))).toBeUndefined();
+  expect(keyAction(key("V", { code: "KeyV", ctrlKey: true, shiftKey: true }), "mac")).toBeUndefined();
+  expect(keyAction(key("v", { code: "KeyV", ctrlKey: true }), "other")).toBeUndefined();
+  expect(keyAction(key("v", { code: "KeyV", ctrlKey: true }), "mac")).toEqual({ kind: "key", spec: "C-v" });
 });

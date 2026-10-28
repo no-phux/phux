@@ -93,9 +93,13 @@ export function PaneView(props: PaneViewProps): JSX.Element {
   const run = async (target: string, signal: AbortSignal): Promise<void> => {
     let cursor: string | undefined;
     let known: string | undefined;
-    // Right after a change the next wait is short, so a change that raced
-    // the watch shows within a second; a quiet pane backs off to WAIT_SECONDS.
+    // phux sends one `dirty` per burst of output, so while a pane streams the
+    // view polls every frame without waiting, until two renders match. After
+    // that it waits briefly, so a change that raced the watch shows within a
+    // second, and a quiet pane backs off to WAIT_SECONDS.
     let wait = 0;
+    let streaming = false;
+    let settled = 0;
     let failures = 0;
     while (!signal.aborted) {
       const started = Date.now();
@@ -117,13 +121,15 @@ export function PaneView(props: PaneViewProps): JSX.Element {
           setStatus("closed");
           return;
         }
+        if (screen.event === "dirty") streaming = true;
         if (screen.changed) {
           known = screen.hash;
           show(screen);
-          wait = 1;
-        } else {
-          wait = Math.min(WAIT_SECONDS, Math.max(1, wait * 2));
+          settled = 0;
+        } else if (streaming && ++settled >= 2) {
+          streaming = false;
         }
+        wait = streaming ? 0 : screen.changed ? 1 : Math.min(WAIT_SECONDS, Math.max(1, wait * 2));
       } catch (cause) {
         if (signal.aborted) return;
         failures += 1;
@@ -171,21 +177,31 @@ export function PaneView(props: PaneViewProps): JSX.Element {
       );
     return flushing;
   };
+  const flushKeys = (): void => {
+    const calls = batchKeys(pending);
+    pending = [];
+    for (const keys of calls) void deliver({ keys });
+  };
   const queue = (action: KeyAction): void => {
+    if (status() !== "live") return;
     pending.push(action);
     if (flushQueued) return;
     flushQueued = true;
     setTimeout(() => {
       flushQueued = false;
-      const calls = batchKeys(pending);
-      pending = [];
-      for (const keys of calls) void deliver({ keys });
+      flushKeys();
     }, 0);
   };
+  /** Paste and submit go behind keys already typed, in the same ordered chain. */
+  const after = (input: { text: string; submit?: boolean }): Promise<void> => {
+    flushKeys();
+    return deliver(input);
+  };
+  const platform = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform) ? "mac" : "other";
 
   const onKeyDown = (event: KeyboardEvent): void => {
-    if (event.isComposing) return;
-    const action = keyAction(event);
+    if (event.isComposing || status() !== "live") return;
+    const action = keyAction(event, platform);
     if (action === undefined) return;
     event.preventDefault();
     event.stopPropagation();
@@ -196,7 +212,7 @@ export function PaneView(props: PaneViewProps): JSX.Element {
     const text = event.clipboardData?.getData("text/plain");
     if (text === undefined || text.length === 0) return;
     event.preventDefault();
-    void deliver({ text });
+    if (status() === "live") void after({ text });
   };
   const onScroll = (): void => {
     setPinned(atBottom());
@@ -208,9 +224,11 @@ export function PaneView(props: PaneViewProps): JSX.Element {
     setSending(true);
     try {
       if (agent() !== undefined) {
+        flushKeys();
+        await flushing;
         await props.client.prompt({ target: props.target, text }, { directory: props.session.directory });
       } else {
-        await props.client.input({ target: props.target, text, submit: true }, { directory: props.session.directory });
+        await after({ text, submit: true });
       }
       setDraft("");
       setPinned(true);

@@ -33,7 +33,8 @@ export function paneName(pane: Pane): string {
 
 /** The state a person reads: a plain shell has no agent lifecycle to report. */
 export function stateKey(pane: Pane): string {
-  return !isAgent(pane) && pane.state === "unknown" ? "state.shell" : `state.${pane.state}`;
+  if (!isAgent(pane) && pane.state === "unknown") return "state.shell";
+  return pane.state in STATE_ORDER ? `state.${pane.state}` : "state.unknown";
 }
 
 export function isAgent(pane: Pane): boolean {
@@ -203,9 +204,14 @@ export function createFleet(ctx: Ctx, client: PhuxClient) {
 const STATE_ORDER: Readonly<Record<Pane["state"], number>> = { blocked: 0, working: 1, done: 2, idle: 3, unknown: 4 };
 
 function comparePanes(left: Pane, right: Pane): number {
-  return STATE_ORDER[left.state] - STATE_ORDER[right.state] ||
+  return rank(left) - rank(right) ||
     left.session.localeCompare(right.session) ||
     paneNumber(left.target) - paneNumber(right.target);
+}
+
+/** A state this release does not know sorts with unknown panes. */
+function rank(pane: Pane): number {
+  return STATE_ORDER[pane.state] ?? STATE_ORDER.unknown;
 }
 
 function paneNumber(target: string): number {

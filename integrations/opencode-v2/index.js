@@ -2653,7 +2653,7 @@ var PhuxRpc = Rpc.define({
 });
 
 // src/gui-service.ts
-var SCREEN_EVENTS = ["dirty", "idle", "title_changed", "pane_closed"];
+var SCREEN_EVENTS = ["dirty", "idle", "title_changed", "pane_closed", "unknown"];
 var DEFAULT_HISTORY = 500;
 var TARGET3 = new RegExp(TARGET_PATTERN);
 var OVERVIEW_TTL_MS = 1000;
@@ -2674,11 +2674,12 @@ function ownedBy(sessionID) {
 function createGuiService(options) {
   const { cli } = options;
   const cacheKey = JSON.stringify([cli.executable, cli.socket ?? null]);
-  const refuseParent = (target) => {
-    exactTarget2(target);
-    if (options.parent !== null && target === options.parent) {
+  const parent = options.parent === null ? null : canonicalTarget(options.parent);
+  const writable = (target) => {
+    const canonical = canonicalTarget(target);
+    if (canonical === parent)
       throw new Error(`${target} hosts this OpenCode server; phux does not type into its own pane.`);
-    }
+    return canonical;
   };
   const fleet = () => {
     const cached = overviews.get(cacheKey);
@@ -2700,10 +2701,11 @@ function createGuiService(options) {
         maxTerminals: options.maxTerminals
       };
     },
-    async screen(input, context = {}) {
-      exactTarget2(input.target);
+    async screen(request, context = {}) {
+      const input = { ...request, target: canonicalTarget(request.target) };
       const signal = context.signal === undefined ? {} : { signal: context.signal };
       let cursor = input.after;
+      let event;
       if ((input.waitSeconds ?? 0) > 0) {
         try {
           const watched = await options.screen.watchUntil(input.target, {
@@ -2713,15 +2715,18 @@ function createGuiService(options) {
             ...signal
           });
           cursor = watched.cursor ?? cursor;
-          if (watched.event === "pane_closed")
+          event = watched.event;
+          if (event === "pane_closed")
             return { changed: true, closed: true, ...cursor === undefined ? {} : { cursor } };
         } catch (error) {
           if (isGone2(error))
             return { changed: true, closed: true };
-          throw error;
+          if (!isUsageError(error))
+            throw error;
+          await sleep2(Math.min(input.waitSeconds, 2) * 1000, context.signal);
         }
       }
-      const withCursor = cursor === undefined ? {} : { cursor };
+      const withCursor = { ...cursor === undefined ? {} : { cursor }, ...event === undefined ? {} : { event } };
       const history = input.history ?? DEFAULT_HISTORY;
       const execution = { timeoutMs: 1e4, ...signal };
       const [rendered, plain] = await Promise.allSettled([
@@ -2744,27 +2749,27 @@ function createGuiService(options) {
       return { changed: true, closed: false, ...withCursor, hash, ...geometry, ...content };
     },
     async input(input, context = {}) {
-      refuseParent(input.target);
+      const target = writable(input.target);
       if (input.text === undefined && input.keys === undefined && input.submit !== true) {
         throw new TypeError("input needs text, keys, or submit");
       }
       const execution = { timeoutMs: 1e4, ...context.signal === undefined ? {} : { signal: context.signal } };
       if (input.text !== undefined)
-        await cli.paste(input.target, input.text, execution);
+        await cli.paste(target, input.text, execution);
       if (input.keys !== undefined)
-        await cli.sendKeys(input.target, input.keys, execution);
+        await cli.sendKeys(target, input.keys.flatMap(keyArgument), execution);
       if (input.submit === true)
-        await cli.sendKeys(input.target, ["Enter"], execution);
+        await cli.sendKeys(target, ["Enter"], execution);
       return { ok: true };
     },
     async prompt(input, context = {}) {
-      refuseParent(input.target);
+      const target = writable(input.target);
       const execution = { timeoutMs: 15000, ...context.signal === undefined ? {} : { signal: context.signal } };
       if (/[\r\n]/.test(input.text)) {
-        await cli.paste(input.target, input.text, execution);
-        await cli.sendKeys(input.target, ["Enter"], execution);
+        await cli.paste(target, input.text, execution);
+        await cli.sendKeys(target, ["Enter"], execution);
       } else {
-        await cli.agentPrompt(input.target, input.text, { wait: false, ...execution });
+        await cli.agentPrompt(target, input.text, { wait: false, ...execution });
       }
       invalidate();
       return { ok: true };
@@ -2785,10 +2790,10 @@ function createGuiService(options) {
       return { target };
     },
     async kill(input, context = {}) {
-      exactTarget2(input.target);
-      const owner = [...instances].find((terminals) => terminals.owned(input.sessionID).includes(input.target)) ?? options.terminals;
-      await owner.kill(input.sessionID, input.target, context.signal);
-      if (options.selectedTargets.get(input.sessionID) === input.target)
+      const target = canonicalTarget(input.target);
+      const owner = [...instances].find((terminals) => terminals.owned(input.sessionID).includes(target)) ?? options.terminals;
+      await owner.kill(input.sessionID, target, context.signal);
+      if (options.selectedTargets.get(input.sessionID) === target)
         options.selectedTargets.delete(input.sessionID);
       invalidate();
       return { ok: true };
@@ -2828,9 +2833,26 @@ function fingerprint(text) {
   }
   return `${(hash >>> 0).toString(36)}:${text.length.toString(36)}`;
 }
-function exactTarget2(target) {
+function canonicalTarget(target) {
   if (!TARGET3.test(target))
     throw new TypeError(`${JSON.stringify(target)} is not an exact @N or host/@N pane selector`);
+  return target.replace(/@0+(?=\d)/, "@");
+}
+function keyArgument(key) {
+  return key.length > 1 && key.startsWith("-") ? [...key] : [key];
+}
+function sleep2(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted === true)
+      return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 function cliErrorCode(error) {
   if (!(error instanceof PhuxError))
@@ -2844,6 +2866,8 @@ function cliErrorCode(error) {
 function isGone2(error) {
   if (cliErrorCode(error) === "no_such_target")
     return true;
+  if (!(error instanceof PhuxError) || error.code !== "command_failed")
+    return false;
   const message = error instanceof Error ? error.message : String(error);
   return /no such target|not found|does not exist|unknown (pane|terminal)/i.test(message);
 }

@@ -262,9 +262,11 @@ export type KeyAction =
  * Translate a keydown into what the pane should receive, or undefined to
  * leave the event to the app (Command shortcuts, bare modifiers, IME).
  */
-export function keyAction(event: KeyInput): KeyAction | undefined {
+export function keyAction(event: KeyInput, platform: "mac" | "other" = "other"): KeyAction | undefined {
   // Command chords and Control-Tab belong to the app: tab switching must never be trapped.
   if (event.metaKey || (event.ctrlKey && event.key === "Tab")) return undefined;
+  // Paste shortcuts reach the paste event, which sends the clipboard as one bracketed paste.
+  if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "v" && (event.shiftKey || platform !== "mac")) return undefined;
   if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.altKey) return { kind: "key", spec: "\u001b[Z" };
   const special = SPECIAL[event.key];
   if (special !== undefined) {
@@ -272,19 +274,24 @@ export function keyAction(event: KeyInput): KeyAction | undefined {
     if (event.altKey && !event.ctrlKey && bytes !== undefined) return { kind: "key", spec: `\u001b${bytes}` };
     return { kind: "key", spec: special };
   }
-  const base = codeCharacter(event.code, event.shiftKey) ?? (event.key.length === 1 ? event.key : undefined);
-  if (event.ctrlKey && !event.altKey) {
-    if (base === undefined) return undefined;
-    if (base === " " || base === "@" || base === "2") return { kind: "key", spec: "C-@" };
-    if (base === "[") return { kind: "key", spec: "Escape" };
-    if (/^[a-z\\\]^_]$/i.test(base)) return { kind: "key", spec: `C-${base.toLowerCase()}` };
-    return undefined;
-  }
+  const single = [...event.key].length === 1 ? event.key : undefined;
+  if (event.ctrlKey && !event.altKey) return controlKey(single !== undefined && /^[ -~]$/.test(single) ? single : codeCharacter(event.code, event.shiftKey));
   if (event.altKey && !event.ctrlKey) {
-    // Option composes characters on macOS; Meta wants the key itself.
-    return base === undefined ? undefined : { kind: "key", spec: `M-${base}` };
+    // A layout's Option character (such as @ or € on many macOS layouts) is
+    // text; Alt that leaves the key unchanged, as on Linux, means Meta.
+    const base = codeCharacter(event.code, event.shiftKey);
+    if (single !== undefined && base !== undefined && single.toLowerCase() !== base.toLowerCase()) return { kind: "text", text: single };
+    const key = single ?? base;
+    return key === undefined ? undefined : { kind: "key", spec: `M-${key}` };
   }
-  if (event.key.length > 0 && [...event.key].length === 1) return { kind: "text", text: event.key };
+  return single === undefined ? undefined : { kind: "text", text: single };
+}
+
+function controlKey(base: string | undefined): KeyAction | undefined {
+  if (base === undefined) return undefined;
+  if (base === " " || base === "@" || base === "2") return { kind: "key", spec: "C-@" };
+  if (base === "[") return { kind: "key", spec: "Escape" };
+  if (/^[a-z\\\]^_]$/i.test(base)) return { kind: "key", spec: `C-${base.toLowerCase()}` };
   return undefined;
 }
 

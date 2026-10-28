@@ -32,8 +32,12 @@ export interface CallContext {
   readonly signal?: AbortSignal;
 }
 
-/** Events that make a watched pane worth repainting: `dirty` fires when output starts and `idle` when it settles. */
-const SCREEN_EVENTS = ["dirty", "idle", "title_changed", "pane_closed"] as const;
+/**
+ * Events that make a watched pane worth repainting: `dirty` fires when output
+ * starts and `idle` when it settles. `unknown` also matches `journal_gap` and
+ * `source_gap`, so a cursor the server can no longer replay wakes at once.
+ */
+const SCREEN_EVENTS = ["dirty", "idle", "title_changed", "pane_closed", "unknown"] as const;
 const DEFAULT_HISTORY = 500;
 const TARGET = new RegExp(TARGET_PATTERN);
 const OVERVIEW_TTL_MS = 1000;
@@ -61,11 +65,12 @@ export function createGuiService(options: GuiServiceOptions) {
   const { cli } = options;
   const cacheKey = JSON.stringify([cli.executable, cli.socket ?? null]);
 
-  const refuseParent = (target: string): void => {
-    exactTarget(target);
-    if (options.parent !== null && target === options.parent) {
-      throw new Error(`${target} hosts this OpenCode server; phux does not type into its own pane.`);
-    }
+  const parent = options.parent === null ? null : canonicalTarget(options.parent);
+  /** A pane the GUI may type into: exact, and never the pane hosting this server, however it is spelled. */
+  const writable = (target: string): string => {
+    const canonical = canonicalTarget(target);
+    if (canonical === parent) throw new Error(`${target} hosts this OpenCode server; phux does not type into its own pane.`);
+    return canonical;
   };
 
   const fleet = (): Promise<Omit<Overview, "owned" | "maxTerminals">> => {
@@ -99,10 +104,11 @@ export function createGuiService(options: GuiServiceOptions) {
      * comes back without content, so a quiet pane costs one small reply and a
      * change that raced the watch still shows by the next wait.
      */
-    async screen(input: ScreenInput, context: CallContext = {}): Promise<Screen> {
-      exactTarget(input.target);
+    async screen(request: ScreenInput, context: CallContext = {}): Promise<Screen> {
+      const input = { ...request, target: canonicalTarget(request.target) };
       const signal = context.signal === undefined ? {} : { signal: context.signal };
       let cursor = input.after;
+      let event: string | undefined;
       if ((input.waitSeconds ?? 0) > 0) {
         try {
           const watched = await options.screen.watchUntil(input.target, {
@@ -112,13 +118,16 @@ export function createGuiService(options: GuiServiceOptions) {
             ...signal,
           });
           cursor = watched.cursor ?? cursor;
-          if (watched.event === "pane_closed") return { changed: true, closed: true, ...(cursor === undefined ? {} : { cursor }) };
+          event = watched.event;
+          if (event === "pane_closed") return { changed: true, closed: true, ...(cursor === undefined ? {} : { cursor }) };
         } catch (error) {
           if (isGone(error)) return { changed: true, closed: true };
-          throw error;
+          if (!isUsageError(error)) throw error;
+          // A phux without resumable watches still renders; the caller's wait becomes a poll.
+          await sleep(Math.min(input.waitSeconds!, 2) * 1000, context.signal);
         }
       }
-      const withCursor = cursor === undefined ? {} : { cursor };
+      const withCursor = { ...(cursor === undefined ? {} : { cursor }), ...(event === undefined ? {} : { event }) };
       const history = input.history ?? DEFAULT_HISTORY;
       const execution = { timeoutMs: 10_000, ...signal };
       // The Formatter trims trailing blank rows, so the plain read places the
@@ -144,26 +153,26 @@ export function createGuiService(options: GuiServiceOptions) {
     },
 
     async input(input: InputInput, context: CallContext = {}): Promise<{ ok: true }> {
-      refuseParent(input.target);
+      const target = writable(input.target);
       if (input.text === undefined && input.keys === undefined && input.submit !== true) {
         throw new TypeError("input needs text, keys, or submit");
       }
       const execution = { timeoutMs: 10_000, ...(context.signal === undefined ? {} : { signal: context.signal }) };
-      if (input.text !== undefined) await cli.paste(input.target, input.text, execution);
-      if (input.keys !== undefined) await cli.sendKeys(input.target, input.keys, execution);
-      if (input.submit === true) await cli.sendKeys(input.target, ["Enter"], execution);
+      if (input.text !== undefined) await cli.paste(target, input.text, execution);
+      if (input.keys !== undefined) await cli.sendKeys(target, input.keys.flatMap(keyArgument), execution);
+      if (input.submit === true) await cli.sendKeys(target, ["Enter"], execution);
       return { ok: true };
     },
 
     /** A turn handed to an agent pane, with phux's delivery receipt. */
     async prompt(input: PromptInput, context: CallContext = {}): Promise<{ ok: true }> {
-      refuseParent(input.target);
+      const target = writable(input.target);
       const execution = { timeoutMs: 15_000, ...(context.signal === undefined ? {} : { signal: context.signal }) };
       if (/[\r\n]/.test(input.text)) {
-        await cli.paste(input.target, input.text, execution);
-        await cli.sendKeys(input.target, ["Enter"], execution);
+        await cli.paste(target, input.text, execution);
+        await cli.sendKeys(target, ["Enter"], execution);
       } else {
-        await cli.agentPrompt(input.target, input.text, { wait: false, ...execution });
+        await cli.agentPrompt(target, input.text, { wait: false, ...execution });
       }
       invalidate();
       return { ok: true };
@@ -188,10 +197,10 @@ export function createGuiService(options: GuiServiceOptions) {
 
     /** Close a terminal the session owns, from whichever location spawned it. */
     async kill(input: KillInput, context: CallContext = {}): Promise<{ ok: true }> {
-      exactTarget(input.target);
-      const owner = [...instances].find((terminals) => terminals.owned(input.sessionID).includes(input.target)) ?? options.terminals;
-      await owner.kill(input.sessionID, input.target, context.signal);
-      if (options.selectedTargets.get(input.sessionID) === input.target) options.selectedTargets.delete(input.sessionID);
+      const target = canonicalTarget(input.target);
+      const owner = [...instances].find((terminals) => terminals.owned(input.sessionID).includes(target)) ?? options.terminals;
+      await owner.kill(input.sessionID, target, context.signal);
+      if (options.selectedTargets.get(input.sessionID) === target) options.selectedTargets.delete(input.sessionID);
       invalidate();
       return { ok: true };
     },
@@ -240,9 +249,35 @@ function fingerprint(text: string): string {
   return `${(hash >>> 0).toString(36)}:${text.length.toString(36)}`;
 }
 
-/** Only exact pane selectors: never a session, tag, or agent name that could fan out. */
-function exactTarget(target: string): void {
+/**
+ * Only exact pane selectors, never a session, tag, or agent name that could
+ * fan out; `@07` and `@7` are one pane, so compare the canonical spelling.
+ */
+export function canonicalTarget(target: string): string {
   if (!TARGET.test(target)) throw new TypeError(`${JSON.stringify(target)} is not an exact @N or host/@N pane selector`);
+  return target.replace(/@0+(?=\d)/, "@");
+}
+
+/**
+ * send-keys reads its keys after the target with flags still live, so a key
+ * that looks like a flag (`-h`, `--`, `--socket=…`) is typed one character at
+ * a time; a lone `-` is an ordinary value.
+ */
+export function keyArgument(key: string): string[] {
+  return key.length > 1 && key.startsWith("-") ? [...key] : [key];
+}
+
+function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted === true) return resolve();
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 function cliErrorCode(error: unknown): string | undefined {
@@ -255,6 +290,8 @@ function cliErrorCode(error: unknown): string | undefined {
 
 function isGone(error: unknown): boolean {
   if (cliErrorCode(error) === "no_such_target") return true;
+  // A missing phux executable is not a closed pane.
+  if (!(error instanceof PhuxError) || error.code !== "command_failed") return false;
   const message = error instanceof Error ? error.message : String(error);
   return /no such target|not found|does not exist|unknown (pane|terminal)/i.test(message);
 }

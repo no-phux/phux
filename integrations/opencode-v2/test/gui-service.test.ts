@@ -127,8 +127,8 @@ test("a screen long-polls after the cursor and skips a render the window already
     expect(cli.calls.some((call) => call.startsWith("watch"))).toBe(false);
 
     const same = await gui.screen({ target: "@3", waitSeconds: 5, after: "c1", known: first.hash! });
-    expect(same).toEqual({ changed: false, closed: false, cursor: "c2", hash: first.hash });
-    expect(cli.calls).toContain("watch @3 after=c1 until=dirty,idle,title_changed,pane_closed");
+    expect(same).toEqual({ changed: false, closed: false, cursor: "c2", event: "dirty", hash: first.hash });
+    expect(cli.calls).toContain("watch @3 after=c1 until=dirty,idle,title_changed,pane_closed,unknown");
 
     cli.state.html = "<div>two</div>";
     const next = await gui.screen({ target: "@3", waitSeconds: 5, after: "c2", known: first.hash! });
@@ -143,6 +143,20 @@ test("a closed pane reads as closed, and an older phux falls back to plain rows"
   const { cli, gui, unregister } = service("/tmp/closed.sock");
   try {
     expect(await gui.screen({ target: "@9", waitSeconds: 5 })).toEqual({ changed: true, closed: true });
+    // A missing executable is an error to show, not a closed pane.
+    const missing = cli.rendered;
+    cli.rendered = async () => {
+      throw new PhuxError("unavailable", "phux executable \"phux\" was not found");
+    };
+    await expect(gui.screen({ target: "@3" })).rejects.toThrow("was not found");
+    cli.rendered = missing;
+    // A phux that cannot resume watches still renders after a short poll.
+    const watch = cli.watchUntil;
+    cli.watchUntil = async () => {
+      throw new PhuxError("command_failed", "unexpected argument '--after'", { exitCode: 2 });
+    };
+    expect(await gui.screen({ target: "@3", waitSeconds: 1 })).toMatchObject({ changed: true, closed: false });
+    cli.watchUntil = watch;
     cli.state.renderedFails = new PhuxError("command_failed", "unexpected argument '--format'", { exitCode: 2 });
     expect(await gui.screen({ target: "@3" })).toMatchObject({ changed: true, lines: ["h", "a", "b"], historyRows: 1 });
     cli.state.renderedFails = new PhuxError("timeout", "slow");
@@ -159,6 +173,10 @@ test("input reaches only exact panes, never the pane hosting this server", async
     await gui.input({ target: "@3", keys: ["C-c"] });
     expect(cli.calls.slice(-3)).toEqual(["paste @3 ls -la", "keys @3 Enter", "keys @3 C-c"]);
     await expect(gui.input({ target: "@7", keys: ["C-c"] })).rejects.toThrow("hosts this OpenCode server");
+    await expect(gui.input({ target: "@007", keys: ["C-c"] })).rejects.toThrow("hosts this OpenCode server");
+    await expect(gui.prompt({ target: "@07", text: "hi" })).rejects.toThrow("hosts this OpenCode server");
+    await gui.input({ target: "@03", keys: ["-h", "--", "--socket=/x", "-", "Enter"] });
+    expect(cli.calls.at(-1)).toBe("keys @3 - h - - - - s o c k e t = / x - Enter");
     await expect(gui.input({ target: "#all", keys: ["C-c"] })).rejects.toThrow("exact");
     await expect(gui.screen({ target: "%reviewer" })).rejects.toThrow("exact");
     await expect(gui.input({ target: "@3" })).rejects.toThrow("needs text");

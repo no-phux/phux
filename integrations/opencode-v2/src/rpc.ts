@@ -48,6 +48,8 @@ export interface Screen {
   readonly cursor?: string;
   /** Identity of this render; pass it back as `known` to skip an unchanged one. */
   readonly hash?: string;
+  /** The pane event that ended the wait, such as `dirty` while output streams. */
+  readonly event?: string;
   /** Inline-styled markup from the phux server's Formatter: untrusted, never assigned as HTML. */
   readonly html?: string;
   /** Plain rows, from a phux too old to render html. */
