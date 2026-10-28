@@ -91,6 +91,32 @@ impl TerminalInput {
         }
     }
 
+    /// Where the pointer rests and whether Command is held, so a link under
+    /// it can read as clickable. Returns whether that changed what shows.
+    pub fn hover(&mut self, position: Option<Point<Pixels>>, command: bool) -> bool {
+        let before = self.hovered_link();
+        self.hover = position.map(|position| (position, command));
+        self.hovered_link() != before
+    }
+
+    /// Command went down or up with the pointer where it was.
+    pub fn hover_command(&mut self, command: bool) -> bool {
+        let position = self.hover.map(|(position, _)| position);
+        self.hover(position, command)
+    }
+
+    /// The painted link Command would open, as `(row, start, end)` columns:
+    /// only while Command is held over it and no drag is captured.
+    pub fn hovered_link(&self) -> Option<(u16, u16, u16)> {
+        let (position, command) = self.hover?;
+        if !command || self.capturing() {
+            return None;
+        }
+        let (row, col) = self.cell_at(position)?;
+        let (start, end) = self.painted_links.span(row, col)?;
+        Some((row, start, end))
+    }
+
     pub fn cancel_link(&mut self) {
         self.painted_links.cancel();
     }
