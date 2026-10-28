@@ -195,6 +195,15 @@ test("Windows policy filters cannot silently pass zero tests and diagnostics nev
   expect(policy).toContain('$listed.Contains("${case}: test")');
   expect(policy).toContain("--exact");
   expect(policy).toContain("test result: ok\\. 1 passed; 0 failed; 0 ignored;");
+  expect(policy).toContain(
+    "connection::home::probe_tests::topology_before_seed_cannot_select_the_recent_session_as_home",
+  );
+  expect(policy).toContain(
+    "connection::home::probe_tests::an_old_refusal_cannot_release_a_reconnected_probe_before_its_seed",
+  );
+  expect(policy).toContain(
+    "connection::home::probe_tests::a_not_ready_probe_rearms_the_wake_for_its_seed",
+  );
   const predicates =
     steps(job(windows, "windows"))
       .map(run)

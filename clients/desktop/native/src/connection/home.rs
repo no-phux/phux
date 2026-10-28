@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 
-use phux_client_runtime::control::{ControlOptions, Event, Status, Topology};
+use phux_client_runtime::control::{ControlOptions, ControlPlane, Event, Status, Topology};
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target};
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{OperationId, SessionKey};
@@ -62,17 +62,15 @@ pub fn choose(requested: Option<&str>, topology: &Topology, inbox: Option<&str>)
 
 /// The Intake session's name: from the topology when it lists the Intake, else
 /// from the organization replica's record.
-fn inbox_name(client: &Client, topology: &Topology) -> Option<String> {
+fn inbox_name(control: &ControlPlane, topology: &Topology) -> Option<String> {
     let key = topology.inbox?;
     if let Some(session) = topology.session_keyed(&key) {
         return Some(session.name.clone());
     }
-    client
-        .intake()
-        .sessions
-        .into_iter()
-        .find(|session| session.key == key)
-        .map(|session| session.name)
+    control
+        .organization()
+        .session(&key)
+        .map(|session| session.name.clone())
 }
 
 /// The session a window on `socket` opens: `requested` (created persistent
@@ -96,8 +94,7 @@ pub fn open_home(phux: &Path, socket: &Path, requested: Option<&str>) -> Result<
 /// be reached, or has nothing to open.
 pub fn open_remote_home(name: &str) -> Result<String, String> {
     let probe = Probe::connect(Target::resolve(name, None)?)?;
-    let topology = probe.ready()?;
-    let inbox = inbox_name(&probe.client, &topology);
+    let (topology, inbox) = probe.ready()?;
     match choose(None, &topology, inbox.as_deref()) {
         Home::Existing(name) => Ok(name),
         Home::Missing(_) | Home::Nothing => Err(format!(
@@ -132,7 +129,7 @@ fn existing_target_home(
     name: &str,
     key: Option<SessionKey>,
 ) -> Result<String, String> {
-    let topology = Probe::connect(target)?.ready()?;
+    let (topology, _) = Probe::connect(target)?.ready()?;
     home_entry(&topology, name, key)
         .map(|session| session.name.clone())
         .ok_or_else(|| {
@@ -193,8 +190,7 @@ impl Probe {
         socket: &Path,
         requested: Option<&str>,
     ) -> Result<String, String> {
-        let topology = self.ready()?;
-        let inbox = inbox_name(&self.client, &topology);
+        let (topology, inbox) = self.ready()?;
         match choose(requested, &topology, inbox.as_deref()) {
             Home::Existing(name) => Ok(name),
             Home::Missing(name) if self.organization() => self.create(&name).map(|()| name),
@@ -214,29 +210,36 @@ impl Probe {
 
     /// Wait for the topology and, from an `ORGANIZATION` server, the seeded
     /// replica (or its refusal, which leaves the topology to choose from).
-    fn ready(&self) -> Result<Topology, String> {
-        let mut unavailable = false;
+    fn ready(&self) -> Result<(Topology, Option<String>), String> {
+        let mut unavailable = None;
         loop {
-            let observation = self.client.take_observation();
-            if observation.status.is_terminal() {
-                return Err(observation
-                    .last_error
-                    .unwrap_or_else(|| "The phux server closed the connection.".to_owned()));
-            }
-            unavailable |= observation
-                .events
-                .iter()
-                .any(|event| matches!(event, Event::OrganizationUnavailable { .. }));
-            let negotiated = matches!(observation.status, Status::Negotiated | Status::Attached);
-            if negotiated && let Some(topology) = self.client.topology() {
-                let seeded =
-                    !self.organization() || unavailable || self.client.organization().is_live();
-                if seeded {
-                    return Ok(topology);
-                }
+            if let Some(home) = self.sample_ready(&mut unavailable)? {
+                return Ok(home);
             }
             self.wait("The phux server did not list its sessions in time.")?;
         }
+    }
+
+    fn sample_ready(
+        &self,
+        unavailable: &mut Option<u64>,
+    ) -> Result<Option<(Topology, Option<String>)>, String> {
+        // This Client operation rearms the activity wake; a direct control-plane
+        // drain would leave the next organization publication without a wake.
+        let observation = self.client.take_observation();
+        for event in observation.events {
+            match event {
+                Event::ConnectionOpened { .. } => *unavailable = None,
+                Event::OrganizationUnavailable { .. } => {
+                    *unavailable = Some(observation.connection_epoch)
+                }
+                _ => {}
+            }
+        }
+        // Never return a pre-seed topology after a separate read observes the
+        // replica as live. Status, Intake and readiness share a control lock.
+        self.client
+            .with_control(|control| ready_home(control, *unavailable))
     }
 
     fn create(&self, name: &str) -> Result<(), String> {
@@ -288,6 +291,30 @@ impl Probe {
         self.wake.recv_timeout(left).map_err(|_| timeout.to_owned())
     }
 }
+
+fn ready_home(
+    control: &ControlPlane,
+    unavailable: Option<u64>,
+) -> Result<Option<(Topology, Option<String>)>, String> {
+    if control.status().is_terminal() {
+        return Err(control
+            .last_error()
+            .unwrap_or("The phux server closed the connection.")
+            .to_owned());
+    }
+    let negotiated = matches!(control.status(), Status::Negotiated | Status::Attached);
+    let seeded = !control.organization_supported()
+        || unavailable == Some(control.connection_epoch())
+        || control.organization().is_live();
+    let Some(topology) = control.topology().filter(|_| negotiated && seeded) else {
+        return Ok(None);
+    };
+    Ok(Some((topology.clone(), inbox_name(control, topology))))
+}
+
+#[cfg(test)]
+#[path = "home_probe_tests.rs"]
+mod probe_tests;
 
 /// `phux new` on a server without `ORGANIZATION`: a session the CLI is given
 /// a name for is persistent.
