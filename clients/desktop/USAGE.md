@@ -78,7 +78,8 @@ restart, server handoff, release channels, and recovery.
 ### Workspace
 
 The window is a sidebar (every visible session, its terminal count and
-independently expandable contents), workspace tabs and split panes. Exceptions
+independently expandable contents, where an agent's row says what it is
+doing: working, needs you, finished or idle), workspace tabs and split panes. Exceptions
 speak where they apply: a connection or startup chip in the titlebar, and a
 **Follow live** pill on a pane scrolled back from its output. The sidebar, the
 Changes panel and a session's rows slide open and shut unless **Animations** is

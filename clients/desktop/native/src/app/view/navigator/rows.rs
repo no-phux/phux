@@ -122,6 +122,12 @@ pub(super) fn pane_row(
                 move || format!("pane-label-{terminal}")
             }),
         )
+        .children(agent.and_then(|info| {
+            let terminal = pane.terminal_id.clone();
+            agent_word(info, look).map(|(detail, word)| {
+                detail.debug_selector(move || format!("pane-state-{terminal}: {word}"))
+            })
+        }))
         .children(suffix.map(|suffix| {
             let terminal = pane.terminal_id.clone();
             row_detail(suffix, look).debug_selector(move || format!("pane-suffix-{terminal}"))
@@ -159,6 +165,11 @@ pub(super) fn catalog_pane_row(
         .debug_selector(move || selector.clone())
         .child(row_icon(pane_mark(pane.origin, pane.agent.as_ref(), look)))
         .child(row_label(title, Emphasis::Quiet, look))
+        .children(pane.agent.as_ref().and_then(|info| {
+            let selector = format!("catalog-pane-state-{}-{terminal}", destination.host_label());
+            agent_word(info, look)
+                .map(|(detail, word)| detail.debug_selector(move || format!("{selector}: {word}")))
+        }))
         .children(suffix.map(|suffix| {
             let selector = format!(
                 "catalog-pane-suffix-{}-{terminal}",
@@ -201,6 +212,31 @@ fn pane_mark(origin: PaneOrigin, agent: Option<&AgentInfo>, look: &Look) -> AnyE
         return state_dot(info.needs_you().then_some(info.state), state).into_any_element();
     }
     terminal_glyph(look).into_any_element()
+}
+
+/// What an agent is doing, in a word beside its row: quiet while it works
+/// or rests, in its attention colour when it waits on you (asking, or
+/// finished for review). No word for an agent that has not said.
+fn agent_word(info: &AgentInfo, look: &Look) -> Option<(gpui::Div, &'static str)> {
+    let word = if info.urgent() {
+        "needs you"
+    } else {
+        info.word()
+    };
+    if word.is_empty() {
+        return None;
+    }
+    let detail = row_detail(word, look);
+    let detail = if info.needs_you() {
+        let mut ink = from_hex(crate::app::ui::status::agent_swatch(info.state));
+        if look.light {
+            ink.l = ink.l.min(0.32);
+        }
+        detail.text_color(ink)
+    } else {
+        detail
+    };
+    Some((detail, word))
 }
 
 /// A terminal nobody's agent drives: a terminal, not a bullet.
