@@ -35,7 +35,7 @@ use picking::Target;
 use ranking::{filter_sections, goto_id, prepare_goto, query_terms, rank_sections, section_ids};
 use rows::{
     CURRENT, Row, Section, command_results, command_sections, current_mark, goto_sections,
-    settings_sections, simple_row,
+    settings_sections, simple_row, switcher_sections,
 };
 use surface::inset_radius;
 use windows::{WINDOWS, move_sections, raise_window, session_sections, window_sections};

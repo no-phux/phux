@@ -15,6 +15,7 @@ const CATALOG: &str = "\
     new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
     native-agent | New Agent… | Terminal |  | Start a native agent in the focused folder, on this host. | agent acp opencode remote headless login
     new-session | New Session… | Terminal | cmd+shift+n | Create a named session. |
+    switch-session | Switch Session… | Terminal | cmd+shift+s | Filter the sessions on every machine; Enter switches this window, or creates a session with the name you typed. | session switch create filter
     rename-session | Rename Session… | Terminal |  | Change the current session's name. |
     select-session-work | Select All in Session | Organization |  | Select the current session's work for organization. |
     move-resources | Move to Session… | Organization | cmd+shift+m | Choose a session for the selected work. |

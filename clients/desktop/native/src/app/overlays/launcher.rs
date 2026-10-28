@@ -27,7 +27,8 @@ use super::goto_filter::GotoFilter;
 use super::surface::baseline;
 use super::{
     Row, Section, Target, WINDOWS, command_results, command_sections, corner, move_sections,
-    prepare_goto, query_terms, rank_sections, session_sections, settings_sections, window_sections,
+    prepare_goto, query_terms, rank_sections, session_sections, settings_sections,
+    switcher_sections, window_sections,
 };
 
 /// Heading line boxes are pinned; Kit's row/list padding follows the window rem.
@@ -112,6 +113,10 @@ pub(super) fn results(
         Modal::WindowSession => (
             "Open session…",
             rank_sections(session_sections(desk), query),
+        ),
+        Modal::Sessions => (
+            "Switch session, or name a new one…",
+            switcher_sections(desk, query),
         ),
         Modal::MoveResources => ("Move to…", rank_sections(move_sections(desk), query)),
         _ => {
@@ -373,6 +378,12 @@ fn item(
     let detail = row.detail.filter(|_| row.command.is_none());
     let selector = match &row.target {
         Target::Preference(key, _) => key.selector(),
+        Target::CreateSession(name) => format!("palette-result-create-session:{name}"),
+        Target::Work(destination) => format!(
+            "palette-result-session:{}:{}",
+            destination.host_label(),
+            destination.name
+        ),
         _ => format!("palette-result-{}", row.command.unwrap_or("destination")),
     };
     let setting = match row.target {

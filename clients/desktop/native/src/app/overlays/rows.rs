@@ -140,6 +140,42 @@ pub(super) fn work_rows(desk: &Desk) -> Vec<Row> {
         .collect()
 }
 
+/// The session switcher: sessions on every machine, this window's machine
+/// first, ranked by `query`; then, when this machine has no session with
+/// exactly that name, a row that creates one in the focused folder.
+pub(super) fn switcher_sections(desk: &Desk, query: &str) -> Vec<Section> {
+    let here = desk.remote.clone();
+    let mut rows = work_rows(desk);
+    rows.sort_by_key(|row| match &row.target {
+        Target::Work(destination) => destination.host != here,
+        _ => true,
+    });
+    let mut sections = rank_sections(
+        vec![Section {
+            label: Some("Sessions"),
+            rows,
+        }],
+        query,
+    );
+    let name = query.trim();
+    let taken = desk.work_catalog().iter().any(|work| {
+        work.destination.host == here && work.destination.name.eq_ignore_ascii_case(name)
+    });
+    if !name.is_empty() && !taken {
+        let place = desk.focused_cwd().unwrap_or_else(|| "~".into());
+        sections.push(Section {
+            label: Some("Create"),
+            rows: vec![simple_row(
+                &format!("New session “{name}”"),
+                format!("in {place}"),
+                "Create",
+                Target::CreateSession(name.to_owned()),
+            )],
+        });
+    }
+    sections
+}
+
 /// Catalog visibility and runtime prerequisites, separate from grouping rows.
 fn command_offered(
     command: &crate::settings::CommandSpec,

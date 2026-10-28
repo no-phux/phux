@@ -192,6 +192,17 @@ impl Desk {
                 self.navigate_work(destination, cx);
                 self.after_command(window, cx);
             }
+            Target::CreateSession(name) => {
+                // The same path as the New Session dialog; a refusal leaves
+                // that dialog open with the reason.
+                self.modal = Modal::Session {
+                    create: true,
+                    current: String::new(),
+                    target: None,
+                };
+                let directory = self.focused_cwd();
+                self.apply_session(name, directory, window, cx);
+            }
             Target::Setting(page) => self.show_settings_page(page, window, cx),
             Target::Preference(key, item) => {
                 if item.is_switch() {
@@ -268,6 +279,8 @@ pub(super) enum Target {
         tab: Option<String>,
     },
     Work(crate::app::fleet::Destination),
+    /// Create a session with this name in the focused folder.
+    CreateSession(String),
     Setting(crate::app::settings_panel::Page),
     Preference(
         crate::app::settings_panel::catalog::Key,

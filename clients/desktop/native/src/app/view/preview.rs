@@ -232,6 +232,7 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                 ("navigation-narrow", "tabs-side", 760., true),
                 ("path-picker", "tabs-side", 1280., true),
                 ("themes", "theme", 1280., true),
+                ("switcher", "switch-session", 1280., true),
             ] {
                 root.update(cx, |root, window, cx| {
                     let desk = root.view().clone().downcast::<Desk>().unwrap();

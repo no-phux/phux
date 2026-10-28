@@ -21,6 +21,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
+        | Modal::Sessions
         | Modal::Windows
         | Modal::MoveResources
         | Modal::Themes

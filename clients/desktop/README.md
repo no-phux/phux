@@ -131,6 +131,7 @@ first, then ends all its processes and deletes the session.
 | ⌘F, ⌘G, ⇧⌘G, ⌘E  | find, next, previous, find selection                     |
 | ⌘↑ ⌘↓            | previous / next shell prompt (needs OSC 133 marks)       |
 | ⇧⌘A              | jump to the agent that most needs you                    |
+| ⇧⌘S              | switch session, or create one by typing its name         |
 | ⌘B, ⌘,           | sidebar, settings                                        |
 | ⌘N, ⌥⌘N          | new window; move the focused pane to its own window      |
 | ⇧⌘I or ⌥;        | insert a path from the focused terminal's host           |
