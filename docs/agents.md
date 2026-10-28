@@ -66,6 +66,11 @@ hooks, reports its state to phux as it changes.
 
 Start a new agent session inside a phux pane to use it.
 
+The OpenCode plugin also adds phux to OpenCode Desktop: a side panel with
+every pane and its agent's state, a live view of any pane you can type into,
+terminals the session owns, and notifications when an agent needs you. See
+[its README](../integrations/opencode-v2/README.md#opencode-desktop).
+
 ### Claude Code from any terminal
 
 `phux agent install-claude` makes a plain `claude` command start inside a

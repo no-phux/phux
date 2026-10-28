@@ -1580,6 +1580,155 @@ function wellFormedJson(value) {
   return JSON.stringify(value, (_key, item) => typeof item === "string" ? item.replace(LONE_SURROGATE, "\uFFFD") : item);
 }
 
+// ../runtime/src/screen.ts
+class PhuxScreen {
+  executable;
+  socket;
+  cwd;
+  env;
+  runner;
+  maxStdoutBytes;
+  constructor(options = {}) {
+    this.executable = options.executable ?? "phux";
+    this.socket = options.socket;
+    this.cwd = options.cwd;
+    this.env = options.env;
+    this.runner = options.runner ?? nodeProcessRunner;
+    this.maxStdoutBytes = options.maxStdoutBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  }
+  async rendered(target, options = {}) {
+    const args = ["snapshot", "--json", "--format", "html"];
+    if (options.history !== undefined) {
+      if (!Number.isSafeInteger(options.history) || options.history < 0)
+        throw new RangeError("history must be a non-negative integer");
+      args.push("--tail", String(options.history));
+    }
+    this.pushSocket(args);
+    args.push(target);
+    const result = await this.run("snapshot --format html", args, options.timeoutMs ?? 1e4, options.signal);
+    if (result.exitCode !== 0)
+      throw this.failed("snapshot --format html", args, result);
+    let value;
+    try {
+      value = JSON.parse(result.stdout);
+    } catch (cause) {
+      throw new PhuxError("malformed_json", "phux snapshot --format html returned malformed JSON", { argv: this.argv(args), cause });
+    }
+    try {
+      return parseRenderedScreen(value);
+    } catch (cause) {
+      if (!(cause instanceof SchemaValidationError))
+        throw cause;
+      throw new PhuxError("invalid_response", `phux snapshot --format html JSON does not match its documented CLI shape: ${cause.message}`, {
+        argv: this.argv(args),
+        cause
+      });
+    }
+  }
+  async watchUntil(target, options) {
+    if (options.until.length === 0)
+      throw new TypeError("until must name at least one event");
+    if (!Number.isSafeInteger(options.timeoutSeconds) || options.timeoutSeconds < 1 || options.timeoutSeconds > 86400) {
+      throw new RangeError("timeoutSeconds must be an integer from 1 through 86400");
+    }
+    const args = ["watch", "--json"];
+    for (const event of options.until)
+      args.push("--until", event);
+    args.push("--timeout", String(options.timeoutSeconds));
+    if (options.after !== undefined)
+      args.push("--after", options.after);
+    this.pushSocket(args);
+    args.push(target);
+    const result = await this.run("watch", args, options.timeoutMs ?? options.timeoutSeconds * 1000 + 5000, options.signal);
+    if (result.exitCode !== 0 && result.exitCode !== 124)
+      throw this.failed("watch", args, result);
+    const event = lastStringField(result.stdout, "event");
+    const cursor = lastStringField(result.stderr, "cursor");
+    return {
+      outcome: result.exitCode === 0 ? "matched" : "timed_out",
+      ...event === undefined ? {} : { event },
+      ...cursor === undefined ? {} : { cursor }
+    };
+  }
+  async run(verb, args, timeoutMs, signal) {
+    let result;
+    try {
+      result = await this.runner({
+        executable: this.executable,
+        args,
+        ...this.cwd === undefined ? {} : { cwd: this.cwd },
+        ...this.env === undefined ? {} : { env: this.env },
+        ...signal === undefined ? {} : { signal },
+        timeoutMs,
+        maxStdoutBytes: this.maxStdoutBytes,
+        maxStderrBytes: DEFAULT_MAX_OUTPUT_BYTES
+      });
+    } catch (cause) {
+      const missing = cause instanceof Error && "code" in cause && cause.code === "ENOENT";
+      throw new PhuxError("unavailable", missing ? `phux executable ${JSON.stringify(this.executable)} was not found; install phux or configure its absolute path` : `could not start phux executable ${JSON.stringify(this.executable)}: ${cause instanceof Error ? cause.message : String(cause)}`, { argv: this.argv(args), cause });
+    }
+    if (result.termination === "aborted")
+      throw new PhuxError("aborted", `phux ${verb} was aborted`, { argv: this.argv(args) });
+    if (result.termination === "timed_out")
+      throw new PhuxError("timeout", `phux ${verb} exceeded its local subprocess timeout`, { argv: this.argv(args) });
+    if (result.termination === "output_limit")
+      throw new PhuxError("output_limit", `phux ${verb} exceeded its ${result.outputLimit} capture limit`, { argv: this.argv(args) });
+    return result;
+  }
+  failed(verb, args, result) {
+    let cliError;
+    try {
+      const document = JSON.parse(result.stderr.trim());
+      if (document !== null && typeof document === "object" && !Array.isArray(document))
+        cliError = document;
+    } catch {}
+    const detail = result.stderr.trim();
+    return new PhuxError("command_failed", `phux ${verb} failed with exit code ${String(result.exitCode)}${detail === "" ? "" : `: ${detail}`}`, {
+      argv: this.argv(args),
+      exitCode: result.exitCode,
+      stderr: result.stderr,
+      ...cliError === undefined ? {} : { cliError }
+    });
+  }
+  pushSocket(args) {
+    if (this.socket !== undefined)
+      args.push("--socket", this.socket);
+  }
+  argv(args) {
+    return [this.executable, ...args];
+  }
+}
+function parseRenderedScreen(value) {
+  const screen = parseScreenState(value);
+  const root = value;
+  const rendered = root.rendered;
+  if (rendered === null || typeof rendered !== "object" || Array.isArray(rendered)) {
+    throw new SchemaValidationError("$.rendered", "an object");
+  }
+  const { format, data } = rendered;
+  if (format !== "html")
+    throw new SchemaValidationError("$.rendered.format", '"html"');
+  if (typeof data !== "string")
+    throw new SchemaValidationError("$.rendered.data", "a string");
+  const title = root.title;
+  if (title !== undefined && title !== null && typeof title !== "string")
+    throw new SchemaValidationError("$.title", "a string or null");
+  return { pane: screen.pane, cols: screen.cols, rows: screen.rows, cursor: screen.cursor, title: title ?? null, html: data };
+}
+function lastStringField(text, field) {
+  const lines = text.split(`
+`).map((line) => line.trim()).filter((line) => line.startsWith("{"));
+  for (const line of lines.reverse()) {
+    try {
+      const value = JSON.parse(line);
+      if (value !== null && typeof value === "object" && typeof value[field] === "string") {
+        return value[field];
+      }
+    } catch {}
+  }
+  return;
+}
+
 // ../runtime/src/awareness.ts
 var PHUX_CONTEXT_VERSION = 1;
 var DEFAULT_CONTEXT_TIMEOUT_MS = 1000;
@@ -2421,6 +2570,291 @@ function isGone(error) {
   return /not found|no such|does not exist|unknown (pane|terminal)/i.test(message);
 }
 
+// src/rpc.ts
+import { Rpc } from "@opencode/plugin/rpc";
+var TARGET_PATTERN = "^(?:[^/\\s]+/)?@[0-9]+$";
+var TARGET2 = { type: "string", minLength: 2, maxLength: 512 };
+var SESSION = { type: "string", minLength: 1, maxLength: 256 };
+var OBJECT = { type: "object" };
+var KEY = { type: "string", minLength: 1, maxLength: 64 };
+var PhuxRpc = Rpc.define({
+  id: "phux",
+  methods: {
+    overview: {
+      input: {
+        type: "object",
+        properties: { sessionIDs: { type: "array", maxItems: 256, items: SESSION } },
+        additionalProperties: false
+      },
+      output: OBJECT
+    },
+    screen: {
+      input: {
+        type: "object",
+        properties: {
+          target: TARGET2,
+          history: { type: "integer", minimum: 0, maximum: 1e4 },
+          after: { type: "string", minLength: 1, maxLength: 512 },
+          waitSeconds: { type: "integer", minimum: 0, maximum: 25 },
+          known: { type: "string", minLength: 1, maxLength: 64 }
+        },
+        required: ["target"],
+        additionalProperties: false
+      },
+      output: OBJECT
+    },
+    input: {
+      input: {
+        type: "object",
+        properties: {
+          target: TARGET2,
+          text: { type: "string", minLength: 1, maxLength: 65536 },
+          keys: { type: "array", minItems: 1, maxItems: 256, items: KEY },
+          submit: { type: "boolean" }
+        },
+        required: ["target"],
+        additionalProperties: false
+      },
+      output: OBJECT
+    },
+    prompt: {
+      input: {
+        type: "object",
+        properties: { target: TARGET2, text: { type: "string", minLength: 1, maxLength: 65536 } },
+        required: ["target", "text"],
+        additionalProperties: false
+      },
+      output: OBJECT
+    },
+    spawn: {
+      input: {
+        type: "object",
+        properties: {
+          sessionID: SESSION,
+          cwd: { type: "string", minLength: 1, maxLength: 4096 },
+          command: { type: "array", minItems: 1, maxItems: 256, items: { type: "string", maxLength: 65536 } }
+        },
+        required: ["sessionID"],
+        additionalProperties: false
+      },
+      output: OBJECT
+    },
+    kill: {
+      input: {
+        type: "object",
+        properties: { sessionID: SESSION, target: TARGET2 },
+        required: ["sessionID", "target"],
+        additionalProperties: false
+      },
+      output: OBJECT
+    }
+  },
+  events: {}
+});
+
+// src/gui-service.ts
+var SCREEN_EVENTS = ["dirty", "idle", "title_changed", "pane_closed"];
+var DEFAULT_HISTORY = 500;
+var TARGET3 = new RegExp(TARGET_PATTERN);
+var OVERVIEW_TTL_MS = 1000;
+var instances = new Set;
+var overviews = new Map;
+var observed = new Map;
+function registerTerminals(terminals) {
+  instances.add(terminals);
+  return () => instances.delete(terminals);
+}
+function ownedBy(sessionID) {
+  const owned = new Set;
+  for (const terminals of instances)
+    for (const target of terminals.owned(sessionID))
+      owned.add(target);
+  return [...owned];
+}
+function createGuiService(options) {
+  const { cli } = options;
+  const cacheKey = JSON.stringify([cli.executable, cli.socket ?? null]);
+  const refuseParent = (target) => {
+    exactTarget2(target);
+    if (options.parent !== null && target === options.parent) {
+      throw new Error(`${target} hosts this OpenCode server; phux does not type into its own pane.`);
+    }
+  };
+  const fleet = () => {
+    const cached = overviews.get(cacheKey);
+    if (cached !== undefined && Date.now() - cached.at < OVERVIEW_TTL_MS)
+      return cached.result;
+    const result = cli.agentList({ timeoutMs: 1e4 }).then((list) => ({ available: true, panes: stamp(cacheKey, list.agents.map(toPane)) }), (error) => ({ available: false, error: describe(error), panes: [] }));
+    overviews.set(cacheKey, { at: Date.now(), result });
+    return result;
+  };
+  const invalidate = () => {
+    overviews.delete(cacheKey);
+  };
+  return {
+    async overview(input) {
+      const result = await fleet();
+      return {
+        ...result,
+        owned: Object.fromEntries((input.sessionIDs ?? []).map((sessionID) => [sessionID, ownedBy(sessionID)])),
+        maxTerminals: options.maxTerminals
+      };
+    },
+    async screen(input, context = {}) {
+      exactTarget2(input.target);
+      const signal = context.signal === undefined ? {} : { signal: context.signal };
+      let cursor = input.after;
+      if ((input.waitSeconds ?? 0) > 0) {
+        try {
+          const watched = await options.screen.watchUntil(input.target, {
+            until: SCREEN_EVENTS,
+            timeoutSeconds: input.waitSeconds,
+            ...input.after === undefined ? {} : { after: input.after },
+            ...signal
+          });
+          cursor = watched.cursor ?? cursor;
+          if (watched.event === "pane_closed")
+            return { changed: true, closed: true, ...cursor === undefined ? {} : { cursor } };
+        } catch (error) {
+          if (isGone2(error))
+            return { changed: true, closed: true };
+          throw error;
+        }
+      }
+      const withCursor = cursor === undefined ? {} : { cursor };
+      const history = input.history ?? DEFAULT_HISTORY;
+      const execution = { timeoutMs: 1e4, ...signal };
+      const [rendered, plain] = await Promise.allSettled([
+        options.screen.rendered(input.target, { history, ...execution }),
+        cli.snapshot({ target: input.target, scrollback: history, ...execution })
+      ]);
+      if ([rendered, plain].some((result) => result.status === "rejected" && isGone2(result.reason))) {
+        return { changed: true, closed: true, ...withCursor };
+      }
+      if (plain.status === "rejected")
+        throw plain.reason;
+      if (rendered.status === "rejected" && !isUsageError(rendered.reason))
+        throw rendered.reason;
+      const screen = plain.value;
+      const content = rendered.status === "fulfilled" ? { html: rendered.value.html, title: rendered.value.title } : { lines: [...screen.scrollback, ...screen.lines] };
+      const geometry = { cols: screen.cols, rows: screen.rows, historyRows: screen.scrollback.length, caret: screen.cursor };
+      const hash = fingerprint(JSON.stringify([content, geometry]));
+      if (hash === input.known)
+        return { changed: false, closed: false, ...withCursor, hash };
+      return { changed: true, closed: false, ...withCursor, hash, ...geometry, ...content };
+    },
+    async input(input, context = {}) {
+      refuseParent(input.target);
+      if (input.text === undefined && input.keys === undefined && input.submit !== true) {
+        throw new TypeError("input needs text, keys, or submit");
+      }
+      const execution = { timeoutMs: 1e4, ...context.signal === undefined ? {} : { signal: context.signal } };
+      if (input.text !== undefined)
+        await cli.paste(input.target, input.text, execution);
+      if (input.keys !== undefined)
+        await cli.sendKeys(input.target, input.keys, execution);
+      if (input.submit === true)
+        await cli.sendKeys(input.target, ["Enter"], execution);
+      return { ok: true };
+    },
+    async prompt(input, context = {}) {
+      refuseParent(input.target);
+      const execution = { timeoutMs: 15000, ...context.signal === undefined ? {} : { signal: context.signal } };
+      if (/[\r\n]/.test(input.text)) {
+        await cli.paste(input.target, input.text, execution);
+        await cli.sendKeys(input.target, ["Enter"], execution);
+      } else {
+        await cli.agentPrompt(input.target, input.text, { wait: false, ...execution });
+      }
+      invalidate();
+      return { ok: true };
+    },
+    async spawn(input, context = {}) {
+      const signal = context.signal === undefined ? {} : { signal: context.signal };
+      await options.terminals.admit(input.sessionID, context.signal);
+      const result = await cli.spawn({
+        timeoutMs: 15000,
+        ...input.cwd === undefined ? {} : { cwd: input.cwd },
+        ...input.command === undefined ? {} : { command: input.command },
+        ...signal
+      });
+      const target = result.satellite === null ? `@${result.terminal_id}` : `${result.satellite}/@${result.terminal_id}`;
+      await options.terminals.add(input.sessionID, target);
+      options.selectedTargets.set(input.sessionID, target);
+      invalidate();
+      return { target };
+    },
+    async kill(input, context = {}) {
+      exactTarget2(input.target);
+      const owner = [...instances].find((terminals) => terminals.owned(input.sessionID).includes(input.target)) ?? options.terminals;
+      await owner.kill(input.sessionID, input.target, context.signal);
+      if (options.selectedTargets.get(input.sessionID) === input.target)
+        options.selectedTargets.delete(input.sessionID);
+      invalidate();
+      return { ok: true };
+    }
+  };
+}
+function stamp(key, panes, now = Date.now()) {
+  const previous = observed.get(key) ?? new Map;
+  const next = new Map;
+  const result = panes.map((pane) => {
+    const before = previous.get(pane.target);
+    const entry = before === undefined ? { state: pane.state, seq: 0, since: now } : before.state === pane.state ? before : { state: pane.state, seq: before.seq + 1, since: now };
+    next.set(pane.target, entry);
+    return { ...pane, seq: entry.seq, since: entry.since };
+  });
+  observed.set(key, next);
+  return result;
+}
+function toPane(agent) {
+  return {
+    target: agent.terminal,
+    session: agent.session,
+    title: agent.title,
+    cwd: agent.cwd,
+    agent: { id: agent.agent.id, label: agent.agent.label, kind: agent.agent.kind },
+    state: agent.state,
+    attention: agent.attention,
+    provider: agent.agent_session?.provider ?? null,
+    nativeId: agent.agent_session?.native_id ?? null
+  };
+}
+function fingerprint(text) {
+  let hash = 2166136261;
+  for (let index = 0;index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${(hash >>> 0).toString(36)}:${text.length.toString(36)}`;
+}
+function exactTarget2(target) {
+  if (!TARGET3.test(target))
+    throw new TypeError(`${JSON.stringify(target)} is not an exact @N or host/@N pane selector`);
+}
+function cliErrorCode(error) {
+  if (!(error instanceof PhuxError))
+    return;
+  const detail = error.cliError?.["error"];
+  if (detail === null || typeof detail !== "object" || Array.isArray(detail))
+    return;
+  const code = detail.code;
+  return typeof code === "string" ? code : undefined;
+}
+function isGone2(error) {
+  if (cliErrorCode(error) === "no_such_target")
+    return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /no such target|not found|does not exist|unknown (pane|terminal)/i.test(message);
+}
+function isUsageError(error) {
+  return cliErrorCode(error) === "usage_error" || error instanceof PhuxError && error.exitCode === 2;
+}
+function describe(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length > 600 ? `${message.slice(0, 600)}\u2026` : message;
+}
+
 // src/index.ts
 var src_default = Plugin.define({
   id: "phux",
@@ -2442,7 +2876,9 @@ var src_default = Plugin.define({
       enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS, false),
       ...options.contextTimeoutMs === undefined ? {} : { timeoutMs: options.contextTimeoutMs }
     });
-    const terminals = new OwnedTerminals(cli, options.maxTerminals ?? DEFAULT_MAX_TERMINALS);
+    const maxTerminals = options.maxTerminals ?? DEFAULT_MAX_TERMINALS;
+    const terminals = new OwnedTerminals(cli, maxTerminals);
+    const unregisterTerminals = registerTerminals(terminals);
     const contextIdentity = (sessionID) => {
       const self = normalizeTerminalIdentity(identityTarget);
       const selected = selectedTargets.get(sessionID) ?? environmentTarget;
@@ -2491,6 +2927,16 @@ var src_default = Plugin.define({
         await lifecycle.toolEnd(event.sessionID, event.tool, event.id);
       });
     }
+    const screen = new PhuxScreen(cliOptions(options, environment));
+    const gui = createGuiService({ cli, screen, terminals, maxTerminals, parent, selectedTargets });
+    const rpc = await ctx.rpc.register(PhuxRpc, {
+      overview: (input) => gui.overview(input),
+      screen: (input, call) => gui.screen(input, { signal: call.signal }),
+      input: (input, call) => gui.input(input, { signal: call.signal }),
+      prompt: (input, call) => gui.prompt(input, { signal: call.signal }),
+      spawn: (input, call) => gui.spawn(input, { signal: call.signal }),
+      kill: (input, call) => gui.kill(input, { signal: call.signal })
+    });
     const controller = new AbortController;
     const events = (async () => {
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
@@ -2511,6 +2957,8 @@ var src_default = Plugin.define({
     });
     return async () => {
       controller.abort();
+      await rpc.dispose();
+      unregisterTerminals();
       await events.catch(() => {
         return;
       });
@@ -2533,7 +2981,7 @@ var SHARED_TOOLS = [
   "phux_resource_wait",
   "phux_status"
 ];
-var TARGET2 = { type: "string", minLength: 2, maxLength: 512, pattern: "^(?:[^/\\s]+/)?@[0-9]+$", description: "Exact @N or host/@N returned by phux_spawn." };
+var TARGET4 = { type: "string", minLength: 2, maxLength: 512, pattern: "^(?:[^/\\s]+/)?@[0-9]+$", description: "Exact @N or host/@N returned by phux_spawn." };
 function ownedSpawn(spawn, terminals, selectedTargets) {
   return {
     ...spawn,
@@ -2554,7 +3002,7 @@ function killTool(terminals, selectedTargets) {
   return {
     name: "phux_kill",
     description: "Close a terminal this session opened with phux_spawn. Refuses panes it did not spawn.",
-    input: { type: "object", properties: { target: TARGET2 }, required: ["target"], additionalProperties: false },
+    input: { type: "object", properties: { target: TARGET4 }, required: ["target"], additionalProperties: false },
     async execute(input, context) {
       await terminals.kill(context.sessionID, input.target, context.signal);
       if (selectedTargets.get(context.sessionID) === input.target)

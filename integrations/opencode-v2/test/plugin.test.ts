@@ -212,7 +212,15 @@ async function setupHost(serverLifecycle = true, extra: Record<string, unknown> 
   const shellHooks: Record<string, (event: { command: string }) => Promise<void>> = {};
   const sessionHooks: Record<string, (event: unknown) => Promise<void>> = {};
   let deliver!: (entry: { event: unknown; done: () => void } | undefined) => void;
+  const rpc: Record<string, (input: unknown, call: { signal: AbortSignal }) => Promise<unknown>> = {};
   const context = {
+    rpc: {
+      register: async (definition: { id: string }, implementation: typeof rpc) => {
+        expect(definition.id).toBe("phux");
+        Object.assign(rpc, implementation);
+        return { dispose: async () => undefined };
+      },
+    },
     options: { contextAwareness: false, serverLifecycle, ...extra },
     tool: {
       transform: async (transform: (editor: unknown) => void) => transform({ add: (tool: Info) => { tools[tool.name] = tool; } }),
@@ -242,6 +250,7 @@ async function setupHost(serverLifecycle = true, extra: Record<string, unknown> 
   } as unknown as Plugin.Context;
   const cleanup = await plugin.setup(context);
   return {
+    rpc: (method: string, input: unknown) => rpc[method]!(input, { signal: new AbortController().signal }),
     before: (event: unknown) => hooks["execute.before"]!(event),
     shellHookCount: () => Object.keys(shellHooks).length,
     toolNames: () => Object.keys(tools),
