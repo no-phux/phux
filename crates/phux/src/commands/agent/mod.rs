@@ -351,10 +351,15 @@ async fn pane_evidence(
     snapshot: &SessionSnapshot,
     pane: &ResourceInfo,
 ) -> PaneEvidence {
-    let screen =
-        phux_client::snapshot::get_screen_scrollback(socket_path, pane.id.clone(), None, true)
-            .await
-            .ok();
+    let (screen, occupant) = tokio::join!(
+        phux_client::snapshot::get_screen_scrollback(socket_path, pane.id.clone(), None, true),
+        phux_client::agent_meta::read_pane_occupant_within(
+            socket_path,
+            &pane.id,
+            std::time::Duration::ZERO
+        ),
+    );
+    let screen = screen.ok();
     let session = session_of_pane(snapshot, pane);
     // The pane's live agent session only when it has exactly one (ADR-0103).
     let agent_session = {
@@ -388,6 +393,7 @@ async fn pane_evidence(
                     .iter()
                     .any(|cell| cell.semantic == Some(phux_core::screen::SemanticContent::Input))
             }),
+        occupant,
     }
 }
 

@@ -350,6 +350,18 @@ fn infer_identity(
     plugins: &[PluginAgent],
     sources: &mut Vec<AgentSource>,
 ) -> AgentIdentity {
+    // Screen and title words are a guess about what runs; the occupant is
+    // the server's observation of it. `cat README` or a cwd named
+    // `claude-501` in a bash prompt is text, not a Claude.
+    if let Some(occupant) = evidence.occupant.as_ref().filter(|o| o.is_pane_shell) {
+        sources.push(AgentSource::new(
+            "identity",
+            "foreground is the pane shell",
+            0.9,
+            occupant.foreground.clone(),
+        ));
+        return identity("unknown", "Unknown agent", AgentKind::Unknown);
+    }
     let text = evidence_text(evidence);
     if contains_token(&text, "codex") {
         sources.push(AgentSource::new("identity", "codex marker", 0.8, "Codex"));
