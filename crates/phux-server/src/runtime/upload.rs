@@ -164,13 +164,13 @@ pub(super) async fn handle_put_file(state: &SharedState, chunk: PutFileChunk) ->
         None => {
             return error(
                 ErrorCode::TerminalNotFound,
-                format!("no such terminal: {:?}", chunk.terminal_id),
+                format!("no such terminal: {}", chunk.terminal_id),
             );
         }
         Some(false) => {
             return error(
                 ErrorCode::WrongResourceKind,
-                format!("not a Terminal: {:?}", chunk.terminal_id),
+                format!("not a Terminal: {}", chunk.terminal_id),
             );
         }
         Some(true) => {}

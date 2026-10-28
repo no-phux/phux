@@ -105,7 +105,7 @@ async fn append_output(
         })
         .ok_or_else(|| CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
-            message: format!("no such resource: {terminal_id:?}"),
+            message: format!("no such resource: {terminal_id}"),
         })?;
     let session = handle
         .agent_session()

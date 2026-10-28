@@ -74,7 +74,7 @@ pub(super) fn local_terminal(
         }
         ResolvedOwned::Remote(_) => Err(CommandResult::Error {
             code: ErrorCode::UnsupportedSatelliteRoute,
-            message: format!("{verb} on satellite route unsupported: {terminal_id:?}"),
+            message: format!("{verb} on satellite route unsupported: {terminal_id}"),
         }),
         ResolvedOwned::Unknown => Err(terminal_not_found(terminal_id)),
     }
