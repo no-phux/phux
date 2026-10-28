@@ -128,8 +128,12 @@ printf '%s\n' 'line one' 'line two' | phux paste @7
 phux send-keys @7 Enter
 ```
 
-`send-keys` and `paste` have no `--json` flag and no delivery receipt.
-Read the pane before sending the same text again.
+With `--json` before the target, `send-keys` and `paste` print a receipt:
+`schema_version`, `sent`, `terminal_id`, and `events`, the number of input
+events the server acknowledged. The receipt means the bytes reached the
+pane's input, not that the program read them. When a send fails partway,
+`error.recovery.effect_certainty` is `unknown`, so read the pane before you
+send the same text again.
 
 When the pane is already a recognized agent, one line goes out with a
 receipt:

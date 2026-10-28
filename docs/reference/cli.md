@@ -3559,7 +3559,7 @@ Examples:
 phux paste demo 'SELECT count(*) FROM users;'
 git diff | phux paste review
 
-Usage: phux paste [--untrusted] <TARGET> [TEXT]
+Usage: phux paste [--untrusted] [--json] <TARGET> [TEXT]
 
 Arguments:
   <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
@@ -3572,6 +3572,9 @@ Flags:
                        silently drop an unsafe payload — e.g. anything
                        multiline. Without this flag the paste is trusted and
                        forwarded verbatim.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -4825,14 +4828,18 @@ followed by the real key, honoring the pane's live bracketed-paste mode. TARGET
 is resolved client-side to one pane, so the live pane is neither attached nor
 resized.
 
-Flags (`--socket`) MUST precede TARGET: KEYS is a trailing var-arg, so anything
-after TARGET is taken as a key to send.
+Flags (`--json`, `--socket`) MUST precede TARGET: KEYS is a trailing var-arg, so
+anything after TARGET is taken as a key to send.
+
+`--json` prints how many input events the server acknowledged. A failure partway
+carries `error.recovery`: part of the keys reached the pane, so read it before
+sending again.
 
 Examples:
 phux send-keys demo "echo hi" Enter
 phux send-keys work:1.0 C-c
 
-Usage: phux send-keys <TARGET> <KEYS>…
+Usage: phux send-keys [--json] <TARGET> <KEYS>…
 
 Arguments:
   <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
@@ -4840,6 +4847,9 @@ Arguments:
   <KEYS>…   Keys to send: named keys and/or literal strings, in order.
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:

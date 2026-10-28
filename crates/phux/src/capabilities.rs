@@ -132,6 +132,7 @@ fn schema_contracts() -> Value {
         { "invocation": "phux spawn --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux launch --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux resize --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux send-keys|paste --json", "schema_version": crate::commands::send_keys::RECEIPT_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux ask --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux agent list|show|explain --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux agent wait|prompt|send-keys|answer|start --json", "schema_version": 1, "kind": "document" },
