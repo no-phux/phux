@@ -103,6 +103,8 @@ pub enum Modal {
     AgentFleet,
     NativeLaunch,
     Path,
+    /// Pick a theme; the highlighted one previews until Enter keeps it.
+    Themes,
     MoveResources,
     Rename {
         tab_id: String,
@@ -274,6 +276,9 @@ pub struct Desk {
     pub(super) menu_closed: Option<(gpui::SharedString, Instant)>,
     /// Where menu triggers were painted.
     pub(crate) anchors: super::ui::anchor::Anchors,
+    /// The theme picker's original theme, restored unless a theme is kept,
+    /// and whether its list has been pointed at the current theme yet.
+    pub(crate) theme_pick: Option<(String, bool)>,
     /// Titlebar and sidebar. A terminal frame does not rebuild them.
     pub(super) chrome: super::view::ChromeCache,
     /// The window title last written.

@@ -19,6 +19,7 @@ mod picking;
 mod ranking;
 mod rows;
 mod surface;
+mod theme_panel;
 mod windows;
 
 pub use find_bar::find_bar;

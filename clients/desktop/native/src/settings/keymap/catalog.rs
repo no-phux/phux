@@ -11,6 +11,7 @@ const CATALOG: &str = "\
     capture | Capture… | General | cmd+shift+space | Dispatch a thought to OpenCode. Enter follows; Command/Control+Enter stays; Shift+Enter adds a line. | thought idea bug intake
     goto | Go To… | General | cmd+p | Find and focus a terminal, agent or tab. | switch navigate
     settings | Settings… | General | cmd+, | Adjust appearance, key bindings and desktop preferences. | preferences theme
+    theme | Select Theme… | General |  | Preview themes as you move through them; Enter keeps one, Escape restores. | colors colours appearance dark light
     new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
     native-agent | New Agent… | Terminal |  | Start a native agent in the focused folder, on this host. | agent acp opencode remote headless login
     new-session | New Session… | Terminal | cmd+shift+n | Create a named session. |

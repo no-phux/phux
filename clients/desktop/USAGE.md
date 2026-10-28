@@ -186,7 +186,10 @@ If you have a Ghostty config (`~/.config/ghostty/config`, or the Application
 Support copy), the first launch adopts it: font family and size,
 `adjust-cell-width/height` percentages, colours including the 16-colour
 palette and a named `theme`, window padding, `unfocused-split-opacity`,
-`split-divider-color`, and `macos-option-as-alt`. Settings also exposes
+`split-divider-color`, and `macos-option-as-alt`. **Select Theme…** in the
+command palette lists every theme with its colours and previews the
+highlighted one across the whole app as you move through the list; Enter
+keeps it, Escape or a click outside restores the theme it opened on. Settings also exposes
 **Appearance > Glassy panes** and **Pane opacity**, which lower the default terminal background opacity over
 the native blurred window background. Your `keybind` lines replace
 the built-in chords where an equivalent command exists, including non-Command

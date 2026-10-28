@@ -143,6 +143,7 @@ impl Desk {
             menu: None,
             menu_closed: None,
             anchors: Default::default(),
+            theme_pick: None,
             chrome: super::super::view::ChromeCache::default(),
             window_title: String::new(),
             closed: false,

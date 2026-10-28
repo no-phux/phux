@@ -23,6 +23,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         | Modal::WindowSession
         | Modal::Windows
         | Modal::MoveResources
+        | Modal::Themes
         | Modal::Path => {
             desk.palette_view = PaletteView::default();
             let state = palette_state(desk, window, cx);

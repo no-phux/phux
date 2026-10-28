@@ -87,6 +87,7 @@ impl Desk {
             "folder" => self.open_folder(window, cx),
             "native-agent" => self.open_native_launch(window, cx),
             "insert-path" => self.open_path_picker(),
+            "theme" => self.open_theme_picker(),
             "view" => self.workspace_call(|link| link.workspace.duplicate_view(&link.connection)),
             "close" => self.fold_pane(window, cx),
             "close-tab" => {

@@ -35,6 +35,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
                 None => backdrop(colors, window, cx, panel),
             };
         }
+        Modal::Themes => super::theme_panel::theme_panel(desk, &look, window, cx),
         Modal::Notifications => {
             let panel = notifications_panel(desk, colors, &look, window, cx);
             return match desk.anchors.get("notifications") {
