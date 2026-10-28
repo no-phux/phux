@@ -1,6 +1,6 @@
 # @phux/opencode
 
-OpenCode V2 plugin, tested against the public `@opencode/plugin@2.0.32` contract.
+OpenCode V2 plugin, tested against the public `@opencode/plugin@2.2.0` contract.
 OpenCode keeps its own shell, sessions, and permissions; phux supplies
 terminals only where a terminal is the point.
 
@@ -19,6 +19,39 @@ it: OpenCode never updates plugins on its own, so run `opencode plugin check`
 and `opencode plugin update` (or the TUI's Plugins dialog) to move to the
 newest release.
 
+## OpenCode Desktop
+
+The same package adds phux to OpenCode Desktop. Configure it in the global
+`opencode.json(c)`, which is where the desktop app reads plugins, and every
+window gets:
+
+- **Panes**, a side-panel tab listing every pane on the phux server: this
+  session's terminals first, then agents that need you, then each phux
+  session. Each row shows the agent, its folder, and its live state.
+- **A live view of any pane** in its own side-panel tab. It renders the phux
+  server's own styled screen, follows output as it happens, and costs nothing
+  while the pane is quiet. Click the screen to type into the pane; the field
+  below sends a line, or a prompt with a delivery receipt to an agent. Quote
+  the selection or the screen into your next prompt with one click.
+- **Terminals for the session.** *New phux terminal* opens a shell in the
+  session's folder that the session owns, exactly like the agent's
+  `phux_spawn`. Terminals the agent spawns open beside the conversation as it
+  starts them, and the composer shows a pill listing them.
+- **Attention.** A titlebar item appears while any agent needs you, and the
+  app's notifications fire when an agent needs you or finishes.
+- **Commands** in the palette and Settings > Shortcuts: show panes, new
+  terminal, open a pane, prompt an agent, quote a pane, and go to the agent
+  that needs you. `/phux` in the composer shows the panes.
+- **Settings > phux** for notifications, opening agent terminals, and fitting
+  wide panes to the panel.
+
+The desktop UI talks only to this plugin's server part through its RPC, so
+the phux CLI, its socket, and each session's terminal ownership stay on the
+OpenCode server. It needs OpenCode 2.2 or newer. The GUI never types into the
+pane that hosts the OpenCode server, and it closes only terminals the session
+owns. **Settings > Extensions > Plugins** turns the desktop UI off without
+removing the tools.
+
 ## Build and load from a checkout
 
 From a phux checkout:
@@ -29,9 +62,12 @@ bun install --frozen-lockfile
 bun run compile
 ```
 
-OpenCode loads bundled `index.js` for server tools and `tui.js` for the terminal
-companion, not TypeScript sources. The bundles include phux's shared runtime;
-the TUI entrypoint is universal-compiled against OpenTUI 0.5.17 and Solid 1.9.12.
+OpenCode loads bundled `index.js` for server tools, `tui.js` for the terminal
+companion, and `dist/gui-experimental.cjs` for the desktop UI, not TypeScript
+sources. The bundles include phux's shared runtime; the TUI entrypoint is
+universal-compiled against OpenTUI 0.7.0 and Solid 1.9.12, and the desktop
+bundle is built with the SDK's Vite preset (`vite build --watch` reloads it in
+open windows while you work).
 Install the declared peers before loading a checkout; merely having `tui.js`
 on disk does not mean its runtime dependencies are available.
 Artifacts are checked in and Git installs require no build lifecycle hooks;
@@ -159,9 +195,11 @@ bun run gates
 
 The package gate typechecks, builds, then tests. Its packed-artifact regression
 loads the tarball outside the checkout and checks registration against the
-public SDK. Source tests cover cross-session selection/deletion, terminal
-ownership and release, lifecycle identity, parent write protection, and
-cancellation.
+public SDK, including the desktop entrypoint. Source tests cover cross-session
+selection/deletion, terminal ownership and release, lifecycle identity, parent
+write protection, and cancellation; the desktop tests cover the RPC service,
+the screen renderer's sanitizing parser and key mapping, the bundle's module
+contract, and that every message the UI reads has English copy.
 
 The checkout's paired Seroval overrides keep its dependency audit clean. npm
 does not apply a dependency's overrides in a consuming project: a fresh tarball

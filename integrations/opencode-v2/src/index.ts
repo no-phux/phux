@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode/plugin";
 
 import { PhuxCli, type PhuxCliOptions } from "../../runtime/src/adapter.js";
+import { PhuxScreen } from "../../runtime/src/screen.js";
 import {
   PhuxContextAwareness,
   contextAwarenessEnabled,
@@ -11,6 +12,16 @@ import { OpenCodeLifecycle } from "./lifecycle.js";
 import { createPhuxTools, type PhuxToolDefinition, type ToolContext } from "../../runtime/src/tools.js";
 import { PARENT_PANE_RULE, parentPane } from "./parent.js";
 import { DEFAULT_MAX_TERMINALS, OwnedTerminals } from "./terminals.js";
+import { createGuiService, registerTerminals } from "./gui-service.js";
+import {
+  PhuxRpc,
+  type InputInput,
+  type KillInput,
+  type OverviewInput,
+  type PromptInput,
+  type ScreenInput,
+  type SpawnInput,
+} from "./rpc.js";
 
 
 export interface PhuxOpenCodeV2Options {
@@ -55,7 +66,9 @@ export default Plugin.define({
       enabled: options.contextAwareness ?? contextAwarenessEnabled(environment.PHUX_CONTEXT_AWARENESS, false),
       ...(options.contextTimeoutMs === undefined ? {} : { timeoutMs: options.contextTimeoutMs }),
     });
-    const terminals = new OwnedTerminals(cli, options.maxTerminals ?? DEFAULT_MAX_TERMINALS);
+    const maxTerminals = options.maxTerminals ?? DEFAULT_MAX_TERMINALS;
+    const terminals = new OwnedTerminals(cli, maxTerminals);
+    const unregisterTerminals = registerTerminals(terminals);
     const contextIdentity = (sessionID: string) => {
       const self = normalizeTerminalIdentity(identityTarget);
       const selected = selectedTargets.get(sessionID) ?? environmentTarget;
@@ -109,6 +122,19 @@ export default Plugin.define({
       });
     }
 
+    // The desktop and web GUI reach phux only through this RPC, so the CLI,
+    // its socket, and each session's terminal ownership stay server-side.
+    const screen = new PhuxScreen(cliOptions(options, environment));
+    const gui = createGuiService({ cli, screen, terminals, maxTerminals, parent, selectedTargets });
+    const rpc = await ctx.rpc.register(PhuxRpc, {
+      overview: (input) => gui.overview(input as OverviewInput),
+      screen: (input, call) => gui.screen(input as ScreenInput, { signal: call.signal }),
+      input: (input, call) => gui.input(input as InputInput, { signal: call.signal }),
+      prompt: (input, call) => gui.prompt(input as PromptInput, { signal: call.signal }),
+      spawn: (input, call) => gui.spawn(input as SpawnInput, { signal: call.signal }),
+      kill: (input, call) => gui.kill(input as KillInput, { signal: call.signal }),
+    });
+
     const controller = new AbortController();
     const events = (async () => {
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
@@ -128,6 +154,8 @@ export default Plugin.define({
 
     return async () => {
       controller.abort();
+      await rpc.dispose();
+      unregisterTerminals();
       await events.catch(() => undefined);
       if (reportLifecycle) await lifecycle.dispose();
       await terminals.releaseAll();
