@@ -23,7 +23,7 @@ const CATALOG: &str = "\
     kill-session | Kill Session… | Terminal |  | Confirm termination of a session and its processes. | delete
     new-home | New Terminal in Home Directory | Terminal | cmd+shift+t | Open a new terminal starting in your home directory. | shell
     folder | Open Folder… | Terminal | cmd+o | Choose a folder for a new terminal. | directory project
-    insert-path | Insert Path… | Terminal | cmd+shift+i | Choose a file or folder path to insert into the terminal. |
+    insert-path | Insert Path… | Terminal | cmd+shift+i alt+; | Choose a file or folder path to insert at the cursor. | complete picker file
     split-right | Split Right | Panes | cmd+d | Open a terminal beside the focused pane. | vertical
     split-down | Split Down | Panes | cmd+shift+d | Open a terminal below the focused pane. | horizontal
     split-left | Split Left | Panes |  | Open a terminal to the left of the focused pane. |

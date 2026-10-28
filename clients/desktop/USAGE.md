@@ -147,7 +147,7 @@ another window, or a capture started in the background, stays out.
 | ⌘N               | New window, with its own connection and a fresh terminal                    |
 | ⌥⌘N              | Move the focused pane into a new window of its own                          |
 | ⌘K               | Clear the screen                                                            |
-| ⇧⌘I              | Insert Path: browse or search paths on the focused terminal's host          |
+| ⇧⌘I or ⌥;        | Insert Path: a list at the cursor of paths on the focused terminal's host   |
 | ⇧⌘R              | Reconnect, first restarting the server if it has stopped                    |
 | ⌥⌘G / ⌥⌘R        | Toggle the Changes panel / Reviews (GitHub pull requests)                   |
 | ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                |
@@ -252,11 +252,13 @@ copied file pastes its path rather than its name. Command-V of a clipboard
 image (a screenshot, a copied picture) saves it under the temporary directory
 and pastes that path, which Claude Code, Codex and similar agents read as an
 image attachment. These are this Mac's paths, also for a remote pane. **Insert Path**
-lists paths on the host that runs
-the focused terminal (a satellite's own disk for a satellite pane), never this
-Mac's; it needs a server that advertises `PATH_QUERY`. Enter types the chosen
-path as one shell-quoted word and presses nothing else, and only into the pane
-it opened on. **Terminate Terminal Process** (palette only) ends one process.
+(⇧⌘I or ⌥;) opens a list at the terminal cursor of paths on the host that
+runs the focused terminal (a satellite's own disk for a satellite pane), never
+this Mac's; it needs a server that advertises `PATH_QUERY`. Type to filter,
+Tab opens a folder, Escape closes. Enter types the chosen path as one shell
+word and presses nothing else, and only into the pane it opened on: relative
+to the folder the list opened in when it lies under it, quoted only when it
+needs quoting. **Terminate Terminal Process** (palette only) ends one process.
 **Kill Session** (the palette, or a session's menu in the sidebar) asks first,
 then ends every terminal in the session and deletes it; a notification reports any
 terminal that did not end, and why. **Close Pane** (⌘W, pane menu) ends its

@@ -230,6 +230,7 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                 ("capture", "capture", 1280., true),
                 ("navigation", "tabs-side", 1280., true),
                 ("navigation-narrow", "tabs-side", 760., true),
+                ("path-picker", "tabs-side", 1280., true),
             ] {
                 root.update(cx, |root, window, cx| {
                     let desk = root.view().clone().downcast::<Desk>().unwrap();
@@ -271,6 +272,9 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                         desk.update_prefs(|prefs| prefs.sidebar_visible = sidebar, cx);
                         if name.contains("peek") {
                             desk.execute("tab-peek", window, cx);
+                        }
+                        if name == "path-picker" {
+                            stage_path_picker(desk, window, cx);
                         }
                         desk.chrome_hover = None;
                         desk.controls_hover = None;
@@ -354,6 +358,37 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+/// The path picker open at the focused pane's cursor over a staged listing;
+/// the fixture runtime answers no path queries.
+fn stage_path_picker(desk: &mut Desk, window: &mut gpui::Window, cx: &mut gpui::Context<Desk>) {
+    use crate::connection::path::{PathRow, PathTarget, begin_picker};
+    let root = "/Users/you/dev/phux-app";
+    let target = desk.path_target().unwrap_or(PathTarget {
+        terminal_id: "local:1".into(),
+        placement_id: String::new(),
+        server_id: String::new(),
+        epoch: String::new(),
+    });
+    let mut picker = begin_picker(target, root);
+    picker.rows = [
+        ("Sources", "directory"),
+        ("Tests", "directory"),
+        ("docs", "directory"),
+        ("Package.swift", "file"),
+        ("README.md", "file"),
+        ("Settings View.swift", "file"),
+    ]
+    .into_iter()
+    .map(|(name, kind)| PathRow {
+        path: format!("{root}/{name}"),
+        kind: kind.into(),
+    })
+    .collect();
+    picker.parent = Some("/Users/you/dev".into());
+    desk.picker = Some(picker);
+    desk.open_modal(crate::app::Modal::Path, window, cx);
 }
 
 fn scene_preferences(

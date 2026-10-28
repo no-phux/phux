@@ -245,6 +245,13 @@ impl TerminalInput {
     pub fn focus_handle(&self) -> &FocusHandle {
         &self.focus
     }
+
+    /// The cursor cell as last painted, in window coordinates. Empty until
+    /// the first frame is presented.
+    pub fn cursor_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.metrics.map(|metrics| metrics.cursor_bounds)
+    }
+
     pub fn set_option_as_alt(&mut self, enabled: bool) {
         self.option_as_alt = enabled;
     }
