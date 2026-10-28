@@ -7,6 +7,8 @@ for things to happen.
 
 ```sh
 phux agent list                                   # every pane's agent and state
+phux agent list --state blocked --state done       # agents needing a look
+phux agent list --query 'mini backend'             # words across inventory fields
 phux agent wait --any --until blocked --timeout 600  # until any agent needs you
 ```
 
@@ -48,6 +50,13 @@ phux agent explain @7     # the evidence behind the state
 `phux agent list` prints one line per agent: the pane, the agent's kind, its
 `%name` address (or why it has none), its state, how confident phux is, and
 a short explanation. `--json` prints the same as a document.
+
+`--state` filters the current state (repeat it to include several states).
+`--query` matches case-insensitive words across the pane address, session,
+agent kind/name, title, and working directory. Every word must match, but
+words may match different fields; terminal contents are not searched. The
+filters combine with AND. An empty result succeeds with `agents: []` in JSON.
+Filtering never changes whether a `%name` is ambiguous in the full fleet.
 
 ## Agent setup
 
@@ -111,6 +120,10 @@ with its input schema. Each tool mirrors one `phux` command and is marked
 read-only or destructive the same way the server treats it. Tools that kill,
 detach, send a destructive signal, or approve something require
 `confirm: true`.
+
+`phux_agent_list` accepts the same filters as the CLI: `states` is an
+optional array such as `["blocked", "done"]`, and `query` is optional text.
+They filter the current inventory; they are not a completion gate.
 
 ## Driving an agent in a pane
 
