@@ -231,6 +231,7 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                 ("navigation", "tabs-side", 1280., true),
                 ("navigation-narrow", "tabs-side", 760., true),
                 ("path-picker", "tabs-side", 1280., true),
+                ("themes", "theme", 1280., true),
             ] {
                 root.update(cx, |root, window, cx| {
                     let desk = root.view().clone().downcast::<Desk>().unwrap();
@@ -244,6 +245,7 @@ fn capture(root: WindowHandle<Root>, directory: PathBuf, cx: &mut App) {
                         desk.close_menu(cx);
                         desk.tab_peek.close();
                         desk.modal = crate::app::Modal::None;
+                        desk.theme_pick = None;
                         desk.changes.open = false;
                         desk.reviews.open = false;
                         crate::app::conversation::preview::scene(desk, name);

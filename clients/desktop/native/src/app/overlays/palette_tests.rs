@@ -180,3 +180,4 @@ mod modals;
 mod navigation;
 mod search;
 mod settings;
+mod themes;

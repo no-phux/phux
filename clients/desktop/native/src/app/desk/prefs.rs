@@ -130,6 +130,11 @@ impl Desk {
         if matches!(self.modal, Modal::Path) {
             self.picker = None;
         }
+        // Leaving the theme picker without keeping a theme restores the one
+        // it opened on.
+        if let Some((original, _)) = self.theme_pick.take() {
+            self.apply_prefs(|prefs| prefs.theme_id = original, cx);
+        }
         // Closing the list is what reads it.
         if self.modal == Modal::Notifications {
             self.feed.read_all();
@@ -139,6 +144,26 @@ impl Desk {
         self.modal_inputs.clear();
         self.focus_terminal(window, cx);
         cx.notify();
+    }
+
+    /// Open the theme picker on the current theme.
+    pub(crate) fn open_theme_picker(&mut self) {
+        self.theme_pick = Some((self.prefs.theme_id.clone(), false));
+        self.modal = Modal::Themes;
+    }
+
+    /// Show `id` everywhere without saving it.
+    pub(crate) fn preview_theme(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.theme_pick.is_some() {
+            self.apply_prefs(|prefs| prefs.theme_id = id, cx);
+        }
+    }
+
+    /// Keep `id`: save it and close the picker without restoring.
+    pub(crate) fn keep_theme(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.theme_pick = None;
+        self.update_prefs(|prefs| prefs.theme_id = id, cx);
+        self.close_modal(window, cx);
     }
 
     /// The open modal changed in place (Go To became Commands) and keeps its controls.
