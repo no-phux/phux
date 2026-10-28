@@ -433,7 +433,12 @@ impl Updater {
         self._progress = None;
         match result {
             Ok(staged) => {
-                self.message = format!("Desktop {} is ready to install", staged.release.version);
+                let verb = if cfg!(target_os = "linux") {
+                    "installed; restart to use it"
+                } else {
+                    "ready to install"
+                };
+                self.message = format!("Desktop {} is {verb}", staged.release.version);
                 self.staged = Some(staged);
             }
             Err(error) => {
