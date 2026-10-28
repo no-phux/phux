@@ -185,6 +185,13 @@ shortcuts, and settings. Current implementation/consumer routes are in
 
 See [Command palette](USAGE.md#command-palette).
 
+### Reviews
+
+Auto-merge can be enabled only with a loaded diff matching the pull request's
+current head and base. Both are rechecked just before enabling. GitHub
+auto-merge follows future eligible revisions too: this is not an atomic
+SHA-pinned merge. Disabling auto-merge does not require a current diff.
+
 ### Performance monitor
 
 See [Performance monitor](PERFORMANCE.md).

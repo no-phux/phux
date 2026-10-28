@@ -79,7 +79,8 @@ impl Desk {
         );
     }
 
-    /// Merge once checks and reviews pass, or stop waiting to.
+    /// Auto-merge follows future eligible revisions; it is not SHA-pinned.
+    /// Check the currently reviewed range before enabling, never before disabling.
     pub(crate) fn toggle_auto_merge(&mut self, cx: &mut Context<Self>) {
         let Some(opened) = self.reviews.opened.as_ref() else {
             return;
@@ -87,14 +88,10 @@ impl Desk {
         let Some(pull) = opened.pull.data.as_ref() else {
             return;
         };
-        let method = match pull.auto_merge {
-            Some(_) => None,
-            None => opened.merge_method(),
-        };
-        if pull.auto_merge.is_none() && method.is_none() {
+        let Some(method) = opened.auto_merge_change() else {
             return;
-        }
-        let id = pull.id.clone();
+        };
+        let pull = pull.clone();
         let what = if method.is_some() {
             "Enabling auto-merge"
         } else {
@@ -102,7 +99,7 @@ impl Desk {
         };
         self.review_write(
             what,
-            move || write::set_auto_merge(&id, method),
+            move || set_auto_merge_with(&pull, method, github::pull::fetch, write::set_auto_merge),
             |desk, result, _, _| {
                 if let Err(error) = result {
                     desk.post(Kind::Error, "Could not change auto-merge", Some(error));
@@ -201,6 +198,108 @@ impl Desk {
                 Err(error) => desk.post(Kind::Error, "Could not check out", Some(error)),
             },
             cx,
+        );
+    }
+}
+
+/// GitHub cannot atomically pin auto-merge to a revision. Reuse the review's
+/// base guard and also check the head immediately before the enable mutation.
+fn set_auto_merge_with(
+    pull: &github::Pull,
+    method: Option<MergeMethod>,
+    read: impl FnOnce(&str, u64) -> github::gh::Result<github::Pull>,
+    write: impl FnOnce(&str, Option<MergeMethod>) -> github::gh::Result<()>,
+) -> github::gh::Result<()> {
+    if method.is_some() {
+        super::verify_review_base_with(pull, |repo, number| {
+            let current = read(repo, number)?;
+            if current.head_oid != pull.head_oid {
+                return Err(github::GhError::Failed(
+                    "The head changed. Refresh and review the new diff before enabling auto-merge."
+                        .into(),
+                ));
+            }
+            Ok(current)
+        })?;
+    }
+    write(&pull.id, method)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enabling_revalidates_head_and_base_before_any_mutation() {
+        let pull = super::super::fixture::pull();
+        for field in ["head", "base_ref", "base_oid"] {
+            let mut current = pull.clone();
+            match field {
+                "head" => current.head_oid = "new-head".into(),
+                "base_ref" => current.base_ref = "release".into(),
+                _ => current.base_oid = "new-base".into(),
+            }
+            assert!(
+                set_auto_merge_with(
+                    &pull,
+                    Some(MergeMethod::Squash),
+                    |repo, number| {
+                        assert_eq!((repo, number), (pull.repo.as_str(), pull.number));
+                        Ok(current)
+                    },
+                    |_, _| panic!("{field} changed: must not enable"),
+                )
+                .is_err()
+            );
+        }
+        let mut read = false;
+        set_auto_merge_with(
+            &pull,
+            Some(MergeMethod::Squash),
+            |_, _| {
+                read = true;
+                Ok(pull.clone())
+            },
+            |id, method| {
+                assert_eq!(id, pull.id);
+                assert_eq!(method, Some(MergeMethod::Squash));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(read);
+    }
+
+    #[test]
+    fn disabling_does_not_read_or_guard_the_revision() {
+        let pull = super::super::fixture::pull();
+        let mut wrote = false;
+        set_auto_merge_with(
+            &pull,
+            None,
+            |_, _| panic!("disabling must not need a fresh read"),
+            |id, method| {
+                assert_eq!(id, pull.id);
+                assert_eq!(method, None);
+                wrote = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(wrote);
+    }
+
+    #[test]
+    fn a_failed_revalidation_never_enables_auto_merge() {
+        let pull = super::super::fixture::pull();
+        assert!(
+            set_auto_merge_with(
+                &pull,
+                Some(MergeMethod::Squash),
+                |_, _| Err(github::GhError::Failed("offline".into())),
+                |_, _| panic!("failed to read: must not enable"),
+            )
+            .is_err()
         );
     }
 }

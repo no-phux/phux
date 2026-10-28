@@ -127,3 +127,43 @@ fn a_retarget_between_polls_is_refused_before_the_write() {
     );
     assert!(super::verify_review_base_with(&cached, |_, _| Ok(cached.clone())).is_ok());
 }
+
+#[test]
+fn auto_merge_enable_needs_a_loaded_current_patch_and_a_method() {
+    let mut opened = reviewed();
+    assert!(matches!(opened.auto_merge_change(), Some(Some(_))));
+    opened.patch.loading = true;
+    assert!(opened.auto_merge_change().is_none());
+    opened.patch.loading = false;
+    let patch = opened.patch.data.take().unwrap();
+    assert!(opened.auto_merge_change().is_none());
+    opened.patch.data = Some(patch);
+    for field in ["head", "base_ref", "base_oid"] {
+        let mut stale = reviewed();
+        let patch = stale.patch.data.as_mut().unwrap();
+        match field {
+            "head" => patch.head = "old-head".into(),
+            "base_ref" => patch.base_ref = "old-base-ref".into(),
+            _ => patch.base_oid = "old-base-oid".into(),
+        }
+        assert!(stale.auto_merge_change().is_none(), "{field}");
+    }
+    opened.pull.data.as_mut().unwrap().methods.allowed.clear();
+    assert!(opened.auto_merge_change().is_none());
+}
+
+#[test]
+fn auto_merge_disable_ignores_missing_or_stale_patch_and_methods() {
+    let mut opened = reviewed();
+    let pull = opened.pull.data.as_mut().unwrap();
+    pull.auto_merge = Some(crate::git::github::MergeMethod::Squash);
+    pull.methods.allowed.clear();
+    pull.methods.auto_merge = false;
+    pull.head_oid = "new-head".into();
+    pull.base_ref = "release".into();
+    pull.base_oid = "new-base".into();
+    assert_eq!(opened.auto_merge_change(), Some(None));
+    opened.patch.data = None;
+    opened.patch.loading = true;
+    assert_eq!(opened.auto_merge_change(), Some(None));
+}
