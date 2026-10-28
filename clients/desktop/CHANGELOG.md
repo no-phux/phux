@@ -55,6 +55,16 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.51.0](https://github.com/no-phux/phux/compare/desktop-v0.50.0...desktop-v0.51.0) (2026-10-28)
+
+
+### Features
+
+* **desktop:** open Insert Path at the cursor, on Option-; ([4b9a190](https://github.com/no-phux/phux/commit/4b9a1909bc81e88744dc0dafd7d76abc7b517706))
+* **desktop:** preview each theme as you move to it in Select Theme ([0228f62](https://github.com/no-phux/phux/commit/0228f626d35772fa51d8a2d7baef4825096ea14c))
+* **desktop:** sidebar agent rows say what each agent is doing ([#1839](https://github.com/no-phux/phux/issues/1839)) ([90a452a](https://github.com/no-phux/phux/commit/90a452a1bb87d87e22a9bac24ea1714e9b69e6ee))
+* **desktop:** switch sessions from a list dropped from the session button ([3ad4dfe](https://github.com/no-phux/phux/commit/3ad4dfe61e15e50bd106dacf430fa7bd9721b7b5))
+
 ## [0.50.0](https://github.com/no-phux/phux/compare/desktop-v0.49.0...desktop-v0.50.0) (2026-10-28)
 
 
