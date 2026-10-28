@@ -55,6 +55,23 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.50.0](https://github.com/no-phux/phux/compare/desktop-v0.49.0...desktop-v0.50.0) (2026-10-28)
+
+
+### Features
+
+* **cli:** minimal boxes show up in the desktop as their own session ([#1830](https://github.com/no-phux/phux/issues/1830)) ([165323c](https://github.com/no-phux/phux/commit/165323c1a38e8a041c47655c60a38daef54ad4cb))
+* **desktop:** a scripted fleet film from the fixture capture ([e644336](https://github.com/no-phux/phux/commit/e6443363a34d0191e10ee37d24392616c7324b1c))
+* **desktop:** draw box, block, braille and Powerline glyphs from the cell grid ([#1832](https://github.com/no-phux/phux/issues/1832)) ([69faafb](https://github.com/no-phux/phux/commit/69faafb321dbf9a147a19d165bf5efa43d9875fb))
+* **desktop:** qualify and package the native Windows app ([#1829](https://github.com/no-phux/phux/issues/1829)) ([f39321f](https://github.com/no-phux/phux/commit/f39321f8fcf5f6fb4bc3436aad66f930989342fe))
+* **desktop:** walk tabs and sidebar sessions with Command+arrows on Mac ([#1825](https://github.com/no-phux/phux/issues/1825)) ([9d17ce2](https://github.com/no-phux/phux/commit/9d17ce2e3787a0e3817a2758cbf655fb325190d6))
+
+
+### Bug Fixes
+
+* **desktop:** put every terminal glyph on its cell and draw Claude Code's tool marks ([#1826](https://github.com/no-phux/phux/issues/1826)) ([24fce1b](https://github.com/no-phux/phux/commit/24fce1b6c7321c429fd4b68f2c7a4d1d3e55adbd))
+* **desktop:** resolve the default home from one bootstrap snapshot ([#1835](https://github.com/no-phux/phux/issues/1835)) ([9e67ca9](https://github.com/no-phux/phux/commit/9e67ca9894778f01037ddcda78c45367bfa0e82f))
+
 ## [0.49.0](https://github.com/no-phux/phux/compare/desktop-v0.48.0...desktop-v0.49.0) (2026-10-27)
 
 
