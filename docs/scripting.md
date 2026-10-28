@@ -245,6 +245,8 @@ On failure, stdout is empty and stderr carries one JSON object:
 ```
 
 Branch on `error.code`, which comes from a fixed list, not on `message`.
+`phux --capabilities --json` prints that list under `error_codes`, each
+code with what it means.
 
 A bounded `run`, `wait`, `watch`, `resource wait`, or `agent wait` that
 runs out of time reports `timed_out` with exit 124 (125 for `run`). `wait`
