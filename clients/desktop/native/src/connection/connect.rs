@@ -52,6 +52,8 @@ impl Connection {
                 attach_role: Some(RolePolicy::PRIMARY),
                 auto_attach_foreign_spawns: false,
                 subscribe_agent_sessions: true,
+                // Typing reads as typed: predicted echo is plain text.
+                prediction_style: phux_client_runtime::control::PredictionStyle::Plain,
                 ..ControlOptions::default()
             },
         )?;

@@ -264,6 +264,7 @@ impl Client {
             // The draw-list ABI exposes text, not image planes.
             image_protocols: phux_protocol::caps::ImageProtocolSet::new(),
             deliver_inbound: InboundDelivery::Queued,
+            prediction_style: phux_client_runtime::control::PredictionStyle::Underline,
         };
         (options, history)
     }
