@@ -111,7 +111,8 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .as_ref()
         .zip(view)
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
-    let (laid, wheel, press, moved) = (id.clone(), id.clone(), id.clone(), id.clone());
+    let (laid, wheel, press, moved, left) =
+        (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
     let host = el()
         .key(format!("pane-host-{id}"))
         .w_full()
@@ -155,6 +156,11 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .cursor(if linked { rune::Cursor::Pointer } else { rune::Cursor::Text })
         .on_pointer_move_local(move |d: &mut Desk, event, tx| {
             d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods().cmd);
+        })
+        .on_hover_change(move |d: &mut Desk, inside, _| {
+            if !inside {
+                d.pointer_left(&left);
+            }
         })
         .on_wheel(move |d: &mut Desk, event, _| {
             d.wheel(&wheel, event.x - PAD, event.y - PAD, event.dy, event.mods);

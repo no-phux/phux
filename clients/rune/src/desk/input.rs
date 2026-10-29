@@ -34,6 +34,15 @@ impl Desk {
             }
             return true;
         }
+        if self.find_query.focused {
+            // The field has the keys; what it leaves is a shortcut or
+            // nothing, never terminal input (Ctrl-C must not reach the job).
+            let physical = tx.physical_key();
+            if let Some(action) = keys::shortcut(&event.key, event.mods, physical) {
+                self.shortcut(action, tx);
+            }
+            return true;
+        }
         if self.pending.is_some() {
             match event.key {
                 rune::Key::Enter => self.confirm_pending(),

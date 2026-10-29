@@ -204,7 +204,8 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
         'e' if !cfg!(target_os = "macos") => Shortcut::SplitDown,
         'e' => Shortcut::FindSelection,
         'f' => Shortcut::Find,
-        'g' if mods.shift => Shortcut::FindPrevious,
+        // Off macOS every app chord has Shift, so G alone is next there.
+        'g' if mods.shift && cfg!(target_os = "macos") => Shortcut::FindPrevious,
         'g' => Shortcut::FindNext,
         'n' => Shortcut::NewSession,
         ']' | '}' => Shortcut::NextTerminal,

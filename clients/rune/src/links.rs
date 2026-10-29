@@ -145,7 +145,9 @@ pub fn find(cells: &[(char, u16, u16)], row: u16, col: u16) -> Option<Link> {
     let chars: Vec<char> = cells.iter().map(|c| c.0).collect();
     let mut i = 0;
     while i < chars.len() {
-        let boundary = i == 0 || !chars[i - 1].is_alphanumeric();
+        // A row's first cell starts a word even when the row above ends
+        // in a letter.
+        let boundary = i == 0 || !chars[i - 1].is_alphanumeric() || cells[i - 1].1 != cells[i].1;
         let rest: String = chars[i..].iter().take(8).collect();
         let Some(scheme) = SCHEMES
             .iter()
@@ -294,6 +296,12 @@ mod tests {
         assert_eq!(at(&f, 2, 0), None);
         let unsafe_link = frame(&["run"], 5, Some(("javascript:x", 0..3)));
         assert_eq!(at(&unsafe_link, 1, 0), None);
+    }
+
+    #[test]
+    fn a_row_start_is_a_word_boundary() {
+        let cells = line(&["full width text ending in letters", "https://phux.sh next"]);
+        assert_eq!(find(&cells, 1, 3).expect("a link").url, "https://phux.sh");
     }
 
     #[test]

@@ -301,6 +301,7 @@ impl Desk {
             Event::TerminalChanged { terminal_id }
                 if shown(&terminal_id) || self.others.contains_key(&terminal_id) =>
             {
+                self.relink(&terminal_id);
                 self.generation += 1;
                 true
             }

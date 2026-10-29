@@ -10,9 +10,6 @@ use rune::{Key, KeyEvent, TextEdit, Tx};
 
 use super::Desk;
 
-/// The engine's cap on one search; more exist when a search hits it.
-const MATCH_LIMIT: usize = 4096;
-
 pub struct Find {
     pub terminal: ResourceId,
     view: ViewId,
@@ -21,6 +18,8 @@ pub struct Find {
     /// The current match; `None` with no matches.
     pub index: Option<usize>,
     pub case_sensitive: bool,
+    /// A bound (the match cap or the anchor budget) hid more matches.
+    truncated: bool,
 }
 
 impl Find {
@@ -34,7 +33,7 @@ impl Find {
         };
         // Counted from the newest match, the way the user walks them.
         let total = self.matches.len();
-        let more = if total >= MATCH_LIMIT { "+" } else { "" };
+        let more = if self.truncated { "+" } else { "" };
         format!("{} of {total}{more}", total - index)
     }
 }
@@ -59,6 +58,7 @@ impl Desk {
             matches: Vec::new(),
             index: None,
             case_sensitive: false,
+            truncated: false,
         });
     }
 
@@ -89,15 +89,23 @@ impl Desk {
         };
         let Some(find) = &mut self.find else { return };
         let query = self.find_query.text.clone();
-        find.matches = match client.engine() {
-            Some(engine) if !query.is_empty() => engine
-                .search_view(find.view, query, find.case_sensitive)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|m| (m.start, m.end))
-                .collect(),
-            _ => Vec::new(),
+        let Some(engine) = client.engine() else {
+            return;
         };
+        // An empty query frees the last search's anchors, which history
+        // scrolling draws on too.
+        let found = if query.is_empty() {
+            let _ = engine.clear_view_search(find.view);
+            None
+        } else {
+            engine
+                .search_view_bounded(find.view, query, find.case_sensitive)
+                .ok()
+        };
+        find.truncated = found.as_ref().is_some_and(|f| f.truncated);
+        find.matches = found
+            .map(|f| f.matches.into_iter().map(|m| (m.start, m.end)).collect())
+            .unwrap_or_default();
         find.index = find.matches.len().checked_sub(1);
         self.show_match();
     }
@@ -147,6 +155,7 @@ impl Desk {
         self.find_query.focused = false;
         if let Some(engine) = self.client.as_ref().and_then(|c| c.engine()) {
             let _ = engine.clear_view_selection(find.view);
+            let _ = engine.clear_view_search(find.view);
         }
         self.generation += 1;
     }

@@ -16,6 +16,8 @@ pub struct Pointer {
     last: Option<(ResourceId, f32, f32)>,
     /// A ⌘-press opened a link; its drag and release go nowhere else.
     opened: bool,
+    /// ⌘ as the last pointer or modifier event left it.
+    cmd: bool,
 }
 
 impl Desk {
@@ -24,7 +26,16 @@ impl Desk {
             .client
             .as_ref()?
             .acquire_view(self.view_of(terminal)?)?;
-        let (col, row) = self.metrics().cell_at(x, y, frame.cols, frame.rows);
+        let m = self.metrics();
+        // The padding, rail and pill are not the edge cell.
+        let inside = x >= 0.0
+            && y >= 0.0
+            && x < f32::from(frame.cols) * m.cell_w
+            && y < f32::from(frame.rows) * m.cell_h;
+        if !inside {
+            return None;
+        }
+        let (col, row) = m.cell_at(x, y, frame.cols, frame.rows);
         links::at(&frame, col, row)
     }
 
@@ -38,12 +49,39 @@ impl Desk {
     /// The pointer moved over a pane, `x, y` in its grid's points.
     pub fn hover(&mut self, terminal: &ResourceId, x: f32, y: f32, cmd: bool) {
         self.pointer.last = Some((terminal.clone(), x, y));
+        self.pointer.cmd = cmd;
         let link = cmd.then(|| self.link_at(terminal, x, y)).flatten();
         self.set_hover(link.map(|link| (terminal.clone(), link)));
     }
 
+    /// The pointer left a pane: nothing there is under it any more.
+    pub fn pointer_left(&mut self, terminal: &ResourceId) {
+        if self
+            .pointer
+            .last
+            .as_ref()
+            .is_some_and(|(t, _, _)| t == terminal)
+        {
+            self.pointer.last = None;
+            self.set_hover(None);
+        }
+    }
+
+    /// A pane's output moved under a held ⌘: find the link again.
+    pub(super) fn relink(&mut self, terminal: &ResourceId) {
+        if self
+            .pointer
+            .last
+            .as_ref()
+            .is_some_and(|(t, _, _)| t == terminal)
+        {
+            self.modifiers_changed(self.pointer.cmd);
+        }
+    }
+
     /// ⌘ went down or up without the pointer moving.
     pub fn modifiers_changed(&mut self, cmd: bool) {
+        self.pointer.cmd = cmd;
         let link = match (&self.pointer.last, cmd) {
             (Some((terminal, x, y)), true) => self
                 .link_at(terminal, *x, *y)
@@ -70,6 +108,8 @@ impl Desk {
             }
             return opened;
         }
+        // A new press; a release lost to another app ends the old one.
+        self.pointer.opened = false;
         let Some(link) = cmd.then(|| self.link_at(terminal, x, y)).flatten() else {
             return false;
         };
