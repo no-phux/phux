@@ -293,6 +293,18 @@ impl ServerState {
                 stored: false,
             });
         }
+        // Incremental server intentions must obey the same bounds as decoded
+        // whole-document writes, before anything is stored or launched.
+        for delta in &applied.transition.deltas {
+            if let phux_core::Delta::PutArrangement(arrangement) = delta {
+                crate::org_wire::document(&arrangement.groups)
+                    .validate_wire()
+                    .map_err(|error| Refusal::InvalidArgument {
+                        field: "arrangement",
+                        reason: error.to_string(),
+                    })?;
+            }
+        }
         // The journal position after this commit's events are recorded,
         // counting records the caller journals ahead of them.
         let journaled = applied
@@ -450,6 +462,7 @@ impl ServerState {
         };
         let op = match target {
             TerminalTarget::Session(session) => Op::ResourceCreate {
+                placement: None,
                 session: Some(
                     self.sessions
                         .registry
@@ -538,6 +551,7 @@ impl ServerState {
             .ok_or(Refusal::NotFound)?;
         let commit = self.commit(
             Op::ResourceCreate {
+                placement: None,
                 session: Some(session),
                 resource: NewResource {
                     kind: ResourceKind::AgentSession,
@@ -661,8 +675,9 @@ impl ServerState {
     /// Startup reconciliation (ADR-0162 §5): every activation a previous
     /// run left current or lost, and no engine in this process vouches for,
     /// becomes `Lost` when its process still runs on this boot with the
-    /// recorded start time, and `Completed`/`Unobserved` otherwise. Nothing
-    /// is relaunched. Idempotent.
+    /// recorded start time, `Failed` when launch intent committed and no
+    /// process was recorded, and `Completed`/`Unobserved` when a recorded
+    /// process is gone. Nothing is relaunched. Idempotent.
     pub fn reconcile(&mut self) -> Reconciled {
         self.reconcile_with(crate::reconcile::boot_id(), crate::reconcile::observe)
     }
@@ -707,6 +722,15 @@ impl ServerState {
                         outcome: Outcome::Unobserved,
                     }
                 }
+                Verdict::NeverLaunched => {
+                    out.never_launched += 1;
+                    Op::ActivationEnded {
+                        resource: key,
+                        activation,
+                        state: ExecState::Failed,
+                        outcome: Outcome::Unobserved,
+                    }
+                }
             };
             if let Err(refusal) = self.commit_system(op) {
                 tracing::warn!(resource = %key, %refusal, "reconcile verdict not recorded");
@@ -732,6 +756,8 @@ pub struct Reconciled {
     pub lost: u32,
     /// Activations that ended unobserved.
     pub unobserved: u32,
+    /// Activations whose launch intent committed and never started a process.
+    pub never_launched: u32,
 }
 
 /// Where [`ServerState::create_terminal`] puts a new Terminal.
@@ -747,6 +773,9 @@ pub enum TerminalTarget<'a> {
         lifetime: SessionLifetime,
     },
 }
+
+#[cfg(test)]
+mod creation_bounds;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
@@ -814,6 +843,34 @@ mod tests {
         fail.store(false, Ordering::Relaxed);
         state.retire_record(terminal, ExitOutcome::exited(0));
         assert!(state.registry().record(terminal).is_none());
+    }
+
+    #[test]
+    fn a_committed_launch_with_no_process_fails_instead_of_completing() {
+        let mut state = ServerState::new();
+        let (_, terminal) = state.seed_session("work");
+        let before = state
+            .registry()
+            .record(terminal)
+            .unwrap()
+            .activation
+            .clone()
+            .unwrap();
+        assert_eq!(before.state, ExecState::Starting);
+        assert!(before.host_proc.is_none());
+        let counts = state.reconcile_with(None, |_| panic!("must not probe"));
+        let after = state
+            .registry()
+            .record(terminal)
+            .unwrap()
+            .activation
+            .clone()
+            .unwrap();
+        assert_eq!(after.state, ExecState::Failed);
+        assert_ne!(after.state, ExecState::Completed);
+        assert_eq!(after.outcome, Some(Outcome::Unobserved));
+        assert_eq!(counts.never_launched, 1);
+        assert_eq!(counts.unobserved, 0);
     }
 
     #[test]

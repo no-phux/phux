@@ -8,7 +8,11 @@ import { table } from "../lib/value.ts";
 import { syncLocks } from "./lock.ts";
 
 /** Locks that record the root path crates outside the root workspace. */
-const STANDALONE_LOCKS = ["clients/phux-web/Cargo.lock", "clients/desktop/native/Cargo.lock"];
+const STANDALONE_LOCKS = [
+  "clients/phux-web/Cargo.lock",
+  "clients/desktop/native/Cargo.lock",
+  "clients/rune/Cargo.lock",
+];
 
 const SETTINGS: [path: string[], expected: unknown, why: string][] = [
   [["draft"], true, "release.yml ships drafts; Release Please must create them"],

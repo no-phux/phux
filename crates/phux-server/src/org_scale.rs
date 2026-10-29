@@ -133,6 +133,7 @@ pub fn seed(path: &Path, spec: ScaleSpec, now: Stamp) -> Result<ScaleOrg, StoreE
             &mut registry,
             &mut keys,
             Op::ResourceCreate {
+                placement: None,
                 session: session.or(Some(inbox)),
                 resource: dormant(),
             },
@@ -144,6 +145,7 @@ pub fn seed(path: &Path, spec: ScaleSpec, now: Stamp) -> Result<ScaleOrg, StoreE
             &mut registry,
             &mut keys,
             Op::ResourceCreate {
+                placement: None,
                 session: None,
                 resource: dormant(),
             },

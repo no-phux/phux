@@ -2,6 +2,13 @@
 
 Every page in the phux docs, grouped by what you're trying to do.
 
+The server, CLI and terminal UI are the core product. Remote hosts, agent
+integrations, MCP, plugins and distributions are optional maintained
+features; you do not need them to use local terminals. The separately
+released desktop is a newer maintained client. The browser client is an
+unshipped experiment, and phone apps are not available yet. See
+[Clients](./clients.md) for platform requirements and limitations.
+
 ## Get started
 
 - [Install](./install.md): the install script, Homebrew, the desktop app, updating, and removing phux.
@@ -17,20 +24,24 @@ Every page in the phux docs, grouped by what you're trying to do.
 - [Status bar and sidebar](./status-bar.md): what the bar and the sidebar show, and how to change it.
 - [Hooks](./hooks.md): run a command when something happens.
 - [Plugins](./plugins.md): add actions, panes, and sidebar sections.
+- [Maintained plugin packages](../plugins/README.md): the shipped plugins and where they are installed.
 - [Distributions](./distros.md): switch curated defaults without replacing your config; run the Crew agent distro.
 - [Omarchy](./omarchy.md): one command to fit phux into an Omarchy desktop, with its keys, theme, and launcher.
 - [Projects](./projects.md): open a project's session from a recipe in its repository.
 
 ## Automate
 
+- [Public terminal workflow](./public-api.md): create, place and start a terminal with durable identity, receipts and connected-server schemas.
 - [Using phux as an agent](./agent-quickstart.md): install phux and drive sessions, panes, input, and scrollback from code.
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
+- [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
 
 ## Build for phux
 
-- [Program protocol](./program-protocol.md): how a program in a pane reports what it is doing with OSC 7501, and what phux shows.
+- [OSC 7501: report status from any program](./program-protocol.md): the Program Status Protocol sequence phux reads, and what a pane shows from it.
+- [Any program can report status](./any-program-status.md): a short OSC 7501 emitter, a demo with no hooks, and how phux ranks that report.
 - [Program sequences and agent reports](./program-sequences.md): titles, `phux-ask` questions, OSC 133, OSC 52, and the other sequences phux reads, plus the agent record.
 
 ## Machines and clients
@@ -70,13 +81,14 @@ Generated from the `phux` binary, so they match the code these docs describe.
 ## Work on phux
 
 - [Architecture](./architecture.md): the process model, crates, and clients.
+- [libghostty in phux](./libghostty.md): the libghostty-vt terminal engine in the server and in a rendering client, and what it does not do.
 - [Decisions](./decisions.md): the constraints the code keeps, and why.
 - [Organization](./organization.md): how the server owns sessions and their contents.
 - [Substrate](./substrate.md): how people, hosts, and agents fit together.
-- [Protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
+- [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
 - [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
 - [Compatibility](./compatibility.md): what an older or newer peer sees.
-- [Embedding](./embedding.md): put a phux terminal in your own app.
+- [Embed phux](./embedding.md): put a phux terminal in your own app with `phux-gpui`, `phux-client-runtime`, or `phux-client-ffi`.
 - [Development](./development.md): set up, build, and run the checks.
 - [Releasing](./releasing.md): what ships, and how.
 

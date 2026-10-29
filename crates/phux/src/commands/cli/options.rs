@@ -29,9 +29,9 @@ pub(crate) enum SignalArg {
     Kill,
 }
 
-/// Split axis for explicit pane placement — the one `--split` vocabulary
-/// shared by `spawn`, `launch`, `play`, `insert-pane`, and `mv`
-/// (ADR-0065 §6). `h` / `v` are accepted shorthands.
+/// Parsed `--split` spelling; creation verbs name the placement axis, while
+/// existing-pane edits name the divider. Keep the per-command help explicit.
+/// `h` / `v` are accepted shorthands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SpawnSplit {
     #[usage(visible_alias = "h")]

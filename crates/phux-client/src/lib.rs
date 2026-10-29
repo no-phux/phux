@@ -55,6 +55,8 @@ pub mod organize;
 pub mod pane_move;
 pub mod perf;
 pub mod recovery;
+// Complete-intention terminal creation and connected-server API discovery.
+pub mod terminal;
 // Project identity (ADR-0168): discovery, the stored document, grouping.
 pub mod project_groups;
 pub use phux_client_runtime::project_identity;

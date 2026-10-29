@@ -31,9 +31,12 @@ fn catalog_reports_explicit_profile_failures_without_fallback() {
     let config = profile(dir.path());
     std::fs::write(dir.path().join("integrations/opencode.toml"), "invalid [").unwrap();
     let catalog = catalog_at(&config).unwrap();
-    assert_eq!(catalog.integrations.len(), 1);
-    let item = &catalog.integrations[0];
-    assert_eq!(item.integration, "opencode");
+    assert_eq!(catalog.integrations.len(), 2);
+    let item = catalog
+        .integrations
+        .iter()
+        .find(|item| item.integration == "opencode")
+        .unwrap();
     assert!(!item.native_available);
     assert!(
         item.native_detail
@@ -41,6 +44,34 @@ fn catalog_reports_explicit_profile_failures_without_fallback() {
             .unwrap()
             .contains("opencode.toml")
     );
+}
+
+#[test]
+fn catalog_exposes_fx_even_when_its_override_is_broken() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = profile(dir.path());
+    let catalog = catalog_at(&config).unwrap();
+    let fx = catalog
+        .integrations
+        .iter()
+        .find(|item| item.integration == "fx")
+        .unwrap();
+    assert_eq!(fx.display_name.as_deref(), Some("fx"));
+    assert_eq!(
+        fx.native_available,
+        phux_plugin::executable_path("fx").is_some()
+    );
+    assert!(fx.auth_command.is_none());
+
+    std::fs::write(dir.path().join("integrations/fx.toml"), "invalid [").unwrap();
+    let catalog = catalog_at(&config).unwrap();
+    let fx = catalog
+        .integrations
+        .iter()
+        .find(|item| item.integration == "fx")
+        .unwrap();
+    assert!(!fx.native_available);
+    assert!(fx.native_detail.as_ref().unwrap().contains("fx.toml"));
 }
 
 #[test]
@@ -124,7 +155,9 @@ fn catalog_auth_tracks_the_absolute_opencode_override_but_never_wrappers_or_cust
         catalog_at(&config)
             .unwrap()
             .integrations
-            .remove(0)
+            .into_iter()
+            .find(|item| item.integration == "opencode")
+            .unwrap()
             .auth_command
     };
     write(&executable, "'acp'");

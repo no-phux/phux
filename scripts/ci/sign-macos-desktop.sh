@@ -11,8 +11,15 @@ done
 [[ "$APPLE_NOTARY_KEY_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo 'Invalid Apple notary key ID' >&2; exit 1; }
 [[ "$APPLE_NOTARY_ISSUER_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || { echo 'Invalid Apple notary issuer ID' >&2; exit 1; }
 if [[ "${1:-}" == --check-config ]]; then exit 0; fi
+# --zip-only: sign, notarize and staple the app into OUTPUT.zip without the
+# Phux.app-specific DMG (the Rune alpha client uses it).
+zip_only=0
+if [[ "${1:-}" == --zip-only ]]; then
+    zip_only=1
+    shift
+fi
 if [[ $# != 2 || "$2" != *.zip ]]; then
-    echo 'Usage: sign-macos-desktop.sh APP OUTPUT.zip (also writes OUTPUT.dmg)' >&2
+    echo 'Usage: sign-macos-desktop.sh [--zip-only] APP OUTPUT.zip (also writes OUTPUT.dmg unless --zip-only)' >&2
     exit 2
 fi
 
@@ -97,6 +104,7 @@ xcrun stapler staple "$app"
 xcrun stapler validate "$app"
 spctl --assess --type execute --verbose=2 "$app"
 ditto -c -k --norsrc --keepParent "$app" "$archive"
+if [[ "$zip_only" -eq 1 ]]; then exit 0; fi
 bun "$harness/clients/desktop/scripts/package-dmg.ts" --app "$app" --output "$dmg"
 codesign --keychain "$keychain" --sign "$identities" --timestamp "$dmg"
 notarize "$dmg" "${archive%.zip}-dmg-notary.json"

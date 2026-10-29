@@ -2,8 +2,13 @@
 
 A client is a program that shows sessions from a phux server: the terminal
 UI, the desktop app, or something you build. Every client talks to the same
-server the same way, so any client can show any session, and several can
-show one session at once.
+server protocol, so several clients can show one session at once. Individual
+clients differ in supported features and maturity.
+
+The terminal UI is the core client. The separately released desktop is
+maintained but newer; the browser client is experimental and unshipped.
+Phone apps are not available yet. Remote hosts and agent integrations are
+optional; no extra client is required to use the server from the CLI.
 
 ```sh
 phux attach work        # the terminal UI, in this terminal
@@ -14,7 +19,8 @@ phux attach work        # the terminal UI, in this terminal
 `phux` and `phux attach` run the terminal UI in whatever terminal you are
 in. It ships in every release, and every other client is measured against
 it. It draws panes with libghostty, the same terminal emulator the server
-uses, so what you see is what the server has.
+uses, so what you see is what the server has. See
+[libghostty in phux](./libghostty.md).
 
 [Getting started](./getting-started.md) covers this client.
 <kbd>C-a</kbd> <kbd>S</kbd> opens settings, which edit your config file;
@@ -27,8 +33,9 @@ new pane and never overwrites an existing one.
 
 ## Desktop
 
-The phux desktop is a native app for macOS 26.0 or later on Apple silicon
-and Linux on x86_64 or arm64 with Vulkan. On macOS and Linux, install it with:
+The phux desktop is a native app for macOS 26.0 or later on Apple silicon,
+Linux on x86_64 or arm64 with Vulkan, and Windows x64 with a WSL 2 server.
+On macOS and Linux, install it with:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
@@ -36,10 +43,11 @@ curl -fsSL https://phux.sh/install-desktop | sh
 
 Windows: the CLI and server run in WSL 2, with PowerShell launchers. The
 [native x64 desktop](../clients/desktop/README.md#windows) uses Direct3D 11,
-Windows input/clipboard, and the same WSL coordinator. Its installer requires
-a Windows-capable desktop release; WSLg is not needed. Updates are manual on
-Windows, and the local Changes panel and external Unix developer socket are
-unavailable there.
+Windows input/clipboard, and the same WSL coordinator. Windows x64 ZIPs ship
+from [Desktop 0.50.0](https://github.com/no-phux/phux/releases/tag/desktop-v0.50.0)
+onward; older desktop tags have no Windows download. WSLg is not needed.
+Updates are manual on Windows, and the local Changes panel and external
+Unix developer socket are unavailable there.
 
 It shows every session on this machine and on each machine you added with
 `phux host add` or the app's **Add Machine…**, grouped by machine or by
@@ -47,7 +55,8 @@ repository. Add Machine lists the machines on your Tailscale network and
 installs phux on the one you pick ([Remote machines](./remote.md#machines-on-your-tailnet)). One window shows one
 session, and the sidebar switches between them. Agents that need you are
 marked where they are. <kbd>⌘P</kbd> opens a palette of sessions, actions,
-and settings. The app checks for updates and installs them on restart.
+and settings. On macOS and Linux the app checks for updates and offers to
+install them on restart; Windows updates are manual.
 An update reopens the same windows, hosts, sessions, tabs and focused panes,
 bringing the foreground window back to the front.
 
@@ -85,6 +94,16 @@ The desktop app has its own version and release notes. The macOS app and
 DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app
 requires macOS 26.0; the standalone CLI requires macOS 11.0. Expect rough
 edges: the terminal UI is ahead of the desktop.
+
+### Rune alpha
+
+[Phux Rune](../clients/rune/README.md) is an alpha desktop client built on the
+[Rune](https://github.com/anomalyco/rune) UI framework, beside the desktop app
+as a candidate replacement for its GPUI base. It shows every session and
+terminal with each agent's state, a command palette, and splits from the
+session's server-stored arrangement, the same layout the terminal UI shows,
+with find in history and ⌘-clickable links. It ships as `rune-v*` prereleases (from 0.1.0-alpha.3 Developer ID signed and
+notarized on macOS, plus a Linux tarball) and has no settings or images yet.
 
 ## Browser
 

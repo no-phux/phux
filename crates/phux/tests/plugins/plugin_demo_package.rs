@@ -18,7 +18,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn demo_xdg() -> PathBuf {
-    repo_root().join("examples/plugins/agent-tools/config")
+    repo_root().join("plugins/agent-tools/config")
 }
 
 fn run_demo(args: &[&str]) -> (i32, String, String) {
@@ -81,8 +81,6 @@ fn checked_in_plugin_demo_lists_configured_actions() {
 fn inspect_action_reports_runtime_context() {
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, INSPECT_ACTION]);
     assert_eq!(code, 0, "config run should succeed; stderr={stderr}");
-    assert!(stdout.contains("core=stable terminal/session host"));
-    assert!(stdout.contains("plugin=agentic workflow package"));
     assert!(stdout.contains(&format!("plugin_id={PLUGIN_ID}")));
     assert!(stdout.contains(&format!("action_id={INSPECT_ACTION}")));
 
@@ -93,7 +91,7 @@ fn inspect_action_reports_runtime_context() {
     assert_eq!(output["action_id"], INSPECT_ACTION);
     assert_eq!(output["outcome"], "completed");
     assert_eq!(output["exit_code"], 0);
-    assert!(stdout_from_json(&output).contains("phux plugin demo"));
+    assert!(stdout_from_json(&output).contains(&format!("plugin_id={PLUGIN_ID}")));
 }
 
 #[test]
@@ -256,7 +254,7 @@ fn launch_bench_reports_no_server_as_action_failure() {
 /// accepts one, fresh-identity) arguments `archive import` rebuilds.
 #[test]
 fn shipped_templates_resume_the_providers_in_shell_integrations_report() {
-    let dir = repo_root().join("examples/plugins/agent-tools/integrations");
+    let dir = repo_root().join("plugins/agent-tools/integrations");
     let base = vec!["agent".to_owned()];
     for (file, provider, resume, fresh) in [
         (

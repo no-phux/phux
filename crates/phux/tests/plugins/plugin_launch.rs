@@ -18,7 +18,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn demo_xdg() -> PathBuf {
-    repo_root().join("examples/plugins/agent-tools/config")
+    repo_root().join("plugins/agent-tools/config")
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {

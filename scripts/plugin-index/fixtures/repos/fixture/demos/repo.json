@@ -1,0 +1,10 @@
+{
+  "full_name": "fixture/demos",
+  "archived": false,
+  "fork": false,
+  "private": false,
+  "default_branch": "main",
+  "stargazers_count": 4,
+  "pushed_at": "2026-02-02T00:00:00Z",
+  "license": { "spdx_id": "Apache-2.0" }
+}

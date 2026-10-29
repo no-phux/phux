@@ -86,13 +86,28 @@ pub(super) fn translate(
             name,
             on_exit,
             launch_mode,
+            placement,
         } => {
+            if placement.is_some()
+                && s.org().receipt(&ow::core_operation(&operation)).is_none()
+                && let Some(launch) = launch.as_deref()
+                && let Err(reason) = validate_placed_launch(launch)
+            {
+                return Some((
+                    ow::core_operation(&operation),
+                    Err(Refusal::InvalidArgument {
+                        field: "launch",
+                        reason,
+                    }),
+                ));
+            }
             let kind = crate::resource::core_kind(kind);
             let op = kind
                 .ok_or_else(|| Refusal::Unsupported {
                     capability: "this resource kind".to_owned(),
                 })
                 .map(|kind| Op::ResourceCreate {
+                    placement: placement.as_deref().map(core_placement),
                     session: Some(ow::core_session_key(&session)),
                     resource: phux_core::NewResource {
                         kind,
@@ -329,15 +344,8 @@ pub(super) fn answer(s: &mut ServerState, applied: &phux_core::Applied) -> Comma
             _ => None,
         })
     });
-    let target = created.resource.and_then(|key| {
-        let id = s.registry().resource_id(&key)?;
-        let activation = s.registry().record(id)?.activation.as_ref()?.id;
-        Some(LiveTarget {
-            resource: s.intern_terminal_wire(id),
-            instance: s.idspace.instance(),
-            activation: ow::activation_id(activation),
-        })
-    });
+    let visible = creation_still_in_origin(s, &created, receipt.as_ref());
+    let target = created_target(s, &created, visible);
     let committed = Committed::new(
         operation,
         ow::revision(revision.unwrap_or(phux_core::Revision::ZERO)),
@@ -346,8 +354,170 @@ pub(super) fn answer(s: &mut ServerState, applied: &phux_core::Applied) -> Comma
     .with_resource(created.resource.and_then(ow::resource_key))
     .with_target(target)
     .with_revisions(revisions)
-    .with_prior_awaiting(prior_awaiting);
+    .with_prior_awaiting(prior_awaiting)
+    .with_replayed(applied.replayed)
+    .with_creation(
+        created
+            .entry
+            .and_then(|_| phux_protocol::ids::AuthorityId::new(*s.org().authority().id.as_bytes())),
+        created
+            .arrangement
+            .and_then(ow::arrangement_key)
+            .filter(|_| created.entry.is_some()),
+        created.entry,
+        creation_activation(s, &created, visible),
+    );
     CommandResult::OkWith(CommandValue::Committed(Box::new(committed)))
+}
+
+/// Recover a retained placed-create receipt without resubmitting its command.
+pub(super) fn lookup_creation(
+    s: &mut ServerState,
+    operation: phux_protocol::ids::OperationId,
+    session: phux_protocol::ids::SessionKey,
+) -> CommandResult {
+    let operation = ow::core_operation(&operation);
+    let session = ow::core_session_key(&session);
+    let Some(receipt) = s.org().receipt(&operation) else {
+        return CommandResult::Refused(ow::refusal(&Refusal::NotFound));
+    };
+    let Op::ResourceCreate {
+        session: original,
+        placement: Some(_),
+        ..
+    } = &receipt.op
+    else {
+        return CommandResult::Refused(ow::refusal(&Refusal::NotFound));
+    };
+    if original.unwrap_or_else(|| s.org().authority().intake_session()) != session {
+        return CommandResult::Refused(ow::refusal(&Refusal::NotFound));
+    }
+    let applied = phux_core::Applied {
+        operation,
+        reply: receipt.reply,
+        transition: phux_core::Transition::default(),
+        effects: Vec::new(),
+        replayed: true,
+    };
+    answer(s, &applied)
+}
+
+fn creation_still_in_origin(
+    s: &ServerState,
+    created: &phux_core::Created,
+    receipt: Option<&phux_core::Receipt>,
+) -> bool {
+    if created.entry.is_none() {
+        return true;
+    }
+    let Some(record) = created.resource.and_then(|key| s.org().resource(&key)) else {
+        return false;
+    };
+    let Some(phux_core::Receipt {
+        op: Op::ResourceCreate { session, .. },
+        ..
+    }) = receipt
+    else {
+        return false;
+    };
+    record.session == session.unwrap_or_else(|| s.org().authority().intake_session())
+}
+
+fn created_target(
+    s: &mut ServerState,
+    created: &phux_core::Created,
+    visible: bool,
+) -> Option<LiveTarget> {
+    if !visible {
+        return None;
+    }
+    let key = created.resource?;
+    let id = s.registry().resource_id(&key)?;
+    let current = s.registry().record(id)?.activation.as_ref()?;
+    if created.entry.is_some()
+        && (current.id != phux_core::ActivationId::FIRST
+            || !current.state.is_current()
+            || s.resource_handle(id).is_none())
+    {
+        return None;
+    }
+    let activation = current.id;
+    Some(LiveTarget {
+        resource: s.intern_terminal_wire(id),
+        instance: s.idspace.instance(),
+        activation: ow::activation_id(activation),
+    })
+}
+
+fn creation_activation(
+    s: &ServerState,
+    created: &phux_core::Created,
+    visible: bool,
+) -> Option<phux_protocol::wire::frame::ActivationInfo> {
+    if !visible {
+        return None;
+    }
+    created.entry?;
+    let key = created.resource?;
+    let activation = s.org().resource(&key)?.activation.as_ref()?;
+    if activation.id != phux_core::ActivationId::FIRST {
+        return None;
+    }
+    let outcome = activation.outcome.map(|outcome| match outcome {
+        phux_core::Outcome::Exit(exit) if exit.status.is_none() && exit.signal.is_none() => {
+            phux_protocol::wire::frame::Outcome::Unobserved
+        }
+        other => ow::outcome(other),
+    });
+    Some(
+        phux_protocol::wire::frame::ActivationInfo::new(
+            ow::activation_id(activation.id),
+            phux_protocol::ids::ServerInstance::new(*activation.instance.as_bytes()),
+            ow::exec_state(activation.state),
+        )
+        .with_outcome(outcome),
+    )
+}
+
+fn validate_placed_launch(launch: &phux_protocol::wire::frame::LaunchSpec) -> Result<(), String> {
+    phux_protocol::api::validate_terminal_launch(launch)?;
+    if let Some(cwd) = &launch.cwd {
+        let cwd = std::path::Path::new(cwd);
+        if !cwd.is_absolute()
+            || !cwd.is_dir()
+            || rustix::fs::access(cwd, rustix::fs::Access::EXEC_OK).is_err()
+        {
+            return Err("cwd must be an absolute enterable directory on the executing host".into());
+        }
+    }
+    Ok(())
+}
+
+const fn core_placement(
+    placement: &phux_protocol::wire::frame::CreatePlacement,
+) -> phux_core::CreatePlacement {
+    use phux_protocol::wire::frame::{CreatePlacement, SplitDirection};
+    match placement {
+        CreatePlacement::NewGroup => phux_core::CreatePlacement::NewGroup,
+        CreatePlacement::Beside {
+            entry,
+            resource,
+            instance,
+            activation,
+            dir,
+            ratio,
+        } => phux_core::CreatePlacement::Beside {
+            entry: *entry,
+            resource: ow::core_resource_key(resource),
+            instance: phux_core::InstanceId::from_bytes(*instance.as_bytes()),
+            activation: ow::core_activation_id(*activation),
+            dir: match dir {
+                SplitDirection::Horizontal => phux_core::SplitDir::Horizontal,
+                SplitDirection::Vertical => phux_core::SplitDir::Vertical,
+            },
+            ratio: *ratio,
+        },
+    }
 }
 
 const fn record_key(record: phux_core::RecordRef) -> [u8; 16] {

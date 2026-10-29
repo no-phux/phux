@@ -33,14 +33,8 @@ fn launch(
 ) {
     let Some((terminal, with_pty, scrollback, cmd)) = state.with_mut(|s| {
         let id = s.registry().resource_id(&resource)?;
-        let session = s
-            .registry()
-            .session_of(id)
-            .and_then(|sid| s.registry().session(sid))
-            .map(|r| r.name.clone())
-            .unwrap_or_default();
         let with_pty = s.attach_create_seeds_pty();
-        let cmd = with_pty.then(|| build_command(s, spec, &session));
+        let cmd = with_pty.then(|| build_command(s, spec));
         if let phux_core::LaunchSpec::Terminal(t) = spec {
             let wire = s.intern_terminal_wire(id);
             super::super::commands::set_agent_session(s, wire, t.restore.clone());
@@ -55,7 +49,7 @@ fn launch(
         });
         cmd
     });
-    if let Err(error) = super::super::commands::launch_pane_actor(
+    if let Err(error) = super::super::commands::launch_pane_actor_with_failure_policy(
         state,
         terminal,
         cmd,
@@ -64,6 +58,7 @@ fn launch(
         root_token,
         None,
         super::super::commands::SpawnAttribution::default(),
+        true,
     ) {
         warn!(?terminal, with_pty, %error, "launch effect failed");
     }
@@ -71,11 +66,7 @@ fn launch(
 
 /// The command a Terminal launch spec runs: its argv, else the default
 /// shell, in its cwd, with its environment and the server's `TERM`.
-fn build_command(
-    s: &ServerState,
-    spec: &phux_core::LaunchSpec,
-    session: &str,
-) -> portable_pty::CommandBuilder {
+fn build_command(s: &ServerState, spec: &phux_core::LaunchSpec) -> portable_pty::CommandBuilder {
     let launch = match spec {
         phux_core::LaunchSpec::Terminal(t) => t.clone(),
         _ => phux_core::TerminalLaunch::default(),
@@ -85,8 +76,11 @@ fn build_command(
             .unwrap_or_else(|| {
                 crate::terminal_actor::default_shell_command(s.shell(), s.login_shell())
             });
-    let cwd = launch.cwd.as_ref().and_then(|p| p.to_str());
-    crate::terminal_actor::apply_spawn_cwd(&mut cmd, cwd, session);
+    // A recorded launch directory is intent, not a hint. If it disappears
+    // after validation, fail the activation rather than execute elsewhere.
+    if let Some(cwd) = &launch.cwd {
+        crate::terminal_actor::apply_strict_spawn_cwd(&mut cmd, cwd);
+    }
     for (key, value) in launch.env {
         cmd.env(key, value);
     }

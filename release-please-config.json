@@ -31,6 +31,7 @@
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
         "clients/desktop",
+        "clients/rune",
         "integrations/runtime",
         "integrations/opencode-v2",
         "integrations/pi",

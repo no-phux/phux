@@ -57,32 +57,32 @@ pub(super) fn mutate(
         );
     }
     // R17: a replaced session arrangement is published under the TUI layout
-    // key for older readers.
+    // key for older readers. A placed create publishes after its launch so
+    // the receipt observes the activation the effect recorded.
     let republish = match &op {
         Op::ArrangementReplace {
             owner: phux_core::ArrangementOwner::Session(key),
             ..
         } => Some(*key),
+        Op::ResourceCreate {
+            session,
+            placement: Some(_),
+            ..
+        } => *session,
         _ => None,
     };
     let committed = state.with_mut(|s| {
         let actor = s.actor_for(client_id);
         let command = phux_core::Command { operation, op };
         let commit = s.commit_command_from(&command, &actor, Some(client_id))?;
-        if let Some(session) = republish.and_then(|key| s.registry().session_id(&key))
-            && !commit.applied.replayed
-        {
-            s.publish_arrangement_as_layout(session);
-        }
         let detached: Vec<_> = s
             .take_killed_sessions()
             .into_iter()
             .flat_map(|session| s.attached_clients_in_session(session))
             .collect();
-        let answer = answer(s, &commit.applied);
-        Ok::<_, Refusal>((answer, commit.applied.effects, detached))
+        Ok::<_, Refusal>((commit.applied, detached))
     });
-    let (answer, effects, detached) = match committed {
+    let (mut applied, detached) = match committed {
         Ok(committed) => {
             if let Some((owner, expected, groups)) = arrangement_save {
                 debug!(
@@ -112,10 +112,17 @@ pub(super) fn mutate(
         }
     };
     super::super::client::detach_clients_of_killed_session(state, detached);
-    for effect in effects {
+    for effect in std::mem::take(&mut applied.effects) {
         run_effect(state, effect, root_token);
     }
-    answer
+    state.with_mut(|s| {
+        if let Some(session) = republish.and_then(|key| s.registry().session_id(&key))
+            && !applied.replayed
+        {
+            s.publish_arrangement_as_layout(session);
+        }
+        answer(s, &applied)
+    })
 }
 
 /// `SESSION_KILL`: the kill is written to the organization store first. Only

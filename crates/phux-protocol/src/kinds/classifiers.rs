@@ -138,12 +138,15 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::AppendResourceOutput { .. } => &C_APPEND_RESOURCE_OUTPUT,
         Command::Transcribe { .. } => &C_TRANSCRIBE,
         Command::GetOrganization { .. } => &C_GET_ORGANIZATION,
+        Command::DescribeApi => &C_API_DESCRIBE,
+        Command::GetCreation { .. } => &C_GET_CREATION,
         Command::SessionCreate { .. } => &C_SESSION_CREATE,
         Command::SessionRename { .. }
         | Command::SessionSetProject { .. }
         | Command::SessionSetLifetime { .. }
         | Command::InboxResolve { .. } => &C_SESSION_ORGANIZE,
         Command::SessionDelete { .. } | Command::SessionKill { .. } => &C_SESSION_DELETE,
+        Command::ResourceCreate { placement: Some(_), .. } => &C_RESOURCE_CREATE_PLACED,
         Command::ResourceCreate { .. } => &C_RESOURCE_CREATE,
         Command::ResourceMove { .. } | Command::ResourceMoveMany { .. } => &C_RESOURCE_MOVE,
         Command::ResourceRename { .. } => &C_RESOURCE_RENAME,
