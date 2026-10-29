@@ -7,6 +7,10 @@ use super::{
 };
 
 #[cfg(test)]
+static EXECUTOR_PERSIST_ATTEMPTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
 mod tests;
 
 #[derive(Debug, Clone, Copy)]
@@ -43,6 +47,9 @@ impl ServerState {
         };
         report.start.get_or_insert(StartedReport { proc });
         self.retry_activation_reports();
+        if self.has_pending_activation_reports() {
+            super::super::notify_activation_reports();
+        }
     }
 
     /// Report an observed end, without a launch diagnostic.
@@ -66,6 +73,9 @@ impl ServerState {
         };
         report.end.get_or_insert((outcome, failed, diagnostic));
         self.retry_activation_reports();
+        if self.has_pending_activation_reports() {
+            super::super::notify_activation_reports();
+        }
     }
 
     fn activation_report(&mut self, resource: ResourceId) -> Option<&mut PendingActivation> {
@@ -144,18 +154,11 @@ impl ServerState {
 
     fn persist_activation_report(&mut self, report: &mut PendingActivation) -> Result<(), ()> {
         if let Some(started) = report.start {
-            let starting = self
-                .org()
-                .resource(&report.resource)
-                .and_then(|r| r.activation.as_ref())
-                .is_some_and(|a| a.state == ExecState::Starting);
-            if starting {
-                self.persist_executor_op(Op::ActivationStarted {
-                    resource: report.resource,
-                    activation: report.id,
-                    proc: started.proc,
-                })?;
-            }
+            self.persist_executor_op(Op::ActivationStarted {
+                resource: report.resource,
+                activation: report.id,
+                proc: started.proc,
+            })?;
             report.start = None;
         }
         if let Some((outcome, failed, diagnostic)) = report.end {
@@ -175,11 +178,12 @@ impl ServerState {
     }
 
     fn persist_executor_op(&mut self, op: Op) -> Result<(), ()> {
+        #[cfg(test)]
+        EXECUTOR_PERSIST_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.commit_system(op) {
             Ok(_) => Ok(()),
             Err(refusal @ Refusal::StoreFailure { .. }) => {
                 tracing::warn!(%refusal, "executor evidence awaits persistence; will retry without execution");
-                super::super::notify_activation_reports();
                 Err(())
             }
             Err(refusal) => {
@@ -187,5 +191,17 @@ impl ServerState {
                 Ok(())
             }
         }
+    }
+
+    /// Zero the test-only executor persistence counter.
+    #[cfg(test)]
+    pub(crate) fn reset_executor_persist_attempts() {
+        EXECUTOR_PERSIST_ATTEMPTS.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How many times executor evidence has been offered to the store in this process.
+    #[cfg(test)]
+    pub(crate) fn executor_persist_attempts() -> u64 {
+        EXECUTOR_PERSIST_ATTEMPTS.load(std::sync::atomic::Ordering::Relaxed)
     }
 }

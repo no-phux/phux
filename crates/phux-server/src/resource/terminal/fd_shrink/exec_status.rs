@@ -13,14 +13,16 @@ pub(super) fn channel() -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 pub(super) fn confirm(pid: libc::pid_t, reader: OwnedFd) -> Result<(), LaunchDiagnostic> {
-    // poll(2) and the failure SIGKILL run off the LocalSet thread. The caller
-    // still waits for the verdict, but the runtime thread is not inside the
-    // syscall or the signal.
+    // `recv` still blocks this LocalSet thread until the status verdict is
+    // sent. That wait is only the bounded status read: the verdict goes out
+    // before SIGKILL/waitpid, so a D-state child cannot hold the caller past
+    // the deadline.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("phux-exec-status".to_owned())
         .spawn(move || {
             let result = read_status(UnixStream::from(reader), Duration::from_secs(2));
+            let _ = tx.send(result);
             if result.is_err() {
                 // This exact child was spawned above and has not been handed to an
                 // actor/reaper. Never spawn again: timeout may follow an executed effect.
@@ -28,7 +30,6 @@ pub(super) fn confirm(pid: libc::pid_t, reader: OwnedFd) -> Result<(), LaunchDia
                 let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
                 while nix::sys::wait::waitpid(child, None) == Err(nix::errno::Errno::EINTR) {}
             }
-            let _ = tx.send(result);
         })
         .map_err(|_| uncertain())?;
     rx.recv().unwrap_or_else(|_| Err(uncertain()))
@@ -163,5 +164,58 @@ mod tests {
             read_status(UnixStream::from(reader), Duration::from_millis(10)),
             Err(uncertain())
         );
+    }
+
+    #[test]
+    fn confirm_kills_a_silent_child_at_the_two_second_deadline() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let pid = libc::pid_t::try_from(child.id()).unwrap();
+        let (reader, writer) = channel().unwrap();
+        let holder = std::thread::spawn(move || {
+            std::thread::park();
+            drop(writer);
+        });
+        let started = Instant::now();
+        let result = confirm(pid, reader);
+        let elapsed = started.elapsed();
+        holder.thread().unpark();
+        let _ = holder.join();
+        assert!(result.is_err());
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "deadline stretched to {elapsed:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(1500),
+            "deadline collapsed to {elapsed:?}"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && child_still_running(pid) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let running = child_still_running(pid);
+        if matches!(child.try_wait(), Ok(None)) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(
+            !running,
+            "confirm must SIGKILL a child that never reports status"
+        );
+    }
+
+    fn child_still_running(pid: libc::pid_t) -> bool {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        let Some(rest) = stat.rsplit(')').next() else {
+            return true;
+        };
+        rest.split_whitespace()
+            .next()
+            .is_some_and(|state| state != "Z")
     }
 }

@@ -11,7 +11,7 @@ use std::io::{self, ErrorKind};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use phux_core::{LaunchDiagnostic, LaunchStage};
 use portable_pty::{Child, CommandBuilder, MasterPty, SlavePty};
@@ -25,6 +25,11 @@ const SPAWN_CWD_KEY: &str = "PHUX_FD_SHRINK_CWD";
 
 #[cfg(test)]
 mod tests;
+
+static TRAMPOLINE_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(phux_fd_shrink)]
+static TRAMPOLINE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Spawn exactly once and wait for the requested exec, not just the launcher.
 /// A missing trampoline falls back to portable-pty for non-strict spawns.
@@ -83,19 +88,48 @@ fn fallback_spawn(
 
 /// Cache a successful trampoline path. A failure is not remembered, so a later
 /// materialize (after a noexec temp dir or a missing compiler) can succeed.
-fn remember_path(slot: &OnceLock<PathBuf>, made: io::Result<PathBuf>) -> io::Result<PathBuf> {
+///
+/// The fast path only reads `slot`. Materializing takes the lock and checks
+/// again, so concurrent spawns do not rewrite an executing image.
+fn remember_path(
+    slot: &OnceLock<PathBuf>,
+    materialize: impl FnOnce() -> io::Result<PathBuf>,
+) -> io::Result<PathBuf> {
     if let Some(path) = slot.get() {
         return Ok(path.clone());
     }
-    let path = made?;
+    let _guard = TRAMPOLINE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(path) = slot.get() {
+        return Ok(path.clone());
+    }
+    let path = materialize()?;
     Ok(slot.get_or_init(|| path).clone())
 }
 
+#[cfg(test)]
+thread_local! {
+    static FORCE_TRAMPOLINE_MISSING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn set_force_trampoline_missing(missing: bool) {
+    FORCE_TRAMPOLINE_MISSING.with(|cell| cell.set(missing));
+}
+
 fn trampoline_path() -> io::Result<PathBuf> {
+    #[cfg(test)]
+    if FORCE_TRAMPOLINE_MISSING.with(std::cell::Cell::get) {
+        return Err(io::Error::new(
+            ErrorKind::NotFound,
+            "trampoline forced missing",
+        ));
+    }
     #[cfg(phux_fd_shrink)]
     {
         static PATH: OnceLock<PathBuf> = OnceLock::new();
-        remember_path(&PATH, materialize_trampoline())
+        remember_path(&PATH, materialize_trampoline)
     }
     #[cfg(not(phux_fd_shrink))]
     {
@@ -122,14 +156,27 @@ fn materialize_trampoline() -> io::Result<PathBuf> {
         let _ = write!(hash, "{byte:02x}");
     }
     let path = dir.join(format!("phux-fd-shrink-{hash}"));
-    let tmp = dir.join(format!("phux-fd-shrink-{hash}.{}.tmp", std::process::id()));
+    if path.is_file() {
+        return Ok(path);
+    }
+    let tmp = dir.join(format!(
+        "phux-fd-shrink-{hash}.{}.{}.tmp",
+        std::process::id(),
+        TRAMPOLINE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     std::fs::write(&tmp, TRAMPOLINE_BYTES)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700))?;
     }
-    std::fs::rename(&tmp, &path)?;
+    if let Err(error) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        if error.raw_os_error() == Some(libc::ETXTBSY) && path.is_file() {
+            return Ok(path);
+        }
+        return Err(error);
+    }
     Ok(path)
 }
 

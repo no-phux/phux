@@ -18,12 +18,11 @@ impl Spawned {
 fn a_failed_trampoline_materialize_is_not_cached() {
     use std::io::{Error, ErrorKind};
     let slot = OnceLock::new();
-    let missing = remember_path(
-        &slot,
-        Err(Error::new(ErrorKind::PermissionDenied, "noexec")),
-    );
+    let missing = remember_path(&slot, || {
+        Err(Error::new(ErrorKind::PermissionDenied, "noexec"))
+    });
     assert!(missing.is_err());
-    let ready = remember_path(&slot, Ok("/tmp/phux-fd-shrink".into()));
+    let ready = remember_path(&slot, || Ok("/tmp/phux-fd-shrink".into()));
     assert_eq!(ready.unwrap().as_os_str(), "/tmp/phux-fd-shrink");
 }
 
@@ -33,6 +32,31 @@ fn a_missing_trampoline_falls_back_only_for_non_strict_spawns() {
     assert_eq!(spawn_route(false, true), SpawnRoute::FailClosed);
     assert_eq!(spawn_route(true, false), SpawnRoute::Launcher);
     assert_eq!(spawn_route(true, true), SpawnRoute::Launcher);
+}
+
+#[test]
+fn spawn_pane_child_routes_a_missing_trampoline_through_strict_cwd() {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            set_force_trampoline_missing(false);
+        }
+    }
+    let _restore = Restore;
+    set_force_trampoline_missing(true);
+    let mut strict = CommandBuilder::new("/bin/true");
+    strict.env(super::super::spawn::STRICT_CWD_KEY, "1");
+    match spawn(&strict) {
+        Err(LaunchDiagnostic {
+            stage: LaunchStage::Spawn,
+            errno: Some(errno),
+        }) if errno == libc::ENOEXEC => {}
+        Err(error) => panic!("strict missing trampoline returned {error}"),
+        Ok(_) => panic!("strict missing trampoline spawned"),
+    }
+    let loose = CommandBuilder::new("/bin/true");
+    let mut spawned = spawn(&loose).unwrap();
+    assert_eq!(spawned.wait().exit_code(), 0);
 }
 
 fn spawn(cmd: &CommandBuilder) -> Result<Spawned, LaunchDiagnostic> {
