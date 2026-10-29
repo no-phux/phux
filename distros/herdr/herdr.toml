@@ -1,7 +1,6 @@
 # `herdr` is the former name of phux's `starter` config layer, kept as an
-# alias so existing configs keep loading. It is not related to herdr, the
-# separate, independent project. Configs that still extend
-# distros/herdr/herdr.toml keep loading.
+# alias so existing configs keep loading. It is not Herdr (https://herdr.dev),
+# a separate project.
 # Do not add settings here — they belong in starter.toml or the shipped
 # defaults. See distros/starter/README.md.
 extends = ["../starter/starter.toml"]
