@@ -1,13 +1,15 @@
-# Program protocol
+---
+title: OSC 7501: report status from any program
+description: OSC 7501 (the Program Status Protocol) is one escape sequence a program writes to report its status. phux reads it and shows it per pane.
+---
 
-This page is for people who write programs that run inside a phux pane:
-build tools, deploy scripts, coding agents. It specifies how such a program
-tells phux what it is doing, and what phux does with that.
+# OSC 7501: report status from any program
 
-The main channel is the Program Status Protocol, OSC 7501. A program writes
-one escape sequence to its terminal, and phux records it, ranks it, and
-shows it as the pane's state in the sidebar, the agents view, notifications,
-and `phux agent list`. It needs no phux library and no socket.
+OSC 7501, the Program Status Protocol, is one escape sequence a program writes to say what it is doing: `\033]7501;state=working\033\\`. phux reads it.
+
+This page is for people who write programs that run inside a phux pane: build tools, deploy scripts, coding agents. It specifies how such a program tells phux what it is doing, and what phux does with that.
+
+A program writes that sequence to its terminal. phux records it, ranks it, and shows it as the pane's state in the sidebar, the agents view, notifications, and `phux agent list`. It needs no phux library and no socket.
 
 ```sh
 printf '\033]7501;state=working:app=deploy\033\\'
@@ -70,7 +72,9 @@ A program that only writes OSC 7501 needs none of this; it can use
 
 phux implements revision 0.4 of the
 [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status),
-a terminal-neutral specification. The parser is libghostty's. This section
+a terminal-neutral specification. Mitchell Hashimoto
+[introduced OSC 7501](https://mitchellh.com/writing/program-status-osc7501).
+The parser is libghostty's. This section
 restates the protocol as phux applies it, including where phux differs.
 
 ### Syntax

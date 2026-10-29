@@ -1,4 +1,4 @@
-# Plugins
+# Plugin API
 
 A plugin is a directory with a `phux-plugin.toml` manifest that adds to
 phux: actions for the palette and your keys, panes, status-bar widgets,

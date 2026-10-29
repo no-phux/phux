@@ -1,8 +1,9 @@
-# Embed a phux terminal in your app
+# Embed phux
 
-A GPUI app adds the `phux-gpui` view. Another Rust toolkit uses
-`phux-client-runtime` and paints its `draw::DrawList`. A Swift, C or other
-native app links `phux-client-ffi` and paints `phux_client_terminal_draw_list`.
+Embed phux in your own app with one of three crates. A GPUI app adds the
+`phux-gpui` view. Another Rust toolkit uses `phux-client-runtime` and
+paints its `draw::DrawList`. A Swift, C or other native app links
+`phux-client-ffi` and paints `phux_client_terminal_draw_list`.
 All three run phux's libghostty replica in your process and share one set of
 paint rules ([ADR-0189](https://github.com/no-phux/phux/blob/3cd9ddac22075c1b3db2674e2edc4e00c91d67f4/docs/adr/0189-the-terminal-view-is-a-crate-and-paint-rules-are-shared.md)).
 None of these crates is on crates.io yet; depend on them by path or git.
