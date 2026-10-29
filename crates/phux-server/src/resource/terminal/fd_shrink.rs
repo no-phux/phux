@@ -27,24 +27,75 @@ const SPAWN_CWD_KEY: &str = "PHUX_FD_SHRINK_CWD";
 mod tests;
 
 /// Spawn exactly once and wait for the requested exec, not just the launcher.
-/// Fail closed if the verified launcher is unavailable: a fallback must not
-/// execute a command without equivalent execution evidence.
+/// A missing trampoline falls back to portable-pty for non-strict spawns.
+/// Strict cwd still fails closed: a fallback directory is not execution evidence.
 pub(super) fn spawn_pane_child(
-    _slave: &(dyn SlavePty + Send),
+    slave: &(dyn SlavePty + Send),
     master: &dyn MasterPty,
     cmd: &CommandBuilder,
 ) -> Result<Box<dyn Child + Send + Sync>, LaunchDiagnostic> {
+    if trampoline_path().is_err() {
+        return match spawn_route(false, strict_cwd(cmd)) {
+            SpawnRoute::Fallback => fallback_spawn(slave, cmd),
+            SpawnRoute::FailClosed => Err(LaunchDiagnostic {
+                stage: LaunchStage::Spawn,
+                errno: Some(libc::ENOEXEC),
+            }),
+            SpawnRoute::Launcher => posix_spawn_child(master, cmd),
+        };
+    }
     posix_spawn_child(master, cmd)
+}
+
+fn strict_cwd(cmd: &CommandBuilder) -> bool {
+    cmd.get_env(super::spawn::STRICT_CWD_KEY).is_some()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpawnRoute {
+    Launcher,
+    Fallback,
+    FailClosed,
+}
+
+const fn spawn_route(trampoline_ready: bool, strict: bool) -> SpawnRoute {
+    if trampoline_ready {
+        SpawnRoute::Launcher
+    } else if strict {
+        SpawnRoute::FailClosed
+    } else {
+        SpawnRoute::Fallback
+    }
+}
+
+/// Portable-pty spawn used only when the verified launcher cannot be materialized.
+fn fallback_spawn(
+    slave: &(dyn SlavePty + Send),
+    cmd: &CommandBuilder,
+) -> Result<Box<dyn Child + Send + Sync>, LaunchDiagnostic> {
+    slave
+        .spawn_command(cmd.clone())
+        .map_err(|_| LaunchDiagnostic {
+            stage: LaunchStage::Spawn,
+            errno: None,
+        })
+}
+
+/// Cache a successful trampoline path. A failure is not remembered, so a later
+/// materialize (after a noexec temp dir or a missing compiler) can succeed.
+fn remember_path(slot: &OnceLock<PathBuf>, made: io::Result<PathBuf>) -> io::Result<PathBuf> {
+    if let Some(path) = slot.get() {
+        return Ok(path.clone());
+    }
+    let path = made?;
+    Ok(slot.get_or_init(|| path).clone())
 }
 
 fn trampoline_path() -> io::Result<PathBuf> {
     #[cfg(phux_fd_shrink)]
     {
-        static PATH: OnceLock<io::Result<PathBuf>> = OnceLock::new();
-        match PATH.get_or_init(materialize_trampoline) {
-            Ok(path) => Ok(path.clone()),
-            Err(err) => Err(io::Error::new(err.kind(), err.to_string())),
-        }
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        remember_path(&PATH, materialize_trampoline())
     }
     #[cfg(not(phux_fd_shrink))]
     {

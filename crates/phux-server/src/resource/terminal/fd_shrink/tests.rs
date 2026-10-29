@@ -1,7 +1,9 @@
 //! Real PTY requested-exec classification, not launcher exit-code inference.
+//! Also the trampoline cache and non-strict fallback decision.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use super::*;
 use std::os::unix::fs::PermissionsExt as _;
+use std::sync::OnceLock;
 
 struct Spawned {
     child: Box<dyn Child + Send + Sync>,
@@ -12,6 +14,27 @@ impl Spawned {
         self.child.wait().unwrap()
     }
 }
+#[test]
+fn a_failed_trampoline_materialize_is_not_cached() {
+    use std::io::{Error, ErrorKind};
+    let slot = OnceLock::new();
+    let missing = remember_path(
+        &slot,
+        Err(Error::new(ErrorKind::PermissionDenied, "noexec")),
+    );
+    assert!(missing.is_err());
+    let ready = remember_path(&slot, Ok("/tmp/phux-fd-shrink".into()));
+    assert_eq!(ready.unwrap().as_os_str(), "/tmp/phux-fd-shrink");
+}
+
+#[test]
+fn a_missing_trampoline_falls_back_only_for_non_strict_spawns() {
+    assert_eq!(spawn_route(false, false), SpawnRoute::Fallback);
+    assert_eq!(spawn_route(false, true), SpawnRoute::FailClosed);
+    assert_eq!(spawn_route(true, false), SpawnRoute::Launcher);
+    assert_eq!(spawn_route(true, true), SpawnRoute::Launcher);
+}
+
 fn spawn(cmd: &CommandBuilder) -> Result<Spawned, LaunchDiagnostic> {
     let pair = portable_pty::native_pty_system()
         .openpty(portable_pty::PtySize::default())
