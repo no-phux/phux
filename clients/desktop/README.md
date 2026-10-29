@@ -19,6 +19,17 @@ CLI or stops its server. The shell installer also supports older
 ad-hoc-signed releases, clearing quarantine only after verifying the
 release signature.
 
+### macOS Homebrew
+
+```sh
+brew trust --tap no-phux/tap # Homebrew 6+
+brew install --cask no-phux/tap/phux-desktop
+```
+
+The cask installs the signed, notarized DMG on Apple silicon, macOS 26+.
+Update with `brew upgrade --cask no-phux/tap/phux-desktop`. No separate CLI
+formula is required; an existing CLI is preserved.
+
 ### macOS download
 
 Download the **macos-arm64.dmg** from the newest
