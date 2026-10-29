@@ -51,7 +51,7 @@ impl ServerState {
     /// free its server-side bookkeeping, descendants included. Returns
     /// whether the server now executes nothing (R13). Idempotent.
     pub fn reap_terminal(&mut self, pane: ResourceId) -> bool {
-        let (idle, token) = self.reap_terminal_inner(pane, ExitOutcome::UNKNOWN);
+        let (idle, token) = self.reap_terminal_inner(pane, ExitOutcome::UNKNOWN, false);
         if let Some(token) = token {
             token.cancel();
         }
@@ -65,14 +65,16 @@ impl ServerState {
         &mut self,
         pane: ResourceId,
         outcome: ExitOutcome,
+        preserve_record: bool,
     ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
-        self.reap_terminal_inner(pane, outcome)
+        self.reap_terminal_inner(pane, outcome, preserve_record)
     }
 
     fn reap_terminal_inner(
         &mut self,
         pane: ResourceId,
         outcome: ExitOutcome,
+        preserve_record: bool,
     ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
         if self.sessions.registry.resource(pane).is_none() {
             return (!self.has_live_activation(), None);
@@ -88,8 +90,13 @@ impl ServerState {
             }
             self.retire_record(child, ExitOutcome::UNKNOWN);
         }
+        if preserve_record {
+            self.activation_ended(pane, outcome, false);
+        }
         let token = self.forget_terminal_bookkeeping(pane);
-        self.retire_record(pane, outcome);
+        if !preserve_record {
+            self.retire_record(pane, outcome);
+        }
         // A removed producer hands its parent back to the remaining sources.
         if let Some(handle) = parent.and_then(|parent| self.resource_handle(parent)) {
             let _ = handle

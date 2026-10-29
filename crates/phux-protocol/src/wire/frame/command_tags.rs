@@ -69,6 +69,8 @@ enum CommandTag {
     ServiceHttpOpen = 0x3d,
     ServiceHttpRead = 0x3e,
     ServiceHttpClose = 0x3f,
+    DescribeApi = 0x40,
+    GetCreation = 0x41,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -126,6 +128,10 @@ pub(crate) const COMMAND_TAG_SERVICE_HTTP_OPEN: u8 = CommandTag::ServiceHttpOpen
 pub(crate) const COMMAND_TAG_SERVICE_HTTP_READ: u8 = CommandTag::ServiceHttpRead as u8;
 /// Wire tag for [`Command::ServiceHttpClose`].
 pub(crate) const COMMAND_TAG_SERVICE_HTTP_CLOSE: u8 = CommandTag::ServiceHttpClose as u8;
+/// Wire tag for [`Command::DescribeApi`].
+pub(crate) const COMMAND_TAG_DESCRIBE_API: u8 = CommandTag::DescribeApi as u8;
+/// Wire tag for [`Command::GetCreation`].
+pub(crate) const COMMAND_TAG_GET_CREATION: u8 = CommandTag::GetCreation as u8;
 /// Wire tag for [`Command::Shutdown`].
 pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = CommandTag::Shutdown as u8;
 /// Wire tag for [`Command::ReportAgentState`].

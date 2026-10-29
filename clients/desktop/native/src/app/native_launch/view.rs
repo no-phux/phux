@@ -83,6 +83,13 @@ fn integration_row(
         .when(item.integration == "opencode", |row| {
             row.child(setup_disclosure(item, desk, look, cx))
         })
+        .when(item.integration == "fx", |row| {
+            row.child(div().flex().flex_col().gap(px(6.))
+                .child(muted(look, "Install fx and connect a provider on this host before starting. phux does not install fx or copy credentials."))
+                .child(div().debug_selector(|| "fx-setup-guide".into())
+                    .child(ghost_button("fx-install-docs", "fx setup guide")
+                        .on_click(|_, _, cx| cx.open_url("https://fx.sh/docs/getting-started/installation")))))
+        })
         .into_any_element()
 }
 

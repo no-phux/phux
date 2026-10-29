@@ -366,6 +366,7 @@ fn resource_create_defaults_to_inbox_and_validates_kind() {
     let mut h = Harness::new();
     let applied = h
         .run(Op::ResourceCreate {
+            placement: None,
             session: None,
             resource: shell(),
         })
@@ -376,6 +377,7 @@ fn resource_create_defaults_to_inbox_and_validates_kind() {
     let missing = SessionKey::from_bytes([7; 16]);
     assert_eq!(
         h.run(Op::ResourceCreate {
+            placement: None,
             session: Some(missing),
             resource: shell(),
         })
@@ -389,6 +391,7 @@ fn resource_create_defaults_to_inbox_and_validates_kind() {
     };
     assert!(matches!(
         h.run(Op::ResourceCreate {
+            placement: None,
             session: None,
             resource: orphan_agent,
         }),
@@ -404,6 +407,7 @@ fn resource_create_defaults_to_inbox_and_validates_kind() {
     };
     assert!(matches!(
         h.run(Op::ResourceCreate {
+            placement: None,
             session: None,
             resource: wrong_spec,
         }),
@@ -420,6 +424,7 @@ fn a_deferred_create_is_dormant_until_relaunched() {
     let s = h.create_session("work", SessionLifetime::Persistent);
     let applied = h
         .run(Op::ResourceCreate {
+            placement: None,
             session: Some(s),
             resource: NewResource {
                 launch_mode: LaunchMode::Deferred,
@@ -467,6 +472,7 @@ fn a_deferred_create_is_dormant_until_relaunched() {
     };
     assert!(matches!(
         h.run(Op::ResourceCreate {
+            placement: None,
             session: Some(s),
             resource: without_spec,
         }),

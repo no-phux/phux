@@ -19,7 +19,11 @@ const ZIG: Surface[] = ["native", "web_engine", "desktop"];
  * the root changelog. These leave the docs-only fast path.
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
-  "docs/{spec,reference,assets}/**": ["phux"],
+  // README and the wire schema are Rust inputs. Other files under
+  // docs/spec, including the plugin index schema, are documentation.
+  "README.md": ["phux"],
+  "docs/spec/wire-schema.json": ["phux"],
+  "docs/{reference,assets}/**": ["phux"],
   "docs/agents.md": ["phux"],
   "CHANGELOG.md": [],
 };
@@ -36,6 +40,12 @@ const ROUTES: Record<string, Surface[]> = {
   // Distro layers and manifests are exercised by native config tests; Crew's
   // credential-free launcher tests also run in guards.
   "distros/**": ["phux"],
+  // First-party plugins and runnable CLI examples are native test inputs.
+  "plugins/**": ["phux"],
+  "examples/**": ["phux"],
+  "scripts/examples-smoke.sh": ["phux"],
+  "scripts/test-agent-examples.py": ["phux"],
+  "scripts/{demo-record,record-readme}.sh": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
   // its shared actions: a change to how lanes run reruns every lane.
   ".github/workflows/*.{yml,yaml}": [],
@@ -124,6 +134,10 @@ const ROUTES: Record<string, Surface[]> = {
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
   "scripts/check-*": [],
+  // Lint lane only for a generator-only diff (classify skips the unit pool).
+  // plugin-index.yml runs the generator tests. A phux-config change still
+  // compiles this tree because the rust lane cargo-checks it.
+  "scripts/plugin-index/**": ["phux"],
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],

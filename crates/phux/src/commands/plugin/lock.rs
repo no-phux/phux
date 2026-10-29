@@ -1,12 +1,16 @@
 //! Managed-install lockfile (`plugins.lock`): records where every
 //! `phux plugin install`ed package came from — the source kind, the
-//! original ref (git URL / local path), the requested branch or tag, and
-//! the resolved commit for git sources — so `phux plugin update` can
-//! re-fetch deterministically without re-asking the user.
+//! original ref (git URL / local path), the requested branch or tag, the
+//! subdirectory inside a git clone, and the resolved commit for git sources —
+//! so `phux plugin update` can re-fetch deterministically without re-asking
+//! the user.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use phux_config::plugin::PluginManifestBuild;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Lockfile name inside the managed plugins directory.
 pub(super) const LOCKFILE_NAME: &str = "plugins.lock";
@@ -45,9 +49,67 @@ pub(super) struct PluginLockEntry {
     /// Requested branch or tag (`--rev`), git sources only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) branch: Option<String>,
+    /// Subdirectory of a git clone that holds `phux-plugin.toml`.
+    /// Absent for root plugins and for locks written before subdirectory
+    /// installs, which still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) subdir: Option<String>,
     /// Resolved commit hash, git sources only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) rev: Option<String>,
+    /// SHA-256 of the `[[build]]` steps last approved with `--yes` or a
+    /// terminal answer. Absent when the plugin has no build steps, or the
+    /// install predates this field (an update then asks again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) build_steps: Option<String>,
+}
+
+/// SHA-256 of approved `[[build]]` steps. `None` when there are none.
+///
+/// Encoding is a count of steps, then for each step a presence marker
+/// (`0` when `platforms` is omitted, `1` when the key is set), the
+/// platform names as `len:bytes` when present, and each argument as
+/// `len:bytes`. Omitted platforms run on every platform; `platforms = []`
+/// runs on none, so those hashes differ. A length prefix keeps
+/// `["a\u{1f}b","c"]` distinct from `["a","b\u{1f}c"]`. A lockfile written
+/// with an older encoding does not match and `update` asks again.
+pub(super) fn hash_build_steps(steps: &[PluginManifestBuild]) -> Option<String> {
+    if steps.is_empty() {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    feed_count(&mut hasher, steps.len());
+    for step in steps {
+        match &step.platforms {
+            None => feed_count(&mut hasher, 0),
+            Some(platforms) => {
+                feed_count(&mut hasher, 1);
+                feed_count(&mut hasher, platforms.len());
+                for platform in platforms {
+                    feed_bytes(&mut hasher, format!("{platform:?}").as_bytes());
+                }
+            }
+        }
+        feed_count(&mut hasher, step.command.len());
+        for arg in &step.command {
+            feed_bytes(&mut hasher, arg.as_bytes());
+        }
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(out, "{byte:02x}");
+    }
+    Some(out)
+}
+
+fn feed_count(hasher: &mut Sha256, count: usize) {
+    hasher.update(format!("{count}:").as_bytes());
+}
+
+fn feed_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    feed_count(hasher, bytes.len());
+    hasher.update(bytes);
 }
 
 /// Source kinds `phux plugin install` accepts.
@@ -91,6 +153,9 @@ pub(super) fn read_lockfile(plugins_dir: &Path) -> Result<PluginLockFile, String
 }
 
 /// Write the lockfile (entries sorted by id for stable diffs).
+///
+/// No advisory lock: `fs2` and `fd-lock` are not dependencies of this
+/// workspace, so two concurrent installs can lose one lockfile write.
 pub(super) fn write_lockfile(plugins_dir: &Path, lock: &PluginLockFile) -> Result<(), String> {
     let mut lock = lock.clone();
     lock.plugins.sort_by(|a, b| a.id.cmp(&b.id));
@@ -130,14 +195,18 @@ mod tests {
                     source: PluginSourceKind::Git,
                     source_ref: "https://example.invalid/plugin.git".to_owned(),
                     branch: Some("main".to_owned()),
+                    subdir: Some("plugins/demo".to_owned()),
                     rev: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+                    build_steps: Some("abc".to_owned()),
                 },
                 PluginLockEntry {
                     id: "example.dir-plugin".to_owned(),
                     source: PluginSourceKind::Dir,
                     source_ref: "/srv/plugins/dir-plugin".to_owned(),
                     branch: None,
+                    subdir: None,
                     rev: None,
+                    build_steps: None,
                 },
             ],
         }
@@ -182,7 +251,9 @@ mod tests {
                 source: PluginSourceKind::Git,
                 source_ref: "https://example.invalid/plugin.git".to_owned(),
                 branch: Some("main".to_owned()),
+                subdir: Some("plugins/demo".to_owned()),
                 rev: Some("fedcba9876543210fedcba9876543210fedcba98".to_owned()),
+                build_steps: Some("abc".to_owned()),
             },
         );
 
@@ -207,5 +278,87 @@ mod tests {
         let err = read_lockfile(dir.path()).unwrap_err();
 
         assert!(err.contains("plugins.lock"), "{err}");
+    }
+
+    fn step(argv: &[&str]) -> phux_config::plugin::PluginManifestBuild {
+        phux_config::plugin::PluginManifestBuild {
+            platforms: None,
+            command: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+
+    /// The previous encoding: `{platforms}|{args joined by \u{1f}}` per step.
+    fn legacy_build_hash(steps: &[phux_config::plugin::PluginManifestBuild]) -> String {
+        use sha2::{Digest, Sha256};
+        use std::fmt::Write as _;
+
+        let mut hasher = Sha256::new();
+        for step in steps {
+            let line = format!("|{}", step.command.join("\u{1f}"));
+            hasher.update(line.as_bytes());
+            hasher.update(b"\n");
+        }
+        let digest = hasher.finalize();
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    /// Args used to be joined with `\u{1f}`, so `["a","b"]` and `["a\u{1f}b"]`
+    /// were one hash. A lockfile still holding that digest does not match.
+    #[test]
+    fn build_step_hash_does_not_collide_on_separator_bytes() {
+        let split = step(&["sh", "build.sh", "a", "b"]);
+        let glued = step(&["sh", "build.sh", "a\u{1f}b"]);
+        let split_hash = super::hash_build_steps(std::slice::from_ref(&split)).unwrap();
+        let glued_hash = super::hash_build_steps(std::slice::from_ref(&glued)).unwrap();
+        assert_ne!(split_hash, glued_hash);
+
+        let legacy = legacy_build_hash(std::slice::from_ref(&split));
+        assert_eq!(legacy, legacy_build_hash(std::slice::from_ref(&glued)));
+        assert_ne!(
+            split_hash, legacy,
+            "an old lockfile hash must not match, so update asks again"
+        );
+    }
+
+    /// Same argument count. Joining on `\u{1f}` without a per-arg length
+    /// still collides; the length prefix is what keeps these apart.
+    #[test]
+    fn build_step_hash_distinguishes_same_count_separator_splits() {
+        let left = step(&["a\u{1f}b", "c"]);
+        let right = step(&["a", "b\u{1f}c"]);
+        assert_eq!(left.command.len(), right.command.len());
+        assert_eq!(
+            format!("{}:{}", left.command.len(), left.command.join("\u{1f}")),
+            format!("{}:{}", right.command.len(), right.command.join("\u{1f}"))
+        );
+        assert_ne!(
+            super::hash_build_steps(std::slice::from_ref(&left)).unwrap(),
+            super::hash_build_steps(std::slice::from_ref(&right)).unwrap()
+        );
+    }
+
+    /// `platforms = []` matches no platform. An omitted key matches every
+    /// platform. The hashes record that difference.
+    #[test]
+    fn empty_platform_list_hashes_apart_from_omitted_platforms() {
+        use phux_config::plugin::PluginManifestBuild;
+
+        let command = vec!["sh".to_owned(), "build.sh".to_owned()];
+        let absent = PluginManifestBuild {
+            platforms: None,
+            command: command.clone(),
+        };
+        let empty = PluginManifestBuild {
+            platforms: Some(Vec::new()),
+            command,
+        };
+        assert_ne!(
+            super::hash_build_steps(std::slice::from_ref(&absent)).unwrap(),
+            super::hash_build_steps(std::slice::from_ref(&empty)).unwrap()
+        );
     }
 }

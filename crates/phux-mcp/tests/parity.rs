@@ -71,6 +71,9 @@ fn cli_verbs() -> BTreeSet<String> {
 /// `CLI_ONLY` row saying why not. Add a verb here when you add one agents
 /// should reach.
 const AGENT_FACING: &[&str] = &[
+    "terminal create",
+    "terminal operation",
+    "terminal describe",
     "agent answer",
     "agent prompt",
     "agent send-keys",

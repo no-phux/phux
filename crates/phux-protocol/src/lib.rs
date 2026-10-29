@@ -28,6 +28,7 @@
 pub mod input;
 pub mod wire;
 
+pub mod api;
 pub mod caps;
 pub mod checkout;
 pub mod enroll;

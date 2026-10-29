@@ -51,14 +51,10 @@ pub(crate) fn recovery_pid(err: &AttachError, socket: &Path) -> Option<i32> {
         .flatten()
 }
 
-/// Peer credentials on `socket`, then the latest [`phux_server::health`]
-/// record when that pid is alive and owned by this user.
+/// Peer credentials for this socket only; a live health-log pid may belong
+/// to another profile or a different process after pid reuse.
 pub(crate) fn server_pid(socket: &Path) -> Option<i32> {
-    phux_client::explain::peer_pid(socket).or_else(|| {
-        let raw = phux_server::health::running_pid()?;
-        let pid = i32::try_from(raw).ok()?;
-        phux_client::explain::owned_live_pid(pid)
-    })
+    phux_client::explain::server_pid(socket)
 }
 
 fn is_dead_socket(err: &AttachError) -> bool {

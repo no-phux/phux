@@ -1,0 +1,9 @@
+id = "fixture.demo"
+name = "Demo"
+version = "0.1.0"
+min_phux_version = "0.0.2"
+description = "Example plugin from the checkout."
+
+[[agents]]
+id = "helper"
+label = "Helper"

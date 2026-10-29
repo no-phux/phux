@@ -59,6 +59,10 @@ pub(super) struct Fields {
     pub(super) expires_at: Option<u64>,
     pub(super) launch_mode: Option<u8>,
     pub(super) project: Option<String>,
+    pub(super) placement: Option<Box<super::CreatePlacement>>,
+    pub(super) entry: Option<[u8; 16]>,
+    pub(super) replayed: bool,
+    pub(super) authority: Option<super::AuthorityId>,
 }
 
 impl Fields {
@@ -80,6 +84,14 @@ impl Fields {
                 field::org::RESOURCE => out.resource = Some(read_key(value, ResourceKey::new)?),
                 field::org::EXPECTED => out.expected = Some(Revision::new(read_u64(value)?)),
                 field::org::NAME => out.name = Some(bounded_str(value, MAX_ORG_NAME_BYTES)?),
+                field::org::AUTHORITY => {
+                    out.authority = Some(read_key(value, super::AuthorityId::new)?);
+                }
+                field::org::PLACEMENT => {
+                    out.placement = Some(Box::new(super::placement::decode(value)?));
+                }
+                field::org::ENTRY => out.entry = Some(key_bytes(value)?),
+                field::org::REPLAYED => out.replayed = Decoder::new(value).read_bool("replayed")?,
                 field::org::PROJECT => {
                     out.project = Some(bounded_str(value, MAX_ORG_NAME_BYTES)?);
                 }

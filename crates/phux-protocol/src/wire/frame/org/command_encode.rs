@@ -19,6 +19,7 @@ pub(super) const fn org_command_tag(command: &Command) -> Option<u8> {
     };
     Some(match command {
         Command::GetOrganization { .. } => COMMAND_TAG_GET_ORGANIZATION,
+        Command::GetCreation { .. } => crate::wire::frame::COMMAND_TAG_GET_CREATION,
         Command::SessionCreate { .. } => COMMAND_TAG_SESSION_CREATE,
         Command::SessionRename { .. } => COMMAND_TAG_SESSION_RENAME,
         Command::SessionSetLifetime { .. } => COMMAND_TAG_SESSION_SET_LIFETIME,
@@ -110,7 +111,8 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             write_session(enc, field::org::SESSION, session);
             write_u8(enc, field::org::LIFETIME, lifetime.to_u8());
         }
-        Command::SessionDelete { operation, session }
+        Command::GetCreation { operation, session }
+        | Command::SessionDelete { operation, session }
         | Command::SessionKill { operation, session } => {
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
@@ -132,6 +134,7 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             name,
             on_exit,
             launch_mode,
+            placement,
         } => {
             write_operation(enc, operation);
             write_session(enc, field::org::SESSION, session);
@@ -140,6 +143,11 @@ pub(in crate::wire) fn encode_org_command(command: &Command, enc: &mut Encoder<'
             }
             if let Some(launch) = launch {
                 enc.write_field_with(field::org::LAUNCH, |e| encode_launch(launch, e));
+            }
+            if let Some(placement) = placement {
+                enc.write_field_with(field::org::PLACEMENT, |e| {
+                    super::placement::encode(placement, e);
+                });
             }
             write_u8(enc, field::org::KIND, kind.as_wire());
             write_u8(enc, field::org::ON_EXIT, on_exit.to_u8());

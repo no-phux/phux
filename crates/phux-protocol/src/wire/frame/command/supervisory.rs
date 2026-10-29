@@ -8,6 +8,9 @@ use super::{Command, CommandValue};
 macro_rules! supervisory_commands {
     ($next:ident!($($rest:tt)*) $($done:tt)*) => {
         $next!($($rest)* $($done)*
+    /// Connected-server public workflow description and nested schemas.
+    /// Requires `features_ext.API_DESCRIPTION`; support is not authorization.
+    DescribeApi,
     /// Dedicated SDK-owned `AgentSession` broker request. The wire body is
     /// length-prefixed JSON bounded by `MAX_NATIVE_PAYLOAD_BYTES`; controller
     /// requests additionally require exclusive binding proof and generation.

@@ -16,6 +16,7 @@
 #
 # Run it:   bash examples/agents/02-run-and-exit-codes.sh
 
+# shellcheck source=examples/agents/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 phux_start_server
 
@@ -39,7 +40,9 @@ if phux run "$PHUX_SESSION" "true" >/dev/null; then
 fi
 # A subshell that exits non-zero: the code is mirrored without killing the
 # pane's shell.
-phux run "$PHUX_SESSION" "sh -c 'exit 7'" >/dev/null && rc=$? || rc=$?
+rc=0
+phux run "$PHUX_SESSION" "sh -c 'exit 7'" >/dev/null || rc=$?
+[[ "$rc" -eq 7 ]]
 echo "  'sh -c exit 7' -> phux exited $rc"
 
 # --- chaining like a shell --------------------------------------------------
@@ -49,8 +52,10 @@ phux run "$PHUX_SESSION" "true" >/dev/null \
     && phux run "$PHUX_SESSION" "echo 'second step ran because first succeeded'"
 
 section "short-circuit on failure"
-phux run "$PHUX_SESSION" "sh -c 'exit 3'" >/dev/null \
-    || echo "  first step failed (code $?); did NOT run the second"
+rc=0
+phux run "$PHUX_SESSION" "sh -c 'exit 3'" >/dev/null || rc=$?
+[[ "$rc" -eq 3 ]]
+echo "  first step failed (code $rc); did NOT run the second"
 
 # --- reading the JSON result programmatically ------------------------------
 # An agent typically wants exit_code + output as data, not text.

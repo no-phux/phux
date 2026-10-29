@@ -25,6 +25,7 @@ fn session_kill_ends_every_member_and_deletes_the_session() {
             &state,
             CLIENT,
             Command::ResourceCreate {
+                placement: None,
                 operation: op(2),
                 session,
                 kind: phux_protocol::ids::ResourceKind::Terminal,

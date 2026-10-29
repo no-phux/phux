@@ -96,6 +96,62 @@ const BUILD_FAIL: &str = r#"
 command = ["sh", "-c", "echo boom >&2; exit 3"]
 "#;
 
+/// The documented source-layout migration repairs provenance without deleting
+/// an installed package or its only copy of operator state.
+#[test]
+fn relocated_local_source_can_be_repaired_with_state_kept_outside_the_install() {
+    let home = TestHome::new();
+    let old = home.scratch.join("old-source");
+    let new = home.scratch.join("new-source");
+    let id = "example.migrated";
+    write_fixture_plugin(&old, id, "0.1.0", "0.0.1", "");
+    let (code, _, stderr) = home.run(&["plugin", "install", old.to_str().unwrap(), "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let installed = home.plugins_dir().join(id);
+    std::fs::create_dir(installed.join("state")).unwrap();
+    std::fs::write(installed.join("state/operator.json"), "operator archive").unwrap();
+    let config = std::fs::read(home.config_toml()).unwrap();
+    let backup = home.scratch.join("retained-install");
+    let copy = "import shutil,sys; shutil.copytree(sys.argv[1], sys.argv[2], symlinks=True)";
+    assert!(
+        Command::new("python3")
+            .args(["-c", copy])
+            .arg(&installed)
+            .arg(&backup)
+            .status()
+            .unwrap()
+            .success()
+    );
+    // The same procedure refuses to merge into an existing destination.
+    assert!(
+        !Command::new("python3")
+            .args(["-c", copy])
+            .arg(&installed)
+            .arg(&backup)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::rename(&old, &new).unwrap();
+    let (code, _, _) = home.run(&["plugin", "update", id, "--json"]);
+    assert_ne!(code, 0, "the recorded source must first be repaired");
+    let mut lock: toml_edit::DocumentMut = std::fs::read_to_string(home.lockfile())
+        .unwrap()
+        .parse()
+        .unwrap();
+    lock["plugin"][0]["ref"] = toml_edit::value(new.to_str().unwrap());
+    std::fs::write(home.lockfile(), lock.to_string()).unwrap();
+    let (code, _, stderr) = home.run(&["plugin", "update", id, "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(backup.join("state/operator.json")).unwrap(),
+        "operator archive"
+    );
+    assert_eq!(std::fs::read(home.config_toml()).unwrap(), config);
+    assert!(installed.join("phux-plugin.toml").is_file());
+}
+
 /// Install from a local fixture directory: the tree is copied into the
 /// managed plugins dir, the [[build]] step runs inside the managed copy,
 /// the entry is linked into config.toml, and plugins.lock records the
