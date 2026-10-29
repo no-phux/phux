@@ -353,6 +353,7 @@ impl ServerState {
             let _ = self.sessions.registry.prune_receipts(floor, RECEIPT_CAP);
         }
         self.prune_activation_reports();
+        super::notify_activation_reports();
         self.after_commit(&applied.transition, &handles);
         self.journal_org_events(&applied, actor, client);
         OrgCommit { applied, handles }

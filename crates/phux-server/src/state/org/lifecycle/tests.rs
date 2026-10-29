@@ -150,6 +150,62 @@ fn report_from_another_instance_is_discarded_even_with_same_activation_id() {
 }
 
 #[test]
+fn a_report_for_a_different_activation_id_is_discarded() {
+    let (mut s, id, _dir, db) = retained();
+    reject(&db);
+    s.activation_ended(id, ExitOutcome::UNKNOWN, true);
+    s.org.pending_reports.front_mut().unwrap().id = phux_core::ActivationId::FIRST.next();
+    recover(&db);
+    let before = activation(&s, id);
+    s.retry_activation_reports();
+    assert_eq!(activation(&s, id), before);
+    assert!(!s.has_pending_activation_reports());
+}
+
+#[test]
+fn a_commit_prunes_a_report_whose_activation_was_replaced() {
+    let (mut s, id, _dir, _db) = retained();
+    s.activation_ended(id, ExitOutcome::UNKNOWN, true);
+    assert_eq!(activation(&s, id).state, ExecState::Failed);
+    let record = s.registry().record(id).unwrap().clone();
+    let activation_id = record.activation.as_ref().unwrap().id;
+    let instance = record.activation.as_ref().unwrap().instance;
+    s.org.pending_reports.push_back(PendingActivation {
+        resource: record.key,
+        id: activation_id,
+        instance,
+        start: None,
+        end: Some((ExitOutcome::exited(9), false, None)),
+    });
+    s.commit(
+        Op::ResourceRename {
+            resource: record.key,
+            name: Some("renamed".to_owned()),
+        },
+        &Actor::owner(),
+    )
+    .unwrap();
+    assert!(
+        s.org.pending_reports.is_empty(),
+        "the commit must drop evidence that no longer matches the activation"
+    );
+    assert_eq!(activation(&s, id).state, ExecState::Failed);
+}
+
+#[test]
+fn a_start_report_does_not_apply_once_the_activation_is_running() {
+    let (mut s, id, _dir, db) = retained();
+    s.activation_started(id, None);
+    assert_eq!(activation(&s, id).state, ExecState::Running);
+    reject(&db);
+    s.activation_started(id, None);
+    recover(&db);
+    s.retry_activation_reports();
+    assert_eq!(activation(&s, id).state, ExecState::Running);
+    assert!(!s.has_pending_activation_reports());
+}
+
+#[test]
 fn normal_start_end_and_remove_policy_still_commit_in_order() {
     let (mut s, id, _dir, _db) = retained();
     s.activation_started(id, None);

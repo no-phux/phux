@@ -179,6 +179,7 @@ impl ServerState {
             Ok(_) => Ok(()),
             Err(refusal @ Refusal::StoreFailure { .. }) => {
                 tracing::warn!(%refusal, "executor evidence awaits persistence; will retry without execution");
+                super::super::notify_activation_reports();
                 Err(())
             }
             Err(refusal) => {

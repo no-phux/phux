@@ -103,11 +103,33 @@ pub(in crate::runtime) fn spawn_activation_report_retry(
     let state = state.clone();
     let token = root_token.clone();
     tokio::task::spawn_local(async move {
+        let mut delay = Duration::from_millis(20);
+        let cap = Duration::from_secs(2);
         loop {
             tokio::select! {
                 () = token.cancelled() => return,
-                () = tokio::time::sleep(Duration::from_millis(100)) => {
-                    state.with_mut(crate::state::ServerState::retry_activation_reports);
+                () = crate::state::activation_reports_woken() => {}
+            }
+            loop {
+                if token.is_cancelled() {
+                    return;
+                }
+                let pending = state.with_mut(|server| {
+                    server.retry_activation_reports();
+                    server.has_pending_activation_reports()
+                });
+                if !pending {
+                    delay = Duration::from_millis(20);
+                    break;
+                }
+                tokio::select! {
+                    () = token.cancelled() => return,
+                    () = crate::state::activation_reports_woken() => {
+                        delay = Duration::from_millis(20);
+                    }
+                    () = tokio::time::sleep(delay) => {
+                        delay = (delay * 2).min(cap);
+                    }
                 }
             }
         }
