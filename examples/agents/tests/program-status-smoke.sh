@@ -23,9 +23,12 @@ if [[ "$got" != "$working" ]]; then
     exit 1
 fi
 
-done_seq="$(printf '\033]7501;state=done:app=mytool\033\\')"
+# The no-argument sequence is what the demo runs. title is base64 of "deploy".
+titled_working="$(printf '\033]7501;state=working:app=mytool:title=ZGVwbG95\033\\')"
+titled_blocked="$(printf '\033]7501;state=blocked:kind=permission:app=mytool:title=ZGVwbG95\033\\')"
+titled_done="$(printf '\033]7501;state=done:app=mytool:title=ZGVwbG95\033\\')"
 sequence="$(PHUX_STATUS_HOLD=0 sh "$emitter")"
-want="${working}${blocked}${done_seq}"
+want="${titled_working}${titled_blocked}${titled_done}"
 if [[ "$sequence" != "$want" ]]; then
     printf 'report-status.sh default sequence mismatch\n' >&2
     printf 'got: %q\n' "$sequence" >&2

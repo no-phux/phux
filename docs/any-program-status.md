@@ -55,7 +55,17 @@ report "done" "" mytool
 
 [`examples/agents/report-status.sh`](../examples/agents/report-status.sh)
 is that function as a script. With no arguments it reports `working`, then
-`blocked`, waits, then `done`.
+`blocked`, waits, then `done`. Each of those reports also sends `title`,
+the base64 of `deploy`:
+
+```sh
+printf '\033]7501;state=blocked:kind=permission:app=mytool:title=ZGVwbG95\033\\'
+```
+
+phux takes the agent name from `title` and the kind from `app`. The demo
+sends two different words, so the pane is addressable as `%deploy`. A
+report replaces its record, so every report in the sequence carries the
+title.
 
 A shell prompt mark, OSC 133 `A`, ends `working` and `blocked` records, and
 so does the pane's process exiting. `idle`, `done`, and `error` stay.
@@ -132,36 +142,31 @@ rules, and the same shell function is what a program in that pane can run.
 ## What a run shows
 
 This is the output of one run of
-`examples/agents/05-program-status.sh` against a debug build of phux at
-main `c63ec1ad6` (the parent of the commit that added this page). The pane
-id is the one that server assigned. Columns are separated by tabs.
+`examples/agents/05-program-status.sh` against a debug build of this
+checkout. The program is unchanged from main `c63ec1ad6`. The pane id is
+the one that server assigned. Columns are separated by tabs.
 
 `phux agent list` is the first line. `phux agent explain @1` is the line
 after the blank line, plus the `agent_record` line under it. The second
 column is the program's `app`, which the agent record uses as its kind.
-`permission` is not that column: it stays on the program-status record.
-`mytool` has no detection manifest, so explain says there is no rule
-evidence to show.
+The address is `%deploy`: the name is the `title`, and the kind is the
+`app`. `permission` stays on the program-status record, not in that
+column. `mytool` has no detection manifest, so explain says there is no
+rule evidence to show.
 
 ```text
-@1	mytool	(not %-addressable: invalid_agent_name)	blocked	1.00	the phux.agent/v1 record for this pane (ADR-0040); no detection manifest is loaded for `mytool`, so there is no rule evidence to show
+@1	mytool	%deploy	blocked	1.00	the phux.agent/v1 record for this pane (ADR-0040); no detection manifest is loaded for `mytool`, so there is no rule evidence to show
 
-@1	mytool	(not %-addressable: invalid_agent_name)	blocked	1.00	the phux.agent/v1 record for this pane (ADR-0040); no detection manifest is loaded for `mytool`, so there is no rule evidence to show
-  - agent_record 1.00: phux.agent/v1 record published for this pane ({"name":"mytool","kind":"mytool","state":"blocked"})
+@1	mytool	%deploy	blocked	1.00	the phux.agent/v1 record for this pane (ADR-0040); no detection manifest is loaded for `mytool`, so there is no rule evidence to show
+  - agent_record 1.00: phux.agent/v1 record published for this pane ({"name":"deploy","kind":"mytool","state":"blocked"})
 ```
-
-The address column says the name is not `%`-addressable. The record's name
-and its kind are both `mytool`, and phux refuses `%` for a name that equals
-its kind
-([`agent.rs`](../crates/phux-client/src/selector/agent.rs)). The pane is
-still `@1`.
 
 From the same run, `phux resource show @1` included these lines. The
 command also printed the pane's process.
 
 ```text
-agent: {"kind":"mytool","name":"mytool","state":"blocked"}
-program_status: {"active":{"app":"mytool","id":"","kind":"permission","state":"blocked"},"record_ids":[""]}
+agent: {"kind":"mytool","name":"deploy","state":"blocked"}
+program_status: {"active":{"app":"mytool","id":"","kind":"permission","state":"blocked","title":"deploy"},"record_ids":[""]}
 ```
 
 The [protocol](./program-protocol.md#how-phux-shows-program-status) says
