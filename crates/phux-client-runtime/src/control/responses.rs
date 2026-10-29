@@ -157,6 +157,12 @@ impl ControlPlane {
         if self.terminal_theme.is_some() {
             engine.set_terminal_theme(self.terminal_theme);
         }
+        #[cfg(feature = "engine")]
+        if self.options.prediction_style == super::PredictionStyle::Plain {
+            engine
+                .set_prediction_underline(false)
+                .map_err(|error| ControlError::Protocol(error.to_string()))?;
+        }
         if let Some(previous) = self.engine.replace(engine) {
             previous.stop();
         }

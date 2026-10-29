@@ -28,7 +28,7 @@ use crate::commands::{cli_runtime, json_err, ls};
 
 /// Version of the `phux status --json` document. Additive fields do not
 /// bump it.
-const STATUS_SCHEMA_VERSION: u8 = 1;
+pub(crate) const STATUS_SCHEMA_VERSION: u8 = 1;
 
 /// Everything one `phux status` reports, collected before any rendering.
 #[derive(Debug)]

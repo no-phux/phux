@@ -130,9 +130,10 @@ pub(super) fn signal(args: commands::SignalArgs, socket: Option<PathBuf>) -> Exi
         signal,
         idempotency_key,
         yes,
+        json,
     } = args;
-    match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
-        Ok(key) => commands::supervise::run_signal(&target, signal, key, yes, socket),
+    match commands::spawn::parse_key_arg(idempotency_key.as_deref(), json.json) {
+        Ok(key) => commands::supervise::run_signal(&target, signal, key, yes, json.json, socket),
         Err(code) => code,
     }
 }

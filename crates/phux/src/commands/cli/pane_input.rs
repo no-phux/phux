@@ -14,8 +14,11 @@ use usage::Args;
             delivered as a submission-safe paste followed by the real key, honoring \
             the pane's live bracketed-paste mode. TARGET is resolved client-side to \
             one pane, so the live pane is neither attached nor resized.\n\n\
-            Flags (`--socket`) MUST precede TARGET: KEYS is a trailing var-arg, \
-            so anything after TARGET is taken as a key to send.\n\n\
+            Flags (`--json`, `--socket`) MUST precede TARGET: KEYS is a trailing \
+            var-arg, so anything after TARGET is taken as a key to send.\n\n\
+            `--json` prints how many input events the server acknowledged. A \
+            failure partway carries `error.recovery`: part of the keys reached \
+            the pane, so read it before sending again.\n\n\
             Examples:\n  \
             phux send-keys demo \"echo hi\" Enter\n  \
             phux send-keys work:1.0 C-c"
@@ -28,6 +31,9 @@ pub(crate) struct SendKeysArgs {
     /// Keys to send: named keys and/or literal strings, in order.
     #[usage(trailing_var_arg, required)]
     pub(crate) keys: Vec<String>,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
 }
 
 /// Upload a local file without attaching or submitting input
@@ -93,6 +99,9 @@ pub(crate) struct PasteArgs {
     /// flag the paste is trusted and forwarded verbatim.
     #[usage(long)]
     pub(crate) untrusted: bool,
+
+    #[usage(flatten)]
+    pub(crate) json: JsonOpt,
 }
 
 /// Run a command in a pane and capture its exit code.

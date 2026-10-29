@@ -8,6 +8,8 @@ use phux_protocol::kinds::{
 };
 use serde_json::{Value, json};
 
+mod error_codes;
+
 const CAPABILITIES_SCHEMA_VERSION: u8 = 1;
 
 /// The build-time kind catalog (ADR-0125): the server-level and substrate
@@ -123,16 +125,21 @@ fn schema_contracts() -> Value {
     json!([
         { "invocation": "phux --capabilities --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux runtime-info --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux ls --json", "schema_version": 3, "kind": "document" },
-        { "invocation": "phux snapshot --json", "schema_version": 3, "kind": "document" },
-        { "invocation": "phux snapshot --rendered --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux status --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux server --ensure --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux ls --json", "schema_version": phux_core::session_list::LS_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux snapshot --json", "schema_version": phux_core::screen::SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux snapshot --rendered --json", "schema_version": phux_core::screen::RENDERED_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux status --json", "schema_version": crate::commands::status::STATUS_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux server --ensure --json", "schema_version": crate::commands::server::ENSURE_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux new --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux spawn --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux launch --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux resize --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux send-keys|paste --json", "schema_version": crate::commands::send_keys::RECEIPT_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux ask --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux kill --json", "schema_version": crate::commands::kill::KILL_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux rename --json", "schema_version": crate::commands::rename::RENAME_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux signal|take|give --json", "schema_version": crate::commands::supervise::SUPERVISE_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux detach|approve|deny --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux agent list|show|explain --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux agent wait|prompt|send-keys|answer|start --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux agent session open|emit|log --json", "schema_version": 1, "kind": "document" },
@@ -142,9 +149,10 @@ fn schema_contracts() -> Value {
         { "invocation": "phux config import-tmux --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux plugin --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux project inspect --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux archive export|import", "schema_version": 2, "kind": "document", "note": "the archive file export writes and import reads" },
+        { "invocation": "phux archive export|import", "schema_version": crate::commands::archive::model::ARCHIVE_SCHEMA_VERSION, "kind": "document", "note": "the archive file export writes and import reads" },
+        { "invocation": "phux archive import --json", "schema_version": crate::commands::archive::model::RESTORE_SUMMARY_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux worktree --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux host --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux host --json", "schema_version": phux_core::host_list::HOSTS_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux tag --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux pair --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux pair ls|prune|rotate|revoke --json", "schema_version": 1, "kind": "document" },
@@ -153,10 +161,19 @@ fn schema_contracts() -> Value {
         { "invocation": "phux doctor --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux update --json", "schema_version": crate::commands::update::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux channel --json", "schema_version": crate::commands::update::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
-        { "invocation": "phux whoami --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux run --json", "schema_version": null, "kind": "document", "note": "unversioned result" },
+        { "invocation": "phux whoami --json", "schema_version": phux_protocol::wire::frame::WHOAMI_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux run --json", "schema_version": crate::commands::run::RESULT_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux mission --json", "schema_version": phux_mission::SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux mail|claim --json", "schema_version": crate::commands::coord::SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux approvals --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux agent usage --json", "schema_version": null, "kind": "document", "note": "the published phux.usage/v1 snapshot, verbatim; `schema` is its version" },
+        { "invocation": "phux organize --json", "schema_version": phux_client::organize::DOCUMENT_SCHEMA, "kind": "document" },
+        { "invocation": "phux perf --json", "schema_version": phux_perf::SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux resource show --json", "schema_version": phux_client::resource::show::SHOW_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux resource methods --json", "schema_version": phux_client::resource::methods::METHODS_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux resource wait --json", "schema_version": phux_client::resource::wait::WAIT_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux watch --json", "schema_version": null, "kind": "ndjson", "note": "event vocabulary is the compatibility contract" },
-        { "invocation": "phux --json failures", "schema_version": 1, "kind": "error" }
+        { "invocation": "phux --json failures", "schema_version": crate::commands::json_err::ERROR_SCHEMA_VERSION, "kind": "error" }
     ])
 }
 
@@ -177,6 +194,7 @@ fn document(meta: &usage::spec::CommandMeta<'_>, mcp: Option<&Path>) -> Value {
             "default_scope": "full"
         },
         "json_contracts": schema_contracts(),
+        "error_codes": error_codes::catalogue(),
         "kinds": kinds_catalog(),
         "mcp": {
             "available": available,

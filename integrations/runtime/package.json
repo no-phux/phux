@@ -48,6 +48,10 @@
     "./transcript": {
       "types": "./dist/src/transcript.d.ts",
       "import": "./dist/src/transcript.js"
+    },
+    "./screen": {
+      "types": "./dist/src/screen.d.ts",
+      "import": "./dist/src/screen.js"
     }
   },
   "scripts": {

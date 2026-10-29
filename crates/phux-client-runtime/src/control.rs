@@ -89,7 +89,7 @@ pub use global_metadata::{GlobalMetadata, MAX_WATCHED_GLOBAL_KEYS};
 pub use input::mint_input_operation_id;
 pub use options::{
     ControlOptions, InboundDelivery, MAX_QUEUED_INBOUND_BYTES, MAX_QUEUED_INBOUND_FRAMES,
-    SessionRecovery,
+    PredictionStyle, SessionRecovery,
 };
 pub use org_plane::{ArrangementSubmitError, mint_operation};
 pub use organization::{InboxView, IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};

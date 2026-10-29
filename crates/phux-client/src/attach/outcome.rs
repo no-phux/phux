@@ -56,14 +56,14 @@ pub enum AttachError {
     Ghostty(#[from] libghostty_vt::Error),
 
     /// The server answered with a structured `ERROR` instead of the reply.
-    #[error("server refused attach: {0}")]
+    #[error("server refused the request: {0}")]
     Refused(String),
 
     /// The server answered `HELLO` (or `ATTACH`) with
     /// `ERROR { VERSION_INCOMPATIBLE }`. Same sentence as [`Self::Refused`];
     /// the variant is how a caller tells a live old server from a policy
     /// refusal without reading the message text.
-    #[error("server refused attach: {0}")]
+    #[error("server refused the request: {0}")]
     IncompatibleProtocol(String),
 
     /// `GET_SCREEN` asked for a rendered capture and the `Ok` reply carried

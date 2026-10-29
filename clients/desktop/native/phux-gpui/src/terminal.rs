@@ -342,6 +342,12 @@ impl Render for Terminal {
             (input.clone(), input.clone(), input.clone(), input.clone());
         let (release, release_out, wheel) = (input.clone(), input.clone(), input.clone());
         let captured = input.clone();
+        let (hovered, flagged, left) = (input.clone(), input.clone(), input.clone());
+        let underline_input = input.clone();
+        let (moved_view, flagged_view, left_view) = (this.clone(), this.clone(), this.clone());
+        // Command held over a link: it reads as clickable, underlined with a
+        // pointing hand, because Command-click opens it.
+        let pointing = self.input.read(cx).hovered_link().is_some();
 
         div()
             .id(self.element_id.clone())
@@ -377,7 +383,23 @@ impl Render for Terminal {
                     cx.stop_propagation();
                 }),
             )
+            .when(pointing, |terminal| terminal.cursor_pointer())
+            .on_modifiers_changed(move |event: &gpui::ModifiersChangedEvent, _, cx| {
+                if flagged.update(cx, |state, _| state.hover_command(event.modifiers.platform)) {
+                    flagged_view.update(cx, |_, cx| cx.notify());
+                }
+            })
+            .on_hover(move |inside: &bool, _, cx| {
+                if !*inside && left.update(cx, |state, _| state.hover(None, false)) {
+                    left_view.update(cx, |_, cx| cx.notify());
+                }
+            })
             .on_mouse_move(move |event, window, cx| {
+                if hovered.update(cx, |state, _| {
+                    state.hover(Some(event.position), event.modifiers.platform)
+                }) {
+                    moved_view.update(cx, |_, cx| cx.notify());
+                }
                 // A drag this view captured is delivered by the window-wide
                 // listener below, inside the pane or not.
                 if movement.read(cx).capturing() {
@@ -444,6 +466,28 @@ impl Render for Terminal {
                             }
                         });
                         let mut report = prepared.paint(bounds, window, cx);
+                        if let (Some(frame), Some((row, start, end))) =
+                            (report.frame.as_ref(), underline_input.read(cx).hovered_link())
+                        {
+                            let cells = paint::shifted(
+                                report.geometry.cell_bounds(row, start, end.saturating_sub(start)),
+                                report.shift,
+                            );
+                            let ink = frame.colors.foreground;
+                            let color = gpui::Rgba {
+                                r: f32::from(ink.r) / 255.,
+                                g: f32::from(ink.g) / 255.,
+                                b: f32::from(ink.b) / 255.,
+                                a: 0.9,
+                            };
+                            let rule = gpui::Bounds::new(
+                                gpui::point(cells.left(), cells.bottom() - gpui::px(2.)),
+                                gpui::size(cells.size.width, gpui::px(1.)),
+                            );
+                            window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+                                window.paint_quad(gpui::fill(rule, color));
+                            });
+                        }
                         if let Some((laser, color)) = beam
                             && report.frame.is_some()
                         {

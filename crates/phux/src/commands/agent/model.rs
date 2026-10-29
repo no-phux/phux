@@ -224,6 +224,10 @@ pub(super) struct PaneEvidence {
     pub(super) agent_session: Option<SessionEvidence>,
     pub(super) lines: Vec<String>,
     pub(super) semantic_input: bool,
+    /// The server-observed foreground process, when the detector has
+    /// published one. A pane whose foreground is its own shell runs no
+    /// agent, whatever its screen says.
+    pub(super) occupant: Option<phux_client::agent_meta::PaneOccupantRecord>,
 }
 
 /// The `AgentSession` facet a snapshot carries for a pane's child.
@@ -259,6 +263,7 @@ impl PaneEvidence {
             agent_session: None,
             lines: lines.iter().map(|line| (*line).to_owned()).collect(),
             semantic_input: false,
+            occupant: None,
         }
     }
 }

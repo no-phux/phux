@@ -29,7 +29,7 @@ use phux_client::state::Degradation;
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, partial, report_no_server, resolve_targets};
+use crate::commands::{cli_runtime, json_err, parse_selector, partial, resolve_targets};
 
 use self::config::configured_agents;
 use self::detect::infer_agent_state;
@@ -266,7 +266,7 @@ fn run_agent_one(
     rt.block_on(async move {
         let (snapshot, degradation) = match fetch_snapshot(&socket_path, "agent").await {
             Ok(pair) => pair,
-            Err(code) => return code,
+            Err(err) => return json_err::report_no_server(json, &err, &socket_path, "agent"),
         };
         // `%name` is singular (ADR-0075 point 3): the agent's pane, or a
         // refusal that names why — never `pick_target_pane` over a set.
@@ -277,7 +277,7 @@ fn run_agent_one(
         let Some(target_id) =
             phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         else {
-            return partial::report_target_miss(target, &degradation);
+            return partial::report_target_miss_for(json, target, &degradation);
         };
         let plugins = configured_agents();
         let states = classify_snapshot(&socket_path, &snapshot, &plugins).await;
@@ -285,22 +285,23 @@ fn run_agent_one(
             .into_iter()
             .find(|state| state.terminal == phux_client::selector::format_terminal_id(&target_id))
         else {
-            return partial::report_target_miss(target, &degradation);
+            return partial::report_target_miss_for(json, target, &degradation);
         };
         partial::warn_partial_view("agent", &degradation);
         print_agent_states(&[state], json, view)
     })
 }
 
-/// One `GET_STATE`, plus what it could not see.
+/// One `GET_STATE`, plus what it could not see. The caller reports a
+/// failure on its own channel, so a `--json` verb never gets prose too.
 async fn fetch_snapshot(
     socket_path: &Path,
     verb: &str,
-) -> Result<(SessionSnapshot, Degradation), ExitCode> {
+) -> Result<(SessionSnapshot, Degradation), phux_client::attach::AttachError> {
     phux_client::state::get_state(socket_path)
         .await
         .map(phux_client::state::StateView::into_parts)
-        .map_err(|err| report_no_server(&err, socket_path, verb))
+        .inspect_err(|err| tracing::debug!(error = %err, verb, "session state read failed"))
 }
 
 async fn classify_snapshot(
@@ -333,10 +334,15 @@ async fn pane_evidence(
     snapshot: &SessionSnapshot,
     pane: &ResourceInfo,
 ) -> PaneEvidence {
-    let screen =
-        phux_client::snapshot::get_screen_scrollback(socket_path, pane.id.clone(), None, true)
-            .await
-            .ok();
+    let (screen, occupant) = tokio::join!(
+        phux_client::snapshot::get_screen_scrollback(socket_path, pane.id.clone(), None, true),
+        phux_client::agent_meta::read_pane_occupant_within(
+            socket_path,
+            &pane.id,
+            std::time::Duration::ZERO
+        ),
+    );
+    let screen = screen.ok();
     let session = session_of_pane(snapshot, pane);
     // The pane's live agent session only when it has exactly one (ADR-0103).
     let agent_session = {
@@ -370,6 +376,7 @@ async fn pane_evidence(
                     .iter()
                     .any(|cell| cell.semantic == Some(phux_core::screen::SemanticContent::Input))
             }),
+        occupant,
     }
 }
 

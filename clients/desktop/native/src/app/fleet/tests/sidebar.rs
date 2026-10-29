@@ -139,7 +139,13 @@ fn the_host_filter_opens_at_its_trigger_and_filters_without_navigation(cx: &mut 
         let menu_cx = &mut VisualTestContext::from_window(menu, cx);
         draw(menu_cx);
         let local = menu_cx
-            .debug_bounds("glass-menu-show-host-This Mac")
+            .debug_bounds(
+                format!(
+                    "glass-menu-show-host-{}",
+                    crate::platform::local_machine_label()
+                )
+                .leak(),
+            )
             .expect("machine checkboxes open directly, without a View submenu");
         menu_cx.simulate_click(local.center(), Modifiers::none());
         menu_cx.run_until_parked();

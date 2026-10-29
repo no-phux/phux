@@ -2,6 +2,9 @@
 
 /// The command line was refused before a command could run. Exit 2.
 pub(crate) const USAGE_ERROR: &str = "usage_error";
+/// A dangerous verb was not confirmed: no `--yes`, and no terminal to ask,
+/// or the answer was no. Nothing was sent. Exit 2.
+pub(crate) const CONFIRMATION_REQUIRED: &str = "confirmation_required";
 /// No server is listening at the socket (connection refused / not found).
 pub(crate) const NO_SERVER: &str = "no_server";
 /// The server was there and closed the connection mid-command.
@@ -308,3 +311,7 @@ pub(crate) const MISSION_START_FAILED: &str = "mission_start_failed";
 pub(crate) const MAIL_NOT_FOUND: &str = "mail_not_found";
 /// Renewal named an expired, foreign or superseded lease. Exit 1.
 pub(crate) const CLAIM_NOT_FOUND: &str = "claim_not_found";
+/// A bounded `run`, `wait`, `watch`, or `agent wait` gave up before its
+/// condition held. Exit 124, or 125 for `run`; `error.recovery` says what a
+/// timed-out `run` delivered.
+pub(crate) const TIMED_OUT: &str = "timed_out";

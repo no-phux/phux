@@ -232,7 +232,7 @@ async fn bind_terminal_stream(
         crate::runtime::send_error(
             &plumbing.out_tx,
             ErrorCode::TerminalNotFound,
-            &format!("STREAM_BIND for unsubscribed terminal: {terminal_id:?}"),
+            &format!("STREAM_BIND for unsubscribed terminal: {terminal_id}"),
         )
         .await;
         return;
@@ -256,7 +256,7 @@ async fn bind_terminal_stream(
         crate::runtime::send_error(
             &plumbing.out_tx,
             ErrorCode::TerminalNotFound,
-            &format!("STREAM_BIND raced terminal death: {terminal_id:?}"),
+            &format!("STREAM_BIND raced terminal death: {terminal_id}"),
         )
         .await;
         return;

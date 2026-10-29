@@ -438,7 +438,7 @@ fn development_builds_never_stage_or_swap(cx: &mut gpui::TestAppContext) {
     });
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(windows)]
 #[gpui::test]
 fn manual_install_action_never_stages(cx: &mut gpui::TestAppContext) {
     use gpui::AppContext;
@@ -459,7 +459,7 @@ fn manual_install_action_never_stages(cx: &mut gpui::TestAppContext) {
     });
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(windows)]
 #[test]
 fn manual_install_platforms_move_phux_alone_and_name_the_desktop_installer() {
     let mut updater = installed("0.2.0");

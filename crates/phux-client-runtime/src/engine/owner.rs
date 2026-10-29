@@ -94,6 +94,9 @@ pub(super) struct Owner {
     document_revisions: HashMap<ResourceId, u64>,
     #[cfg(feature = "engine")]
     next_document_revision: u64,
+    /// Whether predictive echo is drawn underlined.
+    #[cfg(feature = "engine")]
+    prediction_underline: bool,
 }
 
 impl Drop for Owner {
@@ -133,6 +136,8 @@ impl Owner {
             document_revisions: HashMap::new(),
             #[cfg(feature = "engine")]
             next_document_revision: 1,
+            #[cfg(feature = "engine")]
+            prediction_underline: true,
         }
     }
 

@@ -62,10 +62,11 @@ pub(super) fn kill(args: commands::KillArgs, socket: Option<PathBuf>) -> ExitCod
         server,
         idempotency_key,
         yes,
+        json,
         remote,
     } = args;
-    match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
-        Ok(key) => commands::kill::run(target, server, key, yes, remote.with_socket(socket)),
+    match commands::spawn::parse_key_arg(idempotency_key.as_deref(), json) {
+        Ok(key) => commands::kill::run(target, server, key, yes, json, remote.with_socket(socket)),
         Err(code) => code,
     }
 }

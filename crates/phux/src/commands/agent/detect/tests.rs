@@ -329,3 +329,29 @@ fn json_confidence_is_the_shortest_decimal() {
     assert!(rendered.contains("\"confidence\":0.2,"), "{rendered}");
     assert!(!rendered.contains("0.2000000"), "{rendered}");
 }
+
+/// A shell in the foreground runs no agent: "claude" in its prompt or in
+/// output it printed is text, not identity. Another foreground keeps the
+/// screen heuristic.
+#[test]
+fn a_shell_foreground_outranks_agent_words_on_the_screen() {
+    use phux_client::agent_meta::PaneOccupantRecord;
+    let screen = ["host:claude-501 me$ cat notes", "codex and claude"];
+    let mut evidence = PaneEvidence::for_test("@2", Some("claude-501"), &screen);
+    evidence.occupant = Some(PaneOccupantRecord {
+        foreground: "bash".to_owned(),
+        is_pane_shell: true,
+    });
+    let state = infer_agent_state(&evidence, &[]);
+    assert_eq!(state.agent.kind, AgentKind::Unknown);
+    assert_eq!(state.sources[0].observed, "bash");
+
+    evidence.occupant = Some(PaneOccupantRecord {
+        foreground: "node".to_owned(),
+        is_pane_shell: false,
+    });
+    assert_eq!(
+        infer_agent_state(&evidence, &[]).agent.kind,
+        AgentKind::Codex
+    );
+}

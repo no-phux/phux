@@ -36,7 +36,14 @@ minimal-chrome mode, not the Classic style.
 Chrome uses bundled Inter with compact leading and consistent label columns.
 **Font family** and **Font size** still change only terminal text; the searchable
 font dropdown previews each face, with bundled terminal fonts pinned first.
-Choose **Tokyo Night** from the **Theme** menu under **Settings > Appearance > Font & theme**.
+The **Theme** menu under **Settings > Appearance > Font & theme**, or **Select
+Theme…** in the command palette (which previews each theme as you move to it),
+offers 26 built-in themes: phux Midnight, Nord, Dracula, the Catppuccin family
+(Mocha, Frappé, Macchiato, Latte), Tokyo Night (Night, Storm, Day), Gruvbox
+(Dark, Light), Kanagawa Wave, Everforest (Dark, Light), Rosé Pine (main, Moon,
+Dawn), One Dark, GitHub (Dark, Light), Solarized (Dark, Light), Night Owl and
+Flexoki (Dark, Light). A Ghostty `theme` is listed first when your config names
+one.
 
 **Backdrop shader** shows a live card for each built-in WGSL backdrop and each
 `.wgsl` file in your shader folder; **Shader intensity** sets how strongly it

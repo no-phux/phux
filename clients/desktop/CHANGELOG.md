@@ -55,6 +55,19 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.52.0](https://github.com/no-phux/phux/compare/desktop-v0.51.0...desktop-v0.52.0) (2026-10-28)
+
+
+### Features
+
+* **desktop:** underline a link while Command is held over it ([54c897e](https://github.com/no-phux/phux/commit/54c897e6dc90087ddb4efc82f84b5ceaffa39cbb))
+
+
+### Bug Fixes
+
+* **desktop:** install Desktop updates in place on Linux and name the local host ([#1856](https://github.com/no-phux/phux/issues/1856)) ([bff9eab](https://github.com/no-phux/phux/commit/bff9eab6277bf4ececc2b83b7389522551a8f47d))
+* **desktop:** typed text no longer shows an underline while it echoes ([bf46091](https://github.com/no-phux/phux/commit/bf46091f39775882b3d13575e9e4f3c3c4687621))
+
 ## [0.51.0](https://github.com/no-phux/phux/compare/desktop-v0.50.0...desktop-v0.51.0) (2026-10-28)
 
 

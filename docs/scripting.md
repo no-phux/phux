@@ -222,8 +222,14 @@ phux rm --yes @7               # forget a pane whose process ended
 
 **`kill` and `rm` ask first.** On a terminal they ask for confirmation. With
 no terminal they refuse with exit 2 and send nothing, so a script passes
-`--yes` to say what it means. Quote `#tag` targets, because `#` starts a
+`--yes` to say what it means. Under `--json` that refusal is the
+`confirmation_required` error. `signal interrupt|terminate|kill`, `detach`,
+and `approve` ask the same way. Quote `#tag` targets, because `#` starts a
 comment in the shell.
+
+Every verb that changes state takes `--json`: `kill`, `rm`, `rename`,
+`signal`, `take`, `give`, `detach`, `approve`, and `deny` print a versioned
+result, and fail with the JSON error below.
 
 ## JSON output and errors
 
@@ -239,6 +245,15 @@ On failure, stdout is empty and stderr carries one JSON object:
 ```
 
 Branch on `error.code`, which comes from a fixed list, not on `message`.
+`phux --capabilities --json` prints that list under `error_codes`, each
+code with what it means.
+
+A bounded `run`, `wait`, `watch`, `resource wait`, or `agent wait` that
+runs out of time reports `timed_out` with exit 124 (125 for `run`). `wait`
+still prints the pane's last screen on stdout, so you can see why the
+condition never held. A timed-out `run` carries `error.recovery`:
+`not_applied` means nothing reached the pane; otherwise the command may
+still be running, so read the pane instead of sending it again.
 
 Mutation failures can also carry additive `error.recovery` facts:
 

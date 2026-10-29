@@ -49,8 +49,9 @@ pub(crate) fn dispatch(
         Some(Command::Detach(commands::DetachArgs {
             session,
             yes,
+            json,
             remote,
-        })) => commands::detach::run_detach(session, yes, remote.with_socket(socket)),
+        })) => commands::detach::run_detach(session, yes, json.json, remote.with_socket(socket)),
         Some(Command::InsertPane(args)) => panes::insert_pane(args, socket),
         Some(Command::Mv(args)) => panes::mv(args, socket),
         Some(Command::Rm(commands::RmArgs { target, yes, json })) => {
@@ -71,21 +72,21 @@ pub(crate) fn dispatch(
             geometry,
             json,
         })) => commands::resize::run_resize(&target, geometry, json.json, socket),
-        Some(Command::Take(commands::TakeArgs { target, ttl })) => {
-            commands::supervise::run_take(&target, ttl, socket)
+        Some(Command::Take(commands::TakeArgs { target, ttl, json })) => {
+            commands::supervise::run_take(&target, ttl, json.json, socket)
         }
-        Some(Command::Give(commands::GiveArgs { target })) => {
-            commands::supervise::run_give(&target, socket)
+        Some(Command::Give(commands::GiveArgs { target, json })) => {
+            commands::supervise::run_give(&target, json.json, socket)
         }
         Some(Command::Signal(args)) => panes::signal(args, socket),
         Some(Command::Approvals(commands::ApprovalsArgs { json })) => {
             commands::approvals::run_approvals(json.json, socket)
         }
-        Some(Command::Approve(commands::ApproveArgs { id, yes })) => {
-            commands::approvals::run_approve(&id, yes, socket)
+        Some(Command::Approve(commands::ApproveArgs { id, yes, json })) => {
+            commands::approvals::run_approve(&id, yes, json.json, socket)
         }
-        Some(Command::Deny(commands::DenyArgs { id })) => {
-            commands::approvals::run_deny(&id, socket)
+        Some(Command::Deny(commands::DenyArgs { id, json })) => {
+            commands::approvals::run_deny(&id, json.json, socket)
         }
         Some(Command::Update(commands::UpdateArgs { opts })) => {
             commands::update::run_update(&opts, socket)
@@ -99,11 +100,14 @@ pub(crate) fn dispatch(
         Some(Command::Rename(commands::RenameArgs {
             target,
             new_name,
+            json,
             remote,
-        })) => commands::rename::run_rename(&target, &new_name, remote.with_socket(socket)),
+        })) => {
+            commands::rename::run_rename(&target, &new_name, json.json, remote.with_socket(socket))
+        }
         Some(Command::Snapshot(args)) => panes::snapshot(args, socket),
-        Some(Command::SendKeys(commands::SendKeysArgs { target, keys })) => {
-            commands::send_keys::run_send_keys(&target, &keys, socket)
+        Some(Command::SendKeys(commands::SendKeysArgs { target, keys, json })) => {
+            commands::send_keys::run_send_keys(&target, &keys, json.json, socket)
         }
         Some(Command::Upload(args)) => panes::upload(args, socket),
         Some(Command::Download(args)) => machines::download(args, socket),
@@ -111,7 +115,8 @@ pub(crate) fn dispatch(
             target,
             text,
             untrusted,
-        })) => commands::paste::run_paste(&target, text, untrusted, socket),
+            json,
+        })) => commands::paste::run_paste(&target, text, untrusted, json.json, socket),
         Some(Command::Wait(args)) => panes::wait(args, socket),
         Some(Command::Watch(args)) => panes::watch(args, socket),
         Some(Command::Resource(commands::ResourceArgs { action })) => {

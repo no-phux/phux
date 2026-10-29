@@ -192,14 +192,19 @@ fn watch_exit(
 ) -> ExitCode {
     match result {
         Ok(WatchOutcome::Stopped) => ExitCode::SUCCESS,
-        Ok(WatchOutcome::TimedOut) => {
-            error!(
-                "watch timed out after {}s{}",
-                deadline.map_or(0, |d| d.as_secs()),
-                describe_gate(until),
-            );
-            ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
-        }
+        Ok(WatchOutcome::TimedOut) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::TIMED_OUT,
+                format!(
+                    "watch timed out after {}s{}",
+                    deadline.map_or(0, |d| d.as_secs()),
+                    describe_gate(until),
+                ),
+                "raise `--timeout`, or read the pane with `phux snapshot`",
+            ),
+            crate::exit_codes::EXIT_WAIT_TIMEOUT,
+        ),
         Ok(WatchOutcome::Ended) if until.is_empty() => ExitCode::SUCCESS,
         Ok(WatchOutcome::Ended) => json_err::emit(
             json,

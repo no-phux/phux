@@ -89,6 +89,10 @@ impl Owner {
                     .and_then(|()| self.render_and_publish(&id));
                 let _ = reply.send(result);
             }
+            Query::PredictionUnderline(underline, reply) => {
+                self.prediction_underline = underline;
+                let _ = reply.send(());
+            }
             Query::ClearPredictions(id, reply) => {
                 if let Some(slot) = self.presentations.get_mut(&id) {
                     slot.predictor.clear();

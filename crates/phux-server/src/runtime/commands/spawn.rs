@@ -31,7 +31,7 @@ pub(in crate::runtime) fn terminal_not_found(
 ) -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::TerminalNotFound,
-        message: format!("no such terminal: {terminal_id:?}"),
+        message: format!("no such terminal: {terminal_id}"),
     }
 }
 

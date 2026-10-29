@@ -839,13 +839,16 @@ Releases the held action ID once: the server runs it as the workload that asked,
 under that workload's own grant, and answers that workload. Asks on a terminal;
 pass `--yes` when stdin is not one.
 
-Usage: phux approve [--yes] <ID>
+Usage: phux approve [--yes] [--json] <ID>
 
 Arguments:
   <ID>  The approval id `phux approvals` lists.
 
 Flags:
       --yes            Approve without asking.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -1645,12 +1648,15 @@ Deny a held action
 Refuses the held action ID: the workload that asked gets a permission-denied
 answer and nothing runs.
 
-Usage: phux deny <ID>
+Usage: phux deny [--json] <ID>
 
 Arguments:
   <ID>  The approval id `phux approvals` lists.
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -1667,7 +1673,7 @@ client attached to that session; with no argument, detaches every attached
 client on the server. Each target client's TUI exits cleanly. Useful for
 scripting or reclaiming a session that's attached (or wedged) elsewhere.
 
-Usage: phux detach [--yes] [--remote <[USER@]HOST[:PORT]>] [SESSION]
+Usage: phux detach [FLAGS] [SESSION]
 
 Arguments:
   [SESSION]  Session to detach clients from. Omit to detach every attached
@@ -1679,6 +1685,10 @@ Flags:
                                   Without it, `phux detach` asks on a terminal,
                                   and when stdin is not one it refuses with exit
                                   2 having sent nothing.
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -1778,12 +1788,15 @@ Give back input control taken with `take`
 Releases the input lease taken with `phux take`, returning the pane to open
 input. A no-op if you do not hold the lease. TARGET is a selector.
 
-Usage: phux give <TARGET>
+Usage: phux give [--json] <TARGET>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -2468,6 +2481,9 @@ Flags:
                                   terminal, and when stdin is not one it refuses
                                   with exit 2 having sent nothing. `--server`
                                   never asks.
+      --json                      Emit a schema-versioned JSON result or error:
+                                  `target`, and `killed`, the members a session
+                                  kill ended (`null` for a pane kill).
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -3565,7 +3581,7 @@ Examples:
 phux paste demo 'SELECT count(*) FROM users;'
 git diff | phux paste review
 
-Usage: phux paste [--untrusted] <TARGET> [TEXT]
+Usage: phux paste [--untrusted] [--json] <TARGET> [TEXT]
 
 Arguments:
   <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
@@ -3578,6 +3594,9 @@ Flags:
                        silently drop an unsafe payload — e.g. anything
                        multiline. Without this flag the paste is trusted and
                        forwarded verbatim.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -4456,13 +4475,17 @@ Reassigns `TARGET`'s human-readable name to `NEW_NAME` in one round-trip.
 pick up the new name on their next snapshot. An unknown `TARGET`, or a session
 `NEW_NAME` already in use, is an error.
 
-Usage: phux rename [--remote <[USER@]HOST[:PORT]>] <TARGET> <NEW_NAME>
+Usage: phux rename [--json] [--remote <[USER@]HOST[:PORT]>] <TARGET> <NEW_NAME>
 
 Arguments:
   <TARGET>    Current session name, or a pane selector.
   <NEW_NAME>  New name.
 
 Flags:
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -4831,14 +4854,18 @@ followed by the real key, honoring the pane's live bracketed-paste mode. TARGET
 is resolved client-side to one pane, so the live pane is neither attached nor
 resized.
 
-Flags (`--socket`) MUST precede TARGET: KEYS is a trailing var-arg, so anything
-after TARGET is taken as a key to send.
+Flags (`--json`, `--socket`) MUST precede TARGET: KEYS is a trailing var-arg, so
+anything after TARGET is taken as a key to send.
+
+`--json` prints how many input events the server acknowledged. A failure partway
+carries `error.recovery`: part of the keys reached the pane, so read it before
+sending again.
 
 Examples:
 phux send-keys demo "echo hi" Enter
 phux send-keys work:1.0 C-c
 
-Usage: phux send-keys <TARGET> <KEYS>…
+Usage: phux send-keys [--json] <TARGET> <KEYS>…
 
 Arguments:
   <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
@@ -4846,6 +4873,9 @@ Arguments:
   <KEYS>…   Keys to send: named keys and/or literal strings, in order.
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -5145,7 +5175,7 @@ Examples:
 phux signal build freeze
 phux signal . kill
 
-Usage: phux signal [--idempotency-key <HEX32>] [--yes] <TARGET> <SIGNAL>
+Usage: phux signal [FLAGS] <TARGET> <SIGNAL>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
@@ -5164,6 +5194,9 @@ Flags:
                                  when stdin is not one they refuse with exit 2
                                  having sent nothing. `freeze` and `resume`, the
                                  reversible brake, never ask.
+      --json                     Emit stable, versioned JSON on stdout instead
+                                 of the human view. On failure, stdout stays
+                                 empty and stderr carries one JSON error object.
   -h, --help                     Print help
 
 Global flags:
@@ -5483,7 +5516,7 @@ agent's `send-keys`) are locked out. Use it to grab control of a pane an agent
 is driving. Release with `phux give`. TARGET is a selector (see the top-level
 help).
 
-Usage: phux take [--ttl <SECS>] <TARGET>
+Usage: phux take [--ttl <SECS>] [--json] <TARGET>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
@@ -5494,6 +5527,9 @@ Flags:
                        exiting. Omit to hold the lease until `phux give` or a
                        disconnect, today's default. The wire's `ttl_ms` is a
                        `u32`, so this caps at 4294967 (about 49.7 days).
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:

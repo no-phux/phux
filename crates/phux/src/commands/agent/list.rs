@@ -8,7 +8,7 @@ use phux_server::runtime::default_socket_path;
 use super::action_flags::ListFlags;
 use super::model::AgentStateReport;
 use super::{AgentView, classify_snapshot, configured_agents, fetch_snapshot, print_agent_states};
-use crate::commands::{cli_runtime, partial};
+use crate::commands::{cli_runtime, json_err, partial};
 
 impl ListFlags {
     fn matches(&self, report: &AgentStateReport) -> bool {
@@ -30,7 +30,9 @@ pub(super) fn run(flags: &ListFlags, socket: Option<PathBuf>) -> ExitCode {
     rt.block_on(async move {
         let (snapshot, degradation) = match fetch_snapshot(&socket_path, "agent list").await {
             Ok(pair) => pair,
-            Err(code) => return code,
+            Err(err) => {
+                return json_err::report_no_server(flags.json, &err, &socket_path, "agent list");
+            }
         };
         let plugins = configured_agents();
         let mut states = classify_snapshot(&socket_path, &snapshot, &plugins).await;

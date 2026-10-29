@@ -157,10 +157,18 @@ fn report_result(result: &phux_client::wait::WaitResult, json: bool) -> ExitCode
     }
     match result.outcome {
         WaitOutcome::Met => ExitCode::SUCCESS,
-        WaitOutcome::TimedOut => {
-            error!("wait timed out after {} polls", result.polls);
-            ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
-        }
+        // The screen above is still printed: what the pane shows when the
+        // budget ran out is the evidence a caller needs next.
+        WaitOutcome::TimedOut => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::TIMED_OUT,
+                format!("wait timed out after {} polls", result.polls),
+                "raise `--timeout`, or read the pane with `phux snapshot` to see why the \
+                 condition never held",
+            ),
+            crate::exit_codes::EXIT_WAIT_TIMEOUT,
+        ),
     }
 }
 
