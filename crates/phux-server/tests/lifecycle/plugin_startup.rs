@@ -367,7 +367,11 @@ fn clean_stop_signals_the_group() {
             "sidecar should observe SIGTERM"
         );
         assert!(!alive(pid), "process group leader should be gone");
-        assert!(started.elapsed() < Duration::from_secs(10));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "a leader that exits on SIGTERM should not wait out the 5s grace: {elapsed:?}"
+        );
     });
 }
 
