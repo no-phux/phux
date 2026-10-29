@@ -82,6 +82,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # Warning-only pending a maintainer decision after one week (around
+      # Nov 5, 2026). A new or renamed flat docs/*.md missing from
+      # no-phux/website scripts/docs-catalog.ts, or a failed catalog fetch,
+      # prints a warning and exits 0. This step must not fail the guards job
+      # or the ci aggregate, and it is not a required check.
+      - name: website docs catalog
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/check-website-docs-catalog.sh
       - uses: ./.github/actions/setup-bun
       # A docs-only diff needs only the two guards that read docs, with the
       # runner's own bash and no Nix.
