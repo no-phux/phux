@@ -309,6 +309,21 @@ plugin's `keys` names it.
 code. `--timeout SECS` gives up after that long, and `--json` prints the
 result as a JSON document.
 
+## Listing a plugin
+
+Add the GitHub topic `phux-plugin` and a `phux-plugin.toml` at the root of
+the default branch that `phux plugin validate` accepts. The static index
+is built from that public topic and from the plugins in this repository.
+A repository with several plugins lists their directories in
+`phux-plugin-dirs.toml`:
+
+```toml
+subdirs = ["plugins/pane-tools"]
+```
+
+Plugins run as you and aren't sandboxed (see the top of this page). The
+index document is [plugin-index.schema.json](spec/plugin-index.schema.json).
+
 ## First-party plugins
 
 The optional [first-party plugins](../plugins/README.md) live under `plugins/`:

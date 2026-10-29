@@ -1,0 +1,20 @@
+# Nested workspace so this generator is not a member of the product workspace
+# and does not rewrite the root Cargo.lock. `phux-config` is a path dependency;
+# its loader is the same one `phux plugin validate` runs.
+[workspace]
+resolver = "3"
+
+[package]
+name = "phux-plugin-index"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "Apache-2.0"
+description = "Build a static phux plugin index from the public GitHub topic phux-plugin."
+
+[dependencies]
+phux-config = { path = "../../crates/phux-config" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
