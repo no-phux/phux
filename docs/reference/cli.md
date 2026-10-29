@@ -47,6 +47,7 @@ Panes:
   insert-pane   Insert an existing pane into a layout
   mv            Move a pane into another session, or beside another pane
   swap-pane     Swap two panes in a layout
+  terminal      Create and place terminals; inspect API and receipts
   resource      Inspect a resource or wait for its process to exit
 
 Agents:
@@ -3804,6 +3805,7 @@ Commands:
   link      Add or update a manifest entry in `config.toml`.
   list      List configured plugin manifests. [aliases: ls]
   log       Show recent plugin action and hook runs, oldest first.
+  new       Write a minimal plugin directory.
   unlink    Remove a configured plugin by id. [aliases: rm, remove]
   update    Re-fetch, rebuild, and revalidate installed plugins.
   validate  Validate one manifest, or every configured manifest when omitted.
@@ -3857,25 +3859,55 @@ Global flags:
 ```text
 Fetch, build, validate, and link a plugin package.
 
-REF is a git URL (`https://…`, `git@…`, `file://…` — cloned with the system
-`git`), a local plugin directory (copied), or a local tarball (`.tar`,
-`.tar.gz`, `.tgz` — extracted with the system `tar`). The package lands under
-the managed plugins directory (`$XDG_DATA_HOME/phux/plugins`, else
-`~/.local/share/phux/plugins`), its manifest `[[build]]` steps for this platform
-run with a bounded timeout and captured output, the manifest is validated
-(including the `min_phux_version` gate), and the result is linked into
-`config.toml` like `phux plugin link`. Provenance (ref, branch, resolved commit)
-is recorded in the managed directory's `plugins.lock` so `phux plugin update`
-can re-fetch it later.
+REF is chosen in this order. An existing local directory is copied. An existing
+local file whose name ends in `.tar`, `.tar.gz`, or `.tgz` is extracted with the
+system `tar`; any other existing file is an error. A git URL (`https://…`,
+`git@…`, `file://…`) is cloned as given with the system `git`. `owner/repo` or
+`owner/repo/sub/dir` that is not an existing path is GitHub shorthand: phux
+clones `https://github.com/owner/repo` and, when more segments follow the repo,
+uses them as the plugin subdirectory. Nothing is contacted except that clone.
+
+An existing local path wins over shorthand. `./foo/bar`, `../foo`, an absolute
+path, a `~` path, a trailing slash, and a `.` or `..` segment are always local
+paths, never shorthand. When a reference matches both, the local path is chosen
+and the message says so. `--rev` is the branch or tag for a git URL or
+shorthand. `--subdir` selects the subdirectory of a git clone; passing it when
+the reference already names a subdirectory is an error that names both, and
+neither is chosen.
+
+The package lands under the managed plugins directory
+(`$XDG_DATA_HOME/phux/plugins`, else `~/.local/share/phux/plugins`), its
+manifest `[[build]]` steps for this platform run with a bounded timeout and
+captured output, the manifest is validated (including the `min_phux_version`
+gate), and the result is linked into `config.toml` like `phux plugin link`.
+Provenance (ref, branch, subdirectory, resolved commit) is recorded in the
+managed directory's `plugins.lock` so `phux plugin update` can re-fetch it.
 
 Usage: phux plugin install [FLAGS] <REF>
 
 Arguments:
-  <REF>  Git URL, local plugin directory, or local tarball path.
+  <REF>  Git URL, local path, or GitHub `owner/repo[/subdir]`.
 
 Flags:
-      --rev <REV>      Branch or tag to clone (git sources only).
+      --rev <REV>      Branch, tag, or full 40-character commit SHA (git sources
+                       only).
+
+                       A commit SHA is fetched and checked out, then pinned. A
+                       short SHA is fetched when the server can resolve it.
+      --subdir <PATH>  Subdirectory of a git clone that holds
+                       `phux-plugin.toml`.
+
+                       For a git URL this is the only way to name a
+                       subdirectory. `owner/repo/sub/dir` already names one;
+                       passing both is an error.
       --disabled       Install and link the plugin but leave it disabled.
+      --yes            Run remote `[[build]]` steps without a confirmation
+                       prompt.
+
+                       A git install or update whose manifest has build steps
+                       asks on a terminal and refuses otherwise. Steps that
+                       match the hash stored at the last approval do not ask
+                       again. A local directory or tarball does not ask.
       --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 
@@ -3949,6 +3981,34 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux plugin new`
+
+```text
+Write a minimal plugin directory.
+
+NAME is the plugin id (`hello`, `com.example.tools`). It is also the manifest
+`name` and, unless `--dir` is set, the directory created in the working
+directory. The manifest sets `version` to `0.1.0` and `min_phux_version` to this
+phux, and declares one example action plus one `pane-exit` hook. The action runs
+`scripts/hello.sh`. A README is included. A directory that already contains
+files is refused and left unchanged. The result passes `phux plugin validate`
+and `phux plugin link`.
+
+Usage: phux plugin new [--dir <PATH>] [--json] <NAME>
+
+Arguments:
+  <NAME>  Plugin id. Also the manifest name and the default directory.
+
+Flags:
+      --dir <PATH>     Directory to write. Created when missing. Refused when it
+                       exists and is not empty.
+      --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux plugin unlink`
 
 ```text
@@ -3974,15 +4034,23 @@ Re-fetch, rebuild, and revalidate installed plugins.
 
 Reads the managed directory's `plugins.lock`, re-fetches each recorded source
 (all of them, or just NAME), reruns its `[[build]]` steps, revalidates the
-manifest, swaps the managed copy, and records the new resolved commit.
-`config.toml` is untouched — the linked manifest path does not move.
+manifest, swaps the managed copy, and records the new resolved commit. A branch
+update is accepted only when the new commit is the recorded one or a descendant
+of it. A commit pinned with `--rev` stays at that SHA. `--latest` accepts a
+rewritten branch or moves off a pinned commit. Changed `[[build]]` steps ask for
+confirmation the same way `install` does. `config.toml` is untouched — the
+linked manifest path does not move.
 
-Usage: phux plugin update [--json] [NAME]
+Usage: phux plugin update [FLAGS] [NAME]
 
 Arguments:
   [NAME]  Plugin id to update. Omit to update every installed plugin.
 
 Flags:
+      --latest         Accept a rewritten history, or move off a commit pinned
+                       with `--rev`.
+      --yes            Run changed remote `[[build]]` steps without a
+                       confirmation prompt.
       --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 
@@ -5541,6 +5609,83 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux terminal`
+
+```text
+Create and place terminals; inspect API and receipts
+
+Always returns versioned JSON. Creation commits membership, placement and launch
+intent together; a receipt is not process or task completion.
+
+Usage: phux terminal <SUBCOMMAND>
+
+Commands:
+  create     Create, place and start a terminal from one strict JSON intention.
+  describe   Read the connected server's public workflow schemas and retry
+             contracts.
+  operation  Recover a retained creation receipt without executing or retrying
+             anything. A missing receipt means unknown, not that the original
+             request was refused.
+  help       Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux terminal create`
+
+```text
+Create, place and start a terminal from one strict JSON intention.
+
+Use `terminal describe` for the complete nested request schema. Argv runs in a
+new process, never by typing into an existing shell. The resource and
+failed/completed execution remain until explicit removal.
+
+Usage: phux terminal create <--request-json <JSON>>
+
+Flags:
+      --request-json <JSON>  JSON intention containing `idempotency_key`,
+                             session and optional argv/cwd/env/name/placement.
+  -h, --help                 Print help
+
+Global flags:
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux terminal describe`
+
+```text
+Read the connected server's public workflow schemas and retry contracts.
+
+Usage: phux terminal describe
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux terminal operation`
+
+```text
+Recover a retained creation receipt without executing or retrying anything. A
+missing receipt means unknown, not that the original request was refused.
+
+Usage: phux terminal operation <--session <KEY>> <--idempotency-key <HEX32>>
+
+Flags:
+      --session <KEY>            Original full durable destination session key.
+      --idempotency-key <HEX32>  Same key supplied to terminal create.
+  -h, --help                     Print help
+
+Global flags:
+      --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux theme`

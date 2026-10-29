@@ -31,6 +31,7 @@ unshipped experiment, and phone apps are not available yet. See
 
 ## Automate
 
+- [Public terminal workflow](./public-api.md): create, place and start a terminal with durable identity, receipts and connected-server schemas.
 - [Using phux as an agent](./agent-quickstart.md): install phux and drive sessions, panes, input, and scrollback from code.
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
 - [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.
@@ -39,7 +40,8 @@ unshipped experiment, and phone apps are not available yet. See
 
 ## Build for phux
 
-- [Program protocol](./program-protocol.md): how a program in a pane reports what it is doing with OSC 7501, and what phux shows.
+- [OSC 7501: report status from any program](./program-protocol.md): the Program Status Protocol sequence phux reads, and what a pane shows from it.
+- [Any program can report status](./any-program-status.md): a short OSC 7501 emitter, a demo with no hooks, and how phux ranks that report.
 - [Program sequences and agent reports](./program-sequences.md): titles, `phux-ask` questions, OSC 133, OSC 52, and the other sequences phux reads, plus the agent record.
 
 ## Machines and clients
@@ -79,13 +81,14 @@ Generated from the `phux` binary, so they match the code these docs describe.
 ## Work on phux
 
 - [Architecture](./architecture.md): the process model, crates, and clients.
+- [libghostty in phux](./libghostty.md): the libghostty-vt terminal engine in the server and in a rendering client, and what it does not do.
 - [Decisions](./decisions.md): the constraints the code keeps, and why.
 - [Organization](./organization.md): how the server owns sessions and their contents.
-- [Substrate](./substrate.md): keeper authority, principal scopes, delegation limits, and one-way adapters.
-- [Protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
+- [Substrate](./substrate.md): how people, hosts, and agents fit together.
+- [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
 - [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
 - [Compatibility](./compatibility.md): what an older or newer peer sees.
-- [Embedding](./embedding.md): put a phux terminal in your own app.
+- [Embed phux](./embedding.md): put a phux terminal in your own app with `phux-gpui`, `phux-client-runtime`, or `phux-client-ffi`.
 - [Development](./development.md): set up, build, and run the checks.
 - [Releasing](./releasing.md): what ships, and how.
 

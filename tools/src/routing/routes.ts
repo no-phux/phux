@@ -19,8 +19,11 @@ const ZIG: Surface[] = ["native", "web_engine", "desktop"];
  * the root changelog. These leave the docs-only fast path.
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
+  // README and the wire schema are Rust inputs. Other files under
+  // docs/spec, including the plugin index schema, are documentation.
   "README.md": ["phux"],
-  "docs/{spec,reference,assets}/**": ["phux"],
+  "docs/spec/wire-schema.json": ["phux"],
+  "docs/{reference,assets}/**": ["phux"],
   "docs/agents.md": ["phux"],
   "CHANGELOG.md": [],
 };
@@ -78,6 +81,8 @@ const ROUTES: Record<string, Surface[]> = {
   ".agents/skills/{using-phux,using-phux-mcp}/**": ["phux"],
   ".agents/lib/**": ["integrations"],
   "clients/{phux-web,phux-vt-web}/**": ["web"],
+  // The Rune client has its own workspace and lane (rune-client.yml).
+  "clients/rune/**": [],
   "clients/phux-vt-web/vendor/**": ["web", "web_engine"],
   "scripts/build-vt-wasm.sh": ["web", "web_engine"],
   "scripts/{prepare,smoke,test}-vt-wasm.mjs": ["web", "web_engine"],
@@ -131,6 +136,10 @@ const ROUTES: Record<string, Surface[]> = {
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
   "scripts/check-*": [],
+  // Lint lane only for a generator-only diff (classify skips the unit pool).
+  // plugin-index.yml runs the generator tests. A phux-config change still
+  // compiles this tree because the rust lane cargo-checks it.
+  "scripts/plugin-index/**": ["phux"],
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],

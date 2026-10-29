@@ -272,7 +272,9 @@ fn reap_exited_pane(
         exit.status,
         attribution,
     );
-    let (_, actor_token) = s.reap_terminal_deferring_actor_cancel(pane, exit);
+    let preserve_record = matches!(reason, CloseReason::Exited | CloseReason::ServerShutdown)
+        && s.record_survives_exit(pane);
+    let (_, actor_token) = s.reap_terminal_deferring_actor_cancel(pane, exit, preserve_record);
     // ADR-0105: clients of a session a group kill released are detached.
     let killed_clients: Vec<_> = s
         .take_killed_sessions()

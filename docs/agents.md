@@ -330,8 +330,10 @@ terminal, with no integration and no socket:
 printf '\033]7501;state=blocked:kind=permission:app=mytool\033\\'
 ```
 
-The [program protocol](./program-protocol.md) specifies it, and
-[program sequences](./program-sequences.md) covers the `phux-ask` question
+The [program protocol](./program-protocol.md) specifies it.
+[Any program can report status](./any-program-status.md) walks through a
+shell emitter, a demo with no hooks, and one real `phux agent explain`.
+[Program sequences](./program-sequences.md) covers the `phux-ask` question
 title and the other sequences phux reads.
 
 A tool phux's agent rules recognize can also report through an agent
@@ -397,6 +399,15 @@ phux deny ID
 Nothing on this machine's own socket is ever held. See
 [Remote machines](./remote.md#who-can-do-what) for keys and scopes.
 
+## Complete terminal creation
+
+Use `phux terminal describe` / `phux_api_describe` for the connected server's
+[terminal workflow](./public-api.md), nested schemas and retry rules.
+`terminal create` / `phux_terminal_create` execute argv in a new process and
+commit its placement; they do not type a shell command or submit an agent turn.
+After a lost reply, `terminal operation` / `phux_terminal_operation` read the
+retained server receipt without repeating effects. Support is not authorization.
+
 ## Commands agents use
 
 The commands an agent drives phux with. The [command line
@@ -409,7 +420,8 @@ says why it is command-line only.
 `host discover`, `host ls`, `host renew`, `host upgrade`, `kill`, `launch`,
 `logs`, `ls`, `mcp`, `new`, `organize`, `play`, `rec mark`, `relaunch`, `resize`,
 `resource methods`, `resource show`, `resource wait`, `restore`, `rm`,
-`run`, `signal`, `snapshot`, `spawn`, `status`, `update`, `wait`, `watch`,
+`run`, `signal`, `snapshot`, `spawn`, `status`, `terminal create`,
+`terminal describe`, `terminal operation`, `update`, `wait`, `watch`,
 `whoami`, `mail send`, `mail read`, `mail ack`, `claim take`, `claim renew`,
 `claim release`, `claim list`.
 

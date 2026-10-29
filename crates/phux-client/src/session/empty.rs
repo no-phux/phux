@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use phux_protocol::wire::frame::{
-    Command, OrgFilter, Refusal, SESSION_CREATE_RESULT_KEY_PREFIX, SessionLifetime,
+    Command, LaunchSpec, OrgFilter, Refusal, SESSION_CREATE_RESULT_KEY_PREFIX, SessionLifetime,
 };
 
 use crate::attach::connection::Connection;
@@ -145,26 +145,7 @@ pub async fn check_session_directory(
     let record = records.session_named(name).ok_or_else(|| {
         format!("session {name:?} disappeared before its directory could be checked")
     })?;
-    let directory = record
-        .attrs
-        .iter()
-        .find(|(key, _)| key == "directory")
-        .map(|(_, value)| value.as_str());
-    let expected = root.to_string_lossy();
-    match directory {
-        Some(directory) if directory == expected => {}
-        Some(directory) => {
-            return Err(format!(
-                "session {name:?} belongs to {directory:?}, not {}",
-                root.display()
-            ));
-        }
-        None => {
-            return Err(format!(
-                "session {name:?} has no checkout directory in its organization record"
-            ));
-        }
-    }
+    let directory = checked_session_directory(record, name, root)?;
     let live = records
         .members(&record.key)
         .filter(|resource| resource.kind == phux_protocol::ids::ResourceKind::Terminal)
@@ -173,17 +154,24 @@ pub async fn check_session_directory(
     if live.is_some() || !seed_empty {
         return Ok(live);
     }
-    let launch = phux_protocol::wire::frame::LaunchSpec::new(Vec::new())
-        .with_cwd(Some(expected.into_owned()));
-    let committed = crate::org::create_resource(
-        &mut conn,
-        record.key,
-        phux_protocol::ids::ResourceKind::Terminal,
-        Some(launch),
-        phux_protocol::wire::frame::LaunchMode::Immediate,
-    )
-    .await
-    .map_err(|err| format!("could not start a shell in session {name:?}: {err}"))?;
+    seed_directory_shell(&mut conn, record, directory, name)
+        .await
+        .map(Some)
+}
+
+async fn seed_directory_shell(
+    conn: &mut Connection,
+    record: &phux_protocol::wire::frame::SessionRecord,
+    directory: String,
+    name: &str,
+) -> Result<u32, String> {
+    let placed = conn
+        .server_features_ext()
+        .contains(phux_protocol::caps::ServerFeatureExt::CreatePlacement);
+    let launch = LaunchSpec::new(Vec::new()).with_cwd(Some(directory));
+    let committed = create_directory_shell(conn, record.key, launch, placed)
+        .await
+        .map_err(|err| format!("could not start a shell in session {name:?}: {err}"))?;
     let resource = committed
         .resource
         .ok_or_else(|| format!("server created no shell record in session {name:?}"))?;
@@ -191,9 +179,70 @@ pub async fn check_session_directory(
         .target
         .and_then(|target| target.resource.local_id())
         .ok_or_else(|| format!("server started no local shell in session {name:?}"))?;
+    if !placed {
+        arrange_legacy_directory_shell(conn, record.arrangement, resource)
+            .await
+            .map_err(|err| format!("could not arrange the shell in session {name:?}: {err}"))?;
+    }
+    Ok(terminal_id)
+}
+
+fn checked_session_directory(
+    record: &phux_protocol::wire::frame::SessionRecord,
+    name: &str,
+    root: &Path,
+) -> Result<String, String> {
+    let directory = record
+        .attrs
+        .iter()
+        .find(|(key, _)| key == "directory")
+        .map(|(_, value)| value.as_str());
+    let expected = root.to_string_lossy();
+    match directory {
+        Some(directory) if directory == expected => Ok(expected.into_owned()),
+        Some(directory) => Err(format!(
+            "session {name:?} belongs to {directory:?}, not {}",
+            root.display()
+        )),
+        None => Err(format!(
+            "session {name:?} has no checkout directory in its organization record"
+        )),
+    }
+}
+
+async fn create_directory_shell(
+    conn: &mut Connection,
+    session: phux_protocol::ids::SessionKey,
+    launch: LaunchSpec,
+    placed: bool,
+) -> Result<phux_protocol::wire::frame::Committed, crate::org::OrgError> {
+    crate::org::commit(
+        conn,
+        2,
+        Command::ResourceCreate {
+            operation: crate::org::mint_operation(),
+            session,
+            kind: phux_protocol::ids::ResourceKind::Terminal,
+            launch: Some(Box::new(launch)),
+            name: None,
+            on_exit: phux_protocol::wire::frame::ExitPolicy::Remove,
+            launch_mode: phux_protocol::wire::frame::LaunchMode::Immediate,
+            placement: placed
+                .then(|| Box::new(phux_protocol::wire::frame::CreatePlacement::NewGroup)),
+        },
+    )
+    .await
+}
+
+/// Compatibility only: old organization servers cannot commit placement with creation.
+async fn arrange_legacy_directory_shell(
+    conn: &mut Connection,
+    arrangement: Option<phux_protocol::ids::ArrangementKey>,
+    resource: phux_protocol::ids::ResourceKey,
+) -> Result<(), String> {
     let arranged = async {
-        let arrangement = record.arrangement.ok_or("session has no arrangement")?;
-        let value = crate::org::arrangement(&mut conn, 3, arrangement)
+        let arrangement = arrangement.ok_or("session has no arrangement")?;
+        let value = crate::org::arrangement(conn, 3, arrangement)
             .await
             .map_err(|err| err.to_string())?;
         let mut document = value.document;
@@ -210,9 +259,9 @@ pub async fn check_session_directory(
                 ),
             });
         crate::org::commit(
-            &mut conn,
+            conn,
             4,
-            phux_protocol::wire::frame::Command::ArrangementReplace {
+            Command::ArrangementReplace {
                 operation: crate::org::mint_operation(),
                 arrangement,
                 expected: value.revision,
@@ -224,14 +273,9 @@ pub async fn check_session_directory(
         Ok::<_, String>(())
     }
     .await;
-    if let Err(err) = arranged {
-        // Do not leave an unplaced shell that a subsequent open mistakes for
-        // a usable pane. Resource removal also prunes its arrangement entry.
-        let _ = crate::org::remove_resource(&mut conn, resource).await;
-        return Err(format!(
-            "could not arrange the shell in session {name:?}: {err}"
-        ));
+    if arranged.is_err() {
+        // Never replay the create to repair an uncertain legacy layout write.
+        let _ = crate::org::remove_resource(conn, resource).await;
     }
-    drop(conn);
-    Ok(Some(terminal_id))
+    arranged
 }

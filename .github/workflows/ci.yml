@@ -55,6 +55,13 @@ jobs:
       receipt: ${{ steps.plan.outputs.receipt }}
       receipt_name: ${{ steps.plan.outputs.receipt_name }}
     steps:
+      # TEMP: proof for #1831 release-head exemption; remove after one release-please cycle
+      - name: debug event
+        env:
+          EVT_ACTION: ${{ github.event.action }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: echo "action=$EVT_ACTION draft=$PR_DRAFT head_ref=$HEAD_REF"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -116,6 +123,8 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           cache-lane: check
       - run: nix develop -c just rust-lint
+      - name: Check the plugin index compiles
+        run: nix develop -c cargo check --locked --manifest-path scripts/plugin-index/Cargo.toml
       - name: leave disk for the mbx objects export
         if: github.event_name == 'push'
         run: bash scripts/ci/mbx-export-headroom.sh

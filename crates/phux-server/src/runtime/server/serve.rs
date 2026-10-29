@@ -233,6 +233,7 @@ impl ServerRuntime {
                     info!(
                         lost = reconciled.lost,
                         unobserved = reconciled.unobserved,
+                        never_launched = reconciled.never_launched,
                         "reconciled activations a previous run left live"
                     );
                 }

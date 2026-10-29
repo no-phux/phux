@@ -373,6 +373,11 @@ pub enum ServerFeatureExt {
     /// `SERVICE_HTTP_CLOSE`: HTTP exchanges with a named service on its host
     /// (`opencode`) or on a named satellite's, authorized by the connection.
     HostServiceHttp = 0x0000_1000,
+    /// Resource creation commits placement with membership and launch intent,
+    /// and returns stable entry identity and current execution in its receipt.
+    CreatePlacement = 0x0000_2000,
+    /// Connected-server public workflow description and nested schemas.
+    ApiDescription = 0x0000_4000,
 }
 
 impl ServerFeatureExt {
@@ -391,6 +396,8 @@ impl ServerFeatureExt {
         Self::Checkout,
         Self::NativeAgentLaunch,
         Self::HostServiceHttp,
+        Self::CreatePlacement,
+        Self::ApiDescription,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -410,6 +417,8 @@ impl ServerFeatureExt {
             Self::Checkout => "CHECKOUT",
             Self::NativeAgentLaunch => "NATIVE_AGENT_LAUNCH",
             Self::HostServiceHttp => "HOST_SERVICE_HTTP",
+            Self::CreatePlacement => "CREATE_PLACEMENT",
+            Self::ApiDescription => "API_DESCRIPTION",
         }
     }
 
@@ -437,7 +446,9 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::FileDownload as u32
         | ServerFeatureExt::Checkout as u32
         | ServerFeatureExt::NativeAgentLaunch as u32
-        | ServerFeatureExt::HostServiceHttp as u32;
+        | ServerFeatureExt::HostServiceHttp as u32
+        | ServerFeatureExt::CreatePlacement as u32
+        | ServerFeatureExt::ApiDescription as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {
