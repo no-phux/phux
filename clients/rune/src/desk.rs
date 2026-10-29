@@ -439,8 +439,17 @@ impl Desk {
         let title = self
             .shown
             .as_ref()
-            .and_then(|s| self.topology.as_ref()?.panes.iter().find(|p| p.terminal_id == s.terminal))
-            .map_or_else(|| "phux".to_owned(), |p| format!("{} — {}", crate::palette::pane_label(p), p.session_name));
+            .and_then(|s| {
+                self.topology
+                    .as_ref()?
+                    .panes
+                    .iter()
+                    .find(|p| p.terminal_id == s.terminal)
+            })
+            .map_or_else(
+                || "phux".to_owned(),
+                |p| format!("{} — {}", crate::palette::pane_label(p), p.session_name),
+            );
         if self.window_title != title {
             tx.set_title(title.clone());
             self.window_title = title;
