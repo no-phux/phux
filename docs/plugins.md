@@ -1,9 +1,6 @@
-# Plugins
+# Plugin API
 
-A plugin is a directory with a `phux-plugin.toml` manifest that adds to
-phux: actions for the palette and your keys, panes, status-bar widgets,
-sidebar sections, themes, hooks, and agent declarations. Install one to
-pick up someone else's workflow, or write one to package your own.
+phux has a plugin API: a directory with a `phux-plugin.toml` manifest that adds actions, panes, sidebar sections, widgets, themes, hooks, and agent declarations. Install one to pick up someone else's workflow, or write one to package your own. Actions are for the palette and for keys; widgets are status-bar widgets.
 
 ```sh
 phux plugin install https://github.com/someone/phux-plugin
@@ -18,6 +15,8 @@ and every plugin command runs as a separate process, but that is not a
 sandbox. A plugin's commands, and the build steps `phux plugin install`
 and `phux plugin update` run, can do anything your user can. Read a
 plugin before you install it.
+
+To read agent status, run `phux agent list --json`. To block until a pane's screen contains text, matches a pattern, or goes idle, run `phux wait` with `--until`, `--regex`, or `--idle`.
 
 ## Managing plugins
 

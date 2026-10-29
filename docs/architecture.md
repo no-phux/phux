@@ -14,7 +14,8 @@ Brand artwork and cross-repository release delivery are documented in
 
 Each user runs one `phux-server` process per profile. It owns the
 pseudo-terminals, the processes in them, and a libghostty `Terminal` per
-pane holding the canonical screen state. Everything else is a client: the
+pane holding the canonical screen state. What that library does in phux, and
+what it does not, is [libghostty in phux](./libghostty.md). Everything else is a client: the
 TUI, the desktop app, every `phux` subcommand, the MCP adapter, a remote
 `phux attach`.
 

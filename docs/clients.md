@@ -14,7 +14,8 @@ phux attach work        # the terminal UI, in this terminal
 `phux` and `phux attach` run the terminal UI in whatever terminal you are
 in. It ships in every release, and every other client is measured against
 it. It draws panes with libghostty, the same terminal emulator the server
-uses, so what you see is what the server has.
+uses, so what you see is what the server has. See
+[libghostty in phux](./libghostty.md).
 
 [Getting started](./getting-started.md) covers this client.
 <kbd>C-a</kbd> <kbd>S</kbd> opens settings, which edit your config file;
