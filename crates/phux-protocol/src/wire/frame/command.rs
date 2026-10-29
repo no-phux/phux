@@ -140,6 +140,7 @@ impl Command {
         matches!(
             self,
             Self::GetOrganization { .. }
+                | Self::GetCreation { .. }
                 | Self::SessionCreate { .. }
                 | Self::SessionRename { .. }
                 | Self::SessionSetProject { .. }

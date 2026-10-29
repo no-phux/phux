@@ -3,9 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 # Plain `cargo build` builds the shipped executables; workspace-wide gates opt in.
 default-members = ["crates/phux", "crates/phux-mcp"]
-# Browser/wasm consumers (phux-486) live under clients/ and target wasm32 only.
-# They are their own cargo workspaces so the native `cargo build --workspace`
-# (and CI) never tries to build wasm-bindgen crates for the host.
+# Browser and desktop clients have separate workspaces and toolchains.
 # `.claude` holds agent worktrees. Without it, Cargo's cached-root lookup
 # adopts this checkout as the workspace of a nested worktree's out-of-tree
 # path dependencies (the desktop host's GPUI checkout) and fails inheritance.
@@ -30,10 +28,7 @@ unreachable_pub = "warn"
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
-# Not in either group above; without this, clippy.toml's
-# `cognitive-complexity-threshold` is inert. CI's `-D warnings` makes it a
-# gate. Tests that are one long assertion script opt out per function with
-# `#[expect(clippy::cognitive_complexity, reason = ...)]`.
+# Enable the threshold in clippy.toml; neither lint group includes it.
 cognitive_complexity = "warn"
 unwrap_used = "warn"
 expect_used = "warn"
@@ -45,10 +40,7 @@ print_stderr = "warn"
 # Pedantic exceptions: too noisy for our style.
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
-# New in Rust 1.99 and flags several hundred existing test assertions. Its
-# suggested `assert_eq!(x, [] as [T; 0])` does not compile at many of them
-# (unnameable or non-PartialEq element types), so adopting it is a dedicated
-# cleanup, not part of a toolchain bump.
+# The suggested empty-array comparison requires PartialEq on element types.
 assert_is_empty = "allow"
 
 [workspace.dependencies]
@@ -72,45 +64,25 @@ phux-dial = { path = "crates/phux-dial" }
 phux-perf = { path = "crates/phux-perf" }
 phux-git = { path = "crates/phux-git" }
 phux-relay = { path = "crates/phux-relay" }
-# The phux-independent QUIC tunnel relay; members opt into its features.
+# The relay is independent of phux; members opt into its features.
 quictun = { path = "crates/quictun", default-features = false }
 phux-plugin = { path = "crates/phux-plugin" }
 phux-usage = { path = "crates/phux-usage" }
-# Fatal-signal (SIGSEGV/SIGBUS/SIGABRT) terminal restore. Apache-2.0 ONLY —
-# derived from upstream code, unlike every other crate here; see
-# crates/phux-crash/NOTICE.
+# Derived code with its own attribution; see crates/phux-crash/NOTICE.
 phux-crash = { path = "crates/phux-crash" }
-# Dev-only: phux-server's integration-test scaffolding, extracted from
-# `tests/common/` so it compiles once instead of once per test binary.
+# Dev-only scaffolding, compiled once for the server integration tests.
 phux-server-testkit = { path = "crates/phux-server-testkit" }
 portable-pty-adopt = { path = "crates/portable-pty-adopt" }
 
 # External.
-# Already in the dependency graph (wtransport -> pem -> base64 0.22.1;
-# rcgen -> pem -> base64 0.23.1) before this entry; pinning here reuses the
-# 0.22.1 already resolved rather than adding a third version, and replaces
-# a hand-rolled encoder/decoder in `phux-core`/`phux-server`/`phux` with
-# the one already paid for (D9, `GET_SCREEN --format vt`'s base64 payload).
 base64 = "0.23"
 thiserror = "2"
 tracing = "0.1"
 tracing-core = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
-# Non-blocking, file-backed `tracing` sink. The telemetry foundation needs
-# to write logs to a file off the hot path — for the client (which must
-# never touch stderr while the alt screen is up) and for a daemonized
-# server whose crash must be durable on disk. `tracing-appender` is the
-# canonical companion to `tracing-subscriber` (same maintainers, same
-# repo), pure-safe Rust, and its `non_blocking` writer offloads file I/O
-# to a background thread so a slow disk never stalls a render/PTY-pump
-# thread. No alternative in the ecosystem pairs a non-blocking writer with
-# the `MakeWriter` trait `tracing-subscriber` expects.
+# File logging must not block the render/PTY thread or write into the TUI.
 tracing-appender = "0.2"
-# Typed CLI parser plus a portable usage spec (help, completions, docs).
-# Same crate mise uses; the default runtime adds no third-party crates to
-# the binary. Completions replace clap_complete; validation covers portable
-# `validate=` rules that used to be clap `value_parser` closures; `test`
-# is the in-crate parse/help assertion helpers.
+# One CLI spec supplies parsing, help, completions, and generated docs.
 usage = { package = "usage-rs", version = "6.12", features = ["completions", "validation", "test"] }
 bytes = "1"
 slotmap = "1"
@@ -118,157 +90,50 @@ smallvec = "1.16"
 proptest = "1"
 insta = { version = "1", features = ["yaml"] }
 tempfile = "3"
-# The server's organization store (ADR-0162): transactional SQLite with
-# indexed membership and durable receipts. `bundled` compiles a pinned
-# SQLite from source instead of linking the host's.
+# Bundle SQLite rather than depending on the host's version and features.
 rusqlite = { version = "0.37", features = ["bundled"] }
-# East Asian Width + Emoji presentation width lookup for the predict
-# layer (phux-9gw.1.4). The predictive-echo state needs to know how many
-# terminal cells a Unicode scalar consumes before queueing a prediction —
-# width-2 CJK / emoji must advance the predict cursor by 2 cells and
-# refuse to predict at `cursor_col + 2 > cols`. `unicode-width` is the
-# canonical zero-dep crate for this (Unicode 16, single small table),
-# used by `ratatui`, `crossterm`, and `tui-rs`. No alternative ships
-# both EAW and emoji presentation tables in a single lookup.
+# Predictive echo needs both cell widths and grapheme boundaries.
 unicode-width = "0.2"
-# Grapheme-cluster segmentation for the predict layer (phux-9gw.1.6).
-# Multi-codepoint graphemes (flag emoji, ZWJ family sequences, base +
-# combining mark) arrive in a key event's `text` as several scalars; the
-# predictive-echo state must split that text into clusters with
-# `unicode-segmentation`'s `Graphemes` iterator before it can queue and
-# later reconcile them as single visual cells. `unicode-width` answers
-# "how wide is one scalar"; it does not group scalars into clusters, so
-# the two crates are complementary. `unicode-segmentation` is the
-# canonical UAX #29 implementation (used by `ratatui`, `bat`, `helix`),
-# is pure-safe Rust with no C deps, and is already present in Cargo.lock
-# transitively — adding it as a direct dep compiles no new crate.
 unicode-segmentation = "1"
-# DEFLATE for the negotiated `FRAME_COMPRESSED` wire envelope
-# (docs/spec/proto.md §6.4). A remote attach's first paint is dominated by the
-# native bootstrap prefix, which libghostty emits as whole 16-bytes-per-cell
-# pages: a dense scrolled 200x50 pane measures 522 KiB, and four panes put
-# 2 MiB on the wire before the user sees anything. That payload is mostly
-# structural repetition and deflates 14x at level 1, which is the difference
-# between a second and a blink on a 20 Mbit uplink. `flate2` is the canonical
-# Rust DEFLATE crate; with `default-features` (the pure-Rust `miniz_oxide`
-# backend, no `zlib`/C toolchain, wasm-safe) it is ALREADY in Cargo.lock as a
-# transitive dependency of `png`, so taking it as a direct dependency compiles
-# no crate that was not being compiled anyway. `zstd` would reach a better
-# ratio but pulls a C backend for a payload that is already 14x smaller and no
-# longer what makes a remote attach slow.
+# Wire compression uses the pure-Rust backend on native and wasm targets.
 flate2 = "1.1"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
-# Instruction-count CI guard (`just perf-icount`, the `perf-icount` job).
-# Callgrind client requests bracket one function, so the count is the hot
-# path rather than process startup and does not move with runner load.
-# Dev-only: the bench harness is the only caller. Valgrind itself is a CI
-# package, not a crate.
+# Dev-only instruction-count benchmarks; Valgrind is a separate host tool.
 iai-callgrind = "0.16"
 dhat = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "sync", "signal", "time", "process"] }
 portable-pty = "0.9"
-# QR-code generation for `phux pair --qr` (phux-a9s / ADR-0031, which calls
-# for showing the pairing token "as a QR / short code" with the cert
-# fingerprint alongside). Encoding a QR is not a few-lines job — it needs
-# Reed-Solomon error correction, bit placement, and data masking — so a
-# library is the right tool. `qrcode` is pure-safe Rust (no `unsafe`, no C
-# deps) and ships a built-in Unicode half-block string renderer
-# (`render::unicode::Dense1x2`), exactly what a terminal QR needs. Default
-# features (the `image` / `svg` renderers) are disabled — we only use the
-# text renderer — so it compiles no image stack.
+# Pairing renders text QR codes only; do not pull in the image stack.
 qrcode = { version = "0.14", default-features = false }
-# Chrome-layer TUI toolkit for phux-tui (status bar, dividers, overlays).
-# The boundary (ADR-0020, ADR-0100) is compiler-enforced by the crate split:
-# only `phux-tui` declares `ratatui`; the headless client (`phux-client`) and
-# the pane-interior substrate (`phux-client-core`) have no `ratatui`
-# dependency, so a stray `use ratatui` there fails to compile. See epic
-# phux-5ke. Phux emits VT
-# itself, so no crossterm backend, convenience macros or layout cache is needed.
-# `unstable-rendered-line-info` gates `Paragraph::line_count` —
-# the wrapped-display-row count the help overlay's scroll window needs
-# (phux-9adu); counting logical lines undercounts whenever a row wraps.
-# "Unstable" here means semver-exempt upstream (ratatui#293), so a ratatui
-# bump must re-check it; the alternative was reimplementing ratatui's word
-# wrapper to count rows, which would drift from the renderer.
+# Only phux-tui links ratatui, for chrome; phux emits pane VT itself.
+# Recheck Paragraph::line_count on upgrades: its feature is semver-exempt.
 ratatui = { version = "0.30", default-features = false, features = ["std", "underline-color", "unstable-rendered-line-info"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
-# Provider-native agent restoration needs a caller-chosen UUID before spawn:
-# Claude Code and Gemini both expose documented `--session-id` fresh-session
-# flags, and replay the same value through `--resume`. `uuid` supplies the
-# OS-random RFC 4122 v4 generation and formatting; it is already present in
-# Cargo.lock transitively, so this adds no package and avoids a collision-prone
-# timestamp/PID identifier.
+# Agent restoration needs a provider-native session ID before spawn.
 uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
-# `unbounded_depth` is a feature on a dependency we already have, not a new
-# crate: it adds no row to `Cargo.lock`. `phux-server`'s graceful-upgrade blob
-# needs `Deserializer::disable_recursion_limit` — see the `# Depth` note in
-# `crates/phux-server/src/upgrade/blob.rs` for why the default 128-level cap is
-# wrong for that one parse.
+# Upgrade snapshots can exceed serde's default depth; see state/upgrade_blob.rs.
 serde_json = { version = "1", features = ["unbounded_depth"] }
-# SIMD byte search on the PTY output hot path: the compatibility-profile
-# rewrite (`downsample`) and the attach fan-out skip plain-text runs looking
-# for ESC. An early-exiting `iter().position()` does not vectorize; `memchr`
-# is the standard, thoroughly tested SIMD implementation of exactly this
-# primitive. It adds nothing to the build: it is already compiled into every
-# phux binary through `serde_json` (and `regex`, `nom`, `axum`), so this only
-# names a dependency the graph already carries.
+# SIMD search skips plain-text runs in the PTY output hot path.
 memchr = "2"
 toml = "1"
-# Comment-preserving edits for user-owned config.toml. The plugin lifecycle
-# commands need to toggle/add/remove `[[plugins]]` entries without flattening a
-# hand-written config into a generated document; `toml_edit` is the maintained
-# mutable-document companion to the TOML stack.
+# Preserve comments when editing user-owned config.toml.
 toml_edit = "0.25"
-# The config schema already rejects unknown keys (`deny_unknown_fields`),
-# but serde's error names only the leaf field — `unknown field \`wich-key\``,
-# with no parent table — which is ambiguous the moment two tables share a
-# key name (`enabled`, `width`, `position`). `serde_path_to_error` wraps the
-# deserializer and reports the full dotted path (`keybindings.wich-key`) for
-# both unknown-field and wrong-type errors. Deriving the path from the
-# schema walk is the only approach that cannot drift; a hand-maintained key
-# list is exactly the kind of thing that rots. One small pure-Rust crate.
+# Report the full config key path, not an ambiguous leaf name.
 serde_path_to_error = "0.1"
-# libghostty is our canonical terminal backend (ADR-0008). Both phux-protocol
-# and phux-server depend on it — phux-protocol re-exports types, phux-server
-# drives the emulator.
+# Pinned terminal engine; protocol's default features stay pure Rust.
 libghostty-vt = { version = "0.2", git = "https://github.com/phall1/libghostty-rs.git", rev = "9b06bf34eb996fb3580e834e440cef7d38862975", default-features = false }
-# PNG decoder used by the Kitty graphics replay bridge (ADR-0034). This
-# matches libghostty-vt's optional PNG dependency and is enabled only for
-# in-workspace/server-feature consumers that need to ingest `f=100` APC images.
+# Kitty graphics replay decodes f=100 PNG images.
 png = "0.18"
-# QUIC transport (phux-y8v6, ADR-0007). Shared by phux-server (the
-# `QuicListener`) and phux-client (the dialer) so both ends speak the same
-# stack at the same version. `rustls-ring` keeps us off quinn's default
-# aws-lc-rs/cmake path; the `log` feature is deliberately omitted — it
-# resolves to `tracing/log`, which feature-unification would turn on
-# workspace-wide, inflating every `tracing` macro's expansion.
+# Use ring rather than aws-lc-rs/cmake. Omit log to avoid tracing/log unification.
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
-# rustls 0.23 + `ring` provider: TLS 1.3 termination on the server, and the
-# client-side cert verifier (fingerprint pin / loopback skip) on the dialer.
-# Same features both ends so feature-unification is a no-op.
+# Share the TLS provider and feature set between listeners and dialers.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
 
 [profile.release]
 lto = "fat"
 codegen-units = 1
-# Keep the symbol table in the shipped binary (phux-rah). `strip = "symbols"`
-# discarded it, so every backtrace the panic hook logs
-# (`crates/phux-server/src/telemetry.rs`) resolved to bare addresses — while
-# `docs/operations.md` advertised that hook as capturing task/actor panics.
-# `panic = "abort"` means that crash record is all an operator ever gets, so it
-# has to be readable.
-#
-# `debuginfo` rather than `none`. Both measured from real release builds of
-# `-p phux` on this workspace:
-#   strip = "debuginfo"                          17M, 19761 symbols
-#   strip = "none", debug = "line-tables-only"   80M, 28391 symbols
-# Naming every frame is what makes a trace readable; adding file:line to those
-# frames costs another 63M, which is not worth it in a shipped artifact. The
-# panic hook already logs `info.location()`, so the panic *site* is never in
-# doubt — what the backtrace contributes is the call chain leading to it, and
-# named frames are enough to read one. Reach for `[profile.profiling]`
-# (`debug = 1`, `strip = "none"`) when line-accurate frames are actually needed.
+# Keep named panic backtraces without shipping full debug information.
 strip = "debuginfo"
 panic = "abort"
 opt-level = 3

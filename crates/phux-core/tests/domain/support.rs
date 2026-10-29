@@ -117,6 +117,7 @@ impl Harness {
     pub fn create_resource(&mut self, session: SessionKey, spec: NewResource) -> ResourceKey {
         let applied = self
             .run(Op::ResourceCreate {
+                placement: None,
                 session: Some(session),
                 resource: spec,
             })

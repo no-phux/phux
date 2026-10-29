@@ -21,6 +21,7 @@ pub(in crate::wire) fn decode_org_command(
         COMMAND_TAG_SESSION_SET_LIFETIME,
     };
     let after_reserved = [
+        crate::wire::frame::COMMAND_TAG_GET_CREATION,
         crate::wire::frame::COMMAND_TAG_DELEGATE_AGENT,
         crate::wire::frame::COMMAND_TAG_REVOKE_DELEGATION,
         crate::wire::frame::COMMAND_TAG_SESSION_KILL,
@@ -33,6 +34,10 @@ pub(in crate::wire) fn decode_org_command(
     }
     let f = Fields::read_from(dec)?;
     let command = match tag {
+        crate::wire::frame::COMMAND_TAG_GET_CREATION => Command::GetCreation {
+            operation: f.operation()?,
+            session: f.session()?,
+        },
         COMMAND_TAG_GET_ORGANIZATION => Command::GetOrganization {
             filter: f.filter.unwrap_or_default(),
             page_size: f.page_size.unwrap_or(0),
@@ -65,6 +70,7 @@ pub(in crate::wire) fn decode_org_command(
             on_exit: f.on_exit()?.unwrap_or_default(),
             kind: f.kind.unwrap_or_default(),
             launch_mode: f.launch_mode()?.unwrap_or_default(),
+            placement: f.placement,
             launch: f.launch,
             name: f.name,
         },

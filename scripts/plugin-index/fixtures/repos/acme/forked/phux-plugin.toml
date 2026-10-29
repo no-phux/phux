@@ -1,0 +1,10 @@
+id = "acme.forked"
+name = "Forked"
+version = "0.1.0"
+min_phux_version = "0.0.2"
+description = "Fork; must not be indexed."
+
+[[actions]]
+id = "run"
+title = "Run"
+command = ["true"]

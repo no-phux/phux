@@ -29,6 +29,9 @@ pub enum Verdict {
     Lost,
     /// The process is gone: mark it `Completed` with outcome `Unobserved`.
     Unobserved,
+    /// Launch intent committed and no process was ever recorded. Mark it
+    /// `Failed`: committed, never launched. Not a completed unobserved exit.
+    NeverLaunched,
 }
 
 /// Decide one activation's fate.
@@ -50,7 +53,11 @@ pub fn decide(
         return Verdict::Keep;
     }
     let Some(recorded) = recorded else {
-        return Verdict::Unobserved;
+        return if state == ExecState::Starting {
+            Verdict::NeverLaunched
+        } else {
+            Verdict::Unobserved
+        };
     };
     if boot != Some(recorded.boot_id) {
         return Verdict::Unobserved;
@@ -295,10 +302,14 @@ mod tests {
     }
 
     #[test]
-    fn no_recorded_identity_is_unobserved() {
+    fn a_commit_that_never_launched_is_not_an_unobserved_exit() {
         let never = |_| -> Observed { panic!("must not probe") };
         assert_eq!(
             decide(ExecState::Starting, false, None, Some(BOOT), never),
+            Verdict::NeverLaunched
+        );
+        assert_eq!(
+            decide(ExecState::Running, false, None, Some(BOOT), never),
             Verdict::Unobserved
         );
     }

@@ -36,7 +36,9 @@ Homebrew before version 6 does not ask you to trust the tap; skip the
 first line. Update with `brew upgrade no-phux/tap/phux`. See
 [Homebrew](./install.md#homebrew).
 
-From a checkout of this repository:
+For a source install, first install the [platform packages](./development.md#platform-packages)
+(including `mold`, selected by `.cargo/config.toml` for Linux GNU builds).
+Then, from a checkout of this repository:
 
 ```sh
 cargo install --locked --path crates/phux
@@ -49,7 +51,8 @@ A binary run from `target/` uses the `dev` profile and its own socket.
 
 On Windows, the CLI, server, and terminal UI run under WSL 2 only.
 PowerShell launchers call into that WSL install. Desktop 0.50.0 and later
-also provide a native Windows app, backed by the WSL coordinator. See
+also publish a native Windows x64 app, backed by the WSL server, not a
+native Windows CLI/server. See
 [Windows (WSL)](./install.md#windows-wsl) and
 [requirements](./install.md#requirements).
 
@@ -292,6 +295,7 @@ an attaching `phux new` refuse to attach back to that same server unless
 Put flags for `send-keys` and `run` before the target: words after it
 are keys or the command. `phux wait` accepts flags before or after the
 target; spell a bare `--tail` out (`--tail 80`) when the target follows
-it. `send-keys`, `paste`, `detach`, `kill`, and `attach` do not accept
-`--json`. `phux ls` and `phux spawn` leave the server unstarted.
+it. `send-keys`, `paste`, `detach`, and `kill` support `--json`; `attach`
+does not. Input receipts acknowledge delivery, not execution. `phux ls`
+and `phux spawn` leave the server unstarted.
 `phux server --ensure` and `phux new` start one.

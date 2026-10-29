@@ -158,6 +158,15 @@ pub fn apply_spawn_cwd(builder: &mut CommandBuilder, cwd: Option<&str>, session:
     }
 }
 
+/// Env mark that forbids falling back to another directory when the recorded cwd cannot be entered.
+pub(crate) const STRICT_CWD_KEY: &str = "PHUX_FD_SHRINK_STRICT_CWD";
+
+/// Apply recorded cwd intent without permitting any executor fallback directory.
+pub(crate) fn apply_strict_spawn_cwd(builder: &mut CommandBuilder, cwd: &std::path::Path) {
+    builder.cwd(cwd);
+    builder.env(STRICT_CWD_KEY, "1");
+}
+
 /// `path` is a directory the child can `chdir` into (search permission, not
 /// just `is_dir`). Best effort: TOCTOU can still fail the spawn.
 fn dir_is_enterable(path: &std::path::Path) -> bool {

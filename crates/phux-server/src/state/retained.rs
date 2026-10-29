@@ -94,6 +94,13 @@ impl RetainedTable {
 }
 
 impl ServerState {
+    /// Whether engine retirement must preserve this durable record. Explicit purge is separate.
+    pub(crate) fn record_survives_exit(&self, pane: ResourceId) -> bool {
+        self.registry()
+            .record(pane)
+            .is_some_and(|record| record.durable_result)
+    }
+
     /// Mirror `defaults.retain-on-exit*`. Called once at startup.
     pub const fn set_retain_policy(&mut self, policy: RetainPolicy) {
         self.config.retain = policy;
