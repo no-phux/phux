@@ -7,6 +7,7 @@ mod desk;
 mod grid;
 mod keys;
 mod launch;
+mod palette;
 mod ui;
 
 use desk::Desk;
@@ -28,7 +29,7 @@ fn main() {
     let spec = AppSpec {
         min_size: Some((640.0, 360.0)),
         setup: Some(|desk: &mut Desk, waker| desk.listen(waker)),
-        poll: Some(|desk: &mut Desk, _, tx| desk.poll(tx)),
+        poll: Some(|desk: &mut Desk, clock, tx| desk.poll(clock, tx)),
         on_key: Some(|desk: &mut Desk, event, tx| desk.key(event, tx)),
         ..AppSpec::new("phux", (1100.0, 720.0), placeholder_init, ui::view)
     };
@@ -40,6 +41,7 @@ fn main() {
             drag_regions: true,
         })
         .standard_menus()
+        .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
         .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))
         .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn())
         .run();

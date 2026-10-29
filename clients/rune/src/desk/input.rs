@@ -17,6 +17,15 @@ pub fn paste_needs_confirmation(bracketed: bool, text: &str) -> bool {
 impl Desk {
     /// Every key nothing else took. True consumes it.
     pub fn key(&mut self, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
+        if self.palette_open {
+            // The field has the keys; only the chord that closes it gets here.
+            let physical = tx.physical_key();
+            if keys::shortcut(&event.key, event.mods, physical) == Some(Shortcut::Palette) {
+                self.close_palette();
+                tx.blur();
+            }
+            return true;
+        }
         if self.held_paste.is_some() {
             match event.key {
                 rune::Key::Enter => self.confirm_paste(),
@@ -32,6 +41,7 @@ impl Desk {
             self.shortcut(action, tx);
             return true;
         }
+        self.restart_blink();
         let Some(typed) = keys::typed(&event.key, event.mods, tx.key_base(), physical) else {
             return false;
         };
@@ -63,7 +73,25 @@ impl Desk {
         true
     }
 
-    fn shortcut(&mut self, action: Shortcut, tx: &mut Tx) {
+    /// What the input method composed: dead keys, CJK, the emoji picker.
+    /// Plain characters arrive as keys instead.
+    pub fn ime(&mut self, event: &rune::Ime) -> bool {
+        match event {
+            rune::Ime::Preedit(text, _) => {
+                self.preedit = Some(text.clone()).filter(|t| !t.is_empty());
+            }
+            rune::Ime::Commit(text) => {
+                self.preedit = None;
+                if let (Some(client), Some(shown)) = (&self.client, &self.shown) {
+                    client.with_control(|control| control.send_text(&shown.terminal, text));
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn shortcut(&mut self, action: Shortcut, tx: &mut Tx) {
         match action {
             Shortcut::Copy => self.copy(tx),
             Shortcut::Paste => tx.read_clipboard(|desk: &mut Desk, content, _| {
@@ -78,6 +106,8 @@ impl Desk {
             Shortcut::ZoomReset => self.zoom(None),
             Shortcut::ScrollTop => self.scroll(Scroll::Top),
             Shortcut::ScrollBottom => self.scroll(Scroll::Bottom),
+            Shortcut::Palette => self.toggle_palette(),
+            Shortcut::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
         }
     }
 

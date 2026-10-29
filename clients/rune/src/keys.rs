@@ -30,6 +30,8 @@ pub enum Shortcut {
     ZoomReset,
     ScrollTop,
     ScrollBottom,
+    Palette,
+    ToggleSidebar,
 }
 
 pub fn mods(mods: Mods) -> ModSet {
@@ -176,6 +178,8 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
         'c' => Shortcut::Copy,
         'v' => Shortcut::Paste,
         't' => Shortcut::NewTerminal,
+        'k' | 'p' => Shortcut::Palette,
+        'b' => Shortcut::ToggleSidebar,
         'n' => Shortcut::NewSession,
         ']' | '}' => Shortcut::NextTerminal,
         '[' | '{' => Shortcut::PreviousTerminal,

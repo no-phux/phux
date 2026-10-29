@@ -21,7 +21,9 @@ use rune::{Tx, Waker};
 use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
+mod frame;
 mod input;
+mod palette;
 
 /// Wakes Rune's loop from the runtime's driver thread. Only posts; never
 /// re-enters the client.
@@ -75,6 +77,18 @@ pub struct Desk {
     pub held_paste: Option<String>,
     /// A command's failure (a spawn), shown until the next terminal opens.
     pub notice: Option<String>,
+    /// The command palette, while open, and its field and highlighted row.
+    pub palette_open: bool,
+    pub palette_query: rune::TextEdit,
+    pub palette_picked: usize,
+    pub sidebar_open: bool,
+    /// The input method's composition at the terminal cursor.
+    pub preedit: Option<String>,
+    /// The blink phase a blinking cursor shows now, and when typing last
+    /// restarted it (app clock seconds).
+    pub blink_on: bool,
+    blink_since: f64,
+    clock: f64,
     /// Spawns this window sent, to show the terminal when it lands.
     pending_spawns: Vec<u32>,
     /// Bumped by every frame change of the shown terminal, so the view runs.
@@ -108,6 +122,14 @@ impl Desk {
             epoch: 0,
             held_paste: None,
             notice: None,
+            palette_open: false,
+            palette_query: rune::TextEdit::new(""),
+            palette_picked: 0,
+            sidebar_open: true,
+            preedit: None,
+            blink_on: true,
+            blink_since: 0.0,
+            clock: 0.0,
             pending_spawns: Vec::new(),
             generation: 0,
             font_size: grid::DEFAULT_FONT_SIZE,
@@ -142,7 +164,8 @@ impl Desk {
     }
 
     /// Drain the runtime once. True when anything on screen may have changed.
-    pub fn poll(&mut self, tx: &mut Tx) -> bool {
+    pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
+        self.clock = clock;
         let Some(client) = self.client.clone() else {
             return false;
         };
@@ -172,7 +195,7 @@ impl Desk {
         changed |= self.open_wanted(&client);
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();
-        changed
+        changed | self.blink(&client, tx)
     }
 
     fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
@@ -297,85 +320,6 @@ impl Desk {
         self.notice = None;
         self.generation += 1;
         true
-    }
-
-    /// The grid area moved or resized.
-    pub fn laid_out(&mut self, area: [f32; 2]) {
-        self.area = area;
-        self.fit();
-    }
-
-    /// Propose the shown terminal's size from the grid area. The runtime
-    /// refuses it for observers and before the terminal is ready; a later
-    /// drain retries.
-    fn fit(&mut self) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
-            return;
-        };
-        if self.area[0] < 1.0 || self.area[1] < 1.0 {
-            return;
-        }
-        let metrics = self.metrics();
-        let size = metrics.fit(self.area);
-        let cell = metrics.cell_px();
-        if self
-            .fitted
-            .as_ref()
-            .is_some_and(|(id, fitted, px)| id == &shown.terminal && *fitted == size && *px == cell)
-        {
-            return;
-        }
-        let outcome = client.with_control(|control| {
-            control.resize_terminal_with_cell(
-                &shown.terminal,
-                size.0.into(),
-                size.1.into(),
-                Some(cell),
-            )
-        });
-        if outcome == phux_client_runtime::control::TerminalResizeOutcome::Queued {
-            self.fitted = Some((shown.terminal.clone(), size, cell));
-        }
-    }
-
-    /// Clear the delivery fence of the frame Rune just drew, only when that
-    /// exact publication is still current on the same connection. This is
-    /// a next-frame receipt; it never clears a newer fence.
-    pub fn drawn(&self) {
-        let Some(painted) = self.painted.take() else {
-            return;
-        };
-        let Some(client) = &self.client else { return };
-        if client.connection_epoch() != painted.epoch {
-            return;
-        }
-        let current = client.acquire_view(painted.view);
-        if !current.is_some_and(|frame| Arc::ptr_eq(&frame, &painted.frame)) {
-            return;
-        }
-        client.with_control(|control| {
-            control.acknowledge_projection_if(&painted.terminal, painted.fence)
-        });
-    }
-
-    /// Note the frame a view build is about to paint, when it can clear a
-    /// fence: attached, and at the live tail the input landed in.
-    pub fn painting(&self, view: ViewId, frame: &Arc<GridFrame>) {
-        let painted = self.client.as_ref().and_then(|client| {
-            if self.status != Status::Attached || !frame.scrollbar.at_tail() {
-                return None;
-            }
-            let fence =
-                client.with_control(|control| control.projection_fence(&frame.terminal_id))?;
-            Some(Painted {
-                terminal: frame.terminal_id.clone(),
-                view,
-                fence,
-                frame: Arc::clone(frame),
-                epoch: client.connection_epoch(),
-            })
-        });
-        self.painted.replace(painted);
     }
 
     pub fn show(&mut self, terminal: ResourceId, session_name: &str) {

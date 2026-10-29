@@ -327,10 +327,11 @@ fn row_el(list: &DrawList<Color>, row: &Row<'_>, m: &Metrics) -> El {
 }
 
 /// The whole grid, sized to its cells, over the frame's default background.
-pub fn paint(frame: &GridFrame, focused: bool, metrics: &Metrics) -> El {
+pub fn paint(frame: &GridFrame, focused: bool, blink_on: bool, metrics: &Metrics) -> El {
     let visibility = phux_client_runtime::draw::Visibility {
         focused,
-        ..Default::default()
+        cursor_visible: true,
+        blink_visible: blink_on,
     };
     let list = DrawList::build(frame, &theme(), visibility);
     let mut grid = rune::col()
@@ -345,6 +346,56 @@ pub fn paint(frame: &GridFrame, focused: bool, metrics: &Metrics) -> El {
         grid = grid.child(memo(id, version, || row_el(&list, row, metrics)));
     }
     grid
+}
+
+/// The input method's anchor at the terminal cursor, with any composition
+/// drawn over the cells it will land in. Only while the terminal has the
+/// keyboard.
+pub fn ime_layer(
+    frame: &GridFrame,
+    preedit: Option<&str>,
+    metrics: &Metrics,
+    ink: (Color, Color),
+) -> El {
+    let (fg, bg) = ink;
+    let x = f32::from(frame.cursor.col) * metrics.cell_w;
+    let y = f32::from(frame.cursor.row) * metrics.cell_h;
+    let anchor = el()
+        .key("ime-caret")
+        .absolute(x, y)
+        .size(metrics.cell_w, metrics.cell_h)
+        .ime_cursor();
+    let Some(composed) = preedit.filter(|t| !t.is_empty()) else {
+        return anchor;
+    };
+    let cells = f32::from(text_cells(composed)) * metrics.cell_w;
+    let composing = text(composed)
+        .absolute(x, y)
+        .font(metrics.style(false, false))
+        .color(fg)
+        .single_line();
+    el().absolute(0.0, 0.0)
+        .size(
+            f32::from(frame.cols) * metrics.cell_w,
+            f32::from(frame.rows) * metrics.cell_h,
+        )
+        .child(el().absolute(x, y).h(metrics.cell_h).w(cells).fill(bg))
+        .child(composing)
+        .child(
+            el().absolute(x, y + metrics.cell_h - 1.5)
+                .h(1.5)
+                .w(cells)
+                .fill(fg),
+        )
+        .child(anchor)
+}
+
+/// Terminal cells a composition covers: two for wide (CJK) characters.
+fn text_cells(text: &str) -> u16 {
+    let wide = |c: char| matches!(u32::from(c), 0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x1F300..=0x1FAFF | 0x20000..=0x3FFFD);
+    text.chars()
+        .map(|c| if wide(c) { 2u16 } else { 1 })
+        .fold(0u16, u16::saturating_add)
 }
 
 /// The frame's own default background, for the area around the grid.
