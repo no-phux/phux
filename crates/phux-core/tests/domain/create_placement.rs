@@ -218,6 +218,47 @@ fn invalid_missing_moved_and_replaced_anchors_refuse_without_launch_or_records()
     );
 }
 #[test]
+fn receipt_env_values_are_hashed_and_retries_still_match() {
+    use phux_core::{Actor, Command, LaunchSpec, TerminalLaunch};
+    let mut h = Harness::new();
+    let session = h.create_session("work", SessionLifetime::Persistent);
+    let mut spec = shell();
+    spec.launch = Some(LaunchSpec::Terminal(TerminalLaunch {
+        env: vec![("SECRET".to_owned(), "super-secret-value".to_owned())],
+        ..TerminalLaunch::default()
+    }));
+    let op = Op::ResourceCreate {
+        session: Some(session),
+        resource: spec,
+        placement: None,
+    };
+    let operation = h.next_op();
+    let applied = h
+        .run_cmd(
+            &Actor::owner(),
+            &Command {
+                operation,
+                op: op.clone(),
+            },
+        )
+        .unwrap();
+    assert!(!applied.replayed);
+    let receipt = h.reg.org().receipt(&operation).unwrap();
+    let stored = serde_json::to_string(receipt).unwrap();
+    assert!(!stored.contains("super-secret-value"));
+    assert!(stored.contains("sha256:"));
+    let key = created(&applied).1.unwrap();
+    let LaunchSpec::Terminal(launch) = h.resource(key).launch.unwrap() else {
+        panic!("terminal launch")
+    };
+    assert_eq!(launch.env[0].1, "super-secret-value");
+    let replay = h
+        .run_cmd(&Actor::owner(), &Command { operation, op })
+        .unwrap();
+    assert!(replay.replayed);
+}
+
+#[test]
 fn unrelated_arrangement_edits_do_not_conflict_with_stable_entry_intent() {
     let mut h = Harness::new();
     let (session, anchor, entry) = first(&mut h);

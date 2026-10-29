@@ -866,6 +866,69 @@ mod tests {
     }
 
     #[test]
+    fn a_receipt_persists_env_hashes_not_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1.sqlite3");
+        let mut keys = SequentialKeys::new(*b"storetst");
+        let mut store = SqliteOrgStore::open(&path).unwrap();
+        let mut registry = Registry::new(org(&mut keys));
+        store.import(registry.org(), None, Stamp(0)).unwrap();
+        let mut spec = shell();
+        let LaunchSpec::Terminal(launch) = spec.launch.as_mut().unwrap() else {
+            panic!("shell");
+        };
+        launch
+            .env
+            .push(("SECRET".to_owned(), "super-secret-value".to_owned()));
+        let create = Command {
+            operation: op_id(1),
+            op: Op::ResourceCreate {
+                placement: None,
+                session: None,
+                resource: spec,
+            },
+        };
+        let applied = phux_core::apply(
+            registry.org(),
+            &create,
+            &Actor::owner(),
+            Stamp(0),
+            &mut keys,
+        )
+        .unwrap();
+        store.commit(&applied.transition, 1, Stamp(0)).unwrap();
+        let _ = registry.commit(&applied.transition);
+        let blob: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT receipt FROM receipts", [], |row| row.get(0))
+            .unwrap();
+        assert!(!blob.contains("super-secret-value"));
+        assert!(blob.contains("sha256:"));
+        let record: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT record FROM resources", [], |row| row.get(0))
+            .unwrap();
+        assert!(record.contains("super-secret-value"));
+        let reopened = SqliteOrgStore::open(&path)
+            .unwrap()
+            .load()
+            .unwrap()
+            .unwrap();
+        let back = Org::restore(
+            reopened.authority,
+            registry.org().instance(),
+            reopened.sessions,
+            reopened.resources,
+            reopened.arrangements,
+            reopened.receipts,
+        )
+        .unwrap();
+        let replay =
+            phux_core::apply(&back, &create, &Actor::owner(), Stamp(1), &mut keys).unwrap();
+        assert!(replay.replayed);
+    }
+
+    #[test]
     fn a_removed_resource_leaves_a_tombstone_and_receipts_prune() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("v1.sqlite3");
