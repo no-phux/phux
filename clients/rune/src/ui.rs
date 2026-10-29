@@ -8,6 +8,7 @@ use crate::desk::{Desk, Pending};
 
 mod palette;
 mod panes;
+pub(crate) use panes::DIVIDER;
 mod sidebar;
 
 const SIDEBAR_W: f32 = 236.0;

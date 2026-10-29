@@ -7,7 +7,6 @@ use crate::desk::Desk;
 use crate::palette::Hit;
 
 const WIDTH: f32 = 600.0;
-const ROWS: usize = 60;
 
 pub fn view(desk: &Desk, ink: &Ink) -> El {
     let hits = desk.palette_hits();
@@ -23,7 +22,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .on_input_change(|d: &mut Desk, _| d.palette_picked = 0)
         .on_submit(|d: &mut Desk, tx| d.palette_run(None, tx));
     let mut results = col().key("palette-results").w_full().padding(6.0).gap(1.0);
-    for (index, hit) in hits.iter().take(ROWS).enumerate() {
+    for (index, hit) in hits.iter().take(crate::palette::ROWS).enumerate() {
         results = results.child(hit_row(hit, index, index == picked, ink));
     }
     if hits.is_empty() {

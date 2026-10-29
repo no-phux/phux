@@ -47,7 +47,7 @@ impl Desk {
             self.report(terminal, phase, x, y, mods);
             return;
         }
-        self.select(phase, x, y, clicks);
+        self.select(terminal, phase, x, y, clicks);
     }
 
     fn report(&mut self, terminal: &ResourceId, phase: Phase, x: f32, y: f32, mods: Mods) {
@@ -85,20 +85,37 @@ impl Desk {
                 MouseAction::Release
             }
         };
-        let (cell_w, cell_h) = metrics.cell_px();
+        // Surface pixels inside the cell the point is in, clamped to the grid.
+        let (x, y) = cell_center(&metrics, col, row);
         let event = MouseEvent {
             action,
             button: MouseButton::Left,
             mods: keys::mods(mods),
-            // Surface pixels inside the cell the point is in, clamped to the grid.
-            x: f64::from(col) * f64::from(cell_w) + f64::from(cell_w) / 2.0,
-            y: f64::from(row) * f64::from(cell_h) + f64::from(cell_h) / 2.0,
+            x,
+            y,
         };
         client.with_control(|control| control.send_mouse(terminal, event));
     }
 
-    /// Wheel over a pane: `dy` points, positive revealing older rows.
-    pub fn wheel(&mut self, terminal: &ResourceId, dy: f32, mods: Mods) {
+    /// The surface pixels of the cell under a point in a pane's grid.
+    fn surface_point(&self, terminal: &ResourceId, x: f32, y: f32) -> Option<(f64, f64)> {
+        let frame = self
+            .client
+            .as_ref()?
+            .acquire_view(self.view_of(terminal)?)?;
+        let metrics = self.metrics();
+        let (col, row) = metrics.cell_at(x, y, frame.cols, frame.rows);
+        Some(cell_center(&metrics, col, row))
+    }
+
+    /// Wheel over a pane at `x, y` in its grid's points: `dy` points,
+    /// positive revealing older rows.
+    pub fn wheel(&mut self, terminal: &ResourceId, x: f32, y: f32, dy: f32, mods: Mods) {
+        // Leftover fractions belong to the pane they came from.
+        if self.wheel_pane.as_ref() != Some(terminal) {
+            self.wheel_pane = Some(terminal.clone());
+            self.wheel_rows = 0.0;
+        }
         let cell_h = self.metrics().cell_h;
         self.wheel_rows += dy / cell_h;
         let rows = self.wheel_rows.trunc();
@@ -116,13 +133,15 @@ impl Desk {
             } else {
                 MouseButton::Five
             };
+            // Programs route the wheel by position (vim splits, tmux panes).
+            let (x, y) = self.surface_point(terminal, x, y).unwrap_or((0.0, 0.0));
             for _ in 0..steps.abs() {
                 let event = MouseEvent {
                     action: MouseAction::Press,
                     button,
                     mods: keys::mods(mods),
-                    x: 0.0,
-                    y: 0.0,
+                    x,
+                    y,
                 };
                 client.with_control(|control| control.send_mouse(terminal, event));
             }
@@ -154,4 +173,14 @@ impl Desk {
         let _ = client.with_control(|control| control.scroll_view(view, Scroll::Delta(-steps)));
         self.generation += 1;
     }
+}
+
+/// Surface pixels at the middle of a cell, as the server divides by the
+/// reported cell size.
+fn cell_center(metrics: &crate::grid::Metrics, col: u16, row: u16) -> (f64, f64) {
+    let (cell_w, cell_h) = metrics.cell_px();
+    (
+        f64::from(col) * f64::from(cell_w) + f64::from(cell_w) / 2.0,
+        f64::from(row) * f64::from(cell_h) + f64::from(cell_h) / 2.0,
+    )
 }

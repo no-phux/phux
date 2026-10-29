@@ -50,9 +50,18 @@ impl Desk {
         let Some(shown) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
             return self.layout.take().is_some();
         };
+        self.place_pending_splits(client);
+        let listed: Vec<ResourceId> = self
+            .topology
+            .iter()
+            .flat_map(|t| t.panes.iter().map(|p| p.terminal_id.clone()))
+            .collect();
         let tree = self
             .arrangement(client)
             .and_then(|(_, doc)| doc.active_group().and_then(|g| g.tree.clone()))
+            // A leaf whose terminal is gone draws nothing; the server owns
+            // the stored tree, so it is pruned here, never written.
+            .and_then(|tree| prune(tree, &listed, &shown))
             .filter(|tree| leaves(tree).contains(&shown));
         let tree = match (&self.zoomed, tree) {
             (Some(zoomed), Some(tree)) if leaves(&tree).contains(zoomed) => {
@@ -66,6 +75,10 @@ impl Desk {
             None => tree,
         };
         let changed = self.layout.as_ref() != Some(&tree);
+        // Everything on screen counts as seen, not only the keyboard's pane.
+        for id in leaves(&tree) {
+            self.activities.seen(&id);
+        }
         self.layout = Some(tree);
         changed | self.sync_views(client)
     }
@@ -156,9 +169,38 @@ impl Desk {
         self.zoomed = None;
     }
 
-    /// Place a spawned terminal beside its split's target and write the
-    /// tree back. Without an arrangement it still shows, unplaced.
+    /// Queue a spawned terminal for placement beside its split's target.
     pub(super) fn place_split(
+        &mut self,
+        client: &Client,
+        target: &ResourceId,
+        new: &ResourceId,
+        dir: SplitDir,
+    ) {
+        self.unplaced_splits
+            .push((target.clone(), new.clone(), dir, std::time::Instant::now()));
+        self.place_pending_splits(client);
+    }
+
+    /// Place every queued split whose session arrangement the replica now
+    /// holds; the keyboard stays where it is until then. One that waits too
+    /// long shows on its own with a notice.
+    fn place_pending_splits(&mut self, client: &Client) {
+        const PATIENCE: std::time::Duration = std::time::Duration::from_secs(3);
+        let pending = std::mem::take(&mut self.unplaced_splits);
+        for (target, new, dir, since) in pending {
+            if self.arrangement(client).is_some() {
+                self.write_split(client, &target, &new, dir);
+            } else if since.elapsed() < PATIENCE {
+                self.unplaced_splits.push((target, new, dir, since));
+            } else {
+                self.notice = Some("The split could not be saved; it shows on its own.".to_owned());
+                self.want(new);
+            }
+        }
+    }
+
+    fn write_split(
         &mut self,
         client: &Client,
         target: &ResourceId,
@@ -180,29 +222,15 @@ impl Desk {
             if let Ok(split) = split_at(&base, target, new, dir, 0.5) {
                 group.tree = Some(split);
                 group.focus = Some(new.clone());
-                if let Err(error) = client.replace_arrangement(session, &doc) {
-                    self.notice = Some(format!("Split not saved: {error}"));
+                match client.replace_arrangement(session, &doc) {
+                    Ok(operation) => {
+                        self.layout_ops.insert(operation);
+                    }
+                    Err(error) => self.notice = Some(format!("Split not saved: {error}")),
                 }
             }
         }
         self.want(new.clone());
-    }
-
-    /// Drop a closed pane from the arrangement, as the TUI does.
-    pub(super) fn unplace(&mut self, client: &Client, id: &ResourceId) {
-        let Some((session, mut doc)) = self.arrangement(client) else {
-            return;
-        };
-        let Some(group) = doc.active_group_mut() else {
-            return;
-        };
-        let Some(tree) = group.tree.clone() else {
-            return;
-        };
-        if let Ok(rest) = kill_pane(&tree, id) {
-            group.tree = rest;
-            let _ = client.replace_arrangement(session, &doc);
-        }
     }
 
     /// A split's container moved or resized.
@@ -214,7 +242,8 @@ impl Desk {
     pub fn split_span(&self, path: &SplitPath, horizontal: bool) -> f32 {
         self.split_sizes
             .get(path)
-            .map_or(0.0, |size| if horizontal { size[0] } else { size[1] })
+            // The divider's own width is not either side's.
+            .map_or(0.0, |size| (if horizontal { size[0] } else { size[1] }) - crate::ui::DIVIDER)
     }
 
     /// A divider drag: preview the ratio locally, and write it on release.
@@ -237,11 +266,36 @@ impl Desk {
                 .and_then(|t| with_ratio(t, &path, ratio))
         {
             group.tree = Some(tree);
-            let _ = client.replace_arrangement(session, &doc);
+            match client.replace_arrangement(session, &doc) {
+                Ok(operation) => {
+                    self.layout_ops.insert(operation);
+                }
+                Err(error) => self.notice = Some(format!("Divider not saved: {error}")),
+            }
         }
         self.refresh_layout(&client);
         self.fit();
     }
+}
+
+/// `tree` without leaves whose terminal the server no longer lists (the
+/// focused one stays). `None` when nothing is left.
+fn prune(tree: LayoutNode, listed: &[ResourceId], keep: &ResourceId) -> Option<LayoutNode> {
+    leaves(&tree)
+        .into_iter()
+        .filter(|id| id != keep && !listed.contains(id))
+        .try_fold(tree, |tree, gone| kill_pane(&tree, &gone).ok().flatten())
+}
+
+/// The pane that takes the keyboard when `closed` goes: the leaf before it in
+/// reading order, else the one after.
+pub fn neighbour(tree: &LayoutNode, closed: &ResourceId) -> Option<ResourceId> {
+    let all = leaves(tree);
+    let at = all.iter().position(|id| id == closed)?;
+    at.checked_sub(1)
+        .and_then(|i| all.get(i))
+        .or_else(|| all.get(at + 1))
+        .cloned()
 }
 
 /// `tree` with the split at `path` given `ratio`; `None` when `path` does
@@ -318,5 +372,42 @@ mod tests {
         let tree = split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2));
         assert!(with_ratio(&tree, &[false], 0.4).is_none());
         assert!(with_ratio(&leaf(1), &[], 0.4).is_none());
+    }
+
+    #[test]
+    fn a_closed_pane_hands_the_keyboard_to_its_reading_order_neighbour() {
+        let tree = split(
+            SplitDir::Horizontal,
+            0.5,
+            leaf(1),
+            split(SplitDir::Vertical, 0.5, leaf(2), leaf(3)),
+        );
+        assert_eq!(
+            neighbour(&tree, &ResourceId::local(3)),
+            Some(ResourceId::local(2))
+        );
+        assert_eq!(
+            neighbour(&tree, &ResourceId::local(1)),
+            Some(ResourceId::local(2))
+        );
+        assert_eq!(neighbour(&leaf(1), &ResourceId::local(1)), None);
+    }
+
+    #[test]
+    fn unlisted_leaves_are_pruned_but_the_focused_one_stays() {
+        let tree = split(
+            SplitDir::Horizontal,
+            0.5,
+            leaf(1),
+            split(SplitDir::Vertical, 0.5, leaf(2), leaf(3)),
+        );
+        let listed = [ResourceId::local(1), ResourceId::local(3)];
+        let pruned = prune(tree.clone(), &listed, &ResourceId::local(1)).expect("leaves remain");
+        assert_eq!(
+            leaves(&pruned),
+            vec![ResourceId::local(1), ResourceId::local(3)]
+        );
+        let kept = prune(tree, &[], &ResourceId::local(2)).expect("focus stays");
+        assert_eq!(leaves(&kept), vec![ResourceId::local(2)]);
     }
 }

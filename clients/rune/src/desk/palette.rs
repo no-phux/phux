@@ -34,7 +34,8 @@ impl Desk {
 
     /// Arrow keys and Escape inside the palette's field.
     pub fn palette_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
-        let count = self.palette_hits().len();
+        // Only the rendered rows can be highlighted.
+        let count = self.palette_hits().len().min(palette::ROWS);
         match event.key {
             Key::Down | Key::Tab if count > 0 => {
                 self.palette_picked = (self.palette_picked + 1) % count
@@ -46,13 +47,15 @@ impl Desk {
             }
             _ => return false,
         }
+        tx.scroll_into_view(format!("palette-row-{}", self.palette_picked));
         true
     }
 
     /// Run the highlighted row, or the row at `index`.
     pub fn palette_run(&mut self, index: Option<usize>, tx: &mut Tx) {
         let hits = self.palette_hits();
-        let Some(hit) = hits.get(index.unwrap_or(self.palette_picked)).cloned() else {
+        let picked = self.palette_picked.min(hits.len().saturating_sub(1));
+        let Some(hit) = hits.get(index.unwrap_or(picked)).cloned() else {
             return;
         };
         self.close_palette();

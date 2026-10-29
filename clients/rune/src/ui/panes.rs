@@ -10,7 +10,7 @@ use crate::desk::{Desk, SplitPath};
 use crate::grid;
 
 /// The hit area a divider gives the pointer, around its one-point line.
-const DIVIDER: f32 = 7.0;
+pub(crate) const DIVIDER: f32 = 7.0;
 
 pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
     desk.scale.set(cx.env().scale);
@@ -150,7 +150,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .border(1.0, edge)
         .cursor(rune::Cursor::Text)
         .on_wheel(move |d: &mut Desk, event, _| {
-            d.wheel(&wheel, event.dy, event.mods);
+            d.wheel(&wheel, event.x - PAD, event.y - PAD, event.dy, event.mods);
             true
         })
         .on_drag(move |d: &mut Desk, drag, tx| {

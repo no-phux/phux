@@ -183,6 +183,10 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
     if !cfg!(target_os = "macos") && !mods.shift {
         return None;
     }
+    // Exact chords: ⌘⌥D or ⌘⌃T stay with the program.
+    if mods.alt || (cfg!(target_os = "macos") && mods.ctrl) {
+        return None;
+    }
     Some(match physical.and_then(us_char).unwrap_or(*c) {
         'c' => Shortcut::Copy,
         'v' => Shortcut::Paste,
@@ -193,7 +197,7 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
         'w' => Shortcut::CloseTerminal,
         'd' if mods.shift && cfg!(target_os = "macos") => Shortcut::SplitDown,
         'd' => Shortcut::SplitRight,
-        'e' => Shortcut::SplitDown,
+        'e' if !cfg!(target_os = "macos") => Shortcut::SplitDown,
         'n' => Shortcut::NewSession,
         ']' | '}' => Shortcut::NextTerminal,
         '[' | '{' => Shortcut::PreviousTerminal,

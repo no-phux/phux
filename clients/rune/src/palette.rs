@@ -14,6 +14,9 @@ pub enum Target {
     Action(Shortcut),
 }
 
+/// The most rows the palette renders; the highlight stays within them.
+pub const ROWS: usize = 60;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub title: String,

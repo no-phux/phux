@@ -92,10 +92,10 @@ impl Mark {
 pub struct Activities(HashMap<ResourceId, Activity>);
 
 impl Activities {
-    /// Fold one event in. `shown` is the terminal on screen, which never
-    /// collects marks for you. True when a mark may have changed.
-    pub fn apply(&mut self, event: &Event, shown: Option<&ResourceId>) -> bool {
-        let on_screen = |id: &ResourceId| shown == Some(id);
+    /// Fold one event in. Terminals in `on_screen` are in front of you and
+    /// collect no marks. True when a mark may have changed.
+    pub fn apply(&mut self, event: &Event, on_screen: &[ResourceId]) -> bool {
+        let on_screen = |id: &ResourceId| on_screen.contains(id);
         match event {
             Event::AgentMetadata { terminal_id, value } => {
                 let agent = value
@@ -220,10 +220,10 @@ mod tests {
     #[test]
     fn a_blocked_agent_needs_you_until_it_moves_on() {
         let mut a = Activities::default();
-        a.apply(&record("blocked"), None);
+        a.apply(&record("blocked"), &[]);
         assert_eq!(a.mark(&id(1)), Mark::Blocked);
         assert!(a.mark(&id(1)).needs_you());
-        a.apply(&record("working"), None);
+        a.apply(&record("working"), &[]);
         assert_eq!(a.mark(&id(1)), Mark::Working);
         assert!(a.mark(&id(1)).live());
         assert_eq!(a.agent_name(&id(1)), Some("claude"));
@@ -232,8 +232,8 @@ mod tests {
     #[test]
     fn finishing_off_screen_is_held_until_seen() {
         let mut a = Activities::default();
-        a.apply(&record("working"), None);
-        a.apply(&record("done"), None);
+        a.apply(&record("working"), &[]);
+        a.apply(&record("done"), &[]);
         assert_eq!(a.mark(&id(1)), Mark::Done);
         a.seen(&id(1));
         assert_eq!(a.mark(&id(1)), Mark::Idle);
@@ -242,23 +242,23 @@ mod tests {
     #[test]
     fn the_shown_terminal_collects_no_marks() {
         let mut a = Activities::default();
-        a.apply(&record("working"), Some(&id(1)));
-        a.apply(&record("done"), Some(&id(1)));
-        a.apply(&Event::Bell { terminal_id: id(1) }, Some(&id(1)));
+        a.apply(&record("working"), &[id(1)]);
+        a.apply(&record("done"), &[id(1)]);
+        a.apply(&Event::Bell { terminal_id: id(1) }, &[id(1)]);
         assert_eq!(a.mark(&id(1)), Mark::Idle);
     }
 
     #[test]
     fn a_bell_and_a_question_mark_the_row() {
         let mut a = Activities::default();
-        a.apply(&Event::Bell { terminal_id: id(1) }, None);
+        a.apply(&Event::Bell { terminal_id: id(1) }, &[]);
         assert_eq!(a.mark(&id(1)), Mark::Bell);
         a.apply(
             &Event::AgentAskedState {
                 terminal_id: id(1),
                 asked: true,
             },
-            None,
+            &[],
         );
         assert_eq!(a.mark(&id(1)), Mark::Blocked);
     }
@@ -266,24 +266,24 @@ mod tests {
     #[test]
     fn a_running_command_shows_and_a_retracted_record_clears() {
         let mut a = Activities::default();
-        a.apply(&Event::CommandStarted { terminal_id: id(1) }, None);
+        a.apply(&Event::CommandStarted { terminal_id: id(1) }, &[]);
         assert_eq!(a.mark(&id(1)), Mark::Running);
         a.apply(
             &Event::CommandFinished {
                 terminal_id: id(1),
                 exit_code: Some(1),
             },
-            None,
+            &[],
         );
         // Short commands leave no mark behind.
         assert_eq!(a.mark(&id(1)), Mark::None);
-        a.apply(&record("working"), None);
+        a.apply(&record("working"), &[]);
         a.apply(
             &Event::AgentMetadata {
                 terminal_id: id(1),
                 value: None,
             },
-            None,
+            &[],
         );
         assert_eq!(a.mark(&id(1)), Mark::None);
     }

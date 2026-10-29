@@ -224,11 +224,14 @@ impl Desk {
     }
 
     /// A press, drag, or release over the grid selects through the engine.
-    pub fn select(&mut self, phase: Phase, x: f32, y: f32, clicks: u32) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
+    pub fn select(&mut self, terminal: &ResourceId, phase: Phase, x: f32, y: f32, clicks: u32) {
+        let Some(view) = self.view_of(terminal) else {
             return;
         };
-        let Some(frame) = client.acquire_view(shown.view) else {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let Some(frame) = client.acquire_view(view) else {
             return;
         };
         let Some(engine) = client.engine() else {
@@ -256,7 +259,7 @@ impl Desk {
             screen_height: (u32::from(frame.rows) * u32::from(cell_h)).max(1),
             padding_left: 0,
         };
-        if let Ok(result) = engine.view_selection_gesture(shown.view, event) {
+        if let Ok(result) = engine.view_selection_gesture(view, event) {
             self.gesture = if phase == 2 { 0 } else { result.handle };
         }
         self.generation += 1;

@@ -11,10 +11,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
+use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::control::{ControlOptions, Event, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target, ViewId};
-use phux_protocol::ids::{ArrangementKey, ResourceId};
+use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId};
 use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
 use rune::{Tx, Waker};
 
@@ -125,8 +126,15 @@ pub struct Desk {
     pub zoomed: Option<ResourceId>,
     /// A divider drag's split and ratio, previewed until release.
     pub(crate) dragging: Option<(SplitPath, f32)>,
+    /// Spawned splits waiting for the session's arrangement: the pane split,
+    /// the new terminal, the direction, and since when.
+    unplaced_splits: Vec<(ResourceId, ResourceId, SplitDir, Instant)>,
+    /// Arrangement writes this window made, to report a refusal.
+    layout_ops: HashSet<OperationId>,
     /// Spawns that become splits: the pane split and the direction.
     pending_splits: HashMap<u32, (ResourceId, SplitDir)>,
+    /// The pane the wheel last moved, owning `wheel_rows`.
+    wheel_pane: Option<ResourceId>,
     /// The pane whose program took the last press, until its release.
     mouse_capture: Option<ResourceId>,
     /// The cell the last reported pointer event was in.
@@ -179,6 +187,9 @@ impl Desk {
             zoomed: None,
             dragging: None,
             pending_splits: HashMap::new(),
+            unplaced_splits: Vec::new(),
+            layout_ops: HashSet::new(),
+            wheel_pane: None,
             mouse_capture: None,
             mouse_cell: None,
             window_title: String::new(),
@@ -252,9 +263,11 @@ impl Desk {
     }
 
     fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
-        let marked = self
-            .activities
-            .apply(&event, self.shown.as_ref().map(|s| &s.terminal));
+        let on_screen: Vec<ResourceId> = match &self.layout {
+            Some(tree) => phux_client_core::layout::leaves(tree),
+            None => self.shown.iter().map(|s| s.terminal.clone()).collect(),
+        };
+        let marked = self.activities.apply(&event, &on_screen);
         marked | self.apply_view(client, event, tx)
     }
 
@@ -292,17 +305,26 @@ impl Desk {
                 true
             }
             Event::TerminalClosed { terminal_id, .. } if shown(&terminal_id) => {
-                self.unplace(client, &terminal_id);
-                // Keep the keyboard in the split: a sibling takes focus.
-                let sibling = self.others.keys().next().cloned();
+                // Keep the keyboard in the split: the neighbour takes focus.
+                let next = self
+                    .layout
+                    .as_ref()
+                    .and_then(|t| layout::neighbour(t, &terminal_id));
                 self.close_shown(client);
-                if let Some(sibling) = sibling {
-                    self.focus_pane(&sibling);
+                if let Some(next) = next {
+                    self.focus_pane(&next);
+                }
+                true
+            }
+            Event::OrganizationOperation { operation, outcome }
+                if self.layout_ops.remove(&operation) =>
+            {
+                if matches!(outcome, OrgOutcome::Refused(_) | OrgOutcome::Error { .. }) {
+                    self.notice = Some("The layout changed elsewhere first; try again.".to_owned());
                 }
                 true
             }
             Event::TerminalClosed { terminal_id, .. } if self.others.contains_key(&terminal_id) => {
-                self.unplace(client, &terminal_id);
                 if let Some(view) = self.others.remove(&terminal_id) {
                     let _ = client.destroy_view(view);
                 }
