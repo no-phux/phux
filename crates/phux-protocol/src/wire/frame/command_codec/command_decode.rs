@@ -40,6 +40,9 @@ pub(super) fn decode_input_event_body(dec: &mut Decoder<'_>) -> Result<InputEven
 pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let command_body_len = dec.remaining_in_body();
     let tag = dec.read_u8()?;
+    if tag == crate::wire::frame::COMMAND_TAG_DESCRIBE_API {
+        return Ok(Command::DescribeApi);
+    }
     if tag == crate::wire::frame::COMMAND_TAG_NATIVE_AGENT {
         let bytes = dec.read_bytes()?;
         if bytes.len() > crate::native_agent::MAX_NATIVE_PAYLOAD_BYTES {

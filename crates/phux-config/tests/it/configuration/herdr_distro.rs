@@ -76,9 +76,9 @@ fn plugin_manifests_absolutize_and_load() {
         .into_iter()
         .map(|p| p.manifest)
         .collect();
-    assert!(manifests[0].ends_with("examples/plugins/continuum/phux-plugin.toml"));
-    assert!(manifests[1].ends_with("examples/plugins/agent-tools/phux-plugin.toml"));
-    assert!(manifests[2].ends_with("examples/plugins/usage/phux-plugin.toml"));
+    assert!(manifests[0].ends_with("plugins/continuum/phux-plugin.toml"));
+    assert!(manifests[1].ends_with("plugins/agent-tools/phux-plugin.toml"));
+    assert!(manifests[2].ends_with("plugins/usage/phux-plugin.toml"));
     for manifest in &manifests {
         assert!(manifest.is_absolute(), "{manifest:?}");
         assert!(

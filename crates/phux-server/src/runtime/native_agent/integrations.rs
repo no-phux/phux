@@ -33,9 +33,10 @@ fn catalog_at(config: &Path) -> Result<NativeIntegrationCatalog, CommandResult> 
     let items = phux_plugin::list_launchable(config, LaunchMode::Native)
         .map_err(|e| refusal(e.to_string()))?;
     let mut names = BTreeMap::new();
-    // Include OpenCode even when an explicitly broken profile suppresses its
+    // Include built-in profiles even when a broken override suppresses their
     // fallback: a missing button must not conceal a configuration error.
     names.insert("opencode".to_owned(), Some("OpenCode".to_owned()));
+    names.insert("fx".to_owned(), Some("fx".to_owned()));
     for item in items {
         names.insert(item.integration_id, item.display_name);
         if names.len() > MAX_INTEGRATIONS {

@@ -48,6 +48,7 @@ impl Org {
             &self.state,
             CLIENT,
             Command::ResourceCreate {
+                placement: None,
                 operation,
                 session,
                 kind: phux_protocol::ids::ResourceKind::Terminal,
@@ -217,6 +218,7 @@ fn insert_resource_before(
             },
             launch: None,
             on_exit: phux_core::ExitPolicy::Retain,
+            durable_result: false,
             activation: None,
             revision: phux_core::Revision::FIRST,
         };

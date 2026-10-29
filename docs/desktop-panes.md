@@ -41,7 +41,7 @@ do in the pane.
 
 Titlebar tabs, sidebar tab rows, terminal rows, and the pane controls start
 with a glyph tinted for the agent, with the agent's state as a small dot on
-its corner. Claude Code, Codex, OpenCode, Pi, Oh My Pi, Grok, Amp, Cursor
+its corner. Claude Code, Codex, fx, OpenCode, Pi, Oh My Pi, Grok, Amp, Cursor
 Agent, Gemini, Goose, and Aider each have their own glyph and tint. An ACP
 agent whose name ends in `-acp` gets the same mark as the agent it runs.
 Any other agent gets a robot glyph in a muted color.

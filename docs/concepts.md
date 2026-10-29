@@ -94,6 +94,12 @@ There are three ways to point at something, each for a different job:
 
 Starting a pane's program again, with `phux relaunch` or `phux restore`, is a new run in the same pane: same key, new process.
 
+The [public terminal workflow](./public-api.md) names that run by its
+**activation** and server **incarnation**. A **placement entry** is the stable
+identity of one view in an arrangement, not the pane itself. Splitting beside
+an entry must still name the resource and execution it displays; a reused
+live pane number or a different view is not an equivalent target.
+
 ## What survives what
 
 | Event                                                | Programs in panes | Sessions, tabs, and panes | Scrollback |

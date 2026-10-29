@@ -175,7 +175,7 @@ async fn checked_in_continuum_restore_missing_archive_is_structured()
         std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
     )
     .join("../..")
-    .join("examples/plugins/continuum/phux-plugin.toml");
+    .join("plugins/continuum/phux-plugin.toml");
     let config = write_config_for_manifest(&tmp, &manifest)?;
 
     let output = run_configured_action(
@@ -240,7 +240,7 @@ printf '{"schema_version":1,"sessions":[]}\n' > "$output"
         std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
     )
     .join("../..")
-    .join("examples/plugins/continuum/scripts/autosave.sh");
+    .join("plugins/continuum/scripts/autosave.sh");
     let command = format!(
         "PHUX_BIN={} PHUX_CONTINUUM_ARCHIVE={} sh {}",
         sh_quote(&fake_phux),

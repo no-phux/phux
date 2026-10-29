@@ -359,8 +359,15 @@ static C_SESSION_DELETE: Rule = Rule::verbs(
     &[Verb::Terminate],
     Subject::KeyedSession,
 );
+static C_API_DESCRIBE: Rule = Rule::verbs("`DESCRIBE_API`", &[Verb::Inventory], GLOBAL);
+static C_GET_CREATION: Rule = Rule::verbs("`GET_CREATION`", &[Verb::Inventory], Subject::KeyedSession);
 static C_RESOURCE_CREATE: Rule =
     Rule::verbs("`RESOURCE_CREATE`", &[Verb::Create], Subject::KeyedSession);
+static C_RESOURCE_CREATE_PLACED: Rule = Rule::verbs(
+    "`RESOURCE_CREATE` with placement",
+    &[Verb::Create, Verb::Organize],
+    Subject::KeyedSession,
+);
 static C_RESOURCE_MOVE: Rule = Rule::verbs(
     "`RESOURCE_MOVE`, `RESOURCE_MOVE_MANY`",
     &[Verb::Organize],
@@ -411,7 +418,7 @@ static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclass
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 51] = [
+pub static COMMAND_RULES: [&Rule; 54] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -449,10 +456,13 @@ pub static COMMAND_RULES: [&Rule; 51] = [
     &C_NATIVE_COMMAND,
     &C_NATIVE_CONTROLLER,
     &C_GET_ORGANIZATION,
+    &C_API_DESCRIBE,
+    &C_GET_CREATION,
     &C_SESSION_CREATE,
     &C_SESSION_ORGANIZE,
     &C_SESSION_DELETE,
     &C_RESOURCE_CREATE,
+    &C_RESOURCE_CREATE_PLACED,
     &C_RESOURCE_MOVE,
     &C_RESOURCE_RENAME,
     &C_RESOURCE_TERMINATE,

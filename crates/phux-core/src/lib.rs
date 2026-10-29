@@ -38,8 +38,8 @@ pub use arrangement::{
     LayoutNode, SplitDir, first_group,
 };
 pub use command::{
-    Applied, Command, Created, Effect, LaunchMode, NewResource, Op, Refusal, Reply, SourcePin,
-    TerminateMode,
+    Applied, Command, CreatePlacement, Created, Effect, LaunchMode, NewResource, Op, Refusal,
+    Reply, SourcePin, TerminateMode,
 };
 pub use ids::{ResourceId, SessionId};
 pub use keys::{

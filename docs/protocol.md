@@ -1,6 +1,6 @@
-# Protocol
+# Server protocol
 
-How a client talks to a phux server. The code in
+How a client talks to a phux server, in length-prefixed frames. The code in
 [`crates/phux-protocol`](../crates/phux-protocol) is the definition; this
 page is the map. [`wire-schema.json`](./spec/wire-schema.json) lists every
 frame and field and is generated from the codec, so it cannot be stale.
@@ -9,6 +9,8 @@ If you are writing a client in Rust, use `phux-client-core` and
 `phux-client-runtime` rather than this. If you are writing one in another
 language, [`clients/phux-web`](../clients/phux-web) is a complete
 non-native implementation to read alongside.
+
+If you only need agent status or to wait on a screen, you don't need the protocol: use `phux agent list --json` or `phux wait --until/--regex/--idle`.
 
 ## Transports
 
@@ -255,6 +257,25 @@ An `AgentSession` has an immutable, one-level Terminal parent. Purging the
 parent closes its children atomically; closing a child never kills its
 parent. Process exit under Retain is not purge: see
 [activations and exit policy](./organization.md#activations-and-reconciliation).
+
+### Complete terminal creation and discovery
+
+`features_ext.CREATE_PLACEMENT` (`0x2000`) gates the optional `RESOURCE_CREATE`
+placement field and creation receipts. The placement is either a new group or
+a split beside a stable entry with a durable resource key, incarnation and
+activation fence. It requires both `CREATE` and `ORGANIZE` on the destination
+session; no cross-session anchor is admitted. The new fields are append-only
+organization TLVs: placement `43`, entry `44`, replayed `45`, authority `46`.
+Creation receipts additionally use the existing arrangement/activation fields.
+Absent placement keeps the legacy create bytes and `CREATE`-only authority.
+
+`features_ext.API_DESCRIPTION` (`0x4000`) gates `DESCRIBE_API` (command tag
+`0x40`, no body) and `GET_CREATION` (`0x41`, organization operation/session
+TLVs). Description returns JSON containing complete nested public workflow
+schemas, not an application IDL inferred from top-level frame shapes. Lookup
+is read-only, needs `INVENTORY` on the original destination session, and
+returns a retained creation receipt or `NOT_FOUND`. A missing receipt cannot
+establish that the original mutation never ran. See the [public contract](./public-api.md).
 
 ### File transfer
 

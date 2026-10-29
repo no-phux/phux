@@ -1,7 +1,11 @@
 # phux desktop
 
-A native app for Apple silicon macOS 26+ and Linux x86_64/arm64 (X11 or
-Wayland, Vulkan).
+A native app for Apple silicon macOS 26+, Linux x86_64/arm64 (X11 or
+Wayland, Vulkan), and Windows x64 (Direct3D 11, WSL 2 server).
+
+The desktop is a maintained, separately versioned client, newer and rougher
+than the core terminal UI. It uses the same persistent server; installing
+it is optional.
 
 Rust, GPUI, and the shared client runtime; no web view.
 
@@ -18,6 +22,17 @@ installer adds the CLI when none is found. It never replaces an existing
 CLI or stops its server. The shell installer also supports older
 ad-hoc-signed releases, clearing quarantine only after verifying the
 release signature.
+
+### macOS Homebrew
+
+```sh
+brew trust --tap no-phux/tap # Homebrew 6+
+brew install --cask no-phux/tap/phux-desktop
+```
+
+The cask installs the signed, notarized DMG on Apple silicon, macOS 26+.
+Update with `brew upgrade --cask no-phux/tap/phux-desktop`. No separate CLI
+formula is required; an existing CLI is preserved.
 
 ### macOS download
 
@@ -45,7 +60,9 @@ On Windows today, the CLI and terminal UI run in WSL 2, with PowerShell
 launchers. The native x64 desktop connects to that same coordinator through
 `wsl.exe` and the binary stdio bridge; WSLg and a network listener are not required.
 [Install the WSL CLI/server](../../docs/install.md#windows-wsl) first, then
-install a Windows-capable desktop release from PowerShell:
+install from PowerShell. Windows x64 ZIPs are published from
+[Desktop 0.50.0](https://github.com/no-phux/phux/releases/tag/desktop-v0.50.0)
+onward; older stable tags have only macOS/Linux artifacts.
 
 ```powershell
 $installer = Join-Path $env:TEMP 'install-phux-desktop.ps1'
@@ -57,6 +74,7 @@ The installer refuses channels without a Windows artifact. It verifies
 release-key-signed checksums, installs per user under `%LOCALAPPDATA%\Phux`,
 and adds a Start Menu shortcut and Apps uninstall entry. Signature verification
 uses `minisign.exe` on Windows or `minisign` in WSL (`sudo apt-get install minisign`).
+Signed checksums are not Authenticode signing or a promise of SmartScreen reputation.
 It never replaces the WSL CLI or stops its server. Close the app and rerun
 the installer to update; `-Channel next` selects preview builds, `-Version VERSION`
 pins a stable version, and `-Uninstall` preserves preferences and WSL shells.

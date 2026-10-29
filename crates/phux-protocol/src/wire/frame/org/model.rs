@@ -35,6 +35,28 @@ pub struct LiveTarget {
     pub activation: ActivationId,
 }
 
+/// Presentation committed with resource membership and launch intent.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreatePlacement {
+    /// Append a new unnamed group; does not change client focus.
+    NewGroup,
+    /// Split one stable entry only while it still shows the observed execution.
+    Beside {
+        /// Stable entry id.
+        entry: [u8; 16],
+        /// Durable anchor resource.
+        resource: ResourceKey,
+        /// Anchor's execution incarnation.
+        instance: ServerInstance,
+        /// Anchor's activation.
+        activation: ActivationId,
+        /// Split axis.
+        dir: SplitDirection,
+        /// Fraction kept by the anchor, strictly between zero and one.
+        ratio: f32,
+    },
+}
+
 /// How a resource's execution starts and restarts. Kind-specific; a
 /// Terminal reads every field.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -220,4 +242,17 @@ pub struct ArrangementGroup {
 pub struct ArrangementDoc {
     /// The groups, in display order.
     pub groups: Vec<ArrangementGroup>,
+}
+
+impl ArrangementDoc {
+    /// Validate the complete encoded shape against the wire's size and depth bounds.
+    /// Server-generated incremental edits must pass this before durable commitment too.
+    ///
+    /// # Errors
+    /// Any arrangement the ordinary wire decoder would refuse.
+    pub fn validate_wire(&self) -> Result<(), super::DecodeError> {
+        let mut bytes = bytes::BytesMut::new();
+        super::arrangement::encode_arrangement_doc(self, &mut super::Encoder::new(&mut bytes));
+        super::arrangement::decode_arrangement_doc(&bytes).map(|_| ())
+    }
 }

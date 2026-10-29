@@ -122,6 +122,9 @@ pub(crate) fn dispatch(
         Some(Command::Resource(commands::ResourceArgs { action })) => {
             commands::resource::run_resource(&action, socket)
         }
+        Some(Command::Terminal(commands::TerminalArgs { action })) => {
+            commands::terminal::run(&action, socket)
+        }
         Some(Command::Rec(args)) => recording::rec(args, socket),
         Some(Command::Play {
             file,

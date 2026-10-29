@@ -19,6 +19,7 @@ slotmap.workspace = true
 # serialized domain type: the server produces it, the CLI emits it as the
 # stable JSON contract. Pure data — no I/O — so it lives here, shared.
 serde.workspace = true
+sha2 = "0.11"
 
 [dev-dependencies]
 proptest.workspace = true

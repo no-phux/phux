@@ -16,9 +16,8 @@
 #
 # Two subtleties this example bakes in deliberately:
 #
-#   * The pane's shell is the user's $SHELL, which may be zsh/fish, not a
-#     POSIX sh. So the interactive program is wrapped in `sh -c '...'`,
-#     making it portable regardless of the login shell.
+#   * lib.sh selects a clean POSIX shell; the program also uses `sh -c`
+#     so its syntax is explicit when copied into an agent.
 #   * `wait --until` matches ANY visible line, INCLUDING the echo of the
 #     command you just typed. So we wait on `result=49` -- a value the
 #     program COMPUTES at runtime, which never appears in the command's
@@ -26,20 +25,20 @@
 #
 # Run it:   bash examples/agents/04-read-act-wait-loop.sh
 
+# shellcheck source=examples/agents/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 phux_start_server
 
 # A tiny interactive program standing in for an installer / wizard: it
 # prompts, reads a number, and prints its square. Wrapped in `sh -c` for
 # portability across login shells.
-PROMPT_PROG='sh -c '\''printf "Pick a number: "; read n; echo "result=$((n * n))"'\'''
+# shellcheck disable=SC2016 # Arithmetic expands in the pane, not this script.
+PROMPT_PROG='sh -c '\''printf "Pick a %s: " number; read -r n; echo "result=$((n * n))"'\'''
 
 section "ACT: start the interactive prompt"
 phux send-keys "$PHUX_SESSION" "$PROMPT_PROG" Enter
 
-# READ + WAIT: block until the prompt is actually on screen. "Pick a
-# number:" is fine to match here -- we only need to know the program is
-# running and waiting; the next match (on output) is the load-bearing one.
+# READ + WAIT: the formatted prompt is absent from the echoed source too.
 section "READ+WAIT: block until the prompt is on screen"
 phux wait --until "Pick a number:" --timeout 10 "$PHUX_SESSION"
 

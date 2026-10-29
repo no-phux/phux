@@ -38,7 +38,9 @@ and finally the screen matched against built-in rules. When the agent exits or a
 program takes over the pane, the state goes back to `unknown`.
 
 Screen rules ship for Claude Code, Codex, OpenCode, pi, Oh My Pi, Grok, Amp,
-Cursor, Gemini CLI, Goose, and Aider. A screen that matches no rule reads as
+Cursor, Gemini CLI, Goose, and Aider. fx is recognized by its executable;
+its screen state has no verified rules yet, so use ACP or explicit status for
+turn and permission state. A screen that matches no rule reads as
 `idle`, never `blocked`. To add or override rules, put them in
 `~/.config/phux/agent-rules/` (or `$PHUX_AGENT_RULES_DIR`).
 
@@ -70,6 +72,7 @@ hooks, reports its state to phux as it changes.
 | pi | `pi install npm:@phux/pi` |
 | Oh My Pi | `omp plugin install @phux/omp` |
 | OpenCode | `opencode plugin add @phux/opencode` |
+| fx | Use the built-in `fx acp` profile ([ACP sessions](./acp.md)); for terminal fx, register `phux mcp` in fx. |
 | Grok | `grok plugin marketplace add no-phux/phux`, then `grok plugin install phux@phux --trust` |
 | Anything that speaks MCP | See [MCP](#mcp). |
 
@@ -120,7 +123,8 @@ agent registers any stdio server. For Claude Code:
 claude mcp add phux -- phux mcp
 ```
 
-The plugins above register it for you. `phux mcp --schema` prints every tool
+For terminal fx, run `fx mcp add phux -- phux mcp` to register it. The plugins
+above register it for their agents. `phux mcp --schema` prints every tool
 with its input schema. Each tool mirrors one `phux` command and is marked
 read-only or destructive the same way the server treats it. Tools that kill,
 detach, send a destructive signal, or approve something require
@@ -339,8 +343,10 @@ terminal, with no integration and no socket:
 printf '\033]7501;state=blocked:kind=permission:app=mytool\033\\'
 ```
 
-The [program protocol](./program-protocol.md) specifies it, and
-[program sequences](./program-sequences.md) covers the `phux-ask` question
+The [program protocol](./program-protocol.md) specifies it.
+[Any program can report status](./any-program-status.md) walks through a
+shell emitter, a demo with no hooks, and one real `phux agent explain`.
+[Program sequences](./program-sequences.md) covers the `phux-ask` question
 title and the other sequences phux reads.
 
 A tool phux's agent rules recognize can also report through an agent
@@ -406,6 +412,15 @@ phux deny ID
 Nothing on this machine's own socket is ever held. See
 [Remote machines](./remote.md#who-can-do-what) for keys and scopes.
 
+## Complete terminal creation
+
+Use `phux terminal describe` / `phux_api_describe` for the connected server's
+[terminal workflow](./public-api.md), nested schemas and retry rules.
+`terminal create` / `phux_terminal_create` execute argv in a new process and
+commit its placement; they do not type a shell command or submit an agent turn.
+After a lost reply, `terminal operation` / `phux_terminal_operation` read the
+retained server receipt without repeating effects. Support is not authorization.
+
 ## Commands agents use
 
 The commands an agent drives phux with. The [command line
@@ -418,7 +433,8 @@ says why it is command-line only.
 `host discover`, `host ls`, `host renew`, `host upgrade`, `kill`, `launch`,
 `logs`, `ls`, `mcp`, `new`, `organize`, `play`, `rec mark`, `relaunch`, `resize`,
 `resource methods`, `resource show`, `resource wait`, `restore`, `rm`,
-`run`, `signal`, `snapshot`, `spawn`, `status`, `update`, `wait`, `watch`,
+`run`, `signal`, `snapshot`, `spawn`, `status`, `terminal create`,
+`terminal describe`, `terminal operation`, `update`, `wait`, `watch`,
 `whoami`, `mail send`, `mail read`, `mail ack`, `claim take`, `claim renew`,
 `claim release`, `claim list`.
 

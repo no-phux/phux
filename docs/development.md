@@ -39,7 +39,8 @@ Nix provides it.
 
 ## libghostty-vt
 
-The terminal engine is Ghostty's C library. Its build script downloads a
+The terminal engine is Ghostty's C library. What it does in a running phux,
+and what it does not, is [libghostty in phux](./libghostty.md). Its build script downloads a
 prebuilt, checksummed `libghostty-vt.a` for the pinned Ghostty commit on
 the three release targets and needs only `curl` and `tar`. Anything else
 (other targets, `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, offline, a failed
@@ -367,9 +368,14 @@ evidence of anything.
 
 ## Demos and recordings
 
+`bash scripts/record-readme.sh` records the README's real composited TUI
+using `target/debug/phux`, a private server, and an empty home. It needs
+Python 3 for JSON processing, not a signed-in agent or an external renderer.
 `scripts/demo-setup.sh` stages a demo session and prints the runbook.
 `scripts/demo-record.sh` records `docs/assets/recording-demo.cast` and
 renders the GIF, under a 1 MiB budget because GitHub serves the whole file
-before the first frame. `scripts/demo-pi-setup.sh` sets up the pi fleet
+before the first frame. Pass an output directory for a disposable take or
+concurrent runs; all intermediate files are private and removed on exit.
+`scripts/demo-pi-setup.sh` sets up the pi fleet
 demo. The `.cast` files under `docs/assets/` are read by tests in
 `phux-record` and `phux`, so re-record them deliberately.
