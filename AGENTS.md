@@ -28,6 +28,14 @@ phux new --json -s agent -c "$PWD" -- claude
 panes as `@N` from `terminal_id`. `phux skill` prints the guide built into
 the binary you have installed.
 
+## Building on phux
+
+Programs that drive phux, or report status into a pane, start at
+[Build on phux](./docs/building.md). That page is the map to the versioned
+`--json` CLI, the MCP server (`phux mcp`), `phux watch --json` and its
+resume cursor, and OSC 7501. Agent state is evidence-ranked; screen is
+the floor.
+
 ## Build and validate
 
 `mise install` or `nix develop`, then `just doctor <area>` and the smallest

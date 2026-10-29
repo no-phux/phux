@@ -54,6 +54,7 @@ phux wait --regex 'passed|failed' @1
 [using phux as an agent](./docs/agent-quickstart.md) ·
 [driving terminals from scripts](./docs/scripting.md) ·
 [coding agents](./docs/agents.md) ·
+[build on phux](./docs/building.md) ·
 [remote machines](./docs/remote.md)
 
 ## For agents

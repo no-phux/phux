@@ -28,6 +28,10 @@ Every page in the phux docs, grouped by what you're trying to do.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
 
+## Build on phux
+
+- [Build on phux](./building.md): the versioned `--json` CLI, the MCP server, `phux watch`, the 1.x wire protocol, OSC 7501, plugins, and the surfaces this repository does not ship.
+
 ## Build for phux
 
 - [Program protocol](./program-protocol.md): how a program in a pane reports what it is doing with OSC 7501, and what phux shows.

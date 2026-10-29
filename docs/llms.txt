@@ -1,0 +1,42 @@
+# phux
+
+> Builder entry points checked into this repository at docs/llms.txt.
+> https://docs.phux.sh/llms.txt is a different file, maintained in
+> no-phux/website at public/llms.txt. This repository does not generate
+> that hosted file. https://docs.phux.sh/llms-full.txt is every hosted page.
+
+Start with [Build on phux](./building.md).
+
+## Entry points
+
+- [Build on phux](./building.md): the hub for the surfaces below, the
+  version rules, and what this repository does not ship.
+- [Versioned `--json`](./scripting.md#json-output-and-errors). The generated
+  command text is the [CLI reference](./reference/cli.md).
+- [MCP](./agents.md#mcp). `phux mcp` over stdio. The
+  [parity table](./reference/parity.md) is generated from the tool catalog.
+- [`phux watch`](./scripting.md#watching-events). `--json` is one JSON object
+  per line. `--after` resumes from the cursor printed last on stderr.
+- [Wire protocol](./protocol.md). Binary frames.
+  [Compatibility](./compatibility.md) is the 1.x rule.
+  [`wire-schema.json`](./spec/wire-schema.json) is generated from the codec.
+- [OSC 7501](./program-protocol.md). One escape sequence, no phux library.
+- [Plugins](./plugins.md). A `phux-plugin.toml` manifest.
+- [Agent integrations](./agents.md#agent-setup). Includes Claude Code, pi,
+  Oh My Pi, OpenCode, and Grok, and any MCP client.
+- [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)
+  and [embedding](./embedding.md).
+
+## Agent state
+
+Agent state is evidence-ranked; screen is the floor. It has not been
+measured on a live Claude Code, Codex, or OpenCode session. The order the
+docs and the server code record is on [Build on phux](./building.md).
+
+## Not shipped
+
+There is no public SDK.
+There is no JSON socket.
+There is no example application.
+There is no plugin index.
+Sources for each sentence are on [Build on phux](./building.md).
