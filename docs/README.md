@@ -38,6 +38,10 @@ unshipped experiment, and phone apps are not available yet. See
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
 
+## Build on phux
+
+- [Build on phux](./building.md): the versioned `--json` CLI, the MCP server, `phux watch`, the 1.x server protocol, OSC 7501, the plugin API, and the surfaces this repository does not ship.
+
 ## Build for phux
 
 - [OSC 7501: report status from any program](./program-protocol.md): the Program Status Protocol sequence phux reads, and what a pane shows from it.
