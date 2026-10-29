@@ -5,7 +5,7 @@ use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
 use rune::{Color, Cx, El, Phase, col, el, row};
 
-use super::{Ink, PAD, placeholder};
+use super::{Ink, PAD, overlay, placeholder};
 use crate::desk::{Desk, SplitPath};
 use crate::grid;
 
@@ -111,7 +111,8 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .as_ref()
         .zip(view)
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
-    let (laid, wheel, press) = (id.clone(), id.clone(), id.clone());
+    let (laid, wheel, press, moved, left) =
+        (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
     let host = el()
         .key(format!("pane-host-{id}"))
         .w_full()
@@ -132,7 +133,9 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     }
     let metrics = desk.metrics();
     let keyboard = focused && desk.focused;
-    let mut grid_layer = el().child(grid::paint(&frame, keyboard, desk.blink_on, &metrics));
+    let mut grid_layer = el()
+        .child(grid::paint(&frame, keyboard, desk.blink_on, &metrics))
+        .children(overlay::link_underline(desk, id, &metrics, ink));
     if keyboard && !desk.palette_open && desk.pending.is_none() {
         grid_layer = grid_layer.child(grid::ime_layer(
             &frame,
@@ -146,18 +149,33 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     } else {
         Color::TRANSPARENT
     };
+    let linked = desk.pointer.hover.as_ref().is_some_and(|(t, _)| t == id);
+    let area = desk.pane_area(id).unwrap_or([0.0, 0.0]);
     host.fill(grid::background(&frame))
         .border(1.0, edge)
-        .cursor(rune::Cursor::Text)
+        .cursor(if linked { rune::Cursor::Pointer } else { rune::Cursor::Text })
+        .on_pointer_move_local(move |d: &mut Desk, event, tx| {
+            d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods().cmd);
+        })
+        .on_hover_change(move |d: &mut Desk, inside, _| {
+            if !inside {
+                d.pointer_left(&left);
+            }
+        })
         .on_wheel(move |d: &mut Desk, event, _| {
             d.wheel(&wheel, event.x - PAD, event.y - PAD, event.dy, event.mods);
             true
         })
         .on_drag(move |d: &mut Desk, drag, tx| {
             // Drag points include the padding; the grid starts inside it.
-            d.pointer(&press, drag.phase, drag.x - PAD, drag.y - PAD, drag.clicks, tx.mods());
+            let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
+            if !d.press_link(&press, drag.phase, x, y, mods.cmd, tx) {
+                d.pointer(&press, drag.phase, x, y, drag.clicks, mods);
+            }
         })
         .child(grid_layer)
+        .children(overlay::history(desk, id, &frame, area, ink))
+        .children(overlay::find_bar(desk, id, area, ink))
         // Panes without the keyboard sit back a little.
         .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(Color::BLACK.alpha(0.18)).inert()))
 }

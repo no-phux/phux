@@ -41,6 +41,10 @@ pub enum Shortcut {
     FocusRight,
     FocusUp,
     FocusDown,
+    Find,
+    FindNext,
+    FindPrevious,
+    FindSelection,
 }
 
 pub fn mods(mods: Mods) -> ModSet {
@@ -198,6 +202,11 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
         'd' if mods.shift && cfg!(target_os = "macos") => Shortcut::SplitDown,
         'd' => Shortcut::SplitRight,
         'e' if !cfg!(target_os = "macos") => Shortcut::SplitDown,
+        'e' => Shortcut::FindSelection,
+        'f' => Shortcut::Find,
+        // Off macOS every app chord has Shift, so G alone is next there.
+        'g' if mods.shift && cfg!(target_os = "macos") => Shortcut::FindPrevious,
+        'g' => Shortcut::FindNext,
         'n' => Shortcut::NewSession,
         ']' | '}' => Shortcut::NextTerminal,
         '[' | '{' => Shortcut::PreviousTerminal,
@@ -386,6 +395,33 @@ mod tests {
         };
         assert_eq!(event.key, physical_key_for_char('c'));
         assert_eq!(event.unshifted_codepoint, Some(u32::from('c')));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn find_chords() {
+        let cmd = m(|m| m.cmd = true);
+        let shifted = m(|m| {
+            m.cmd = true;
+            m.shift = true;
+        });
+        let g = Some(PhysicalKeyCode::KeyG);
+        assert_eq!(
+            shortcut(&Key::Command('f'), cmd, None),
+            Some(Shortcut::Find)
+        );
+        assert_eq!(
+            shortcut(&Key::Command('g'), cmd, g),
+            Some(Shortcut::FindNext)
+        );
+        assert_eq!(
+            shortcut(&Key::Command('G'), shifted, g),
+            Some(Shortcut::FindPrevious)
+        );
+        assert_eq!(
+            shortcut(&Key::Command('e'), cmd, None),
+            Some(Shortcut::FindSelection)
+        );
     }
 
     #[test]
