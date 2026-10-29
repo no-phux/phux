@@ -127,9 +127,10 @@ const ROUTES: Record<string, Surface[]> = {
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
   "scripts/check-*": [],
-  // Nested cargo workspace. plugin-index.yml runs its tests; product lanes
-  // do not build it.
-  "scripts/plugin-index/**": [],
+  // Its own workspace, compiled by the rust lane (`cargo check` in ci.yml)
+  // so a phux-config change cannot break it unseen. plugin-index.yml still
+  // runs the offline tests.
+  "scripts/plugin-index/**": ["phux"],
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],

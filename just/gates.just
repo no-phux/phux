@@ -126,6 +126,8 @@ doc:
 [group('gates')]
 deny:
     cargo deny check
+    # The generator is its own workspace, so the root check never sees its lock.
+    cargo deny --manifest-path scripts/plugin-index/Cargo.toml --config deny.toml --locked check
 
 
 # Shell scripts at warning severity: the examples carry deliberate info-level

@@ -111,7 +111,7 @@ test.each<[string[], Surface[]]>([
   [[".beads/config.yaml"], []],
   [[".beads/issues.jsonl", "clients/desktop/native/src/main.rs"], ["desktop"]],
   [["scripts/check-docs.sh"], []],
-  [["scripts/plugin-index/src/lib.rs"], []],
+  [["scripts/plugin-index/src/lib.rs"], ["phux"]],
   [[".github/workflows/plugin-index.yml"], []],
   [["docs/spec/plugin-index.schema.json"], []],
   [
@@ -122,7 +122,7 @@ test.each<[string[], Surface[]]>([
       "docs/plugins.md",
       "tools/src/routing/routes.ts",
     ],
-    [],
+    ["phux"],
   ],
   [["brand.config.json", "brand.lock.json"], []],
   [["scripts/brand.py", "scripts/update-brand.py", "scripts/test_brand_update.py"], []],
