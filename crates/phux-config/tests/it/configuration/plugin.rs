@@ -736,3 +736,59 @@ fn plugin_manifest_loads_and_validates_themes() -> Result<(), Box<dyn std::error
     }
     Ok(())
 }
+
+#[test]
+fn startup_entries_follow_action_id_rules_and_cap_at_eight()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+    let dir = TempDir::new()?;
+    let mut body = String::new();
+    for n in 0..8 {
+        let _ = write!(
+            body,
+            "[[startup]]\nid = \"job{n}\"\ncommand = [\"sleep\", \"1\"]\n"
+        );
+    }
+    let path = write_manifest(dir.path(), &manifest("example.startup", &body));
+    let loaded = plugin::load_plugin_manifest(&path)?;
+    assert_eq!(loaded.startup.len(), 8);
+    assert_eq!(loaded.startup[0].command, ["sleep", "1"]);
+
+    body.push_str("[[startup]]\nid = \"job8\"\ncommand = [\"sleep\", \"1\"]\n");
+    let path = write_manifest(dir.path(), &manifest("example.startup", &body));
+    let err = plugin::load_plugin_manifest(&path).unwrap_err().to_string();
+    assert!(err.contains("at most 8"), "{err}");
+
+    for (extra, needle) in [
+        (
+            "[[startup]]\nid = \"a\"\ncommand = []\n",
+            "must not be empty",
+        ),
+        (
+            "[[startup]]\nid = \"a\"\ncommand = \"echo hi\"\n",
+            "expected a sequence",
+        ),
+        (
+            "[[startup]]\nid = \"a\"\ncommand = [\"true\"]\n\
+             [[startup]]\nid = \"a\"\ncommand = [\"true\"]\n",
+            "duplicate",
+        ),
+        (
+            "[[startup]]\nid = \"has.dot\"\ncommand = [\"true\"]\n",
+            "invalid plugin startup id",
+        ),
+        (
+            "[[startup]]\nid = \"a\"\ncommand = [\"true\"]\nplatforms = [\"solaris\"]\n",
+            "solaris",
+        ),
+        (
+            "[[startup]]\nid = \"a\"\ncommand = [\"true\"]\ntimeout = 1\n",
+            "timeout",
+        ),
+    ] {
+        let path = write_manifest(dir.path(), &manifest("example.startup", extra));
+        let err = plugin::load_plugin_manifest(&path).unwrap_err().to_string();
+        assert!(err.contains(needle), "{extra}: {err}");
+    }
+    Ok(())
+}

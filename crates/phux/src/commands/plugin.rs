@@ -41,7 +41,8 @@ pub(crate) fn run_plugin(action: &PluginAction) -> ExitCode {
             limit,
             failed,
             json,
-        } => log::run_log(*limit, *failed, *json),
+            startup,
+        } => log::run_log(*limit, *failed, *json, startup.as_ref().map(String::as_str)),
     }
 }
 
@@ -169,6 +170,9 @@ fn run_set_enabled(id: &str, enabled: bool, json: bool) -> ExitCode {
         return fail(json, &err);
     }
     entry.enabled = enabled;
+    // `[[startup]]` sidecars reconcile from this doorbell. No server is
+    // not a failure: the next start reads the file.
+    signal_startup_reload(json);
     if json {
         print_plugin_json("plugin", &entry)
     } else {
@@ -245,6 +249,27 @@ fn dead_entry_problems(entries: &[RegistryEntry]) -> Vec<String> {
 /// into them.
 pub(crate) fn valid_manifest_count() -> Result<usize, String> {
     load_registry().map(|entries| entries.len())
+}
+
+/// Ring the config-reload doorbell so a running server reconciles
+/// `[[startup]]` sidecars. A missing server is quiet: enable and disable
+/// still succeed, and the next server start reads the file.
+fn signal_startup_reload(json: bool) {
+    let socket_path = phux_server::runtime::default_socket_path();
+    let Ok(rt) = crate::commands::cli_runtime() else {
+        return;
+    };
+    match rt.block_on(super::config::ring_config_reload(&socket_path)) {
+        Ok(()) => {
+            if !json {
+                outln!("signalled the running server");
+            }
+        }
+        Err(super::config::ReloadRingError::NoServer(_)) => {}
+        Err(super::config::ReloadRingError::Unconfirmed(refusal)) => {
+            error!("config reload could not be confirmed: {refusal}");
+        }
+    }
 }
 
 /// Report a plugin-registry failure: the historical prose line without

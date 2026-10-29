@@ -32,6 +32,8 @@ pub mod org_scale;
 pub mod org_store;
 pub mod org_wire;
 pub mod perf;
+/// Supervised `[[startup]]` sidecars declared by plugins.
+pub mod plugin_startup;
 pub mod policy;
 pub(crate) mod proc_query;
 pub(crate) mod push;

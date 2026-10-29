@@ -47,6 +47,7 @@ mod lifecycle_state;
 mod metadata;
 pub(crate) mod native_agent;
 mod org;
+mod plugin_startup;
 mod policy;
 mod reap;
 mod remote_listeners;
@@ -191,6 +192,9 @@ pub struct ServerState {
     /// Event-hook dispatcher; `None` when no hooks are configured (firing
     /// is then a no-op).
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,
+    /// `[[startup]]` supervisor. `None` until the accept loop's neighbor
+    /// task is installed, and on servers that were not given a catalog.
+    plugin_startup: Option<crate::plugin_startup::StartupHandle>,
     /// Who wrote each `phux.push/v1/<device>` grant, and what was last
     /// pushed to it (ADR-0155).
     push_grants: crate::push::PushGrants,

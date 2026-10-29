@@ -187,6 +187,7 @@ pub(super) fn build_server_config(
         // This user's work store, the one `phux mail` uses, for the mail
         // and claims of satellites that joined this hub.
         work_store: crate::commands::mission::client(false).ok().map(Box::new),
+        plugin_startup: None,
     }
 }
 
@@ -357,6 +358,11 @@ pub(crate) fn run_server(
         exit_after_idle,
     );
     cfg.policy_mode = config.policy.mode;
+    cfg.plugin_startup = Some(Box::new(phux_server::plugin_startup::config_from(
+        &config_loader::config_path(),
+        &config.plugins,
+        &phux_config::instance::state_dir(),
+    )));
 
     let rt = match build_runtime() {
         Ok(rt) => rt,

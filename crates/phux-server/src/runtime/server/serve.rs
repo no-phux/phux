@@ -39,11 +39,25 @@ impl ServerRuntime {
         clippy::future_not_send,
         reason = "ADR-0014: server runs on a LocalSet; per-pane actors are !Send"
     )]
+    pub async fn run_async<F>(self, shutdown: F) -> Result<(), ServerError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        // The body is a large state machine. Boxing it keeps callers that
+        // await `run_async` (the upgrade tests in particular) under the
+        // large-future lint.
+        Box::pin(self.run_inner(shutdown)).await
+    }
+
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: server runs on a LocalSet; per-pane actors are !Send"
+    )]
     #[allow(
         clippy::too_many_lines,
         reason = "startup binds every transport once; splitting hides the accept-set assembly"
     )]
-    pub async fn run_async<F>(self, shutdown: F) -> Result<(), ServerError>
+    async fn run_inner<F>(self, shutdown: F) -> Result<(), ServerError>
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -134,6 +148,8 @@ impl ServerRuntime {
         let hook_socket_path = socket_path.clone();
         let autosave_socket_path = socket_path.clone();
         let exit_after_idle = self.cfg.exit_after_idle;
+        let plugin_startup = self.cfg.plugin_startup.clone();
+        let startup_socket = socket_path.clone();
         let satellite_source = self.satellite_source.clone();
         let uplink_source = self.uplink_source.clone();
         let uplink_socket = socket_path.clone();
@@ -272,7 +288,19 @@ impl ServerRuntime {
                     root_token.clone(),
                     input_lane_handle.clone(),
                 )));
-                drive_accept_loops(accepts, &root_token).await
+                let startup_task = plugin_startup.map(|cfg| {
+                    crate::plugin_startup::install(&state, *cfg, startup_socket, root_token.clone())
+                });
+                let accept_result = drive_accept_loops(accepts, &root_token).await;
+                // Stop sidecars before this future returns. Dropping the
+                // LocalSet afterwards would abort the task mid-grace.
+                if !root_token.is_cancelled() {
+                    root_token.cancel();
+                }
+                if let Some(task) = startup_task {
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(8), task).await;
+                }
+                accept_result
             })
             .await;
 

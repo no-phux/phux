@@ -79,7 +79,8 @@ pub(crate) fn page() -> Page {
          ├── client-<pid>.log    # per-pid interactive-client log\n\
          ├── onboarding.json     # versioned first-use journey progress\n\
          ├── onboarding.lock     # serializes first-use moment delivery\n\
-         ├── plugin-runs.jsonl   # recent plugin action/hook runs (phux plugin log)\n\
+         ├── plugin-runs.jsonl   # recent plugin action/hook/startup runs (phux plugin log)\n\
+         ├── plugin-startup/     # [[startup]] sidecar logs, pidfiles, and state\n\
          ├── remote-cert.pem     # auto-provisioned remote-consumer certificate (leaf, then CA)\n\
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
          ├── remote-tokens       # structured credential store (owner-only, 0600)\n\
@@ -119,11 +120,18 @@ pub(crate) fn page() -> Page {
            prevents attach.\n\
          - `plugin-runs.jsonl` is the bounded run log behind `phux \
            plugin log`: one JSON line per plugin action run (TUI \
-           keybinding, `phux config run`, the MCP tool) or server hook \
-           run, with exit status, duration, and the last 4 KiB of stdout \
-           and stderr. Writers lock it while appending and compact it to \
-           the newest 100 runs once it passes 1 MiB. Recording is best \
-           effort and never fails a run.\n\
+           keybinding, `phux config run`, the MCP tool), server hook \
+           run, or `[[startup]]` lifecycle line, with exit status, \
+           duration, and the last 4 KiB of stdout and stderr. Writers \
+           lock it while appending and compact it to the newest 100 \
+           runs once it passes 1 MiB. Recording is best effort and \
+           never fails a run.\n\
+         - `plugin-startup/` holds each `[[startup]]` sidecar: \
+           `<plugin-id>/<startup-id>.log` (stdout and stderr, mode \
+           `0600`, rotated at 1 MiB with three generations), \
+           `<plugin-id>/<startup-id>.pid` (so the next start can reap \
+           an orphan), and `<plugin-id>/<startup-id>/` (`PHUX_PLUGIN_STATE`, \
+           mode `0700`). `phux plugin log --startup` prints the log tail.\n\
          - `remote-cert.pem` / `remote-key.pem` are the TLS pair \
            auto-provisioned for remote consumers: issued by \
            the workload CA (`workload-ca.pem`), the certificate file \
@@ -284,6 +292,7 @@ mod tests {
             "onboarding.json",
             "onboarding.lock",
             "plugin-runs.jsonl",
+            "plugin-startup/",
             "remote-cert.pem",
             "remote-key.pem",
             "remote-tokens",

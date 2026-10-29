@@ -64,6 +64,31 @@ pub struct PluginManifest {
     pub sidebar: Vec<PluginManifestSidebar>,
     /// Themes contributed by the plugin (`[[themes]]`, ADR-0157).
     pub themes: Vec<PluginManifestTheme>,
+    /// Long-running sidecars the server supervises (`[[startup]]`).
+    #[serde(default)]
+    pub startup: Vec<PluginManifestStartup>,
+}
+
+/// Most `[[startup]]` entries one manifest may declare.
+///
+/// The server applies the same number again as a global cap across enabled
+/// plugins, in `[[plugins]]` order. Validation enforces only the per-manifest
+/// limit; entries past the global cap are skipped at start.
+pub const MAX_STARTUP_ENTRIES: usize = 8;
+
+/// One `[[startup]]` sidecar: a process the server keeps alive for the
+/// plugin, not a hook and not a pane.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginManifestStartup {
+    /// Plugin-local startup id. Same character rules as an action id.
+    pub id: String,
+    /// Optional platform override. Combined with the manifest's top-level
+    /// `platforms`: the entry runs only when both lists allow this OS. An
+    /// omitted list allows every OS.
+    pub platforms: Option<Vec<PluginPlatform>>,
+    /// Command argv. A shell string is not accepted; the author writes
+    /// `["sh", "-c", "..."]`.
+    pub command: Vec<String>,
 }
 
 /// One `[[themes]]` entry: a catalog name and the directory, under the
