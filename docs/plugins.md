@@ -87,23 +87,34 @@ phux plugin install https://github.com/someone/plugins --subdir plugins/usage
 fetched and checked out, and that commit stays pinned. A password or
 token in a URL (`https://user:token@host/...`) is removed before the
 address is stored or printed; the clone itself still uses the URL you
-typed. A git install whose manifest has `[[build]]` steps prints those
-commands and asks `y/N` on a terminal. Pass `--yes` to run them without
-asking. Without a terminal, `--yes` is required.
+typed. For a private repository, use a git credential helper rather than
+putting a token in the URL. A git install or update whose manifest has
+`[[build]]` steps prints those commands and asks `y/N` on a terminal.
+Pass `--yes` to run them without asking. Without a terminal, `--yes` is
+required. `update` skips the question when the steps are the same ones
+you already approved. A refusal installs nothing.
 
 ### What install and update trust
 
 `install` and `update` fetch with the system `git`: a shallow clone of a
 branch or tag, or a fetch of one commit when `--rev` is a SHA. The only
-protocols git is allowed are `https`, `ssh`, `git`, and `file`. GitHub
-shorthand is `https://github.com/owner/repo` and nothing else is
-contacted. The resolved commit SHA is written to `plugins.lock`.
+protocols git is allowed are `https`, `ssh`, `git`, and `file`. `file` is
+for a repository already on disk, including tests. GitHub shorthand is
+`https://github.com/owner/repo` and nothing else is contacted. Each git
+command waits at most 180 seconds (`PHUX_PLUGIN_GIT_TIMEOUT_MS` is that
+limit in milliseconds). The resolved commit SHA is written to
+`plugins.lock`. Two installs at once can lose one of those lockfile
+writes; the file is not locked.
 
 `update` moves a branch only when the new commit is that recorded SHA or
-a descendant of it. A force-moved or rewritten branch is refused.
-`--latest` accepts the rewritten history. A commit pinned with `--rev`
-does not move unless you pass `--latest`, which then follows the
+a descendant of it, looking 100 commits back. A force-moved or rewritten
+branch is refused, including when the real history is deeper than that
+window. `--latest` accepts the rewritten history. A commit pinned with
+`--rev` does not move unless you pass `--latest`, which then follows the
 repository's default branch.
+
+A symlink anywhere in the repository root refuses an install of that
+root. An install from a subdirectory checks that subdirectory instead.
 
 A plugin is not reviewed. It runs as you, unsandboxed: its commands and
 its build steps can do anything your user can. Read it before you
