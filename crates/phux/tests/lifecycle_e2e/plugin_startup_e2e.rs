@@ -120,6 +120,13 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
         .trim()
         .parse()
         .unwrap();
+    let fds_path = root.path().join(format!("fds.{first}"));
+    assert!(
+        poll_until(Duration::from_secs(20), || {
+            std::fs::read_to_string(&fds_path).is_ok_and(|text| !text.trim().is_empty())
+        }),
+        "sidecar wrote its pid before fds.{first}"
+    );
     let mut reap = Reap(first);
     let env = std::fs::read_to_string(root.path().join(format!("env.{first}"))).unwrap();
     assert!(env.contains("PHUX_PLUGIN_ID=example.startup"), "{env}");
@@ -270,6 +277,55 @@ fn sigkill_reaps_a_grandchild_when_the_leader_honors_term() {
     assert!(
         poll_until(Duration::from_secs(20), || !alive(grand)),
         "the next server start should reap the leftover grandchild"
+    );
+    drop(next);
+    drop(reap_grand);
+    drop(reap_leader);
+}
+
+#[test]
+fn sigkill_reaps_a_grandchild_forked_in_the_leaders_start_tick() {
+    let root = tempfile::tempdir().unwrap();
+    let manifest = write_plugin(
+        root.path(),
+        "echo $$ > \"$PHUX_PLUGIN_ROOT/pid\"\n\
+         sleep 1000 &\n\
+         echo $! > \"$PHUX_PLUGIN_ROOT/grand\"\n\
+         wait\n",
+    );
+    let xdg = XdgDirs::fresh("startup-same-tick");
+    install_config(&xdg, &manifest);
+    let mut server = start_server(&xdg, "stick");
+    let grand_path = root.path().join("grand");
+    assert!(
+        poll_until(Duration::from_secs(20), || grand_path.is_file()),
+        "sidecar did not fork a grandchild"
+    );
+    let leader: i32 = std::fs::read_to_string(root.path().join("pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let grand: i32 = std::fs::read_to_string(&grand_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let reap_leader = Reap(leader);
+    let reap_grand = Reap(grand);
+    server.sigkill();
+    assert!(
+        poll_until(Duration::from_secs(20), || !alive(leader)),
+        "PDEATHSIG should terminate a leader that honors SIGTERM"
+    );
+    assert!(
+        alive(grand),
+        "an immediately forked grandchild should survive the leader"
+    );
+    let next = start_server(&xdg, "stick2");
+    assert!(
+        poll_until(Duration::from_secs(20), || !alive(grand)),
+        "the next start should reap a same-tick grandchild"
     );
     drop(next);
     drop(reap_grand);

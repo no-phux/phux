@@ -129,7 +129,7 @@ pub(crate) fn page() -> Page {
          - `plugin-startup/` holds each `[[startup]]` sidecar: \
            `<plugin-id>/<startup-id>.log` (stdout and stderr, mode \
            `0600`, rotated at 1 MiB with three generations), \
-           `<plugin-id>/<startup-id>.pid` (so the next start can reap \
+           `<plugin-id>/<startup-id>.<server-pid>.pid` (so the next start can reap \
            an orphan), and `<plugin-id>/<startup-id>/` (`PHUX_PLUGIN_STATE`, \
            mode `0700`). `phux plugin log --startup` prints the log tail.\n\
          - `remote-cert.pem` / `remote-key.pem` are the TLS pair \

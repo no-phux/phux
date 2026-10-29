@@ -26,6 +26,7 @@ struct Orphan {
     start_time: String,
     server_pid: i32,
     server_start_time: String,
+    boot_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,6 +41,10 @@ struct PidRecord {
     /// Start time of [`Self::server_pid`], same encoding as `start_time`.
     #[serde(default)]
     server_start_time: String,
+    /// Boot id captured when the pidfile was written. Empty on older
+    /// pidfiles. A different boot means start-time ticks are not comparable.
+    #[serde(default)]
+    boot_id: String,
 }
 
 /// Write the pidfile the next start reads. The leader's start time is
@@ -64,6 +69,7 @@ pub(super) fn write_pidfile(path: &Path, pid: i32, group: i32) -> std::io::Resul
         start_time,
         server_pid,
         server_start_time,
+        boot_id: current_boot_id().unwrap_or_default(),
     };
     let body = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("pid.tmp");
@@ -86,10 +92,11 @@ pub(super) fn write_pidfile(path: &Path, pid: i32, group: i32) -> std::io::Resul
 /// and whose recorded group is still the one we spawned. A refusal removes
 /// the pidfile so the next start does not warn again.
 pub(super) async fn reap_orphans(state_dir: &Path) {
+    let boot = current_boot_id();
     let found = read_pidfiles(state_dir);
     let mut kill = Vec::new();
     for orphan in found {
-        match decide(&orphan) {
+        match decide(&orphan, boot.as_deref()) {
             Decision::Kill => kill.push(orphan),
             Decision::Skip => {}
             Decision::Drop(reason) => drop_orphan(&orphan, reason),
@@ -108,7 +115,7 @@ pub(super) async fn reap_orphans(state_dir: &Path) {
     for orphan in &kill {
         // The group can exit, or its pid can be reused, during the grace.
         // Decide again before `SIGKILL` so a reused pgid is not signaled.
-        match decide(orphan) {
+        match decide(orphan, boot.as_deref()) {
             Decision::Kill if still_present(orphan) => {
                 signal_group(orphan.pgid, libc::SIGKILL);
             }
@@ -146,7 +153,10 @@ enum Decision {
     Drop(&'static str),
 }
 
-fn decide(orphan: &Orphan) -> Decision {
+fn decide(orphan: &Orphan, boot: Option<&str>) -> Decision {
+    if boot_is_stale(&orphan.boot_id, boot) {
+        return Decision::Drop("pidfile is from a different boot; not signaling");
+    }
     if owner_alive(orphan) {
         return Decision::Skip;
     }
@@ -170,12 +180,31 @@ fn decide(orphan: &Orphan) -> Decision {
 }
 
 fn owner_alive(orphan: &Orphan) -> bool {
-    if orphan.server_pid <= 0 || orphan.server_start_time.is_empty() {
+    if orphan.server_pid <= 0 {
         return false;
     }
-    process_exists(orphan.server_pid)
-        && process_start_time(orphan.server_pid).as_deref()
-            == Some(orphan.server_start_time.as_str())
+    if !process_exists(orphan.server_pid) {
+        return false;
+    }
+    // An unreadable start time fails toward "alive". A live server whose
+    // start time we could not record, or cannot read now, must not have
+    // its sidecars reaped by another server.
+    match process_start_time(orphan.server_pid) {
+        Some(_) if orphan.server_start_time.is_empty() => true,
+        Some(current) => current == orphan.server_start_time,
+        None => true,
+    }
+}
+
+/// Start-time ticks reset on reboot. A pidfile from another boot is stale
+/// even when the pid numbers match. An empty recorded id is an older file
+/// and is judged by the start time instead. An unreadable current boot id
+/// fails toward not signaling.
+fn boot_is_stale(recorded: &str, current: Option<&str>) -> bool {
+    if recorded.is_empty() {
+        return false;
+    }
+    current.is_none_or(|current| current != recorded)
 }
 
 /// The recorded leader is still that process, or the group still has a
@@ -230,6 +259,7 @@ fn read_one(path: &Path) -> Option<Orphan> {
         start_time: record.start_time,
         server_pid: record.server_pid,
         server_start_time: record.server_start_time,
+        boot_id: record.boot_id,
     })
 }
 
@@ -267,7 +297,7 @@ fn linux_group_has_later_member(pgid: i32, recorded: &str) -> bool {
         let Some((pgrp, start)) = linux_pgrp_and_start(member) else {
             continue;
         };
-        if pgrp == pgid && start_is_after(&start, recorded) {
+        if pgrp == pgid && start_is_not_before(&start, recorded) {
             return true;
         }
     }
@@ -276,20 +306,20 @@ fn linux_group_has_later_member(pgid: i32, recorded: &str) -> bool {
 
 #[cfg(target_os = "macos")]
 fn macos_group_has_later_member(pgid: i32, recorded: &str) -> bool {
-    // `proc_listpgrppids` returns a pid count. A null buffer asks for the
-    // count; the size argument is in bytes.
+    // `proc_listpgrppids` returns a byte count. A null buffer asks for the
+    // size; divide by `pid_t` to get a pid count.
     let needed = unsafe { libc::proc_listpgrppids(pgid, std::ptr::null_mut(), 0) };
-    if needed <= 0 {
+    let count = pid_count_from_bytes(needed);
+    if count == 0 {
         return false;
     }
-    let count = usize::try_from(needed).unwrap_or(0);
     let mut pids = vec![0_i32; count];
-    let bytes = i32::try_from(pids.len() * std::mem::size_of::<i32>()).unwrap_or(i32::MAX);
+    let bytes = i32::try_from(pids.len() * std::mem::size_of::<libc::pid_t>()).unwrap_or(i32::MAX);
     let got = unsafe { libc::proc_listpgrppids(pgid, pids.as_mut_ptr().cast(), bytes) };
-    if got <= 0 {
+    let count = pid_count_from_bytes(got).min(pids.len());
+    if count == 0 {
         return false;
     }
-    let count = usize::try_from(got).unwrap_or(0).min(pids.len());
     for pid in pids.into_iter().take(count) {
         if pid <= 0 || pid == pgid {
             continue;
@@ -297,17 +327,27 @@ fn macos_group_has_later_member(pgid: i32, recorded: &str) -> bool {
         let Some(start) = process_start_time(pid) else {
             continue;
         };
-        if start_is_after(&start, recorded) {
+        if start_is_not_before(&start, recorded) {
             return true;
         }
     }
     false
 }
 
-/// Linux start times are clock ticks. macOS start times are `sec.usec`.
-/// Both compare in that order, and "after" is a strict greater-than so a
-/// process that started with the leader is not treated as a grandchild.
-fn start_is_after(member: &str, recorded: &str) -> bool {
+/// `proc_listpgrppids` reports bytes. Zero and errors are an empty list.
+#[cfg(target_os = "macos")]
+fn pid_count_from_bytes(bytes: i32) -> usize {
+    let Ok(bytes) = usize::try_from(bytes) else {
+        return 0;
+    };
+    bytes / std::mem::size_of::<libc::pid_t>()
+}
+
+/// Linux start times are clock ticks (10ms). macOS start times are
+/// `sec.usec`. A grandchild forked in the leader's own tick shares that
+/// value, so the member counts when it is not strictly earlier. The leader
+/// pid itself is excluded by the caller.
+fn start_is_not_before(member: &str, recorded: &str) -> bool {
     fn parts(value: &str) -> Option<(u64, u64)> {
         match value.split_once('.') {
             Some((sec, usec)) => Some((sec.parse().ok()?, usec.parse().ok()?)),
@@ -315,7 +355,7 @@ fn start_is_after(member: &str, recorded: &str) -> bool {
         }
     }
     match (parts(member), parts(recorded)) {
-        (Some(member), Some(recorded)) => member > recorded,
+        (Some(member), Some(recorded)) => member >= recorded,
         _ => false,
     }
 }
@@ -399,13 +439,13 @@ fn macos_start_time(pid: i32) -> Option<String> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
     let mut len: libc::size_t = 0;
     // SAFETY: the mib names a kernel query. A null output buffer asks for
-    // the size only.
+    // the size only. `&raw mut` does not create a reference.
     let rc = unsafe {
         libc::sysctl(
-            mib.as_mut_ptr(),
+            &raw mut mib[0],
             4,
             std::ptr::null_mut(),
-            &mut len,
+            &raw mut len,
             std::ptr::null_mut(),
             0,
         )
@@ -418,10 +458,10 @@ fn macos_start_time(pid: i32) -> Option<String> {
     // the mib still names `KERN_PROC_PID` for `pid`.
     let rc = unsafe {
         libc::sysctl(
-            mib.as_mut_ptr(),
+            &raw mut mib[0],
             4,
-            buf.as_mut_ptr().cast::<libc::c_void>(),
-            &mut len,
+            (&raw mut buf[0]).cast::<libc::c_void>(),
+            &raw mut len,
             std::ptr::null_mut(),
             0,
         )
@@ -432,6 +472,50 @@ fn macos_start_time(pid: i32) -> Option<String> {
     let sec = i64::from_ne_bytes(buf.get(0..8)?.try_into().ok()?);
     let usec = i32::from_ne_bytes(buf.get(8..12)?.try_into().ok()?);
     Some(format!("{sec}.{usec}"))
+}
+
+/// Linux: `/proc/sys/kernel/random/boot_id`. macOS: `kern.boottime`.
+fn current_boot_id() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .ok()
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_boot_time()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_boot_time() -> Option<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_BOOTTIME];
+    let mut tv = std::mem::MaybeUninit::<libc::timeval>::zeroed();
+    let mut len: libc::size_t = std::mem::size_of::<libc::timeval>();
+    // SAFETY: the mib names `kern.boottime`. `tv` is a zeroed `timeval`
+    // and `len` is its size. `&raw mut` does not create a reference.
+    let rc = unsafe {
+        libc::sysctl(
+            &raw mut mib[0],
+            2,
+            tv.as_mut_ptr().cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: sysctl wrote a `timeval` or we returned above.
+    let tv = unsafe { tv.assume_init() };
+    Some(format!("{}.{}", tv.tv_sec, tv.tv_usec))
 }
 
 #[cfg(test)]
@@ -474,6 +558,7 @@ mod tests {
             start_time: format!("mismatch-{real}"),
             server_pid: 0,
             server_start_time: String::new(),
+            boot_id: String::new(),
         })
         .unwrap();
         std::fs::write(&path, body).unwrap();
@@ -514,6 +599,7 @@ mod tests {
                 start_time: "1".to_owned(),
                 server_pid: 0,
                 server_start_time: String::new(),
+                boot_id: String::new(),
             })
             .unwrap(),
         )
@@ -555,6 +641,7 @@ mod tests {
                 start_time: start,
                 server_pid: 0,
                 server_start_time: String::new(),
+                boot_id: String::new(),
             })
             .unwrap(),
         )
@@ -630,7 +717,7 @@ mod tests {
         let leader_path = dir.path().join("leader");
         let grand_path = dir.path().join("grand");
         let script = format!(
-            "echo $$ > '{}'; sleep 0.25; sleep 1000 & echo $! > '{}'; wait\n",
+            "echo $$ > '{}'; sleep 1000 & echo $! > '{}'; wait\n",
             leader_path.display(),
             grand_path.display()
         );
@@ -658,7 +745,7 @@ mod tests {
             .unwrap();
         let grand_start = process_start_time(grand).expect("grandchild start");
         assert!(
-            start_is_after(&grand_start, &start),
+            start_is_not_before(&grand_start, &start),
             "grandchild start {grand_start} should be after leader start {start}"
         );
         unsafe { libc::kill(leader_pid, libc::SIGKILL) };
@@ -683,6 +770,7 @@ mod tests {
                 start_time: start,
                 server_pid: 0,
                 server_start_time: String::new(),
+                boot_id: String::new(),
             })
             .unwrap(),
         )
@@ -696,5 +784,130 @@ mod tests {
             !process_exists(grand),
             "a dead leader's later group member is reaped"
         );
+    }
+
+    #[test]
+    fn reap_refuses_a_live_leader_whose_pgid_is_not_its_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut leader = sleep_group();
+        let leader_pid = leader.id().cast_signed();
+        let start = process_start_time(leader_pid).expect("leader start");
+        let mut innocent = sleep_group();
+        let innocent_group = group_of(innocent.id());
+        assert_ne!(innocent_group, leader_pid);
+        let path = dir
+            .path()
+            .join("plugin-startup")
+            .join("plug")
+            .join("web.pid");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&PidRecord {
+                pid: leader_pid,
+                pgid: innocent_group,
+                start_time: start,
+                server_pid: 0,
+                server_start_time: String::new(),
+                boot_id: String::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(reap_orphans(dir.path()));
+        assert!(
+            innocent.try_wait().unwrap().is_none(),
+            "a pidfile whose pgid is not the leader must not signal that group"
+        );
+        assert!(leader.try_wait().unwrap().is_none());
+        let _ = leader.kill();
+        let _ = leader.wait();
+        let _ = innocent.kill();
+        let _ = innocent.wait();
+    }
+
+    #[test]
+    fn reap_skips_when_the_owner_start_time_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sidecar = sleep_group();
+        let pid = sidecar.id().cast_signed();
+        let group = group_of(sidecar.id());
+        let start = process_start_time(pid).expect("start");
+        let path = dir
+            .path()
+            .join("plugin-startup")
+            .join("plug")
+            .join("web.pid");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // SAFETY: the test process is the recorded owner.
+        let server_pid = unsafe { libc::getpid() };
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&PidRecord {
+                pid,
+                pgid: group,
+                start_time: start,
+                server_pid,
+                server_start_time: String::new(),
+                boot_id: current_boot_id().unwrap_or_default(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(reap_orphans(dir.path()));
+        assert!(
+            sidecar.try_wait().unwrap().is_none(),
+            "an unreadable owner start time must fail toward alive"
+        );
+        let _ = sidecar.kill();
+        let _ = sidecar.wait();
+    }
+
+    #[test]
+    fn reap_does_not_kill_a_pidfile_from_another_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = sleep_group();
+        let pid = child.id().cast_signed();
+        let group = group_of(child.id());
+        let start = process_start_time(pid).expect("start");
+        let path = dir
+            .path()
+            .join("plugin-startup")
+            .join("plug")
+            .join("web.pid");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&PidRecord {
+                pid,
+                pgid: group,
+                start_time: start,
+                server_pid: 0,
+                server_start_time: String::new(),
+                boot_id: "not-this-boot".to_owned(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(reap_orphans(dir.path()));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "a pidfile from another boot must not be signaled"
+        );
+        assert!(!path.exists(), "a stale boot pidfile is removed");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

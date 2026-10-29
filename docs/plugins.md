@@ -245,10 +245,15 @@ next start reads the pidfile, which names the sidecar and the server
 that owned it. It does not signal the group while that server is still
 alive. When the owner is gone, it signals the group if the leader pid
 is still alive and its start time still matches, or if the leader is
-already dead but the process group still has a member that started
-after the recorded spawn (a grandchild left behind when the leader
-honored `SIGTERM`). A live pid that started at a different time is
-left alone. Pidfiles for sidecars that have already exited are removed.
+already dead but the process group still has a member that started in
+or after the recorded spawn tick (a grandchild left behind when the
+leader honored `SIGTERM`, including one forked in the same 10ms tick).
+A live pid that started at a different time is left alone. A pidfile
+from a different boot is stale and is not signaled, because start-time
+ticks are not comparable across reboots. The pidfile is named
+`<startup-id>.<server-pid>.pid` so two servers sharing a state
+directory do not overwrite each other. Pidfiles for sidecars that have
+already exited are removed.
 
 **A sidecar's socket connection keeps the server alive.** Connecting to
 `PHUX_SOCKET` counts as a client connection, the same as any other

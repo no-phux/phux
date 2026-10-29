@@ -107,6 +107,7 @@ pub(super) async fn run(
 impl Supervisor {
     async fn serve(&mut self, rx: &mut mpsc::UnboundedReceiver<Cmd>) {
         loop {
+            note_iteration();
             if self.root.is_cancelled() {
                 self.stop_all().await;
                 break;
@@ -448,5 +449,85 @@ async fn wait_until(deadline: Option<Instant>) {
     match deadline {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+fn serve_iterations() -> &'static std::sync::atomic::AtomicU64 {
+    static ITERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    &ITERATIONS
+}
+
+#[cfg(test)]
+fn note_iteration() {
+    serve_iterations().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+const fn note_iteration() {}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    use tokio::sync::{Notify, mpsc};
+    use tokio::time::Instant;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{Supervisor, serve_iterations};
+    use crate::plugin_startup::rotate::CHECK_INTERVAL;
+
+    #[test]
+    fn empty_catalog_arms_no_timer() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            tokio::time::pause();
+            let root = CancellationToken::new();
+            let (_tx, mut rx) = mpsc::unbounded_channel();
+            let supervisor = Supervisor {
+                root: root.clone(),
+                socket: PathBuf::from("/tmp/phux-empty.sock"),
+                state_dir: PathBuf::from("/tmp"),
+                run_log: PathBuf::from("/tmp/plugin-runs.jsonl"),
+                reload: None,
+                catalog: Vec::new(),
+                slots: Vec::new(),
+                paused: false,
+                logged_skips: BTreeSet::new(),
+                origin: Instant::now(),
+                rotate_at: Instant::now() + CHECK_INTERVAL,
+                blocked: false,
+                notify: Arc::new(Notify::new()),
+            };
+            serve_iterations().store(0, Ordering::Relaxed);
+            let task = tokio::task::spawn_local(async move {
+                let mut supervisor = supervisor;
+                supervisor.serve(&mut rx).await;
+            });
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            let parked = serve_iterations().load(Ordering::Relaxed);
+            assert!(parked >= 1, "the supervisor should enter its loop");
+            tokio::time::advance(std::time::Duration::from_secs(2)).await;
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                serve_iterations().load(Ordering::Relaxed),
+                parked,
+                "an empty catalog must not arm a timer"
+            );
+            root.cancel();
+            task.await.unwrap();
+        });
     }
 }

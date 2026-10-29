@@ -19,10 +19,12 @@ pub(super) async fn stop_children(children: &mut [GroupChild]) {
         child.signal(libc::SIGTERM);
     }
     wait_until(STOP_GRACE, children).await;
-    for child in children.iter_mut() {
-        if !child.poll_reaped() {
-            child.signal(libc::SIGKILL);
-        }
+    // The leader may already have honored `SIGTERM`. A grandchild that
+    // ignores `SIGTERM` is still in the group. `SIGKILL` the group before
+    // dropping the pidfile, or that grandchild is left with nothing for
+    // the next start to reap.
+    for child in children.iter() {
+        child.signal(libc::SIGKILL);
     }
     wait_until(Duration::from_secs(2), children).await;
     for child in children.iter() {

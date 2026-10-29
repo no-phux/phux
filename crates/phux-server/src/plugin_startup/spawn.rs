@@ -92,10 +92,13 @@ impl GroupChild {
         reap::signal_group(self.pgid, signal);
     }
 
-    /// `false` when exit notification could not be armed. The supervisor
-    /// polls those children on a one-second fallback instead of a fixed tick.
-    pub(super) const fn has_exit_watch(&self) -> bool {
-        self.watch.is_some()
+    /// `false` when exit notification could not be armed, or the watch has
+    /// already fired. A fired watch is spent: `try_wait` can still return
+    /// `None` in the gap before the process is a zombie, and the one-shot
+    /// registration will not fire again. The supervisor polls those
+    /// children on a one-second fallback.
+    pub(super) fn has_exit_watch(&self) -> bool {
+        self.watch.as_ref().is_some_and(|watch| !watch.fired())
     }
 }
 
@@ -133,7 +136,9 @@ pub(super) fn spawn_child(
         ));
     };
     let log_path = startup_log::log_path(state_dir, &spec.plugin_id, &spec.startup_id);
-    let pidfile = startup_log::pid_path(state_dir, &spec.plugin_id, &spec.startup_id);
+    // SAFETY: `getpid` reads this process's pid.
+    let server_pid = unsafe { libc::getpid() };
+    let pidfile = startup_log::pid_path(state_dir, &spec.plugin_id, &spec.startup_id, server_pid);
     let plugin_state = startup_log::state_dir(state_dir, &spec.plugin_id, &spec.startup_id);
     if let Some(parent) = log_path.parent() {
         create_dir_private(parent)?;
@@ -264,14 +269,24 @@ unsafe fn arm_parent_death_signal(parent_pid: i32) {
         // the wrong check: a pid-1 server is still our parent, and a
         // subreaper is not pid 1. Compare against the pid captured before
         // the fork.
-        if libc::getppid() != parent_pid {
+        if parent_died_before_pdeathsig(parent_pid, libc::getppid()) {
             libc::raise(libc::SIGTERM);
         }
     }
 }
 
+/// `true` when `ppid` is no longer the parent captured before `fork`.
+///
+/// A pid-1 server is still the parent when `ppid` equals that captured
+/// pid. A subreaper that adopted the child after the real parent died has
+/// some other pid, not necessarily 1.
+#[cfg(target_os = "linux")]
+const fn parent_died_before_pdeathsig(parent_pid: i32, ppid: i32) -> bool {
+    ppid != parent_pid
+}
+
 #[cfg(not(target_os = "linux"))]
-fn arm_parent_death_signal(_parent_pid: i32) {}
+const fn arm_parent_death_signal(_parent_pid: i32) {}
 
 /// Mark every descriptor above stderr `FD_CLOEXEC` so a successful `exec`
 /// drops them. Do not close them: std's exec-error pipe lives above stderr,
@@ -321,7 +336,8 @@ fn mark_cloexec_loop() {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "tests"
+    clippy::print_stderr,
+    reason = "tests; a skipped pid-namespace check must say why"
 )]
 mod tests {
     use std::sync::Arc;
@@ -359,6 +375,181 @@ mod tests {
                 Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}"),
                 Ok(_) => panic!("a missing program must not look like a live child"),
             }
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pdeathsig_treats_pid_one_and_a_subreaper_as_distinct_from_init() {
+        assert!(
+            !super::parent_died_before_pdeathsig(1, 1),
+            "a pid-1 parent is still alive when getppid is 1"
+        );
+        assert!(
+            !super::parent_died_before_pdeathsig(42, 42),
+            "the captured parent is still alive"
+        );
+        assert!(
+            super::parent_died_before_pdeathsig(42, 1),
+            "reparenting to init means the parent died"
+        );
+        assert!(
+            super::parent_died_before_pdeathsig(42, 7),
+            "a subreaper is not pid 1, and is still not the captured parent"
+        );
+    }
+
+    /// Runs the real `pre_exec` check with this process as pid 1. `unshare`
+    /// is skipped only when the capability is missing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pdeathsig_does_not_signal_a_child_of_pid_one() {
+        if std::env::var_os("PHUX_PDEATHSIG_PID1").is_none() {
+            let exe = std::env::current_exe().unwrap();
+            let output = match std::process::Command::new("unshare")
+                .args(["-Urpf", "--mount-proc"])
+                .env("PHUX_PDEATHSIG_PID1", "1")
+                .arg(&exe)
+                .args([
+                    "plugin_startup::spawn::tests::pdeathsig_does_not_signal_a_child_of_pid_one",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .output()
+            {
+                Ok(output) => output,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!("skip: unshare is not installed; cannot enter a pid namespace");
+                    return;
+                }
+                Err(err) => panic!("unshare failed to spawn: {err}"),
+            };
+            if output.status.success() {
+                return;
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stderr.contains("Operation not permitted")
+                || stderr.contains("Permission denied")
+                || stderr.contains("Invalid argument")
+            {
+                eprintln!("skip: unshare cannot enter a pid namespace: {stderr}");
+                return;
+            }
+            panic!("pid-1 pdeathsig child failed\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        }
+        assert_eq!(
+            std::process::id(),
+            1,
+            "unshare -Urpf should make this process pid 1"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let spec = StartupSpec {
+            plugin_id: "plug".to_owned(),
+            plugin_name: "Plug".to_owned(),
+            plugin_version: "0.1.0".to_owned(),
+            startup_id: "web".to_owned(),
+            command: vec!["/bin/sleep".to_owned(), "30".to_owned()],
+            plugin_root: dir.path().to_path_buf(),
+            manifest_hash: 1,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let notify = Arc::new(Notify::new());
+            let child = spawn_child(
+                &spec,
+                std::path::Path::new("/tmp/phux-pid1.sock"),
+                dir.path(),
+                &notify,
+            )
+            .unwrap();
+            let pid = i32::try_from(child.child.id().unwrap()).unwrap();
+            tokio::task::yield_now().await;
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            assert!(
+                crate::plugin_startup::reap::process_exists(pid),
+                "a child of pid 1 must not be killed by the pdeathsig race check"
+            );
+            drop(child);
+        });
+    }
+
+    #[test]
+    fn drop_of_a_reaped_leader_does_not_kill_the_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let grand_path = dir.path().join("grand");
+        let script = format!(
+            "sleep 1000 & echo $! > '{}'; exit 0\n",
+            grand_path.display()
+        );
+        let spec = StartupSpec {
+            plugin_id: "plug".to_owned(),
+            plugin_name: "Plug".to_owned(),
+            plugin_version: "0.1.0".to_owned(),
+            startup_id: "web".to_owned(),
+            command: vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
+            plugin_root: dir.path().to_path_buf(),
+            manifest_hash: 1,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let notify = Arc::new(Notify::new());
+            let mut child = spawn_child(
+                &spec,
+                std::path::Path::new("/tmp/phux-drop.sock"),
+                dir.path(),
+                &notify,
+            )
+            .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut grand = None;
+            while std::time::Instant::now() < deadline && grand.is_none() {
+                grand = std::fs::read_to_string(&grand_path)
+                    .ok()
+                    .and_then(|text| text.trim().parse::<i32>().ok());
+                tokio::task::yield_now().await;
+            }
+            let grand = grand.expect("grandchild pid");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline && !child.poll_reaped() {
+                tokio::task::yield_now().await;
+            }
+            assert!(child.poll_reaped(), "the leader should have exited");
+            drop(child);
+            // `kill(pid, 0)` is true for a zombie, so a killpg'd grandchild
+            // still looks alive until it is reaped. On Linux the state byte
+            // distinguishes them immediately.
+            #[cfg(target_os = "linux")]
+            {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let stat =
+                    std::fs::read_to_string(format!("/proc/{grand}/stat")).unwrap_or_default();
+                let state = stat
+                    .rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next())
+                    .unwrap_or("");
+                assert_eq!(
+                    state, "S",
+                    "dropping a reaped leader must not killpg; stat={stat:?}"
+                );
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                assert!(
+                    crate::plugin_startup::reap::process_exists(grand),
+                    "dropping a reaped leader must not killpg"
+                );
+            }
+            unsafe { libc::kill(grand, libc::SIGKILL) };
         });
     }
 }

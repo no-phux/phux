@@ -50,10 +50,14 @@ pub fn log_path(state: &Path, plugin_id: &str, startup_id: &str) -> PathBuf {
     plugin_dir(state, plugin_id).join(format!("{startup_id}.log"))
 }
 
-/// `<state>/plugin-startup/<plugin-id>/<startup-id>.pid`.
+/// `<state>/plugin-startup/<plugin-id>/<startup-id>.<server-pid>.pid`.
+///
+/// The server pid is in the file name so two servers that share a state
+/// directory do not overwrite each other's pidfile. Reap scans every
+/// `*.pid` under the plugin directory.
 #[must_use]
-pub fn pid_path(state: &Path, plugin_id: &str, startup_id: &str) -> PathBuf {
-    plugin_dir(state, plugin_id).join(format!("{startup_id}.pid"))
+pub fn pid_path(state: &Path, plugin_id: &str, startup_id: &str, server_pid: i32) -> PathBuf {
+    plugin_dir(state, plugin_id).join(format!("{startup_id}.{server_pid}.pid"))
 }
 
 /// The `n`th rotated generation of `log`: `log.1`, `log.2`, …

@@ -469,6 +469,52 @@ fn a_grandchild_dies_with_the_group() {
     });
 }
 
+/// The leader honors `SIGTERM` and exits during the grace. The grandchild
+/// ignores `SIGTERM`. The stop must still `SIGKILL` the group.
+#[test]
+fn stop_kills_a_term_ignoring_grandchild() {
+    let _timing = timing_lock();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("plugin");
+        std::fs::create_dir_all(&root).unwrap();
+        let command = sh(
+            &root,
+            "trap 'exit 0' TERM\n\
+             (trap '' TERM; sleep 1000) &\n\
+             echo $! > grand\n\
+             echo $$ > leader\n\
+             wait\n",
+        );
+        let server = Running::boot(
+            StartupCatalog {
+                admitted: vec![spec(&root, "plug.a", "web", command, 1)],
+                skipped_cap: Vec::new(),
+            },
+            None,
+            None,
+        );
+        assert!(wait_until(Duration::from_secs(10), || root.join("grand").is_file()).await);
+        let leader: i32 = std::fs::read_to_string(root.join("leader"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let grand: i32 = std::fs::read_to_string(root.join("grand"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(alive(leader) && alive(grand));
+        server.stop().await;
+        assert!(!alive(leader), "the leader should exit on SIGTERM");
+        assert!(
+            wait_until(Duration::from_secs(3), || !alive(grand)).await,
+            "a TERM-ignoring grandchild must be killed with the group"
+        );
+    });
+}
+
 #[test]
 fn exit_zero_is_not_restarted() {
     let _timing = timing_lock();
