@@ -97,6 +97,9 @@ cancels).
 - No settings window, themes, or Kitty images. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - Option types layout characters on macOS (no Option-as-Meta).
+- A URL that fills a row is assumed to continue on the next one (frames
+  carry no soft-wrap flag yet); the status line shows the joined target
+  before a ⌘-click.
 - No DMG or auto-update yet; the ZIP is the macOS download.
 
 ## Develop
