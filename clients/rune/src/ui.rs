@@ -47,6 +47,8 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .w_full()
         .h_full()
         .fill(p.bg)
+        // Rune hands the root pastes nothing focused took (Edit ▸ Paste).
+        .on_paste(|desk: &mut Desk, text, _| desk.paste(text))
         .child(sidebar(desk, &p, cx.titlebar_inset()))
         .child(el().w(1.0).h_full().fill(p.separator))
         .child(
@@ -55,6 +57,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .h_full()
                 .min_w(0.0)
                 .min_h(0.0)
+                .children(paste_bar(desk, &p))
                 .child(terminal(desk, &p, cx))
                 .child(el().w_full().h(1.0).fill(p.separator))
                 .child(status_line(desk, &p)),
@@ -211,21 +214,16 @@ fn terminal(desk: &Desk, p: &Palette, cx: &mut Cx<Desk>) -> El {
         .on_layout(|desk: &mut Desk, rect| {
             desk.laid_out([rect[2] - 2.0 * PAD, rect[3] - 2.0 * PAD])
         });
-    let frame = desk
-        .client
-        .as_ref()
-        .zip(desk.shown.as_ref())
-        .and_then(|(client, shown)| {
-            // Remember the fence this build paints, for the drawn receipt.
-            let fence = client.with_control(|control| control.projection_fence(&shown.terminal));
-            desk.painted_fence
-                .set(fence.map(|f| (shown.terminal.clone(), f)));
-            client.acquire_view(shown.view)
-        });
     desk.scale.set(cx.env().scale);
-    let Some(frame) = frame else {
+    let shown = desk.client.as_ref().zip(desk.shown.as_ref());
+    let Some((frame, view)) =
+        shown.and_then(|(client, shown)| client.acquire_view(shown.view).map(|f| (f, shown.view)))
+    else {
+        desk.painted.replace(None);
         return area.fill(p.bg).center().child(placeholder(desk, p));
     };
+    // The exact frame this build paints, for the drawn receipt.
+    desk.painting(view, &frame);
     let metrics = desk.metrics();
     area.fill(grid::background(&frame))
         .cursor(rune::Cursor::Text)
@@ -238,6 +236,38 @@ fn terminal(desk: &Desk, p: &Palette, cx: &mut Cx<Desk>) -> El {
             desk.select(drag.phase, drag.x - PAD, drag.y - PAD, drag.clicks);
         })
         .child(grid::paint(&frame, desk.focused, &metrics))
+}
+
+/// A held paste: what it would do, and the choice.
+fn paste_bar(desk: &Desk, p: &Palette) -> Option<El> {
+    let held = desk.held_paste.as_ref()?;
+    let lines = held.lines().count().max(1);
+    let message = format!(
+        "This paste has {lines} line{} and would run as typed commands. Paste anyway?",
+        if lines == 1 { "" } else { "s" }
+    );
+    Some(
+        row()
+            .key("paste-bar")
+            .w_full()
+            .px(12.0)
+            .py(8.0)
+            .gap(8.0)
+            .items_center()
+            .fill(p.selected)
+            .child(text(message).font(LABEL).color(p.text).truncate())
+            .child(el().grow(1.0))
+            .child(
+                button("Cancel (Esc)", "paste-cancel", p, Desk::cancel_paste)
+                    .grow(0.0)
+                    .px(10.0),
+            )
+            .child(
+                button("Paste (Return)", "paste-confirm", p, Desk::confirm_paste)
+                    .grow(0.0)
+                    .px(10.0),
+            ),
+    )
 }
 
 fn placeholder(desk: &Desk, p: &Palette) -> El {
@@ -284,6 +314,12 @@ fn status_line(desk: &Desk, p: &Palette) -> El {
         .child(text(word).font(CAPTION).color(color))
         .child(text(session).font(CAPTION).color(p.dim).truncate())
         .child(el().grow(1.0))
+        .child(
+            text(desk.notice.clone().unwrap_or_default())
+                .font(CAPTION)
+                .color(p.danger)
+                .truncate(),
+        )
         .child(
             text(geometry)
                 .font(CAPTION.family(Family::SystemMono))

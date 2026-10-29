@@ -30,7 +30,9 @@ Darwin)
     app="$stage/Phux Rune.app"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     cp "$binary" "$app/Contents/MacOS/phux-rune"
-    sed "s/@VERSION@/$version/g" "$here/packaging/Info.plist" > "$app/Contents/Info.plist"
+    # CFBundleVersion takes only dot-separated integers: drop a prerelease.
+    sed -e "s/@VERSION@/$version/g" -e "s/@BUILD@/${version%%-*}/g" \
+        "$here/packaging/Info.plist" > "$app/Contents/Info.plist"
     iconset="$stage/AppIcon.iconset"
     mkdir -p "$iconset"
     for size in 16 32 128 256 512; do

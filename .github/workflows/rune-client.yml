@@ -8,9 +8,13 @@ on:
   pull_request:
     paths:
       - .github/workflows/rune-client.yml
+      - Cargo.toml
+      - Cargo.lock
       - rust-toolchain.toml
       - .cargo/config.toml
       - clients/rune/**
+      - clients/desktop/packaging/AppIcon.png
+      - crates/quictun/**
       - crates/phux-client-runtime/**
       - crates/phux-client-core/**
       - crates/phux-config-core/**
@@ -22,9 +26,13 @@ on:
     branches: [main]
     paths:
       - .github/workflows/rune-client.yml
+      - Cargo.toml
+      - Cargo.lock
       - rust-toolchain.toml
       - .cargo/config.toml
       - clients/rune/**
+      - clients/desktop/packaging/AppIcon.png
+      - crates/quictun/**
       - crates/phux-client-runtime/**
       - crates/phux-client-core/**
       - crates/phux-config-core/**

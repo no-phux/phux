@@ -53,11 +53,17 @@ session (or `--session NAME`). It never creates a session on its own.
 | Wheel | Scroll history |
 
 On Linux the same chords use Ctrl-Shift; plain Ctrl chords go to the shell.
+Ctrl and Alt chords follow the key's position, so Ctrl-C is ^C on any layout.
+
+A paste with line breaks into a program that has not turned on bracketed
+paste would run each line; the window asks first (Return pastes, Esc
+cancels).
 
 ## Known gaps
 
-- No IME composition yet (typed layout characters work; CJK input methods
-  do not).
+- No IME or dead keys yet: characters a key types directly work, including
+  Option characters on macOS, but composed input (CJK input methods, ´ then
+  e) does not.
 - No splits: one terminal at a time.
 - No mouse reporting to applications; the wheel scrolls history, also in
   full-screen programs.

@@ -15,6 +15,7 @@ path = "src/main.rs"
 [workspace]
 
 [dependencies]
+phux-client-core = { path = "../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../crates/phux-client-runtime" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).

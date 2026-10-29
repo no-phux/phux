@@ -5,7 +5,7 @@
 
 use phux_client_runtime::control::keys::physical_key_for_char;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
-use rune::{Key, Mods};
+use rune::{Key, Mods, PhysicalKeyCode};
 
 /// What a key press should do in the terminal.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,8 +93,77 @@ fn function(n: u8) -> Option<PhysicalKey> {
     KEYS.get(usize::from(n).checked_sub(1)?).copied()
 }
 
+/// The US-layout character of a physical key: what a chord means whatever
+/// the active layout types there (Ctrl-C on a Cyrillic layout is still ^C).
+pub fn us_char(code: PhysicalKeyCode) -> Option<char> {
+    use PhysicalKeyCode as C;
+    const LETTERS: [PhysicalKeyCode; 26] = [
+        C::KeyA,
+        C::KeyB,
+        C::KeyC,
+        C::KeyD,
+        C::KeyE,
+        C::KeyF,
+        C::KeyG,
+        C::KeyH,
+        C::KeyI,
+        C::KeyJ,
+        C::KeyK,
+        C::KeyL,
+        C::KeyM,
+        C::KeyN,
+        C::KeyO,
+        C::KeyP,
+        C::KeyQ,
+        C::KeyR,
+        C::KeyS,
+        C::KeyT,
+        C::KeyU,
+        C::KeyV,
+        C::KeyW,
+        C::KeyX,
+        C::KeyY,
+        C::KeyZ,
+    ];
+    const DIGITS: [PhysicalKeyCode; 10] = [
+        C::Digit0,
+        C::Digit1,
+        C::Digit2,
+        C::Digit3,
+        C::Digit4,
+        C::Digit5,
+        C::Digit6,
+        C::Digit7,
+        C::Digit8,
+        C::Digit9,
+    ];
+    if let Some(i) = LETTERS.iter().position(|k| *k == code) {
+        return char::from_u32('a' as u32 + i as u32);
+    }
+    if let Some(i) = DIGITS.iter().position(|k| *k == code) {
+        return char::from_digit(i as u32, 10);
+    }
+    Some(match code {
+        C::Minus => '-',
+        C::Equal => '=',
+        C::BracketLeft => '[',
+        C::BracketRight => ']',
+        C::Backslash => '\\',
+        C::Semicolon => ';',
+        C::Quote => '\'',
+        C::Comma => ',',
+        C::Period => '.',
+        C::Slash => '/',
+        C::Backquote => '`',
+        C::Space => ' ',
+        _ => return None,
+    })
+}
+
 /// The Command (macOS) or Ctrl-Shift (elsewhere) chords the app keeps.
-pub fn shortcut(key: &Key, mods: Mods) -> Option<Shortcut> {
+/// `physical` names the key itself, so a shifted chord (Ctrl-Shift-minus
+/// arrives as `_`) and other layouts still match.
+pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Option<Shortcut> {
     let Key::Command(c) = key else {
         return None;
     };
@@ -103,21 +172,22 @@ pub fn shortcut(key: &Key, mods: Mods) -> Option<Shortcut> {
     if !cfg!(target_os = "macos") && !mods.shift {
         return None;
     }
-    Some(match (c, mods.shift) {
-        ('c', _) => Shortcut::Copy,
-        ('v', _) => Shortcut::Paste,
-        ('t', _) => Shortcut::NewTerminal,
-        ('n', _) => Shortcut::NewSession,
-        (']', _) | ('}', _) => Shortcut::NextTerminal,
-        ('[', _) | ('{', _) => Shortcut::PreviousTerminal,
-        ('=' | '+', _) => Shortcut::ZoomIn,
-        ('-', _) => Shortcut::ZoomOut,
-        ('0', _) => Shortcut::ZoomReset,
+    Some(match physical.and_then(us_char).unwrap_or(*c) {
+        'c' => Shortcut::Copy,
+        'v' => Shortcut::Paste,
+        't' => Shortcut::NewTerminal,
+        'n' => Shortcut::NewSession,
+        ']' | '}' => Shortcut::NextTerminal,
+        '[' | '{' => Shortcut::PreviousTerminal,
+        '=' | '+' => Shortcut::ZoomIn,
+        '-' | '_' => Shortcut::ZoomOut,
+        '0' | ')' => Shortcut::ZoomReset,
         _ => return None,
     })
 }
 
-/// Shift-Command arrows jump through history rather than reaching the shell.
+/// Command-↑/↓ (and Home/End) jump through history rather than reaching the
+/// shell.
 pub fn scroll_shortcut(key: &Key, mods: Mods) -> Option<Shortcut> {
     if !(mods.cmd && cfg!(target_os = "macos")) {
         return None;
@@ -129,9 +199,30 @@ pub fn scroll_shortcut(key: &Key, mods: Mods) -> Option<Shortcut> {
     }
 }
 
+/// The physical key and unshifted character a Ctrl or Meta chord encodes:
+/// the key's own position when known, else the layout's character.
+fn chord(physical: Option<PhysicalKeyCode>, fallback: Option<char>) -> Option<(PhysicalKey, char)> {
+    let ch = physical
+        .and_then(us_char)
+        .or(fallback)?
+        .to_ascii_lowercase();
+    let key = if ch == ' ' {
+        PhysicalKey::Space
+    } else {
+        physical_key_for_char(ch)
+    };
+    Some((key, ch))
+}
+
 /// Translate one key down. `base` is the character the key types with no
-/// modifiers (Rune's `Tx::key_base`). `None`: not terminal input.
-pub fn typed(key: &Key, key_mods: Mods, base: Option<char>) -> Option<Typed> {
+/// modifiers (Rune's `Tx::key_base`) and `physical` the key itself
+/// (`Tx::physical_key`). `None`: not terminal input.
+pub fn typed(
+    key: &Key,
+    key_mods: Mods,
+    base: Option<char>,
+    physical: Option<PhysicalKeyCode>,
+) -> Option<Typed> {
     let set = mods(key_mods);
     if let Some(physical) = named(key) {
         return Some(Typed::Key(atom(physical, set, None)));
@@ -141,19 +232,14 @@ pub fn typed(key: &Key, key_mods: Mods, base: Option<char>) -> Option<Typed> {
             Some(Typed::Text(text.clone()))
         }
         Key::Text(text) => {
-            let ch = base.or_else(|| text.chars().next())?.to_ascii_lowercase();
-            let physical = if ch == ' ' {
-                PhysicalKey::Space
-            } else {
-                physical_key_for_char(ch)
-            };
-            Some(Typed::Key(atom(physical, set, Some(ch))))
+            let (key, ch) = chord(physical, base.or_else(|| text.chars().next()))?;
+            Some(Typed::Key(atom(key, set, Some(ch))))
         }
         // Off macOS a Ctrl chord arrives as `Command`; it is terminal input
         // unless `shortcut` claimed it.
         Key::Command(c) if !cfg!(target_os = "macos") => {
-            let ch = base.unwrap_or(*c).to_ascii_lowercase();
-            Some(Typed::Key(atom(physical_key_for_char(ch), set, Some(ch))))
+            let (key, ch) = chord(physical, Some(base.unwrap_or(*c)))?;
+            Some(Typed::Key(atom(key, set, Some(ch))))
         }
         _ => None,
     }
@@ -178,16 +264,19 @@ mod tests {
     #[test]
     fn plain_text_types() {
         assert_eq!(
-            typed(&Key::Text("a".into()), Mods::default(), Some('a')),
+            typed(&Key::Text("a".into()), Mods::default(), Some('a'), None),
             Some(Typed::Text("a".into()))
         );
     }
 
     #[test]
     fn ctrl_letters_are_key_atoms_on_the_physical_key() {
-        let Some(Typed::Key(event)) =
-            typed(&Key::Text("c".into()), m(|m| m.ctrl = true), Some('c'))
-        else {
+        let Some(Typed::Key(event)) = typed(
+            &Key::Text("c".into()),
+            m(|m| m.ctrl = true),
+            Some('c'),
+            None,
+        ) else {
             panic!("ctrl-c is a key atom");
         };
         assert_eq!(event.key, physical_key_for_char('c'));
@@ -197,9 +286,12 @@ mod tests {
 
     #[test]
     fn ctrl_space_is_the_space_key() {
-        let Some(Typed::Key(event)) =
-            typed(&Key::Text(" ".into()), m(|m| m.ctrl = true), Some(' '))
-        else {
+        let Some(Typed::Key(event)) = typed(
+            &Key::Text(" ".into()),
+            m(|m| m.ctrl = true),
+            Some(' '),
+            None,
+        ) else {
             panic!("ctrl-space is a key atom");
         };
         assert_eq!(event.key, PhysicalKey::Space);
@@ -207,7 +299,7 @@ mod tests {
 
     #[test]
     fn named_keys_carry_shift() {
-        let Some(Typed::Key(event)) = typed(&Key::Tab, m(|m| m.shift = true), None) else {
+        let Some(Typed::Key(event)) = typed(&Key::Tab, m(|m| m.shift = true), None, None) else {
             panic!("tab is a key atom");
         };
         assert_eq!(event.key, PhysicalKey::Tab);
@@ -226,20 +318,59 @@ mod tests {
     #[test]
     fn command_chords_are_app_shortcuts_not_input() {
         let cmd = m(|m| m.cmd = true);
-        assert_eq!(shortcut(&Key::Command('v'), cmd), Some(Shortcut::Paste));
         assert_eq!(
-            shortcut(&Key::Command('t'), cmd),
+            shortcut(&Key::Command('v'), cmd, None),
+            Some(Shortcut::Paste)
+        );
+        assert_eq!(
+            shortcut(&Key::Command('t'), cmd, None),
             Some(Shortcut::NewTerminal)
         );
-        assert_eq!(typed(&Key::Command('q'), cmd, Some('q')), None);
+        assert_eq!(typed(&Key::Command('q'), cmd, Some('q'), None), None);
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn option_types_layout_text_on_macos() {
         assert_eq!(
-            typed(&Key::Text("å".into()), m(|m| m.alt = true), Some('a')),
+            typed(&Key::Text("å".into()), m(|m| m.alt = true), Some('a'), None),
             Some(Typed::Text("å".into()))
         );
+    }
+
+    #[test]
+    fn ctrl_chords_follow_the_physical_key_on_other_layouts() {
+        // A Cyrillic layout types 'с' on the C key; Ctrl-C must still be ^C.
+        let Some(Typed::Key(event)) = typed(
+            &Key::Text("с".into()),
+            m(|m| m.ctrl = true),
+            Some('с'),
+            Some(PhysicalKeyCode::KeyC),
+        ) else {
+            panic!("ctrl-c is a key atom");
+        };
+        assert_eq!(event.key, physical_key_for_char('c'));
+        assert_eq!(event.unshifted_codepoint, Some(u32::from('c')));
+    }
+
+    #[test]
+    fn shifted_zoom_chords_match_by_physical_key() {
+        let chord = m(|m| {
+            m.cmd = true;
+            m.shift = true;
+        });
+        let minus = shortcut(&Key::Command('_'), chord, Some(PhysicalKeyCode::Minus));
+        assert_eq!(minus, Some(Shortcut::ZoomOut));
+        let zero = shortcut(&Key::Command(')'), chord, Some(PhysicalKeyCode::Digit0));
+        assert_eq!(zero, Some(Shortcut::ZoomReset));
+    }
+
+    #[test]
+    fn us_chars_cover_letters_digits_and_punctuation() {
+        assert_eq!(us_char(PhysicalKeyCode::KeyA), Some('a'));
+        assert_eq!(us_char(PhysicalKeyCode::KeyZ), Some('z'));
+        assert_eq!(us_char(PhysicalKeyCode::Digit7), Some('7'));
+        assert_eq!(us_char(PhysicalKeyCode::BracketRight), Some(']'));
+        assert_eq!(us_char(PhysicalKeyCode::F1), None);
     }
 }

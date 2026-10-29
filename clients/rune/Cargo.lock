@@ -2264,6 +2264,7 @@ dependencies = [
 name = "phux-rune"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "phux-client-core",
  "phux-client-runtime",
  "phux-protocol",
  "rune",

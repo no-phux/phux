@@ -10,7 +10,7 @@ candidate replacement, on the same server and client runtime.
 - Keyboard input through phux's key encoder, bracketed paste, copy,
   drag/word/line selection, history scrolling, text zoom.
 
-Alpha: no IME composition, splits, mouse reporting, settings or images yet.
+Alpha: no IME or dead keys, splits, mouse reporting, settings or images yet.
 The macOS app is ad-hoc signed and not notarized (Control-click → Open the
 first time). It needs the phux CLI and never installs or upgrades it.
 

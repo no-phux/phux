@@ -4,8 +4,10 @@
 //! reuses the server through `phux server --ensure`, then asks the CLI which
 //! socket that server listens on, the same way the GPUI desktop does.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub const USAGE: &str = "usage: phux-rune [--socket PATH] [--session NAME] [--phux PATH]";
 
@@ -97,18 +99,66 @@ fn locate(explicit: Option<&Path>) -> Result<PathBuf, String> {
         })
 }
 
+/// How long a CLI call may take before the window opens with the failure.
+const CLI_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn run(phux: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new(phux)
+    let mut child = Command::new(phux)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("could not run {}: {error}", phux.display()))?;
-    if output.status.success() {
-        Ok(output.stdout)
+    // Drain both pipes on threads so a chatty CLI can't block on a full pipe
+    // while this waits for it.
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let deadline = Instant::now() + CLI_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "`phux {}` did not finish in {} s; your sessions were not changed.",
+                    args.join(" "),
+                    CLI_TIMEOUT.as_secs()
+                ));
+            }
+            Err(error) => return Err(format!("waiting for {}: {error}", phux.display())),
+        }
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    if status.success() {
+        Ok(stdout)
     } else {
         Err(format!(
             "`phux {}` failed: {}",
             args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&stderr).trim()
         ))
     }
 }
@@ -157,5 +207,14 @@ mod tests {
         assert!(parse(&["--nope"]).is_err());
         assert!(parse(&["--socket"]).is_err());
         assert!(parse(&["--socket", ""]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_returns_stdout_and_reports_stderr() {
+        let sh = Path::new("/bin/sh");
+        assert_eq!(run(sh, &["-c", "printf ok"]).expect("runs"), b"ok");
+        let error = run(sh, &["-c", "echo nope >&2; exit 3"]).expect_err("fails");
+        assert!(error.contains("nope"), "{error}");
     }
 }
