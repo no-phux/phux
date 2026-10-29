@@ -81,6 +81,8 @@ const ROUTES: Record<string, Surface[]> = {
   ".agents/skills/{using-phux,using-phux-mcp}/**": ["phux"],
   ".agents/lib/**": ["integrations"],
   "clients/{phux-web,phux-vt-web}/**": ["web"],
+  // The Rune client has its own workspace and lane (rune-client.yml).
+  "clients/rune/**": [],
   "clients/phux-vt-web/vendor/**": ["web", "web_engine"],
   "scripts/build-vt-wasm.sh": ["web", "web_engine"],
   "scripts/{prepare,smoke,test}-vt-wasm.mjs": ["web", "web_engine"],
