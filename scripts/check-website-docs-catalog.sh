@@ -10,12 +10,17 @@
 # Candidates come from `git diff --name-status --diff-filter=AR BASE HEAD`.
 # An add's path is the second field; a rename's destination is the third.
 # Only docs/<name>.md counts, not docs/<dir>/<name>.md.
+#
+# CATALOG_URL overrides the catalog (default: website main's raw URL).
+# https is fetched with curl; file:// and any other local path are read
+# with cat. HEAD_SHA overrides the diff's head (default: HEAD).
 set -euo pipefail
 # shellcheck source=scripts/lib/output.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CATALOG_URL="https://raw.githubusercontent.com/no-phux/website/main/scripts/docs-catalog.ts"
+CATALOG_URL="${CATALOG_URL:-https://raw.githubusercontent.com/no-phux/website/main/scripts/docs-catalog.ts}"
+head_ref="${HEAD_SHA:-HEAD}"
 
 warn_skip() {
   phux_warn "website docs catalog: $1"
@@ -31,8 +36,12 @@ if ! git -C "$ROOT" rev-parse --verify --quiet "${BASE_SHA}^{commit}" >/dev/null
   warn_skip "base ${BASE_SHA} is not in this checkout; skipping"
   exit 0
 fi
+if ! git -C "$ROOT" rev-parse --verify --quiet "${head_ref}^{commit}" >/dev/null; then
+  warn_skip "head ${head_ref} is not in this checkout; skipping"
+  exit 0
+fi
 
-diff_out="$(git -C "$ROOT" diff --name-status --diff-filter=AR "$BASE_SHA" HEAD)"
+diff_out="$(git -C "$ROOT" diff --name-status --diff-filter=AR "$BASE_SHA" "$head_ref")"
 candidates=()
 while IFS=$'\t' read -r status from to || [[ -n "${status:-}" ]]; do
   [[ -n "${status:-}" ]] || continue
@@ -52,7 +61,21 @@ if [[ ${#candidates[@]} -eq 0 ]]; then
   exit 0
 fi
 
-if ! catalog="$(curl -fsSL --proto '=https' --max-time 30 --retry 2 "$CATALOG_URL")"; then
+load_catalog() {
+  case "$CATALOG_URL" in
+    https://* | http://*)
+      curl -fsSL --proto '=https' --max-time 30 --retry 2 -- "$CATALOG_URL"
+      ;;
+    file://*)
+      cat -- "${CATALOG_URL#file://}"
+      ;;
+    *)
+      cat -- "$CATALOG_URL"
+      ;;
+  esac
+}
+
+if ! catalog="$(load_catalog)"; then
   warn_skip "could not fetch ${CATALOG_URL}; skipping"
   exit 0
 fi

@@ -92,6 +92,11 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: bash scripts/check-website-docs-catalog.sh
+      # Proves the warning above on every guards run, including docs-only
+      # pull requests. The check stays exit 0; this fixture fails the job
+      # if that contract breaks.
+      - name: website docs catalog fixture
+        run: bash scripts/check-website-docs-catalog_test.sh
       - uses: ./.github/actions/setup-bun
       # A docs-only diff needs only the two guards that read docs, with the
       # runner's own bash and no Nix.
