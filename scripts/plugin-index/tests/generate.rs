@@ -103,7 +103,7 @@ fn fixture_catalog_skips_archived_forks_private_and_invalid_manifests() {
     assert_eq!(
         skipped,
         [
-            ("acme/baddirs", "", "invalid plugin directory: ../escape"),
+            ("acme/baddirs", "", "invalid plugin directory"),
             (
                 "acme/broken",
                 "",

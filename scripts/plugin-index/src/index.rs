@@ -312,11 +312,13 @@ fn plugin_from(facts: Facts, meta: &CatalogMeta, repo: &str, subdir: &str) -> Pl
     }
 }
 
+const REASON_MAX_CHARS: usize = 300;
+
 fn skip(repo: &RepoMeta, subdir: &str, reason: &str) -> Skipped {
     Skipped {
         repo: repo.full_name.clone(),
         subdir: subdir.to_owned(),
-        reason: reason.to_owned(),
+        reason: validate::cap_field(reason, REASON_MAX_CHARS),
     }
 }
 
@@ -413,13 +415,66 @@ mod tests {
             "{reasons:?}"
         );
         assert!(reasons.contains(&"HTTP 403"), "{reasons:?}");
-        let limited = github::classify_body(
-            403,
-            "retry-after: 60\n",
-            b"rate limit".to_vec(),
-            1024 * 1024,
+    }
+
+    #[test]
+    fn a_read_error_aborts_instead_of_being_skipped() {
+        let read = |_repo: &RepoMeta, _path: &str| Err(Error::new("transport down"));
+        let mut plugins = Vec::new();
+        let mut skipped = Vec::new();
+        let err = index_repo(&read, &sample_repo("acme/good"), &mut plugins, &mut skipped)
+            .expect_err("transport");
+        assert!(plugins.is_empty());
+        assert!(
+            skipped.is_empty(),
+            "an Err read must not be recorded as a skip: {skipped:?}"
         );
-        assert!(limited.is_err(), "a rate limit stays fatal");
+        assert!(err.to_string().contains("transport down"), "{err}");
+    }
+
+    #[test]
+    fn a_theme_fetch_error_aborts_instead_of_being_skipped() {
+        let manifest = "\
+id = \"acme.theme\"
+name = \"Theme\"
+version = \"0.1.0\"
+min_phux_version = \"0.0.2\"
+
+[[themes]]
+name = \"demo\"
+path = \"themes/demo\"
+";
+        let read = |_repo: &RepoMeta, path: &str| {
+            if path.ends_with("colors.toml") {
+                Err(Error::new("theme transport down"))
+            } else if path == "phux-plugin.toml" {
+                Ok(Fetched::Text(manifest.to_owned()))
+            } else {
+                Ok(Fetched::Missing)
+            }
+        };
+        let mut plugins = Vec::new();
+        let mut skipped = Vec::new();
+        let err = index_repo(
+            &read,
+            &sample_repo("acme/theme"),
+            &mut plugins,
+            &mut skipped,
+        )
+        .expect_err("theme transport");
+        assert!(plugins.is_empty());
+        assert!(
+            skipped.is_empty(),
+            "a theme fetch Err must not be recorded as a skip: {skipped:?}"
+        );
+        assert!(err.to_string().contains("theme transport down"), "{err}");
+    }
+
+    #[test]
+    fn skip_reasons_are_capped() {
+        let reason = "x".repeat(REASON_MAX_CHARS + 40);
+        let skipped = skip(&sample_repo("acme/long"), "", &reason);
+        assert_eq!(skipped.reason.chars().count(), REASON_MAX_CHARS);
     }
 
     fn sample_repo(name: &str) -> RepoMeta {

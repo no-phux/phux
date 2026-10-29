@@ -163,7 +163,10 @@ pub(crate) fn fetch_repo(source: &Source, full_name: &str) -> Result<Option<Repo
                     Ok(raw) => Ok(normalize_repo(raw).ok()),
                     Err(_) => Ok(None),
                 },
-                Fetched::Missing | Fetched::Skip(_) => Ok(None),
+                Fetched::Missing => Ok(None),
+                Fetched::Skip(reason) => Err(Error::new(format!(
+                    "could not read repository metadata: {reason}"
+                ))),
             }
         }
     }
@@ -237,7 +240,7 @@ fn offline_file(fixtures: &Path, repo: &str, path: &str) -> Result<Fetched, Erro
         return Ok(Fetched::Missing);
     }
     if crate::validate::safe_relative(path).is_err() {
-        return Ok(Fetched::Skip(format!("invalid plugin directory: {path}")));
+        return Ok(Fetched::Skip("invalid plugin directory".to_owned()));
     }
     let full = base.join(path);
     if full.is_dir() {
@@ -354,12 +357,19 @@ fn collect_search(
 }
 
 fn read_online(client: &CurlClient, url: &str, accept: &str, limit: u64) -> Result<Fetched, Error> {
-    let head = match exchange(client, url, accept, limit, true) {
-        Ok(call) => call,
-        Err(err) => return Ok(Fetched::Skip(format!("could not fetch manifest: {err}"))),
-    };
-    let Call::Done(head) = head else {
-        return Ok(Fetched::Skip("request cap reached".to_owned()));
+    read_online_with(|head| exchange(client, url, accept, limit, head), limit)
+}
+
+/// `fetch(true)` is the header request. `fetch(false)` is the body.
+/// Transport errors and an exhausted request cap fail the build. A rate-limit
+/// response fails the build, including a HEAD 403 whose body only shows up on GET.
+fn read_online_with(
+    mut fetch: impl FnMut(bool) -> Result<Call, Error>,
+    limit: u64,
+) -> Result<Fetched, Error> {
+    let head = match fetch(true)? {
+        Call::Done(head) => head,
+        Call::Capped => return Err(Error::new("request cap reached")),
     };
     if rate_limited(head.status, &head.headers, &head.body) {
         return Err(Error::new(
@@ -371,18 +381,29 @@ fn read_online(client: &CurlClient, url: &str, accept: &str, limit: u64) -> Resu
             return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
         }
     }
-    match head.status {
-        404 => return Ok(Fetched::Missing),
-        403 => return Ok(Fetched::Skip("HTTP 403".to_owned())),
-        200 => {}
-        other => return Ok(Fetched::Skip(format!("HTTP {other}"))),
+    // A HEAD 403 has no body. Secondary rate limits often say so only in the
+    // GET body, with no retry-after on the header response.
+    if head.status == 403 {
+        let got = match fetch(false)? {
+            Call::Done(got) => got,
+            Call::Capped => return Err(Error::new("request cap reached")),
+        };
+        if rate_limited(got.status, &got.headers, &got.body) {
+            return Err(Error::new(
+                "GitHub rate limit needs longer than 20s; set GITHUB_TOKEN to raise it",
+            ));
+        }
+        return classify_body(got.status, &got.headers, got.body, limit);
     }
-    let got = match exchange(client, url, accept, limit, false) {
-        Ok(call) => call,
-        Err(err) => return Ok(Fetched::Skip(format!("could not fetch manifest: {err}"))),
-    };
-    let Call::Done(got) = got else {
-        return Ok(Fetched::Skip("request cap reached".to_owned()));
+    if head.status == 404 {
+        return Ok(Fetched::Missing);
+    }
+    if head.status != 200 {
+        return Ok(Fetched::Skip(format!("HTTP {}", head.status)));
+    }
+    let got = match fetch(false)? {
+        Call::Done(got) => got,
+        Call::Capped => return Err(Error::new("request cap reached")),
     };
     if let Some(len) = content_length(&got.headers) {
         if len > limit {
@@ -403,11 +424,8 @@ pub(crate) fn classify_body(
     body: Vec<u8>,
     limit: u64,
 ) -> Result<Fetched, Error> {
-    if rate_limited(status, headers, &body) {
-        return Err(Error::new(
-            "GitHub rate limit needs longer than 20s; set GITHUB_TOKEN to raise it",
-        ));
-    }
+    // Rate limits are decided in `read_online_with` before this, so a caller
+    // that skips those checks cannot still fail closed here.
     if status == 404 {
         return Ok(Fetched::Missing);
     }
@@ -825,11 +843,9 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_403_is_a_skip_and_a_rate_limit_is_fatal() {
+    fn a_plain_403_is_a_skip() {
         let skipped = classify_body(403, "", b"forbidden".to_vec(), FILE_LIMIT).expect("skip");
         assert!(matches!(skipped, Fetched::Skip(reason) if reason == "HTTP 403"));
-        let fatal = classify_body(403, "retry-after: 60\n", b"rate limit".to_vec(), FILE_LIMIT);
-        assert!(fatal.is_err());
     }
 
     #[test]
@@ -848,7 +864,83 @@ mod tests {
             pushed_at: "2026-01-01T00:00:00Z".to_owned(),
             license: None,
         };
-        let fetched = read_text(&source, &repo, "phux-plugin.toml").expect("capped");
-        assert!(matches!(fetched, Fetched::Skip(reason) if reason == "request cap reached"));
+        let err = read_text(&source, &repo, "phux-plugin.toml").expect_err("cap is fatal");
+        assert!(err.to_string().contains("request cap reached"), "{err}");
+    }
+
+    fn response(status: u16, headers: &str, body: &[u8]) -> Response {
+        Response {
+            status,
+            headers: headers.to_owned(),
+            body: body.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_curl_failure_fails_the_build() {
+        let err = read_online_with(|_| Err(Error::new("curl failed")), FILE_LIMIT).unwrap_err();
+        assert!(err.to_string().contains("curl failed"), "{err}");
+    }
+
+    #[test]
+    fn head_retry_after_is_fatal_before_get() {
+        let mut gets = 0;
+        let err = read_online_with(
+            |head| {
+                if head {
+                    Ok(Call::Done(response(403, "retry-after: 60\n", b"")))
+                } else {
+                    gets += 1;
+                    Ok(Call::Done(response(200, "content-length: 2\n", b"ok")))
+                }
+            },
+            FILE_LIMIT,
+        )
+        .unwrap_err();
+        assert_eq!(gets, 0, "the header rate-limit check must fail before GET");
+        assert!(err.to_string().contains("rate limit"), "{err}");
+    }
+
+    #[test]
+    fn head_403_without_retry_after_reads_the_body_and_a_rate_limit_there_is_fatal() {
+        let mut gets = 0;
+        let err = read_online_with(
+            |head| {
+                if head {
+                    Ok(Call::Done(response(403, "\n", b"")))
+                } else {
+                    gets += 1;
+                    Ok(Call::Done(response(
+                        403,
+                        "\n",
+                        b"You have exceeded a secondary rate limit",
+                    )))
+                }
+            },
+            FILE_LIMIT,
+        )
+        .unwrap_err();
+        assert_eq!(gets, 1, "a body-less HEAD 403 must be confirmed with GET");
+        assert!(err.to_string().contains("rate limit"), "{err}");
+    }
+
+    #[test]
+    fn a_rate_limit_body_after_a_clean_head_is_fatal() {
+        let err = read_online_with(
+            |head| {
+                if head {
+                    Ok(Call::Done(response(200, "content-length: 20\n", b"")))
+                } else {
+                    Ok(Call::Done(response(
+                        403,
+                        "\n",
+                        b"You have exceeded a secondary rate limit",
+                    )))
+                }
+            },
+            FILE_LIMIT,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("rate limit"), "{err}");
     }
 }

@@ -69,11 +69,11 @@ pub fn render_markdown(index: &Index) -> String {
     } else {
         for skip in &index.skipped {
             out.push_str("- `");
-            out.push_str(&skip.repo);
+            out.push_str(&escape_markdown(&skip.repo));
             out.push('`');
             if !skip.subdir.is_empty() {
                 out.push_str(" (`");
-                out.push_str(&skip.subdir);
+                out.push_str(&escape_markdown(&skip.subdir));
                 out.push_str("`)");
             }
             out.push_str(" — ");
@@ -105,7 +105,9 @@ fn escape_markdown(text: &str) -> String {
             _ => out.push(ch),
         }
     }
-    out
+    // GitHub autolinks a bare http(s) URL even inside a table cell.
+    out.replace("https://", "https[:]//")
+        .replace("http://", "http[:]//")
 }
 
 #[cfg(test)]

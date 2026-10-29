@@ -132,9 +132,10 @@
           "type": "string"
         },
         "reason": {
-          "description": "Why this repository or directory is not in plugins. archived, fork, private, no valid manifest, or invalid manifest/directory text.",
+          "description": "Why this repository or directory is not in plugins. archived, fork, private, no valid manifest, or invalid manifest/directory text. Capped at 300 characters.",
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 300
         }
       }
     }

@@ -159,16 +159,13 @@ pub(crate) fn theme_color_rels(manifest: &str) -> Vec<String> {
         .collect()
 }
 
-/// Relative directory with no `.` or `..` components.
+/// Relative directory of `[A-Za-z0-9._/-]` with no `.` or `..` components.
+/// The error text never echoes `raw`, so a hostile name cannot enter the index.
 pub(crate) fn safe_relative(raw: &str) -> Result<String, String> {
     let path = raw.trim();
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.contains('\\')
-        || path.contains('\0')
-        || path.contains(':')
-    {
-        return Err(format!("invalid plugin directory: {raw}"));
+    let allowed = |ch: char| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '/' | '-');
+    if path.is_empty() || path.starts_with('/') || !path.chars().all(allowed) {
+        return Err("invalid plugin directory".to_owned());
     }
     let parsed = Path::new(path);
     if parsed.is_absolute()
@@ -176,7 +173,7 @@ pub(crate) fn safe_relative(raw: &str) -> Result<String, String> {
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err(format!("invalid plugin directory: {raw}"));
+        return Err("invalid plugin directory".to_owned());
     }
     Ok(path.to_owned())
 }
@@ -290,6 +287,55 @@ path = "themes/demo"
             ),
             "{err}"
         );
+    }
+
+    #[test]
+    fn escaping_and_the_char_cap_are_pinned_together() {
+        let name = "é".repeat(NAME_MAX_CHARS + 1);
+        let description = "pipe|here <script> line\\nbreak tick`mark [click](javascript:alert(1)) https://evil.example";
+        let body = format!(
+            "id = \"acme.pin\"\nname = \"{name}\"\nversion = \"0.1.0\"\nmin_phux_version = \"0.0.2\"\ndescription = \"{description}\"\n"
+        );
+        let (_dir, path) = write_manifest(&body);
+        let facts = judge(&path, "acme/pin").expect("valid");
+        assert_eq!(facts.name, "é".repeat(NAME_MAX_CHARS));
+        let markdown = crate::render_markdown(&crate::Index {
+            schema_version: crate::SCHEMA_VERSION,
+            generated_at: "2026-01-15T00:00:00Z".to_owned(),
+            notice: crate::NOTICE.to_owned(),
+            plugins: vec![crate::Plugin {
+                repo: "acme/pin".to_owned(),
+                subdir: String::new(),
+                id: facts.id,
+                name: facts.name,
+                description: facts.description,
+                kinds: facts.kinds,
+                min_phux_version: facts.min_phux_version,
+                stars: None,
+                pushed_at: None,
+                license: None,
+                install: "phux plugin install https://github.com/acme/pin".to_owned(),
+            }],
+            skipped: Vec::new(),
+        });
+        assert!(markdown.contains("pipe\\|here"), "{markdown}");
+        assert!(!markdown.contains("pipe|here"), "{markdown}");
+        assert!(!markdown.contains("<script>"), "{markdown}");
+        assert!(markdown.contains("\\<script\\>"), "{markdown}");
+        assert!(markdown.contains("line break"), "{markdown}");
+        assert!(!markdown.contains("line\nbreak"), "{markdown}");
+        assert!(markdown.contains("tick\\`mark"), "{markdown}");
+        assert!(!markdown.contains("](javascript:"), "{markdown}");
+        assert!(!markdown.contains("https://evil.example"), "{markdown}");
+        assert!(markdown.contains("https[:]//evil.example"), "{markdown}");
+    }
+
+    #[test]
+    fn a_hostile_subdir_is_rejected_without_echoing_it() {
+        let raw = "b\n# PWNED\n[click](//evil.example)";
+        let err = safe_relative(raw).expect_err("hostile");
+        assert_eq!(err, "invalid plugin directory");
+        assert!(!err.contains('\n') && !err.contains("PWNED") && !err.contains("click"));
     }
 
     #[test]

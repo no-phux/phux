@@ -54,7 +54,7 @@
     {
       "repo": "acme/baddirs",
       "subdir": "",
-      "reason": "invalid plugin directory: ../escape"
+      "reason": "invalid plugin directory"
     },
     {
       "repo": "acme/broken",
