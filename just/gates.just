@@ -127,7 +127,9 @@ doc:
 deny:
     cargo deny check
     # The generator is its own workspace, so the root check never sees its lock.
-    cargo deny --manifest-path scripts/plugin-index/Cargo.toml --config deny.toml --locked check
+    # Call the binary: mbx wraps `cargo` and would forward `--config` into
+    # `cargo metadata`, which then rejects deny.toml.
+    cargo-deny --manifest-path scripts/plugin-index/Cargo.toml --config deny.toml --locked check
 
 
 # Shell scripts at warning severity: the examples carry deliberate info-level
