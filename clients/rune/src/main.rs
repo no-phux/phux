@@ -8,6 +8,7 @@ mod desk;
 mod grid;
 mod keys;
 mod launch;
+mod links;
 mod palette;
 mod ui;
 
@@ -42,6 +43,8 @@ fn main() {
             drag_regions: true,
         })
         .standard_menus()
+        // ⌘ alone shows the link under a still pointer.
+        .modifier_keys()
         .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
         .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))
         .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn())

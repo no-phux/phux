@@ -6,12 +6,15 @@ use rune::{Color, Cx, El, Family, TextStyle, col, el, row, text};
 
 use crate::desk::{Desk, Pending};
 
+mod overlay;
 mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
 mod sidebar;
 
 const SIDEBAR_W: f32 = 236.0;
+/// The band the macOS traffic lights sit in when they draw over content.
+const TITLEBAR_H: f32 = 38.0;
 /// Space between the terminal area's edge and its grid.
 pub(crate) const PAD: f32 = 6.0;
 pub(crate) const LABEL: TextStyle = TextStyle::new(12.0, 400.0);
@@ -49,10 +52,28 @@ fn ink(dark: bool, accent: Color) -> Ink {
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     let p = ink(cx.system_dark(), cx.accent());
-    let inset = cx.titlebar_inset().max(12.0);
+    // `titlebar_inset` is the traffic lights' width; zero when the system
+    // draws its own titlebar.
+    let lights = cx.titlebar_inset();
+    let band = if lights > 0.0 { TITLEBAR_H } else { 12.0 };
     // With the sidebar folded, the traffic lights sit over the terminal's
-    // top edge: give them a drag strip.
-    let top = (!desk.sidebar_open).then(|| el().key("titlebar").w_full().h(inset).window_drag());
+    // top edge: a draggable titlebar that says what is on screen.
+    let top = (!desk.sidebar_open).then(|| {
+        row()
+            .key("titlebar")
+            .w_full()
+            .h(band)
+            .pl(lights + 8.0)
+            .pr(lights + 8.0)
+            .center()
+            .window_drag()
+            .child(
+                text(desk.window_title())
+                    .font(CAPTION)
+                    .color(p.dim)
+                    .truncate(),
+            )
+    });
     let main = row()
         .key("main")
         .w_full()
@@ -71,7 +92,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                     row()
                         .w(SIDEBAR_W + 1.0)
                         .h_full()
-                        .child(sidebar::view(desk, &p, inset))
+                        .child(sidebar::view(desk, &p, band))
                         .child(el().w(1.0).h_full().fill(p.separator)),
                 ),
         )
@@ -197,12 +218,17 @@ fn status_line(desk: &Desk, p: &Ink) -> El {
         .child(text(word).font(CAPTION).color(color))
         .child(text(session).font(CAPTION).color(p.dim).truncate())
         .child(el().grow(1.0))
-        .child(
-            text(desk.notice.clone().unwrap_or_default())
+        .child(match &desk.pointer.hover {
+            // Where a ⌘-click goes, as a browser shows it.
+            Some((_, link)) => text(link.url.clone())
+                .font(CAPTION)
+                .color(p.accent)
+                .truncate(),
+            None => text(desk.notice.clone().unwrap_or_default())
                 .font(CAPTION)
                 .color(p.danger)
                 .truncate(),
-        )
+        })
         .child(
             text(geometry)
                 .font(CAPTION.family(Family::SystemMono))

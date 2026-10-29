@@ -21,6 +21,10 @@ pub fn paste_needs_confirmation(bracketed: bool, text: &str) -> bool {
 impl Desk {
     /// Every key nothing else took. True consumes it.
     pub fn key(&mut self, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
+        if let rune::Key::Modifier { .. } = event.key {
+            self.modifiers_changed(event.mods.cmd);
+            return false;
+        }
         if self.palette_open {
             // The field has the keys; only the chord that closes it gets here.
             let physical = tx.physical_key();
@@ -111,7 +115,7 @@ impl Desk {
             Shortcut::ScrollTop => self.scroll(Scroll::Top),
             Shortcut::ScrollBottom => self.scroll(Scroll::Bottom),
             Shortcut::Palette => self.toggle_palette(),
-            Shortcut::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
+            Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),
@@ -121,6 +125,10 @@ impl Desk {
             Shortcut::FocusRight => self.focus_toward(Direction::Right),
             Shortcut::FocusUp => self.focus_toward(Direction::Up),
             Shortcut::FocusDown => self.focus_toward(Direction::Down),
+            Shortcut::Find => self.open_find(),
+            Shortcut::FindNext => self.step_find(-1),
+            Shortcut::FindPrevious => self.step_find(1),
+            Shortcut::FindSelection => self.find_selection(),
         }
     }
 
@@ -212,6 +220,15 @@ impl Desk {
         };
         let view = shown.view;
         let _ = client.with_control(|control| control.scroll_view(view, scroll));
+        self.generation += 1;
+    }
+
+    /// Back to the live tail of a pane scrolled into history.
+    pub fn follow_live(&mut self, terminal: &ResourceId) {
+        let (Some(client), Some(view)) = (self.client.clone(), self.view_of(terminal)) else {
+            return;
+        };
+        let _ = client.with_control(|control| control.scroll_view(view, Scroll::Bottom));
         self.generation += 1;
     }
 

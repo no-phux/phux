@@ -42,6 +42,8 @@ const ACTIONS: &[(Shortcut, &str, &str)] = &[
     (Shortcut::SplitDown, "Split down", "⌘⇧D"),
     (Shortcut::ZoomPane, "Zoom pane", "⌘⇧↩"),
     (Shortcut::CloseTerminal, "Close terminal", "⌘W"),
+    (Shortcut::Find, "Find in terminal", "⌘F"),
+    (Shortcut::FindSelection, "Find selected text", "⌘E"),
     (Shortcut::FocusLeft, "Focus pane left", "⌘⌥←"),
     (Shortcut::FocusRight, "Focus pane right", "⌘⌥→"),
     (Shortcut::FocusUp, "Focus pane up", "⌘⌥↑"),
