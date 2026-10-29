@@ -43,6 +43,7 @@ mod pane_tools;
 mod perf_tools;
 mod plugin_tools;
 mod resource_tools;
+mod terminal_tools;
 mod tool_table;
 mod tools;
 

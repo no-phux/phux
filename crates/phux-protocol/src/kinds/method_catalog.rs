@@ -236,6 +236,10 @@ const fn dangerous(method: MethodSpec) -> MethodSpec {
 /// and the Global metadata keys with entries of their own
 /// ([`Carrier::Metadata`]).
 pub static SERVER_METHODS: &[MethodSpec] = &[
+    method!("GET_CREATION", Carrier::Command(crate::wire::frame::COMMAND_TAG_GET_CREATION), [C_GET_CREATION],
+        Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::ApiDescription.mask(), wire_name: ServerFeatureExt::ApiDescription.wire_name() })),
+    method!("DESCRIBE_API", Carrier::Command(crate::wire::frame::COMMAND_TAG_DESCRIBE_API), [C_API_DESCRIBE],
+        Some(FeatureGate::FeaturesExt { mask: ServerFeatureExt::ApiDescription.mask(), wire_name: ServerFeatureExt::ApiDescription.wire_name() })),
     method!("HELLO", Carrier::Frame(TYPE_HELLO), [F_HELLO]),
     method!("PING", Carrier::Frame(TYPE_PING), [F_PING]),
     method!(
@@ -413,7 +417,7 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
     method!(
         "RESOURCE_CREATE",
         Carrier::Command(COMMAND_TAG_RESOURCE_CREATE),
-        [C_RESOURCE_CREATE],
+        [C_RESOURCE_CREATE, C_RESOURCE_CREATE_PLACED],
         ORGANIZATION
     ),
     method!(

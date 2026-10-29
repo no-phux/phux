@@ -252,7 +252,7 @@ Start the recorder, then:
 
 In a terminal that is not one of these panes, start Pi (\`pi\`) and run
 /phux. Choose the seed pane. Ask Pi to make tests/add.test.sh pass.
-The story this layout comes from is docs/pi-live-fleet-proof.md.
+See examples/agents/README.md for the runnable fleet example and its checks.
 
 Reset for another take:
 

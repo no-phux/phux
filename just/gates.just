@@ -42,10 +42,10 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash scripts/check-release-cpu-baselines.sh
     bash scripts/test-demo-pi-setup.sh
     bash scripts/lib/worktree-owner_test.sh
-    bash scripts/check-file-tokens_test.sh
     node --test scripts/test-npm-audit-gate.mjs
     bash examples/agents/tests/placed-fleet-smoke.sh
     bash examples/agents/tests/program-status-smoke.sh
+    python3 -B scripts/test-agent-examples.py
     python3 -B -m unittest discover -s distros/crew -p 'test_*.py'
     bun tools/main.ts desktop-host-lock
 
@@ -127,6 +127,13 @@ doc:
 [group('gates')]
 deny:
     cargo deny check
+    # The generator is its own workspace, so the root check never sees its lock.
+    # Probe it first: a shared-dep bump leaves this lock stale, and cargo-deny
+    # --locked then only says the lock cannot be updated.
+    bash scripts/plugin-index/check-toml-version.sh
+    # Call the binary: mbx wraps `cargo` and would forward `--config` into
+    # `cargo metadata`, which then rejects deny.toml.
+    cargo-deny --manifest-path scripts/plugin-index/Cargo.toml --config deny.toml --locked check
 
 
 # Shell scripts at warning severity: the examples carry deliberate info-level
@@ -135,8 +142,8 @@ deny:
 shellcheck:
     shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
       examples/agents/*.sh \
-      examples/agents/orchestrate-placed-fleet examples/agents/tests/*.sh \
-      examples/plugins/*/scripts/*.sh
+      examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
+      plugins/*/scripts/*.sh
 
 
 # The tools package (build and CI logic, ADR-0184): format, types, lint, tests.
@@ -146,16 +153,16 @@ tools-check:
     cd tools && bun install --frozen-lockfile && bun run check
 
 
-# Doc gates: frontmatter, TL;DR, dead links, ADR status, spec version.
+# Check documentation links, commands, crate maps, and code citations.
 [group('gates')]
 docs-check:
     bash scripts/check-docs.sh
     bash scripts/check-docs_test.sh
 
 
-# Regenerate docs/reference/ from the compiled binary after CLI changes; a
-# freshness unit test fails `just test` with this recipe as the remedy.
+# Regenerate docs/reference/ from the compiled binary after CLI changes.
 [group('gates')]
+[doc('Regenerate reference pages from the CLI, config, and action catalogs.')]
 docs-gen:
     cargo run -q -p phux --bin phux -- gen-reference-docs
 

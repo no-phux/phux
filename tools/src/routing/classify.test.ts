@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { workspaceMembers } from "../lib/cargo.ts";
 import { ROOT } from "../lib/repo.ts";
 import { Classifier, toOutputs, type Classification } from "./classify.ts";
+import { plan } from "./plan.ts";
 import { routes, SURFACES, type Surface } from "./routes.ts";
 
 const classifier = new Classifier();
@@ -34,16 +35,24 @@ test.each<[string[], Surface[]]>([
   [[], ALL],
   [["new-product/source.xyz"], ALL],
   [["docs/releasing.md"], []],
+  [["README.md"], ["phux"]],
   [["docs/spec/wire-schema.json"], ["phux"]],
   [["docs/agents.md"], ["phux"]],
-  [["examples/agents/05-program-status.sh"], []],
-  [["examples/agents/tests/program-status-smoke.sh"], []],
+  [["examples/agents/05-program-status.sh"], ["phux"]],
+  [["examples/agents/tests/program-status-smoke.sh"], ["phux"]],
   [["docs/consumers/agents.md"], []],
   [["CHANGELOG.md"], []],
   [[".agents/skills/using-phux/SKILL.md"], ["phux"]],
   [["distros/crew/crew.py"], ["phux"]],
   [["distros/crew/lead.md"], ["phux"]],
   [["distros/crew/skills/crew-ship/SKILL.md"], ["phux"]],
+  [["plugins/agent-tools/phux-plugin.toml"], ["phux"]],
+  [["plugins/continuum/scripts/autosave.sh"], ["phux"]],
+  [["examples/agents/03-send-keys-and-wait.sh"], ["phux"]],
+  [["examples/plugins/theme-pack/phux-plugin.toml"], ["phux"]],
+  [["scripts/examples-smoke.sh"], ["phux"]],
+  [["scripts/test-agent-examples.py"], ["phux"]],
+  [["scripts/record-readme.sh"], ["phux"]],
   [["clients/desktop/native/src/main.rs"], ["desktop"]],
   [["clients/desktop/native/Cargo.toml"], ["desktop"]],
   [["clients/desktop/native/tests/window.rs"], ["desktop"]],
@@ -113,6 +122,19 @@ test.each<[string[], Surface[]]>([
   [[".beads/config.yaml"], []],
   [[".beads/issues.jsonl", "clients/desktop/native/src/main.rs"], ["desktop"]],
   [["scripts/check-docs.sh"], []],
+  [["scripts/plugin-index/src/lib.rs"], ["phux"]],
+  [[".github/workflows/plugin-index.yml"], []],
+  [["docs/spec/plugin-index.schema.json"], []],
+  [
+    [
+      "scripts/plugin-index/src/lib.rs",
+      ".github/workflows/plugin-index.yml",
+      "docs/spec/plugin-index.schema.json",
+      "docs/plugins.md",
+      "tools/src/routing/routes.ts",
+    ],
+    ["phux"],
+  ],
   [["brand.config.json", "brand.lock.json"], []],
   [["scripts/brand.py", "scripts/update-brand.py", "scripts/test_brand_update.py"], []],
   [["brand.lock.json", "clients/desktop/packaging/AppIcon.svg"], ["desktop"]],
@@ -173,14 +195,28 @@ test("the unit plan narrows to the integration test a diff touches", () => {
   expect(plan(["crates/phux-server/src/lib.rs"])).toEqual(["rdeps", "", true]);
   expect(plan(["Cargo.toml"])).toEqual(["workspace", "", true]);
   expect(plan(["docs/development.md"])).toEqual(["skip", "", false]);
+  expect(plan(["scripts/plugin-index/src/lib.rs"])).toEqual(["skip", "", false]);
   expect(plan([])).toEqual(["workspace", "", true]);
+});
+
+test("a plugin-index-only diff lints and leaves the unit pool, e2e, and ffi off", () => {
+  const classified = classifier.classify(["scripts/plugin-index/src/lib.rs"]);
+  const decided = plan(classified, "pull_request");
+  expect(decided.lanes.has("guards")).toBe(true);
+  expect(decided.lanes.has("lint")).toBe(true);
+  expect(decided.lanes.has("tests")).toBe(false);
+  expect(decided.lanes.has("e2e")).toBe(false);
+  expect(decided.lanes.has("ffi")).toBe(false);
 });
 
 test("docs_only holds only for documentation no build reads", () => {
   expectField("docsOnly", [
     [["docs/development.md", "clients/desktop/README.md"], true],
-    [["docs/install.md", "README.md", "docs/README.md"], true],
+    [["docs/install.md", "docs/README.md"], true],
+    [["README.md"], false],
     [["docs/development.md", "docs/spec/wire-schema.json"], false],
+    [["docs/spec/plugin-index.schema.json"], true],
+    [["docs/plugins.md"], true],
     [["docs/reference/cli.md"], false],
     [["docs/agents.md"], false],
     [["docs/consumers/agents.md"], true],

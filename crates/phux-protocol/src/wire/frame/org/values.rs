@@ -235,6 +235,26 @@ pub(in crate::wire) fn encode_committed(committed: &Committed, enc: &mut Encoder
         for pin in &committed.revisions {
             encode_pin(pin, &mut e);
         }
+        if let Some(authority) = &committed.authority {
+            write_key(&mut e, field::org::AUTHORITY, authority.as_bytes());
+        }
+        if let Some(arrangement) = &committed.arrangement {
+            write_key(&mut e, field::org::ARRANGEMENT, arrangement.as_bytes());
+        }
+        if let Some(entry) = &committed.entry {
+            write_key(&mut e, field::org::ENTRY, entry);
+        }
+        if committed.replayed {
+            write_u8(&mut e, field::org::REPLAYED, 1);
+        }
+        if let Some(activation) = &committed.activation {
+            write_u64(&mut e, field::org::ACTIVATION, activation.id.get());
+            write_key(&mut e, field::org::INSTANCE, activation.instance.as_bytes());
+            write_u8(&mut e, field::org::STATE, activation.state.to_u8());
+            if let Some(outcome) = activation.outcome {
+                e.write_field_with(field::org::OUTCOME, |e| encode_outcome(outcome, e));
+            }
+        }
         write_u64(&mut e, field::org::REVISION, committed.revision.get());
         if let Some(prior) = committed.prior_awaiting {
             write_u8(&mut e, field::org::AWAITING, u8::from(prior));
@@ -249,6 +269,7 @@ pub(in crate::wire) fn encode_committed(committed: &Committed, enc: &mut Encoder
 /// Read a `COMMITTED` value body.
 pub(in crate::wire) fn decode_committed(dec: &mut Decoder<'_>) -> Result<Committed, DecodeError> {
     let f = Fields::read(dec.read_bytes()?)?;
+    let state = f.state()?;
     Ok(Committed {
         operation: f.operation()?,
         revision: req(f.revision)?,
@@ -258,6 +279,20 @@ pub(in crate::wire) fn decode_committed(dec: &mut Decoder<'_>) -> Result<Committ
         revisions: f.pins,
         prior_awaiting: f.awaiting,
         members: f.members,
+        arrangement: f.arrangement,
+        entry: f.entry,
+        replayed: f.replayed,
+        authority: f.authority,
+        activation: match (f.activation, f.instance, state) {
+            (Some(id), Some(instance), Some(state)) => Some(ActivationInfo {
+                id,
+                instance,
+                state,
+                outcome: f.outcome,
+            }),
+            (None, None, None) => None,
+            _ => return Err(DecodeError::UnexpectedEof),
+        },
     })
 }
 

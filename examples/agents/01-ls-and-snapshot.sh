@@ -13,6 +13,7 @@
 # agent skips all that and runs `phux ls` / `phux snapshot` against the
 # user's existing one-per-user server, with no --socket.
 
+# shellcheck source=examples/agents/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 phux_start_server
 

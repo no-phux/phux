@@ -27,6 +27,7 @@ use super::desk::Desk;
 pub enum Harness {
     Claude,
     Codex,
+    Fx,
     OpenCode,
     Pi,
     Omp,
@@ -43,9 +44,10 @@ pub enum Harness {
 impl Harness {
     /// Every harness, [`Harness::Other`] last.
     #[cfg(test)]
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Claude,
         Self::Codex,
+        Self::Fx,
         Self::OpenCode,
         Self::Pi,
         Self::Omp,
@@ -69,6 +71,7 @@ impl Harness {
         match slug {
             "claude" | "claude-code" | "claude-agent" => Self::Claude,
             "codex" | "codex-cli" => Self::Codex,
+            "fx" => Self::Fx,
             "opencode" | "opencode2" | "opencode-ai" | "opencode-v2" => Self::OpenCode,
             "pi" => Self::Pi,
             "omp" | "oh-my-pi" => Self::Omp,
@@ -88,6 +91,7 @@ impl Harness {
         match self {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
+            Self::Fx => "fx",
             Self::OpenCode => "OpenCode",
             Self::Pi => "Pi",
             Self::Omp => "Oh My Pi",
@@ -108,6 +112,7 @@ impl Harness {
         match self {
             Self::Claude => IconName::Asterisk,
             Self::Codex => IconName::CodeXml,
+            Self::Fx => IconName::Terminal,
             Self::OpenCode => IconName::Braces,
             Self::Pi => IconName::Pi,
             Self::Omp => IconName::SquarePi,
@@ -137,6 +142,7 @@ impl Harness {
             Self::Pi => "pi install npm:@phux/pi",
             Self::OpenCode => "opencode plugin add @phux/opencode",
             Self::Codex
+            | Self::Fx
             | Self::Amp
             | Self::Cursor
             | Self::Gemini
@@ -153,6 +159,7 @@ impl Harness {
         Some(match self {
             Self::Claude => ["#fe640b", "#fab387"],
             Self::Codex => ["#209fb5", "#74c7ec"],
+            Self::Fx => ["#64748b", "#cbd5e1"],
             Self::OpenCode => ["#7287fd", "#b4befe"],
             Self::Pi => ["#8839ef", "#cba6f7"],
             Self::Omp => ["#ea76cb", "#f5c2e7"],
@@ -329,6 +336,7 @@ mod tests {
         let kinds = [
             ("claude", Harness::Claude),
             ("codex", Harness::Codex),
+            ("fx", Harness::Fx),
             ("opencode", Harness::OpenCode),
             ("pi", Harness::Pi),
             ("omp", Harness::Omp),
@@ -349,6 +357,7 @@ mod tests {
         assert_eq!(Harness::from_slug("claude-code"), Harness::Claude);
         assert_eq!(Harness::from_slug(" Claude-ACP "), Harness::Claude);
         assert_eq!(Harness::from_slug("codex-acp"), Harness::Codex);
+        assert_eq!(Harness::from_slug(" FX-ACP "), Harness::Fx);
         assert_eq!(Harness::from_slug("@opencode-ai"), Harness::OpenCode);
         assert_eq!(Harness::from_slug("opencode2"), Harness::OpenCode);
         assert_eq!(Harness::from_slug("cursor"), Harness::Cursor);

@@ -8,7 +8,7 @@ fn the_usage_plugin_hooks_real_server_events() -> Result<(), Box<dyn std::error:
     let manifest = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
     )
-    .join("../../examples/plugins/usage/phux-plugin.toml");
+    .join("../../plugins/usage/phux-plugin.toml");
     let loaded = plugin::load_plugin_manifest(&manifest)?;
     assert_eq!(loaded.id, "com.phux.usage");
     let hooks: Vec<(&str, &str)> = loaded

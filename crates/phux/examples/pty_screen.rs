@@ -17,12 +17,15 @@
     clippy::print_stdout,
     clippy::expect_used,
     clippy::unwrap_used,
+    clippy::panic,
     clippy::too_many_lines,
     clippy::doc_markdown,
     reason = "standalone diagnostic harness, not library code"
 )]
 
 use std::io::{Read, Write};
+use std::path::Path;
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -110,8 +113,31 @@ fn unescape(s: &str) -> Vec<u8> {
     out
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+/// Own the private server even if the diagnostic panics midway through capture.
+struct OwnedServer(Child);
+
+impl Drop for OwnedServer {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn wait_for_server(server: &mut Child, socket: &Path) {
+    for _ in 0..200 {
+        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            return;
+        }
+        assert!(
+            server.try_wait().expect("server status").is_none(),
+            "private server exited before binding"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("private server did not bind {}", socket.display());
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> (u16, u16, Vec<String>) {
     let mut cols = 80u16;
     let mut rows = 24u16;
     let mut keys: Vec<String> = Vec::new();
@@ -125,15 +151,48 @@ fn main() {
             keys.push(a);
         }
     }
+    (cols, rows, keys)
+}
 
-    let repo = env!("CARGO_MANIFEST_DIR");
-    let phux_bin = format!("{repo}/../../target/debug/phux");
-    let sock = "/tmp/phux-screen/phux.sock".to_string();
-    let _ = std::fs::create_dir_all("/tmp/phux-screen");
-    let _ = std::fs::remove_file(&sock);
-    let _ = std::process::Command::new("pkill")
-        .args(["-f", &sock])
-        .status();
+fn main() {
+    let (cols, rows, keys) = parse_args(std::env::args().skip(1));
+    let repo = std::env::var_os("CARGO_MANIFEST_DIR").expect("run through cargo");
+    let phux_bin = std::env::var_os("PHUX").map_or_else(
+        || std::path::PathBuf::from(repo).join("../../target/debug/phux"),
+        std::path::PathBuf::from,
+    );
+    let work = tempfile::tempdir().expect("private diagnostic directory");
+    let sock = work.path().join("sock");
+    std::fs::create_dir(work.path().join("home")).expect("private home");
+    let env = [
+        ("HOME", work.path().join("home").into_os_string()),
+        (
+            "XDG_CONFIG_HOME",
+            work.path().join("config").into_os_string(),
+        ),
+        ("XDG_STATE_HOME", work.path().join("state").into_os_string()),
+        ("XDG_DATA_HOME", work.path().join("data").into_os_string()),
+        ("PHUX_SOCKET", sock.clone().into_os_string()),
+        ("PHUX_PROFILE", "pty-screen".into()),
+        ("PHUX_NO_UPDATE_CHECK", "1".into()),
+        ("PATH", "/usr/bin:/bin".into()),
+        ("SHELL", "/bin/sh".into()),
+        ("TERM", "xterm-256color".into()),
+    ];
+    let mut server = OwnedServer(
+        std::process::Command::new(&phux_bin)
+            .args(["server", "--session", "screen", "--exit-after-idle", "60"])
+            .arg("--socket")
+            .arg(&sock)
+            .env_clear()
+            .envs(env.iter().map(|(key, value)| (*key, value)))
+            .current_dir(work.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn private server"),
+    );
+    wait_for_server(&mut server.0, &sock);
 
     let pty = native_pty_system();
     let pair = pty
@@ -146,11 +205,14 @@ fn main() {
         .expect("openpty");
 
     let mut cmd = CommandBuilder::new(&phux_bin);
-    cmd.args(["attach", "--socket", &sock, "screen"]);
-    cmd.cwd("/tmp");
-    cmd.env("SHELL", "/bin/sh");
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("RUST_LOG", "off");
+    cmd.args(["attach", "--socket"]);
+    cmd.arg(&sock);
+    cmd.arg("screen");
+    cmd.cwd(work.path());
+    cmd.env_clear();
+    for (key, value) in &env {
+        cmd.env(key, value);
+    }
     let mut child = pair.slave.spawn_command(cmd).expect("spawn");
     drop(pair.slave);
 
@@ -180,9 +242,7 @@ fn main() {
 
     let bytes = buf.lock().unwrap().clone();
     let _ = child.kill();
-    let _ = std::process::Command::new("pkill")
-        .args(["-f", &sock])
-        .status();
+    let _ = child.wait();
 
     let (grid, cursor) = render(&bytes, cols, rows);
     let bar = "─".repeat(usize::from(cols));
@@ -193,4 +253,18 @@ fn main() {
     }
     println!("└{bar}┘");
     println!("{cols}x{rows}  cursor={cursor:?}  (no tmux — raw PTY + libghostty)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_args;
+
+    #[test]
+    fn dimensions_and_keystrokes_keep_their_existing_order() {
+        let input = ["echo hi\\r", "100x30", "\\x01", "-"];
+        let (cols, rows, keys) = parse_args(input.map(str::to_owned));
+        assert_eq!((cols, rows), (100, 30));
+        assert_eq!(keys, ["echo hi\\r", "\\x01", "-"]);
+        assert_eq!(parse_args(Vec::new()), (80, 24, Vec::new()));
+    }
 }

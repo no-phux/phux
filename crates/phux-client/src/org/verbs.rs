@@ -113,6 +113,7 @@ pub async fn create_resource(
         conn,
         FIRST_REQUEST_ID,
         Command::ResourceCreate {
+            placement: None,
             operation: mint_operation(),
             session,
             kind,

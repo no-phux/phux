@@ -349,6 +349,16 @@ pub struct Committed {
     pub prior_awaiting: Option<bool>,
     /// How many members a `SESSION_KILL` ended; absent on a replayed one.
     pub members: Option<u32>,
+    /// The arrangement edited by a placed create.
+    pub arrangement: Option<ArrangementKey>,
+    /// The stable entry created there.
+    pub entry: Option<[u8; 16]>,
+    /// Current execution observation, not a promise of completion.
+    pub activation: Option<ActivationInfo>,
+    /// Whether the retained operation was replayed without new effects.
+    pub replayed: bool,
+    /// Durable authority of a placed creation.
+    pub authority: Option<AuthorityId>,
 }
 
 /// The longest delegated credential id a decoder accepts.
@@ -404,7 +414,35 @@ impl Committed {
             revisions: Vec::new(),
             prior_awaiting: None,
             members: None,
+            arrangement: None,
+            entry: None,
+            activation: None,
+            replayed: false,
+            authority: None,
         }
+    }
+
+    /// Include the placed create's durable presentation identity and current execution.
+    #[must_use]
+    pub const fn with_creation(
+        mut self,
+        authority: Option<AuthorityId>,
+        arrangement: Option<ArrangementKey>,
+        entry: Option<[u8; 16]>,
+        activation: Option<ActivationInfo>,
+    ) -> Self {
+        self.authority = authority;
+        self.arrangement = arrangement;
+        self.entry = entry;
+        self.activation = activation;
+        self
+    }
+
+    /// Mark a replay of a retained operation.
+    #[must_use]
+    pub const fn with_replayed(mut self, replayed: bool) -> Self {
+        self.replayed = replayed;
+        self
     }
 
     /// Builder setter for [`Self::session`].

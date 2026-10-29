@@ -418,10 +418,23 @@ fn put_session(tx: &Transaction<'_>, s: &Session) -> Result<(), StoreError> {
             s.lifetime.as_str(),
             s.awaiting_organization,
             to_i64(s.revision.get()),
+            // Fixed-depth fields: even a large member vector adds no JSON nesting.
             serde_json::to_string(s)?,
         ],
     )?;
     Ok(())
+}
+
+/// Check potentially recursive row JSON with the exact `load()` decoder.
+///
+/// Fixed-depth session/resource records need no repeated key deserialization.
+/// Keep this check for arrangements and receipt payloads that can contain trees.
+fn stored_json<T: serde::Serialize + serde::de::DeserializeOwned>(
+    value: &T,
+) -> Result<String, StoreError> {
+    let encoded = serde_json::to_string(value)?;
+    let _: T = serde_json::from_str(&encoded)?;
+    Ok(encoded)
 }
 
 fn put_resource(tx: &Transaction<'_>, r: &Resource) -> Result<(), StoreError> {
@@ -438,6 +451,7 @@ fn put_resource(tx: &Transaction<'_>, r: &Resource) -> Result<(), StoreError> {
             r.kind.as_str(),
             r.activation.as_ref().map(|a| a.state.as_str()),
             to_i64(r.revision.get()),
+            // Launch restore data is opaque bytes, not a recursive JSON value.
             serde_json::to_string(r)?,
         ],
     )?;
@@ -458,7 +472,7 @@ fn put_arrangement(tx: &Transaction<'_>, a: &Arrangement) -> Result<(), StoreErr
             a.key.as_bytes().as_slice(),
             owner.as_slice(),
             to_i64(a.revision.get()),
-            serde_json::to_string(a)?,
+            stored_json(a)?,
         ],
     )?;
     Ok(())
@@ -500,6 +514,25 @@ fn apply_delta(tx: &Transaction<'_>, delta: &Delta, now: Stamp) -> Result<(), St
     Ok(())
 }
 
+/// Membership payloads contain only keys/revisions, unless their inverse
+/// restores a pruned layout. Other operation kinds keep the checked path.
+fn receipt_json(receipt: &Receipt) -> Result<String, StoreError> {
+    let membership = matches!(
+        &receipt.op,
+        phux_core::Op::ResourceMove { .. } | phux_core::Op::ResourceMoveMany { .. }
+    );
+    let layout_undo = receipt.undo.as_ref().is_some_and(|undo| {
+        undo.inverse
+            .iter()
+            .any(|edit| matches!(edit, phux_core::InverseEdit::Arrangement { .. }))
+    });
+    if membership && !layout_undo {
+        Ok(serde_json::to_string(receipt)?)
+    } else {
+        stored_json(receipt)
+    }
+}
+
 /// Store `receipt`; returns whether it added a row rather than replacing
 /// one.
 fn put_receipt(tx: &Transaction<'_>, receipt: &Receipt) -> Result<bool, StoreError> {
@@ -515,7 +548,7 @@ fn put_receipt(tx: &Transaction<'_>, receipt: &Receipt) -> Result<bool, StoreErr
         params![
             receipt.operation.as_bytes().as_slice(),
             to_i64(receipt.at.as_millis()),
-            serde_json::to_string(receipt)?,
+            receipt_json(receipt)?,
         ],
     )?;
     Ok(!existed)
@@ -833,6 +866,69 @@ mod tests {
     }
 
     #[test]
+    fn a_receipt_persists_env_hashes_not_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1.sqlite3");
+        let mut keys = SequentialKeys::new(*b"storetst");
+        let mut store = SqliteOrgStore::open(&path).unwrap();
+        let mut registry = Registry::new(org(&mut keys));
+        store.import(registry.org(), None, Stamp(0)).unwrap();
+        let mut spec = shell();
+        let LaunchSpec::Terminal(launch) = spec.launch.as_mut().unwrap() else {
+            panic!("shell");
+        };
+        launch
+            .env
+            .push(("SECRET".to_owned(), "super-secret-value".to_owned()));
+        let create = Command {
+            operation: op_id(1),
+            op: Op::ResourceCreate {
+                placement: None,
+                session: None,
+                resource: spec,
+            },
+        };
+        let applied = phux_core::apply(
+            registry.org(),
+            &create,
+            &Actor::owner(),
+            Stamp(0),
+            &mut keys,
+        )
+        .unwrap();
+        store.commit(&applied.transition, 1, Stamp(0)).unwrap();
+        let _ = registry.commit(&applied.transition);
+        let blob: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT receipt FROM receipts", [], |row| row.get(0))
+            .unwrap();
+        assert!(!blob.contains("super-secret-value"));
+        assert!(blob.contains("sha256:"));
+        let record: String = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT record FROM resources", [], |row| row.get(0))
+            .unwrap();
+        assert!(record.contains("super-secret-value"));
+        let reopened = SqliteOrgStore::open(&path)
+            .unwrap()
+            .load()
+            .unwrap()
+            .unwrap();
+        let back = Org::restore(
+            reopened.authority,
+            registry.org().instance(),
+            reopened.sessions,
+            reopened.resources,
+            reopened.arrangements,
+            reopened.receipts,
+        )
+        .unwrap();
+        let replay =
+            phux_core::apply(&back, &create, &Actor::owner(), Stamp(1), &mut keys).unwrap();
+        assert!(replay.replayed);
+    }
+
+    #[test]
     fn a_removed_resource_leaves_a_tombstone_and_receipts_prune() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("v1.sqlite3");
@@ -843,6 +939,7 @@ mod tests {
         let create = Command {
             operation: op_id(1),
             op: Op::ResourceCreate {
+                placement: None,
                 session: None,
                 resource: shell(),
             },
@@ -893,6 +990,7 @@ mod tests {
         let create = Command {
             operation: op_id(1),
             op: Op::ResourceCreate {
+                placement: None,
                 session: None,
                 resource: shell(),
             },
