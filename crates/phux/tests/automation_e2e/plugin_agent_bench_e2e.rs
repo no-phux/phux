@@ -43,7 +43,7 @@ fn agent_bench_launches_lists_and_drives_role_session() {
     let server = common::ServerGuard::builder("ab").session("seed").start();
     let tmp = tempfile::tempdir().expect("tempdir");
     let repo = repo_root();
-    let xdg = repo.join("examples/plugins/agent-tools/config");
+    let xdg = repo.join("plugins/agent-tools/config");
     let profile = format!("bench-{}", std::process::id());
     let state = tmp.path().join("bench.tsv");
     let state_text = state.to_string_lossy().into_owned();

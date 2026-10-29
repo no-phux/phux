@@ -166,19 +166,20 @@ plugin's `keys` names it.
 code. `--timeout SECS` gives up after that long, and `--json` prints the
 result as a JSON document.
 
-## Examples
+## First-party plugins
 
-The phux repository has working plugins to copy in
-[examples/plugins](https://github.com/no-phux/phux/tree/main/examples/plugins):
+The optional [first-party plugins](../plugins/README.md) live under `plugins/`:
 
 - `usage` publishes your AI plan limits to every client, from hooks on
   `client-attached` and `agent-state-changed`.
 - `continuum` saves and restores your workspace.
 - `agent-tools` launches and drives a bench of coding agents.
-- `theme-pack` is the smallest plugin there is: one theme.
 
 `phux config init --distro starter` writes a config that turns on
 `continuum`, `agent-tools`, and `usage` from a phux source checkout.
+
+For a minimal plugin to copy, see the working
+[theme example](../examples/plugins/theme-pack/README.md).
 
 ## Startup sidecars
 

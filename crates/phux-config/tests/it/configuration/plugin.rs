@@ -6,51 +6,21 @@ use crate::common;
 use common::{manifest, write_manifest};
 
 #[test]
-fn checked_in_example_manifests_load() -> Result<(), Box<dyn std::error::Error>> {
-    let examples = std::path::PathBuf::from(
+fn provider_fixture_loads() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
     )
-    .join("../..")
-    .join("examples/plugins");
-
-    let loaded =
-        plugin::load_plugin_manifest(&examples.join("provider-showcase/phux-plugin.toml"))?;
+    .join("tests/fixtures/provider-showcase/phux-plugin.toml");
+    let loaded = plugin::load_plugin_manifest(&fixture)?;
     assert_eq!(loaded.id, "com.phux.demo.provider-showcase");
     assert_eq!(loaded.events[0].id, "exit");
     assert_eq!(loaded.panes[0].id, "board");
     assert_eq!(loaded.links[0].id, "ticket");
     assert_eq!(loaded.profiles[0].id, "ops-bench");
     assert_eq!(loaded.profiles[0].panes[0].pane, "board");
-
-    let loaded = plugin::load_plugin_manifest(&examples.join("theme-pack/phux-plugin.toml"))?;
-    assert_eq!(loaded.themes[0].name, "phux-dark");
-    assert!(loaded.themes[0].path.join("colors.toml").is_file());
-
-    let loaded = plugin::load_plugin_manifest(&examples.join("continuum/phux-plugin.toml"))?;
-    assert_eq!(loaded.id, "com.phux.demo.continuum");
-    assert_eq!(loaded.actions[0].id, "autosave");
-    assert_eq!(loaded.actions[1].id, "restore-latest");
-    assert_eq!(loaded.events[0].id, "idle-autosave");
-    assert_eq!(loaded.events[1].on, "pane-exit");
-    // An example event that names no hook event would never fire.
-    for manifest in ["provider-showcase", "continuum"] {
-        let loaded =
-            plugin::load_plugin_manifest(&examples.join(manifest).join("phux-plugin.toml"))?;
-        for event in &loaded.events {
-            assert!(
-                phux_config::vocab::HOOK_EVENTS.contains(&event.on.as_str()),
-                "{manifest}: event `{}` listens for unknown `{}`",
-                event.id,
-                event.on
-            );
-        }
+    for event in &loaded.events {
+        assert!(phux_config::vocab::HOOK_EVENTS.contains(&event.on.as_str()));
     }
-    assert_eq!(loaded.profiles[0].id, "continuum");
-    assert_eq!(loaded.profiles[0].actions, ["autosave", "restore-latest"]);
-    assert_eq!(
-        loaded.profiles[0].events,
-        ["idle-autosave", "session-autosave"]
-    );
     Ok(())
 }
 

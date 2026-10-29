@@ -4,8 +4,8 @@ For people changing phux. [Concepts](./concepts.md) is the user-level model;
 [protocol](./protocol.md) is the wire. [Organization](./organization.md) owns
 durable records, activations and restore; [remote authority](./remote.md#who-can-do-what)
 owns grants and revocation; [embedding](./embedding.md#runtime-consumer-contract)
-owns the runtime consumer boundary. [Substrate](./substrate.md) is the org's
-principals, home keeper, and adapters.
+owns the runtime consumer boundary. [Substrate](./substrate.md) covers
+principals, keeper authority, delegation, and adapter boundaries.
 
 Brand artwork and cross-repository release delivery are documented in
 [brand assets](./brand-assets.md).
@@ -186,9 +186,9 @@ revocation and reverse-hub trust. [Agents](./agents.md#safety) owns input
 leases and held approvals; humans retain input priority.
 
 [Work and missions](./organization.md#work-and-missions) use a separate
-keeper/store, distinct from the organization database. The org's home
-keeper is the [substrate decision](./substrate.md). A multi-host
-coordinator and autonomous Lead are not shipping contracts.
+keeper/store, distinct from the organization database. Its single-writer
+authority and delegation limits are in [Substrate](./substrate.md). A
+multi-host task coordinator and autonomous Lead are not shipping contracts.
 
 ### Cache-friendly agent context
 
@@ -267,7 +267,4 @@ Do not revive historical constraints merely because a search found them. Check
 supersession, proposals, current code/tests, and the live contract. Conversely,
 if a still-operative constraint exists only in history, promote it to its live
 home with evidence. New decisions extend the current architecture and link
-their PR rather than creating a second competing source of authority. The
-[substrate](./substrate.md) decision is that extension: principals, one home
-keeper, and one-way adapters, linked from [Decisions](#decisions) and
-[#1689](https://github.com/no-phux/phux/pull/1689).
+their PR rather than creating a second competing source of authority.

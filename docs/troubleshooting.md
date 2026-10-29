@@ -100,10 +100,14 @@ missing file, not a macOS permission refusal.
 
 **`incompatible protocol: client offered X, server requires Y`.** The binary
 and the running server speak different protocols, usually because you updated
-and an older server is still running. Stop that server, then start a fresh
-one. When its pid is known, run `kill <pid>` (or `pkill -f 'phux server'`).
-When it is not, run `pkill -f 'phux server'`. Then run `phux server --ensure`.
-Stopping the old server closes the panes it is running.
+and an older server is still running. Run `phux doctor` for the affected
+profile or explicit socket. Its recovery message identifies the socket and,
+when available, the server PID. Inspect that PID with `ps -p PID -o pid=,args=`
+before stopping it with `kill PID`, then run `phux server --ensure` against
+the same profile or socket. If doctor cannot identify it, inspect the socket
+owner with `lsof -nP /path/to/phux.sock`; do not guess from a process name.
+Stopping that server closes its panes. Never kill by name or pattern: other
+profiles and private servers may be running too.
 
 **Releases on the same protocol major.** They work together in either
 direction. Attaching with `phux` upgrades an older server in place; a newer
