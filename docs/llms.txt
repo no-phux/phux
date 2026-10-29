@@ -30,8 +30,8 @@ Start with [Build on phux](./building.md).
 ## Agent state
 
 Agent state is evidence-ranked; screen is the floor. It has not been
-measured on a live Claude Code, Codex, or OpenCode session. The order the
-docs and the server code record is on [Build on phux](./building.md).
+measured on a live Claude Code, Codex, or OpenCode session. The evidence
+order is on [Build on phux](./building.md).
 
 ## Not shipped
 

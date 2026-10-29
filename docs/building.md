@@ -4,6 +4,9 @@ One page for a program that drives a phux server, or reports status into a
 pane. Each entry links the page that specifies it; any promise here is
 quoted from there.
 
+<!-- TODO: the page titled "Any program can report status" is not on main.
+     The OSC 7501 entry below links program-protocol.md until that page exists. -->
+
 ## Entry points
 
 - [Versioned `--json`](./scripting.md#json-output-and-errors). Pass `--json`
@@ -17,8 +20,6 @@ quoted from there.
 - [Wire protocol](./protocol.md). Length-prefixed binary frames.
   [Compatibility](./compatibility.md) is the 1.x rule.
   [`wire-schema.json`](./spec/wire-schema.json) is generated from the codec.
-<!-- TODO: the page titled "Any program can report status" is not on main.
-     The OSC 7501 entry below links program-protocol.md until that page exists. -->
 - [OSC 7501](./program-protocol.md). A program writes one escape sequence.
   It needs no phux library and no socket.
 - [Plugins](./plugins.md). A directory with a `phux-plugin.toml` manifest.
@@ -47,9 +48,8 @@ reads as `idle`, never `blocked`. `phux agent explain` prints the evidence
 for one pane.
 
 [Precedence](./program-sequences.md#precedence) writes that order as a
-numbered list. [Precedence](./program-sequences.md#precedence) says that
-while a pane has an OSC 7501 record and no live session, phux ignores
-hooks, the foreground program, and the screen.
+numbered list, and says that while a pane has an OSC 7501 record and no
+live session, phux ignores hooks, the foreground program, and the screen.
 
 It has not been measured on a live Claude Code, Codex, or OpenCode session,
 with or without an integration installed.
@@ -115,7 +115,7 @@ says each line is one JSON object and that there is no per-line
 
 There is no SDK compatibility promise, because there is no public SDK.
 
-## Limits of the pages above
+## Watch scope
 
 `phux watch` takes one target. [Watching events](./scripting.md#watching-events)
 shows a pane (`@7`). The generated help says omitting the target watches
