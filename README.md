@@ -5,10 +5,10 @@
 A terminal multiplexer whose server you can drive from code.
 
 phux keeps your shells running in a background server and shows them in a
-terminal UI, like tmux. The difference is that everything the UI can do is
-also a command with JSON output and an exit code, the server tracks which
-panes are running a coding agent and whether it is waiting on you, and
-another machine is one `phux host add me@mini` away, with no account.
+terminal UI, like tmux. Commands expose panes, input, snapshots, and agent
+state with JSON output and exit codes. The server tracks which panes run
+a coding agent and whether it is waiting on you. Another machine is one
+`phux host add me@mini` away, with no account.
 
 [Docs](./docs/README.md) · [Help](#help) · [Releases](https://github.com/no-phux/phux/releases) ·
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)

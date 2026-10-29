@@ -56,3 +56,7 @@ graphify-out/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Plugin-local archives and integration records are user data, not source.
+/plugins/*/state/
+/examples/plugins/*/state/

@@ -23,7 +23,7 @@ refreshed, or published. The published key holds plan names, percentages,
 reset times, and a 12-hex account fingerprint, never an email or token.
 Every client allowed `observe@global` on this server can read it: the owner
 socket and every paired device. The full table is in
-[plan usage](../../../docs/agents.md#plan-usage).
+[plan usage](../../docs/agents.md#plan-usage).
 
 ## Turning it off
 
@@ -39,8 +39,8 @@ your file. Choose your plugins yourself instead, in your `config.toml`:
 
 ```toml
 plugins = [
-  { manifest = "/path/to/phux/examples/plugins/continuum/phux-plugin.toml" },
-  { manifest = "/path/to/phux/examples/plugins/agent-tools/phux-plugin.toml" },
+  { manifest = "/path/to/phux/plugins/continuum/phux-plugin.toml" },
+  { manifest = "/path/to/phux/plugins/agent-tools/phux-plugin.toml" },
 ]
 ```
 

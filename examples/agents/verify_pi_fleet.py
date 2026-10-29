@@ -19,7 +19,8 @@ def validate_child(child: dict, cwd: str) -> tuple[str, str]:
 
 
 def child_panes(document: dict, session: str, cwd: str) -> dict[str, str]:
-    children = [agent for agent in document["agents"] if agent["session"] == session]
+    children = [agent for agent in document["agents"]
+                if agent["session"] == session and agent["agent"]["kind"] in ("claude", "codex")]
     if len(children) != 2:
         raise ValueError("proof needs exactly two child agents in its own session")
     panes = {}

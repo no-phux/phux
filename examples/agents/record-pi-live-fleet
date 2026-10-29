@@ -43,6 +43,9 @@ for command in "$BINARY" pi node python3; do
   command -v "$command" >/dev/null || { echo "missing required command: $command" >&2; exit 1; }
 done
 [[ -f "$PI_EXTENSION" ]] || { echo "missing Pi extension: $PI_EXTENSION" >&2; exit 1; }
+# The private config cannot inherit the operator's launch templates. Enable only
+# agent-tools, not usage hooks or workspace restoration from the starter bundle.
+"$BINARY" plugin link --json "$ROOT/plugins/agent-tools" >/dev/null
 
 (cd "$WORKDIR" && exec "$BINARY" server --exit-after-idle 240) >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!

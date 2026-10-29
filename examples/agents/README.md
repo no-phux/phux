@@ -39,6 +39,10 @@ backgrounded work where there is no single "command done" moment.
 
 ## Running them
 
+`just examples-smoke` runs every introductory script, their negative-path
+regressions, and a real-server check. CI also runs them in `just e2e` using
+the same CLI as the rest of the test archive.
+
 ```sh
 bash examples/agents/01-ls-and-snapshot.sh
 python3 examples/agents/agent_loop.py

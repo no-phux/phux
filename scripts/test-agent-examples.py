@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -38,7 +39,8 @@ class AgentExamplesTests(unittest.TestCase):
     def test_proof_requires_real_child_inventory(self):
         claude = {"session": "proof", "cwd": "/work", "terminal": "@2", "agent": {"kind": "claude"}}
         codex = {"session": "proof", "cwd": "/work", "terminal": "@3", "agent": {"kind": "codex"}}
-        self.assertEqual(proof.child_panes({"agents": [claude, codex]}, "proof", "/work"),
+        seed = {"session": "proof", "cwd": "/work", "terminal": "@1", "agent": {"kind": None}}
+        self.assertEqual(proof.child_panes({"agents": [seed, claude, codex]}, "proof", "/work"),
                          {"claude": "@2", "codex": "@3"})
         for children in ([], [claude], [claude, claude],
                          [claude, dict(codex, terminal="@2")],
@@ -56,6 +58,26 @@ class AgentExamplesTests(unittest.TestCase):
                          {"pane": 2, "lines": []}):
             with self.subTest(snapshot=snapshot), self.assertRaises(ValueError):
                 proof.verify_response(snapshot, "@2", "TOKEN")
+
+    @unittest.skipUnless(os.environ.get("PHUX_EXAMPLES_NATIVE") == "1", "native smoke opt-in")
+    def test_delayed_wait_start_cannot_finish_the_producer(self):
+        with tempfile.TemporaryDirectory(prefix="delayed-example.") as directory:
+            binary = str(Path(os.environ["PHUX"]).resolve())
+            marker = Path(directory) / "delayed"
+            wrapper = Path(directory) / "phux"
+            wrapper.write_text(
+                "#!/bin/sh\n"
+                f"if [ \"$1\" = wait ] && [ ! -f {shlex.quote(str(marker))} ]; then\n"
+                f"  touch {shlex.quote(str(marker))}; sleep 4\nfi\n"
+                f"exec {shlex.quote(binary)} \"$@\"\n"
+            )
+            wrapper.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(ROOT / "examples/agents/03-send-keys-and-wait.sh")],
+                env=dict(os.environ, PHUX=str(wrapper)), capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(marker.exists())
 
     @unittest.skipUnless(os.environ.get("PHUX_EXAMPLES_NATIVE") == "1", "native smoke opt-in")
     def test_fake_pi_success_narration_cannot_pass(self):

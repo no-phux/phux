@@ -1,11 +1,7 @@
 # starter
 
-A config layer that enables the example plugins under
-[`examples/plugins`](../../examples/plugins). Everything else the old
-"herdr" starter distro used to set is now the shipped default, so a bare
-`phux` already behaves that way; what remains here is the one thing an
-embedded default cannot express, a `[[plugins-append]]` list with relative
-manifest paths. Install with `phux config init --distro starter`.
+A config layer enabling the optional [first-party plugins](../../plugins/README.md).
+Keys, theme, and UI defaults are unchanged. Install from a phux checkout:
 
 ```sh
 phux config init --distro starter
@@ -17,9 +13,8 @@ That scaffolds `~/.config/phux/config.toml` with one active line:
 extends = ["/absolute/path/to/distros/starter/starter.toml"]
 ```
 
-followed by the fully-commented shipped defaults. Nothing is copied out
-of herdr: the layer file stays authoritative, so pulling a newer phux
-checkout updates it for every config that extends it.
+followed by the fully-commented shipped defaults. The layer stays in the
+checkout, so updates to it apply to every config that extends it.
 
 Already have a config? Add the `extends` line yourself (top-level, any
 config file). See [configuration: layers](../../docs/config.md#layers).
@@ -36,9 +31,9 @@ rewrites a missing herdr path to starter when the new file is there.
 ## What you get
 
 - **Plugins, additively.** `[[plugins-append]]` wires
-  `examples/plugins/continuum` (workspace autosave/restore),
-  `examples/plugins/agent-tools` (bench helpers), and
-  `examples/plugins/usage` (plan usage for every client) without erasing plugin
+  `plugins/continuum` (workspace autosave/restore),
+  `plugins/agent-tools` (agent launch templates and tools), and
+  `plugins/usage` (plan usage for every client) without erasing plugin
   entries from your own config or another layer. Their actions appear in
   the command palette (`prefix Space`) as `plugin:` rows. To drop them,
   assign a plain `plugins = [...]` in your config - replacement wins over
@@ -51,24 +46,14 @@ rewrites a missing herdr path to starter when the new file is there.
   names, percentages, reset times and an opaque account fingerprint that
   any client with `observe@global` (the owner and every paired device) can
   read. To turn it off, list the plugins you keep in `plugins = [...]`; see
-  [its README](../../examples/plugins/usage/README.md#turning-it-off) and
+  [its README](../../plugins/usage/README.md#turning-it-off) and
   [plan usage](../../docs/agents.md#plan-usage).
-- **Agent identity.** `agent-tools` ships integration templates whose
-  `[launch]` command runs `claude`/`codex`/`gemini` through
-  `scripts/phux-agent-wrap.sh`. The wrapper writes a `phux.agent/v1` L3
-  record (ADR-0040) - a first-class name + kind that the sidebar's
-  `agents` section and `phux agent list` prefer over the OSC-title
-  substring heuristic that false-positives on titles like
-  `vim CLAUDE.md` - and clears it on exit, pinned to the wrapper's own
-  pane. Because this layer enables `agent-tools`, `phux launch
-  claude-code` (or `codex` / `gemini-cli`) opens a self-identifying pane
-  end-to-end: the launch executor (ADR-0042) runs the template `[launch]`
-  command and the server injects `PHUX_TERMINAL_ID` so the wrapper
-  self-targets with no alias. `phux launch --list` shows the bundled
-  integrations. See `examples/plugins/agent-tools/README.md` section
-  "Automatic agent identity" for the manual-activation fallback, the
-  required pane-targeting, and why live working/blocked state still needs
-  a separate signal feed.
+- **Agent identity.** `phux launch claude-code` (or `codex` / `gemini-cli`)
+  opens a self-identifying pane. The template's wrapper declares its name
+  and kind, then clears only its own record on exit. `phux launch --list`
+  lists the available integrations. See
+  [automatic agent identity](../../plugins/agent-tools/README.md#automatic-agent-identity)
+  for manual activation and lifecycle reporting.
 
 ## Overriding
 
@@ -91,6 +76,6 @@ accent = "magenta"              # replace one slot, keep the rest
 
 Relative `manifest` paths in a layer resolve against the layer file's
 own directory, which is what lets this layer reference the sibling
-`examples/plugins/` tree. If you copy `distros/starter/` out of a phux
+`plugins/` tree. If you copy `distros/starter/` out of a phux
 checkout, copy those plugin directories too and update the
 `[[plugins-append]]` paths in `starter.toml`.

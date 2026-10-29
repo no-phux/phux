@@ -8,7 +8,7 @@
 # until the screen meets a condition).
 #
 #   send-keys NAME KEY...   each arg is a named key (Enter, Tab, C-c, Up,
-#                           M-x, ...) or a literal string sent char by char.
+#                           M-x, ...) or literal text delivered as a paste.
 #   wait NAME --until TEXT  succeed when any visible line contains TEXT.
 #   wait NAME --idle MS     succeed when the screen holds still for MS.
 #   wait ... --timeout SECS give up after SECS (exit 124).
@@ -20,15 +20,17 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 phux_start_server
 
 # --- send-keys: type a command and run it ----------------------------------
-# Start a backgrounded job. We use a marker that appears only in OUTPUT,
-# never in the typed command, so `wait --until` can't match the echo.
-section "send-keys: start a backgrounded job"
-phux send-keys "$PHUX_SESSION" "(sleep 3; printf '%s_%s\\n' JOB FINISHED) &" Enter
+# Hold the producer behind a file latch. No amount of scheduler delay can
+# produce the result before the negative wait below has finished.
+section "send-keys: start a job behind a release signal"
+release="$PHUX_TMPDIR/release"
+phux send-keys "$PHUX_SESSION" "while [ ! -f '$release' ]; do sleep 0.05; done; printf '%s_%s\\n' JOB FINISHED" Enter
 
-# The short deadline expires before output exists. If the marker were present
+# The deadline expires before output can exist. If the marker were present
 # in the echoed command, this would wrongly succeed and fail the example.
 section "wait --until (not finished yet -> exit 124)"
 phux_expect_timeout --until JOB_FINISHED --timeout 1 "$PHUX_SESSION"
+touch "$release"
 
 # --- wait --until: block until output appears ------------------------------
 # `--until` matches ANY visible line, INCLUDING the shell's echo of the
