@@ -73,9 +73,13 @@ A successful receipt contains:
 - `terminal_id`: a current local handle only when the original execution
   still has its engine; never persist it as a durable address;
 - `idempotency_key`, `replayed`, and `schema_version` (`1`).
-  `execution.state` and `execution.outcome` accept an unknown value, and wire
-  `ErrorCode` already decodes an unrecognized code as `Unknown`, so naming a
-  new state, outcome, or error code does not bump `schema_version`.
+  On the JSON receipt, `execution.state` and `execution.outcome` accept an
+  unknown value, and wire `ErrorCode` already decodes an unrecognized code
+  as `Unknown`, so naming a new JSON state, outcome, or error code does not
+  bump `schema_version`. That rule is JSON-only. A `#[serde(other)]`
+  `Unknown` does not keep the original token: it re-serializes as `unknown`.
+  The binary `wire_enum!` / `enum_byte` path hard-fails on an unknown byte
+  (`UnknownEnumValue`), so adding a wire enum value needs a feature bit.
 
 Relaunch opens another activation. A receipt of the old creation does not
 adopt that replacement execution: its execution/handle observation becomes
@@ -88,7 +92,10 @@ organization-store transaction. A placement refusal, stale anchor or failed
 store write starts no process and publishes no partial layout. The OS process
 starts after commit. If that launch fails, the creation remains committed with
 a retained `failed` execution; no caller needs to undo a layout or issue a
-compensating kill. The public workflow retains the resource until explicit
+compensating kill. After a restart, `failed` together with outcome
+`unobserved` means the launch intent was **committed, never launched**. It is
+not a completed process whose exit went unseen (`completed` + `unobserved`).
+The public workflow retains the resource until explicit
 removal. Its failed/completed execution survives engine retirement, but an
 explicit relaunch replaces the current activation and its result. This is **not** legacy
 `spawn --retain=SECS` screen retention, and does not promise retained PTY
@@ -126,8 +133,14 @@ request that reuses the same idempotency key after the receipt has been
 pruned is executed again: it is not a replay and it is not refused as a
 duplicate. Reconcile records and external effects; never blindly replay with
 either the old key or a fresh one. There is no exactly-once guarantee beyond
-retained receipts. Receipt environment values are stored as hashes, not
-plaintext.
+retained receipts. Receipt environment values are stored as unsalted
+SHA-256 hashes (`sha256:` plus hex), not plaintext. The hash is not a
+secret: a low-entropy value is guessable, and the same value hashes the
+same way in every receipt, so receipts can be compared. Receipts written
+before hashing keep their plaintext until they are pruned. Replacing or
+deleting a receipt does not scrub SQLite WAL or free pages. Replaying an
+old-format receipt (plaintext environment still stored) conflicts: the
+operation id is reused with a payload that no longer compares equal.
 
 The MCP adapter also has its separate in-memory mutation ledger. It forwards
 the creation key to the server, but its pending operation receipt and

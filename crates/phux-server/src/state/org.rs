@@ -868,6 +868,7 @@ mod tests {
             .unwrap();
         assert_eq!(after.state, ExecState::Failed);
         assert_ne!(after.state, ExecState::Completed);
+        assert_eq!(after.outcome, Some(Outcome::Unobserved));
         assert_eq!(counts.never_launched, 1);
         assert_eq!(counts.unobserved, 0);
     }
