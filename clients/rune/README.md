@@ -15,8 +15,9 @@ Download the newest `rune-v*` prerelease from
 [Releases](https://github.com/no-phux/phux/releases?q=rune-v&expanded=true):
 
 - **macOS (Apple silicon)**: `phux-rune-VERSION-macos-arm64.zip`. Unzip and
-  move **Phux Rune.app** to Applications. The alpha is ad-hoc signed, not
-  notarized: the first time, Control-click the app and choose **Open**.
+  move **Phux Rune.app** to Applications, then open it. From 0.1.0-alpha.3
+  the app is Developer ID signed, Apple-notarized and stapled, like the GPUI
+  desktop; earlier alphas were ad-hoc signed and Gatekeeper refuses them.
 - **Linux (x86_64)**: `phux-rune-VERSION-linux-x86_64.tar.gz`, then run
   `phux-rune`. Needs Vulkan and `libxkbcommon-x11`.
 
@@ -82,7 +83,7 @@ cancels).
   shown.
 - No settings, themes, or Kitty images; no search in history yet.
 - Option types layout characters on macOS (no Option-as-Meta).
-- macOS builds are ad-hoc signed; no auto-update.
+- No DMG or auto-update yet; the ZIP is the macOS download.
 
 ## Develop
 
@@ -109,9 +110,12 @@ cargo run -- --socket /tmp/phux-test/s --script typing.json --snap out.png --at 
 ```
 
 `scripts/package.sh VERSION OUT_DIR` builds the release archive for the
-host. Pushing a `rune-vVERSION` tag runs
+host (ad-hoc signed; a local build may link the dev shell's libraries, so
+ship only CI builds). Pushing a `rune-vVERSION` tag runs
 [`rune-client.yml`](../../.github/workflows/rune-client.yml), which tests,
-packages macOS and Linux, and publishes a prerelease.
+packages macOS and Linux, signs and notarizes the macOS app with
+`scripts/ci/sign-macos-desktop.sh --zip-only` (the GPUI desktop's Apple
+credentials), and publishes a prerelease.
 
 | Module | Owns |
 | --- | --- |
