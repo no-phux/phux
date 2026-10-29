@@ -2,6 +2,13 @@
 
 Every page in the phux docs, grouped by what you're trying to do.
 
+The server, CLI and terminal UI are the core product. Remote hosts, agent
+integrations, MCP, plugins and distributions are optional maintained
+features; you do not need them to use local terminals. The separately
+released desktop is a newer maintained client. The browser client is an
+unshipped experiment, and phone apps are not available yet. See
+[Clients](./clients.md) for platform requirements and limitations.
+
 ## Get started
 
 - [Install](./install.md): the install script, Homebrew, the desktop app, updating, and removing phux.
@@ -17,6 +24,7 @@ Every page in the phux docs, grouped by what you're trying to do.
 - [Status bar and sidebar](./status-bar.md): what the bar and the sidebar show, and how to change it.
 - [Hooks](./hooks.md): run a command when something happens.
 - [Plugins](./plugins.md): add actions, panes, and sidebar sections.
+- [Maintained plugin packages](../plugins/README.md): the shipped plugins and where they are installed.
 - [Distributions](./distros.md): switch curated defaults without replacing your config; run the Crew agent distro.
 - [Omarchy](./omarchy.md): one command to fit phux into an Omarchy desktop, with its keys, theme, and launcher.
 - [Projects](./projects.md): open a project's session from a recipe in its repository.
@@ -25,6 +33,7 @@ Every page in the phux docs, grouped by what you're trying to do.
 
 - [Using phux as an agent](./agent-quickstart.md): install phux and drive sessions, panes, input, and scrollback from code.
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
+- [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
 
@@ -72,7 +81,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Architecture](./architecture.md): the process model, crates, and clients.
 - [Decisions](./decisions.md): the constraints the code keeps, and why.
 - [Organization](./organization.md): how the server owns sessions and their contents.
-- [Substrate](./substrate.md): how people, hosts, and agents fit together.
+- [Substrate](./substrate.md): keeper authority, principal scopes, delegation limits, and one-way adapters.
 - [Protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
 - [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
 - [Compatibility](./compatibility.md): what an older or newer peer sees.

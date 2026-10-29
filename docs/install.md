@@ -17,10 +17,11 @@ Published CLI/server builds:
 | Linux | x86_64                | glibc; there is no musl build           |
 | Linux | arm64                 | glibc; there is no musl build           |
 
-Windows: the CLI and server run in WSL 2, with PowerShell launchers. The
-[native Windows desktop installer](../clients/desktop/README.md#windows)
-requires a release containing the Windows x64 artifact. There is no native Windows
-coordinator or Intel Mac build. See [Windows (WSL)](#windows-wsl).
+Windows: the CLI and server use the Linux builds in WSL 2, with optional
+PowerShell launchers. A separate native Windows x64 desktop is published
+from Desktop 0.50.0 onward; it still needs that WSL server. There is no native
+Windows CLI/server or Intel Mac build. See [Windows (WSL)](#windows-wsl)
+and the [Windows desktop installer](../clients/desktop/README.md#windows).
 
 The install script needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`.
 Xcode is only needed for [source builds](./development.md#gpui-desktop).
@@ -49,9 +50,10 @@ for the operating system's permission boundaries.
 
 ## Windows (WSL)
 
-Windows: the CLI and server run in WSL 2, with PowerShell launchers. The
+The CLI and server run in WSL 2, with optional PowerShell launchers. The
 [native Windows desktop](../clients/desktop/README.md#windows) uses the same
-coordinator; install it only after initializing your non-root WSL user.
+server; install it only after initializing your non-root WSL user. Its native
+window does not require WSLg.
 
 Use Windows Terminal and WSL 2 with Ubuntu 22.04 or newer (x64 or arm64).
 The server, panes, configuration, credentials, and agent integrations live
@@ -218,6 +220,14 @@ The Linux desktop archive does not include the CLI. On Linux, this script instal
 
 The desktop app is rougher than the terminal UI; [Clients](./clients.md#desktop) says what it does today.
 
+### Windows desktop
+
+Desktop 0.50.0 and later publish a Windows x64 ZIP alongside the macOS and
+Linux artifacts. Use the [PowerShell installer](../clients/desktop/README.md#windows)
+after installing the WSL CLI/server above. It verifies signed checksums;
+this is not Windows Authenticode signing or a promise of SmartScreen
+reputation. Windows desktop updates are manual.
+
 ## Check it worked
 
 ```sh
@@ -239,7 +249,14 @@ phux update --rollback # put the previous version back
 
 `phux upgrade` does only the restart: it moves the running server onto whatever `phux` is already installed, again without stopping your panes. Run it after updating some other way, such as `brew upgrade`.
 
-If you're upgrading from 0.110 or older, the new CLI can't stop the old server (`phux upgrade` and `phux kill --server` are refused across protocol majors). Stop it with `pkill -f 'phux server'` or by its pid, then start the new one with `phux server --ensure` (or just run `phux`). Stopping the server ends the programs running in its panes; the new server brings the sessions back without them, and `phux restore` relaunches them. A bare `pkill phux` would also quit attached terminals, agents' `phux mcp` bridges, and the desktop app.
+If you're upgrading from 0.110 or older, the new CLI can't stop the old
+server (`phux upgrade` and `phux kill --server` are refused across protocol
+majors). Save its work, identify the old server's PID and profile, then stop
+that exact process with `kill PID`; do not kill by name or port, which can
+hit unrelated clients or servers. Start the new one with
+`phux server --ensure` (or just run `phux`). Stopping the server ends the programs in its
+panes; the new server brings the sessions back without them, and
+`phux restore` relaunches them.
 
 If you installed with Homebrew, Nix, or `cargo install`, `phux update` changes nothing and prints the command for that package manager instead.
 
@@ -265,7 +282,10 @@ phux completion fish > ~/.config/fish/completions/phux.fish
 
 ## Build from source
 
-You need the Rust toolchain pinned in the repository, a C toolchain, `curl`, and `tar`.
+Install the [platform packages](./development.md#platform-packages) first,
+then the Rust toolchain pinned in the repository. You need a C toolchain,
+`curl`, and `tar`; Linux GNU builds also require `mold`, selected by
+`.cargo/config.toml` in the checkout.
 
 ```sh
 git clone https://github.com/no-phux/phux
