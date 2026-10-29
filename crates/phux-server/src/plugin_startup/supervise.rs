@@ -481,6 +481,29 @@ mod tests {
     use super::{Supervisor, serve_iterations};
     use crate::plugin_startup::rotate::CHECK_INTERVAL;
 
+    struct ClearDefer;
+    impl Drop for ClearDefer {
+        fn drop(&mut self) {
+            crate::plugin_startup::spawn::DEFER_REAP_PID
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Real-time bound. Tokio time is paused in the caller, so this yields
+    /// instead of sleeping on the runtime clock.
+    async fn until_real(limit: std::time::Duration, mut pred: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            if pred() {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[test]
     fn empty_catalog_arms_no_timer() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -534,6 +557,11 @@ mod tests {
     /// A fired exit watch whose first `try_wait` misses the zombie must be
     /// polled again on the one-second fallback. That only happens because
     /// the watch stores `fired` before it notifies.
+    ///
+    /// Virtual time stays put until the deferred wait has actually happened.
+    /// Advancing first, before `/bin/true` has exited, jumps the clock with
+    /// no fallback armed yet, and the later one-second sleep is then still
+    /// in the future.
     #[test]
     fn fired_watch_is_polled_again_when_the_first_wait_misses() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -580,19 +608,29 @@ mod tests {
                 "the exit watch must be armed before it fires"
             );
             crate::plugin_startup::spawn::DEFER_REAP_PID.store(pid, Ordering::Relaxed);
+            let _clear = ClearDefer;
             let task = tokio::task::spawn_local(async move {
                 supervisor.serve(&mut rx).await;
             });
-            for _ in 0..100 {
-                tokio::task::yield_now().await;
-            }
+            let missed = until_real(std::time::Duration::from_secs(5), || {
+                crate::plugin_startup::spawn::DEFER_REAP_PID.load(Ordering::Relaxed) == 0
+            })
+            .await;
             let early = std::fs::read_to_string(&run_log).unwrap_or_default();
+            assert!(
+                missed,
+                "the first wait never missed the exit within 5s; log={early}"
+            );
             assert!(
                 !early.contains("exited 0"),
                 "the missed wait must not count as reaped yet: {early}"
             );
+            // The poll that consumed the defer runs to the next `select`
+            // before this task is scheduled again, so the one-second
+            // fallback is already armed. Jump past that second and stop
+            // short of the three-second rotate deadline.
             tokio::time::advance(std::time::Duration::from_millis(1500)).await;
-            for _ in 0..50 {
+            for _ in 0..20 {
                 tokio::task::yield_now().await;
             }
             let later = std::fs::read_to_string(&run_log).unwrap_or_default();
@@ -603,7 +641,6 @@ mod tests {
             tokio::time::resume();
             root.cancel();
             task.await.unwrap();
-            crate::plugin_startup::spawn::DEFER_REAP_PID.store(0, Ordering::Relaxed);
         });
     }
 }
