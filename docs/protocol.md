@@ -1,6 +1,6 @@
-# Protocol
+# Server protocol
 
-How a client talks to a phux server. The code in
+How a client talks to a phux server, in length-prefixed frames. The code in
 [`crates/phux-protocol`](../crates/phux-protocol) is the definition; this
 page is the map. [`wire-schema.json`](./spec/wire-schema.json) lists every
 frame and field and is generated from the codec, so it cannot be stale.
@@ -9,6 +9,8 @@ If you are writing a client in Rust, use `phux-client-core` and
 `phux-client-runtime` rather than this. If you are writing one in another
 language, [`clients/phux-web`](../clients/phux-web) is a complete
 non-native implementation to read alongside.
+
+If you only need agent status or to wait on a screen, you don't need the protocol: use `phux agent list --json` or `phux wait --until/--regex/--idle`.
 
 ## Transports
 

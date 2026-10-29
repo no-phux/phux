@@ -34,6 +34,7 @@ backgrounded work where there is no single "command done" moment.
 | [`02-run-and-exit-codes.sh`](./02-run-and-exit-codes.sh) | `run`, `run --json` | Discrete commands; exit-code mirroring; `&&`/`||` chaining. |
 | [`03-send-keys-and-wait.sh`](./03-send-keys-and-wait.sh) | `send-keys`, `wait --until`, `wait --idle`, `--timeout` | Structured input; blocking on a condition; driving a REPL. |
 | [`04-read-act-wait-loop.sh`](./04-read-act-wait-loop.sh) | all of the above | The full read+act+wait loop against an interactive prompt. |
+| [`05-program-status.sh`](./05-program-status.sh) | `run`, `agent list`, `agent explain`, `resource show` | A program reports its own state with OSC 7501. No hooks. |
 | [`agent_loop.py`](./agent_loop.py) | all of the above | The same loop as code: subprocess calls + JSON parsing, no phux library. |
 | [`orchestrate-placed-fleet`](./orchestrate-placed-fleet) | `new`, placed `launch`/`spawn`, `move-pane`, `swap-pane`, concurrent `watch` | A small placed fleet; bounded event subprocesses; blocked-ask surfacing; human `C-a q` / `C-a Q` guidance without moving focus. |
 
@@ -45,6 +46,7 @@ the same CLI as the rest of the test archive.
 
 ```sh
 bash examples/agents/01-ls-and-snapshot.sh
+bash examples/agents/05-program-status.sh
 python3 examples/agents/agent_loop.py
 PHUX_BUILDER_INTEGRATION=codex PHUX_REVIEWER_INTEGRATION=claude \
   examples/agents/orchestrate-placed-fleet
@@ -111,7 +113,8 @@ PHUX_DOGFOOD_REAL_AGENTS=1 just agents-fleet-live
 - [`using-phux-mcp`](../../.agents/skills/using-phux-mcp/SKILL.md): the
   canonical MCP skill and live-schema workflow.
 - Install the published copies with `npx skills add no-phux/skills`.
-- [Driving terminals from scripts](../../docs/scripting.md) and
-  [coding agents](../../docs/agents.md).
+- [Driving terminals from scripts](../../docs/scripting.md),
+  [coding agents](../../docs/agents.md), and
+  [any program can report status](../../docs/any-program-status.md).
 - [`integrations/pi`](../../integrations/pi) when pi should drive the same
   CLI surface.

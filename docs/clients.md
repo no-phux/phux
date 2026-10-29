@@ -19,7 +19,8 @@ phux attach work        # the terminal UI, in this terminal
 `phux` and `phux attach` run the terminal UI in whatever terminal you are
 in. It ships in every release, and every other client is measured against
 it. It draws panes with libghostty, the same terminal emulator the server
-uses, so what you see is what the server has.
+uses, so what you see is what the server has. See
+[libghostty in phux](./libghostty.md).
 
 [Getting started](./getting-started.md) covers this client.
 <kbd>C-a</kbd> <kbd>S</kbd> opens settings, which edit your config file;
@@ -93,6 +94,16 @@ The desktop app has its own version and release notes. The macOS app and
 DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app
 requires macOS 26.0; the standalone CLI requires macOS 11.0. Expect rough
 edges: the terminal UI is ahead of the desktop.
+
+### Rune alpha
+
+[Phux Rune](../clients/rune/README.md) is an alpha desktop client built on the
+[Rune](https://github.com/anomalyco/rune) UI framework, beside the desktop app
+as a candidate replacement for its GPUI base. It shows every session and
+terminal with each agent's state, a command palette, and splits from the
+session's server-stored arrangement, the same layout the terminal UI shows.
+It ships as `rune-v*` prereleases (ad-hoc signed on macOS, plus a Linux
+tarball) and has no settings or images yet.
 
 ## Browser
 
