@@ -22,6 +22,9 @@ on:
       - ".github/workflows/plugin-index.yml"
       - "docs/spec/plugin-index.schema.json"
       - "docs/plugins.md"
+      - "crates/phux-config/**"
+      - "crates/phux-config-core/**"
+      - "crates/phux-protocol/**"
 
 permissions:
   contents: read

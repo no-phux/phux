@@ -130,6 +130,7 @@ deny:
     # Call the binary: mbx wraps `cargo` and would forward `--config` into
     # `cargo metadata`, which then rejects deny.toml.
     cargo-deny --manifest-path scripts/plugin-index/Cargo.toml --config deny.toml --locked check
+    bash scripts/plugin-index/check-toml-version.sh
 
 
 # Shell scripts at warning severity: the examples carry deliberate info-level

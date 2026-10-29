@@ -127,9 +127,9 @@ const ROUTES: Record<string, Surface[]> = {
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
   "scripts/check-*": [],
-  // Its own workspace, compiled by the rust lane (`cargo check` in ci.yml)
-  // so a phux-config change cannot break it unseen. plugin-index.yml still
-  // runs the offline tests.
+  // Lint lane only for a generator-only diff (classify skips the unit pool).
+  // plugin-index.yml runs the generator tests. A phux-config change still
+  // compiles this tree because the rust lane cargo-checks it.
   "scripts/plugin-index/**": ["phux"],
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
