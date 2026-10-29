@@ -141,6 +141,9 @@ pub struct ExecutionObservation {
 }
 
 /// Execution lifecycle; loss is not completion.
+///
+/// Unknown values deserialize as [`Self::Unknown`]. Adding a variant does
+/// not bump `schema_version`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionState {
@@ -158,9 +161,16 @@ pub enum ExecutionState {
     Lost,
     /// Historical released uncertain execution.
     Abandoned,
+    /// A state this build does not name. Preserved so a newer server stays readable.
+    #[serde(other)]
+    Unknown,
 }
 
 /// An execution's end, distinct from commitment of a creation intention.
+///
+/// Unknown `type` tags deserialize as [`Self::Unknown`]. Adding a variant
+/// does not bump `schema_version`. Wire [`crate::wire::frame::ErrorCode`]
+/// already decodes an unrecognized code as `Unknown`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionOutcome {
@@ -176,6 +186,9 @@ pub enum ExecutionOutcome {
     },
     /// End not observed, including a launch that never produced an exit status.
     Unobserved,
+    /// An outcome this build does not name.
+    #[serde(other)]
+    Unknown,
 }
 
 impl TerminalCreate {
@@ -344,4 +357,26 @@ pub fn terminal_create_schema() -> serde_json::Value {
 #[must_use]
 pub fn terminal_created_schema() -> serde_json::Value {
     schemars::schema_for!(TerminalCreated).to_value()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "decode assertions")]
+mod tests {
+    use super::{ExecutionOutcome, ExecutionState};
+
+    #[test]
+    fn unknown_execution_values_decode_without_a_schema_bump() {
+        assert_eq!(
+            serde_json::from_str::<ExecutionState>("\"future_state\"").unwrap(),
+            ExecutionState::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<ExecutionOutcome>(r#"{"type":"melted"}"#).unwrap(),
+            ExecutionOutcome::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<ExecutionState>("\"failed\"").unwrap(),
+            ExecutionState::Failed
+        );
+    }
 }
