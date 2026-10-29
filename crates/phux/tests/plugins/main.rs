@@ -7,6 +7,7 @@ mod runner;
 mod common;
 
 mod plugin_demo_package;
+mod plugin_guard;
 mod plugin_install;
 mod plugin_launch;
 mod plugin_lifecycle;

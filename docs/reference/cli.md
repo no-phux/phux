@@ -3885,8 +3885,11 @@ Arguments:
   <REF>  Git URL, local path, or GitHub `owner/repo[/subdir]`.
 
 Flags:
-      --rev <REV>      Branch or tag to clone (git URL or GitHub shorthand
+      --rev <REV>      Branch, tag, or full 40-character commit SHA (git sources
                        only).
+
+                       A commit SHA is fetched and checked out, then pinned. A
+                       short SHA is fetched when the server can resolve it.
       --subdir <PATH>  Subdirectory of a git clone that holds
                        `phux-plugin.toml`.
 
@@ -3894,6 +3897,12 @@ Flags:
                        subdirectory. `owner/repo/sub/dir` already names one;
                        passing both is an error.
       --disabled       Install and link the plugin but leave it disabled.
+      --yes            Run remote `[[build]]` steps without a confirmation
+                       prompt.
+
+                       A git install whose manifest has build steps asks on a
+                       terminal and refuses otherwise. A local directory or
+                       tarball does not ask.
       --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 
@@ -4011,15 +4020,20 @@ Re-fetch, rebuild, and revalidate installed plugins.
 
 Reads the managed directory's `plugins.lock`, re-fetches each recorded source
 (all of them, or just NAME), reruns its `[[build]]` steps, revalidates the
-manifest, swaps the managed copy, and records the new resolved commit.
-`config.toml` is untouched — the linked manifest path does not move.
+manifest, swaps the managed copy, and records the new resolved commit. A branch
+update is accepted only when the new commit is the recorded one or a descendant
+of it. A commit pinned with `--rev` stays at that SHA. `--latest` accepts a
+rewritten branch or moves off a pinned commit. `config.toml` is untouched — the
+linked manifest path does not move.
 
-Usage: phux plugin update [--json] [NAME]
+Usage: phux plugin update [--latest] [--json] [NAME]
 
 Arguments:
   [NAME]  Plugin id to update. Omit to update every installed plugin.
 
 Flags:
+      --latest         Accept a rewritten history, or move off a commit pinned
+                       with `--rev`.
       --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 

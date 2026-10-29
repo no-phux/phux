@@ -248,7 +248,10 @@ pub(crate) enum PluginAction {
         #[usage(value_name = "REF")]
         reference: String,
 
-        /// Branch or tag to clone (git URL or GitHub shorthand only).
+        /// Branch, tag, or full 40-character commit SHA (git sources only).
+        ///
+        /// A commit SHA is fetched and checked out, then pinned. A short
+        /// SHA is fetched when the server can resolve it.
         #[usage(long, value_name = "REV")]
         rev: Option<String>,
 
@@ -263,6 +266,13 @@ pub(crate) enum PluginAction {
         #[usage(long)]
         disabled: bool,
 
+        /// Run remote `[[build]]` steps without a confirmation prompt.
+        ///
+        /// A git install whose manifest has build steps asks on a terminal
+        /// and refuses otherwise. A local directory or tarball does not ask.
+        #[usage(long)]
+        yes: bool,
+
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]
         json: bool,
@@ -273,11 +283,18 @@ pub(crate) enum PluginAction {
     /// Reads the managed directory's `plugins.lock`, re-fetches each
     /// recorded source (all of them, or just NAME), reruns its `[[build]]`
     /// steps, revalidates the manifest, swaps the managed copy, and
-    /// records the new resolved commit. `config.toml` is untouched — the
-    /// linked manifest path does not move.
+    /// records the new resolved commit. A branch update is accepted only
+    /// when the new commit is the recorded one or a descendant of it. A
+    /// commit pinned with `--rev` stays at that SHA. `--latest` accepts a
+    /// rewritten branch or moves off a pinned commit. `config.toml` is
+    /// untouched — the linked manifest path does not move.
     Update {
         /// Plugin id to update. Omit to update every installed plugin.
         name: Option<String>,
+
+        /// Accept a rewritten history, or move off a commit pinned with `--rev`.
+        #[usage(long)]
+        latest: bool,
 
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]

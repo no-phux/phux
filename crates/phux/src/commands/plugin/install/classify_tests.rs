@@ -130,13 +130,7 @@ fn invalid_references_name_the_choice() {
     let parent = classify_source_in(base.path(), "owner/repo/../x", None, None).unwrap_err();
     assert!(parent.contains("chosen as a local path"), "{parent}");
 
-    for reference in [
-        "owner",
-        "-owner/repo",
-        "owner/-repo",
-        "owner//repo",
-        "owner/repo.git.git",
-    ] {
+    for reference in ["owner", "owner/-repo", "owner//repo", "owner/repo.git.git"] {
         let err = classify_source_in(base.path(), reference, None, None).unwrap_err();
         assert!(
             err.contains("neither an existing local path nor a git URL"),
@@ -164,4 +158,56 @@ fn invalid_references_name_the_choice() {
     let classified = classify_source_in(base.path(), "plugin.tar.gz", None, None).unwrap();
     assert!(matches!(classified.source, InstallSource::Tarball(_)));
     assert!(classified.note.is_none());
+
+    let injected =
+        classify_source_in(base.path(), "--upload-pack=evil://x", None, None).unwrap_err();
+    assert!(injected.contains("starts with '-'"), "{injected}");
+    assert!(injected.contains("rejected before git"), "{injected}");
+
+    let scheme =
+        classify_source_in(base.path(), "http://example.com/owner/repo", None, None).unwrap_err();
+    assert!(scheme.contains("not an allowed git URL"), "{scheme}");
+
+    let empty_rev =
+        classify_source_in(base.path(), "https://github.com/owner/repo", Some(""), None)
+            .unwrap_err();
+    assert!(empty_rev.contains("--rev must name"), "{empty_rev}");
+
+    let dashed_rev = classify_source_in(
+        base.path(),
+        "https://github.com/owner/repo",
+        Some("--upload-pack=evil"),
+        None,
+    )
+    .unwrap_err();
+    assert!(dashed_rev.contains("starts with '-'"), "{dashed_rev}");
+}
+
+#[test]
+fn stored_git_url_drops_userinfo_secrets() {
+    let base = Path::new("/tmp/phux-classify-missing");
+    let classified =
+        classify_source_in(base, "https://user:token@github.com/owner/repo", None, None).unwrap();
+    assert_eq!(
+        classified.source.source_ref(),
+        "https://github.com/owner/repo"
+    );
+    match &classified.source {
+        InstallSource::Git { url, .. } => {
+            assert_eq!(url, "https://user:token@github.com/owner/repo");
+        }
+        other => panic!("expected git, got {other:?}"),
+    }
+
+    let token = classify_source_in(
+        base,
+        "https://ghp_example@github.com/owner/repo",
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(token.source.source_ref(), "https://github.com/owner/repo");
+
+    let ssh = classify_source_in(base, "ssh://git@github.com/owner/repo", None, None).unwrap();
+    assert_eq!(ssh.source.source_ref(), "ssh://git@github.com/owner/repo");
 }

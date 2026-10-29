@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::super::registry::temp_nonce;
+use super::git;
 use super::source::InstallSource;
 
 /// Fetch `source` into the (not yet existing) `staging` directory.
@@ -32,23 +33,9 @@ pub(super) fn fetch_into_staging(
             Ok(None)
         }
         InstallSource::Git { url, branch, .. } => {
-            let mut cmd = Command::new("git");
-            cmd.args(["clone", "--depth", "1"]);
-            if let Some(branch) = branch {
-                cmd.args(["--branch", branch]);
-            }
-            cmd.arg(url).arg(staging);
-            run_tool(cmd, "git clone")?;
-            let mut head = Command::new("git");
-            head.arg("-C").arg(staging).args(["rev-parse", "HEAD"]);
-            let stdout = run_tool(head, "git rev-parse HEAD")?;
-            // The managed copy is a snapshot, not a working clone
-            // (ADR-0041): drop the checkout's .git so the installed tree
-            // matches dir installs and cannot be mutated in place.
-            let git_dir = staging.join(".git");
-            std::fs::remove_dir_all(&git_dir)
-                .map_err(|err| format!("could not remove {}: {err}", git_dir.display()))?;
-            Ok(Some(stdout.trim().to_owned()))
+            // `.git` stays until [`seal_git_checkout`] has checked history.
+            let rev = git::clone_at(url, branch.as_deref(), staging)?;
+            Ok(Some(rev))
         }
     }
 }
@@ -60,6 +47,95 @@ pub(super) fn locate_fetched_root(staging: &Path, subdir: Option<&str>) -> Resul
         || locate_plugin_root(staging),
         |subdir| subdir_root(staging, subdir),
     )
+}
+
+/// How an update treats the commit already recorded in the lockfile.
+pub(super) struct PinCheck<'a> {
+    /// Resolved commit from the last install or update.
+    pub(super) previous: &'a str,
+    /// Branch or tag name, when the install was not pinned to a commit.
+    pub(super) branch: Option<&'a str>,
+    /// The install was requested by commit id (`--rev` is hexadecimal).
+    pub(super) pinned_sha: bool,
+    /// `--latest`: accept a rewritten history or move off a pinned commit.
+    pub(super) latest: bool,
+}
+
+/// Refuse symlinks in the plugin root, enforce the recorded commit, then
+/// drop `.git` so the promoted tree is a snapshot.
+pub(super) fn seal_git_checkout(
+    staging: &Path,
+    plugin_root: &Path,
+    new_rev: &str,
+    pin: Option<PinCheck<'_>>,
+) -> Result<(), String> {
+    refuse_symlinks(plugin_root)?;
+    if let Some(pin) = pin {
+        enforce_pin(staging, new_rev, &pin)?;
+    }
+    let git_dir = staging.join(".git");
+    if git_dir.exists() {
+        std::fs::remove_dir_all(&git_dir)
+            .map_err(|err| format!("could not remove {}: {err}", git_dir.display()))?;
+    }
+    Ok(())
+}
+
+fn enforce_pin(repo: &Path, new_rev: &str, pin: &PinCheck<'_>) -> Result<(), String> {
+    if pin.previous.eq_ignore_ascii_case(new_rev) {
+        return Ok(());
+    }
+    if pin.pinned_sha && !pin.latest {
+        return Err(format!(
+            "pinned commit {} would move to {new_rev}; pass --latest to move off that commit",
+            pin.previous
+        ));
+    }
+    if pin.latest {
+        return Ok(());
+    }
+    if git::is_descendant(repo, pin.previous, new_rev, pin.branch)? {
+        Ok(())
+    } else {
+        Err(format!(
+            "commit {new_rev} is not a descendant of recorded commit {}; \
+             pass --latest to accept the rewritten history",
+            pin.previous
+        ))
+    }
+}
+
+/// Walk `root`, skipping `.git`, and refuse every symlink. The same rule as
+/// a local directory install.
+pub(super) fn refuse_symlinks(root: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(root)
+        .map_err(|err| format!("could not read {}: {err}", root.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("could not read {}: {err}", root.display()))?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("could not inspect {}: {err}", path.display()))?;
+        reject_symlink(&path, file_type)?;
+        if file_type.is_dir() {
+            refuse_symlinks(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn reject_symlink(path: &Path, file_type: std::fs::FileType) -> Result<(), String> {
+    if file_type.is_symlink() {
+        Err(format!(
+            "{} is a symlink; plugin installs must be self-contained",
+            path.display()
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Move the fetched plugin root into its final managed directory
@@ -188,12 +264,7 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
         let file_type = entry
             .file_type()
             .map_err(|err| format!("could not inspect {}: {err}", from.display()))?;
-        if file_type.is_symlink() {
-            return Err(format!(
-                "{} is a symlink; plugin dir installs must be self-contained",
-                from.display()
-            ));
-        }
+        reject_symlink(&from, file_type)?;
         let to = dst.join(entry.file_name());
         if file_type.is_dir() {
             copy_tree(&from, &to)?;

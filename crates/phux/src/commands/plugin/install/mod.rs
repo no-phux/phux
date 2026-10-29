@@ -17,6 +17,7 @@
 //! Source choice lives in [`source`]; fetching lives in [`fetch`].
 
 mod fetch;
+mod git;
 mod source;
 
 use std::path::{Path, PathBuf};
@@ -28,8 +29,14 @@ use phux_plugin::{CommandSpec, PluginActionOutcome, run_command_spec};
 
 use super::lock::{PluginLockEntry, lockfile_path, read_lockfile, upsert_entry, write_lockfile};
 use super::{fail, upsert_config_entry};
-use fetch::{StagingGuard, fetch_into_staging, locate_fetched_root, promote, swap_install_dir};
-use source::{classify_source, source_from_lock};
+use std::io::{IsTerminal, Write};
+
+use fetch::{
+    PinCheck, StagingGuard, fetch_into_staging, locate_fetched_root, promote, seal_git_checkout,
+    swap_install_dir,
+};
+use git::is_commit_id;
+use source::{InstallSource, classify_source, source_from_lock};
 
 /// Per-build-step wall-clock bound. A plugin build that cannot finish in
 /// five minutes should ship prebuilt artifacts instead of hanging the CLI.
@@ -50,27 +57,40 @@ pub(super) fn run_install(
     rev: Option<&str>,
     subdir: Option<&str>,
     disabled: bool,
+    yes: bool,
     json: bool,
 ) -> ExitCode {
     let runtime = match crate::commands::cli_runtime() {
         Ok(runtime) => runtime,
         Err(code) => return code,
     };
-    match install(&runtime, reference, rev, subdir, !disabled, json) {
+    match install(&runtime, reference, rev, subdir, !disabled, yes, json) {
+        Ok(code) | Err(PrepareError::Exit(code)) => code,
+        Err(PrepareError::Message(err)) => fail(json, &err),
+    }
+}
+
+/// `phux plugin update [NAME] [--latest] [--json]`.
+pub(super) fn run_update(name: Option<&str>, latest: bool, json: bool) -> ExitCode {
+    let runtime = match crate::commands::cli_runtime() {
+        Ok(runtime) => runtime,
+        Err(code) => return code,
+    };
+    match update(&runtime, name, latest, json) {
         Ok(code) => code,
         Err(err) => fail(json, &err),
     }
 }
 
-/// `phux plugin update [NAME] [--json]`.
-pub(super) fn run_update(name: Option<&str>, json: bool) -> ExitCode {
-    let runtime = match crate::commands::cli_runtime() {
-        Ok(runtime) => runtime,
-        Err(code) => return code,
-    };
-    match update(&runtime, name, json) {
-        Ok(code) => code,
-        Err(err) => fail(json, &err),
+enum PrepareError {
+    Message(String),
+    /// Confirmation already reported this status.
+    Exit(ExitCode),
+}
+
+impl From<String> for PrepareError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
     }
 }
 
@@ -80,15 +100,16 @@ fn install(
     rev: Option<&str>,
     subdir: Option<&str>,
     enabled: bool,
+    yes: bool,
     json: bool,
-) -> Result<ExitCode, String> {
+) -> Result<ExitCode, PrepareError> {
     let classified = classify_source(reference, rev, subdir)?;
     let source = &classified.source;
     let plugins_dir = plugins_data_dir()?;
     std::fs::create_dir_all(&plugins_dir)
         .map_err(|err| format!("could not create {}: {err}", plugins_dir.display()))?;
 
-    let mut staged = stage_plugin(runtime, source, &plugins_dir, reference)?;
+    let mut staged = stage_plugin(runtime, source, &plugins_dir, reference, yes, json)?;
     let final_dir = plugins_dir.join(install_dir_name(&staged.manifest.id));
     promote_staged_plugin(&mut staged, &final_dir)?;
 
@@ -132,21 +153,73 @@ struct StagedPlugin {
 /// managed plugins directory is touched.
 fn stage_plugin(
     runtime: &tokio::runtime::Runtime,
-    source: &source::InstallSource,
+    source: &InstallSource,
     plugins_dir: &Path,
     reference: &str,
-) -> Result<StagedPlugin, String> {
+    yes: bool,
+    json: bool,
+) -> Result<StagedPlugin, PrepareError> {
+    let fetched = fetch_tree(source, plugins_dir, reference, None)?;
+    if matches!(source, InstallSource::Git { .. }) {
+        confirm_remote_build(&fetched.manifest, yes, json)?;
+    }
+    run_build_steps(runtime, &fetched.manifest)?;
+    Ok(fetched)
+}
+
+fn fetch_tree(
+    source: &InstallSource,
+    plugins_dir: &Path,
+    reference: &str,
+    pin: Option<PinCheck<'_>>,
+) -> Result<StagedPlugin, PrepareError> {
     let staging = StagingGuard::claim(plugins_dir);
     let resolved_rev = fetch_into_staging(source, staging.path())?;
     let root = locate_fetched_root(staging.path(), source.subdir())?;
+    if matches!(source, InstallSource::Git { .. }) {
+        let rev = resolved_rev
+            .as_deref()
+            .ok_or_else(|| "git fetch did not resolve a commit".to_owned())?;
+        seal_git_checkout(staging.path(), &root, rev, pin)?;
+    }
     let manifest = load_fetched_manifest(&root, reference)?;
-    run_build_steps(runtime, &manifest)?;
     Ok(StagedPlugin {
         staging,
         root,
         manifest,
         resolved_rev,
     })
+}
+
+/// Remote `[[build]]` steps run as the user. A terminal must say yes, or
+/// the caller passes `--yes`. Anywhere else is a one-line refusal.
+fn confirm_remote_build(
+    manifest: &PluginManifest,
+    yes: bool,
+    json: bool,
+) -> Result<(), PrepareError> {
+    if manifest.build.is_empty() {
+        return Ok(());
+    }
+    let interactive = std::io::stdin().is_terminal();
+    if yes || interactive {
+        let steps = manifest
+            .build
+            .iter()
+            .map(|step| step.command.join(" "))
+            .collect::<Vec<_>>()
+            .join("; ");
+        info!(
+            "remote plugin {} will run build steps: {steps}",
+            manifest.id
+        );
+        let _ = std::io::stderr().flush();
+    }
+    if yes {
+        return Ok(());
+    }
+    crate::commands::confirm::confirmed_for(json, false, "run remote plugin build steps")
+        .map_err(PrepareError::Exit)
 }
 
 /// Move the staged plugin into its managed location, refusing to install over
@@ -236,11 +309,13 @@ struct UpdateReport {
     id: String,
     version: String,
     rev: Option<String>,
+    branch: Option<String>,
 }
 
 fn update(
     runtime: &tokio::runtime::Runtime,
     name: Option<&str>,
+    latest: bool,
     json: bool,
 ) -> Result<ExitCode, String> {
     let plugins_dir = plugins_data_dir()?;
@@ -265,8 +340,9 @@ fn update(
     let mut reports = Vec::with_capacity(targets.len());
     for index in targets {
         let entry = lockfile.plugins[index].clone();
-        let report = update_one(runtime, &plugins_dir, &entry)?;
+        let report = update_one(runtime, &plugins_dir, &entry, latest)?;
         lockfile.plugins[index].rev.clone_from(&report.rev);
+        lockfile.plugins[index].branch.clone_from(&report.branch);
         write_lockfile(&plugins_dir, &lockfile)?;
         reports.push(report);
     }
@@ -306,27 +382,55 @@ fn update_one(
     runtime: &tokio::runtime::Runtime,
     plugins_dir: &Path,
     entry: &PluginLockEntry,
+    latest: bool,
 ) -> Result<UpdateReport, String> {
-    let source = source_from_lock(entry)?;
-    let mut staging = StagingGuard::claim(plugins_dir);
-    let resolved_rev = fetch_into_staging(&source, staging.path())?;
-    let plugin_root = locate_fetched_root(staging.path(), source.subdir())?;
-    let manifest = load_fetched_manifest(&plugin_root, &entry.source_ref)?;
-    if manifest.id != entry.id {
+    let pinned_sha = entry.branch.as_deref().is_some_and(is_commit_id);
+    let mut source = source_from_lock(entry)?;
+    if pinned_sha && let InstallSource::Git { branch, .. } = &mut source {
+        if latest {
+            *branch = None;
+        } else if let Some(full) = entry.rev.clone().filter(|rev| git::is_full_commit(rev)) {
+            *branch = Some(full);
+        }
+    }
+    let pin = entry.rev.as_deref().map(|previous| PinCheck {
+        previous,
+        branch: entry
+            .branch
+            .as_deref()
+            .filter(|branch| !is_commit_id(branch)),
+        pinned_sha,
+        latest,
+    });
+    let fetched =
+        fetch_tree(&source, plugins_dir, &entry.source_ref, pin).map_err(|err| match err {
+            PrepareError::Message(message) => message,
+            PrepareError::Exit(_) => "update does not prompt".to_owned(),
+        })?;
+    if fetched.manifest.id != entry.id {
         return Err(format!(
             "source {} now provides plugin id {:?} (expected {:?}); refusing to update",
-            entry.source_ref, manifest.id, entry.id,
+            entry.source_ref, fetched.manifest.id, entry.id,
         ));
     }
-    run_build_steps(runtime, &manifest)?;
-
+    run_build_steps(runtime, &fetched.manifest)?;
     let final_dir = plugins_dir.join(install_dir_name(&entry.id));
-    swap_install_dir(plugins_dir, staging.path(), &plugin_root, &final_dir)?;
-    staging.disarm();
+    swap_install_dir(
+        plugins_dir,
+        fetched.staging.path(),
+        &fetched.root,
+        &final_dir,
+    )?;
+    let stored_branch = if pinned_sha && latest {
+        None
+    } else {
+        source.branch()
+    };
     Ok(UpdateReport {
         id: entry.id.clone(),
-        version: manifest.version,
-        rev: resolved_rev,
+        version: fetched.manifest.version,
+        rev: fetched.resolved_rev,
+        branch: stored_branch,
     })
 }
 

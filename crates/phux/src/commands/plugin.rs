@@ -33,15 +33,19 @@ pub(crate) fn run_plugin(action: &PluginAction) -> ExitCode {
             rev,
             subdir,
             disabled,
+            yes,
             json,
         } => install::run_install(
             reference,
             rev.as_deref(),
             subdir.as_deref(),
             *disabled,
+            *yes,
             *json,
         ),
-        PluginAction::Update { name, json } => install::run_update(name.as_deref(), *json),
+        PluginAction::Update { name, latest, json } => {
+            install::run_update(name.as_deref(), *latest, *json)
+        }
         PluginAction::Unlink { id, json } => run_unlink(id, *json),
         PluginAction::Enable { id, json } => run_set_enabled(id, true, *json),
         PluginAction::Disable { id, json } => run_set_enabled(id, false, *json),

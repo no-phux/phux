@@ -24,6 +24,10 @@ use super::super::lock::{PluginLockEntry, PluginSourceKind};
 /// `https://github.com/<owner>/<repo>` with no extra query or suffix.
 const GITHUB_CLONE_HOST: &str = "https://github.com";
 
+/// Schemes `git` is allowed to clone. Anything else, including a `://`
+/// that is not at the start, is not a git URL.
+const GIT_URL_SCHEMES: &[&str] = &["https://", "ssh://", "git://", "file://"];
+
 /// Where a `phux plugin install` refers its package from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum InstallSource {
@@ -61,7 +65,7 @@ impl InstallSource {
 
     pub(super) fn source_ref(&self) -> String {
         match self {
-            Self::Git { url, .. } => url.clone(),
+            Self::Git { url, .. } => redact_git_url(url),
             Self::Dir(path) | Self::Tarball(path) => path.display().to_string(),
         }
     }
@@ -106,11 +110,27 @@ pub(super) fn classify_source_in(
                 .to_owned(),
         );
     }
+    reject_option_token("install reference", reference)?;
+    if let Some(rev) = rev {
+        if rev.trim().is_empty() {
+            return Err("--rev must name a branch, tag, or full commit SHA".to_owned());
+        }
+        reject_option_token("--rev", rev)?;
+    }
+    if let Some(subdir) = subdir {
+        reject_option_token("--subdir", subdir)?;
+    }
     if let Some(local) = classify_local(base, reference, rev, subdir)? {
         return Ok(local);
     }
     if is_git_url(reference) {
         return classify_git_url(reference, rev, subdir);
+    }
+    if looks_like_url(reference) {
+        return Err(format!(
+            "{reference:?} is not an allowed git URL. Use https://, ssh://, git://, \
+             file://, or git@host:path"
+        ));
     }
     if is_path_shaped(reference) {
         return Err(path_shaped_miss(reference));
@@ -302,8 +322,60 @@ fn canonicalize(path: &Path) -> Result<PathBuf, String> {
         .map_err(|err| format!("could not resolve {}: {err}", path.display()))
 }
 
+fn reject_option_token(label: &str, value: &str) -> Result<(), String> {
+    if value.starts_with('-') {
+        Err(format!(
+            "{label} {value:?} starts with '-'; rejected before git so it cannot be passed as an option"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// `https://`, `ssh://`, `git://`, `file://` at the start, or `git@host:path`.
+/// A `://` anywhere else is not a URL: that is how `--upload-pack=...://x`
+/// used to reach `git` as an option.
 fn is_git_url(reference: &str) -> bool {
+    if reference.starts_with('-') || reference.chars().any(char::is_whitespace) {
+        return false;
+    }
+    if GIT_URL_SCHEMES
+        .iter()
+        .any(|scheme| reference.starts_with(scheme))
+    {
+        return true;
+    }
+    let Some(rest) = reference.strip_prefix("git@") else {
+        return false;
+    };
+    let Some((host, path)) = rest.split_once(':') else {
+        return false;
+    };
+    !host.is_empty() && !host.contains('/') && !path.is_empty()
+}
+
+fn looks_like_url(reference: &str) -> bool {
     reference.contains("://") || reference.starts_with("git@")
+}
+
+/// Drop `user:pass@` and https token userinfo. `ssh://git@host` stays, because
+/// that user is the ssh login, not a secret. The clone still uses the raw URL.
+pub(super) fn redact_git_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_owned();
+    };
+    let scheme = &url[..scheme_end];
+    let rest = &url[scheme_end + 3..];
+    let Some(at) = rest.find('@') else {
+        return url.to_owned();
+    };
+    let userinfo = &rest[..at];
+    let after = &rest[at + 1..];
+    if userinfo.contains(':') || scheme == "https" || scheme == "http" {
+        format!("{scheme}://{after}")
+    } else {
+        url.to_owned()
+    }
 }
 
 /// A reference that must stay a filesystem path even when it is missing.

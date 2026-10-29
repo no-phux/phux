@@ -73,6 +73,9 @@ fn destination_dir(name: &str, dir: Option<&Path>) -> Result<PathBuf, String> {
 
 fn validate_plugin_id(name: &str) -> Result<(), String> {
     let valid = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name.chars().any(|ch| ch.is_ascii_alphanumeric())
         && name.len() <= PLUGIN_ID_MAX_CHARS
         && name
             .chars()
@@ -284,9 +287,16 @@ mod tests {
         std::fs::create_dir_all(&empty).unwrap();
         scaffold_plugin("com.example.tools", &empty).unwrap();
         plugin::load_plugin_manifest(&empty).unwrap();
+    }
 
-        let bad = scaffold_plugin("Not A Plugin", &root.path().join("nope")).unwrap_err();
-        assert!(bad.contains("not a plugin id"), "{bad}");
-        assert!(!root.path().join("nope").exists());
+    #[test]
+    fn scaffold_rejects_names_that_are_not_plugin_ids() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [".", "..", "Not A Plugin", "---"] {
+            let dest = root.path().join("dest");
+            let err = scaffold_plugin(name, &dest).unwrap_err();
+            assert!(err.contains("not a plugin id"), "{name}: {err}");
+            assert!(!dest.exists(), "{name}");
+        }
     }
 }

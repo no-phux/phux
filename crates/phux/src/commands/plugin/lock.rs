@@ -97,6 +97,9 @@ pub(super) fn read_lockfile(plugins_dir: &Path) -> Result<PluginLockFile, String
 }
 
 /// Write the lockfile (entries sorted by id for stable diffs).
+///
+/// No advisory lock: `fs2` and `fd-lock` are not dependencies of this
+/// workspace, so concurrent install/update is not serialized here.
 pub(super) fn write_lockfile(plugins_dir: &Path, lock: &PluginLockFile) -> Result<(), String> {
     let mut lock = lock.clone();
     lock.plugins.sort_by(|a, b| a.id.cmp(&b.id));
