@@ -73,6 +73,9 @@ A successful receipt contains:
 - `terminal_id`: a current local handle only when the original execution
   still has its engine; never persist it as a durable address;
 - `idempotency_key`, `replayed`, and `schema_version` (`1`).
+  `execution.state` and `execution.outcome` accept an unknown value, and wire
+  `ErrorCode` already decodes an unrecognized code as `Unknown`, so naming a
+  new state, outcome, or error code does not bump `schema_version`.
 
 Relaunch opens another activation. A receipt of the old creation does not
 adopt that replacement execution: its execution/handle observation becomes
@@ -118,9 +121,13 @@ and server restarts, **not** moving to another authority. They are bounded by
 24 hours **or the oldest-first 10,000-receipt cap**, whichever removes them
 first. A short elapsed time alone cannot establish retention. After removal
 or expiry, lookup reports `receipt_not_retained` with outcome `unknown`.
-This does not distinguish never received from received then evicted. Reconcile
-records and external effects; never blindly replay with either the old key or
-a fresh one. There is no exactly-once guarantee beyond retained receipts.
+This does not distinguish never received from received then evicted. A later
+request that reuses the same idempotency key after the receipt has been
+pruned is executed again: it is not a replay and it is not refused as a
+duplicate. Reconcile records and external effects; never blindly replay with
+either the old key or a fresh one. There is no exactly-once guarantee beyond
+retained receipts. Receipt environment values are stored as hashes, not
+plaintext.
 
 The MCP adapter also has its separate in-memory mutation ledger. It forwards
 the creation key to the server, but its pending operation receipt and
