@@ -45,6 +45,23 @@ jobs:
         with:
           toolchain: 1.99.0
 
+      # scripts/plugin-index is its own workspace, so the root `cargo deny check`
+      # never reads this lockfile. Same deny.toml, same 0.20.2 pin as mise.toml.
+      - name: Check the generator lockfile
+        run: |
+          set -euo pipefail
+          version=0.20.2
+          archive="cargo-deny-${version}-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${version}/${archive}"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  ${RUNNER_TEMP}/${archive}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/cargo-deny-${version}-x86_64-unknown-linux-musl/cargo-deny" \
+            --manifest-path scripts/plugin-index/Cargo.toml \
+            --config deny.toml \
+            --locked \
+            check
+
       - name: Test the generator offline
         run: cargo test --locked --manifest-path scripts/plugin-index/Cargo.toml
 
