@@ -27,7 +27,8 @@ Or use [Homebrew](./docs/install.md#homebrew). Run `phux` after installing.
 
 **macOS:** [download the DMG](https://github.com/no-phux/phux/releases?q=desktop-v&expanded=true),
 drag **Phux.app** to **Applications**, eject the image, and open Phux.
-The app includes the CLI/server and is signed and notarized.
+The app includes the CLI/server and is signed and notarized. Or install with
+`brew install --cask no-phux/tap/phux-desktop` ([Homebrew setup](./docs/install.md#macos-homebrew)).
 **Linux:** use the [desktop installer](./docs/install.md#desktop-app).
 
 ### Platform support

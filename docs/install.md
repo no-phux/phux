@@ -177,6 +177,19 @@ Homebrew 6 and later ask you to trust a third-party tap before installing from i
 
 ## Desktop app
 
+### macOS Homebrew
+
+```sh
+brew trust --tap no-phux/tap # Homebrew 6+
+brew install --cask no-phux/tap/phux-desktop
+```
+
+This installs the signed, notarized DMG on Apple silicon with macOS 26 or
+newer. The app bundles the CLI/server; no separate formula is required.
+Update with `brew upgrade --cask no-phux/tap/phux-desktop`. The tap follows
+stable desktop releases independently of CLI releases. The retired
+`phux-cockpit` cask migrates to `phux-desktop` on Homebrew upgrade.
+
 ### macOS drag-and-drop download
 
 Download **macos-arm64.dmg** from the latest
@@ -276,7 +289,7 @@ rm ~/.local/bin/phux ~/.local/bin/phux-mcp
 rm -rf ~/.config/phux ~/.local/state/phux ~/.local/share/phux
 ```
 
-If you installed the desktop app, also remove `Phux.app` from `/Applications` or `~/Applications` on macOS, or `~/.local/share/phux-desktop` on Linux. With Homebrew, run `brew uninstall phux` instead of the first `rm`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.
+If you installed the desktop app, also remove `Phux.app` from `/Applications` or `~/Applications` on macOS, or `~/.local/share/phux-desktop` on Linux. With Homebrew, run `brew uninstall phux` instead of the first `rm`; remove the desktop cask with `brew uninstall --cask no-phux/tap/phux-desktop`. [File locations](./reference/files.md) lists every path phux writes, including where they move when `XDG_*` variables are set.
 
 ## Troubleshooting
 
