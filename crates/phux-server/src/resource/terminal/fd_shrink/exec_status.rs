@@ -13,15 +13,25 @@ pub(super) fn channel() -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 pub(super) fn confirm(pid: libc::pid_t, reader: OwnedFd) -> Result<(), LaunchDiagnostic> {
-    let result = read_status(UnixStream::from(reader), Duration::from_secs(2));
-    if result.is_err() {
-        // This exact child was spawned above and has not been handed to an
-        // actor/reaper. Never spawn again: timeout may follow an executed effect.
-        let child = nix::unistd::Pid::from_raw(pid);
-        let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
-        while nix::sys::wait::waitpid(child, None) == Err(nix::errno::Errno::EINTR) {}
-    }
-    result
+    // poll(2) and the failure SIGKILL run off the LocalSet thread. The caller
+    // still waits for the verdict, but the runtime thread is not inside the
+    // syscall or the signal.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("phux-exec-status".to_owned())
+        .spawn(move || {
+            let result = read_status(UnixStream::from(reader), Duration::from_secs(2));
+            if result.is_err() {
+                // This exact child was spawned above and has not been handed to an
+                // actor/reaper. Never spawn again: timeout may follow an executed effect.
+                let child = nix::unistd::Pid::from_raw(pid);
+                let _ = nix::sys::signal::kill(child, nix::sys::signal::Signal::SIGKILL);
+                while nix::sys::wait::waitpid(child, None) == Err(nix::errno::Errno::EINTR) {}
+            }
+            let _ = tx.send(result);
+        })
+        .map_err(|_| uncertain())?;
+    rx.recv().unwrap_or_else(|_| Err(uncertain()))
 }
 
 const fn uncertain() -> LaunchDiagnostic {
@@ -102,6 +112,26 @@ fn wait_readable(reader: &UnixStream, deadline: Instant) -> Result<(), LaunchDia
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn success_requires_the_magic_byte() {
+        let (reader, writer) = channel().unwrap();
+        let mut writer = UnixStream::from(writer);
+        writer.write_all(&[0x00]).unwrap();
+        drop(writer);
+        assert_eq!(
+            read_status(UnixStream::from(reader), Duration::from_millis(10)),
+            Err(uncertain())
+        );
+        let (reader, writer) = channel().unwrap();
+        let mut writer = UnixStream::from(writer);
+        writer.write_all(&[0xa5]).unwrap();
+        drop(writer);
+        assert_eq!(
+            read_status(UnixStream::from(reader), Duration::from_millis(10)),
+            Ok(())
+        );
+    }
 
     #[test]
     fn early_eof_and_incomplete_status_are_not_exec_success() {
