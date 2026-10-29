@@ -778,6 +778,18 @@ fn startup_entries_follow_action_id_rules_and_cap_at_eight()
             "invalid plugin startup id",
         ),
         (
+            "[[startup]]\nid = \".\"\ncommand = [\"true\"]\n",
+            "invalid plugin startup id",
+        ),
+        (
+            "[[startup]]\nid = \"..\"\ncommand = [\"true\"]\n",
+            "invalid plugin startup id",
+        ),
+        (
+            "[[startup]]\nid = \"server\"\ncommand = [\"true\"]\n",
+            "invalid plugin startup id",
+        ),
+        (
             "[[startup]]\nid = \"a\"\ncommand = [\"true\"]\nplatforms = [\"solaris\"]\n",
             "solaris",
         ),
@@ -789,6 +801,14 @@ fn startup_entries_follow_action_id_rules_and_cap_at_eight()
         let path = write_manifest(dir.path(), &manifest("example.startup", extra));
         let err = plugin::load_plugin_manifest(&path).unwrap_err().to_string();
         assert!(err.contains(needle), "{extra}: {err}");
+    }
+    for id in [".", "..", "server"] {
+        let path = write_manifest(
+            dir.path(),
+            &manifest(id, "[[startup]]\nid = \"web\"\ncommand = [\"true\"]\n"),
+        );
+        let err = plugin::load_plugin_manifest(&path).unwrap_err().to_string();
+        assert!(err.contains("invalid plugin id"), "{id}: {err}");
     }
     Ok(())
 }

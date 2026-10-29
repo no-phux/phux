@@ -7,6 +7,7 @@
 //! Sidecars are not part of the upgrade `StateBlob`.
 
 mod backoff;
+mod exit_watch;
 mod plan;
 mod reap;
 mod rotate;

@@ -196,8 +196,10 @@ platforms = ["linux", "macos"]
 
 `command` is an argument list, never a shell string. Write
 `["sh", "-c", "..."]` when you need a shell. `id` is unique in the
-manifest and uses the same rules as an action id. `platforms` is
-optional. The entry runs only when both that list and the manifest's
+manifest and uses the same rules as an action id. A plugin id or a
+startup id of `.`, `..`, or `server` is rejected: those names escape
+the startup directory or collide with files the server writes there.
+`platforms` is optional. The entry runs only when both that list and the manifest's
 top-level `platforms` allow this operating system. Leaving a list out
 means every system. A manifest may declare at most 8 startup entries.
 The server starts at most 8 across every enabled plugin, in `[[plugins]]`
@@ -239,9 +241,14 @@ group gets `SIGTERM`, then `SIGKILL` after a shared 5 second deadline.
 Upgrade stops them before the new binary runs and starts them again
 once the new process is accepting; they are not restored from the
 upgrade handoff. A server killed with `SIGKILL` cannot do that. The
-next start reads the pidfile and signals the old group only when that
-leader pid is still alive and its start time still matches. A dead
-leader, or a live pid that started at a different time, is left alone.
+next start reads the pidfile, which names the sidecar and the server
+that owned it. It does not signal the group while that server is still
+alive. When the owner is gone, it signals the group if the leader pid
+is still alive and its start time still matches, or if the leader is
+already dead but the process group still has a member that started
+after the recorded spawn (a grandchild left behind when the leader
+honored `SIGTERM`). A live pid that started at a different time is
+left alone. Pidfiles for sidecars that have already exited are removed.
 
 **A sidecar's socket connection keeps the server alive.** Connecting to
 `PHUX_SOCKET` counts as a client connection, the same as any other

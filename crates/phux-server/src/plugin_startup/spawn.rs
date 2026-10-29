@@ -7,9 +7,12 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 
 use phux_plugin::startup_log;
+use tokio::sync::Notify;
 
+use super::exit_watch::{self, ExitWatch};
 use super::plan::StartupSpec;
 use super::reap::{self, write_pidfile};
 
@@ -37,13 +40,16 @@ const SCRUB_ENV: &[&str] = &[
     "PHUX_FOCUS",
 ];
 
-/// A live sidecar. Drop is the last resort: `SIGKILL` the group, and
-/// `kill_on_drop` kills the direct child if the task is aborted first.
+/// A live sidecar. Drop is the last resort: `SIGKILL` the group only when
+/// the direct child has not been reaped. `killpg` on a pgid we already
+/// waited would hit whatever process reused that group. `kill_on_drop`
+/// still kills the direct child if the task is aborted before the wait.
 pub(super) struct GroupChild {
     child: tokio::process::Child,
     pgid: i32,
     pub(super) pidfile: PathBuf,
     exit: ChildExit,
+    watch: Option<ExitWatch>,
 }
 
 /// Distinguishes "still running" from "exited with a code" and "killed by a signal".
@@ -85,10 +91,22 @@ impl GroupChild {
     pub(super) fn signal(&self, signal: i32) {
         reap::signal_group(self.pgid, signal);
     }
+
+    /// `false` when exit notification could not be armed. The supervisor
+    /// polls those children on a one-second fallback instead of a fixed tick.
+    pub(super) const fn has_exit_watch(&self) -> bool {
+        self.watch.is_some()
+    }
 }
 
 impl Drop for GroupChild {
     fn drop(&mut self) {
+        // `poll_reaped` records a child that already exited. Signaling its
+        // process group after that races a reused pgid.
+        if matches!(self.exit, ChildExit::Finished(_)) || self.poll_reaped() {
+            let _ = std::fs::remove_file(&self.pidfile);
+            return;
+        }
         self.signal(libc::SIGKILL);
     }
 }
@@ -106,6 +124,7 @@ pub(super) fn spawn_child(
     spec: &StartupSpec,
     socket: &Path,
     state_dir: &Path,
+    exited: &Arc<Notify>,
 ) -> io::Result<GroupChild> {
     let Some(program) = spec.command.first() else {
         return Err(io::Error::new(
@@ -145,14 +164,18 @@ pub(super) fn spawn_child(
         .env("PHUX_PLUGIN_VERSION", &spec.plugin_version)
         .env("PHUX_PLUGIN_ROOT", &spec.plugin_root)
         .env("PHUX_PLUGIN_STATE", &plugin_state);
+    // Captured before `fork`. The child compares `getppid` to this value,
+    // which is correct when the server is pid 1 or a subreaper reparents it.
+    // SAFETY: `getpid` reads this process's pid.
+    let parent_pid = unsafe { libc::getpid() };
     // SAFETY: `pre_exec` runs in the forked child before `exec`, on the
     // thread that called `spawn`. The body only uses async-signal-safe
-    // calls (`umask`, `prctl`, `getppid`, `raise`, `dup2`, `close_range` /
-    // `closefrom`). `log` and `null` stay open in the parent until `spawn`
-    // returns, so the raw fds are still valid in the child. See
-    // [`child_prelude`] for why `PR_SET_PDEATHSIG` is only safe here.
+    // calls (`umask`, `prctl`, `getppid`, `raise`, `dup2`, `close_range`,
+    // `fcntl`, `getdtablesize`). `log` and `null` stay open in the parent
+    // until `spawn` returns, so the raw fds are still valid in the child.
+    // See [`child_prelude`] for why `PR_SET_PDEATHSIG` is only safe here.
     unsafe {
-        cmd.pre_exec(move || child_prelude(null_fd, log_fd));
+        cmd.pre_exec(move || child_prelude(parent_pid, null_fd, log_fd));
     }
     let child = cmd.spawn()?;
     drop(log);
@@ -176,6 +199,7 @@ pub(super) fn spawn_child(
         pgid: group,
         pidfile,
         exit: ChildExit::Running,
+        watch: exit_watch::watch_exit(pid, exited),
     })
 }
 
@@ -205,23 +229,28 @@ fn open_append(path: &Path) -> io::Result<File> {
 /// spawn onto a short-lived thread or a worker pool: the sidecar would be
 /// signaled when that thread ended, and an upgrade that skipped the stop
 /// would leave it running with no supervisor.
-fn child_prelude(null_fd: i32, log_fd: i32) -> io::Result<()> {
+fn child_prelude(parent_pid: i32, null_fd: i32, log_fd: i32) -> io::Result<()> {
     // SAFETY: this runs in the single-threaded child immediately after
     // fork. Every call below is async-signal-safe.
     unsafe {
         libc::umask(0o077);
-        arm_parent_death_signal();
+        arm_parent_death_signal(parent_pid);
         if libc::dup2(null_fd, 0) < 0 || libc::dup2(log_fd, 1) < 0 || libc::dup2(log_fd, 2) < 0 {
             return Err(io::Error::last_os_error());
         }
-        close_above_stderr();
+        mark_cloexec_above_stderr();
     }
     Ok(())
 }
 
 /// Linux only. macOS has no `PR_SET_PDEATHSIG`; orphan reap covers it.
+///
+/// # Safety
+///
+/// Caller is `child_prelude`, in the forked child. `parent_pid` is the
+/// pid captured in the parent before `fork`.
 #[cfg(target_os = "linux")]
-unsafe fn arm_parent_death_signal() {
+unsafe fn arm_parent_death_signal(parent_pid: i32) {
     // SAFETY: caller is `child_prelude`, in the forked child.
     unsafe {
         libc::prctl(
@@ -231,31 +260,105 @@ unsafe fn arm_parent_death_signal() {
             0,
             0,
         );
-        // The parent can die between fork and prctl. If it already did,
-        // we were reparented to init and the signal will never arrive.
-        if libc::getppid() == 1 {
+        // The parent can die between fork and prctl. `getppid() == 1` is
+        // the wrong check: a pid-1 server is still our parent, and a
+        // subreaper is not pid 1. Compare against the pid captured before
+        // the fork.
+        if libc::getppid() != parent_pid {
             libc::raise(libc::SIGTERM);
         }
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn arm_parent_death_signal() {}
+fn arm_parent_death_signal(_parent_pid: i32) {}
 
-fn close_above_stderr() {
+/// Mark every descriptor above stderr `FD_CLOEXEC` so a successful `exec`
+/// drops them. Do not close them: std's exec-error pipe lives above stderr,
+/// and closing it makes `spawn` return `Ok` when the program is missing.
+/// The child then dies with `SIGABRT` and a typo becomes a crash loop.
+fn mark_cloexec_above_stderr() {
     #[cfg(target_os = "linux")]
-    // SAFETY: `close_range` is one syscall and async-signal-safe. It closes
-    // every descriptor above stderr, including the log and `/dev/null` fds
-    // we just duplicated onto 0, 1, and 2. This runs in the child, so it
-    // does not flip the server's own descriptor flags (that would race the
-    // upgrade handoff; see `daemon::withhold_inherited_descriptors`).
-    unsafe {
-        libc::close_range(3, u32::MAX, 0);
+    {
+        // SAFETY: `close_range` is one syscall and async-signal-safe.
+        // `CLOSE_RANGE_CLOEXEC` sets the flag; it does not close. This runs
+        // in the child, so it does not flip the server's own descriptor
+        // flags (that would race the upgrade handoff; see
+        // `daemon::withhold_inherited_descriptors`). A non-zero return is
+        // `ENOSYS` or `EINVAL` on kernels before 5.9, and the loop below
+        // covers that.
+        let flags = libc::CLOSE_RANGE_CLOEXEC.cast_signed();
+        if unsafe { libc::close_range(3, u32::MAX, flags) } == 0 {
+            return;
+        }
     }
-    #[cfg(target_os = "macos")]
-    // SAFETY: `closefrom` closes every descriptor at or above 3 in the
-    // child. Same constraint as the Linux `close_range` above.
-    unsafe {
-        libc::closefrom(3);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    mark_cloexec_loop();
+}
+
+/// `FD_CLOEXEC` from 3 up to `getdtablesize()`. No allocation. Async-signal-safe.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn mark_cloexec_loop() {
+    // SAFETY: `getdtablesize` and `fcntl` are async-signal-safe. Missing
+    // descriptors return `EBADF` and are skipped.
+    let limit = unsafe { libc::getdtablesize() };
+    if limit <= 3 {
+        return;
+    }
+    for fd in 3..limit {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 {
+            continue;
+        }
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests"
+)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::Notify;
+
+    use super::spawn_child;
+    use crate::plugin_startup::StartupSpec;
+
+    #[test]
+    fn missing_program_is_a_spawn_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = StartupSpec {
+            plugin_id: "plug".to_owned(),
+            plugin_name: "Plug".to_owned(),
+            plugin_version: "0.1.0".to_owned(),
+            startup_id: "web".to_owned(),
+            command: vec!["/no/such/phux-startup-program".to_owned()],
+            plugin_root: dir.path().to_path_buf(),
+            manifest_hash: 1,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let notify = Arc::new(Notify::new());
+            match spawn_child(
+                &spec,
+                std::path::Path::new("/tmp/phux-missing.sock"),
+                dir.path(),
+                &notify,
+            ) {
+                Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}"),
+                Ok(_) => panic!("a missing program must not look like a live child"),
+            }
+        });
     }
 }

@@ -1,5 +1,6 @@
 //! Process-level `[[startup]]` checks: upgrade restarts the sidecar, and a
-//! server killed with SIGKILL is reaped by the next start.
+//! server killed with SIGKILL is reaped by the next start. A leader that
+//! honors `SIGTERM` dies with the server and must not leave a grandchild.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -223,4 +224,54 @@ fn sigkill_of_the_server_is_reaped_by_the_next_start() {
     );
     drop(next);
     drop(reap);
+}
+
+#[test]
+fn sigkill_reaps_a_grandchild_when_the_leader_honors_term() {
+    let root = tempfile::tempdir().unwrap();
+    let manifest = write_plugin(
+        root.path(),
+        "echo $$ > \"$PHUX_PLUGIN_ROOT/pid\"\n\
+         sleep 0.25\n\
+         sleep 1000 &\n\
+         echo $! > \"$PHUX_PLUGIN_ROOT/grand\"\n\
+         wait\n",
+    );
+    let xdg = XdgDirs::fresh("startup-grand");
+    install_config(&xdg, &manifest);
+    let mut server = start_server(&xdg, "sgrand");
+    let grand_path = root.path().join("grand");
+    assert!(
+        poll_until(Duration::from_secs(20), || grand_path.is_file()),
+        "sidecar did not fork a grandchild"
+    );
+    let leader: i32 = std::fs::read_to_string(root.path().join("pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let grand: i32 = std::fs::read_to_string(&grand_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let reap_leader = Reap(leader);
+    let reap_grand = Reap(grand);
+    server.sigkill();
+    assert!(
+        poll_until(Duration::from_secs(20), || !alive(leader)),
+        "PDEATHSIG should terminate a leader that honors SIGTERM"
+    );
+    assert!(
+        alive(grand),
+        "the grandchild should survive the leader's SIGTERM"
+    );
+    let next = start_server(&xdg, "sgrand2");
+    assert!(
+        poll_until(Duration::from_secs(20), || !alive(grand)),
+        "the next server start should reap the leftover grandchild"
+    );
+    drop(next);
+    drop(reap_grand);
+    drop(reap_leader);
 }

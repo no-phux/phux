@@ -126,6 +126,44 @@ impl Drop for Running {
     }
 }
 
+/// Wait until generation `n` has exited and the supervisor has waited it.
+///
+/// `kill(pid, 0)` stays true for a zombie, so `!alive` means the supervisor
+/// has already run `try_wait` and armed the next backoff. Real time is the
+/// deadline: this runs while tokio time is paused.
+async fn wait_reaped_generation(starts: &Path, live: &Path, n: usize) {
+    let ok = wait_real(Duration::from_secs(8), || {
+        if read_lines(starts).len() < n {
+            return false;
+        }
+        let Ok(text) = std::fs::read_to_string(live) else {
+            return false;
+        };
+        let Ok(pid) = text.trim().parse::<i32>() else {
+            return false;
+        };
+        !alive(pid)
+    })
+    .await;
+    assert!(
+        ok,
+        "generation {n} was not reaped; lines={:?} live={}",
+        read_lines(starts),
+        std::fs::read_to_string(live).unwrap_or_default()
+    );
+}
+
+async fn wait_real(limit: Duration, mut pred: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if pred() {
+            return true;
+        }
+        tokio::task::yield_now().await;
+    }
+    pred()
+}
+
 async fn wait_until(limit: Duration, mut pred: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + limit;
     while Instant::now() < deadline {
@@ -216,10 +254,15 @@ fn crash_restarts_with_backoff_then_gives_up() {
 }
 
 /// A failure after 60 seconds up resets the next delay to 1 second.
+///
+/// Tokio time is paused, so the minute of uptime is `advance`d while the
+/// third process is still in a real `sleep`. A reset that did not happen
+/// would wait 4 seconds, and the 1.5 second advance would not start it.
 #[test]
 fn backoff_resets_after_a_minute_up() {
     let _timing = timing_lock();
     run_local(async {
+        tokio::time::pause();
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("plugin");
         std::fs::create_dir_all(&root).unwrap();
@@ -229,9 +272,10 @@ fn backoff_resets_after_a_minute_up() {
              if [ -f count ]; then n=$(cat count); fi\n\
              n=$((n + 1))\n\
              echo \"$n\" > count\n\
+             echo $$ > live.pid\n\
              date +%s%N >> starts\n\
              if [ \"$n\" -le 2 ]; then exit 1; fi\n\
-             if [ \"$n\" -eq 3 ]; then sleep 60; exit 1; fi\n\
+             if [ \"$n\" -eq 3 ]; then echo $$ > holdpid; sleep 1000; fi\n\
              echo hold >> starts\n\
              sleep 1000\n",
         );
@@ -244,31 +288,46 @@ fn backoff_resets_after_a_minute_up() {
             None,
         );
         let starts = root.join("starts");
+        let live = root.join("live.pid");
+        wait_reaped_generation(&starts, &live, 1).await;
+        tokio::time::advance(Duration::from_millis(1_100)).await;
+        wait_reaped_generation(&starts, &live, 2).await;
+        tokio::time::advance(Duration::from_millis(2_100)).await;
+        let holdpid = root.join("holdpid");
+        let mut held = None;
+        let found = wait_real(Duration::from_secs(8), || {
+            held = std::fs::read_to_string(&holdpid)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+                .filter(|pid| alive(*pid));
+            held.is_some()
+        })
+        .await;
         assert!(
-            wait_until(Duration::from_secs(100), || {
+            found,
+            "third start did not stay up: {:?} hold={:?}",
+            read_lines(&starts),
+            std::fs::read_to_string(&holdpid)
+        );
+        let pid = held.expect("held pid");
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(alive(pid), "virtual time must not kill the live sidecar");
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+        wait_reaped_generation(&starts, &live, 3).await;
+        assert!(
+            !read_lines(&starts).iter().any(|line| line == "hold"),
+            "the reset restart must wait for the advanced backoff"
+        );
+        tokio::time::advance(Duration::from_millis(1500)).await;
+        assert!(
+            wait_real(Duration::from_secs(8), || {
                 read_lines(&starts).iter().any(|line| line == "hold")
             })
             .await,
-            "reset restart did not arrive: {:?}",
+            "backoff did not reset to 1s: {:?}",
             read_lines(&starts)
         );
-        let stamps: Vec<u128> = read_lines(&starts)
-            .into_iter()
-            .filter_map(|line| line.parse().ok())
-            .collect();
-        assert!(stamps.len() >= 4, "{stamps:?}");
-        // Start 3 sleeps 60s then fails; the next start should follow a 1s
-        // delay, not the 4s the index would have reached.
-        let extra_ms = stamps[3].saturating_sub(stamps[2]) / 1_000_000;
-        let beyond_minute = extra_ms.saturating_sub(60_000);
-        assert!(
-            beyond_minute < 3_000,
-            "backoff after 60s up was {beyond_minute}ms past the minute; expected about 1s"
-        );
-        assert!(
-            beyond_minute > 400,
-            "restart after the long run was only {beyond_minute}ms past the minute"
-        );
+        tokio::time::resume();
         server.stop().await;
     });
 }

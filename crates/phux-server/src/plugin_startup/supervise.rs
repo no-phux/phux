@@ -3,11 +3,13 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::Duration;
 
 use phux_plugin::run_log::{self, RunRecord};
 use phux_plugin::startup_log;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::backoff::{AfterExit, Policy};
@@ -38,6 +40,7 @@ struct Slot {
     started: Option<Instant>,
 }
 
+#[derive(Clone, Copy)]
 enum Phase {
     Live,
     Backoff { until: Instant },
@@ -58,6 +61,8 @@ struct Supervisor {
     origin: Instant,
     rotate_at: Instant,
     blocked: bool,
+    /// One permit when any watched child exits. `drive` then polls them all.
+    notify: Arc<Notify>,
 }
 
 pub(super) async fn run(
@@ -91,8 +96,9 @@ pub(super) async fn run(
         paused: false,
         logged_skips: BTreeSet::new(),
         origin: Instant::now(),
-        rotate_at: Instant::now(),
+        rotate_at: Instant::now() + CHECK_INTERVAL,
         blocked,
+        notify: Arc::new(Notify::new()),
     };
     supervisor.apply(initial).await;
     supervisor.serve(&mut rx).await;
@@ -105,10 +111,14 @@ impl Supervisor {
                 self.stop_all().await;
                 break;
             }
-            let tick = tokio::time::sleep(std::time::Duration::from_millis(50));
+            // No deadline and no child: wait for shutdown or a command.
+            // An empty catalog must not wake the runtime on a timer.
+            let deadline = self.next_deadline();
+            let root = self.root.clone();
+            let notify = Arc::clone(&self.notify);
             tokio::select! {
                 biased;
-                () = self.root.cancelled() => {
+                () = root.cancelled() => {
                     self.stop_all().await;
                     break;
                 }
@@ -121,11 +131,46 @@ impl Supervisor {
                         Some(cmd) => self.command(cmd).await,
                     }
                 }
-                () = tick => {}
+                () = notify.notified() => {}
+                () = wait_until(deadline) => {}
+            }
+            if self.root.is_cancelled() {
+                continue;
             }
             self.drive();
-            self.rotate_if_due();
+            self.rotate_if_due().await;
         }
+    }
+
+    /// Soonest backoff, log rotation, or the one-second fallback for a child
+    /// whose exit watch could not be armed. `None` when nothing is running
+    /// and nothing is waiting to restart.
+    fn next_deadline(&self) -> Option<Instant> {
+        let mut deadline: Option<Instant> = None;
+        let mut consider = |at: Instant| {
+            deadline = Some(match deadline {
+                Some(current) if current < at => current,
+                _ => at,
+            });
+        };
+        for slot in &self.slots {
+            if let Phase::Backoff { until } = slot.phase
+                && slot.child.is_none()
+            {
+                consider(until);
+            }
+        }
+        if self.slots.iter().any(|slot| slot.child.is_some()) {
+            consider(self.rotate_at);
+            if self.slots.iter().any(|slot| {
+                slot.child
+                    .as_ref()
+                    .is_some_and(|child| !child.has_exit_watch())
+            }) {
+                consider(Instant::now() + Duration::from_secs(1));
+            }
+        }
+        deadline
     }
 
     async fn command(&mut self, cmd: Cmd) {
@@ -239,15 +284,16 @@ impl Supervisor {
     }
 
     fn start_fresh(&mut self, spec: StartupSpec) {
-        let mut slot = Slot {
+        let slot = Slot {
             spec,
             child: None,
             phase: Phase::Live,
             policy: Policy::new(),
             started: None,
         };
-        self.spawn_into(&mut slot, false);
         self.slots.push(slot);
+        let index = self.slots.len() - 1;
+        self.spawn_slot(index, false);
     }
 
     fn drive(&mut self) {
@@ -282,7 +328,7 @@ impl Supervisor {
             .map(|(index, _)| index)
             .collect();
         for index in due {
-            self.spawn_index(index, true);
+            self.spawn_slot(index, true);
         }
     }
 
@@ -311,9 +357,12 @@ impl Supervisor {
         }
     }
 
-    fn spawn_index(&mut self, index: usize, restart: bool) {
+    fn spawn_slot(&mut self, index: usize, restart: bool) {
+        if self.root.is_cancelled() || self.paused || self.blocked {
+            return;
+        }
         let spec = self.slots[index].spec.clone();
-        match self.spawn_spec(&spec) {
+        match spawn::spawn_child(&spec, &self.socket, &self.state_dir, &self.notify) {
             Ok(child) => {
                 self.slots[index].child = Some(child);
                 self.slots[index].started = Some(Instant::now());
@@ -327,53 +376,12 @@ impl Supervisor {
                     error = %err,
                     "startup: spawn failed"
                 );
-                self.note_failure(index, std::time::Duration::ZERO);
+                self.note_failure(index, Duration::ZERO);
             }
         }
     }
 
-    fn spawn_into(&self, slot: &mut Slot, restart: bool) {
-        if self.root.is_cancelled() || self.paused || self.blocked {
-            return;
-        }
-        let spec = slot.spec.clone();
-        match self.spawn_spec(&spec) {
-            Ok(child) => {
-                slot.child = Some(child);
-                slot.started = Some(Instant::now());
-                slot.phase = Phase::Live;
-                self.lifecycle(&spec, if restart { "restarting" } else { "started" });
-            }
-            Err(err) => {
-                tracing::warn!(
-                    plugin = %spec.plugin_id,
-                    startup = %spec.startup_id,
-                    error = %err,
-                    "startup: spawn failed"
-                );
-                let uptime = std::time::Duration::ZERO;
-                let now = self.origin.elapsed();
-                match slot.policy.on_exit(Some(1), uptime, now) {
-                    AfterExit::Restart { delay } => {
-                        slot.phase = Phase::Backoff {
-                            until: Instant::now() + delay,
-                        };
-                    }
-                    AfterExit::GiveUp => {
-                        slot.phase = Phase::GaveUp;
-                        self.lifecycle(&spec, "gave up");
-                    }
-                    AfterExit::Clean => slot.phase = Phase::CleanExit,
-                }
-            }
-        }
-    }
-
-    fn spawn_spec(&self, spec: &StartupSpec) -> std::io::Result<GroupChild> {
-        spawn::spawn_child(spec, &self.socket, &self.state_dir)
-    }
-
-    fn note_failure(&mut self, index: usize, uptime: std::time::Duration) {
+    fn note_failure(&mut self, index: usize, uptime: Duration) {
         let now = self.origin.elapsed();
         let spec = self.slots[index].spec.clone();
         match self.slots[index].policy.on_exit(Some(1), uptime, now) {
@@ -390,25 +398,41 @@ impl Supervisor {
         }
     }
 
-    fn rotate_if_due(&mut self) {
-        if self.rotate_at.elapsed() < CHECK_INTERVAL {
+    async fn rotate_if_due(&mut self) {
+        if Instant::now() < self.rotate_at {
             return;
         }
-        self.rotate_at = Instant::now();
-        for slot in &self.slots {
-            let path =
-                startup_log::log_path(&self.state_dir, &slot.spec.plugin_id, &slot.spec.startup_id);
-            if let Err(err) = super::rotate::rotate_log(
-                &path,
-                startup_log::LOG_MAX_BYTES,
-                startup_log::LOG_GENERATIONS,
-            ) {
-                tracing::debug!(
-                    path = %path.display(),
-                    error = %err,
-                    "startup log rotation failed"
-                );
+        if !self.slots.iter().any(|slot| slot.child.is_some()) {
+            return;
+        }
+        self.rotate_at = Instant::now() + CHECK_INTERVAL;
+        let paths: Vec<PathBuf> = self
+            .slots
+            .iter()
+            .map(|slot| {
+                startup_log::log_path(&self.state_dir, &slot.spec.plugin_id, &slot.spec.startup_id)
+            })
+            .collect();
+        // Copy-then-truncate can be megabytes. Doing it on the `LocalSet`
+        // thread stalls every pane until the copy returns.
+        let rotated = tokio::task::spawn_blocking(move || {
+            for path in &paths {
+                if let Err(err) = super::rotate::rotate_log(
+                    path,
+                    startup_log::LOG_MAX_BYTES,
+                    startup_log::LOG_GENERATIONS,
+                ) {
+                    tracing::debug!(
+                        path = %path.display(),
+                        error = %err,
+                        "startup log rotation failed"
+                    );
+                }
             }
+        })
+        .await;
+        if let Err(err) = rotated {
+            tracing::debug!(error = %err, "startup log rotation task failed");
         }
     }
 
@@ -417,5 +441,12 @@ impl Supervisor {
         if let Err(err) = run_log::record_at(&self.run_log, &record) {
             tracing::debug!(error = %err, "startup lifecycle line was not written");
         }
+    }
+}
+
+async fn wait_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
     }
 }
