@@ -74,5 +74,5 @@ fn encode_without_field(frame: &FrameKind, omitted_id: u64) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// FRAME_COMPRESSED (docs/spec/proto.md §6.4)
+// FRAME_COMPRESSED (docs/protocol.md#framing)
 // ---------------------------------------------------------------------------

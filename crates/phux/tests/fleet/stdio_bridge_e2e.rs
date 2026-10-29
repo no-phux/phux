@@ -217,3 +217,36 @@ async fn bridge_fails_fast_with_a_diagnostic_when_the_socket_is_missing() {
         "diagnostic names the socket: {stderr}"
     );
 }
+
+#[tokio::test]
+async fn bridge_exits_when_its_real_stdout_pipe_stays_backpressured() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("phux.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).expect("bind uds");
+    let mut child =
+        tokio::process::Command::from(crate::common::phux_cmd(crate::runner::phux_bin()))
+            .args(["stdio-bridge", "--socket"])
+            .arg(&socket)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn bridge");
+    // Keep both native pipe handles open: neither stdin EOF nor a broken
+    // stdout pipe may substitute for the bridge's buffered-write deadline.
+    let _stdin = child.stdin.take().expect("stdin");
+    let _stdout = child.stdout.take().expect("stdout");
+    let (mut server, _) = listener.accept().await.expect("bridge connects");
+    let flood = tokio::spawn(async move {
+        let bytes = vec![b'x'; 8 * 1024 * 1024];
+        server.write_all(&bytes).await
+    });
+    let status = tokio::time::timeout(std::time::Duration::from_secs(45), child.wait())
+        .await
+        .expect("real stdout flush and runtime shutdown must be bounded")
+        .expect("wait");
+    flood.abort();
+    let _ = flood.await;
+    assert!(!status.success(), "stalled output is a delivery failure");
+}

@@ -68,7 +68,7 @@ impl TryFrom<u32> for MouseButton {
 }
 
 /// A mouse input event. `x`/`y` are pane-local surface pixels, not cells
-/// (docs/spec/input.md §3.1): cell-quantized clients MUST send
+/// (docs/protocol.md#input): cell-quantized clients MUST send
 /// `cell_index × cell_size`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MouseEvent {

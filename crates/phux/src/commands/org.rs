@@ -33,130 +33,9 @@ pub(crate) enum Target {
     Resource(ResourceRecord),
 }
 
-impl Refusal {
-    /// An organization request that failed: refusals exit 2, everything
-    /// else 1.
-    fn org(verb: &str, err: &OrgError) -> Self {
-        let exit = match err {
-            OrgError::Refused(_) | OrgError::Server { .. } | OrgError::Ambiguous { .. } => 2,
-            _ => 1,
-        };
-        let remedy = match err {
-            OrgError::Unsupported => "upgrade the server (`phux upgrade`)",
-            OrgError::OutcomeUnknown { .. } => {
-                "run `phux ls` to see whether it took effect, then retry"
-            }
-            OrgError::NotFound(_) => "run `phux ls` to see sessions and panes",
-            _ => "run `phux ls` to see the current state, then retry",
-        };
-        Self::new(err.code(), format!("{verb}: {err}"), remedy, exit)
-    }
-}
-
-/// `^` and the shortest prefix of `key` no other record of `inventory`
-/// shares ([`KeyNames`]).
-fn key_text(inventory: &OrgInventory, key: [u8; 16]) -> String {
-    KeyNames::of_inventory(inventory).display(key)
-}
-
-/// Connect to `server`, reporting an unreachable server under `verb`.
-async fn connect(server: &ServerTarget, json: bool, verb: &str) -> Result<Connection, ExitCode> {
-    server
-        .connect()
-        .await
-        .map_err(|err| server.report_unreachable(json, &err, verb))
-}
-
-/// Read every record, refusing a server without `ORGANIZATION` first.
-async fn records(conn: &mut Connection, verb: &str) -> Result<OrgInventory, Refusal> {
-    if !org::supported(conn) {
-        return Err(Refusal::org(verb, &OrgError::Unsupported));
-    }
-    org::fetch(conn, OrgFilter::All, 1)
-        .await
-        .map_err(|err| Refusal::org(verb, &err))
-}
-
-/// Resolve `text` to one session or resource record (see the module docs).
-pub(crate) async fn resolve(
-    conn: &mut Connection,
-    inventory: &OrgInventory,
-    text: &str,
-    verb: &str,
-) -> Result<Target, Refusal> {
-    let parsed = selector::parse(text).map_err(|err| {
-        Refusal::new(
-            codes::INVALID_SELECTOR,
-            format!("invalid target '{text}': {err}"),
-            "run `phux help targets` for the selector grammar",
-            1,
-        )
-    })?;
-    match &parsed {
-        Selector::Key(prefix) => {
-            return match inventory.resolve_key_prefix(prefix) {
-                Ok(KeyMatch::Session(record)) => Ok(Target::Session(record)),
-                Ok(KeyMatch::Resource(record)) => Ok(Target::Resource(record)),
-                Err(err) => Err(Refusal::org(verb, &err)),
-            };
-        }
-        Selector::Session(name) => {
-            if let Some(record) = inventory.session_named(name) {
-                return Ok(Target::Session(record.clone()));
-            }
-        }
-        _ => {}
-    }
-    let (snapshot, _) = phux_client::state::get_state_on(conn)
-        .await
-        .map_err(|err| {
-            Refusal::new(
-                codes::TRANSPORT,
-                format!("{verb}: could not read state: {err}"),
-                "run `phux doctor` for a health check",
-                1,
-            )
-        })?
-        .into_parts();
-    let ids = phux_client::state::resolve_targets_on(conn, &parsed, &snapshot)
-        .await
-        .map_err(|err| {
-            Refusal::new(
-                codes::NO_SUCH_TARGET,
-                format!("{verb}: {err}"),
-                "run `phux ls` to see sessions and panes",
-                1,
-            )
-        })?;
-    let [id] = ids.as_slice() else {
-        if ids.is_empty() {
-            return Err(Refusal::new(
-                codes::NO_SUCH_TARGET,
-                format!("no such target: {text}"),
-                "run `phux ls` to see sessions and panes",
-                1,
-            ));
-        }
-        return Err(Refusal::new(
-            codes::SELECTOR_NOT_SINGLE,
-            format!("'{text}' names {} panes; {verb} takes one", ids.len()),
-            "name one pane (`@N`, `name:N.M`, or a key `^ab23cd`)",
-            1,
-        ));
-    };
-    inventory
-        .resource_by_live(id)
-        .cloned()
-        .map(Target::Resource)
-        .ok_or_else(|| {
-            Refusal::new(
-                codes::NO_SUCH_TARGET,
-                format!("{text} has no record on this server"),
-                "run `phux ls` to see sessions and panes",
-                1,
-            )
-        })
-}
+mod targeting;
+pub(crate) use targeting::resolve;
+use targeting::{connect, key_text, records};
 
 /// One finished organization edit as `--json` prints it.
 fn committed_document(
@@ -208,7 +87,7 @@ where
 /// `phux rm TARGET`: remove a resource whose execution has ended, or delete
 /// a session with no members. Asks first unless `yes`.
 pub(crate) fn run_rm(target: &str, yes: bool, json: bool, socket: Option<PathBuf>) -> ExitCode {
-    if let Err(code) = confirm::confirmed(yes, &format!("remove {target}")) {
+    if let Err(code) = confirm::confirmed_for(json, yes, &format!("remove {target}")) {
         return code;
     }
     run_on(socket, "rm", json, async |_, conn| {
@@ -622,35 +501,45 @@ pub(crate) fn names_resource(target: &str) -> bool {
 }
 
 /// `phux rename PANE NEW_NAME`: set a resource's label.
-pub(crate) fn run_rename_resource(target: &str, new_name: &str, server: ServerSpec) -> ExitCode {
-    let (rt, server) = match server.prepare("rename", false) {
+pub(crate) fn run_rename_resource(
+    target: &str,
+    new_name: &str,
+    json: bool,
+    server: ServerSpec,
+) -> ExitCode {
+    let (rt, server) = match server.prepare("rename", json) {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
     rt.block_on(async {
-        let mut conn = match connect(&server, false, "rename").await {
+        let mut conn = match connect(&server, json, "rename").await {
             Ok(conn) => conn,
             Err(code) => return code,
         };
         let inventory = match records(&mut conn, "rename").await {
             Ok(inventory) => inventory,
-            Err(failure) => return failure.emit(false),
+            Err(failure) => return failure.emit(json),
         };
         let record = match resolve(&mut conn, &inventory, target, "rename").await {
             Ok(Target::Resource(record)) => record,
             Ok(Target::Session(record)) => {
                 // A key prefix can name a session: rename it as one.
                 drop(conn);
-                return crate::commands::rename::run_rename_on(&server, &record.name, new_name)
-                    .await;
+                return crate::commands::rename::run_rename_on(
+                    &server,
+                    &record.name,
+                    new_name,
+                    json,
+                )
+                .await;
             }
-            Err(failure) => return failure.emit(false),
+            Err(failure) => return failure.emit(json),
         };
         let key = key_text(&inventory, *record.key.as_bytes());
         let result = org::rename_resource(&mut conn, record.key, Some(new_name)).await;
         drop(conn);
         finish(
-            false,
+            json,
             "rename",
             target,
             &key,
@@ -661,68 +550,4 @@ pub(crate) fn run_rename_resource(target: &str, new_name: &str, server: ServerSp
 }
 
 #[cfg(test)]
-mod tests {
-    use phux_protocol::ids::KEY_MIN_PREFIX;
-
-    use super::*;
-
-    /// A key prints as its shortest prefix no other listed key shares, at
-    /// least six digits, and that prefix is the protocol key's own text.
-    #[test]
-    fn keys_print_as_their_shortest_unique_prefix() {
-        let mut near = [7; 16];
-        near[15] = 8;
-        let (a, b) = (
-            ResourceKey::new([7; 16]).expect("non-zero"),
-            ResourceKey::new(near).expect("non-zero"),
-        );
-        let alone = KeyNames::new([*a.as_bytes()]).display(*a.as_bytes());
-        assert_eq!(alone.len(), 1 + KEY_MIN_PREFIX);
-        assert!(a.to_string().starts_with(&alone[1..]), "{alone} vs {a}");
-        let crowded = KeyNames::new([*a.as_bytes(), *b.as_bytes()]);
-        let (da, db) = (
-            crowded.display(*a.as_bytes()),
-            crowded.display(*b.as_bytes()),
-        );
-        assert!(da.len() > 1 + KEY_MIN_PREFIX, "{da}");
-        assert_ne!(da, db);
-        assert!(!b.to_string().starts_with(&da[1..]), "{da} also names {b}");
-    }
-
-    /// A bare session name renames the session; every pane form labels a
-    /// resource.
-    #[test]
-    fn rename_tells_a_pane_from_a_session() {
-        assert!(!names_resource("work"));
-        assert!(names_resource("@3"));
-        assert!(names_resource("work:0.1"));
-        assert!(names_resource("^ab23cd"));
-        assert!(!names_resource(""));
-    }
-
-    #[test]
-    fn restore_summarizes_and_names_each_refusal() {
-        use phux_protocol::ids::OperationId;
-        use phux_protocol::wire::frame::Refusal;
-        let ok = ResourceKey::new([1; 16]).expect("non-zero");
-        let refused = ResourceKey::new([2; 16]).expect("non-zero");
-        let operation = OperationId::new([3; 16]).expect("non-zero");
-        let results = vec![
-            (
-                ok,
-                Ok(Committed::new(
-                    operation,
-                    phux_protocol::ids::Revision::new(2),
-                )),
-            ),
-            (refused, Err(OrgError::Refused(Refusal::ExecutionUncertain))),
-        ];
-        let lines = restore_lines(&KeyNames::default(), &results, Some("work"), false);
-        assert_eq!(lines.len(), 2, "{lines:?}");
-        assert_eq!(lines[0], "relaunched 1 of 2 panes in work");
-        assert!(lines[1].contains("refused"), "{lines:?}");
-        let lines = restore_lines(&KeyNames::default(), &results, None, true);
-        assert_eq!(lines.len(), 3, "{lines:?}");
-        assert!(lines[1].ends_with("relaunched"), "{lines:?}");
-    }
-}
+mod tests;

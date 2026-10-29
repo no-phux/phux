@@ -1,4 +1,4 @@
-//! Attach roles (ADR-0127, `docs/spec/L1.md` §8.1): declared intent
+//! Attach roles (ADR-0127, `docs/protocol.md#attach-and-output`): declared intent
 //! projected onto the input lease.
 //!
 //! The lease (ADR-0033) stays the arbitration; this module remembers which

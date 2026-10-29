@@ -21,14 +21,16 @@ test("packed plugin installs and loads outside the checkout with its declared pe
     const output = command([process.execPath, "--eval", `
       import { Host } from '@opencode/plugin/host';
        const entrypoints = Host.resolve({ directory: ${JSON.stringify(directory)}, name: '@phux/opencode' });
-      if (!entrypoints.server || !entrypoints.tui || entrypoints.rpc) {
-        throw new Error('native loader must discover exactly the packed server and TUI entrypoints');
+      if (!entrypoints.server || !entrypoints.tui || !entrypoints.gui || entrypoints.rpc) {
+        throw new Error('native loader must discover exactly the packed server, TUI, and GUI entrypoints');
       }
       const { default: plugin } = await Host.load(entrypoints.server);
       const { default: tui } = await Host.load(entrypoints.tui);
       if (tui.id !== 'phux.tui') throw new Error('packed terminal entrypoint not loadable');
       const tools = [];
+      const rpcs = [];
       const cleanup = await plugin.setup({
+        rpc: { register: async (definition) => { rpcs.push(definition.id); return { dispose: async () => {} }; } },
         options: { contextAwareness: false, executable: ${JSON.stringify(executable)} },
         tool: { transform: async (f) => f({ add: (tool) => tools.push(tool) }), hook: async () => {} },
         session: { hook: async () => {} },
@@ -40,10 +42,12 @@ test("packed plugin installs and loads outside the checkout with its declared pe
       });
       if (status.metadata.result.running !== false) throw new Error('packed runtime did not execute the CLI');
       await cleanup?.();
-      console.log(JSON.stringify({ id: plugin.id, tools: tools.map(tool => tool.name).sort() }));
+      console.log(JSON.stringify({ id: plugin.id, rpcs, gui: entrypoints.gui.endsWith('dist/gui-experimental.cjs'), tools: tools.map(tool => tool.name).sort() }));
     `], directory);
     expect(JSON.parse(output)).toEqual({
       id: "phux",
+      rpcs: ["phux"],
+      gui: true,
       tools: [
         "phux_agent_prompt", "phux_agent_wait", "phux_kill", "phux_panes", "phux_paste",
         "phux_resource_wait", "phux_run", "phux_send_keys", "phux_snapshot", "phux_spawn",

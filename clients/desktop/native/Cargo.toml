@@ -29,6 +29,10 @@ terminal-fixtures = ["phux-gpui/terminal-fixtures"]
 ui-fixtures = []
 
 [[example]]
+name = "brand_icons"
+required-features = ["ui-fixtures"]
+
+[[example]]
 name = "glass_menu"
 required-features = ["ui-fixtures"]
 
@@ -37,7 +41,19 @@ name = "performance_monitor"
 required-features = ["ui-fixtures"]
 
 [[example]]
+name = "design_preview"
+required-features = ["ui-fixtures"]
+
+[[example]]
 name = "settings_preview"
+required-features = ["ui-fixtures"]
+
+[[example]]
+name = "agent_fleet"
+required-features = ["ui-fixtures"]
+
+[[example]]
+name = "backdrop_preview"
 required-features = ["ui-fixtures"]
 
 [dependencies]
@@ -78,17 +94,26 @@ gpui-component = { version = "=0.7.3", features = [
     "tree-sitter-zig",
 ] }
 anyhow = "1"
+base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 async-channel = "2"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 smol = "2"
-nix = { version = "0.31", features = ["socket", "user"] }
 unicode-segmentation = "1"
 # Quick terminal: system-wide hotkeys without Accessibility permission or
 # handwritten Carbon FFI (the host denies unsafe code).
 global-hotkey = "=0.8.0"
+# Backdrop shaders (`shader`): WGSL rendered offscreen on the platform's
+# primary GPU API and shown as a GPUI image. The same wgpu and naga the Linux
+# and Windows renderers already resolve, so the lock gains no packages; only
+# the native backend for each OS is compiled.
+wgpu = { version = "29.0", default-features = false, features = ["std", "parking_lot", "wgsl", "metal", "vulkan", "dx12"] }
+naga = { version = "29.0", features = ["wgsl-in"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["process", "socket", "user"] }
 
 # GPUI Kit pins gpui-pre; the compatibility crates under `toolchain/compat`
 # carry those names and re-export gpui-fast, so Kit and this host share one
@@ -103,6 +128,7 @@ gpui-fast-apple = { path = "../toolchain/gpui/gpui-fast-apple" }
 gpui-fast-macos = { path = "../toolchain/gpui/gpui-fast-macos" }
 gpui-fast-linux = { path = "../toolchain/gpui/gpui-fast-linux" }
 gpui-fast-wgpu = { path = "../toolchain/gpui/gpui-fast-wgpu" }
+gpui-fast-windows = { path = "../toolchain/gpui/gpui-fast-windows" }
 
 [dev-dependencies]
 # `HeadlessAppContext` and `gpui_platform::current_headless_renderer` exist

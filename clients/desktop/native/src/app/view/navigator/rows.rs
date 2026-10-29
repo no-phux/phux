@@ -1,4 +1,4 @@
-//! Rows under a session: a terminal no tab holds, and a record that is not a terminal.
+//! Rows under a session: its terminals, and a record that is not a terminal.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,11 +17,13 @@ use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 
 use crate::app::color::from_hex;
 use crate::app::desk::Desk;
+use crate::app::pane_identity::PaneOrigin;
 use crate::app::skin::Look;
-use crate::app::ui::list::{Emphasis, child_row, row_detail, row_label};
-use crate::app::ui::status::{harness_mark, state_dot};
+use crate::app::ui::list::{Emphasis, child_row, current_mark, row_detail, row_label};
+use crate::app::ui::status::{harness_status, state_dot};
 use crate::app::ui::{ago, dot, row_icon};
 use crate::app::view::{ResourceDrag, drag_label};
+use crate::connection::AgentInfo;
 
 fn exec_state(resource: &ResourceRecord) -> Option<ExecState> {
     resource
@@ -71,8 +73,8 @@ pub(super) fn record_row(
         .into_any_element()
 }
 
-/// A terminal of this session that no tab here holds. Clicking opens it in
-/// a tab; Command-click selects it for organization.
+/// A terminal of this session. Clicking shows its tab, opening one if none
+/// holds it; Command-click selects it for organization.
 pub(super) fn pane_row(
     desk: &Desk,
     pane: &PaneDescriptor,
@@ -84,6 +86,9 @@ pub(super) fn pane_row(
     let terminal = pane.terminal_id.clone();
     let key = pane.key;
     let selected = key.is_some_and(|key| desk.organization.selected.contains(&key));
+    // Only the current session lists `pane_row`s, so the focused terminal is
+    // on this connection: the row you are looking at reads like its session.
+    let viewing = desk.focused_terminal().as_ref() == Some(&terminal);
     let drag = key.map(|key| {
         let keys = desk.organization.drag_keys(key);
         let label = drag_label(&keys, &title);
@@ -91,23 +96,21 @@ pub(super) fn pane_row(
     });
     let agent = desk.agent(&terminal);
     let attention = agent.filter(|info| info.needs_you()).map(|info| info.state);
-    let state = agent.map(|info| info.state);
-    let glyph = match (attention, desk.terminal_origin(&terminal).harness()) {
-        (None, Some(harness)) => harness_mark(harness, state, 12., look).into_any_element(),
-        _ if agent.is_some() => state_dot(attention, state).into_any_element(),
-        _ => terminal_glyph(look).into_any_element(),
-    };
+    let glyph = pane_mark(desk.terminal_origin(&terminal), agent, look);
     let tooltip_terminal = terminal.clone();
     let handle = cx.weak_entity();
     let selector = SharedString::from(format!("pane-{terminal}"));
     child_row(selector.clone(), look)
         .debug_selector(move || selector.to_string())
-        .when(selected, |row| row.bg(look.active))
+        .when(selected || viewing, |row| row.bg(look.active))
+        .when(viewing, |row| row.child(current_mark(look)))
         .child(row_icon(glyph))
         .child(
             row_label(
                 title,
-                if attention.is_some() {
+                if viewing {
+                    Emphasis::Current
+                } else if attention.is_some() {
                     Emphasis::Normal
                 } else {
                     Emphasis::Quiet
@@ -119,6 +122,12 @@ pub(super) fn pane_row(
                 move || format!("pane-label-{terminal}")
             }),
         )
+        .children(agent.and_then(|info| {
+            let terminal = pane.terminal_id.clone();
+            agent_word(info, look).map(|(detail, word)| {
+                detail.debug_selector(move || format!("pane-state-{terminal}: {word}"))
+            })
+        }))
         .children(suffix.map(|suffix| {
             let terminal = pane.terminal_id.clone();
             row_detail(suffix, look).debug_selector(move || format!("pane-suffix-{terminal}"))
@@ -154,8 +163,13 @@ pub(super) fn catalog_pane_row(
     let selector = format!("catalog-pane-{}-{terminal}", destination.host_label());
     child_row(SharedString::from(format!("pane-{terminal}")), look)
         .debug_selector(move || selector.clone())
-        .child(row_icon(terminal_glyph(look)))
+        .child(row_icon(pane_mark(pane.origin, pane.agent.as_ref(), look)))
         .child(row_label(title, Emphasis::Quiet, look))
+        .children(pane.agent.as_ref().and_then(|info| {
+            let selector = format!("catalog-pane-state-{}-{terminal}", destination.host_label());
+            agent_word(info, look)
+                .map(|(detail, word)| detail.debug_selector(move || format!("{selector}: {word}")))
+        }))
         .children(suffix.map(|suffix| {
             let selector = format!(
                 "catalog-pane-suffix-{}-{terminal}",
@@ -184,6 +198,45 @@ pub(super) fn catalog_record_row(
     .child(row_label(record_label(resource), Emphasis::Quiet, look))
     .on_click(cx.listener(move |desk, _, _, cx| desk.navigate_work(destination.clone(), cx)))
     .into_any_element()
+}
+
+/// Identity never depends on selection. Keep the harness visible while its
+/// corner pip reports attention; an alert without a known harness still gets a dot.
+fn pane_mark(origin: PaneOrigin, agent: Option<&AgentInfo>, look: &Look) -> AnyElement {
+    let state = agent.map(|info| info.state);
+    let attention = agent.filter(|info| info.needs_you()).map(|info| info.state);
+    if let Some(harness) = origin.harness() {
+        return harness_status(harness, state, attention, 12., look).into_any_element();
+    }
+    if let Some(info) = agent.filter(|info| info.needs_you()) {
+        return state_dot(info.needs_you().then_some(info.state), state).into_any_element();
+    }
+    terminal_glyph(look).into_any_element()
+}
+
+/// What an agent is doing, in a word beside its row: quiet while it works
+/// or rests, in its attention colour when it waits on you (asking, or
+/// finished for review). No word for an agent that has not said.
+fn agent_word(info: &AgentInfo, look: &Look) -> Option<(gpui::Div, &'static str)> {
+    let word = if info.urgent() {
+        "needs you"
+    } else {
+        info.word()
+    };
+    if word.is_empty() {
+        return None;
+    }
+    let detail = row_detail(word, look);
+    let detail = if info.needs_you() {
+        let mut ink = from_hex(crate::app::ui::status::agent_swatch(info.state));
+        if look.light {
+            ink.l = ink.l.min(0.32);
+        }
+        detail.text_color(ink)
+    } else {
+        detail
+    };
+    Some((detail, word))
 }
 
 /// A terminal nobody's agent drives: a terminal, not a bullet.

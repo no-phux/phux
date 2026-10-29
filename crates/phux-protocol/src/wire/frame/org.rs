@@ -1,4 +1,4 @@
-//! Organization commands, results, and events (`docs/spec/L1.md` §5.7).
+//! Organization commands, results, and events (`docs/organization.md`).
 //!
 //! Sessions and resources are persistent records named by 16-byte keys;
 //! live handles (`SessionId`, `ResourceId`) name current execution. Every

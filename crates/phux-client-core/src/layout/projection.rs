@@ -1,4 +1,4 @@
-//! Named projection metadata keys (ADR-0129, `docs/spec/L3.md` §3.5).
+//! Named projection metadata keys (ADR-0129, `docs/protocol.md#commands-events-resources`).
 //!
 //! A projection is not a resource: it is whichever
 //! `<prefix>.layout/v1/<session-id>` L3 key a consumer chooses to read and
@@ -8,7 +8,7 @@
 use phux_protocol::{GroupId, SessionId};
 
 /// Prefix of the shared per-session layout key the TUI and Cockpit read
-/// (`docs/spec/L3.md` §3.2).
+/// (`docs/organization.md#records-handles-and-arrangements`).
 pub const LAYOUT_KEY: &str = "phux.tui.layout/v1";
 
 /// The shared layout metadata key for `session`.
@@ -17,10 +17,10 @@ pub fn layout_key(session: SessionId) -> String {
     format!("{LAYOUT_KEY}/{}", session.get())
 }
 
-/// Group 1 is the v0.x layout metadata scope (`docs/spec/L3.md` §3.2).
+/// Group 1 is the v0.x layout metadata scope (`docs/organization.md`).
 pub const LAYOUT_METADATA_GROUP: GroupId = GroupId::new(1);
 
-/// Spec-recommended per-key cap (`docs/spec/L3.md` §2), also the reference
+/// Spec-recommended per-key cap (`docs/protocol.md#commands-events-resources`), also the reference
 /// server's `limits.metadata-value-bytes` default.
 pub const MAX_LAYOUT_METADATA_BYTES: usize = 256 * 1024;
 

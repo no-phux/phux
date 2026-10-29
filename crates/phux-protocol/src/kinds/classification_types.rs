@@ -2,7 +2,7 @@
 // Verbs, subjects, and classifications.
 // -----------------------------------------------------------------------------
 
-/// One closed verb of `docs/spec/workload-auth.md` §5. The discriminant is the
+/// One closed verb of `docs/remote.md#who-can-do-what`. The discriminant is the
 /// verb's bit in a scope grant, byte-for-byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]

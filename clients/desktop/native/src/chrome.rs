@@ -5,7 +5,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gpui::{Context, MouseButton, Render, SharedString, Window, div, prelude::*};
+use gpui::{
+    App, Context, MouseButton, MouseDownEvent, Render, SharedString, Window, div, prelude::*,
+};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -26,16 +28,19 @@ impl DragRegion {
 impl Render for DragRegion {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::fonts::install(cx);
-        div().id(self.id.clone()).size_full().on_mouse_down(
-            MouseButton::Left,
-            |event, window, cx| {
-                if event.click_count >= 2 {
-                    window.titlebar_double_click();
-                } else {
-                    window.start_window_move();
-                }
-                cx.stop_propagation();
-            },
-        )
+        div()
+            .id(self.id.clone())
+            .size_full()
+            .on_mouse_down(MouseButton::Left, drag_window)
     }
+}
+
+/// Native dragging and double-click behavior shared by header and canvas gutter.
+pub(crate) fn drag_window(event: &MouseDownEvent, window: &mut Window, cx: &mut App) {
+    if event.click_count >= 2 {
+        window.titlebar_double_click();
+    } else {
+        window.start_window_move();
+    }
+    cx.stop_propagation();
 }

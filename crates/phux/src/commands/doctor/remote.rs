@@ -44,11 +44,8 @@ pub(super) fn check_remote_listeners(socket_path: &std::path::Path) -> Check {
     let report = match rt.block_on(phux_client::state::get_state(socket_path)) {
         Ok(view) => view.snapshot().listeners().cloned(),
         Err(err) => {
-            return Check::warn(
-                "remote-listeners",
-                format!("could not ask the server about remote listeners: {err}"),
-                "the socket may be stale — remove it and start a fresh server",
-            );
+            let pid = crate::commands::diagnostics::recovery_pid(&err, socket_path);
+            return remote_probe_failure(socket_path, &err, pid);
         }
     };
     let token_store_ok = phux_server::auth::ReloadingTokenStore::load(
@@ -57,6 +54,31 @@ pub(super) fn check_remote_listeners(socket_path: &std::path::Path) -> Check {
     )
     .is_ok();
     remote_listeners_check(report.as_ref(), token_store_ok)
+}
+
+/// The hint when the remote-listener probe cannot ask the server.
+///
+/// Same three-way split as the server check: a dead socket may be called
+/// stale, a live incompatible server fails with the stop-and-start recovery,
+/// and every other failure stays neutral.
+pub(super) fn remote_probe_failure(
+    socket_path: &std::path::Path,
+    err: &phux_client::attach::AttachError,
+    pid: Option<i32>,
+) -> Check {
+    use crate::commands::diagnostics::{
+        STALE_SOCKET_HINT, SocketFailure, UNANSWERED_SOCKET_HINT, socket_failure,
+    };
+    let detail = format!("could not ask the server about remote listeners: {err}");
+    match socket_failure(socket_path, err, pid) {
+        SocketFailure::Incompatible(lines) => Check::fail(
+            "remote-listeners",
+            lines.first().cloned().unwrap_or_default(),
+            lines.into_iter().skip(1).collect::<Vec<_>>().join("\n"),
+        ),
+        SocketFailure::Dead => Check::warn("remote-listeners", detail, STALE_SOCKET_HINT),
+        SocketFailure::Other => Check::warn("remote-listeners", detail, UNANSWERED_SOCKET_HINT),
+    }
 }
 
 /// The pure half of [`check_remote_listeners`].

@@ -165,6 +165,8 @@ function perfLine(phase: string, overrides: Record<string, unknown> = {}): strin
       reused: value("scene.reused"),
       patched: value("scene.patched"),
       shaped_lines: value("scene.shaped_lines"),
+      platform_shapes: value("scene.platform_shapes"),
+      ascii_lines: value("scene.ascii_lines"),
     },
     runtime: {
       project_grid: { count: 0 },
@@ -194,6 +196,25 @@ test("headless perf fails on work, time, RSS and phase-set regressions", () => {
   ).toEqual([
     "cached: scene.reused is 0, budget 128",
     "cached: scene.shaped_lines is 24, budget 0",
+  ]);
+  expect(
+    checkPerfBudget(
+      replace(
+        "ascii_redraw",
+        perfLine("ascii_redraw", {
+          scene: {
+            reused: 0,
+            patched: 128,
+            shaped_lines: 3072,
+            platform_shapes: 3072,
+            ascii_lines: 0,
+          },
+        }),
+      ),
+    ),
+  ).toEqual([
+    "ascii_redraw: scene.platform_shapes is 3072, budget 0",
+    "ascii_redraw: scene.ascii_lines is 0, budget 3072",
   ]);
   expect(
     checkPerfBudget(replace("scroll", perfLine("scroll", { tick_us: { mean: 1e9 } }))),

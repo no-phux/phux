@@ -20,9 +20,13 @@
 //!   success flag: the files are the proof, and a qualification harness
 //!   checks them.
 //!
+//! - **Film.** `PHUX_DESKTOP_FILM=DIR` writes the window as timed frames
+//!   for demo videos ([`film`]).
+//!
 //! Windows never activate under `--evidence`, so qualification runs do not
 //! steal focus from the person at the machine.
 
+pub mod film;
 mod log_file;
 mod receipt;
 mod redact;
@@ -123,17 +127,24 @@ pub fn log_dir() -> Option<PathBuf> {
     log_path().and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
-fn log_path() -> Option<PathBuf> {
+/// The desktop log: `PHUX_DESKTOP_LOG`, else the platform's log directory.
+#[must_use]
+pub fn log_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PHUX_DESKTOP_LOG") {
         return Some(PathBuf::from(path));
     }
+    #[cfg(windows)]
+    return Some(crate::platform::state_dir().join("logs/desktop.log"));
+    #[cfg(not(windows))]
     let home = std::env::var_os("HOME")?;
+    #[cfg(not(windows))]
     Some(default_log_path(
         Path::new(&home),
         std::env::var_os("XDG_STATE_HOME"),
     ))
 }
 
+#[cfg(any(test, not(windows)))]
 fn default_log_path(home: &Path, state: Option<std::ffi::OsString>) -> PathBuf {
     if cfg!(target_os = "linux") {
         state

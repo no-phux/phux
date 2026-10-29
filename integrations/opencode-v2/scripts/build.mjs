@@ -1,4 +1,5 @@
 import solid from "@opentui/solid/bun-plugin";
+import { build as vite } from "vite";
 
 for (const entry of ["index", "tui"]) {
   const result = await Bun.build({
@@ -12,3 +13,7 @@ for (const entry of ["index", "tui"]) {
   });
   if (!result.success) throw new AggregateError(result.logs, `phux ${entry} build failed`);
 }
+
+// OpenCode Desktop and web load one prebuilt CommonJS file; the SDK's Vite
+// preset compiles Solid for the DOM and keeps the app's shared modules external.
+await vite({ configFile: new URL("../vite.config.ts", import.meta.url).pathname });

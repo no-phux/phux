@@ -149,3 +149,35 @@ fn only_the_caret_changes_disclosure_and_equal_names_on_other_hosts_stay_open(
         "the other host remains expanded"
     );
 }
+
+#[gpui::test]
+fn agent_rows_say_what_each_agent_is_doing(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, VisualTestContext};
+    let _dial = DeterministicDial::arm();
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut VisualTestContext::from_window(*handle, cx);
+    desk.update(cx, |desk, cx| {
+        desk.prefs.sidebar_visible = true;
+        desk.prefs.sidebar_grouping = crate::settings::SidebarGrouping::None;
+        let local = connection(1, vec![session(7, "argo")]);
+        let local = with_agent(local, 1, AgentState::Working);
+        let local = with_agent(local, 2, AgentState::Blocked);
+        let local = with_agent(local, 3, AgentState::Done);
+        install(desk, local);
+        observe(
+            &mut desk.fleet,
+            Some("mini"),
+            with_agent(connection(2, vec![session(8, "argo")]), 4, AgentState::Idle),
+        );
+        cx.notify();
+    });
+    draw(cx);
+    let caret = cx.debug_bounds("disclose-work-mini-8").unwrap();
+    cx.simulate_click(caret.center(), Modifiers::alt());
+    draw(cx);
+    assert!(shown(cx, "pane-state-@1: working"));
+    assert!(shown(cx, "pane-state-@2: needs you"));
+    assert!(shown(cx, "pane-state-@3: finished"));
+    assert!(shown(cx, "catalog-pane-state-mini-@4: idle"));
+}

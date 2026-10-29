@@ -1,3 +1,4 @@
+import { desktopBrand } from "./brand.ts";
 /** Portable GNU/Linux bundle. No system install or platform-specific icon tools. */
 import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -63,6 +64,7 @@ export function createLinuxBundle(options: LinuxBundleOptions): string {
     JSON.stringify(
       {
         identifier: "dev.phux.desktop",
+        brandProfile: desktopBrand().id,
         version,
         sha,
         channel,
@@ -77,10 +79,11 @@ export function createLinuxBundle(options: LinuxBundleOptions): string {
   for (const name of ["PaperMono-OFL.txt", "JetBrainsMono-OFL.txt"]) {
     cpSync(join(desktopRoot, "native/phux-gpui/assets/fonts", name), join(share, name));
   }
+  cpSync(join(desktopRoot, "native/assets/fonts/Inter-OFL.txt"), join(share, "Inter-OFL.txt"));
   mkdirSync(join(bundle, "share/applications"), { recursive: true });
   mkdirSync(join(bundle, "share/icons/hicolor/scalable/apps"), { recursive: true });
   cpSync(
-    join(desktopRoot, "packaging/AppIcon.svg"),
+    desktopBrand().iconSvg,
     join(bundle, "share/icons/hicolor/scalable/apps/dev.phux.desktop.svg"),
   );
   writeFileSync(

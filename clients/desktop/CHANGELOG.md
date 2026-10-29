@@ -4,6 +4,28 @@
 
 ### Features
 
+- Make the Emblem Fox the app icon and the fleet playground's piece; the
+  piece follows the window theme by default, and a palette button cycles
+  fixed colour schemes and saves the choice.
+
+- Add a playground to the Agent Fleet: every agent as a ghost in its
+  machine's room on an isometric campus, with a camera to drag, scroll and
+  pinch, and a click that opens the exact agent.
+- Add a matrix map to the fleet playground, switched from its header and
+  saved with the display preferences.
+- Add backdrop shaders: live WGSL backdrops behind the panes and chrome
+  (Silk, Aurora, Nebula, Rain, Grid) drawn in the theme's colors, speeding up
+  while agents work and flaring when one needs you. Pick one from live cards
+  in Settings or cycle with **Next Backdrop Shader**; drop a `.wgsl` file in
+  the shader folder and every save redraws the window.
+- Let a backdrop shader play video: a `// phux:media` line names a file or
+  an http(s) URL (YouTube and friends through `yt-dlp`), `ffmpeg` decodes
+  it, and `phux_media(uv)` samples the frame. The `cinema.wgsl` example
+  dims the video while agents work and flashes it back when one needs you.
+
+- Render inline Kitty graphics in terminal panes and previews, including PNG,
+  RGB/RGBA, chunked transfers, Unicode placeholders, cropping, transparency and
+  z-order. Preserve resident images across attach and reconnect.
 - Make session ownership explicit with readable **Runs on …** host chips,
   restrained per-host glass tints, and an active session/host titlebar label
   that remains visible with the sidebar hidden.
@@ -32,6 +54,188 @@
   the session's home terminal, retaining the original editor and draft.
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
+
+## [0.52.0](https://github.com/no-phux/phux/compare/desktop-v0.51.0...desktop-v0.52.0) (2026-10-28)
+
+
+### Features
+
+* **desktop:** underline a link while Command is held over it ([54c897e](https://github.com/no-phux/phux/commit/54c897e6dc90087ddb4efc82f84b5ceaffa39cbb))
+
+
+### Bug Fixes
+
+* **desktop:** install Desktop updates in place on Linux and name the local host ([#1856](https://github.com/no-phux/phux/issues/1856)) ([bff9eab](https://github.com/no-phux/phux/commit/bff9eab6277bf4ececc2b83b7389522551a8f47d))
+* **desktop:** typed text no longer shows an underline while it echoes ([bf46091](https://github.com/no-phux/phux/commit/bf46091f39775882b3d13575e9e4f3c3c4687621))
+
+## [0.51.0](https://github.com/no-phux/phux/compare/desktop-v0.50.0...desktop-v0.51.0) (2026-10-28)
+
+
+### Features
+
+* **desktop:** open Insert Path at the cursor, on Option-; ([4b9a190](https://github.com/no-phux/phux/commit/4b9a1909bc81e88744dc0dafd7d76abc7b517706))
+* **desktop:** preview each theme as you move to it in Select Theme ([0228f62](https://github.com/no-phux/phux/commit/0228f626d35772fa51d8a2d7baef4825096ea14c))
+* **desktop:** sidebar agent rows say what each agent is doing ([#1839](https://github.com/no-phux/phux/issues/1839)) ([90a452a](https://github.com/no-phux/phux/commit/90a452a1bb87d87e22a9bac24ea1714e9b69e6ee))
+* **desktop:** switch sessions from a list dropped from the session button ([3ad4dfe](https://github.com/no-phux/phux/commit/3ad4dfe61e15e50bd106dacf430fa7bd9721b7b5))
+
+## [0.50.0](https://github.com/no-phux/phux/compare/desktop-v0.49.0...desktop-v0.50.0) (2026-10-28)
+
+
+### Features
+
+* **cli:** minimal boxes show up in the desktop as their own session ([#1830](https://github.com/no-phux/phux/issues/1830)) ([165323c](https://github.com/no-phux/phux/commit/165323c1a38e8a041c47655c60a38daef54ad4cb))
+* **desktop:** a scripted fleet film from the fixture capture ([e644336](https://github.com/no-phux/phux/commit/e6443363a34d0191e10ee37d24392616c7324b1c))
+* **desktop:** draw box, block, braille and Powerline glyphs from the cell grid ([#1832](https://github.com/no-phux/phux/issues/1832)) ([69faafb](https://github.com/no-phux/phux/commit/69faafb321dbf9a147a19d165bf5efa43d9875fb))
+* **desktop:** qualify and package the native Windows app ([#1829](https://github.com/no-phux/phux/issues/1829)) ([f39321f](https://github.com/no-phux/phux/commit/f39321f8fcf5f6fb4bc3436aad66f930989342fe))
+* **desktop:** walk tabs and sidebar sessions with Command+arrows on Mac ([#1825](https://github.com/no-phux/phux/issues/1825)) ([9d17ce2](https://github.com/no-phux/phux/commit/9d17ce2e3787a0e3817a2758cbf655fb325190d6))
+
+
+### Bug Fixes
+
+* **desktop:** put every terminal glyph on its cell and draw Claude Code's tool marks ([#1826](https://github.com/no-phux/phux/issues/1826)) ([24fce1b](https://github.com/no-phux/phux/commit/24fce1b6c7321c429fd4b68f2c7a4d1d3e55adbd))
+* **desktop:** resolve the default home from one bootstrap snapshot ([#1835](https://github.com/no-phux/phux/issues/1835)) ([9e67ca9](https://github.com/no-phux/phux/commit/9e67ca9894778f01037ddcda78c45367bfa0e82f))
+
+## [0.49.0](https://github.com/no-phux/phux/compare/desktop-v0.48.0...desktop-v0.49.0) (2026-10-27)
+
+
+### Features
+
+* **desktop:** add Tokyo Night theme ([#1810](https://github.com/no-phux/phux/issues/1810)) ([026bdfd](https://github.com/no-phux/phux/commit/026bdfdcf61cffbbe9a43c15f00eae148c847322))
+* **desktop:** backdrop shaders play video that dims while agents work ([#1821](https://github.com/no-phux/phux/issues/1821)) ([c7a29be](https://github.com/no-phux/phux/commit/c7a29becb738c5588b7fc35f80a5c6d4ef9beb9d))
+* **desktop:** backdrop shaders that move with your agents ([#1817](https://github.com/no-phux/phux/issues/1817)) ([51e33b7](https://github.com/no-phux/phux/commit/51e33b7fc008669653f518b767e68ac32593388b))
+* **desktop:** brand installer and streamline setup help ([c20fb4f](https://github.com/no-phux/phux/commit/c20fb4f09e8f9b39972a8892954b361f42a902ef))
+* **desktop:** land Reviews with safer drafts and review targets ([#1820](https://github.com/no-phux/phux/issues/1820)) ([d7b5696](https://github.com/no-phux/phux/commit/d7b569661ff669f41f65b746782a8df7e0ab786c))
+* **desktop:** mark the terminal the window shows in the sidebar ([#1824](https://github.com/no-phux/phux/issues/1824)) ([dc3ca8a](https://github.com/no-phux/phux/commit/dc3ca8af23b81e03d655c6ac8d47022dc0ac82fd))
+* **desktop:** the Emblem Fox is the app icon and the fleet playground's piece ([#1815](https://github.com/no-phux/phux/issues/1815)) ([46ef188](https://github.com/no-phux/phux/commit/46ef18880f30429607561314f2a02fd847069412))
+
+
+### Bug Fixes
+
+* **desktop:** keep conversation switch in hover controls ([387895f](https://github.com/no-phux/phux/commit/387895f08f5222d9cc93bae1814695b6ce56e388))
+* **desktop:** quiet chrome and advertise truecolor ([461eda9](https://github.com/no-phux/phux/commit/461eda98bb2e0d04dc53db5fee9b39dfa7b56d05))
+
+## [0.48.0](https://github.com/no-phux/phux/compare/desktop-v0.47.1...desktop-v0.48.0) (2026-10-26)
+
+
+### Features
+
+* **desktop:** the agent fleet has a playground of ghosts ([75c6599](https://github.com/no-phux/phux/commit/75c659976805de33f7c955aded9608d83cca225e))
+* **desktop:** the fleet playground has a matrix map ([e740a9b](https://github.com/no-phux/phux/commit/e740a9b3d7950fbc8f513321591ff7191c7298a1))
+
+
+### Bug Fixes
+
+* **desktop:** offer to put ~/.local/bin on PATH after installing the CLI ([#1801](https://github.com/no-phux/phux/issues/1801)) ([18c52ca](https://github.com/no-phux/phux/commit/18c52caea20e071694a1c9cda1f103ca0c1b37fe))
+* **desktop:** size kitty images with real cell pixels from the first frame ([#1800](https://github.com/no-phux/phux/issues/1800)) ([ef91071](https://github.com/no-phux/phux/commit/ef91071781214bf2035ccfee1a25f15ae478a93e))
+
+
+### Documentation
+
+* restore Phux's and mark the Windows desktop unpublished ([#1805](https://github.com/no-phux/phux/issues/1805)) ([75aaec2](https://github.com/no-phux/phux/commit/75aaec21647c392f23560f6f4e3d70156eeb020f))
+* use one canonical one-liner and fix protocol and windows claims ([#1797](https://github.com/no-phux/phux/issues/1797)) ([1855dda](https://github.com/no-phux/phux/commit/1855dda8c0dc4a5dd293f7cde525f2f2a60bf97b))
+
+## [0.47.1](https://github.com/no-phux/phux/compare/desktop-v0.47.0...desktop-v0.47.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **desktop:** make DMG installs self-contained and recoverable ([#1795](https://github.com/no-phux/phux/issues/1795)) ([eedd146](https://github.com/no-phux/phux/commit/eedd14698f07c098f372dee23664091b34417f80))
+* **release:** register the signing keychain on macOS 26 ([#1792](https://github.com/no-phux/phux/issues/1792)) ([1f60463](https://github.com/no-phux/phux/commit/1f60463f86f31d01e3cf0b77a2e23aaf7814056f))
+
+## [0.47.0](https://github.com/no-phux/phux/compare/desktop-v0.46.0...desktop-v0.47.0) (2026-10-25)
+
+
+### Features
+
+* **brand:** bind desktop packaging to the shared brand profile ([0b98573](https://github.com/no-phux/phux/commit/0b9857386b380d1b7b59b73c2387ac0d6a34263b))
+* **brand:** use one profile interface for desktop branding ([#1787](https://github.com/no-phux/phux/issues/1787)) ([0b98573](https://github.com/no-phux/phux/commit/0b9857386b380d1b7b59b73c2387ac0d6a34263b))
+* **desktop:** add macOS permission setup ([#1783](https://github.com/no-phux/phux/issues/1783)) ([d5c9516](https://github.com/no-phux/phux/commit/d5c9516eac156f24624b0dc2234a4dae835cea50))
+* **desktop:** add saved brand profiles in Appearance settings ([#1789](https://github.com/no-phux/phux/issues/1789)) ([55f11ef](https://github.com/no-phux/phux/commit/55f11eff5e728ade431f9e53a4335b447f242f1d))
+* **desktop:** ship a native Windows client backed by WSL ([#1788](https://github.com/no-phux/phux/issues/1788)) (not published yet) ([d536b5d](https://github.com/no-phux/phux/commit/d536b5dd1206deea6a6fd16abc4186d8b8268224))
+
+
+### Bug Fixes
+
+* **desktop:** filter brand asset listings by the requested folder ([#1790](https://github.com/no-phux/phux/issues/1790)) ([ddcb7ef](https://github.com/no-phux/phux/commit/ddcb7ef4f598784dd4280d0ece58133f3e61e5ab))
+* **desktop:** support macOS 26 with idempotent Apple setup ([#1791](https://github.com/no-phux/phux/issues/1791)) ([a028fa3](https://github.com/no-phux/phux/commit/a028fa3ac0988c2de806619f212fea6bb8e6ff33))
+
+## [0.46.0](https://github.com/no-phux/phux/compare/desktop-v0.45.0...desktop-v0.46.0) (2026-10-25)
+
+
+### Features
+
+* **brand:** apply Sculptural Fox to desktop and docs ([#1781](https://github.com/no-phux/phux/issues/1781)) ([e3a1586](https://github.com/no-phux/phux/commit/e3a1586dfcf82987b9b5a8048d76bc92c81e1823))
+* **desktop:** add optional leader key navigation ([#1773](https://github.com/no-phux/phux/issues/1773)) ([c293239](https://github.com/no-phux/phux/commit/c293239aa8e66ec5784fafabd87815a6be3eed5d))
+* **desktop:** highlight the viewed terminal in the sidebar ([#1770](https://github.com/no-phux/phux/issues/1770)) ([eabb863](https://github.com/no-phux/phux/commit/eabb86310eec8d2ceb80b79de4e275ea69d7c1b2))
+* **desktop:** render inline Kitty graphics end to end ([#1780](https://github.com/no-phux/phux/issues/1780)) ([0a9443f](https://github.com/no-phux/phux/commit/0a9443f95557e1618b7bbf212b464a586f69feaf))
+
+
+### Bug Fixes
+
+* **desktop:** align and polish live tab previews ([12b552b](https://github.com/no-phux/phux/commit/12b552bb3977f0dc79e3998f84d00e00f781e4f7))
+* **desktop:** lift sidebar tabs and preserve pane indicators ([#1772](https://github.com/no-phux/phux/issues/1772)) ([6477b67](https://github.com/no-phux/phux/commit/6477b67dd390b07da1a25d99a2265a4f529cca9d))
+* **desktop:** retain urgent attention beside harness marks ([#1778](https://github.com/no-phux/phux/issues/1778)) ([93f0ab4](https://github.com/no-phux/phux/commit/93f0ab44f15dabf8e229c20e8dda32921e78814a))
+
+## [0.45.0](https://github.com/no-phux/phux/compare/desktop-v0.44.1...desktop-v0.45.0) (2026-10-24)
+
+
+### Features
+
+* **desktop:** add a saved developer mode and a developer settings page ([#1734](https://github.com/no-phux/phux/issues/1734)) ([7259f32](https://github.com/no-phux/phux/commit/7259f32ed98303c3f320855d255b6534fb44031f))
+* **desktop:** add corner update progress and explicit restart ([#1732](https://github.com/no-phux/phux/issues/1732)) ([54733cc](https://github.com/no-phux/phux/commit/54733ccd43193b32fc4cf4c63dbadc97d802ac4d))
+* **desktop:** add notarized macOS DMG distribution ([#1767](https://github.com/no-phux/phux/issues/1767)) ([52f04b0](https://github.com/no-phux/phux/commit/52f04b08a83dc77d131a8ab3be5875a1190033b1))
+* **desktop:** peek tabs with live native terminal previews ([#1738](https://github.com/no-phux/phux/issues/1738)) ([16b462d](https://github.com/no-phux/phux/commit/16b462db890f3f54489dd82d46952f28df15d6da))
+* **desktop:** put the agent reply loop first ([#1763](https://github.com/no-phux/phux/issues/1763)) ([7d5b8d0](https://github.com/no-phux/phux/commit/7d5b8d0191ea24fead04ff8a7f790f555cdebfe6))
+* **desktop:** redesign the agent fleet mission control ([df82a8b](https://github.com/no-phux/phux/commit/df82a8bf5c83f6d7b53341d4a609a82f0cdf0057))
+* **desktop:** separate native-style settings from the command palette ([4bf8533](https://github.com/no-phux/phux/commit/4bf8533a3f1fbc7458269df33b0a1e5dff417b63))
+* **desktop:** show tab context on hover ([#1744](https://github.com/no-phux/phux/issues/1744)) ([77f96f3](https://github.com/no-phux/phux/commit/77f96f35a9279065fafe1b41d254f31dca9f25f2))
+* sign in to Tailscale, discover tailnet machines, and install phux from desktop Add Machine ([#1742](https://github.com/no-phux/phux/issues/1742)) ([2d24592](https://github.com/no-phux/phux/commit/2d2459265453de41959bc486953d5e0b27d6d456))
+
+
+### Bug Fixes
+
+* **deps:** update Tokio for I/O-safe descriptor registration ([#1768](https://github.com/no-phux/phux/issues/1768)) ([f932a89](https://github.com/no-phux/phux/commit/f932a897a7400ab5d9dbed4dfaf303e887cb83fc))
+* **desktop:** bound diagnostic capture and batch fence reads ([#1748](https://github.com/no-phux/phux/issues/1748)) ([af355be](https://github.com/no-phux/phux/commit/af355bee278a8bcdc5ff7d051cc6e25315979f5b))
+* **desktop:** format-check phux-gpui too, and format it ([#1753](https://github.com/no-phux/phux/issues/1753)) ([9f6b2a5](https://github.com/no-phux/phux/commit/9f6b2a585dfc1950eb6ff3c93dc9cb5f911c92e7))
+* **desktop:** give every terminal in the session a tab without a click ([#1743](https://github.com/no-phux/phux/issues/1743)) ([a764f37](https://github.com/no-phux/phux/commit/a764f3739ab0b017469ec1fe7947f818a048be47))
+* **desktop:** read an old CLI from its usage_error code, not the error wording ([#1752](https://github.com/no-phux/phux/issues/1752)) ([4ea702f](https://github.com/no-phux/phux/commit/4ea702ffb70c4e85328c5e3fd51285d8ea17a491))
+* **desktop:** yield activity pump during sustained output ([#1760](https://github.com/no-phux/phux/issues/1760)) ([1967457](https://github.com/no-phux/phux/commit/1967457ab16a846dbb6b82d1186354458119bc99))
+
+
+### Performance
+
+* **desktop:** cache ASCII glyph layouts for terminal animation ([#1761](https://github.com/no-phux/phux/issues/1761)) ([7881e7e](https://github.com/no-phux/phux/commit/7881e7e66a3f8e1d029aeaef2f5ea621beeb6cea))
+* **desktop:** open a new shell at full size ([#1758](https://github.com/no-phux/phux/issues/1758)) ([0df8a0a](https://github.com/no-phux/phux/commit/0df8a0a8d7952c8dc527785c4ac5f58a8c82f715))
+* **desktop:** reuse ASCII glyph layouts and yield under output load ([7881e7e](https://github.com/no-phux/phux/commit/7881e7e66a3f8e1d029aeaef2f5ea621beeb6cea))
+
+## [0.44.1](https://github.com/no-phux/phux/compare/desktop-v0.44.0...desktop-v0.44.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **desktop:** restore windows and focused work after updates ([#1733](https://github.com/no-phux/phux/issues/1733)) ([cd7227b](https://github.com/no-phux/phux/commit/cd7227be296832cbd5e0be6227186539bea4e5c6))
+
+## [0.44.0](https://github.com/no-phux/phux/compare/desktop-v0.43.0...desktop-v0.44.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** make wire protocol 1.0 the compatibility baseline ([#1706](https://github.com/no-phux/phux/issues/1706))
+
+### Features
+
+* **desktop:** stack zoomed panes, map split tabs, rework the pane capsule ([#1699](https://github.com/no-phux/phux/issues/1699)) ([88e016c](https://github.com/no-phux/phux/commit/88e016c771c2482a4f020190bd9866f02a7b1f9c))
+* **desktop:** update phux and desktop in one click, and tighten settings layout ([#1700](https://github.com/no-phux/phux/issues/1700)) ([52589ac](https://github.com/no-phux/phux/commit/52589ac8eac0229ab5bbd07181a8c3ec4de253ac))
+* **native:** onboard OpenCode on the connected host ([#1704](https://github.com/no-phux/phux/issues/1704)) ([53d15e4](https://github.com/no-phux/phux/commit/53d15e48b837359b904868347831a90f4940a322))
+* **protocol:** make wire protocol 1.0 the compatibility baseline ([#1706](https://github.com/no-phux/phux/issues/1706)) ([3565741](https://github.com/no-phux/phux/commit/3565741fa3f078a44cfd1a77e17c3e5d47e17a91))
+
+
+### Bug Fixes
+
+* **agents:** a malformed program-status id discards the report ([#1725](https://github.com/no-phux/phux/issues/1725)) ([906e28d](https://github.com/no-phux/phux/commit/906e28d539535b046a3174715dec7aeea46dc36c))
+* **desktop:** deliver programs' OSC 52 copies from the focused terminal ([#1712](https://github.com/no-phux/phux/issues/1712)) ([b2dafac](https://github.com/no-phux/phux/commit/b2dafac299f9ffc8261f14b121fcf93fe8f28599))
+* **desktop:** let cmd-w close a fresh split again ([#1696](https://github.com/no-phux/phux/issues/1696)) ([69d7904](https://github.com/no-phux/phux/commit/69d7904c900978bd70efffdd15826d152a25fbac))
+* **desktop:** remove killed sessions from the session list ([#1702](https://github.com/no-phux/phux/issues/1702)) ([c27a797](https://github.com/no-phux/phux/commit/c27a79777a14eb73b6911979731663f961f5a396))
 
 ## [0.43.0](https://github.com/no-phux/phux/compare/desktop-v0.42.0...desktop-v0.43.0) (2026-10-20)
 

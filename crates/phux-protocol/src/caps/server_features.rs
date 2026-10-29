@@ -109,7 +109,7 @@ macro_rules! define_server_features {
             /// Every known feature, in bit order.
             pub const ALL: &'static [Self] = &[$(Self::$variant),*];
 
-            /// The `docs/spec/proto.md` §6.2 constant, e.g. `"ACKNOWLEDGED_INPUT"`.
+            /// The `docs/protocol.md#handshake` constant, e.g. `"ACKNOWLEDGED_INPUT"`.
             #[must_use]
             pub const fn wire_name(self) -> &'static str {
                 match self {
@@ -179,7 +179,7 @@ define_server_features! {
     /// bit tells a client the kind it asked for is the kind it got.
     ResourceKinds = RESOURCE_KINDS = 0x0000_4000,
     /// The server answers `LIST_DIRECTORY` for its own host
-    /// (`docs/spec/L3.md` §4). A client MUST see the bit first: a 1.x
+    /// (`docs/protocol.md#commands-events-resources`). A client MUST see the bit first: a 1.x
     /// server without it answers an uncorrelated `ERROR Unsupported` for the
     /// frame type, so no `DIRECTORY_LISTING` ever answers the request.
     ListDirectory = LIST_DIRECTORY = 0x0000_8000,
@@ -191,10 +191,10 @@ define_server_features! {
     /// the bit before sending `empty: true`: an older server seeds a shell.
     KeepEmptySessions = KEEP_EMPTY_SESSIONS = 0x0002_0000,
     /// The server answers `GET_METADATA { Global, "phux.whoami/v1" }` with the
-    /// asking connection's identity (`docs/spec/L3.md` §3.9, ADR-0106); the
+    /// asking connection's identity (`docs/remote.md#who-can-do-what`, ADR-0106); the
     /// bit makes an absent value meaningful.
     Whoami = WHOAMI = 0x0004_0000,
-    /// The server understands `LIST_DIRECTORY.host` (`docs/spec/L3.md` §4.1):
+    /// The server understands `LIST_DIRECTORY.host` (`docs/protocol.md#commands-events-resources`):
     /// a hub relays to the named satellite, anything else is refused by name.
     /// A client MUST see the bit before trusting a listing came from the host
     /// it named; an older server lists its own host.
@@ -202,7 +202,7 @@ define_server_features! {
     /// The server honors HELLO field 9 `ssh_origin`, only from a same-uid
     /// Unix-socket peer, and only to relabel the whoami route `ssh-stdio`;
     /// auth is unchanged. The bit lets a whoami reader trust that `uds`
-    /// means no bridge announced ssh (`docs/spec/L3.md` §3.9).
+    /// means no bridge announced ssh (`docs/remote.md#who-can-do-what`).
     SshOrigin = SSH_ORIGIN = 0x0010_0000,
     /// The server evaluates `KILL_RESOURCE_IF` (ADR-0109) and answers
     /// `bind_instance` spawns with the instance token. A client MUST see the
@@ -333,19 +333,19 @@ pub enum ServerFeatureExt {
     /// viewport vote.
     ResizeCellPx = 0x0000_0002,
     /// A kill's reply follows a commit that is the whole visible teardown
-    /// (`docs/spec/L1.md` §5.2): the next `GET_STATE` already omits the
+    /// (`docs/protocol.md#commands-events-resources`): the next `GET_STATE` already omits the
     /// killed resources, so a client need not wait for their reap.
     CommittedTeardown = 0x0000_0004,
     /// `ATTACH_RESOURCE` accepts an agent cursor and explicitly distinguishes
     /// a resumed suffix from a full retained-ring replacement.
     AgentStreamResume = 0x0000_0008,
-    /// The server accepts the organization commands (`docs/spec/L1.md`
-    /// §5.7) and enforces every rule they carry: keyed sessions and
+    /// The server accepts the organization commands (`docs/organization.md`)
+    /// and enforces every rule they carry: keyed sessions and
     /// resources, revisions, receipts, refusals, and the organization
     /// events. A client that does not see it treats organization as
     /// read-only.
     Organization = 0x0000_0010,
-    /// The server accepts `SESSION_KILL` (`docs/spec/L1.md` §5.7): one
+    /// The server accepts `SESSION_KILL` (`docs/organization.md`): one
     /// command ends every member of a session and deletes it. Advertised
     /// only beside [`Self::Organization`].
     SessionKill = 0x0000_0020,
@@ -355,7 +355,7 @@ pub enum ServerFeatureExt {
     /// switch heap accounting. A client MUST see the bit before sending the
     /// command.
     PerfControl = 0x0000_0080,
-    /// The server accepts `SESSION_SET_PROJECT` (`docs/spec/L1.md` §5.7):
+    /// The server accepts `SESSION_SET_PROJECT` (`docs/organization.md`):
     /// link a session into a named project after creation, or clear the
     /// link. Advertised only beside [`Self::Organization`]; a client MUST see
     /// the bit before sending the command.
@@ -400,7 +400,7 @@ impl ServerFeatureExt {
         Self::ApiDescription,
     ];
 
-    /// The `docs/spec/proto.md` §6.2 constant, e.g. `"PATH_QUERY"`.
+    /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
     #[must_use]
     pub const fn wire_name(self) -> &'static str {
         match self {

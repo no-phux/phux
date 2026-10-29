@@ -26,9 +26,7 @@ use phux_client_core::input_replay::{
 use phux_client_core::session::{
     HistoryRejectionReason, HistoryUnavailableReason, KernelEffect, KernelSend, KernelStatus,
 };
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ClientCapabilities, ServerFeature, ServerFeatureExt,
-};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, ServerFeature};
 use phux_protocol::ids::{ClientId, GroupId, InputOperationId, ResourceId, ResourceKind};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
@@ -91,7 +89,7 @@ pub use global_metadata::{GlobalMetadata, MAX_WATCHED_GLOBAL_KEYS};
 pub use input::mint_input_operation_id;
 pub use options::{
     ControlOptions, InboundDelivery, MAX_QUEUED_INBOUND_BYTES, MAX_QUEUED_INBOUND_FRAMES,
-    SessionRecovery,
+    PredictionStyle, SessionRecovery,
 };
 pub use org_plane::{ArrangementSubmitError, mint_operation};
 pub use organization::{InboxView, IntakeView, OrganizationReplica, ReplicaAction, ReplicaState};

@@ -2,6 +2,7 @@
 # Exercise fresh-PATH behavior and compiler download integrity without network.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+bash "$root/scripts/test-macos-desktop.sh"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/phux-setup-test.XXXXXX")"
 scratch="$(cd "$scratch" && pwd)"
 trap 'rm -rf "$scratch"' EXIT
@@ -12,6 +13,7 @@ cp "$root"/scripts/{doctor,setup-rust,install-zig}.sh "$repo/scripts/"
 cp "$root/scripts/lib/dev-toolchain.sh" "$repo/scripts/lib/"
 cp "$root/scripts/lib/output.sh" "$repo/scripts/lib/"
 cp "$root/scripts/lib/apple-toolchain-env.sh" "$repo/scripts/lib/"
+cp "$root/scripts/lib/macos-desktop.sh" "$repo/scripts/lib/"
 cp "$root/rust-toolchain.toml" "$repo/"
 cp "$root/mise.toml" "$repo/"
 cp "$root/.config/zig-toolchain.json" "$repo/.config/"
@@ -194,9 +196,24 @@ chmod +x "$bin/xcrun"
 expect_fail 'macOS SDK/nmedit' "$repo/scripts/doctor.sh" native
 
 # Xcode being present is insufficient for GPUI: execute the Metal compiler.
+mkdir -p "$scratch/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"
+export SETUP_TEST_XCODE="$scratch/Xcode.app/Contents/Developer"
+cat >"$bin/xcode-select" <<'SH'
+#!/bin/sh
+echo "$SETUP_TEST_XCODE"
+SH
+cat >"$bin/xcodebuild" <<'SH'
+#!/bin/sh
+echo 'Xcode 26.0'
+SH
+cat >"$bin/sw_vers" <<'SH'
+#!/bin/sh
+echo 26.0
+SH
+chmod +x "$bin"/{xcode-select,xcodebuild,sw_vers}
 cat >"$bin/xcrun" <<'SH'
 #!/bin/sh
-test "$1" != metal
+test "$3" != metal
 SH
 cp "$bin/npm" "$bin/python3"
 bun_version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' "$root/mise.toml")"

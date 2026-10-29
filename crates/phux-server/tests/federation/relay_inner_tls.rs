@@ -246,7 +246,7 @@ async fn wait_for_route(t: &Topology) {
 fn ticket(paths: &WorkloadPaths) -> Vec<u8> {
     let minted = phux_server::workload::tickets::mint_ticket(
         &phux_server::workload::tickets::tickets_path(&paths.registry),
-        vec!["inventory,observe,create,bind,input,signal@global".to_owned()],
+        vec![phux_server::workload::PAIRED_DEVICE_SCOPE.to_owned()],
         3600,
         600,
     )

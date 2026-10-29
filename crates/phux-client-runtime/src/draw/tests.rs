@@ -47,6 +47,7 @@ fn frame(rows: &[&[&str]], cols: u16) -> GridFrame {
             ..FrameColors::default()
         },
         damage: GridDamage::Full,
+        images: Vec::new(),
         buffer,
     }
 }

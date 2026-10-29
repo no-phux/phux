@@ -3,7 +3,7 @@
 use super::*;
 
 impl Desk {
-    pub(super) fn on_activity(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::app) fn on_activity(&mut self, cx: &mut Context<Self>) {
         let _drain = crate::diag::DRAIN.timer();
         crate::diag::DRAIN_WAKES.incr();
         let (events, answers, uploads, epoch, agents_noted) = {
@@ -30,16 +30,7 @@ impl Desk {
         self.runtime_chrome = chrome;
         // Notify cached terminals even for mixed agent/PTY batches, but keep
         // the last frame while disconnected instead of reacquiring a view.
-        if self.session_is_attached() {
-            let terminals = events
-                .iter()
-                .filter_map(|event| match event {
-                    Event::TerminalChanged { terminal_id } => Some(terminal_id.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            self.panes.notify_terminals(&terminals, cx);
-        }
+        self.notify_terminal_output(&events, cx);
         // A spawn's bootstrap can arrive as a pure paint batch. Promote only
         // output that can actually settle an awaiting placement.
         let awaiting_output = self
@@ -51,12 +42,26 @@ impl Desk {
             && !conversation_changed
             && !awaiting_output
         {
-            if had_uploads || chrome_changed {
+            if had_uploads || chrome_changed || self.tab_peek.open {
                 cx.notify();
             }
             return;
         }
         self.apply_activity(&events, answers, epoch, cx);
+    }
+
+    fn notify_terminal_output(&self, events: &[Event], cx: &mut Context<Self>) {
+        if !self.session_is_attached() {
+            return;
+        }
+        let terminals = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::TerminalChanged { terminal_id } => Some(terminal_id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        self.panes.notify_terminals(&terminals, cx);
     }
 
     pub(super) fn apply_activity(
@@ -145,6 +150,7 @@ impl Desk {
     }
 
     pub(super) fn note_event(&mut self, event: &Event) {
+        self.note_fleet_event(event);
         self.note_terminal_event(event);
         self.note_command_event(event);
         if let Event::OrganizationOperation { operation, outcome } = event {

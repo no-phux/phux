@@ -36,7 +36,7 @@ pub unsafe extern "C" fn phux_client_queue_attach_resource(
 /// Declare the role every later `ATTACH` and `ATTACH_RESOURCE` carries.
 ///
 /// ADR-0127: bit 0 `VIEWER`, bit 1 `DELIBERATE` takeover, the byte of
-/// `docs/spec/L1.md` §8.1. `0` restores the default and sends nothing.
+/// `docs/protocol.md#attach-and-output`. `0` restores the default and sends nothing.
 /// Additive; the ABI version is unchanged.
 ///
 /// # Safety

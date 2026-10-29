@@ -71,6 +71,16 @@ pub fn running_version() -> Option<String> {
         .map(|record| record.version)
 }
 
+/// The pid of the most recently started server.
+///
+/// Same record as [`running_version`]. There is no pidfile; a caller must
+/// still check that the process is alive before treating this as the server
+/// on the socket.
+#[must_use]
+pub fn running_pid() -> Option<u32> {
+    read_records(&history_path()).pop().map(|record| record.pid)
+}
+
 /// Whether recent restarts look like a crash-loop, and the count.
 #[must_use]
 pub fn crash_loop() -> Option<usize> {

@@ -1,4 +1,4 @@
-//! Wire-frame decoder (`docs/spec/proto.md` §5, Appendix A). Bounds-checked;
+//! Wire-frame decoder (`docs/protocol.md#framing`, Appendix A). Bounds-checked;
 //! never panics or reads past the borrowed slice on malformed input.
 
 use super::error::DecodeError;
@@ -331,7 +331,7 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// Read one body-level TLV field (`docs/spec/appendix-encoding.md` §1).
+    /// Read one body-level TLV field (`docs/protocol.md#framing`).
     ///
     /// `Ok(None)` at the end of the body. Every top-level field is
     /// length-delimited, so a caller skips an unknown id by ignoring its slice.

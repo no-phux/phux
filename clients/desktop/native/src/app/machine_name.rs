@@ -12,7 +12,10 @@ static NAMES: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
 /// The name to show for machine `host`, or `None` for this Mac.
 pub(crate) fn label(host: Option<&str>) -> String {
-    host.map_or_else(|| "This Mac".to_owned(), display)
+    host.map_or_else(
+        || crate::platform::local_machine_label().to_owned(),
+        display,
+    )
 }
 
 /// The resolved name for `host` when it is an address that has one.
@@ -140,6 +143,6 @@ mod tests {
         assert!(unresolved([address]).is_empty());
         assert_eq!(display(address), "studio");
         assert_eq!(label(Some("mini")), "mini");
-        assert_eq!(label(None), "This Mac");
+        assert_eq!(label(None), crate::platform::local_machine_label());
     }
 }

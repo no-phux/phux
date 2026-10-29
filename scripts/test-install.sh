@@ -5,6 +5,7 @@
 # handling, and the install-desktop shim. The network is a fake curl.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+sh "$ROOT/scripts/generate-install.sh" --check
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 SH="$(command -v dash || echo /bin/sh)"
@@ -13,21 +14,24 @@ BASE=https://github.com/no-phux/phux/releases/download
 TARGET=x86_64-unknown-linux-gnu
 export HOME="$TMP/home" SHELL=/bin/zsh
 unset ZDOTDIR XDG_CONFIG_HOME PHUX_NO_MODIFY_PATH PHUX_CHANNEL PHUX_INSTALL_DIR
+unset PHUX_DESKTOP_PROGRESS
 mkdir -p "$HOME" "$TMP/bin" "$TMP/served"
-export SERVED="$TMP/served" CALLS="$TMP/calls"
+export SERVED="$TMP/served" CALLS="$TMP/calls" METER_CALLS="$TMP/meter-calls"
 
 # Serves channels/*.json and release assets from $SERVED by basename.
 cat > "$TMP/bin/curl" <<'EOF'
 #!/bin/sh
-out="" url=""
+out="" url="" meter=0
 while [ "$#" -gt 0 ]; do
-  case "$1" in -o | -O) out="$2"; shift ;; https://*) url="$1" ;; esac
+  case "$1" in -o | -O) out="$2"; shift ;; --progress-bar) meter=1 ;; https://*) url="$1" ;; esac
   shift
 done
 printf '%s\n' "$url" >> "$CALLS"
+printf '%s %s\n' "$meter" "$url" >> "$METER_CALLS"
 [ "${FAIL_NETWORK:-0}" = 0 ] || exit 22
 [ -f "$SERVED/${url##*/}" ] || exit 22
 if [ -n "$out" ] && [ "$out" != - ]; then cp "$SERVED/${url##*/}" "$out"; else cat "$SERVED/${url##*/}"; fi
+if [ "$meter" = 1 ]; then printf '\r#### 50.0%%\r######## 100.0%%\r' >&2; fi
 EOF
 chmod 755 "$TMP/bin/curl"
 
@@ -146,6 +150,19 @@ install_to "$TMP/stable" 2>"$TMP/err" >/dev/null
 grep -Fq 'installed phux 9.8.7' "$TMP/err" || fail "stable install: $(cat "$TMP/err")"
 grep -Fxq 'phux v9.8.7' "$TMP/stable/phux" && grep -Fxq stable "$TMP/stable/.phux-channel" || fail "stable files"
 if grep -Fq .sha256 "$CALLS"; then fail "a manifest install fetched a sidecar"; fi
+if grep -Eq '^1 ' "$METER_CALLS" || grep -Fq 'phux-update: verifying' "$TMP/err"; then fail "progress must be opt-in"; fi
+
+# Desktop staging opts into only the archive meter, not metadata downloads.
+# Exercise the shared fetch path with a pin so it also reads a checksum sidecar.
+: > "$METER_CALLS"
+PHUX_DESKTOP_PROGRESS=1 install_to "$TMP/progress" --version 9.8.7 >"$TMP/out" 2>"$TMP/err"
+grep -Fxq "1 $BASE/v9.8.7/phux-v9.8.7-$TARGET.tar.gz" "$METER_CALLS" || fail "archive has no meter"
+grep -Fxq "0 $BASE/v9.8.7/phux-v9.8.7-$TARGET.tar.gz.sha256" "$METER_CALLS" || fail "sidecar has a meter"
+grep -Fq '100.0%' "$TMP/err" || fail "archive progress not forwarded"
+grep -Fxq 'phux-update: verifying' "$TMP/err" || fail "missing verification phase"
+meter_log="$(tr '\r' '\n' < "$TMP/err")"
+[[ $(grep -n '100.0%' <<<"$meter_log" | cut -d: -f1) -lt $(grep -n 'phux-update: verifying' <<<"$meter_log" | cut -d: -f1) ]] \
+  || fail "verification preceded transfer completion"
 
 install_to "$TMP/next" --channel next >/dev/null 2>&1
 grep -Fxq "phux next.$sha_a" "$TMP/next/phux" && grep -Fxq next "$TMP/next/.phux-channel" || fail "next install"

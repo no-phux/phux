@@ -1,5 +1,5 @@
 //! The grant engines and the dispatch guard, below the wire
-//! (`docs/spec/workload-auth.md` §5-§8).
+//! (`docs/remote.md#who-can-do-what`).
 //!
 //! The verb-only matrices derive every expectation from the classifier's own
 //! row for the sample, so they pin the guard to `phux_protocol::kinds` rather

@@ -2,6 +2,86 @@
 use super::*;
 
 #[test]
+fn desktop_leader_defaults_off_and_rejects_unsafe_saved_values() {
+    assert_eq!(default_display().leader_key, None);
+    assert_eq!(parse_display(&json!({})).leader_key, None);
+    for value in [
+        json!(null),
+        json!(true),
+        json!(42),
+        json!(["ctrl+a"]),
+        json!(""),
+        json!("a"),
+        json!("shift+a"),
+        json!("ctrl"),
+        json!("escape"),
+        json!("ctrl+escape"),
+        json!("ctrl+a ctrl+b"),
+    ] {
+        let parsed = parse_display(&json!({"leaderKey": value, "fontSize": 17}));
+        assert_eq!(parsed.leader_key, None, "{value}");
+        assert_eq!(parsed.font_size, 17.);
+    }
+}
+
+#[test]
+fn desktop_leader_normalizes_round_trips_and_can_be_disabled() {
+    for (input, expected) in [
+        ("ctrl+a", "ctrl+a"),
+        ("C-b", "ctrl+b"),
+        ("ctrl+space", "ctrl+space"),
+        ("ctrl+alt+a", "ctrl+alt+a"),
+    ] {
+        let parsed = parse_display(&json!({"leaderKey": input}));
+        assert_eq!(parsed.leader_key.as_deref(), Some(expected));
+        let value = display_value(&parsed);
+        assert_eq!(value["leaderKey"], expected);
+        assert_eq!(parse_display(&value), parsed);
+        let mut off = parsed;
+        off.leader_key = None;
+        assert_eq!(display_value(&off)["leaderKey"], Value::Null);
+        assert_eq!(parse_display(&display_value(&off)), off);
+    }
+}
+
+#[test]
+fn desktop_leader_is_sanitized_before_writing_preferences() {
+    for (input, expected) in [("C-a", Some("ctrl+a")), ("a", None), ("ctrl", None)] {
+        let prefs = DisplayPrefs {
+            leader_key: Some(input.to_owned()),
+            ..default_display()
+        };
+        assert_eq!(sanitize_display(&prefs).leader_key.as_deref(), expected);
+        assert_eq!(
+            parse_display(&display_value(&prefs)).leader_key.as_deref(),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn pane_glass_is_independent_and_preserves_the_saved_strength_across_styles() {
+    assert!(
+        parse_display(&json!({})).pane_glass,
+        "old layouts keep their appearance"
+    );
+    for value in [json!(null), json!("false"), json!(0)] {
+        assert!(parse_display(&json!({"paneGlass": value})).pane_glass);
+    }
+    for skin_id in ["glass", "classic"] {
+        let prefs = DisplayPrefs {
+            skin_id: skin_id.into(),
+            pane_glass: false,
+            terminal_opacity: 0.65,
+            ..default_display()
+        };
+        assert_eq!(parse_display(&display_value(&prefs)), prefs);
+        assert_eq!(prefs.painted_terminal_opacity(), 1.);
+        assert_eq!(prefs.terminal_opacity, 0.65);
+    }
+}
+
+#[test]
 fn agent_fleet_is_opt_in_and_round_trips_without_coercion() {
     for value in [
         json!({}),
@@ -17,6 +97,64 @@ fn agent_fleet_is_opt_in_and_round_trips_without_coercion() {
     };
     assert_eq!(display_value(&on)["agentFleet"], true);
     assert_eq!(parse_display(&display_value(&on)), on);
+}
+
+#[test]
+fn the_playground_map_is_office_unless_a_known_map_is_saved() {
+    for value in [
+        json!({}),
+        json!({"playgroundMap": "lava"}),
+        json!({"playgroundMap": 3}),
+    ] {
+        assert_eq!(parse_display(&value).playground_map, "office");
+    }
+    let matrix = DisplayPrefs {
+        playground_map: "matrix".to_owned(),
+        ..default_display()
+    };
+    assert_eq!(display_value(&matrix)["playgroundMap"], "matrix");
+    assert_eq!(parse_display(&display_value(&matrix)), matrix);
+}
+
+#[test]
+fn the_backdrop_shader_defaults_off_and_keeps_only_known_choices() {
+    let shipped = parse_display(&json!({}));
+    assert_eq!(shipped.backdrop_shader, "off");
+    assert_eq!(shipped.backdrop_intensity, 0.7);
+    for junk in [json!("lava"), json!(3), json!("file:../../etc.wgsl")] {
+        let parsed = parse_display(&json!({"backdropShader": junk}));
+        assert_eq!(parsed.backdrop_shader, "off", "{junk}");
+    }
+    for (saved, kept) in [(0.0, 0.1), (0.456, 0.46), (4.0, 1.0)] {
+        let parsed = parse_display(&json!({"backdropIntensity": saved}));
+        assert_eq!(parsed.backdrop_intensity, kept);
+    }
+    for choice in ["aurora", "file:mine.wgsl"] {
+        let prefs = DisplayPrefs {
+            backdrop_shader: choice.to_owned(),
+            backdrop_intensity: 0.4,
+            ..default_display()
+        };
+        assert_eq!(display_value(&prefs)["backdropShader"], choice);
+        assert_eq!(parse_display(&display_value(&prefs)), prefs);
+    }
+}
+
+#[test]
+fn the_playground_scheme_is_theme_unless_a_known_scheme_is_saved() {
+    for value in [
+        json!({}),
+        json!({"playgroundScheme": "plaid"}),
+        json!({"playgroundScheme": 1}),
+    ] {
+        assert_eq!(parse_display(&value).playground_scheme, "theme");
+    }
+    let mint = DisplayPrefs {
+        playground_scheme: "mint".to_owned(),
+        ..default_display()
+    };
+    assert_eq!(display_value(&mint)["playgroundScheme"], "mint");
+    assert_eq!(parse_display(&display_value(&mint)), mint);
 }
 
 #[test]

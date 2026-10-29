@@ -1,6 +1,9 @@
 //! Opening a window, attaching its connection, and reconnecting or closing it.
 
+mod activity;
+
 use super::*;
+use activity::pump_activity;
 
 impl Desk {
     #[allow(
@@ -10,7 +13,9 @@ impl Desk {
     pub(crate) fn open(
         desktop: Entity<Desktop>,
         updates: Entity<super::super::updates::Updater>,
+        branding: Entity<super::super::branding::Branding>,
         phux: PathBuf,
+        cli_install: Option<crate::app::CliInstall>,
         socket: PathBuf,
         request: OpenRequest,
         recent_projects: Vec<PathBuf>,
@@ -21,7 +26,8 @@ impl Desk {
             FileLayoutStore::new(request.layout_path.clone(), request.legacy_layout.clone());
         let loaded = persist::load_layout(&store.read());
         let blocked = loaded.blocked;
-        let saved = loaded.initial;
+        let resuming = request.resume_layout.is_some();
+        let saved = request.resume_layout.clone().or(loaded.initial);
         let text = settings::read_ghostty_sources();
         let ghostty = settings::parse_ghostty_sources(text.as_deref().unwrap_or_default());
         let mut prefs = saved
@@ -57,22 +63,27 @@ impl Desk {
         let mut desk = Self {
             desktop,
             updates,
+            branding,
             role: request.role,
             socket,
             remote: request.remote.clone(),
             session: request.session.clone(),
             home_key: request.home_key,
-            expected_authority: None,
+            expected_authority: request.authority,
             phux,
+            cli_install,
+            path_prompt: super::cli_path::Prompt::default(),
             focus,
             prefs,
             ghostty_found: text.is_some(),
             chords: shown_chords(&keymap),
             keymap,
+            leader: leader::Leader::new(window, cx),
             ghostty,
             paint: RefCell::new(None),
             capture: super::super::capture::State::default(),
             changes: Default::default(),
+            reviews: Default::default(),
             modal: Modal::None,
             prepared: Modal::None,
             find: None,
@@ -81,6 +92,7 @@ impl Desk {
             recent_projects,
             link: None,
             connect_error: None,
+            reconnect_home: None,
             layout_blocked: blocked,
             persist_writes: request.role != WindowRole::Fresh && !blocked,
             store,
@@ -88,10 +100,13 @@ impl Desk {
             saves,
             _save_errors: save_errors,
             stable_layout: request.stable_layout,
-            layout_key: None,
+            // The handoff already names this store and session. Adopting it
+            // again would replace the restart snapshot with older disk state.
+            layout_key: request.home_key.filter(|_| resuming),
             layout_migration_pending: false,
             last_saved: saved,
             panes: Panes::default(),
+            tab_peek: Default::default(),
             agent_seen: HashMap::new(),
             agent_epoch: None,
             commands: Default::default(),
@@ -114,20 +129,21 @@ impl Desk {
             find_input: None,
             conversation_faces: HashMap::new(),
             settings_controls: None,
-            settings_page: None,
             native_launch: Default::default(),
-            open_fresh: request.fresh,
+            open_fresh: request.fresh && !resuming,
             pending_project_terminal: None,
             expanded: Default::default(),
             disclosures: HashMap::new(),
             hosts: Vec::new(),
             fleet: Default::default(),
             fleet_view: Default::default(),
-            host_adding: None,
+            backdrop_shader: Default::default(),
+            add_machine: AddMachine::default(),
             drag_region: None,
             menu: None,
             menu_closed: None,
             anchors: Default::default(),
+            theme_pick: None,
             chrome: super::super::view::ChromeCache::default(),
             window_title: String::new(),
             closed: false,
@@ -147,7 +163,9 @@ impl Desk {
             upload_epoch: 0,
             uploads_reading: 0,
         };
+        let ready = request.startup_error.is_none();
         if let Some(error) = request.startup_error {
+            desk.connect_error = Some(error.clone());
             desk.post(Kind::Error, "Could not start the phux server", Some(error));
         }
         if blocked {
@@ -157,7 +175,9 @@ impl Desk {
                 Some("This layout is invalid or from an unsupported version. Layout and settings changes will not be saved.".into()),
             );
         }
-        desk.attach(request.initial_terminal, cx);
+        if ready {
+            desk.attach(request.initial_terminal, cx);
+        }
         desk.refresh_hosts(cx);
         desk.sync_bindings(cx);
         desk.set_motion_spans();
@@ -169,9 +189,10 @@ impl Desk {
             let generation = updates.read(cx).runtime_generation;
             if generation != runtime_generation {
                 runtime_generation = generation;
+                let socket = updates.read(cx).local_socket();
                 cx.spawn(async move |this, cx| {
                     smol::Timer::after(Duration::from_millis(500)).await;
-                    let _ = this.update(cx, |desk, cx| desk.redial(cx));
+                    let _ = this.update(cx, |desk, cx| desk.runtime_reconnect(socket, cx));
                 })
                 .detach();
             }
@@ -184,6 +205,8 @@ impl Desk {
         }));
         // Window keys need the `Desk` context on the dispatch path before any terminal exists.
         window.focus(&desk.focus, cx);
+        #[cfg(target_os = "macos")]
+        desk.start_path_probe(cx);
         desk
     }
 
@@ -192,7 +215,8 @@ impl Desk {
         self.reset_native_launch();
         if self.session.is_empty() {
             // The launch could not name a session; its reason is already shown.
-            self.connect_error = Some("No session to open".into());
+            self.connect_error
+                .get_or_insert_with(|| "No session to open".into());
             cx.notify();
             return;
         }
@@ -223,7 +247,7 @@ impl Desk {
                     workspace.preserve_empty();
                 }
                 // A secondary window shows new terminals; every other window restores its own layout.
-                if self.role != WindowRole::Fresh {
+                if self.role != WindowRole::Fresh || !self.open_fresh {
                     workspace.restore(self.last_saved.clone());
                 }
                 self.arm_wake(&connection, cx);
@@ -285,16 +309,50 @@ impl Desk {
 
     pub(super) fn arm_wake(&mut self, connection: &Connection, cx: &mut Context<Self>) {
         let rx = connection.activity();
+        let timer = cx.background_executor().clone();
         self._wake = Some(cx.spawn(async move |this, cx| {
-            loop {
-                if rx.recv().await.is_err() {
-                    break;
-                }
-                if this.update(cx, |desk, cx| desk.on_activity(cx)).is_err() {
-                    break;
-                }
-            }
+            pump_activity(rx, timer, || {
+                this.update(cx, |desk, cx| desk.on_activity(cx)).is_ok()
+            })
+            .await;
         }));
+    }
+
+    /// Snapshot before quitting releases views; no live handles or credentials are saved.
+    pub(in crate::app) fn restart_request(&self) -> OpenRequest {
+        OpenRequest {
+            role: self.role,
+            session: self.session.clone(),
+            home_key: self.link_home_key().or(self.home_key),
+            authority: self
+                .link
+                .as_ref()
+                .and_then(|link| {
+                    link.connection
+                        .with_organization(|replica| replica.authority())
+                })
+                .or(self.expected_authority),
+            remote: self.remote.clone(),
+            layout_path: self.store.path.clone(),
+            legacy_layout: self.store.legacy.clone(),
+            stable_layout: self.stable_layout,
+            resume_layout: self
+                .link
+                .as_ref()
+                .filter(|link| link.workspace.restored())
+                .and_then(|link| {
+                    // A disconnected window still owns its last presentation.
+                    // Keep its incarnation binding; normal restore revalidates it.
+                    Some(persist::save_layout(
+                        link.workspace.server_id()?,
+                        &link.workspace.tabs,
+                        &self.prefs,
+                        Some(&link.workspace.active_id),
+                    ))
+                })
+                .or_else(|| self.last_saved.clone()),
+            ..OpenRequest::default()
+        }
     }
 
     /// Save, then release every view and the connection. Runs once per window.
@@ -343,51 +401,6 @@ impl Desk {
             self.find = None;
             self.find_input = None;
         }
-    }
-
-    /// Resolve the existing home before redialing; never recreate a stale name.
-    pub(super) fn prepare_reconnect_home(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.session_is_attached() {
-            return true;
-        }
-        let key = self.link_home_key().or(self.home_key);
-        let result = if let Some(remote) = self.remote.as_deref() {
-            crate::connection::home::existing_remote_home(remote, &self.session, key)
-        } else {
-            host::start_server(&self.phux, &self.socket).and_then(|()| {
-                if self.session.is_empty() {
-                    crate::connection::home::open_home(&self.phux, &self.socket, None)
-                } else {
-                    crate::connection::home::existing_home(&self.socket, &self.session, key)
-                }
-            })
-        };
-        match result {
-            // A launch that could not name a session reopens on the one
-            // the server now offers, with that session's saved layout.
-            Ok(name) if self.session.is_empty() => {
-                let old = cx.entity_id();
-                self.defer_desktop(cx, move |desktop, cx| desktop.rehome(old, name, cx));
-                false
-            }
-            Ok(name) => {
-                self.session = name.clone();
-                self.workspace_call(|link| link.workspace.set_home_session(name));
-                true
-            }
-            Err(error) => {
-                self.post(Kind::Error, "Could not reconnect", Some(error));
-                cx.notify();
-                false
-            }
-        }
-    }
-
-    pub(crate) fn reconnect(&mut self, cx: &mut Context<Self>) {
-        if !self.prepare_reconnect_home(cx) {
-            return;
-        }
-        self.redial(cx);
     }
 
     /// Reattach after a managed handoff. The updater already performed the

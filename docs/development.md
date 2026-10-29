@@ -170,9 +170,16 @@ sudo apt-get install -y libfontconfig1-dev libfreetype-dev libxkbcommon-dev \
 ```
 
 On macOS use Mise plus the host Xcode for the daily loop; the desktop
-gates refuse a Nix shell whose compiler is shadowed by Mise. The Metal
-compiler must run, not just exist (`xcodebuild -downloadComponent
-MetalToolchain` if not).
+gates refuse a Nix shell whose compiler is shadowed by Mise. The desktop
+supports macOS 26+ and full Xcode 26+ compatible with the host OS.
+`bash scripts/setup-macos-desktop.sh` detects the host version and selected
+Xcode (or an installed `/Applications/Xcode*.app` when needed), downloads
+only a missing matching Metal component, and verifies that it executes.
+Rerunning it is a no-op when Metal works. An explicit `DEVELOPER_DIR` selects
+that Xcode or fails rather than silently using another. It never installs
+Xcode, changes the global `xcode-select` setting, or replaces the installed app.
+Builds perform this setup automatically and enforce a macOS 26.0 deployment
+target even on newer hosts; `doctor desktop` only checks, never installs.
 
 ```sh
 just doctor desktop
@@ -180,6 +187,9 @@ just desktop-app      # build the app and the CLI from this tree, start a server
 ```
 
 [`clients/desktop`](../clients/desktop) has the app's own commands and gates.
+
+For native MSVC builds, isolated WSL coordinator paths, and qualification,
+see [Windows desktop development](./windows-desktop-development.md).
 
 ## Archived Zig Cockpit
 
@@ -278,8 +288,9 @@ The test lanes compile once (`just test-archive`) and run the unit halves
 and e2e from that nextest archive. Pull requests restore caches and never
 save them; `main` pushes save one entry per lane under a 10 GB repository
 budget, pruned by `prune-build-cache`. Runners are the free hosted ones:
-Ubuntu x64 and arm64, and macOS on the `xcode-27` image, where the desktop
-lane shares a handful of slots with the release builds.
+Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image. Desktop releases
+build on macOS 26 (the supported floor); PRs qualify both Apple toolchains.
+The desktop lane shares a handful of macOS slots with release builds.
 
 Workflow files carry their own comments; `.github/workflows/` is the
 reference. `just guards` lints them.
@@ -316,8 +327,10 @@ grants. An abandoned server capture stops and saves after ten minutes;
 the server retains the newest 20 trace files. Exports use exclusive,
 owner-readable files so simultaneous captures cannot overwrite each other.
 
-`PHUX_DEV=1` is the one dev-mode switch for every phux process
-(`phux_perf::dev`). In the desktop it also turns on the performance HUD and
+`PHUX_DEV=1` is the dev-mode switch every phux process reads
+(`phux_perf::dev`). The desktop also has a saved **Developer mode** setting
+(**Settings > Developer**) that does the same without a restart. In the
+desktop, Developer mode also turns on the performance HUD and
 a dev socket, `desktop-<pid>.dev.sock` beside the server socket, that
 answers line JSON (`clients/desktop/native/src/devtools/socket.rs`).
 `phux perf --desktop [--watch S] [--json]` reads it, `phux perf trace

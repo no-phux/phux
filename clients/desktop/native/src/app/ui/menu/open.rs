@@ -32,7 +32,10 @@ pub(crate) fn open<T: 'static>(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                     origin,
-                    size(px(width), px(height - 14.).max(px(ROW))),
+                    size(
+                        px(width),
+                        px(height - if cx.reduce_motion() { 0. } else { 14. }).max(px(ROW)),
+                    ),
                 ))),
                 display_id,
                 titlebar: None,

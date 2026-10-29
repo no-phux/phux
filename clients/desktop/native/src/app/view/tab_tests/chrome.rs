@@ -499,3 +499,43 @@ fn plain_terminal_keeps_side_tabs_in_a_rail_of_their_own(cx: &mut TestAppContext
     assert!(cx.debug_bounds("tab-rail").is_none());
     assert!(cx.debug_bounds("sidebar-tab-shelf").is_some());
 }
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn command_left_and_right_step_tabs_but_leave_text_fields_their_keys(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, |desk, cx| {
+        let workspace = &mut desk.link.as_mut().unwrap().workspace;
+        workspace.tabs = tabs(3);
+        workspace.active_id = "fixture-a".into();
+        cx.notify();
+    });
+    draw(cx);
+    let active = |cx: &mut VisualTestContext| {
+        desk.read_with(cx, |desk, _| {
+            desk.link.as_ref().unwrap().workspace.active_id.clone()
+        })
+    };
+    for (key, tab) in [
+        ("cmd-right", "fixture-b"),
+        ("cmd-right", "fixture-c"),
+        ("cmd-left", "fixture-b"),
+    ] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(active(cx), tab, "{key}");
+    }
+    desk.update_in(cx, |desk, window, cx| desk.execute("palette", window, cx));
+    draw(cx);
+    for key in ["cmd-right", "cmd-left", "cmd-up", "cmd-down"] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(active(cx), "fixture-b", "{key} stays with the palette");
+        assert_ne!(
+            desk.read_with(cx, |desk, _| desk.modal.clone()),
+            Modal::None
+        );
+    }
+}

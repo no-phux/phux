@@ -1,13 +1,23 @@
+import { desktopBrand } from "./brand.ts";
 /**
  * Build `Phux.app`: the release GPUI executable, embedded-font license and
  * font files, the repository LICENSE and NOTICE with a third-party notice
  * generated from the desktop's Cargo graph, an icon rendered from
- * packaging/AppIcon.svg, and an ad-hoc signature. The executable is the Rust
+ * packaging/AppIcon.png, and an ad-hoc signature. The executable is the Rust
  * binary. There is no JS bundle and no native addon.
  *
  * Usage: bun scripts/package-app.ts [--install]
  */
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { desktopBinary, desktopRoot, repoRoot } from "./host.ts";
@@ -19,15 +29,18 @@ const app = resolve(root, "dist/app/Phux.app");
 const contents = join(app, "Contents");
 const binary = process.env.PHUX_DESKTOP_BIN ?? desktopBinary("release");
 const fonts = resolve(root, "native/phux-gpui/assets/fonts");
+const runtime = process.env.PHUX_DESKTOP_RUNTIME_BIN ?? resolve(repo, "target/release/phux");
 
 if (import.meta.main) {
   if (!existsSync(binary)) {
     throw new Error(`Build the native host first (just desktop-native-build): ${binary}`);
   }
+  if (!existsSync(runtime)) throw new Error(`Build the bundled CLI first: ${runtime}`);
   rmSync(app, { recursive: true, force: true });
   mkdirSync(join(contents, "MacOS"), { recursive: true });
   mkdirSync(join(contents, "Resources/fonts"), { recursive: true });
   cpSync(binary, join(contents, "MacOS/phux-desktop"));
+  bundleRuntime(runtime, app);
   run(["chmod", "755", join(contents, "MacOS/phux-desktop")]);
   for (const name of [
     "PaperMono-Regular.ttf",
@@ -46,6 +59,10 @@ if (import.meta.main) {
   for (const name of ["LICENSE", "NOTICE"]) {
     cpSync(join(repo, name), join(contents, "Resources", name));
   }
+  cpSync(
+    join(root, "native/assets/fonts/Inter-OFL.txt"),
+    join(contents, "Resources/fonts/Inter-OFL.txt"),
+  );
   writeFileSync(join(contents, "Resources/THIRD-PARTY-NOTICES.txt"), thirdPartyNotices());
   renderIcon(join(contents, "Resources/AppIcon.icns"));
   const version = packageVersion(readFileSync(join(root, "package.json"), "utf8"));
@@ -68,6 +85,15 @@ if (import.meta.main) {
     run(["/usr/bin/touch", target]);
     console.log(`Installed ${target}`);
   }
+}
+
+/** The app is self-contained, including its same-checkout CLI/server. */
+export function bundleRuntime(source: string, bundle: string): void {
+  if (!existsSync(source)) throw new Error(`Missing bundled phux CLI: ${source}`);
+  const destination = join(bundle, "Contents/MacOS/phux");
+  mkdirSync(join(bundle, "Contents/MacOS"), { recursive: true });
+  cpSync(source, destination);
+  chmodSync(destination, 0o755);
 }
 
 export function packageVersion(text: string): string {
@@ -96,6 +122,7 @@ export function infoPlist(
   <key>CFBundleDisplayName</key><string>Phux</string>
   <key>CFBundleExecutable</key><string>phux-desktop</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>PhuxBrandProfile</key><string>${desktopBrand().id}</string>
   <key>CFBundleIdentifier</key><string>dev.phux.desktop</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Phux</string>
@@ -106,7 +133,7 @@ export function infoPlist(
   <key>PhuxDesktopChannel</key><string>${channel}</string>
   <key>PhuxDesktopHost</key><string>gpui</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <key>LSMinimumSystemVersion</key><string>27.0</string>
+  <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>PhuxBuildSHA</key><string>${sha}</string>
@@ -131,38 +158,57 @@ export function thirdPartyNotices(target = "aarch64-apple-darwin"): string {
     "--manifest-path",
     resolve(root, "native/Cargo.toml"),
   ]);
-  return renderNotices(shippedCrates(metadata));
+  const runtimeMetadata = run([
+    "cargo",
+    "metadata",
+    "--locked",
+    "--format-version",
+    "1",
+    "--filter-platform",
+    target,
+    "--manifest-path",
+    resolve(repo, "crates/phux/Cargo.toml"),
+  ]);
+  const crates = new Map<string, ReturnType<typeof shippedCrates>[number]>();
+  for (const crate of [...shippedCrates(metadata), ...shippedCrates(runtimeMetadata)]) {
+    const key = `${crate.name}@${crate.version}`;
+    const previous = crates.get(key);
+    crates.set(key, { ...crate, buildOnly: crate.buildOnly && (previous?.buildOnly ?? true) });
+  }
+  return renderNotices([...crates.values()]);
 }
 
-function renderIcon(output: string): void {
-  const work = join(tmpdir(), `phux-icon-${process.pid}`);
-  const iconset = join(work, "AppIcon.iconset");
-  mkdirSync(iconset, { recursive: true });
-  run(["qlmanage", "-t", "-s", "1024", "-o", work, resolve(root, "packaging/AppIcon.svg")]);
-  const master = join(work, "AppIcon.svg.png");
-  for (const size of [16, 32, 128, 256, 512]) {
-    run([
-      "sips",
-      "-z",
-      `${size}`,
-      `${size}`,
-      master,
-      "--out",
-      join(iconset, `icon_${size}x${size}.png`),
-    ]);
-    const double = size * 2;
-    run([
-      "sips",
-      "-z",
-      `${double}`,
-      `${double}`,
-      master,
-      "--out",
-      join(iconset, `icon_${size}x${size}@2x.png`),
-    ]);
+export function renderIcon(output: string, master = desktopBrand().iconPng): void {
+  const work = mkdtempSync(join(tmpdir(), "phux-icon-"));
+  try {
+    const iconset = join(work, "AppIcon.iconset");
+    mkdirSync(iconset, { recursive: true });
+    // Use canonical pixels: Quick Look adds a white background or document frame.
+    for (const size of [16, 32, 128, 256, 512]) {
+      run([
+        "sips",
+        "-z",
+        `${size}`,
+        `${size}`,
+        master,
+        "--out",
+        join(iconset, `icon_${size}x${size}.png`),
+      ]);
+      const double = size * 2;
+      run([
+        "sips",
+        "-z",
+        `${double}`,
+        `${double}`,
+        master,
+        "--out",
+        join(iconset, `icon_${size}x${size}@2x.png`),
+      ]);
+    }
+    run(["iconutil", "-c", "icns", iconset, "-o", output]);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
   }
-  run(["iconutil", "-c", "icns", iconset, "-o", output]);
-  rmSync(work, { recursive: true, force: true });
 }
 
 function run(command: string[]): string {

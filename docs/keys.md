@@ -242,6 +242,11 @@ prefix that does not parse falls back to <kbd>C-a</kbd>.
 
 ## Coming from tmux
 
+To bring over your current tmux bindings automatically, preview
+`phux config import-tmux`, then use `--apply` after reviewing its report.
+The [tmux importer guide](./tmux-import.md) covers supported bindings,
+native layering, differences and undo.
+
 This file keeps tmux's prefix and brings back a few tmux habits:
 
 ```toml

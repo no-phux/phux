@@ -42,12 +42,18 @@ use super::typed::typed_keys;
 
 mod activity;
 mod chrome;
+pub(crate) mod cli_path;
 mod clipboard;
 mod commands;
 mod input;
 mod labels;
+mod leader;
 mod lifecycle;
+mod machines;
 mod prefs;
+mod recovery;
+mod request;
+pub use request::{OpenRequest, WindowRole};
 mod search;
 mod sessions;
 mod state;
@@ -56,6 +62,7 @@ mod tests;
 mod work;
 
 pub(crate) use labels::*;
+pub(crate) use machines::{AddMachine, TailnetView};
 
 const SEARCH_BYTES: usize = 8 * 1024 * 1024;
 const UPLOAD_MOVED: &str = "The terminal changed before the upload started. Nothing was pasted.";
@@ -79,34 +86,6 @@ fn agent_attention(info: &AgentInfo) -> super::notifications::AgentAttention {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WindowRole {
-    #[default]
-    Main,
-    Fresh,
-    Quick,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct OpenRequest {
-    pub role: WindowRole,
-    pub session: String,
-    pub home_key: Option<SessionKey>,
-    /// Spawn a new terminal when nothing is restored, instead of showing the home pane.
-    pub fresh: bool,
-    pub initial_terminal: Option<ResourceId>,
-    pub layout_path: PathBuf,
-    pub legacy_layout: Option<PathBuf>,
-    /// Default stores adopt the session key after the first topology; explicit
-    /// layout paths and fresh windows keep their caller-selected store.
-    pub stable_layout: bool,
-    pub startup_error: Option<String>,
-    /// The main window's display, which a quick window borrows.
-    pub main_display: Option<DisplayPrefs>,
-    /// A host from the remote registry. Absent is the local server.
-    pub remote: Option<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRenameTarget {
     pub key: Option<SessionKey>,
@@ -120,11 +99,12 @@ pub enum Modal {
     Commands,
     Capture,
     Goto,
-    Settings,
     Notifications,
     AgentFleet,
     NativeLaunch,
     Path,
+    /// Pick a theme; the highlighted one previews until Enter keeps it.
+    Themes,
     MoveResources,
     Rename {
         tab_id: String,
@@ -150,6 +130,8 @@ pub enum Modal {
         target: Option<SessionRenameTarget>,
     },
     WindowSession,
+    /// Switch this window to a session on any machine, or create one by name.
+    Sessions,
     /// Every open native window, its session, host and tabs.
     Windows,
     Terminate {
@@ -186,6 +168,7 @@ pub struct FindState {
 pub struct Desk {
     pub desktop: Entity<Desktop>,
     pub(crate) updates: Entity<super::updates::Updater>,
+    pub(crate) branding: Entity<super::branding::Branding>,
     pub role: WindowRole,
     pub socket: PathBuf,
     /// A host from the remote registry this window attaches to instead of `socket`.
@@ -194,6 +177,9 @@ pub struct Desk {
     home_key: Option<SessionKey>,
     expected_authority: Option<phux_protocol::ids::AuthorityId>,
     pub phux: PathBuf,
+    /// CLI discovery found or installed. `phux` may still be the command name.
+    pub(crate) cli_install: Option<super::CliInstall>,
+    pub(crate) path_prompt: cli_path::Prompt,
     pub focus: FocusHandle,
     pub prefs: DisplayPrefs,
     pub ghostty_found: bool,
@@ -203,6 +189,7 @@ pub struct Desk {
     keymap: Vec<(String, String)>,
     /// The chord each command shows, from `keymap`.
     chords: HashMap<String, Chord>,
+    leader: leader::Leader,
     /// Paint values for the current preferences, skin, Ghostty config and keymap.
     paint: RefCell<Option<Rc<Paint>>>,
     pub modal: Modal,
@@ -214,6 +201,8 @@ pub struct Desk {
     pub(crate) recent_projects: Vec<PathBuf>,
     pub link: Option<Link>,
     pub connect_error: Option<String>,
+    /// One home probe at a time, including while its blocking worker finishes.
+    reconnect_home: Option<Task<()>>,
     pub layout_blocked: bool,
     pub persist_writes: bool,
     store: FileLayoutStore,
@@ -225,6 +214,7 @@ pub struct Desk {
     layout_migration_pending: bool,
     last_saved: Option<persist::SavedLayout>,
     panes: Panes,
+    pub(crate) tab_peek: super::tab_peek::TabPeek,
     agent_seen: HashMap<ResourceId, super::notifications::AgentAttention>,
     agent_epoch: Option<u64>,
     /// Shell commands in flight, for the finished-in-the-background alert.
@@ -257,11 +247,12 @@ pub struct Desk {
     pub(crate) find_input: Option<(Entity<InputState>, Subscription)>,
     pub(crate) conversation_faces: HashMap<String, super::conversation::Face>,
     pub(crate) settings_controls: Option<SettingsControls>,
-    pub(crate) settings_page: Option<super::settings_panel::Page>,
     pub(crate) native_launch: super::native_launch::State,
     pub(crate) capture: super::capture::State,
     /// The Changes panel beside the panes.
     pub(crate) changes: super::changes::Changes,
+    /// The Reviews surface, in the panes' place while open.
+    pub(crate) reviews: super::reviews::Reviews,
     /// `OpenRequest::fresh`, kept so a rebuilt link spawns the same way.
     open_fresh: bool,
     /// A CLI-opened terminal that has not appeared in this window's topology yet.
@@ -276,8 +267,8 @@ pub struct Desk {
     pub(crate) hosts: Vec<host::RemoteHost>,
     pub(crate) fleet: super::fleet::Fleet,
     pub(crate) fleet_view: super::fleet::dashboard::State,
-    /// A host enrollment in flight, by the target it was given.
-    pub(crate) host_adding: Option<String>,
+    /// The Add Machine dialog: the tailnet and a setup in flight.
+    pub(crate) add_machine: AddMachine,
     /// The titlebar's window-drag surface, created once.
     pub(crate) drag_region: Option<Entity<crate::chrome::DragRegion>>,
     /// The glass menu showing, by the trigger that opened it.
@@ -287,6 +278,9 @@ pub struct Desk {
     pub(super) menu_closed: Option<(gpui::SharedString, Instant)>,
     /// Where menu triggers were painted.
     pub(crate) anchors: super::ui::anchor::Anchors,
+    /// The theme picker's original theme, restored unless a theme is kept,
+    /// and whether its list has been pointed at the current theme yet.
+    pub(crate) theme_pick: Option<(String, bool)>,
     /// Titlebar and sidebar. A terminal frame does not rebuild them.
     pub(super) chrome: super::view::ChromeCache,
     /// The window title last written.
@@ -305,6 +299,8 @@ pub struct Desk {
     shift: Option<Shift>,
     /// The window background last applied.
     backdrop: Option<Backdrop>,
+    /// The shader drawn behind the chrome and panes.
+    pub(crate) backdrop_shader: super::backdrop_shader::BackdropShader,
     /// The placement whose top edge, or whose pane controls, the pointer is over.
     pub(crate) chrome_hover: Option<String>,
     pub(crate) controls_hover: Option<String>,
@@ -522,7 +518,7 @@ fn listed_modal(id: &str) -> Option<Modal> {
         "capture" => Modal::Capture,
         "goto" => Modal::Goto,
         "windows" => Modal::Windows,
-        "settings" => Modal::Settings,
+        "switch-session" => Modal::Sessions,
         "notifications" => Modal::Notifications,
         "agent-fleet" => Modal::AgentFleet,
         _ => return None,

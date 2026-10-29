@@ -1,5 +1,5 @@
 //! The server identity the workload CA issues, pinned by a real client over a
-//! real QUIC listener (ADR-0153, `docs/spec/workload-auth.md` §2).
+//! real QUIC listener (ADR-0153, `docs/remote.md#who-can-connect`).
 //!
 //! - A client pinning the CA connects.
 //! - **CA swap.** After `phux workload authority --rotate` the server

@@ -120,7 +120,7 @@ impl ServerState {
     }
 
     /// Withdraw delegated credential `id`. Returns every live connection
-    /// acting as it, for the caller to revoke (`workload-auth.md` §7); empty
+    /// acting as it, for the caller to revoke (`docs/remote.md#managing-credentials`); empty
     /// when `id` named nothing.
     pub fn withdraw_delegation(&mut self, id: &str) -> Vec<ClientId> {
         let Some(credential) = self.delegations.remove(id) else {
@@ -137,7 +137,7 @@ impl ServerState {
 
     /// Revoke every delegated credential scoped to `session`, which is being
     /// deleted: each socket closes, and each live connection acting as one
-    /// is told `AUTHORIZATION_REVOKED` and closed (`workload-auth.md` §7).
+    /// is told `AUTHORIZATION_REVOKED` and closed (`docs/remote.md#managing-credentials`).
     /// The connections' own teardown releases what they held. Returns the
     /// connections revoked.
     pub(crate) fn revoke_session_delegations(&mut self, session: SessionId) -> Vec<ClientId> {

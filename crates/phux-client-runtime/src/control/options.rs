@@ -3,8 +3,7 @@
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, ClientCapabilities, ImageProtocolSet, Layer, LayerSet,
 };
-#[cfg(not(feature = "engine"))]
-use phux_protocol::caps::{BootstrapProfileKind, BootstrapProfileSet};
+use phux_protocol::caps::{BootstrapProfileKind, BootstrapProfileSet, ImageProtocol};
 use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
 
 /// What a consumer asks the control plane to do on every connection.
@@ -53,8 +52,23 @@ pub struct ControlOptions {
     pub subscribe_agent_sessions: bool,
     /// The bootstrap payload limits offered in `HELLO`.
     pub bootstrap_limits: BootstrapLimits,
+    /// Image protocols this consumer can paint. Currently Kitty is supported;
+    /// unsupported protocols are not advertised. Empty for text-only and ABI consumers.
+    pub image_protocols: ImageProtocolSet,
     /// Where the connection driver puts an inbound frame.
     pub deliver_inbound: InboundDelivery,
+    /// How predictive echo is drawn. Applied to every engine this plane starts.
+    pub prediction_style: PredictionStyle,
+}
+
+/// How a guess at what the server will echo is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PredictionStyle {
+    /// Underlined, as a terminal client marks a guess.
+    #[default]
+    Underline,
+    /// Plain text, for a client that would rather typing read as typed.
+    Plain,
 }
 
 /// Who re-establishes session and terminal admission after transport loss.
@@ -107,7 +121,9 @@ impl Default for ControlOptions {
             auto_attach_foreign_spawns: true,
             subscribe_agent_sessions: false,
             bootstrap_limits: BootstrapLimits::default(),
+            image_protocols: ImageProtocolSet::new(),
             deliver_inbound: InboundDelivery::Fed,
+            prediction_style: PredictionStyle::Underline,
         }
     }
 }
@@ -122,15 +138,31 @@ impl ControlOptions {
     )]
     pub fn client_caps(&self) -> ClientCapabilities {
         ClientCapabilities::new()
-            // GridFrame publishes text/style POD cells, not image planes. Do
-            // not pay mobile bandwidth for escapes no runtime consumer sees.
-            .with_image_protocols(ImageProtocolSet::new())
+            .with_image_protocols(
+                if cfg!(feature = "engine")
+                    && self.image_protocols.contains(ImageProtocol::KittyGraphics)
+                {
+                    ImageProtocolSet::with(&[ImageProtocol::KittyGraphics])
+                } else {
+                    ImageProtocolSet::new()
+                },
+            )
             .with_layers(LayerSet::with(&[Layer::L3]))
             .with_bootstrap(self.bootstrap_caps())
     }
 
     #[cfg(feature = "engine")]
     fn bootstrap_caps(&self) -> BootstrapCapabilities {
+        if self.image_protocols.contains(ImageProtocol::KittyGraphics) {
+            // Native GHOSTSNP does not preserve image storage. Synthesized
+            // replay is the image-capable bootstrap contract.
+            return BootstrapCapabilities::new()
+                .with_profiles(BootstrapProfileSet::with(&[
+                    BootstrapProfileKind::SynthesizedVtRaw,
+                    BootstrapProfileKind::SynthesizedVtStateSync,
+                ]))
+                .with_limits(self.bootstrap_limits);
+        }
         phux_client_core::engine::ghostty::native_bootstrap_capabilities(self.bootstrap_limits)
     }
 
@@ -141,5 +173,42 @@ impl ControlOptions {
                 BootstrapProfileKind::SynthesizedVtRaw,
             ]))
             .with_limits(self.bootstrap_limits)
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn text_consumers_do_not_offer_image_protocols() {
+        assert_eq!(
+            ControlOptions::default().client_caps().image_protocols,
+            ImageProtocolSet::new()
+        );
+    }
+
+    #[test]
+    fn image_offer_is_explicit_and_never_uses_lossy_native_bootstrap() {
+        let options = ControlOptions {
+            image_protocols: ImageProtocolSet::with(&[ImageProtocol::KittyGraphics]),
+            ..ControlOptions::default()
+        };
+        let caps = options.client_caps();
+        assert_eq!(
+            caps.image_protocols.contains(ImageProtocol::KittyGraphics),
+            cfg!(feature = "engine")
+        );
+        assert!(
+            !caps
+                .bootstrap
+                .profiles
+                .contains(BootstrapProfileKind::NativeState)
+        );
+        assert!(
+            caps.bootstrap
+                .profiles
+                .contains(BootstrapProfileKind::SynthesizedVtRaw)
+        );
     }
 }

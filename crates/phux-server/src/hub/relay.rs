@@ -22,7 +22,7 @@
 //! refuses is retained per subscriber and its later deltas are held until
 //! it lands, so a delta never overtakes it. No link-wide stall.
 //!
-//! **Directory listings** (`docs/spec/L3.md` §4.1) ride the link as
+//! **Directory listings** (`docs/protocol.md#commands-events-resources`) ride the link as
 //! correlated requests; every failure is a typed refusal naming the host.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -256,7 +256,7 @@ pub(crate) enum RelayRequest {
         /// The frame to forward (already satellite-local).
         forward: FrameKind,
     },
-    /// Relay a `LIST_DIRECTORY` (`docs/spec/L3.md` §4.1); `reply` resolves
+    /// Relay a `LIST_DIRECTORY` (`docs/protocol.md#commands-events-resources`); `reply` resolves
     /// with the listing or a refusal naming the host.
     ListDirectory {
         /// The requested path, verbatim.
@@ -266,10 +266,6 @@ pub(crate) enum RelayRequest {
     },
     /// A satellite-local path query; the session strips the hub host field
     /// and correlates `PATH_RESULTS` through a link-side request id.
-    #[allow(
-        dead_code,
-        reason = "consumer dispatch is implemented on the sibling branch"
-    )]
     PathQuery {
         root: String,
         query: String,

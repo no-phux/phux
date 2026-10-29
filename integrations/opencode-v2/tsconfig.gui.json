@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsxImportSource": "solid-js",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ]
+  },
+  "include": [
+    "src/gui.tsx",
+    "src/gui/**/*.ts",
+    "src/gui/**/*.tsx"
+  ],
+  "exclude": []
+}

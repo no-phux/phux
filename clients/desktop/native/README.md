@@ -16,6 +16,7 @@ and lock so the GPUI dependency graph never enters the other phux crates.
 | `app/view` | chrome composed from `ui`: titlebar, the one navigator, tabs (one renderer, two placements), panes, status |
 | `app/menus` | every glass menu's contents (main, view, session, tab, pane), built from the desk |
 | `app/overlays/launcher` | native command/navigation presentation over Kit's query and selection state |
+| `app/settings_panel` | shared preference controls and search catalog; `window` owns the separate settings window, sidebar, search and window-local control state |
 | `workspace` | tabs, split trees, focus, size ownership, restore, layout persistence |
 | `settings` | display preferences, Ghostty config, themes, key chords |
 | `connection` | one runtime `Client` per host in a window and its sole event/path-answer drain |
@@ -65,7 +66,10 @@ resolution failure still opens the window, with the reason shown.
 
 ## Observing it
 
-- **Dev mode:** `PHUX_DEV=1` or `--dev` ([`devtools`](src/devtools.rs)).
+- **Dev mode:** **Settings > Developer > Developer mode**, saved by
+  `devtools::prefs`, or `PHUX_DEV=1` / `--dev` for one run
+  ([`devtools`](src/devtools.rs)); it applies live through
+  `devtools::set_dev_mode`.
   `devtools::frames` keeps the last 1200 desk renders (build time and gap)
   for FPS, jank and the HUD ([`app/hud.rs`](src/app/hud.rs)). The binary
   installs `phux_perf::alloc::Counting`, which dev mode enables.
@@ -87,7 +91,7 @@ resolution failure still opens the window, with the reason shown.
   **Memory** explains RSS versus physical footprint versus net Rust allocations
   since dev counting was enabled; native graphics allocations are not Rust heap.
   **Copy JSON** includes `physical_footprint_bytes` separately (null off macOS).
-  **Settings > Performance > Count Rust allocations** enables or disables the
+  **Settings > Developer > Count Rust allocations** enables or disables the
   desktop's counter live, across windows, for this run only. It does not enable
   the dev socket, change the server or require a restart.
   Memory also offers inline counting, baseline comparisons, native malloc
@@ -164,3 +168,43 @@ HOME=$tmp XDG_CONFIG_HOME=$tmp/config XDG_STATE_HOME=$tmp/state \
 ```
 
 It refuses a `HOME` outside the temporary directory and any named server.
+Each update state also saves a `*-corner.png` with Settings closed, covering
+availability, measured downloads, verification, server installation, handoff
+recovery, and the explicit restart action. These are native scene captures,
+not compositor-presentation evidence.
+
+Capture the actual fleet composition with representative local/remote agents
+in dark, light, narrow, and empty layouts, without a daemon or credentials:
+
+```sh
+cargo build --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --features ui-fixtures --example agent_fleet
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/phux-fleet.XXXXXX")
+mkdir -p "$tmp/config"
+env -u PHUX_SOCKET -u PHUX_PROFILE HOME="$tmp" \
+  XDG_CONFIG_HOME="$tmp/config" XDG_STATE_HOME="$tmp/state" \
+  clients/desktop/native/target/debug/examples/agent_fleet "$tmp/images"
+```
+
+These PNGs are native scene captures for design review, not compositor
+presentation evidence. Fixture inventory is excluded from shipping builds.
+
+Capture the main desktop compositions and overlays without a server:
+
+```sh
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/design.XXXXXX")
+cargo build --locked --manifest-path clients/desktop/native/Cargo.toml \
+  --features ui-fixtures --example design_preview
+env -i PATH=/usr/bin:/bin TMPDIR="${TMPDIR:-/tmp}" HOME="$tmp" \
+  XDG_CONFIG_HOME="$tmp/config" XDG_STATE_HOME="$tmp/state" PHUX_DESKTOP_BACKGROUND=1 \
+  clients/desktop/native/target/debug/examples/design_preview clients/desktop/.cache/design-preview
+```
+
+The embedded runtime supplies synthetic terminal output. Captures cover top,
+bottom and side tabs, live tab previews, a collapsed sidebar, narrow layouts, menus, Work,
+Actions, notifications, Changes, capture and the actual agent conversation
+(ready, working, permission, disconnected and narrow) in dark and light appearances.
+The `navigation` and `navigation-narrow` scenes include a split mosaic and an
+expanded, unselected session with its own agent mark. These are
+native scene captures, not proof of compositor presentation. The preview
+refuses a non-temporary HOME or a named server and never runs terminal input.

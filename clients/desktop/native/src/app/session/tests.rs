@@ -24,6 +24,7 @@ fn opening_a_window_does_not_read_its_leased_desktop(cx: &mut TestAppContext) {
         quick: false,
         dev_telemetry: false,
         startup_error: Some("Isolated window fixture".into()),
+        cli_install: None,
     };
     desktop.update(cx, |desktop, cx| {
         desktop.launch(options, cx).unwrap();
@@ -110,6 +111,7 @@ fn project_open_uses_a_durable_window_even_when_a_fresh_view_exists(cx: &mut Tes
         quick: false,
         dev_telemetry: false,
         startup_error: Some("Isolated window fixture".into()),
+        cli_install: None,
     };
     desktop.update(cx, |desktop, cx| {
         desktop.launch(options, cx).unwrap();
@@ -155,6 +157,7 @@ fn performance_monitor_starts_stops_and_reopens_live_without_a_launch_flag(
                     quick: false,
                     dev_telemetry: false,
                     startup_error: None,
+                    cli_install: None,
                 },
                 cx,
             )
@@ -235,6 +238,7 @@ fn main_menu_drops_from_the_titlebar_with_or_without_a_sidebar(cx: &mut TestAppC
                     quick: false,
                     startup_error: Some("Isolated hub fixture".into()),
                     dev_telemetry: false,
+                    cli_install: None,
                 },
                 cx,
             )
@@ -271,8 +275,9 @@ fn main_menu_drops_from_the_titlebar_with_or_without_a_sidebar(cx: &mut TestAppC
         menu_cx.run_until_parked();
         assert_eq!(
             desk.read_with(menu_cx, |desk, _| desk.modal.clone()),
-            crate::app::Modal::Settings
+            crate::app::Modal::None
         );
+        assert!(desk.read_with(menu_cx, |desk, cx| desk.desktop.read(cx).settings.is_some()));
         assert!(
             desk.read_with(menu_cx, |desk, _| desk.menu_window())
                 .is_none(),
@@ -335,6 +340,7 @@ fn the_inbox_shows_a_pending_approval_and_clears_it_after_a_decision(cx: &mut Te
                     quick: false,
                     startup_error: None,
                     dev_telemetry: false,
+                    cli_install: None,
                 },
                 cx,
             )

@@ -4,6 +4,7 @@
  *
  *   bun clients/desktop/scripts/perf-bench.ts [--phux <cli>] [--desktop <phux-desktop>]
  *     [--panes 4] [--seconds 8] [--output <dir>] [--profile <phase>]
+ *     [--workload full|cmatrix] (cmatrix must be installed on the benchmark host)
  *
  * It owns a temporary HOME, socket and server, opens the app behind the active
  * one (never activating it), lays out `--panes` terminals in one tab plus one
@@ -40,6 +41,7 @@ const { values } = parseArgs({
     seconds: { type: "string", default: "8" },
     output: { type: "string" },
     profile: { type: "string" },
+    workload: { type: "string", default: "full" },
   },
 });
 const phux = resolve(values.phux);
@@ -50,6 +52,9 @@ assert(existsSync(phux) && existsSync(host), "CLI and desktop binary must exist"
 assert(!isInstalledPhux(phux), "perf refuses an installed phux CLI");
 assert(Number.isInteger(panes) && panes >= 1 && panes <= 8, "--panes is 1-8");
 assert(seconds >= 2, "--seconds is at least 2");
+assert(["full", "cmatrix"].includes(values.workload), "--workload is full or cmatrix");
+const cmatrix = values.workload === "cmatrix" ? Bun.which("cmatrix") : undefined;
+assert(values.workload !== "cmatrix" || cmatrix, "cmatrix workload requires cmatrix on PATH");
 
 // Short path: Unix-domain socket paths are limited.
 const home = mkdtempSync("/tmp/phux-desktop-perf-");
@@ -286,6 +291,8 @@ const COUNTERS = [
   "desktop.acquire_rejected",
   "desktop.prepare_reused",
   "desktop.shaped",
+  "desktop.platform_shaped",
+  "desktop.ascii_lines",
   "runtime.publish",
   "runtime.acquire",
   "runtime.catch_up",
@@ -298,8 +305,9 @@ interface Phase {
   cpuPercent: number;
   rssMiB: number;
   heapMiB: number;
-  drawsPerSecond: number;
-  drawP99Ms: number | undefined;
+  /** Terminal paints, not compositor FPS; several panes can paint in one draw. */
+  terminalPaintsPerSecond: number;
+  deskBuildP99Ms: number;
   wakesPerSecond: number;
   drainMsPerSecond: number;
   batchesPerSecond: number;
@@ -352,10 +360,16 @@ function summarize(name: string, window: Sample[]): Phase {
     heapMiB: Math.round(
       Math.max(...window.map((sample) => sample.memory?.heapUsed ?? 0)) / 2 ** 20,
     ),
-    drawsPerSecond: Math.round(
-      ((last.frames?.frames ?? 0) - (first.frames?.frames ?? 0)) / elapsed,
+    // The diagnostic frame ring is rolling, not a cumulative counter; its
+    // length can shrink. Count actual terminal paints over this interval.
+    terminalPaintsPerSecond: Math.round(
+      (histogramDelta(first, last, "desktop.paint")?.count ?? 0) / elapsed,
     ),
-    drawP99Ms: last.frames?.p99Ms,
+    deskBuildP99Ms:
+      percentile(
+        histogramDelta(first, last, "desktop.frame") ?? { count: 0, sum: 0, buckets: new Map() },
+        99,
+      ) / 1000,
     wakesPerSecond: Math.round(
       tail.reduce((sum, sample) => sum + sample.drains.wakes, 0) / elapsed,
     ),
@@ -388,30 +402,36 @@ async function phase(name: string, results: Phase[]): Promise<void> {
   await profiler?.exited;
   const window = samples().filter((sample) => sample.at >= start);
   const result = summarize(name, window);
+  if (name === "flood-one" || name === "flood-all") {
+    assert(
+      (result.counters["desktop.shaped"] ?? 0) > 0,
+      `${name}: visible workload never repainted terminal content; evidence: ${evidence}`,
+    );
+  }
   results.push(result);
   appendFileSync(join(evidence, "summary.jsonl"), `${JSON.stringify(result)}\n`);
 }
 
 function flood(terminal: string): void {
-  cli(
-    "send-keys",
-    terminal,
-    `python3 '${resolve(repo, "scripts/bench/flood.py")}' 60 full`,
-    "Enter",
-  );
+  // The sandbox intentionally has a minimal PATH; resolve cmatrix on the host.
+  const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+  const command = cmatrix
+    ? `${quote(cmatrix)} -b -u 1`
+    : `python3 ${quote(resolve(repo, "scripts/bench/flood.py"))} 60 full`;
+  cli("send-keys", terminal, command, "Enter");
 }
 
 function render(results: Phase[]): string {
   const lines = [
-    `phase           cpu%   rssMiB heapMiB draws/s drawP99ms wakes/s drainMs/s batch/s mut/s`,
+    `phase           cpu%   rssMiB heapMiB paint/s deskP99ms wakes/s drainMs/s batch/s mut/s`,
     ...results.map((phase) =>
       [
         phase.name.padEnd(14),
         String(phase.cpuPercent).padStart(6),
         String(phase.rssMiB).padStart(8),
         String(phase.heapMiB).padStart(7),
-        String(phase.drawsPerSecond).padStart(7),
-        String(phase.drawP99Ms?.toFixed(1) ?? "-").padStart(9),
+        String(phase.terminalPaintsPerSecond).padStart(7),
+        String(phase.deskBuildP99Ms.toFixed(1)).padStart(9),
         String(phase.wakesPerSecond).padStart(7),
         String(phase.drainMsPerSecond).padStart(9),
         String(phase.batchesPerSecond).padStart(7),

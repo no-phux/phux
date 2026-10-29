@@ -136,6 +136,49 @@ fn shell_exit_removes_the_pane_without_sending_a_kill() {
 }
 
 #[test]
+fn close_acknowledged_spawn_before_bootstrap_kills_instead_of_dismissing() {
+    for whole_tab in [false, true] {
+        let _dial = DeterministicDial::arm();
+        let mut connection = view_tests::attached();
+        let mut workspace = view_tests::opened(&mut connection);
+        let terminal = ResourceId::local(9);
+        let request_id = workspace
+            .launch_capture(&connection, SpawnRequest::default(), true)
+            .unwrap();
+        connection
+            .client
+            .feed(FrameKind::ResourceSpawned {
+                request_id,
+                result: phux_protocol::wire::frame::SpawnResult::Ok(terminal.clone()),
+            })
+            .unwrap();
+        let events = connection.drain();
+        workspace.handle(&events, &connection);
+        workspace.settle(&connection);
+        assert!(connection.pane(&terminal).is_none());
+        assert!(!connection.ready(&terminal));
+        if whole_tab {
+            workspace.duplicate_view(&connection);
+        }
+        let placement = workspace.focused().unwrap().id.clone();
+        let before = workspace.tabs.clone();
+        let tab = workspace.active_id.clone();
+        let _ = connection.client.take_outbound();
+        if whole_tab {
+            workspace.terminate_tab(&connection, &tab);
+        } else {
+            workspace.terminate_pane(&connection, &placement);
+        }
+        assert_eq!(kills(&connection), vec![terminal]);
+        assert_eq!(
+            workspace.tabs, before,
+            "keep the process visible until confirmed exit"
+        );
+        assert!(workspace.take_notices().is_empty());
+    }
+}
+
+#[test]
 fn closing_a_fresh_split_kills_it_before_a_topology_read_lists_it() {
     let _dial = DeterministicDial::arm();
     let mut connection = view_tests::attached();

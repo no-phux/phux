@@ -133,7 +133,7 @@ pub fn validate_prompt_text(text: &str) -> Result<(), Refusal> {
 }
 
 /// Refuse a batch over either `APPLY_INPUT` wire cap as a local usage error,
-/// never splitting it (`docs/spec/input.md`).
+/// never splitting it (`docs/protocol.md#input`).
 ///
 /// The rule is
 /// [`phux_client_core::input_replay::validate_apply_input_batch`], the same

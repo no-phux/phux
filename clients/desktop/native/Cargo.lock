@@ -2626,8 +2626,6 @@ dependencies = [
 [[package]]
 name = "gpui-fast-windows"
 version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c4cf30e5269146dc29dafcaeaa3cc78ff2371811873057833e8fab9e1891102"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -3640,17 +3638,18 @@ dependencies = [
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=fd9d90018a440a09c720dc1623a04cb71c8a8bdd#fd9d90018a440a09c720dc1623a04cb71c8a8bdd"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=9b06bf34eb996fb3580e834e440cef7d38862975#9b06bf34eb996fb3580e834e440cef7d38862975"
 dependencies = [
  "bitflags 2.13.2",
  "int-enum",
  "libghostty-vt-sys",
+ "png 0.18.1",
 ]
 
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=fd9d90018a440a09c720dc1623a04cb71c8a8bdd#fd9d90018a440a09c720dc1623a04cb71c8a8bdd"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=9b06bf34eb996fb3580e834e440cef7d38862975#9b06bf34eb996fb3580e834e440cef7d38862975"
 
 [[package]]
 name = "libloading"
@@ -4898,7 +4897,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "ciborium",
  "libghostty-vt",
@@ -4914,7 +4913,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-ffi"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "libghostty-vt",
  "phux-client-core",
@@ -4925,7 +4924,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -4953,7 +4952,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "nix",
  "serde",
@@ -4964,7 +4963,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "serde",
  "slotmap",
@@ -4977,6 +4976,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "base64 0.22.1",
  "global-hotkey",
  "gpui-component",
  "gpui-kit",
@@ -4984,6 +4984,7 @@ dependencies = [
  "gpui-pre-platform",
  "image",
  "log",
+ "naga",
  "nix",
  "phux-client-core",
  "phux-client-ffi",
@@ -4997,11 +4998,12 @@ dependencies = [
  "serde_json",
  "smol",
  "unicode-segmentation",
+ "wgpu",
 ]
 
 [[package]]
 name = "phux-dial"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -5018,7 +5020,7 @@ dependencies = [
 
 [[package]]
 name = "phux-git"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "libc",
  "memchr",
@@ -5033,6 +5035,7 @@ dependencies = [
  "async-channel",
  "gpui-fast",
  "gpui-fast-platform",
+ "image",
  "log",
  "phux-client-core",
  "phux-client-runtime",
@@ -5043,7 +5046,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "libc",
  "nix",
@@ -5053,13 +5056,14 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
  "flate2",
  "int-enum",
  "libghostty-vt",
+ "png 0.18.1",
  "schemars",
  "serde",
  "serde_json",
@@ -5385,7 +5389,7 @@ dependencies = [
 
 [[package]]
 name = "quictun"
-version = "0.110.0"
+version = "0.114.0"
 dependencies = [
  "quinn",
  "rustls",
@@ -6991,9 +6995,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",

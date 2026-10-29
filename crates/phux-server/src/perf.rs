@@ -3,7 +3,7 @@
 //! Static [`phux_perf`] metrics are recorded at each hop, grouped by pipeline
 //! stage (`pty.*`, `echo.*`, `input.*`, `tick.*`, `pump.*`, `wire.*`,
 //! `cmd.*`/`attach.*`, `consumer.*`, process gauges). Names are diagnostic,
-//! not a wire contract; see `docs/operations.md`.
+//! not a wire contract; see `docs/troubleshooting.md#lag`.
 
 use std::sync::OnceLock;
 use std::time::Instant;

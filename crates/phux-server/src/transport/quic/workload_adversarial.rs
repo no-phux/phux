@@ -1,5 +1,5 @@
 //! Adversarial admission on a paired QUIC listener
-//! (`docs/spec/workload-auth.md` §3, §9).
+//! (`docs/remote.md#who-can-connect`).
 //!
 //! ADR-0116 replaced the nonce/incarnation/channel-binding proof with mTLS, so
 //! the replay attacks that proof defended against become questions about the

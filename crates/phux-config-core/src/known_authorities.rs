@@ -18,7 +18,9 @@
 //! presents one, and `[[remote]]` refuses unknown keys: an older `phux`
 //! reading the same `config.toml` would refuse it whole.
 
+#[cfg(unix)]
 use std::io::Write as _;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -91,6 +93,7 @@ pub fn lookup(store: &Path, leaf: &str, route: Option<&str>) -> Option<String> {
 ///
 /// A pin that is not a fingerprint, or a failure to write the store. The
 /// store is written owner-only, atomically.
+/// Platforms without secure owner-only writes return an error without writing.
 pub fn record(
     store: &Path,
     leaf: &str,
@@ -161,6 +164,7 @@ fn parse_line(line: &str) -> Option<(String, String)> {
 }
 
 /// Temp file (owner-only, created new), sync, rename.
+#[cfg(unix)]
 fn write_owner_only(path: &Path, text: &str) -> std::io::Result<()> {
     let parent = path
         .parent()
@@ -190,7 +194,16 @@ fn write_owner_only(path: &Path, text: &str) -> std::io::Result<()> {
     written
 }
 
+#[cfg(not(unix))]
+fn write_owner_only(_path: &Path, _text: &str) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "secure owner-only authority writes are unavailable on this platform",
+    ))
+}
+
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 
@@ -276,5 +289,31 @@ mod tests {
             canonical_authority(&"AB".repeat(32)),
             Some(format!("sha256:{}", "ab".repeat(32)))
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(unix))]
+mod portable_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_secure_writes_leave_the_store_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = dir.path().join(FILE_NAME);
+        std::fs::write(&store, "existing trusted data").expect("fixture");
+        let error = record(
+            &store,
+            &"a".repeat(64),
+            None,
+            &format!("sha256:{}", "b".repeat(64)),
+        )
+        .expect_err("must not write without owner-only protection");
+        assert!(error.contains("secure owner-only"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&store).expect("unchanged"),
+            "existing trusted data"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 1);
     }
 }

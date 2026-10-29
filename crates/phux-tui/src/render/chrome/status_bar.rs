@@ -4,7 +4,7 @@
 //! [`StatusBarPainter`] lays it into a `cols × 1` ratatui buffer and emits
 //! raw VT (CUP + per-cell SGR + grapheme), ending in an SGR reset.
 //! The caller restores the focused pane's cursor afterwards (ADR-0020). The
-//! bar defaults to [`Position::Top`] (`docs/consumers/tui.md` §8.5); the pane
+//! bar defaults to [`Position::Top`] (`docs/status-bar.md#the-status-bar`); the pane
 //! content rect shifts to match.
 
 use std::time::SystemTime;
@@ -14,7 +14,7 @@ use phux_config::widget::{Cell as WidgetCell, StatusBar, WidgetContext, WindowIn
 use crate::render::theme::Theme;
 
 /// Where the status bar lives in the outer terminal. Defaults to
-/// [`Self::Top`] per `docs/consumers/tui.md` §8.5.
+/// [`Self::Top`] per `docs/status-bar.md#the-status-bar`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Position {
     /// One row at the very bottom of the outer terminal.
@@ -333,7 +333,7 @@ impl StatusBarPainter {
     /// Show `notice` for [`NOTICE_TTL`] from `now`, replacing any current
     /// one; true when accepted. Refused (logged instead) under the error line,
     /// or on an empty bar, which reserves no row to paint it on
-    /// (`docs/consumers/tui.md` §8.7).
+    /// (`docs/status-bar.md#the-status-bar`).
     pub fn set_notice(&mut self, notice: Notice, now: std::time::Instant) -> bool {
         if self.error.is_some() {
             tracing::info!(

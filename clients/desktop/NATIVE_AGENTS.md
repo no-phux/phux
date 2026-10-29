@@ -13,11 +13,15 @@ harness's documented plugin install command to copy (**Set up conversation**:
 Claude Code, Grok, OMP, Pi, OpenCode), or **Launch natively** for harnesses
 without a hook plugin. Nothing is installed by the app.
 
-Prompts appear in accent bubbles and replies as markdown under the harness
-mark. Thinking and tool calls fold to one line; live thinking and failed
+Prompts appear in quiet bubbles and replies own a readable, compact thread.
+The provider and current state share one header; its terminal icon opens the
+underlying terminal. Thinking and tool calls fold to one line; live thinking and failed
 calls start open, and your fold choice holds for that entry. A working turn
-shows a shimmer line, a blocked turn a "needs you" line. Stop and Send share
-the composer card. These use GPUI Kit components, not vendored chat code.
+shows a shimmer line, a blocked turn a "needs you" line. Send stays at the
+composer's trailing edge; Stop appears when interruption is available.
+Shortcut help is contextual rather than a permanent footer. Questions,
+read-only states, missing transcript data and delivery failures stay visible.
+These use GPUI Kit components, not vendored chat code.
 
 **New Agent…** lists ACP-capable integrations and executable prerequisites
 from the connected host, including a built-in OpenCode profile. A configured
@@ -31,7 +35,8 @@ The desktop keeps that SDK owner's local draft, pending receipts, and question
 edits when the handoff recreates layout placements. Controls stay disabled until
 the fresh connection confirms the same parent, AgentSession, and activation.
 
-The conversation labels **ACP** and **Attached TUI** are deliberate.
+The header's details distinguish **ACP** from **Attached TUI** controls without
+putting protocol badges in the working thread.
 ACP Send, Stop, and provider dialogs use typed operations against the
 exact activation, current turn, and question. Permission choices, confirmations,
 selection, text/editor input, multi-question answers, and supported scalar JSON

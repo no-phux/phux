@@ -16,6 +16,7 @@ use crate::{ConfigError, OrganizeCfg, RemoteConfigEntry, layer};
 /// The config path: `$XDG_CONFIG_HOME/phux/config.toml`, else
 /// `$HOME/.config/phux/config.toml` (no I/O).
 #[must_use]
+#[cfg(not(windows))]
 pub fn config_path() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map_or_else(
@@ -26,6 +27,15 @@ pub fn config_path() -> PathBuf {
             },
             PathBuf::from,
         )
+        .join("phux")
+        .join("config.toml")
+}
+
+/// Native Windows configuration in the user's local application-data directory.
+#[must_use]
+#[cfg(windows)]
+pub fn config_path() -> PathBuf {
+    crate::instance::windows_data_dir()
         .join("phux")
         .join("config.toml")
 }

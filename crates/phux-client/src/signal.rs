@@ -88,7 +88,7 @@ pub const fn signal_command(terminal_id: ResourceId, signal: TerminalSignal) -> 
 /// --idempotency-key`).
 ///
 /// A repeat with the same key answers the first result and delivers nothing
-/// (`docs/spec/L1.md` §5.1.1).
+/// (`docs/protocol.md#receipts-retries-and-backpressure`).
 ///
 /// # Errors
 ///

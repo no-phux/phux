@@ -24,6 +24,13 @@ use crate::target::{AuthorityPin, Resolved, Transport as Lane};
 pub enum Transport {
     /// The local server's Unix-domain socket.
     Uds(PathBuf),
+    /// A Linux Unix socket reached through a native Windows WSL stdio bridge.
+    Wsl {
+        /// Absolute Linux server socket path.
+        socket: PathBuf,
+        /// The Linux phux executable selected by the host.
+        phux: PathBuf,
+    },
     /// A `ws://` or `wss://` URL. Off loopback it needs the pin and token
     /// a registry entry carries; see [`Target::resolve`].
     Ws(String),
@@ -38,6 +45,7 @@ impl Transport {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Uds(_) => "uds",
+            Self::Wsl { .. } => "wsl",
             Self::Ws(_) => "ws",
             Self::Quic(_) => "quic",
         }
@@ -71,6 +79,18 @@ pub struct Target {
 }
 
 impl Target {
+    /// A Linux server socket reached through `wsl.exe` on Windows.
+    ///
+    /// `phux` is the Linux executable explicitly selected by the host, never
+    /// replaced by a fallback. `PHUX_WSL_DISTRO` optionally selects the
+    /// distribution at dial time. Other operating systems refuse this transport.
+    #[must_use]
+    pub fn wsl(socket: PathBuf, phux: PathBuf) -> Self {
+        let mut target = Self::uds(socket.clone());
+        target.transport = Transport::Wsl { socket, phux };
+        target
+    }
+
     /// The local server at `path`.
     #[must_use]
     pub fn uds(path: impl Into<PathBuf>) -> Self {
@@ -136,6 +156,7 @@ impl Target {
     pub async fn plan(&self) -> Result<Dial, String> {
         match &self.transport {
             Transport::Uds(path) => Ok(Dial::Uds(path.clone())),
+            Transport::Wsl { socket, phux } => wsl::plan(socket, phux),
             Transport::Ws(url) => {
                 let resolved = self.remote(url.clone(), Lane::Ws(url.clone()));
                 let token = match self.token.clone() {
@@ -157,7 +178,7 @@ impl Target {
     /// The registry entry a WebSocket or QUIC dial is planned from.
     pub(crate) fn resolved(&self) -> Option<Resolved> {
         match &self.transport {
-            Transport::Uds(_) => None,
+            Transport::Uds(_) | Transport::Wsl { .. } => None,
             Transport::Ws(url) => Some(self.remote(url.clone(), Lane::Ws(url.clone()))),
             Transport::Quic(authority) => {
                 Some(self.remote(format!("quic://{authority}"), Lane::Quic(authority.clone())))
@@ -274,6 +295,7 @@ enum ConnectionEnd {
 mod driver;
 mod establish;
 pub(crate) mod io;
+mod wsl;
 
 pub(crate) use establish::{DialFailure, establish};
 

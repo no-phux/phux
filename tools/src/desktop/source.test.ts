@@ -94,6 +94,16 @@ test("a patch that does not match its pin fails", () => {
   );
 });
 
+test("the shipping source pins the Windows backend and verifies the complete patch series", () => {
+  const shipping = layout();
+  const pin = readPin(shipping);
+  expect(pin.crates["gpui-fast-windows"]).toEqual({
+    version: "0.1.9",
+    sha256: "6c4cf30e5269146dc29dafcaeaa3cc78ff2371811873057833e8fab9e1891102",
+  });
+  expect(pinnedPatches(pin, shipping.toolchain)).toHaveLength(Object.keys(pin.patches).length);
+});
+
 test("downloads are verified before caching; a tampered cache is preserved", async () => {
   const cached = join(paths.cache, "crates/demo-0.1.0.crate");
   const demo = (sha = sha256(ARCHIVE)) =>

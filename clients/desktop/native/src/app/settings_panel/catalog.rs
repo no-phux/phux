@@ -4,9 +4,9 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{App, FontWeight, IntoElement, SharedString, Window, div, px, relative};
+use gpui::{App, IntoElement, SharedString, Window, px};
+use gpui_kit::component::Icon;
 use gpui_kit::component::setting::{self as kit, RenderOptions, SettingField};
-use gpui_kit::component::{ActiveTheme, IconName};
 
 use super::Page;
 
@@ -40,6 +40,7 @@ pub(crate) struct Item {
     pub actionable: bool,
     activate: Option<Activate>,
     value: Option<SwitchValue>,
+    wide: bool,
 }
 
 impl Item {
@@ -53,6 +54,7 @@ impl Item {
             actionable: true,
             activate: None,
             value: None,
+            wide: false,
         }
     }
 
@@ -69,6 +71,7 @@ impl Item {
             actionable: true,
             activate: None,
             value: None,
+            wide: false,
         }
     }
 
@@ -99,6 +102,22 @@ impl Item {
         self.description = description.into();
         self.control = self.control.description(self.description.clone());
         self
+    }
+
+    /// Wide pickers and tracks move below their labels in a narrow settings pane.
+    pub fn wide(mut self) -> Self {
+        self.wide = true;
+        self
+    }
+
+    /// Pages and exact palette editors share the same narrow-control layout.
+    pub fn responsive_control(&self, stacked: bool) -> kit::SettingItem {
+        let control = self.control.clone();
+        if stacked && self.wide {
+            control.layout(gpui::Axis::Vertical)
+        } else {
+            control
+        }
     }
 
     pub fn keywords<I, S>(mut self, keywords: I) -> Self
@@ -134,6 +153,7 @@ impl Item {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Group {
     title: Option<SharedString>,
     description: Option<SharedString>,
@@ -143,7 +163,10 @@ pub(crate) struct Group {
 /// Pages inset their groups this far past Kit's list padding, so every
 /// heading, label and control shares the page header's text column.
 pub(crate) const GUTTER: f32 = 20.;
-const KIT_LIST_PADDING: f32 = 16.;
+// Kit reserves up to three fifths of a horizontal row for its label. Keep
+// room for a 260pt picker, the row gap and both group/page insets as well.
+pub(crate) const STACK_CONTROLS_BELOW: f32 = 720.;
+const KIT_LIST_PADDING: f32 = crate::app::ui::typography::BASE;
 
 impl Group {
     pub fn new() -> Self {
@@ -169,41 +192,42 @@ impl Group {
         self
     }
 
-    /// Kit's group, headed by a small section label in place of Kit's
-    /// body-size title, so a heading reads as a heading and not a setting.
-    fn native(&self) -> kit::SettingGroup {
-        let heading = (self.title.is_some() || self.description.is_some()).then(|| {
-            let (title, description) = (self.title.clone(), self.description.clone());
-            kit::SettingItem::render(move |_, _, cx| {
-                let muted = cx.theme().muted_foreground;
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    // Sit closer to the settings the label heads than Kit's row gap.
-                    .mb(px(-4.))
-                    .children(title.clone().map(|title| {
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(muted)
-                            .child(title)
-                    }))
-                    .children(description.clone().map(|description| {
-                        div()
-                            // The measure of a setting's own description.
-                            .max_w(relative(0.6))
-                            .text_xs()
-                            .line_height(px(17.))
-                            .text_color(muted.opacity(0.85))
-                            .child(description)
-                    }))
-            })
-        });
-        kit::SettingGroup::new()
+    fn filtered(&self, page: Page, query: &str, stacked: bool) -> kit::SettingGroup {
+        let group = kit::SettingGroup::new()
             .px(px(GUTTER - KIT_LIST_PADDING))
-            .items(heading)
-            .items(self.items.iter().map(|item| item.control.clone()))
+            .gap(px(12.));
+        let group = match &self.title {
+            Some(title) => group.title(title.clone()),
+            None => group,
+        };
+        let group = match &self.description {
+            Some(description) => group.description(description.clone()),
+            None => group,
+        };
+        group.items(
+            self.items
+                .iter()
+                .filter(|item| self.matches(item, page, query))
+                .map(|item| item.responsive_control(stacked)),
+        )
+    }
+
+    fn matches(&self, item: &Item, page: Page, query: &str) -> bool {
+        let text = format!(
+            "{} {} {} {} {} {}",
+            page.title(),
+            page.sidebar_title(),
+            self.title.as_deref().unwrap_or(""),
+            item.title,
+            item.description,
+            item.keywords
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<&str>>()
+                .join(" ")
+        )
+        .to_lowercase();
+        query.split_whitespace().all(|word| text.contains(word))
     }
 
     pub fn items(mut self, items: impl IntoIterator<Item = Item>) -> Self {
@@ -217,29 +241,50 @@ impl Group {
 pub(crate) struct Content {
     pub inner: kit::SettingPage,
     pub entries: Vec<(Option<SharedString>, Item)>,
+    groups: Vec<Group>,
 }
 
 impl Content {
     pub fn new(title: impl Into<SharedString>) -> Self {
         Self {
-            inner: kit::SettingPage::new(title),
+            inner: kit::SettingPage::new(title)
+                .header_style(&gpui::StyleRefinement::default().px(px(GUTTER))),
             entries: Vec::new(),
+            groups: Vec::new(),
         }
     }
 
-    pub fn icon(mut self, icon: IconName) -> Self {
+    pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         self.inner = self.inner.icon(icon);
         self
     }
 
     pub fn group(mut self, group: Group) -> Self {
-        self.inner = self.inner.group(group.native());
         self.entries.extend(
             group
                 .items
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(|item| (group.title.clone(), item)),
         );
+        self.groups.push(group);
         self
+    }
+
+    pub fn matches(&self, page: Page, query: &str) -> bool {
+        self.groups.iter().any(|group| {
+            group
+                .items
+                .iter()
+                .any(|item| group.matches(item, page, query))
+        })
+    }
+
+    pub fn filtered(self, page: Page, query: &str, stacked: bool) -> kit::SettingPage {
+        self.inner.groups(
+            self.groups
+                .iter()
+                .map(|group| group.filtered(page, query, stacked)),
+        )
     }
 }

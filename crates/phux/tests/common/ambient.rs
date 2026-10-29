@@ -115,11 +115,16 @@ pub struct XdgDirs {
 
 impl XdgDirs {
     /// A fresh, empty pair under the target temp directory, named by `tag`,
-    /// the process id, and a counter.
+    /// the process id, a counter, and the clock. A test binary that mounts
+    /// `common` under several modules has one counter per copy, so the pid
+    /// and counter alone collide between copies running in parallel.
     pub fn fresh(tag: &str) -> Self {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = xdg_root().join(format!("{tag}-{}-{n}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let root = xdg_root().join(format!("{tag}-{}-{n}-{nanos}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dirs = Self {
             state: root.join("state"),

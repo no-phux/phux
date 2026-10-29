@@ -121,10 +121,10 @@ impl Operations {
         let outcome = operation.result.borrow().clone();
         match outcome {
             Some(Ok(result)) => Ok(
-                json!({ "schema_version": 1, "operation_id": key, "state": "completed", "result": result }),
+                json!({ "schema_version": 1, "operation_id": key, "adapter_receipt_id": key, "scope": phux_client::recovery::Scope { kind: phux_client::recovery::ScopeKind::McpAdapter, id: None }, "state": "completed", "result": result }),
             ),
             Some(Err(error)) => Ok(
-                json!({ "schema_version": 1, "operation_id": key, "state": "failed", "error": error.document() }),
+                json!({ "schema_version": 1, "operation_id": key, "adapter_receipt_id": key, "scope": phux_client::recovery::Scope { kind: phux_client::recovery::ScopeKind::McpAdapter, id: None }, "state": "failed", "error": error.document() }),
             ),
             None => {
                 let mut doc = pending(&key);
@@ -186,7 +186,7 @@ fn take_background(args: &mut Value) -> Result<bool, ToolError> {
 }
 
 fn pending(key: &str) -> Value {
-    json!({ "schema_version": 1, "operation_id": key, "state": "pending", "status_tool": "phux_operation_status" })
+    json!({ "schema_version": 1, "operation_id": key, "adapter_receipt_id": key, "scope": phux_client::recovery::Scope { kind: phux_client::recovery::ScopeKind::McpAdapter, id: None }, "state": "pending", "status_tool": "phux_operation_status" })
 }
 
 fn failure(code: &str, message: &str) -> ToolError {

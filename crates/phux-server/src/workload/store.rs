@@ -1,5 +1,5 @@
 //! Owner-only, no-follow, lock-and-rename persistence for workload authority
-//! files (`workload-auth.md` §2).
+//! files (`docs/remote.md#who-can-connect`).
 //!
 //! Reads check owner control of the file and its directory, re-validate
 //! across a no-follow open, and accept only a stat-stable read. Writes hold

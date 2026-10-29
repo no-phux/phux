@@ -1,0 +1,98 @@
+diff --git a/gpui-fast-windows/src/directx_devices.rs b/gpui-fast-windows/src/directx_devices.rs
+index 8e65e6e..b7e8dcb 100644
+--- a/gpui-fast-windows/src/directx_devices.rs
++++ b/gpui-fast-windows/src/directx_devices.rs
+@@ -14,12 +14,11 @@ use windows::Win32::{
+             D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+         },
+         Dxgi::{
+-            CreateDXGIFactory2, DXGI_CREATE_FACTORY_DEBUG, DXGI_CREATE_FACTORY_FLAGS,
+-            IDXGIAdapter1, IDXGIFactory6,
++            CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_DEBUG,
++            DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_NOT_FOUND, IDXGIAdapter1, IDXGIFactory6,
+         },
+     },
+ };
+-use windows::core::Interface;
+ 
+ pub(crate) fn try_to_recover_from_device_lost<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
+     (0..5)
+@@ -112,31 +111,57 @@ fn get_adapter(
+     ID3D11DeviceContext,
+     D3D_FEATURE_LEVEL,
+ )> {
+-    for adapter_index in 0.. {
+-        let adapter: IDXGIAdapter1 = unsafe { dxgi_factory.EnumAdapters(adapter_index)?.cast()? };
+-        if let Ok(desc) = unsafe { adapter.GetDesc1() } {
+-            let gpu_name = String::from_utf16_lossy(&desc.Description)
+-                .trim_matches(char::from(0))
+-                .to_string();
+-            log::info!("Using GPU: {}", gpu_name);
++    // Prefer real hardware. Bound enumeration even if a broken driver never
++    // returns NOT_FOUND; WARP is one explicit, final attempt, not a retry loop.
++    for adapter_index in 0..32 {
++        let adapter = match unsafe { dxgi_factory.EnumAdapters1(adapter_index) } {
++            Ok(adapter) => adapter,
++            Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
++            Err(error) => return Err(error).context("Enumerating DXGI hardware adapters"),
++        };
++        let desc = unsafe { adapter.GetDesc1()? };
++        if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
++            continue;
+         }
+-        // Check to see whether the adapter supports Direct3D 11 and create
+-        // the device if it does.
+-        let mut context: Option<ID3D11DeviceContext> = None;
+-        let mut feature_level = D3D_FEATURE_LEVEL::default();
+-        if let Some(device) = get_device(
+-            &adapter,
+-            Some(&mut context),
+-            Some(&mut feature_level),
+-            debug_layer_available,
+-        )
+-        .log_err()
+-        {
+-            return Ok((adapter, device, context.unwrap(), feature_level));
++        if let Some(devices) = create_adapter_device(adapter, debug_layer_available).log_err() {
++            return Ok(devices);
+         }
+     }
+ 
+-    unreachable!()
++    log::warn!("No usable hardware adapter; trying the Direct3D WARP software adapter");
++    let warp = unsafe { dxgi_factory.EnumWarpAdapter::<IDXGIAdapter1>() }
++        .context("Getting the WARP software adapter")?;
++    create_adapter_device(warp, debug_layer_available).context("Creating the WARP device")
++}
++
++fn create_adapter_device(
++    adapter: IDXGIAdapter1,
++    debug_layer_available: bool,
++) -> Result<(
++    IDXGIAdapter1,
++    ID3D11Device,
++    ID3D11DeviceContext,
++    D3D_FEATURE_LEVEL,
++)> {
++    let mut context = None;
++    let mut feature_level = D3D_FEATURE_LEVEL::default();
++    let device = get_device(
++        &adapter,
++        Some(&mut context),
++        Some(&mut feature_level),
++        debug_layer_available,
++    )?;
++    let desc = unsafe { adapter.GetDesc1()? };
++    log::info!(
++        "Using GPU: {}",
++        String::from_utf16_lossy(&desc.Description).trim_matches(char::from(0))
++    );
++    Ok((
++        adapter,
++        device,
++        context.context("D3D11 device context missing")?,
++        feature_level,
++    ))
+ }
+ 
+ #[inline]

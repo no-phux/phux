@@ -4,7 +4,7 @@
 //! [`OperationId`]. The server keeps a receipt per id, so a resend with the
 //! same id and payload returns the original result without repeating its
 //! effects, and the same id with another payload is refused
-//! `DUPLICATE_OPERATION` (`docs/spec/L1.md` §5.7.2). [`OrgJournal`] is the
+//! `DUPLICATE_OPERATION` (`docs/organization.md`). [`OrgJournal`] is the
 //! client half of that contract, on the [`InputReplayJournal`] pattern:
 //!
 //! - **One id per user action, forever.** A resend after a reconnect reuses

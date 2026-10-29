@@ -1,4 +1,4 @@
-//! `OPEN_LISTENER` over the wire (ADR-0120, `docs/spec/L1.md` §5.6).
+//! `OPEN_LISTENER` over the wire (ADR-0120, `docs/remote.md#attaching-over-ssh`).
 //!
 //! A Unix-socket client opens a QUIC listener for one attach. The listener
 //! admits the token it was opened with and nothing else, the command itself is

@@ -243,7 +243,8 @@ impl Workspace {
         let mut seen = HashSet::new();
         for placement in leaves {
             if let Some(terminal) = &placement.terminal_id
-                && !self.unresolved.contains(&placement.id)
+                && (!self.unresolved.contains(&placement.id)
+                    || self.spawned.contains(&placement.terminal_label))
                 && !seen.insert(terminal.clone())
             {
                 continue;
@@ -264,6 +265,7 @@ impl Workspace {
             || connection.status != Status::Attached
             || !connection.session_validated()
             || connection.pane(terminal).is_some()
+            || self.spawned.contains(&terminal_label(terminal))
             || connection.ready(terminal)
         {
             return false;
@@ -338,6 +340,41 @@ impl Workspace {
         }
     }
 
+    /// Open an explicit navigation target, retaining ownership only of a new focus request.
+    pub(crate) fn open_for_navigation(
+        &mut self,
+        connection: &Connection,
+        pane: &PaneDescriptor,
+    ) -> Option<PendingOpen> {
+        let label = terminal_label(&pane.terminal_id);
+        let previous = self.awaiting.get(&label).cloned();
+        // An explicit refusal must not be retried by automatic session adoption.
+        self.considered.insert(label.clone());
+        self.open(connection, pane);
+        (previous != Some(Destination::Tab) && self.awaiting.get(&label) == Some(&Destination::Tab))
+            .then_some(PendingOpen { label, previous })
+    }
+
+    /// Withdraw this navigation's focus request, preserving an earlier quiet tab.
+    pub(crate) fn cancel_pending_open(&mut self, intent: PendingOpen) {
+        if self.awaiting.get(&intent.label) != Some(&Destination::Tab) {
+            return;
+        }
+        match intent.previous {
+            Some(destination) => {
+                self.awaiting.insert(intent.label, destination);
+            }
+            None => {
+                self.awaiting.remove(&intent.label);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_open(&self, terminal: &ResourceId) -> bool {
+        self.awaiting.get(&terminal_label(terminal)) == Some(&Destination::Tab)
+    }
+
     /// Land a ready terminal in a new tab, or await it. Returns whether it waits.
     pub(super) fn tab_when_ready(
         &mut self,
@@ -373,9 +410,11 @@ impl Workspace {
         );
         self.spawns.clear();
         self.awaiting.clear();
+        self.spawned.clear();
         self.unresolved.clear();
         self.attaching.clear();
         self.closed_terminals.clear();
+        self.considered.clear();
         self.owners.clear();
         self.active_id.clear();
     }

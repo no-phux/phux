@@ -13,6 +13,8 @@
 //!   the parse. The reading records how each was read, so a consumer can show
 //!   a newer producer's word as present-but-unsupported.
 //! - `kind` and `session` that are not strings are ignored, not fatal.
+//! - A value over [`MAX_AGENT_RECORD_BYTES`] is "no declared agent": any
+//!   local client can write the key, so its size is untrusted input.
 
 /// The lifecycle word a record declares.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -43,8 +45,13 @@ pub enum AgentAttention {
     High,
 }
 
+/// The most bytes an encoded `phux.agent/v1` record may hold. Writers refuse
+/// a larger record, the server ignores a `SET_METADATA` carrying one, and
+/// [`parse_agent_record`] reads one as "no declared agent".
+pub const MAX_AGENT_RECORD_BYTES: usize = 4096;
+
 /// The most bytes of an unsupported word a reading carries. A record may hold
-/// up to 4096 bytes (L3.md §3.7.1); a vocabulary word is a slug, and a
+/// up to [`MAX_AGENT_RECORD_BYTES`]; a vocabulary word is a slug, and a
 /// consumer only displays it.
 pub const MAX_RAW_WORD_BYTES: usize = 64;
 
@@ -113,6 +120,9 @@ impl AgentRecordReading {
 /// Decode a `phux.agent/v1` value, or `None` for "no declared agent".
 #[must_use]
 pub fn parse_agent_record(bytes: &[u8]) -> Option<AgentRecordReading> {
+    if bytes.len() > MAX_AGENT_RECORD_BYTES {
+        return None;
+    }
     let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     let object = value.as_object()?;
     let name = object.get("name")?.as_str()?;
@@ -202,7 +212,22 @@ fn raw(value: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentState, StateReading, parse_agent_record};
+    use super::{AgentState, MAX_AGENT_RECORD_BYTES, StateReading, parse_agent_record};
+
+    /// The record is untrusted input: one byte over the limit is no
+    /// declared agent, however well-formed; exactly at the limit still reads.
+    #[test]
+    fn a_record_over_the_byte_limit_is_no_declared_agent() {
+        let record_of = |len: usize| {
+            let frame = br#"{"name":"a","session":""}"#.len();
+            format!(r#"{{"name":"a","session":"{}"}}"#, "x".repeat(len - frame))
+        };
+        let at = record_of(MAX_AGENT_RECORD_BYTES);
+        assert_eq!(at.len(), MAX_AGENT_RECORD_BYTES);
+        assert!(parse_agent_record(at.as_bytes()).is_some());
+        let over = record_of(MAX_AGENT_RECORD_BYTES + 1);
+        assert_eq!(parse_agent_record(over.as_bytes()), None);
+    }
 
     #[test]
     fn an_empty_or_whitespace_only_name_is_no_declared_agent() {

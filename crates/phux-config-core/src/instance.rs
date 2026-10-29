@@ -176,11 +176,19 @@ pub fn running_executable() -> std::io::Result<PathBuf> {
 
 /// `path` without the ` (deleted)` suffix Linux gives an unlinked image.
 #[must_use]
+#[cfg(unix)]
 pub fn without_deleted_suffix(path: &Path) -> PathBuf {
     use std::os::unix::ffi::OsStrExt as _;
     let bytes = path.as_os_str().as_bytes();
     let live = bytes.strip_suffix(b" (deleted)").unwrap_or(bytes);
     PathBuf::from(std::ffi::OsStr::from_bytes(live))
+}
+
+/// Windows executable paths have no Linux deleted-image suffix.
+#[must_use]
+#[cfg(not(unix))]
+pub fn without_deleted_suffix(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 /// Whether `exe` lives under a Cargo `target/` directory.
@@ -212,6 +220,7 @@ fn exe_is_under_cargo_target(exe: &Path) -> bool {
 /// `/tmp` while the systemd `--user` server, which always has the variable,
 /// listens under `/run/user/<uid>`.
 #[must_use]
+#[cfg(not(windows))]
 pub fn runtime_dir() -> PathBuf {
     let profile = profile();
     let base = std::env::var_os("XDG_RUNTIME_DIR")
@@ -227,15 +236,21 @@ pub fn runtime_dir() -> PathBuf {
     path
 }
 
+/// Native Windows runtime state, separate from a WSL coordinator's socket.
+#[must_use]
+#[cfg(windows)]
+pub fn runtime_dir() -> PathBuf {
+    windows_data_dir()
+        .join(suffixed("phux", &profile()))
+        .join("run")
+}
+
 /// This machine's short host name: the node name up to its first dot, or
 /// `local` when it has none. Project identities without a network remote
 /// name it (ADR-0168).
 #[must_use]
 pub fn local_host_name() -> String {
-    let node = nix::unistd::gethostname()
-        .ok()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let node = host_name();
     let short = node.split('.').next().unwrap_or_default();
     if short.is_empty() {
         "local".to_owned()
@@ -244,11 +259,25 @@ pub fn local_host_name() -> String {
     }
 }
 
+#[cfg(unix)]
+fn host_name() -> String {
+    nix::unistd::gethostname()
+        .ok()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+#[cfg(not(unix))]
+fn host_name() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
+}
+
 /// The per-user, per-profile state directory holding logs and provisioned
 /// credentials.
 ///
 /// `$XDG_STATE_HOME/phux[-<profile>]`, else `$HOME/.local/state/phux[-…]`.
 #[must_use]
+#[cfg(not(windows))]
 pub fn state_dir() -> PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
         .filter(|v| !v.is_empty())
@@ -262,6 +291,26 @@ pub fn state_dir() -> PathBuf {
             PathBuf::from,
         );
     base.join(suffixed("phux", &profile()))
+}
+
+/// Per-user native Windows state; never a path inside a WSL distribution.
+#[must_use]
+#[cfg(windows)]
+pub fn state_dir() -> PathBuf {
+    windows_data_dir().join(suffixed("phux", &profile()))
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_data_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .filter(|path| !path.is_empty())
+                .map(|home| PathBuf::from(home).join("AppData").join("Local"))
+        })
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 /// Directory of local bug-report bundles: `$XDG_STATE_HOME/<profile-dir>/reports`.
@@ -284,12 +333,19 @@ fn suffixed(stem: &str, profile: &str) -> String {
 }
 
 /// This user's `/run/user/<uid>`, if the login manager created it.
+#[cfg(unix)]
 fn login_runtime_dir() -> Option<PathBuf> {
     let uid = nix::unistd::getuid().as_raw();
     let dir = PathBuf::from(format!("/run/user/{uid}"));
     owned_dir(&dir, uid).then_some(dir)
 }
 
+#[cfg(all(not(unix), not(windows)))]
+const fn login_runtime_dir() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(unix)]
 fn owned_dir(dir: &Path, uid: u32) -> bool {
     use std::os::unix::fs::MetadataExt as _;
     std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir() && meta.uid() == uid)
@@ -299,6 +355,7 @@ fn owned_dir(dir: &Path, uid: u32) -> bool {
 ///
 /// Only needs to be unique per user on a shared machine; the directory is
 /// created `0700` and its ownership is verified before use.
+#[cfg(not(windows))]
 pub(crate) fn user_segment() -> String {
     std::env::var("UID")
         .ok()
@@ -311,6 +368,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn a_replaced_binary_resolves_to_its_installed_path() {
         assert_eq!(
             without_deleted_suffix(Path::new("/home/u/.local/bin/phux (deleted)")),
@@ -323,6 +381,30 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(unix))]
+    fn non_unix_executable_paths_are_preserved() {
+        let path = Path::new(r"C:\Users\me\phux (deleted)");
+        assert_eq!(without_deleted_suffix(path), path);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_windows_state_and_config_use_native_application_data() {
+        let base = windows_data_dir();
+        assert!(runtime_dir().starts_with(&base));
+        assert!(state_dir().starts_with(&base));
+        assert_eq!(
+            crate::loader::config_path(),
+            base.join("phux").join("config.toml")
+        );
+        assert_eq!(
+            crate::socket::default_socket_path(),
+            runtime_dir().join("phux.sock")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn login_runtime_dir_must_exist_and_be_ours() {
         let dir = tempfile::tempdir().expect("tempdir");
         let uid = nix::unistd::getuid().as_raw();

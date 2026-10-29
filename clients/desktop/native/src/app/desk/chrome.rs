@@ -54,6 +54,11 @@ impl Desk {
         matches!(self.drag, Some(Drag::Changes))
     }
 
+    /// Whether the window is wide enough for the optional titlebar buttons.
+    pub(crate) fn wide_titlebar(&self) -> bool {
+        self.viewport.width >= gpui::px(900.)
+    }
+
     pub fn set_viewport(&mut self, size: gpui::Size<gpui::Pixels>) {
         // Use the last painted strip, not a newly toggled panel's desired
         // placement, so every responsive move retires an old drag.
@@ -268,20 +273,33 @@ impl Desk {
                     return;
                 }
                 *moved = true;
+                self.tab_peek.click = None;
                 let id = id.clone();
-                let from = self
-                    .link
-                    .as_ref()
-                    .and_then(|link| link.workspace.tabs.iter().position(|tab| tab.id == id));
-                let Some(from) = from else { return };
-                let to = self.tab_geometry.borrow().drop_index(from, *position, x, y);
-                if to != from {
-                    self.workspace_call(|link| link.workspace.move_tab(from, to));
-                }
-                cx.notify();
+                let position = *position;
+                self.reorder_tab_at_pointer(&id, position, x, y, cx);
             }
             None => {}
         }
+    }
+
+    fn reorder_tab_at_pointer(
+        &mut self,
+        id: &str,
+        position: TabPosition,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let from = self
+            .link
+            .as_ref()
+            .and_then(|link| link.workspace.tabs.iter().position(|tab| tab.id == id));
+        let Some(from) = from else { return };
+        let to = self.tab_geometry.borrow().drop_index(from, position, x, y);
+        if to != from {
+            self.workspace_call(|link| link.workspace.move_tab(from, to));
+        }
+        cx.notify();
     }
 
     /// Release ends every drag and saves what it changed.

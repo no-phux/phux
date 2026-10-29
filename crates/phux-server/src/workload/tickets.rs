@@ -1,4 +1,4 @@
-//! Single-use enrollment tickets (`workload-auth.md` §8.2, ADR-0154).
+//! Single-use enrollment tickets (`docs/remote.md#pairing-with-a-link`, ADR-0154).
 //!
 //! `phux pair --enroll` mints one: a 256-bit secret the connect link carries,
 //! of which this store keeps only the SHA-256, beside the scope ceiling and
@@ -287,7 +287,7 @@ pub struct TicketEnrollment {
 
 /// Enroll the key `csr_der` certifies, authorized by the ticket `secret`.
 ///
-/// `workload-auth.md` §8.2: parse the request (no side effect), consume
+/// `docs/remote.md#pairing-with-a-link`: parse the request (no side effect), consume
 /// the ticket, create the CA if absent, issue, and record the credential with
 /// the ticket's ceiling and lifetime.
 ///

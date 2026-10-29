@@ -2,6 +2,7 @@
 
 mod agent_fleet;
 mod agent_stream;
+mod bootstrap;
 mod capture;
 mod clipboard;
 mod federation;
@@ -9,6 +10,7 @@ mod identity;
 mod killing;
 mod layouts;
 mod native_launch;
+mod resume;
 mod window_transfer;
 
 use std::path::PathBuf;
@@ -256,6 +258,7 @@ impl Server {
                         quick: false,
                         dev_telemetry: false,
                         startup_error: None,
+                        cli_install: None,
                     },
                     cx,
                 )
@@ -308,6 +311,9 @@ fn wait_for(cx: &mut TestAppContext, mut predicate: impl FnMut(&mut TestAppConte
         }
         assert!(Instant::now() < deadline, "desktop lifecycle deadline");
         std::thread::sleep(Duration::from_millis(10));
+        // The coordinator uses real I/O, but GPUI's fair wake pump yields on
+        // its test clock. Wall time alone leaves coalesced events parked.
+        cx.executor().advance_clock(Duration::from_millis(10));
     }
 }
 

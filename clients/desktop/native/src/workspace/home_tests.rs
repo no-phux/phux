@@ -71,13 +71,32 @@ fn split_of(tab: &str) -> Destination {
 /// [`Workspace::settle`]. `settle` itself returns early on a connection
 /// that is not attached and validated, and no deterministic attached
 /// connection exists for unit tests, so these drive the same
-/// `answered` -> `place_ready` path it runs once the terminal is ready.
+/// `answered` -> `land_answered` path.
 fn reply(workspace: &mut Workspace, connection: &Connection, request: u32, terminal: u32) {
     let terminal = ResourceId::local(terminal);
     workspace.answered(request, Some(&terminal), None);
-    let label = terminal_label(&terminal);
-    let destination = workspace.awaiting.get(&label).cloned().unwrap();
-    workspace.place_ready(connection, &label, destination);
+    workspace.land_answered(connection);
+}
+
+#[test]
+fn an_answered_spawn_lands_before_the_terminal_accepts_input() {
+    let (_dial, connection) = offline();
+    let terminal = ResourceId::local(9);
+    assert!(!connection.ready(&terminal));
+    let mut workspace = Workspace::new("main".into(), WorkspaceOptions::default());
+    workspace.tabs = vec![one_pane_tab("a", 1)];
+    workspace.active_id = "a".into();
+    workspace.spawns.insert(7, split_of("a"));
+    workspace.answered(7, Some(&terminal), None);
+    workspace.land_answered(&connection);
+    assert_eq!(leaves(&workspace.tabs[0]), ["local:1", "local:9"]);
+    assert_eq!(workspace.pending(), 0);
+    let placed = placements(&workspace.tabs[0].root)
+        .into_iter()
+        .find(|placement| placement.terminal_label == "local:9")
+        .unwrap();
+    assert!(placed.view_id.is_none());
+    assert!(workspace.unresolved.contains(&placed.id));
 }
 
 fn leaves(tab: &DeskTab) -> Vec<String> {

@@ -16,13 +16,13 @@ use paste::PasteEvent;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum InputEvent {
-    /// A structured key event (`INPUT_KEY` — `docs/spec/input.md` §2).
+    /// A structured key event (`INPUT_KEY` — `docs/protocol.md#input`).
     Key(KeyEvent),
-    /// A structured mouse event (`INPUT_MOUSE` — `docs/spec/input.md` §3).
+    /// A structured mouse event (`INPUT_MOUSE` — `docs/protocol.md#input`).
     Mouse(MouseEvent),
-    /// A focus state change (`INPUT_FOCUS` — `docs/spec/input.md` §4).
+    /// A focus state change (`INPUT_FOCUS` — `docs/protocol.md#input`).
     Focus(FocusEvent),
-    /// A paste payload (`INPUT_PASTE` — `docs/spec/input.md` §5).
+    /// A paste payload (`INPUT_PASTE` — `docs/protocol.md#input`).
     Paste(PasteEvent),
 }
 

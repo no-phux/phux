@@ -9,6 +9,7 @@ use phux_protocol::wire::frame::{
 use tokio::sync::watch;
 
 use crate::agent_detect::record::AgentRecordJson;
+use crate::hooks::HookEvent;
 use crate::resource::terminal::program_status::Record;
 use crate::state::{ServerState, SharedState};
 
@@ -21,13 +22,16 @@ pub(super) fn spawn_drain(
         let mut published = HashMap::new();
         let mut projection = None;
         loop {
-            {
+            let hook = {
                 let records = rx.borrow_and_update();
                 state.with_mut(|s| {
-                    if s.terminal_from_wire(&terminal).is_some() {
-                        publish(s, &terminal, &records, &mut published, &mut projection);
-                    }
-                });
+                    s.terminal_from_wire(&terminal)?;
+                    publish(s, &terminal, &records, &mut published, &mut projection)
+                })
+            };
+            // The hook re-takes the state lock, so it fires after release.
+            if let Some(event) = hook {
+                crate::hooks::fire_hook(&state, event);
             }
             if rx.changed().await.is_err() {
                 break;
@@ -37,13 +41,14 @@ pub(super) fn spawn_drain(
 }
 
 /// Records are written before the index, all under the same state lock.
+/// Returns the `agent-state-changed` hook the projection owes, if any.
 fn publish(
     s: &mut ServerState,
     terminal: &ResourceId,
     records: &[Record],
     published: &mut HashMap<String, Record>,
     projection: &mut Option<Projection>,
-) {
+) -> Option<HookEvent> {
     let scope = Scope::Resource(terminal.clone());
     let next_ids: HashSet<&str> = records.iter().map(|record| record.id.as_str()).collect();
     published.retain(|id, _| {
@@ -70,6 +75,10 @@ fn publish(
             published.insert(record.id.clone(), record.clone());
         }
     }
+    let before = s
+        .hook_dispatcher()
+        .is_some()
+        .then(|| s.metadata().get(&scope, RESOURCE_AGENT_KEY));
     if let Some(active) = records.first() {
         let index = Summary {
             record_ids: records.iter().map(|record| record.id.as_str()).collect(),
@@ -83,6 +92,9 @@ fn publish(
         s.metadata_delete(&scope, RESOURCE_PROGRAM_STATUS_KEY);
         clear_projection(s, terminal, &scope, projection);
     }
+    // Hooks off: `before` was never read and nothing is owed.
+    let after = s.metadata().get(&scope, RESOURCE_AGENT_KEY);
+    HookEvent::agent_record_transition(terminal, before?.as_deref(), after.as_deref())
 }
 
 #[derive(serde::Serialize)]
@@ -199,4 +211,73 @@ fn display_text(text: &str) -> String {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{Record, publish};
+    use crate::hooks::{AGENT_STATE_CHANGED, HookDispatcher};
+    use crate::state::SharedState;
+
+    fn record(state: &'static str) -> Record {
+        Record {
+            id: "build".to_owned(),
+            state,
+            kind: None,
+            progress: None,
+            app: Some("mytool".to_owned()),
+            title: None,
+            msg: None,
+        }
+    }
+
+    /// phux-jqlh0.9: an OSC 7501 projection onto `phux.agent/v1` owes the
+    /// `agent-state-changed` hook on each effective edge, and only then.
+    #[test]
+    fn program_status_projection_fires_agent_state_changed_on_real_edges() {
+        let state = SharedState::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        state.with_mut(|s| s.set_hook_dispatcher(HookDispatcher::from_sender(tx)));
+        let (_session, pane) = state.with_mut(|s| s.seed_session("osc-hook"));
+        let terminal = state.with_mut(|s| s.intern_terminal_wire(pane));
+        let mut published = HashMap::new();
+        let mut projection = None;
+        let mut step = |records: &[Record]| {
+            state.with_mut(|s| publish(s, &terminal, records, &mut published, &mut projection))
+        };
+
+        let first = step(&[record("working")]).expect("first sighting is an edge");
+        assert_eq!(first.name, AGENT_STATE_CHANGED);
+        assert_eq!(first.context.get("from"), None);
+        assert_eq!(first.context.get("to").map(String::as_str), Some("working"));
+        assert_eq!(
+            first.context.get("agent-kind").map(String::as_str),
+            Some("mytool")
+        );
+        assert!(step(&[record("working")]).is_none(), "no edge, no hook");
+        let blocked = step(&[record("blocked")]).expect("working -> blocked");
+        assert_eq!(
+            blocked.context.get("from").map(String::as_str),
+            Some("working")
+        );
+        assert_eq!(
+            blocked.context.get("to").map(String::as_str),
+            Some("blocked")
+        );
+        let cleared = step(&[]).expect("clearing the status withdraws the record");
+        assert_eq!(
+            cleared.context.get("from").map(String::as_str),
+            Some("blocked")
+        );
+        assert_eq!(
+            cleared.context.get("to").map(String::as_str),
+            Some("unknown")
+        );
+        assert!(step(&[]).is_none(), "nothing left to withdraw");
+        // `publish` only computes the hook; the drain fires it after release.
+        assert!(rx.try_recv().is_err());
+    }
 }

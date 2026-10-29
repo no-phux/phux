@@ -15,9 +15,23 @@ export const DESKTOP_ARCHIVES: Record<string, string> = {
   "aarch64-apple-darwin": "macos-arm64.zip",
   "x86_64-unknown-linux-gnu": "linux-x64.tar.gz",
   "aarch64-unknown-linux-gnu": "linux-arm64.tar.gz",
+  "x86_64-pc-windows-msvc": "windows-x64.zip",
 };
-/** Both products ship for the same targets. */
-export const TARGETS = Object.keys(DESKTOP_ARCHIVES);
+/** CLI releases remain Unix-only; Windows runs that CLI inside WSL. */
+export const TARGETS = [
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+];
+export function targets(product: Product, channel: Channel = "next", version = ""): string[] {
+  if (product === "phux") return TARGETS;
+  if (channel === "next") return Object.keys(DESKTOP_ARCHIVES);
+  // Do not retroactively demand a Windows asset from an immutable historical
+  // release. Every new stable desktop (0.50.0 onward) must carry it.
+  valid(VERSION, version, "desktop version");
+  const [major = 0, minor = 0] = version.split(".").map(Number);
+  return major > 0 || minor >= 50 ? Object.keys(DESKTOP_ARCHIVES) : TARGETS;
+}
 const FIXTURES = "scripts/fixtures/release-manifest";
 
 // The POSIX installers parse the rendered file with awk, so values stay in
@@ -63,13 +77,14 @@ export function entry(
   digests: Record<string, string>,
 ): Table {
   const given = Object.keys(digests);
-  if (given.length !== TARGETS.length || !TARGETS.every((target) => target in digests)) {
-    throw new Failure(`${product} needs digests for exactly ${TARGETS.join(", ")}`);
+  const required = targets(product, channel, version);
+  if (given.length !== required.length || !required.every((target) => target in digests)) {
+    throw new Failure(`${product} needs digests for exactly ${required.join(", ")}`);
   }
   const release =
     channel === "next" ? "next" : `${product === "phux" ? "" : "desktop-"}v${version}`;
   const artifacts: Table = {};
-  for (const target of TARGETS) {
+  for (const target of required) {
     const name = assetName(product, channel, channel === "next" ? sha : version, target);
     const sha256 = valid(DIGEST, digests[target], `${name} sha256`);
     artifacts[target] = { name, url: `${DOWNLOAD}/${release}/${name}`, sha256 };
@@ -79,7 +94,7 @@ export function entry(
     release,
     sha: valid(SHA, sha, `${product} sha`),
     protocol: valid(PROTOCOL, protocol, `${product} protocol`),
-    ...(product === "desktop" ? { minimum_macos: "27.0" } : {}),
+    ...(product === "desktop" ? { minimum_macos: "26.0" } : {}),
     artifacts,
   };
 }
@@ -124,17 +139,20 @@ export function bridgeRecord(
   if (product === "desktop") {
     record["archive"] = assetName("desktop", "next", sha, "aarch64-apple-darwin");
     record["sha256"] = digests["aarch64-apple-darwin"];
-    record["minimum_macos"] = "27.0";
+    record["minimum_macos"] = "26.0";
   }
   record["published_at"] = now();
   const name = product === "phux" ? "channel.json" : "desktop-channel.json";
   return [name, `${JSON.stringify(record, null, 2)}\n`];
 }
 
-/** Placeholder digests `11..`, `22..`, ... starting at `first`. */
-function fakeDigests(first: number): Record<string, string> {
+/** Placeholder single-hex-digit digests, wrapping after f. */
+function fakeDigests(first: number, product: Product): Record<string, string> {
   return Object.fromEntries(
-    TARGETS.map((target, index) => [target, (index + first).toString(16).repeat(64)]),
+    targets(product).map((target, index) => [
+      target,
+      ((index + first) % 16).toString(16).repeat(64),
+    ]),
   );
 }
 
@@ -142,8 +160,15 @@ export function fixture(channel: Channel): Table {
   return manifest(
     channel,
     {
-      phux: entry("phux", channel, "9.8.7", "a".repeat(40), "0.9", fakeDigests(1)),
-      desktop: entry("desktop", channel, "1.2.3", "b".repeat(40), "0.9", fakeDigests(13)),
+      phux: entry("phux", channel, "9.8.7", "a".repeat(40), "0.9", fakeDigests(1, "phux")),
+      desktop: entry(
+        "desktop",
+        channel,
+        "1.2.3",
+        "b".repeat(40),
+        "0.9",
+        fakeDigests(13, "desktop"),
+      ),
     },
     "2026-01-01T00:00:00Z",
   );

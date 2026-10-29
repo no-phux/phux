@@ -17,15 +17,19 @@ present credentials from pairing.
 
 ## Adding a machine
 
-Install phux on the remote machine, then run this on your own:
+Run this on your own machine:
 
 ```sh
-phux host add me@mini
+phux host add me@mini --install
 ```
 
 Over `ssh me@mini`, this:
 
-1. Checks that `phux` is on the remote `PATH`.
+1. Checks that `phux` is on the remote `PATH`. With `--install`, it installs
+   phux there with the [install script](./install.md#install-script) when
+   it's missing, or runs `phux update` there when it's older than yours,
+   both on your release channel. Without `--install`, a missing phux is an
+   error.
 2. Installs a service there, so the server survives logouts and reboots.
 3. Sets the remote server's `[policy] mode` to `"paired"` and opens a QUIC
    listener on UDP port 8788.
@@ -42,14 +46,49 @@ with some Homebrew or Nix installs, say where it is:
 phux host add me@mini --remote-phux /opt/homebrew/bin/phux
 ```
 
+The machine's entry remembers that path, and where `--install` put phux, so
+later attaches, server restarts, and `phux host renew` run the same one.
+
 | Option | Does |
 | --- | --- |
 | `--name NAME` | Saves the machine under another name. |
+| `--install` | Installs phux on the machine, or updates an older one, before setting it up. |
+| `--accept-new-host-key` | Trusts the SSH host key of a machine you have never connected to; a changed key is still refused. |
 | `--quic-port PORT` | Uses another UDP port than 8788. |
 | `--endpoint HOST:PORT` | Registers this address instead of the ones found on the host. |
 | `--no-service` | Starts the server without a service, so it won't come back after a reboot. |
 | `--ssh-only` | Registers an `ssh://` entry without contacting the host. |
 | `--session NAME` | Attaches to this session on arrival. |
+
+## Machines on your tailnet
+
+With [Tailscale](https://tailscale.com), phux lists the machines on your
+tailnet so you don't have to type their names:
+
+```sh
+phux host discover            # every Mac and Linux machine on the tailnet
+phux host discover --login    # sign in to Tailscale, or reconnect it, first
+```
+
+It reads the Tailscale client on this machine and shows each machine's
+`MagicDNS` name, whether it's online, and whether you already added it. Add
+one by that name:
+
+```sh
+phux host add mini.tail1234.ts.net --name mini --install --accept-new-host-key
+```
+
+`--accept-new-host-key` is safe here because the tailnet already vouches for
+the address. Machines that run Tailscale SSH need no SSH key.
+
+`--login` opens the Tailscale app if it isn't running, reconnects a client
+that's signed in but disconnected, or starts a sign-in and prints its link.
+It doesn't wait for the browser: run `phux host discover` again afterwards.
+
+The desktop app does all of this from **Add Machine…** (in the File menu,
+the palette, and Settings > Hosts & connections): it lists your tailnet's
+machines, signs you in to Tailscale in the browser, and shows each setup
+step as it happens.
 
 ## Using a machine
 
@@ -88,6 +127,22 @@ changes. A token alone never gets anyone in.
 Certificates from `phux host add` last 90 days. Attaching warns, and
 `phux doctor` reports, when one is within two weeks of expiring.
 `phux host renew mini` replaces it.
+
+### A paired phone can see panes but cannot close or organize them
+
+Older pairing enrolled devices without the newer `organize` and `terminate`
+permissions. Update phux on the server, find the phone's credential with
+`phux workload list`, then explicitly repair that device on the server:
+
+```sh
+phux workload repair-paired sha256:DEVICE_CREDENTIAL_ID
+```
+
+Reconnect the phone afterwards. Its certificate, key and expiry stay the
+same; no server restart or re-pair is needed. Repair accepts only an active
+human device with exactly the old full-control pairing ceiling, not custom
+scopes or automation. New pairings include all terminal permissions. Loading
+a credential or marking it `human` never silently adds permissions.
 
 ## Who can do what
 
@@ -201,6 +256,62 @@ An expired code stops new joins but doesn't undo one. To cut off a joined
 satellite, revoke its credential on the hub with `phux workload revoke`, and
 remove it with `phux host rm sandbox`.
 
+### Minimal boxes
+
+[Minimal](https://minimal.dev) runs coding agents in isolated boxes on your
+own machine. One command makes every box join this machine's phux:
+
+```sh
+phux host minimal setup
+min session activate          # as usual; the box shows up in phux as min-NAME
+phux ls                       # the box's sessions, under min-NAME
+```
+
+![phux host minimal setup, then a plain min session activate joins the box](assets/minimal-demo.gif)
+
+`setup` writes a `phux` Minimal loadout that copies a Linux phux into each
+box and starts its server there, adds it to Minimal's `default_loadouts`, and
+installs a per-user service that runs `phux host minimal watch`. On macOS the
+box's phux is this phux's own version for Linux, checked like `phux update`
+checks one, and refreshed when that version changes; on Linux it is the phux
+you ran. Run `setup` again after the hub's QUIC port changes.
+
+The watcher notices each new box within a couple of seconds, mints a
+single-use ticket for it, and hands the code to `phux host join -` inside the
+box over `min session exec`. The box dials this machine at
+`host.min.internal`, the name Minimal gives this machine's loopback inside a
+box, so this server needs `[policy] mode = "paired"` and a QUIC listener
+bound to loopback or all addresses. A box's panes are then addressable here
+as `min-NAME/@N`. The box also gets a session here, `min-NAME`, whose pane
+is a shell in the box (`min session attach`), so it shows up in `phux ls`,
+`phux attach` and the desktop app without anything else to run. When a box
+is destroyed, that session ends, its satellite entry goes, and its
+credential is revoked.
+
+**The box gets no authority here.** A satellite credential opens no terminal
+on the hub; the hub drives the box, never the reverse, so an agent sealed in
+a box still can't reach your other panes.
+
+Agents in a box can still talk to yours. `phux mail` and `phux claim` in a
+box use this machine's store, in the box's name, so an agent there writes
+`phux mail send hub/@749 ...` and the agent in your pane `@749` gets it as
+mail from `min-NAME/@N` ([Mail across a hub](./agents.md#mail-across-a-hub)).
+
+A box activated with `--no-loadouts` has no phux and is skipped. A
+`--network none` box, and an `--network own_ip` box whose egress rules don't
+admit `host.min.internal`, can't reach the hub, so they never join. The
+default `host_ip` box can.
+
+| Command | Does |
+| --- | --- |
+| `phux host minimal setup` | Loadout, default, hub, and watcher service. `--no-service` skips the service; `--box-phux PATH` picks the Linux phux boxes get. |
+| `phux host minimal sync` | One pass: join new boxes, forget destroyed ones. |
+| `phux host minimal watch` | `sync` every two seconds, as the service does. |
+| `phux host minimal remove` | Stops the watcher, removes the loadout, and forgets and revokes every box. |
+
+`--hub HOST:PORT` overrides the address boxes dial, and `--min PATH` the
+Minimal CLI, when `min` is neither on `PATH` nor in `~/.local/bin`.
+
 ## Managing credentials
 
 ```sh
@@ -227,6 +338,15 @@ sides.
 `phux doctor` on the server machine checks the listener, the certificate,
 and whether the advertised address is reachable.
 
+**`could not install phux`.** The install script failed on the machine.
+Release builds exist for Apple silicon macOS and glibc Linux on x86_64 and
+arm64. Run the script there yourself to see all of its output.
+
+**`Host key verification failed`.** SSH has never connected to that machine.
+Connect once with `ssh` to check and save its key, or pass
+`--accept-new-host-key` when something else, such as a tailnet, vouches for
+the address.
+
 **`no answer within 5s; is UDP filtered?`** `phux host add` couldn't reach
 UDP 8788, so it registered an `ssh://` route instead. Attaching over it
 tries direct QUIC and falls back to `ssh -t` running the terminal UI
@@ -236,8 +356,13 @@ there. Open the port, or use a relay.
 The error names the machine and says to run `phux host add NAME` again.
 
 **`incompatible protocol`.** The two machines run releases too far apart. The
-error names both versions. `ssh HOST phux update` updates the remote binary,
-and `ssh HOST phux upgrade` moves its running server onto the binary already
-installed there.
+error names both versions. Stop the remote server, then start a fresh one:
+`ssh HOST kill <pid>` when its pid is known, otherwise
+`ssh HOST pkill -f 'phux server'`, then `ssh HOST phux server --ensure`. Stopping it
+closes the panes it is running.
+
+**Same protocol major, older remote server.** `ssh HOST phux update` updates
+the remote binary, and `ssh HOST phux upgrade` moves its running server onto
+the binary already installed there. Panes survive that hand-over.
 
 More in [Troubleshooting](./troubleshooting.md).

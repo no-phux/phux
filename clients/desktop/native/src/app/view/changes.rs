@@ -122,7 +122,7 @@ pub(super) fn build(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>
     div()
         .size_full()
         .relative()
-        .pt(px(gutter))
+        .pt(px(super::panes::top_inset(desk, &look)))
         .pr(px(gutter))
         // Its foot is the window's, whatever sits under the panes.
         .pb(px(gutter))
@@ -195,7 +195,7 @@ fn branch_detail(status: &Status) -> String {
 }
 
 /// The layout button's icon and tooltip: what it shows, and what a click does.
-fn layout_control(layout: Layout) -> (IconName, &'static str) {
+pub(super) fn layout_control(layout: Layout) -> (IconName, &'static str) {
     match layout {
         Layout::Auto => (
             IconName::Columns2,

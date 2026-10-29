@@ -127,8 +127,13 @@ desktop_tools() {
         return
     fi
     if [[ "$(uname -s)" == Darwin ]]; then
-        # shellcheck source=scripts/lib/apple-toolchain-env.sh
-        source "$DEV_ROOT/scripts/lib/apple-toolchain-env.sh"
+        # --check never downloads a component; builds/setup repair missing Metal.
+        # shellcheck source=scripts/lib/macos-desktop.sh
+        source "$DEV_ROOT/scripts/lib/macos-desktop.sh"
+        if ! prepare_macos_desktop --check; then
+            fail 'macOS desktop toolchain' 'bash scripts/setup-macos-desktop.sh; see docs/development.md#gpui-desktop'
+            return
+        fi
     fi
     native_tools
     node_tools
@@ -143,9 +148,7 @@ desktop_tools() {
         Darwin/arm64) ;;
         *) fail 'unsupported desktop platform' 'Use Apple-silicon macOS or x86-64/ARM64 Linux'; return ;;
     esac
-    if xcrun metal --version >/dev/null 2>&1; then ok 'Metal compiler executes'; else
-        fail 'Metal compiler unavailable in this environment' 'xcodebuild -downloadComponent MetalToolchain; verify xcrun metal --version; see clients/desktop/toolchain/README.md for inherited Nix SDK environments'
-    fi
+    ok 'Metal compiler executes (macOS 26 deployment target)'
 }
 
 linux_desktop_tools() {

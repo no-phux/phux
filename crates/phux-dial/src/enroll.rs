@@ -1,6 +1,6 @@
 //! The client half of the enrollment ALPN.
 //!
-//! See `workload-auth.md` §8.2 and ADR-0154: one QUIC connection under
+//! See `docs/remote.md#pairing-with-a-link` and ADR-0154: one QUIC connection under
 //! [`ENROLL_ALPN`] carrying one request, and the checks every client applies
 //! to the reply before it stores anything.
 
@@ -141,7 +141,7 @@ fn io_lost(err: impl std::fmt::Display) -> DialError {
 
 /// Check an issued chain as `phux host add` does, and return it parsed.
 ///
-/// `workload-auth.md` §8.1 step 3: exactly two certificates, the leaf
+/// `docs/remote.md#adding-a-machine`: exactly two certificates, the leaf
 /// carrying `public_key` (the requester's DER `SubjectPublicKeyInfo`) and
 /// verifying as a client certificate under the second, valid now, and that
 /// second the pinned authority when `pinned_authority` names one.

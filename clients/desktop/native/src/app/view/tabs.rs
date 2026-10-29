@@ -1,9 +1,12 @@
 //! One tab renderer and one set of tab actions: a compact strip in the
 //! titlebar or below the workspace, or rows in the navigator's fixed tab
 //! shelf (or, in the plain terminal, which has no sidebar, a rail of its own). A tab whose agent needs a person wears that state itself: a
-//! wash and a mark on its corner, not an entry in a separate list. A tab
+//! single small pip on its harness, not a wash or a second corner badge. A tab
 //! leads with its agent's harness mark, and one only agents drive sits back
-//! (shorter and fainter) until it is selected or hovered.
+//! (fainter) until it is selected or hovered, without changing size.
+
+pub(super) mod hover;
+mod map;
 
 use gpui::prelude::*;
 use gpui::{
@@ -16,18 +19,18 @@ use phux_protocol::ids::ResourceKey;
 
 use crate::connection::AgentState;
 use crate::settings::TabPosition;
-use crate::workspace::layout::{self, DeskTab, Placement};
+use crate::workspace::layout::{self, DeskTab};
 
 use super::super::color::from_hex;
 use super::super::desk::{self, Desk, Modal};
 use super::super::pane_identity::Harness;
 use super::super::skin::{Look, Surface, Surfaced};
-use super::super::ui::layout_map::layout_map;
-use super::super::ui::list::{CHILD_INSET, ROW, ROW_GAP, ROW_INSET, row_icon, row_radius};
+use super::super::ui::ghost_icon;
+use super::super::ui::list::{
+    CHILD_INSET, ROW, ROW_GAP, ROW_INSET, current_mark, row_icon, row_radius,
+};
 use super::super::ui::menu::Anchor;
-use super::super::ui::status::{attention_wash, harness_mark, state_dot, strongest};
-use super::super::ui::{agent_swatch, attention_mark, ghost_icon};
-use super::tab_glow;
+use super::super::ui::status::{harness_mark, harness_status, state_dot, strongest};
 
 /// Both selected and inactive tabs reserve the surface's one-point rim.
 const TAB_RIM: f32 = 1.;
@@ -98,6 +101,8 @@ pub(super) fn strip(
         )
     });
     let geometry = desk.tab_geometry.clone();
+    let scroll = desk.tab_peek.strip_scroll.clone();
+    let count = tabs.len();
     geometry.borrow_mut().prepare(position, tabs.len());
     let side = position == TabPosition::Side;
     // Beside the sidebar, top tabs start on the cards' column (the titlebar
@@ -113,38 +118,38 @@ pub(super) fn strip(
         TabPosition::Side => "side-tabs",
     };
     div()
+        .on_children_prepainted(move |bounds, _, _| {
+            // Tracked scrollers keep their child bounds on the handle rather
+            // than passing them to this callback. Add their painted offset.
+            let bounds = if position != TabPosition::Side {
+                (0..count).filter_map(|index| scroll.bounds_for_item(index))
+                    .map(|mut bounds| { bounds.origin += scroll.offset(); bounds })
+                    .collect()
+            } else { bounds };
+            let mut geometry = geometry.borrow_mut();
+            for (index, bounds) in bounds.into_iter().enumerate() {
+                geometry.record(index, position, bounds);
+            }
+        })
         .id(id)
         .debug_selector(move || id.into())
         .when(side, |list| list.w_full())
         .when(!side, |list| {
             list.flex_1().min_w_0().h_full().overflow_x_scroll()
+                .track_scroll(&desk.tab_peek.strip_scroll)
         })
-        .child(
-            // Measure inside the scroller: its children then include the actual
-            // painted scroll offset, not the unscrolled layout coordinates.
-            div()
-                .flex()
-                .when(side, |list| list.flex_col().gap(px(1.)).w_full())
-                .when(!side, |list| {
-                    list.gap(px(5.))
-                        .w_full()
-                        .min_w(px(tabs.len() as f32 * 105. + 3. + lead_pad - 4.))
-                        .h_full()
-                        .items_center()
-                        .when(position == TabPosition::Top, |list| {
-                            list.pl(px(lead_pad)).pr(px(4.))
-                        })
-                })
-                .children(tabs.iter().map(|tab| {
-                    tab_button(desk, tab, active, position, look, cx).into_any_element()
-                }))
-                .on_children_prepainted(move |bounds, _, _| {
-                    let mut geometry = geometry.borrow_mut();
-                    for (index, bounds) in bounds.into_iter().enumerate() {
-                        geometry.record(index, position, bounds);
-                    }
-                }),
-        )
+        .flex()
+        .when(side, |list| list.flex_col().gap(px(1.)))
+        .when(!side, |list| list.gap(px(5.)).items_center())
+        .when(position == TabPosition::Top, |list| {
+            list.pl(px(lead_pad))
+                .pr(px(4.))
+        })
+        // Direct children let the scroll handle reveal individual tabs and give
+        // the live shelf their exact layout bounds, without a second grid.
+        .children(tabs.iter().map(|tab| {
+            tab_button(desk, tab, active, position, look, cx).into_any_element()
+        }))
 }
 
 /// The most pressing agent state in `tab`, only when it needs a person.
@@ -158,8 +163,8 @@ pub(super) fn tab_attention(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
     )
 }
 
-/// The calmer state an agent in `tab` is in, for a quiet leading dot.
-fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
+/// The strongest lifecycle state among agents in `tab`.
+pub(super) fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
     strongest(
         layout::placements(&tab.root)
             .into_iter()
@@ -169,23 +174,20 @@ fn tab_agent(desk: &Desk, tab: &DeskTab) -> Option<AgentState> {
     )
 }
 
-/// A sidebar tab's leading slot: a lit dot while it needs a person, else its
-/// agent's harness mark, else its agent's state, else a terminal glyph.
-fn side_lead(
+/// A tab keeps its harness identity through attention and selection changes;
+/// the harness's pip carries attention. Unclassified agents use an attention dot.
+pub(super) fn side_lead(
     attention: Option<AgentState>,
     agent: Option<AgentState>,
     harness: Option<Harness>,
     selected: bool,
     look: &Look,
 ) -> AnyElement {
+    if let Some(harness) = harness {
+        return harness_status(harness, agent, attention, 13., look).into_any_element();
+    }
     if attention.is_some() {
         return state_dot(attention, agent).into_any_element();
-    }
-    if let Some(harness) = harness {
-        return harness_mark(harness, agent, 13., look).into_any_element();
-    }
-    if agent.is_some() {
-        return state_dot(None, agent).into_any_element();
     }
     Icon::new(IconName::SquareTerminal)
         .size(px(13.))
@@ -195,20 +197,6 @@ fn side_lead(
             &look.chrome.faint
         }))
         .into_any_element()
-}
-
-/// A titlebar tab's leading slot: nothing while its corner mark asks for a
-/// person, else what a sidebar tab leads with.
-fn top_lead(
-    attention: Option<AgentState>,
-    agent: Option<AgentState>,
-    harness: Option<Harness>,
-    selected: bool,
-    look: &Look,
-) -> Option<AnyElement> {
-    attention
-        .is_none()
-        .then(|| side_lead(None, agent, harness, selected, look))
 }
 
 /// A titlebar tab's close button: on hover, and always on the selected tab.
@@ -283,11 +271,13 @@ fn tab_press(
     window: &mut Window,
     cx: &mut Context<Desk>,
 ) {
+    desk.tab_peek.click = None;
     if event.modifiers.platform
         && let Some(key) = key
     {
         desk.toggle_resource_selection(key, cx);
     } else {
+        let peek = desk.active_tab_id().as_deref() == Some(id) && !event.modifiers.modified();
         desk.select_tab(id);
         desk.begin_tab_drag(
             id.to_owned(),
@@ -295,6 +285,7 @@ fn tab_press(
             event.position.y.as_f32(),
             cx,
         );
+        desk.tab_peek.click = peek.then(|| id.to_owned());
     }
     desk.after_command(window, cx);
 }
@@ -303,56 +294,6 @@ fn tab_resource_key(desk: &Desk, tab: &DeskTab) -> Option<ResourceKey> {
     let link = desk.link.as_ref()?;
     let terminal = layout::focused_placement(tab)?.terminal_id.as_ref()?;
     link.connection.pane(terminal)?.key
-}
-
-/// How a pane's cell in its tab's map is painted.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum CellTone {
-    /// The pane in front: focused, or the zoomed one.
-    Front,
-    /// Visible beside the front pane.
-    Beside,
-    /// Hidden behind a zoomed pane.
-    Hidden,
-}
-
-fn cell_tone(tab: &DeskTab, placement: &Placement) -> CellTone {
-    match tab.zoomed_id.as_deref() {
-        Some(zoomed) if zoomed == placement.id => CellTone::Front,
-        Some(_) => CellTone::Hidden,
-        None if tab.focused_id == placement.id => CellTone::Front,
-        None => CellTone::Beside,
-    }
-}
-
-/// A split tab's map: each pane a cell in its own proportions, the front one
-/// lit (in the accent on the selected tab), an agent's cell in its state's
-/// colour, and the panes a zoom hides faded. None for a single pane.
-fn tab_map(desk: &Desk, tab: &DeskTab, selected: bool, look: &Look) -> Option<gpui::Div> {
-    if layout::placements(&tab.root).len() < 2 {
-        return None;
-    }
-    let accent = from_hex(&look.chrome.theme.accent);
-    let ink = look.ink;
-    let paint = |placement: &Placement| {
-        let agent = placement
-            .terminal_id
-            .as_ref()
-            .and_then(|id| desk.agent(id))
-            .map(|info| info.state)
-            .filter(|state| *state != AgentState::Unknown)
-            .map(|state| from_hex(agent_swatch(state)));
-        match (cell_tone(tab, placement), agent) {
-            (CellTone::Hidden, _) => ink.opacity(0.16),
-            (CellTone::Front, Some(swatch)) => swatch,
-            (CellTone::Front, None) if selected => accent,
-            (CellTone::Front, None) => ink.opacity(0.6),
-            (CellTone::Beside, Some(swatch)) => swatch.opacity(0.45),
-            (CellTone::Beside, None) => ink.opacity(if selected { 0.24 } else { 0.18 }),
-        }
-    };
-    let id = tab.id.clone();
-    Some(layout_map(&tab.root, 20., 14., &paint).debug_selector(move || format!("tab-map-{id}")))
 }
 
 /// Rename follows an ordinary double click, not an organization selection
@@ -367,6 +308,60 @@ fn rename_requested(event: &ClickEvent) -> bool {
     }
 }
 
+fn tab_click(
+    desk: &mut Desk,
+    id: &str,
+    event: &ClickEvent,
+    window: &mut Window,
+    cx: &mut Context<Desk>,
+) {
+    let peek = desk.tab_peek.click.take().as_deref() == Some(id);
+    if rename_requested(event) {
+        desk.tab_peek.close();
+        desk.open_modal(
+            Modal::Rename {
+                tab_id: id.to_owned(),
+            },
+            window,
+            cx,
+        );
+    } else if peek && event.click_count() == 1 {
+        desk.toggle_tab_peek(window, cx);
+    }
+}
+
+fn tab_label(desk: &Desk, tab: &DeskTab, selected: bool, look: &Look) -> gpui::Div {
+    let id = tab.id.clone();
+    div()
+        .debug_selector(move || format!("tab-label-{id}"))
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .text_size(px(13.))
+        .when(selected, |label| label.font_weight(FontWeight::MEDIUM))
+        .text_color(if selected {
+            look.ink
+        } else {
+            from_hex(&look.chrome.subtext)
+        })
+        .child(desk::tab_title(desk, tab))
+}
+
+fn tab_actions(
+    desk: &Desk,
+    tab: &DeskTab,
+    side: bool,
+    selected: bool,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    if side {
+        tab_more(desk, &tab.id, selected, cx).into_any_element()
+    } else {
+        tab_close(&tab.id, selected, look, cx).into_any_element()
+    }
+}
+
 fn tab_button(
     desk: &Desk,
     tab: &DeskTab,
@@ -376,8 +371,7 @@ fn tab_button(
     cx: &mut Context<Desk>,
 ) -> impl IntoElement {
     let height = tab_height(look.skin.chrome.titlebar);
-    let id = &tab.id;
-    let tab_selector = SharedString::from(format!("tab-{id}"));
+    let tab_selector = SharedString::from(format!("tab-{}", tab.id));
     let selected = tab.id == active;
     let key = tab_resource_key(desk, tab);
     let organizing = key.is_some_and(|key| desk.organization.selected.contains(&key));
@@ -394,7 +388,6 @@ fn tab_button(
     } else {
         1.
     };
-    let sunk = if recessed { depth.inset } else { 0. };
     let (drag_id, rename_id, middle_id, menu_id) = (
         tab.id.clone(),
         tab.id.clone(),
@@ -402,7 +395,9 @@ fn tab_button(
         tab.id.clone(),
     );
     let side = position == TabPosition::Side;
-    let map = tab_map(desk, tab, selected, look);
+    let map = map::render(desk, tab, selected, look);
+    let tooltip_tab = tab.id.clone();
+    let handle = cx.weak_entity();
     div()
         .id(tab_selector.clone())
         .debug_selector(move || tab_selector.to_string())
@@ -418,7 +413,7 @@ fn tab_button(
                 .pr(px(ROW_INSET - TAB_RIM))
         })
         .when(!side, |tab| {
-            tab.h(px(height - sunk))
+            tab.h(px(height))
                 .min_w(px(100.))
                 .max_w(px(TAB_MAX))
                 .flex_1()
@@ -429,7 +424,6 @@ fn tab_button(
         .gap(px(if side { ROW_GAP } else { 6. }))
         .when(selected, |tab| {
             tab.surface(look, if side { Surface::SideTab } else { Surface::Tab })
-                .shadow(tab_glow(look))
         })
         .when(!selected, |tab| {
             tab.rounded(px(if side {
@@ -442,10 +436,8 @@ fn tab_button(
             .when(fade < 1., |tab| tab.opacity(fade))
             .hover(move |style| style.bg(hover).opacity(1.))
         })
-        .when_some(attention.filter(|_| !selected), |tab, state| {
-            tab.bg(attention_wash(state))
-        })
         .when(organizing, |tab| tab.bg(look.active))
+        .when(side && selected, |tab| tab.child(current_mark(look)))
         .block_mouse_except_scroll()
         .when(side, |tab| {
             tab.child(row_icon(side_lead(
@@ -464,38 +456,12 @@ fn tab_button(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .children(top_lead(attention, agent, harness, selected, look)),
+                    .child(side_lead(attention, agent, harness, selected, look)),
             )
         })
-        .child(
-            div()
-                .debug_selector({
-                    let id = id.clone();
-                    move || format!("tab-label-{id}")
-                })
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_sm()
-                .when(selected, |label| label.font_weight(FontWeight::MEDIUM))
-                .text_color(if selected {
-                    look.ink
-                } else {
-                    from_hex(&look.chrome.subtext)
-                })
-                .child(desk::tab_title(desk, tab)),
-        )
+        .child(tab_label(desk, tab, selected, look))
         .children(map)
-        .child(if side {
-            tab_more(desk, &tab.id, selected, cx).into_any_element()
-        } else {
-            tab_close(&tab.id, selected, look, cx).into_any_element()
-        })
-        .children(
-            attention
-                .filter(|_| !side)
-                .map(|state| attention_mark(state, look)),
-        )
+        .child(tab_actions(desk, tab, side, selected, look, cx))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |desk, event: &gpui::MouseDownEvent, window, cx| {
@@ -516,14 +482,9 @@ fn tab_button(
             }),
         )
         .on_click(cx.listener(move |desk, event: &ClickEvent, window, cx| {
-            if rename_requested(event) {
-                desk.open_modal(
-                    Modal::Rename {
-                        tab_id: rename_id.clone(),
-                    },
-                    window,
-                    cx,
-                );
-            }
+            tab_click(desk, &rename_id, event, window, cx);
         }))
+        .when(!desk.tab_peek.open, |tab| {
+            tab.tooltip(move |window, cx| hover::tooltip(&tooltip_tab, &handle, window, cx))
+        })
 }

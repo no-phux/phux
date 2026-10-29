@@ -8,23 +8,43 @@ use gpui::{
     ParentElement, SharedString, Styled, Window, div, px,
 };
 
-use crate::connection::AgentInfo;
 use crate::workspace::layout::{self, Placement};
 
 use super::super::super::color::from_hex;
 use super::super::super::conversation;
 use super::super::super::desk::Desk;
 use super::super::super::overlays;
-use super::super::super::pane_identity::PaneKind;
+use super::super::super::pane_identity::{PaneKind, PaneOrigin};
 use super::super::super::skin::{Look, Surface, Surfaced};
 use super::super::super::ui::status::harness_mark;
-use super::super::super::ui::{agent_swatch, ghost_button, pill, specular};
+use super::super::super::ui::{pill, specular};
 use super::super::gloss;
 use super::controls::{Offer, drop_hint, pane_controls};
-use super::depth::{depth_inset, pane_shadows, veils};
+use super::depth::{depth_inset, veils};
 
 /// How far down a pane the pointer reveals its controls.
 const CONTROLS_EDGE: f32 = 36.;
+
+/// A terminal that has not bound a view yet. A saved id that this server
+/// does not have says so. A spawn waiting for its replica stays blank.
+fn pending_terminal(missing: bool, look: &Look) -> AnyElement {
+    if !missing {
+        return div().size_full().into_any_element();
+    }
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(from_hex(&look.chrome.muted))
+        .child(
+            div()
+                .w_full()
+                .text_center()
+                .child("Saved terminal is not on this server"),
+        )
+        .into_any_element()
+}
 
 /// A terminal pane's body: its cached view, or a placeholder while the
 /// terminal is missing or not ready.
@@ -40,31 +60,16 @@ fn terminal_body(
     // The terminal holds the keyboard only while no modal or find field does.
     let settings = desk.terminal_settings(placement, focused && !desk.text_field_has_keys());
     let client = desk.client();
-    let (Some(terminal), Some(view), Some(settings), Some(client)) = (
-        placement.terminal_id.clone(),
-        placement.view_id,
-        settings,
-        client,
-    ) else {
-        return div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(from_hex(&look.chrome.muted))
-            .child(
-                div()
-                    .w_full()
-                    .text_center()
-                    .child(if placement.terminal_id.is_none() {
-                        "Saved terminal is not on this server"
-                    } else {
-                        "Waiting for terminal"
-                    }),
-            )
-            .into_any_element();
+    let Some(terminal) = placement.terminal_id.clone() else {
+        return pending_terminal(true, look);
     };
-    let remote = desk.remote.clone();
+    let Some(view) = placement.view_id else {
+        return pending_terminal(false, look);
+    };
+    let (Some(settings), Some(client)) = (settings, client) else {
+        return pending_terminal(false, look);
+    };
+    let remote = crate::platform::filesystem_host(desk.remote.as_deref()).map(str::to_owned);
     let entity = desk.panes_mut().entity_for(
         &placement_id,
         &terminal,
@@ -131,123 +136,38 @@ pub(super) fn pane_view(
     let find_bar = find.map(|case| overlays::find_bar(desk, case, cx));
     let id = placement.id.clone();
     let leaving = desk.motion.is_leaving(&id);
-    // An agent's pane sits back until it holds focus or the pointer.
-    let hovered = desk.motion.hover.as_deref() == Some(id.as_str());
-    let recessed = identity.origin.is_agent() && !focused && !hovered && !leaving;
-    let instant = cx.reduce_motion() || !desk.prefs.animations;
-    let depth = desk.motion.depth(&id, recessed, instant, Instant::now());
-    if depth > 0. && depth < 1. {
-        window.request_animation_frame();
-    }
-    let unfocused = if !focused && shared {
-        1. - desk.prefs.unfocused_opacity as f32
-    } else {
-        0.
-    };
-    let dim =
-        Some(veils(unfocused, look.skin.material.depth.veil * depth)).filter(|amount| *amount > 0.);
+    let depth = pane_depth(desk, &id, identity.origin, focused, window, cx);
+    let dim = pane_dim(desk, &look, focused, shared, depth);
     let (padding_x, padding_y) = (desk.prefs.padding_x as f32, desk.prefs.padding_y as f32);
     let (inset_x, inset_y) = depth_inset(&look, depth, padding_x, padding_y);
     let fade = from_hex(&colors.theme.background);
-    let agent = placement
-        .terminal_id
-        .as_ref()
-        .and_then(|id| desk.agent(id))
-        .cloned();
-    let urgent = agent.as_ref().is_some_and(AgentInfo::urgent);
-    let fenced = placement.terminal_id.as_ref().is_some_and(|id| {
-        desk.link
-            .as_ref()
-            .is_some_and(|link| link.connection.fenced(id))
-    });
     let dropping = desk.drop_target.as_deref() == Some(id.as_str());
     let remote_files = placement.terminal_id.as_ref().is_some_and(|terminal| {
         !matches!(
-            crate::attach::terminal_host(desk.remote.as_deref(), terminal),
+            crate::attach::terminal_host(
+                crate::platform::filesystem_host(desk.remote.as_deref()),
+                terminal
+            ),
             crate::attach::TerminalHost::Local
         )
     });
     // Only the focused pane is read for scrollback; the pill sits on it.
     let follow = focused && !leaving && desk.follows_live();
-    let controls = find.is_none()
-        && !dropping
-        && !leaving
-        && desk.dragging_split().is_none()
-        && (desk.chrome_hover.as_deref() == Some(id.as_str())
-            || desk.controls_hover.as_deref() == Some(id.as_str())
-            || desk.pane_menu_open.as_deref() == Some(id.as_str()));
+    let controls = controls_visible(desk, &id, find.is_some(), dropping, leaving);
     let edge = if dropping {
         from_hex(&colors.theme.accent)
-    } else if urgent {
-        agent
-            .as_ref()
-            .map(|info| from_hex(agent_swatch(info.state)).opacity(0.75))
-            .unwrap_or(look.lit)
-    } else if focused && shared {
-        look.lit
     } else {
         gpui::transparent_black()
     };
-    let shine = look
-        .lit
-        .opacity(if focused { 0.7 } else { 0.35 } * gloss(&look.skin) * (1. - depth) * presence);
-    let eligible = desk.conversation_eligible(&id);
-    // Native agents is on, but this agent publishes no conversation yet: the
-    // capsule offers the step that unlocks it.
-    let setup = identity
-        .origin
-        .harness()
-        .filter(|_| desk.prefs.native_agents && !eligible)
-        .filter(|_| placement.terminal_id.is_some());
-    let controls_bar = controls.then(|| {
-        let offer = Offer { behind, setup };
-        pane_controls(desk, placement, identity.origin, zoomed, offer, &look, cx).into_any_element()
-    });
-    let conversation_toggle = eligible && !desk.conversation_visible(&id) && !controls;
-    // While it sits back, the pane names its harness in the corner; forward,
-    // the controls capsule does.
-    let corner_mark = identity
-        .origin
-        .harness()
-        .filter(|_| depth > 0. && !controls)
-        .map(|harness| {
-            let state = agent.as_ref().map(|info| info.state);
-            harness_mark(harness, state, 14., &look).opacity(0.85 * depth)
-        });
-    let corner =
-        (corner_mark.is_some() || (fenced && !controls) || conversation_toggle).then(|| {
-            let conversation_id = id.clone();
-            div()
-                .absolute()
-                .top(px(8.))
-                .right(px(10.))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .children(corner_mark)
-                .when(fenced && !controls, |corner| {
-                    corner.child(pill(
-                        "Typing may not have arrived",
-                        &format!("{}22", colors.theme.warning),
-                        &colors.theme.warning,
-                        &look,
-                    ))
-                })
-                .when(conversation_toggle, |corner| {
-                    corner.child(
-                        ghost_button(format!("conversation-open-{id}"), "Conversation").on_click(
-                            cx.listener(move |desk, _, window, cx| {
-                                desk.toggle_conversation(&conversation_id, window, cx);
-                            }),
-                        ),
-                    )
-                })
-        });
-    let drag_id = id.clone();
-    let drop_id = id.clone();
-    let exit_id = id.clone();
+    let shine = focus_shine(&look, focused, shared, depth, presence);
+    let controls_bar = controls.then(|| controls_bar(desk, placement, zoomed, behind, &look, cx));
+    let corner = pane_corner(desk, placement, depth, controls, &look);
     let card = div()
         .id(SharedString::from(format!("pane-card-{id}")))
+        .debug_selector({
+            let id = id.clone();
+            move || format!("pane-card-{id}")
+        })
         .size_full()
         .relative()
         .flex()
@@ -255,36 +175,11 @@ pub(super) fn pane_view(
         .when(presence < 1., |card| card.opacity(presence.max(0.)))
         .surface(&look, Surface::Pane)
         .border_color(edge)
-        .shadow(pane_shadows(&look, depth))
+        .shadow(look.pane_depth_shadows(depth))
         .overflow_hidden()
         .block_mouse_except_scroll()
-        .on_hover(track_hover(id.clone(), |desk| &mut desk.motion.hover, cx))
-        .on_drag_move::<ExternalPaths>(cx.listener(
-            move |desk, event: &DragMoveEvent<ExternalPaths>, _, cx| {
-                let inside = event.bounds.contains(&event.event.position);
-                let here = desk.drop_target.as_deref() == Some(drag_id.as_str());
-                if inside && !here {
-                    desk.drop_target = Some(drag_id.clone());
-                    cx.notify();
-                } else if !inside && here {
-                    desk.drop_target = None;
-                    cx.notify();
-                }
-            },
-        ))
-        .on_drop(cx.listener(move |desk, paths: &ExternalPaths, window, cx| {
-            if let Some(tab) = desk.active_tab_id() {
-                desk.focus_placement(&tab, &drop_id, window, cx);
-            }
-            desk.drop_paths(&drop_id, paths.paths(), cx);
-            desk.after_command(window, cx);
-        }))
-        .on_file_drop_exit(cx.listener(move |desk, _: &FileDropEvent, _, cx| {
-            if desk.drop_target.as_deref() == Some(exit_id.as_str()) {
-                desk.drop_target = None;
-                cx.notify();
-            }
-        }))
+        .on_hover(track_hover(id.clone(), |desk| &mut desk.motion.hover, cx));
+    let card = file_drop_target(card, &id, cx)
         .child(
             div()
                 .flex_grow(1.)
@@ -330,6 +225,164 @@ pub(super) fn pane_view(
             specular(shine, inset_x + look.skin.shape.radius).map(|line| line.top(px(inset_y))),
         )
         .into_any_element()
+}
+
+/// Focus among split panes is a neutral top edge, never a coloured perimeter.
+fn focus_shine(look: &Look, focused: bool, shared: bool, depth: f32, presence: f32) -> Hsla {
+    if !focused || !shared {
+        return gpui::transparent_black();
+    }
+    look.lit
+        .opacity(0.7 * gloss(&look.skin) * (1. - depth) * presence)
+}
+
+fn pane_dim(desk: &Desk, look: &Look, focused: bool, shared: bool, depth: f32) -> Option<f32> {
+    let unfocused = if !focused && shared {
+        1. - desk.prefs.unfocused_opacity as f32
+    } else {
+        0.
+    };
+    Some(veils(unfocused, look.skin.material.depth.veil * depth)).filter(|amount| *amount > 0.)
+}
+
+/// The hover capsule offers conversation setup only where it can be enabled.
+fn controls_bar(
+    desk: &Desk,
+    placement: &Placement,
+    zoomed: bool,
+    behind: usize,
+    look: &Look,
+    cx: &mut Context<Desk>,
+) -> AnyElement {
+    let origin = desk.pane_identity(placement).origin;
+    let eligible = desk.conversation_eligible(&placement.id);
+    let setup = origin
+        .harness()
+        .filter(|_| desk.prefs.native_agents && !eligible)
+        .filter(|_| placement.terminal_id.is_some());
+    pane_controls(
+        desk,
+        placement,
+        origin,
+        zoomed,
+        Offer { behind, setup },
+        look,
+        cx,
+    )
+    .into_any_element()
+}
+
+/// File hover and drop share the same placement, without changing its layout.
+fn file_drop_target(
+    card: gpui::Stateful<gpui::Div>,
+    id: &str,
+    cx: &Context<Desk>,
+) -> gpui::Stateful<gpui::Div> {
+    let drag_id = id.to_owned();
+    let drop_id = id.to_owned();
+    let exit_id = id.to_owned();
+    card.on_drag_move::<ExternalPaths>(cx.listener(
+        move |desk, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+            let inside = event.bounds.contains(&event.event.position);
+            let here = desk.drop_target.as_deref() == Some(drag_id.as_str());
+            if inside && !here {
+                desk.drop_target = Some(drag_id.clone());
+                cx.notify();
+            } else if !inside && here {
+                desk.drop_target = None;
+                cx.notify();
+            }
+        },
+    ))
+    .on_drop(cx.listener(move |desk, paths: &ExternalPaths, window, cx| {
+        if let Some(tab) = desk.active_tab_id() {
+            desk.focus_placement(&tab, &drop_id, window, cx);
+        }
+        desk.drop_paths(&drop_id, paths.paths(), cx);
+        desk.after_command(window, cx);
+    }))
+    .on_file_drop_exit(cx.listener(move |desk, _: &FileDropEvent, _, cx| {
+        if desk.drop_target.as_deref() == Some(exit_id.as_str()) {
+            desk.drop_target = None;
+            cx.notify();
+        }
+    }))
+}
+
+/// An agent's pane sits back until it holds focus or the pointer.
+fn pane_depth(
+    desk: &mut Desk,
+    id: &str,
+    origin: PaneOrigin,
+    focused: bool,
+    window: &mut Window,
+    cx: &Context<Desk>,
+) -> f32 {
+    let hovered = desk.motion.hover.as_deref() == Some(id);
+    let recessed = origin.is_agent() && !focused && !hovered && !desk.motion.is_leaving(id);
+    let instant = cx.reduce_motion() || !desk.prefs.animations;
+    let depth = desk.motion.depth(id, recessed, instant, Instant::now());
+    if depth > 0. && depth < 1. {
+        window.request_animation_frame();
+    }
+    depth
+}
+
+fn controls_visible(desk: &Desk, id: &str, finding: bool, dropping: bool, leaving: bool) -> bool {
+    if finding || dropping || leaving || desk.dragging_split().is_some() {
+        return false;
+    }
+    desk.chrome_hover.as_deref() == Some(id)
+        || desk.controls_hover.as_deref() == Some(id)
+        || desk.pane_menu_open.as_deref() == Some(id)
+}
+
+/// Only recessed identity and input-recovery notices occupy the corner.
+fn pane_corner(
+    desk: &Desk,
+    placement: &Placement,
+    depth: f32,
+    controls: bool,
+    look: &Look,
+) -> Option<gpui::Div> {
+    if controls {
+        return None;
+    }
+    let corner_mark = desk
+        .pane_identity(placement)
+        .origin
+        .harness()
+        .filter(|_| depth > 0.)
+        .map(|harness| harness_mark(harness, None, 14., look).opacity(0.85 * depth));
+    let fenced = placement.terminal_id.as_ref().is_some_and(|id| {
+        desk.link
+            .as_ref()
+            .is_some_and(|link| link.connection.fenced(id))
+    });
+    if corner_mark.is_none() && !fenced {
+        return None;
+    }
+    let id = placement.id.clone();
+    let warning = &look.chrome.theme.warning;
+    Some(
+        div()
+            .debug_selector(move || format!("pane-corner-{id}"))
+            .absolute()
+            .top(px(8.))
+            .right(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .children(corner_mark)
+            .when(fenced, |corner| {
+                corner.child(pill(
+                    "Typing may not have arrived",
+                    &format!("{warning}22"),
+                    warning,
+                    look,
+                ))
+            }),
+    )
 }
 
 /// Keep the desk field `slot` picks naming pane `id` while the pointer is over it.

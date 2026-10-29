@@ -111,12 +111,17 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 
 Agent-facing verbs that have no MCP tool yet:
 
+- `phux config distro list`: local distro package inventory; no server action.
+- `phux config distro current`: local configured selection; no server action.
+- `phux config distro use`: operator config-file selection; reload is explicitly separate.
+- `phux config distro off`: operator config-file selection; reload is explicitly separate.
 - `phux logs`: local operator log inventory and tailing, not a model-facing server action.
 - `phux update`: replaces the operator's installed binaries; installation management stays outside MCP.
 - `phux channel`: changes the operator's installed release channel; installation management stays outside MCP.
 - `phux config agents`: local config inventory of declared agent integrations; `phux_agent_list` covers the live agents.
 - `phux host add`: operator host-registry enrollment, not an agent action.
 - `phux host ls`: operator inventory of the host registry, not an agent action.
+- `phux host discover`: operator tailnet inventory for enrollment, not an agent action.
 - `phux host renew`: operator host-registry certificate renewal, not an agent action.
 - `phux host upgrade`: operator host-registry transport upgrade, not an agent action.
 - `phux pair`: mints a pairing secret; credential handling stays outside the model-facing set.

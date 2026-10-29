@@ -25,6 +25,19 @@ desktop-test: worktree-claim desktop-source
     cargo test --locked --manifest-path clients/desktop/native/Cargo.toml
 
 [group('desktop')]
+[doc('Test real CLI/server bootstrap and failed-start retry without touching installed state')]
+desktop-bootstrap-test: worktree-claim desktop-source desktop-cli
+    #!/usr/bin/env bash
+    set -euo pipefail
+    state="$PWD/clients/desktop/.cache/bootstrap-state"
+    config="$PWD/clients/desktop/.cache/bootstrap-config"
+    mkdir -p "$state" "$config"
+    PHUX_DESKTOP_JOURNEY_TEST_BIN="${CARGO_TARGET_DIR:-$PWD/target}/debug/phux" \
+        XDG_STATE_HOME="$state" XDG_CONFIG_HOME="$config" \
+        cargo test --locked --manifest-path clients/desktop/native/Cargo.toml -p phux-desktop \
+        --lib app::session::journey_tests::bootstrap -- --ignored --test-threads=1
+
+[group('desktop')]
 [doc('Test the pinned Linux wgpu renderer, including native capture alpha')]
 desktop-renderer-test: worktree-claim desktop-source
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/clients/desktop/native/target}" bun tools/main.ts desktop-wgpu-test wgpu_
@@ -37,7 +50,7 @@ desktop-perf-headless profile="test": desktop-source
 [group('desktop')]
 [doc('Format check and clippy -D warnings for the native desktop crate')]
 desktop-lint: worktree-claim desktop-source
-    cargo fmt --manifest-path clients/desktop/native/Cargo.toml -- --check
+    cargo fmt --manifest-path clients/desktop/native/Cargo.toml --all -- --check
     cargo clippy --locked --manifest-path clients/desktop/native/Cargo.toml --all-targets -- -D warnings
     # phux-gpui alone resolves without the desktop's `patched-gpui`, so its
     # published-gpui-fast branches (src/platform.rs) compile and lint too.
@@ -55,8 +68,8 @@ desktop-lock-refresh: desktop-source
 
 [group('desktop')]
 [doc('Build the phux CLI from this checkout for the desktop launcher')]
-desktop-cli:
-    bash clients/desktop/scripts/build-cli.sh
+desktop-cli profile="debug":
+    bash clients/desktop/scripts/build-cli.sh "--{{profile}}"
 
 [group('desktop')]
 [doc('Build the debug GPUI desktop and launch it against this checkout')]
@@ -93,13 +106,18 @@ desktop-framework-check profile="release": desktop-cli (desktop-package profile)
 desktop-tests:
     #!/usr/bin/env bash
     set -euo pipefail
+    tests=(desktop-test)
+    # The current harness also qualifies immutable releases that predate this recipe.
+    if just --show desktop-bootstrap-test >/dev/null 2>&1; then
+        tests+=(desktop-bootstrap-test)
+    fi
     if [[ "$(uname -s)" != Linux ]]; then
-        just desktop-test
+        just "${tests[@]}"
         just desktop-perf-budget
         exit 0
     fi
-    if [[ -n "${DISPLAY:-}" ]]; then just desktop-test; else
-        xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just desktop-test
+    if [[ -n "${DISPLAY:-}" ]]; then just "${tests[@]}"; else
+        xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session -- just "${tests[@]}"
     fi
     just desktop-renderer-test
 
@@ -114,11 +132,12 @@ desktop-native-test: desktop-framework-check
 
 [group('desktop')]
 [doc('Package the release desktop for the native platform under clients/desktop/dist')]
-desktop-package profile="release": (desktop-native-build profile)
+desktop-package profile="release": (desktop-native-build profile) (desktop-cli profile)
     #!/usr/bin/env bash
     set -euo pipefail
     cd clients/desktop
     export PHUX_DESKTOP_BIN="$PWD/native/target/{{profile}}/phux-desktop"
+    export PHUX_DESKTOP_RUNTIME_BIN="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/{{profile}}/phux"
     if [[ "$(uname -s)" == Linux ]]; then
         bun scripts/package-linux.ts
     else
@@ -126,8 +145,13 @@ desktop-package profile="release": (desktop-native-build profile)
     fi
 
 [group('desktop')]
+[doc('Package a local drag-to-Applications DMG (ad-hoc; stable releases notarize in CI)')]
+desktop-dmg: desktop-package
+    bun clients/desktop/scripts/package-dmg.ts --app clients/desktop/dist/app/Phux.app --output clients/desktop/dist/Phux.dmg
+
+[group('desktop')]
 [doc('Build Phux.app and install it to /Applications; it opens your Intake session')]
-desktop-install-app: desktop-native-build
+desktop-install-app: desktop-native-build (desktop-cli "release")
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ "$(uname -s)" == Linux ]]; then

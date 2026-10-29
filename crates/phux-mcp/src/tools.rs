@@ -1030,6 +1030,20 @@ pub(crate) fn contract_error(
 /// A transport failure on the `--json` error contract, with the codes the
 /// CLI uses for one: `no_server`, `server_disconnected`, or `transport`.
 pub(crate) fn transport_error(err: &AttachError, socket: &Path, verb: &str) -> ToolError {
+    let pid = phux_client::attach::is_incompatible_protocol(err)
+        .then(|| phux_client::explain::server_pid(socket))
+        .flatten();
+    render_transport_error(err, socket, verb, pid)
+}
+
+/// [`transport_error`] with the server pid already resolved, so tests can pin
+/// both the known-pid and unknown-pid recoveries.
+pub(crate) fn render_transport_error(
+    err: &AttachError,
+    socket: &Path,
+    verb: &str,
+    pid: Option<i32>,
+) -> ToolError {
     const DOCTOR: &str = "run `phux doctor` for a health check";
     match err {
         AttachError::Io(io)
@@ -1050,6 +1064,12 @@ pub(crate) fn transport_error(err: &AttachError, socket: &Path, verb: &str) -> T
             "server_disconnected",
             format!("server closed the connection during {verb}"),
             DOCTOR,
+            1,
+        ),
+        AttachError::IncompatibleProtocol(_) => contract_error(
+            "transport",
+            format!("{verb} failed: {err}"),
+            &phux_client::explain::old_server_recovery_lines(socket, pid).join("\n"),
             1,
         ),
         other => contract_error("transport", format!("{verb} failed: {other}"), DOCTOR, 1),
@@ -1137,6 +1157,38 @@ mod tests {
             matches!(result, Err(AttachError::Io(_))),
             "the MCP collector must not turn a transport error into an empty success: {result:?}"
         );
+    }
+
+    /// An old-protocol server stays on `transport`. The remedy names `kill`
+    /// when the pid is known and otherwise only the server-process fallback.
+    #[test]
+    fn an_incompatible_transport_error_names_the_stop_recovery() {
+        let socket = Path::new("/tmp/old.sock");
+        let err = AttachError::IncompatibleProtocol(
+            "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
+             update the phux server so protocol major.minor match"
+                .to_owned(),
+        );
+        let with_pid = render_transport_error(&err, socket, "spawn", Some(4242));
+        let doc = with_pid.document();
+        assert_eq!(doc["error"]["code"], "transport");
+        assert_eq!(doc["exit_code"], 1);
+        let remedy = doc["remedy"].as_str().unwrap_or_default();
+        assert!(remedy.contains("kill 4242"), "{remedy}");
+        assert!(remedy.contains("pkill -f 'phux server'"), "{remedy}");
+        assert!(remedy.contains("`phux server --ensure`"), "{remedy}");
+        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+            assert!(!remedy.contains(forbidden), "{forbidden} in {remedy}");
+        }
+
+        let unknown = render_transport_error(&err, socket, "spawn", None);
+        let unknown_doc = unknown.document();
+        let remedy = unknown_doc["remedy"].as_str().unwrap_or_default();
+        assert!(remedy.contains("pkill -f 'phux server'"), "{remedy}");
+        assert!(!remedy.contains("`kill "), "{remedy}");
+        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+            assert!(!remedy.contains(forbidden), "{forbidden} in {remedy}");
+        }
     }
 
     /// The fixture as a server that reached everything it knows about.

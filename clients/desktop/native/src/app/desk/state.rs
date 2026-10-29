@@ -81,11 +81,10 @@ impl Desk {
     /// terminal output and input receipts change it in paint-only batches.
     pub(super) fn read_runtime_chrome(&self) -> RuntimeChrome {
         let fenced = self.link.as_ref().map_or_else(Vec::new, |link| {
-            self.placements()
-                .filter_map(|placement| placement.terminal_id.as_ref())
-                .filter(|id| link.connection.fenced(id))
-                .cloned()
-                .collect()
+            link.connection.fenced_placements(
+                self.placements()
+                    .filter_map(|placement| placement.terminal_id.as_ref()),
+            )
         });
         RuntimeChrome {
             scrolled_back: self.scrolled_back(),
@@ -123,7 +122,7 @@ impl Desk {
         self.placements().find(|placement| placement.id == id)
     }
 
-    pub(super) fn placement_of(&self, terminal: &ResourceId) -> Option<&Placement> {
+    pub(crate) fn placement_of(&self, terminal: &ResourceId) -> Option<&Placement> {
         self.placements()
             .find(|placement| placement.terminal_id.as_ref() == Some(terminal))
     }
@@ -266,17 +265,21 @@ impl Desk {
 
     /// Reveal a notification's terminal, if it has one, and mark it read.
     pub fn open_notification(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let terminal = self.feed.get(id).and_then(|entry| entry.terminal.clone());
-        let approval = self
-            .feed
-            .get(id)
-            .is_some_and(|entry| entry.kind == Kind::Approval);
+        let Some(entry) = self.feed.get(id) else {
+            return;
+        };
+        let terminal = entry.terminal.clone();
+        let approval = entry.kind == Kind::Approval;
         self.feed.read(id);
         // An approval is decided in the Inbox; opening one shows it there.
-        if approval {
+        if approval || terminal.is_none() {
+            if !approval {
+                self.feed.show_details(id);
+            }
             if self.modal != Modal::Notifications {
                 self.execute("notifications", window, cx);
             }
+            cx.notify();
             return;
         }
         if self.modal == Modal::Notifications {

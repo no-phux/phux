@@ -332,10 +332,10 @@ impl Desk {
         self.locations.insert(previous, self.store.clone());
         self.persist();
         self.abandon_organize();
+        self.cancel_fleet_navigation();
         self.park_link(cx);
         self.pending_project_terminal = None;
         self.connect_error = None;
-        self.fleet_view.pending = None;
         self.goto_search = Default::default();
         self.remote = name.clone();
         self.session = session.clone();
@@ -380,49 +380,6 @@ impl Desk {
         cx.notify();
     }
 
-    /// Enroll `target` over ssh. The dialog closes at once; enrollment runs in
-    /// the background and reports through a notification.
-    pub(crate) fn apply_add_host(
-        &mut self,
-        target: String,
-        name: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let target = target.trim().to_owned();
-        if target.is_empty() {
-            self.post(
-                Kind::Refusal,
-                "Could not add host",
-                Some("Enter an ssh destination such as me@mini.".into()),
-            );
-            cx.notify();
-            return;
-        }
-        if self.host_adding.is_some() {
-            return;
-        }
-        self.close_modal(window, cx);
-        self.host_adding = Some(target.clone());
-        let phux = self.phux.clone();
-        cx.spawn(async move |desk, cx| {
-            let added = target.clone();
-            let result = smol::unblock(move || host::add_host(&phux, &target, &name)).await;
-            let _ = desk.update(cx, |desk, cx| {
-                desk.host_adding = None;
-                match result {
-                    Ok(()) => desk.post(Kind::Info, &format!("Added {added}"), None),
-                    Err(error) => {
-                        desk.post(Kind::Error, &format!("Could not add {added}"), Some(error))
-                    }
-                }
-                desk.refresh_hosts(cx);
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
     pub(crate) fn confirm_remove_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Modal::RemoveHost { name } = self.modal.clone() else {
             return;
@@ -441,7 +398,7 @@ impl Desk {
 
     /// Why a CLI-backed action cannot run here: the CLI drives the local
     /// server's socket, not a registered host.
-    pub(super) fn local_only(&self) -> Option<String> {
+    pub(crate) fn local_only(&self) -> Option<String> {
         self.remote.as_deref().map(|host| {
             format!("This window is on {host}. Run it there with `phux attach {host}`.")
         })

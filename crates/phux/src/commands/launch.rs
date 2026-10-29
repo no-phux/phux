@@ -8,9 +8,9 @@ use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{FrameKind, SpawnResult};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::SpawnSplit;
 use crate::commands::agent::{PreparedAgentSession, prepare_for_launch};
 use crate::commands::spawn::{dispatch_spawn, dispatch_spawn_placed, report_spawn_error};
+use crate::commands::{SpawnSplit, json_err};
 
 mod native;
 
@@ -48,16 +48,30 @@ pub(crate) fn run_launch(
         return run_list(&config_path, mode, json);
     }
     let Some(integration) = integration else {
-        error!("launch requires an INTEGRATION name (or --list)");
-        return ExitCode::FAILURE;
+        return json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::USAGE_ERROR,
+                "launch requires an INTEGRATION name (or --list)",
+                "`phux launch --list` names the integrations enabled plugins provide",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        );
     };
     let workspace_cwd = match cwd {
         Some(dir) => dir,
         None => match std::env::current_dir() {
             Ok(dir) => dir,
             Err(err) => {
-                error!("launch could not read the current directory: {err}");
-                return ExitCode::FAILURE;
+                return json_err::emit(
+                    json,
+                    &json_err::CliError::new(
+                        json_err::codes::IO,
+                        format!("launch could not read the current directory: {err}"),
+                        "pass `-c DIR`, or run from a directory that still exists",
+                    ),
+                    crate::exit_codes::EXIT_FAILURE,
+                );
             }
         },
     };
@@ -69,7 +83,7 @@ pub(crate) fn run_launch(
         mode,
     ) {
         Ok(resolved) => resolved,
-        Err(err) => return report_launch_error(&err),
+        Err(err) => return report_launch_error(json, &err),
     };
     if mode == LaunchMode::Native {
         if print {
@@ -177,7 +191,7 @@ fn spawn_resolved(
 fn run_list(config_path: &std::path::Path, mode: LaunchMode, json: bool) -> ExitCode {
     let integrations = match phux_plugin::list_launchable(config_path, mode) {
         Ok(integrations) => integrations,
-        Err(err) => return report_launch_error(&err),
+        Err(err) => return report_launch_error(json, &err),
     };
     if json {
         let items: Vec<_> = integrations
@@ -441,7 +455,24 @@ fn launch_error_text(err: &LaunchError) -> String {
     }
 }
 
-fn report_launch_error(err: &LaunchError) -> ExitCode {
-    error!("{}", launch_error_text(err));
-    ExitCode::FAILURE
+fn report_launch_error(json: bool, err: &LaunchError) -> ExitCode {
+    let (code, remedy) = match err {
+        LaunchError::NotFound { .. } => (
+            json_err::codes::UNKNOWN_INTEGRATION,
+            "`phux launch --list` names what is launchable; `phux plugin list` shows what is enabled",
+        ),
+        LaunchError::Config(_) => (
+            json_err::codes::INVALID_CONFIG,
+            "run `phux config check` to see what is wrong with the config",
+        ),
+        _ => (
+            json_err::codes::REGISTRY,
+            "run `phux plugin validate` on the plugin that provides this integration",
+        ),
+    };
+    json_err::emit(
+        json,
+        &json_err::CliError::new(code, launch_error_text(err), remedy),
+        crate::exit_codes::EXIT_FAILURE,
+    )
 }

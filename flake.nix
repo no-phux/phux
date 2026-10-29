@@ -1,5 +1,5 @@
 {
-  description = "phux — a terminal multiplexer built on libghostty-vt";
+  description = "A terminal multiplexer whose server you can drive from code.";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

@@ -51,6 +51,23 @@ pub enum FeatureGate {
 }
 
 impl FeatureGate {
+    /// Whether this bit is advertised in its own negotiated caps word.
+    /// Zero masks are never advertised; unknown bits have already been
+    /// removed by the typed feature sets. This is not authorization.
+    #[must_use]
+    pub const fn advertised(
+        self,
+        features: crate::caps::ServerFeatureSet,
+        features_ext: crate::caps::ServerFeatureExtSet,
+    ) -> bool {
+        match self {
+            Self::Features(feature) => features.contains(feature),
+            Self::FeaturesExt { mask, .. } => {
+                mask != 0 && features_ext.as_wire() & mask == mask
+            }
+        }
+    }
+
     /// The caps word the bit lives in.
     #[must_use]
     pub const fn word(self) -> FeatureWord {
@@ -110,6 +127,18 @@ pub struct MethodSpec {
 }
 
 impl MethodSpec {
+    /// Whether this method's ordinary feature gate is advertised. A method
+    /// without a gate needs no bit. Does not judge payload, route, kind,
+    /// transport, scope, or authority, and does not imply it is shipped.
+    #[must_use]
+    pub fn advertised(
+        &self,
+        features: crate::caps::ServerFeatureSet,
+        features_ext: crate::caps::ServerFeatureExtSet,
+    ) -> bool {
+        self.gate.is_none_or(|gate| gate.advertised(features, features_ext))
+    }
+
     /// Every verb any of the method's rows can require.
     #[must_use]
     pub fn verbs(&self) -> Verbs {
@@ -234,7 +263,47 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
     method!(
         "PATH_QUERY",
         Carrier::Frame(TYPE_PATH_QUERY),
-        [F_PATH_QUERY]
+        [F_PATH_QUERY],
+        Some(FeatureGate::FeaturesExt {
+            mask: ServerFeatureExt::PathQuery.mask(),
+            wire_name: ServerFeatureExt::PathQuery.wire_name(),
+        })
+    ),
+    method!(
+        "GET_FILE",
+        Carrier::Command(COMMAND_TAG_GET_FILE),
+        [C_GET_FILE],
+        Some(FeatureGate::FeaturesExt {
+            mask: ServerFeatureExt::FileDownload.mask(),
+            wire_name: ServerFeatureExt::FileDownload.wire_name(),
+        })
+    ),
+    method!(
+        "SERVICE_HTTP_OPEN",
+        Carrier::Command(COMMAND_TAG_SERVICE_HTTP_OPEN),
+        [C_SERVICE_HTTP],
+        Some(FeatureGate::FeaturesExt {
+            mask: ServerFeatureExt::HostServiceHttp.mask(),
+            wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
+        })
+    ),
+    method!(
+        "SERVICE_HTTP_READ",
+        Carrier::Command(COMMAND_TAG_SERVICE_HTTP_READ),
+        [C_SERVICE_HTTP],
+        Some(FeatureGate::FeaturesExt {
+            mask: ServerFeatureExt::HostServiceHttp.mask(),
+            wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
+        })
+    ),
+    method!(
+        "SERVICE_HTTP_CLOSE",
+        Carrier::Command(COMMAND_TAG_SERVICE_HTTP_CLOSE),
+        [C_SERVICE_HTTP],
+        Some(FeatureGate::FeaturesExt {
+            mask: ServerFeatureExt::HostServiceHttp.mask(),
+            wire_name: ServerFeatureExt::HostServiceHttp.wire_name(),
+        })
     ),
     dangerous(method!(
         "UPGRADE",

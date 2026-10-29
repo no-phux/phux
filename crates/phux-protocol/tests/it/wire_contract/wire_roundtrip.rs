@@ -9,7 +9,7 @@
 //! checkpoint and history frames have focused semantic tests in
 //! `bootstrap_wire.rs`.
 //!
-//! The TLV byte-building helpers (`docs/spec/appendix-encoding.md`) live in
+//! The TLV byte-building helpers (`docs/protocol.md#framing`) live in
 //! `tests/common/mod.rs`, shared with the other wire test files.
 
 #![allow(clippy::unwrap_used)]
@@ -81,7 +81,7 @@ use strategies::{arb_frame_kind, arb_resource_info, arb_resource_kind};
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
-// The retired `WindowInfo` layout slot (L1.md §1.1, ADR-0030): a present
+// The retired `WindowInfo` layout slot (docs/protocol.md, ADR-0030): a present
 // tree is skipped, whatever its ratio, and the fields after it still decode.
 // -----------------------------------------------------------------------------
 

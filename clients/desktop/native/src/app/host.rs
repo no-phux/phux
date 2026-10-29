@@ -2,9 +2,9 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const MISSING_CLI: &str =
     "Install the phux CLI from https://phux.sh/install so the desktop can change sessions.";
@@ -21,6 +21,7 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
     if phux.as_os_str().is_empty() {
         return Err(MISSING_CLI.into());
     }
+    let path = crate::platform::coordinator_path(path)?;
     let path = path
         .to_str()
         .ok_or_else(|| "The selected folder has a non-UTF-8 path.".to_owned())?;
@@ -32,7 +33,39 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
         ),
     )
     .map_err(project_error)?;
-    let result: serde_json::Value = serde_json::from_slice(&output)
+    parse_opened_project(&output)
+}
+
+/// `phux worktree new`: a linked worktree of `repo` on `branch` (created at
+/// `from` when it does not exist yet) and its session, with the CLI's hooks.
+pub fn new_worktree(
+    phux: &Path,
+    socket: &Path,
+    repo: &Path,
+    branch: &str,
+    from: &str,
+) -> Result<OpenedProject, String> {
+    let repo = repo
+        .to_str()
+        .ok_or_else(|| "The checkout has a non-UTF-8 path.".to_owned())?;
+    if branch.starts_with('-') || from.starts_with('-') {
+        return Err(format!("{branch} is not a branch name the CLI can take."));
+    }
+    let output = run_output(
+        phux,
+        socket_args(
+            socket,
+            &[
+                "worktree", "new", branch, "--from", from, "--repo", repo, "--json",
+            ],
+        ),
+    )
+    .map_err(project_error)?;
+    parse_opened_project(&output)
+}
+
+fn parse_opened_project(output: &[u8]) -> Result<OpenedProject, String> {
+    let result: serde_json::Value = serde_json::from_slice(output)
         .map_err(|_| "Project open returned an invalid response.".to_owned())?;
     let session = result
         .get("session")
@@ -47,13 +80,20 @@ pub fn open_project(phux: &Path, socket: &Path, path: &Path) -> Result<OpenedPro
     let root = result
         .get("path")
         .and_then(serde_json::Value::as_str)
-        .filter(|path| Path::new(path).is_absolute())
+        .filter(|path| crate::platform::coordinator_absolute(path))
         .ok_or_else(|| "Project open returned no checkout path.".to_owned())?;
     Ok(OpenedProject {
         session: session.to_owned(),
         terminal: phux_protocol::ResourceId::local(terminal),
         path: PathBuf::from(root),
     })
+}
+
+/// The stable code of the CLI's JSON error on the last line of `error`.
+fn error_code(error: &str) -> Option<String> {
+    let line = error.lines().rfind(|line| !line.trim().is_empty())?;
+    let document: serde_json::Value = serde_json::from_str(line).ok()?;
+    Some(document.pointer("/error/code")?.as_str()?.to_owned())
 }
 
 /// The CLI's JSON refusal belongs on stderr; show its actionable message,
@@ -81,32 +121,15 @@ fn project_error(error: String) -> String {
 
 /// Start only the server. Reconnecting must never create a missing session.
 /// A demo supervisor is not restarted.
-pub fn start_server(phux: &Path, socket: &Path) -> Result<(), String> {
+pub fn start_server(phux: &Path, socket: &Path) -> Result<PathBuf, String> {
     if std::env::var_os("PHUX_DESKTOP_DEMO").is_some() {
         return Err(
             "The private demo server stopped. Relaunch the demo to start a new sandbox.".into(),
         );
     }
-    if phux.as_os_str().is_empty() {
-        return Err(
-            "Install the phux CLI from https://phux.sh/install so the desktop can start a server."
-                .into(),
-        );
-    }
-    restart(phux, socket)
-}
-
-fn restart(phux: &Path, socket: &Path) -> Result<(), String> {
-    run(phux, socket_args(socket, &["server", "--ensure"]))?;
-    let listening = server_socket(phux, socket)?;
-    if listening != socket {
-        return Err(format!(
-            "The server listens on {}, not {}. Relaunch Phux to use it.",
-            listening.display(),
-            socket.display()
-        ));
-    }
-    Ok(())
+    let phux = crate::launch::command_path(phux).map_err(|error| format!("{error:#}"))?;
+    crate::launch::ensure_server(&phux, (!socket.as_os_str().is_empty()).then_some(socket))
+        .map_err(|error| format!("{error:#}"))
 }
 
 /// `phux new` for a server without `ORGANIZATION`; the CLI makes a session it
@@ -157,6 +180,12 @@ pub fn kill_session(phux: &Path, socket: &Path, name: &str) -> Option<String> {
     run(phux, socket_args(socket, &["kill", name.trim()])).err()
 }
 
+mod add;
+mod tailnet;
+
+pub use add::{AddHost, add_host};
+pub use tailnet::{Tailnet, TailnetPeer, discover_tailnet};
+
 /// A machine `phux host add` registered for `phux attach NAME`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteHost {
@@ -197,19 +226,6 @@ fn parse_hosts(output: &[u8]) -> Result<Vec<RemoteHost>, String> {
     Ok(hosts)
 }
 
-/// `phux host add TARGET` over the ssh trust the user already has. Enrollment
-/// installs the remote service and pairs, so it can take a while.
-pub fn add_host(phux: &Path, target: &str, name: &str) -> Result<(), String> {
-    if target.trim().is_empty() {
-        return Err("Enter an ssh destination such as me@mini.".into());
-    }
-    let mut args = args(&["host", "add", target.trim()]);
-    if !name.trim().is_empty() {
-        args.extend(["--name".to_owned(), name.trim().to_owned()]);
-    }
-    run(phux, args)
-}
-
 /// `phux host rm NAME`. The token file stays, as the CLI leaves it.
 pub fn remove_host(phux: &Path, name: &str) -> Result<(), String> {
     run(phux, args(&["host", "rm", "--role", "remote", name]))
@@ -217,19 +233,25 @@ pub fn remove_host(phux: &Path, name: &str) -> Result<(), String> {
 
 /// A fresh private file under the temporary directory. The path is never reused.
 pub fn write_temp_file(name: &str, text: &str) -> Result<PathBuf, String> {
-    let base = std::env::temp_dir().join(format!("phux-{}", std::process::id()));
+    // Windows' per-user LocalAppData inherits the user's ACL, unlike a shared
+    // temporary directory configured by a service or system account.
+    let temporary = if cfg!(windows) {
+        crate::platform::state_dir().join("exports")
+    } else {
+        std::env::temp_dir()
+    };
+    let base = temporary.join(format!("phux-{}", std::process::id()));
     fs::create_dir_all(&base).map_err(|error| error.to_string())?;
     let dir = unique_dir(&base)?;
     let file_name = Path::new(name)
         .file_name()
         .unwrap_or(std::ffi::OsStr::new("export.txt"));
     let path = dir.join(file_name);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|error| error.to_string())?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&path).map_err(|error| error.to_string())?;
     file.write_all(text.as_bytes())
         .map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
@@ -272,7 +294,8 @@ fn run_output(phux: &Path, args: Vec<String>) -> Result<Vec<u8>, String> {
     if phux.as_os_str().is_empty() {
         return Err(MISSING_CLI.into());
     }
-    let output = Command::new(phux)
+    let phux = crate::launch::command_path(phux).map_err(|error| format!("{error:#}"))?;
+    let output = crate::platform::phux_command(&phux)
         .args(&args)
         .stdin(std::process::Stdio::null())
         .output()
@@ -294,24 +317,22 @@ fn run_output(phux: &Path, args: Vec<String>) -> Result<Vec<u8>, String> {
     })
 }
 
-fn server_socket(phux: &Path, socket: &Path) -> Result<PathBuf, String> {
-    let output = Command::new(phux)
-        .args(socket_args(socket, &["status", "--json"]))
-        .output()
-        .map_err(|error| error.to_string())?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let value: serde_json::Value = serde_json::from_str(text.trim())
-        .map_err(|_| "No running phux server after `phux server --ensure`".to_owned())?;
-    value
-        .get("socket")
-        .and_then(|socket| socket.as_str())
-        .map(PathBuf::from)
-        .ok_or_else(|| "No running phux server after `phux server --ensure`".to_owned())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{RemoteHost, parse_hosts, project_error};
+    use super::{RemoteHost, parse_hosts, parse_opened_project, project_error};
+
+    #[test]
+    fn project_response_uses_coordinator_paths() {
+        let opened =
+            parse_opened_project(br#"{"session":"work","terminal_id":7,"path":"/home/user/work"}"#)
+                .unwrap();
+        assert_eq!(opened.path.to_string_lossy(), "/home/user/work");
+        assert!(
+            parse_opened_project(br#"{"session":"work","terminal_id":7,"path":"relative"}"#)
+                .is_err()
+        );
+        assert!(parse_opened_project(br#"{"session":"work","path":"/home/user/work"}"#).is_err());
+    }
 
     #[test]
     fn project_refusal_shows_remedy_without_json() {

@@ -31,6 +31,9 @@ pub(crate) enum DialFailure {
         /// What `connect(2)` said.
         error: std::io::Error,
     },
+    /// The WSL stdio bridge could not be started.
+    #[cfg(windows)]
+    Wsl(std::io::Error),
     /// The remote dial failed (reachability, TLS, pin, or token).
     Remote(DialError),
     /// The QUIC connection closed as it was established, for this reason.
@@ -45,6 +48,10 @@ impl DialFailure {
             Self::Uds { path, error } => ConnectionEnd::Dropped(Some(format!(
                 "{name}: could not connect to {}: {error}",
                 path.display()
+            ))),
+            #[cfg(windows)]
+            Self::Wsl(error) => ConnectionEnd::Dropped(Some(format!(
+                "{name}: could not start the WSL stdio bridge: {error}"
             ))),
             Self::Remote(error) if is_fatal_refusal(&error) => {
                 ConnectionEnd::Refused(dial_message(name, &error))
@@ -64,11 +71,14 @@ impl DialFailure {
 pub(crate) async fn establish(dial: &Dial) -> Result<Io, DialFailure> {
     match dial {
         Dial::Uds(path) => establish_uds(path).await,
+        #[cfg(windows)]
+        Dial::Wsl { socket, phux } => super::wsl::establish(socket, phux).map_err(DialFailure::Wsl),
         Dial::Quic(plan) => establish_quic(plan).await,
         Dial::Ws(plan) => establish_ws(plan).await,
     }
 }
 
+#[cfg(unix)]
 async fn establish_uds(path: &Path) -> Result<Io, DialFailure> {
     let stream = tokio::net::UnixStream::connect(path)
         .await
@@ -77,6 +87,17 @@ async fn establish_uds(path: &Path) -> Result<Io, DialFailure> {
             error,
         })?;
     Ok(Io::from_unix_stream(stream))
+}
+
+#[cfg(not(unix))]
+async fn establish_uds(path: &Path) -> Result<Io, DialFailure> {
+    Err(DialFailure::Uds {
+        path: path.to_path_buf(),
+        error: std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "native Unix sockets are unavailable; use the explicit WSL transport for a Linux server",
+        ),
+    })
 }
 
 async fn establish_ws(plan: &WsDial) -> Result<Io, DialFailure> {
@@ -115,6 +136,16 @@ pub(super) async fn dial(target: &Target, options: ConnectOptions) -> Result<Io,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(unix))]
+    #[tokio::test]
+    async fn native_unix_sockets_remain_explicitly_unsupported() {
+        let Err(DialFailure::Uds { error, .. }) = establish_uds(Path::new("/linux.sock")).await
+        else {
+            panic!("a native non-Unix client must not reinterpret a Unix socket");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    }
 
     #[tokio::test]
     async fn a_loopback_dial_names_a_missing_captured_token_file() {

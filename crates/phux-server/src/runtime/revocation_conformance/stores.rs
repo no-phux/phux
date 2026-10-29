@@ -1,4 +1,4 @@
-//! What is, and is not, a verdict (`docs/spec/workload-auth.md` §7).
+//! What is, and is not, a verdict (`docs/remote.md#managing-credentials`).
 //!
 //! Benign pairing-token store events never cut a live paired session, while
 //! a real revocation still does within the poll interval; a bearer revoked

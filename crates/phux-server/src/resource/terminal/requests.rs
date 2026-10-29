@@ -6,15 +6,32 @@ use std::os::fd::OwnedFd;
 
 use crate::grid::SnapshotBytes;
 use crate::mailbox::{Outbound, TerminalInput};
-use bytes::Bytes;
 use phux_protocol::ClientId;
 use phux_protocol::ids::{BootstrapId, StreamId};
-use phux_protocol::wire::frame::FrameKind;
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 pub use crate::resource::{
     ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResyncAudience, ResyncReason,
     ResyncTarget,
+};
+
+/// Bounded input admission credits and PTY writer handoff.
+#[path = "requests_input.rs"]
+pub mod input;
+pub use input::{
+    DEFAULT_INPUT_MAILBOX, INPUT_CREDITS, InputCredit, InputCreditPool, PTY_WRITER_QUEUE,
+};
+pub(crate) use input::{
+    EncodedInputRequest, WriteCompletion, WriteCompletionSink, echo_probe_for, try_send_to_writer,
+};
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[path = "requests_native.rs"]
+mod native;
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+pub use native::{
+    NativeBootstrapReply, NativeBootstrapRequest, NativeHistoryReply, NativeHistoryRequest,
+    NativePublicationReply, NativePublicationRequest, NativeReleaseRequest,
 };
 
 /// Register a consumer with the actor (ADR-0018), sent by the ATTACH path.
@@ -40,6 +57,8 @@ pub struct ConsumerAttachRequest {
     pub wants_state_sync: bool,
     /// Scrollback for the state-sync bootstrap (ignored otherwise).
     pub state_sync_scrollback: Option<u32>,
+    /// Image protocols supported by the bootstrap receiver.
+    pub image_protocols: phux_protocol::caps::ImageProtocolSet,
     /// Maximum snapshot bytes this registration may allocate before replying.
     pub bootstrap_max_bytes: usize,
     /// Maximum bootstrap frames the caller can still retain.
@@ -113,259 +132,13 @@ pub struct ConsumerAckRequest {
     pub seq: u64,
 }
 
-/// Default depth of the per-pane input mailbox.
-pub const DEFAULT_INPUT_MAILBOX: usize = 64;
-
-/// Input credits per pane (ADR-0144): credited requests in flight between
-/// their sender and the end of their `write(2)`.
-///
-/// Equal to the encoded-input mailbox depth, so a credited `try_send` never
-/// finds the mailbox full.
-pub const INPUT_CREDITS: usize = DEFAULT_INPUT_MAILBOX;
-
-/// Writer-queue slots that only uncredited terminal replies may use.
-const TERMINAL_REPLY_HEADROOM: usize = 16;
-
-/// PTY writer queue depth: every input credit plus the reply headroom, so a
-/// credited request forwarded by the actor always finds a slot.
-pub const PTY_WRITER_QUEUE: usize = INPUT_CREDITS + TERMINAL_REPLY_HEADROOM;
-
-/// One pane's input credits (ADR-0144). Cloning shares the pool.
-#[derive(Debug, Clone)]
-pub struct InputCreditPool(std::sync::Arc<tokio::sync::Semaphore>);
-
-impl Default for InputCreditPool {
-    fn default() -> Self {
-        Self(std::sync::Arc::new(tokio::sync::Semaphore::new(
-            INPUT_CREDITS,
-        )))
-    }
-}
-
-impl InputCreditPool {
-    /// A credit, if one is free now.
-    #[must_use]
-    pub fn try_take(&self) -> Option<InputCredit> {
-        self.0.try_acquire().ok()?.forget();
-        Some(InputCredit { pool: self.clone() })
-    }
-
-    /// A credit, waiting until one is returned.
-    pub async fn take(&self) -> InputCredit {
-        // The pool is never closed, so `acquire` only fails if it were.
-        if let Ok(permit) = self.0.acquire().await {
-            permit.forget();
-        }
-        InputCredit { pool: self.clone() }
-    }
-
-    /// Credits free right now.
-    #[must_use]
-    pub fn available(&self) -> usize {
-        self.0.available_permits()
-    }
-
-    fn is(&self, other: &Self) -> bool {
-        std::sync::Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-/// One held pane input credit, returned to its pool when dropped.
-#[derive(Debug)]
-pub struct InputCredit {
-    pool: InputCreditPool,
-}
-
-impl InputCredit {
-    /// Whether this credit was drawn from `pool`.
-    #[must_use]
-    pub fn is_from(&self, pool: &InputCreditPool) -> bool {
-        self.pool.is(pool)
-    }
-}
-
-impl Drop for InputCredit {
-    fn drop(&mut self) {
-        self.pool.0.add_permits(1);
-    }
-}
-
-/// Queue `request` for the PTY writer. An uncredited request (a terminal
-/// reply, or input from the no-lane path) may not take a slot reserved for
-/// credited input, so it is refused as `Full` once only those remain.
-///
-/// # Errors
-///
-/// The request back, as `try_send` would return it.
-pub(crate) fn try_send_to_writer(
-    tx: &mpsc::Sender<EncodedInputRequest>,
-    mut request: EncodedInputRequest,
-) -> Result<(), mpsc::error::TrySendError<EncodedInputRequest>> {
-    let result = if request.credit.is_none() && tx.capacity() <= INPUT_CREDITS {
-        Err(mpsc::error::TrySendError::Full(request))
-    } else {
-        request.writer_queued_at = Some(std::time::Instant::now());
-        tx.try_send(request)
-    };
-    if matches!(&result, Err(mpsc::error::TrySendError::Full(_))) {
-        crate::perf::INPUT_WRITER_FULL.incr();
-    }
-    result
-}
-
-/// Final disposition of a PTY write, reported on
-/// [`EncodedInputRequest::completion`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WriteCompletion {
-    /// `write_all` and `flush` both succeeded.
-    Delivered,
-    /// Failed after bytes may have landed; delivery is indeterminate.
-    Failed,
-    /// Refused before writing: the canonical-mode line discipline would have
-    /// truncated a line longer than `limit` and possibly wedged the pane.
-    CanonicalLimitExceeded { limit: usize },
-    /// Never reached a live writer, so `write(2)` was provably not called
-    /// (no PTY, full or closed queue). Safe to resubmit.
-    NotWritten,
-}
-
-/// One-shot report path for an acknowledged write's [`WriteCompletion`],
-/// tagging the outcome with its admission-queue ticket.
-///
-/// Dropping an unfired sink reports [`WriteCompletion::Failed`]; sites that
-/// can prove nothing was written report [`WriteCompletion::NotWritten`].
-pub(crate) struct WriteCompletionSink {
-    notify: Option<Box<dyn FnOnce(WriteCompletion) + Send>>,
-}
-
-impl WriteCompletionSink {
-    pub(crate) fn new(notify: impl FnOnce(WriteCompletion) + Send + 'static) -> Self {
-        Self {
-            notify: Some(Box::new(notify)),
-        }
-    }
-
-    /// Report `outcome` once; consuming the sink disarms the `Drop` fallback.
-    pub(crate) fn complete(mut self, outcome: WriteCompletion) {
-        if let Some(notify) = self.notify.take() {
-            notify(outcome);
-        }
-    }
-
-    /// A sink backed by a plain channel (tests).
-    #[cfg(test)]
-    pub(crate) fn channel() -> (Self, std::sync::mpsc::Receiver<WriteCompletion>) {
-        let (tx, rx) = std::sync::mpsc::channel();
-        (
-            Self::new(move |outcome| {
-                let _ = tx.send(outcome);
-            }),
-            rx,
-        )
-    }
-}
-
-impl Drop for WriteCompletionSink {
-    fn drop(&mut self) {
-        if let Some(notify) = self.notify.take() {
-            notify(WriteCompletion::Failed);
-        }
-    }
-}
-
-impl std::fmt::Debug for WriteCompletionSink {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WriteCompletionSink")
-            .field("armed", &self.notify.is_some())
-            .finish()
-    }
-}
-
-/// Bytes for the PTY writer, optionally with a completion report.
-#[derive(Debug)]
-pub(crate) struct EncodedInputRequest {
-    /// Fully encoded PTY bytes.
-    pub(crate) bytes: Bytes,
-    /// Whether this may arm the `echo.server` sample (keys and pastes, not
-    /// mouse, focus, or terminal replies).
-    pub(crate) echo_probe: bool,
-    /// See [`WriteCompletionSink`]; dropping it reports indeterminate.
-    pub(crate) completion: Option<WriteCompletionSink>,
-    /// The pane input credit this request holds (ADR-0144), released when
-    /// the request drops: after the writer thread's `write(2)`, or at
-    /// whichever step discards it.
-    pub(crate) credit: Option<InputCredit>,
-    /// Stamped only at the final writer handoff, not the lane/actor queue.
-    pub(crate) writer_queued_at: Option<std::time::Instant>,
-    /// Set by [`super::fast_pty::PtyFastPath::enqueue`]. The writer decrements
-    /// the pane's pending count only for these, so a test `try_send` does not
-    /// underflow it.
-    pub(crate) counts_pending: bool,
-    /// In-flight input-lane key. [`super::fast_pty::PtyFastPath::enqueue`]
-    /// drops it after `pending` is published; every earlier discard drops it
-    /// with the request.
-    pub(crate) lane_ahead: Option<super::fast_pty::LaneAhead>,
-}
-
-impl EncodedInputRequest {
-    pub(crate) fn legacy(bytes: Vec<u8>) -> Self {
-        Self::legacy_probe(bytes, true)
-    }
-
-    /// [`Self::legacy`] with an explicit echo-probe flag.
-    pub(crate) fn legacy_probe(bytes: Vec<u8>, echo_probe: bool) -> Self {
-        Self {
-            bytes: bytes.into(),
-            echo_probe,
-            completion: None,
-            credit: None,
-            writer_queued_at: None,
-            counts_pending: false,
-            lane_ahead: None,
-        }
-    }
-
-    /// This request, holding `credit` until it is written or discarded.
-    #[must_use]
-    pub(crate) fn with_credit(mut self, credit: InputCredit) -> Self {
-        self.credit = Some(credit);
-        self
-    }
-
-    /// This request keeps the inline path closed until the writer queue
-    /// counts it.
-    #[must_use]
-    pub(crate) fn with_lane_ahead(
-        mut self,
-        lane_ahead: Option<super::fast_pty::LaneAhead>,
-    ) -> Self {
-        self.lane_ahead = lane_ahead;
-        self
-    }
-
-    pub(crate) fn acknowledged(bytes: Vec<u8>, completion: WriteCompletionSink) -> Self {
-        Self {
-            bytes: Bytes::from(bytes),
-            echo_probe: true,
-            completion: Some(completion),
-            credit: None,
-            writer_queued_at: None,
-            counts_pending: false,
-            lane_ahead: None,
-        }
-    }
-}
-
-/// Whether this input kind arms the `echo.server` sample.
-pub(crate) const fn echo_probe_for(input: &TerminalInput) -> bool {
-    matches!(input, TerminalInput::Key(_) | TerminalInput::Paste(_))
-}
-
 /// Request the pane's replay snapshot (ATTACH).
 #[derive(Debug)]
 pub struct SnapshotRequest {
     /// Scrollback: `None` viewport only, `Some(0)` all, `Some(n)` last `n`.
     pub scrollback: Option<u32>,
+    /// Image protocols the receiver can replay; omitted before charging the source budget.
+    pub image_protocols: phux_protocol::caps::ImageProtocolSet,
     /// Maximum aggregate snapshot bytes the actor may allocate.
     pub max_bytes: usize,
     /// Maximum frames the caller can still retain for this snapshot.
@@ -374,140 +147,6 @@ pub struct SnapshotRequest {
     pub chunk_bytes: usize,
     /// Snapshot plus its raw cut; dropping the receiver is benign.
     pub reply: oneshot::Sender<Result<(SnapshotBytes, u64), crate::grid::SynthesisError>>,
-}
-
-/// Fully-owned native prefix captured atomically by the terminal actor.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-#[derive(Debug)]
-pub struct NativeBootstrapReply {
-    /// Bounded BEGIN/CHUNK/READY sequence for the per-client pump to publish.
-    pub frames: Vec<FrameKind>,
-    /// Heap retained by the opaque payloads, charged to the connection's
-    /// bootstrap staging budget.
-    pub retained_bytes: usize,
-    /// Actor-global raw output cut included by the checkpoint.
-    pub base_seq: u64,
-    /// Actor-private generation key used only for the publication fence.
-    pub(crate) publication_cursor: crate::native_state::OpaqueHistoryCursor,
-}
-
-/// Live bytes after a native checkpoint fence, plus the receiver installed
-/// atomically after the replay cut.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-#[derive(Debug)]
-pub struct NativePublicationReply {
-    pub(crate) replay: Vec<(u64, Bytes)>,
-    pub(crate) live: broadcast::Receiver<PaneOutput>,
-}
-
-/// Complete the `READY`/`ATTACH_READY` publication fence for one owner.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-#[derive(Debug)]
-pub struct NativePublicationRequest {
-    /// Server-local lease owner completing publication.
-    pub owner: u64,
-    /// Wire terminal identity for the published replica.
-    pub terminal_id: phux_protocol::ids::ResourceId,
-    /// Logical stream identity for the published replica.
-    pub stream_id: StreamId,
-    /// Replica generation whose READY frame was just sent.
-    pub bootstrap_id: BootstrapId,
-    /// Authenticated actor-private generation cursor returned with READY.
-    pub cursor: crate::native_state::OpaqueHistoryCursor,
-    /// Completion carrying replay bytes and the post-replay live receiver.
-    pub reply:
-        oneshot::Sender<Result<NativePublicationReply, crate::native_state::NativeStateError>>,
-}
-
-/// Native checkpoint capture request serialized by the terminal actor.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-#[derive(Debug)]
-pub struct NativeBootstrapRequest {
-    /// Server-local owner identity used for detach and TTL cleanup.
-    pub owner: u64,
-    /// Wire terminal identity for this subscription.
-    pub terminal_id: phux_protocol::ids::ResourceId,
-    /// Logical stream identity.
-    pub stream_id: StreamId,
-    /// Replica generation identity.
-    pub bootstrap_id: BootstrapId,
-    /// Negotiated payload limits.
-    pub limits: phux_protocol::caps::BootstrapLimits,
-    /// Remaining connection-wide opaque byte budget.
-    pub max_bytes: usize,
-    /// Remaining connection-wide frame budget.
-    pub max_frames: usize,
-    /// Atomic capture result. The pump alone publishes the returned frames.
-    pub reply: oneshot::Sender<Result<NativeBootstrapReply, crate::native_state::NativeStateError>>,
-}
-
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-impl NativeBootstrapRequest {
-    /// A request granted the whole native budget: every prefix byte and
-    /// chunk the engine may retain, plus the BEGIN and READY frames.
-    #[must_use]
-    pub(crate) const fn full_budget(
-        owner: u64,
-        terminal_id: phux_protocol::ids::ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-        limits: phux_protocol::caps::BootstrapLimits,
-        reply: oneshot::Sender<Result<NativeBootstrapReply, crate::native_state::NativeStateError>>,
-    ) -> Self {
-        Self {
-            owner,
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            limits,
-            max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-            max_frames: crate::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES,
-            reply,
-        }
-    }
-}
-
-/// Actor result paired with the caller's still-owned outbound permit.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-#[derive(Debug)]
-pub struct NativeHistoryReply {
-    /// Permit proving mailbox capacity was reserved before actor advancement.
-    pub permit: mpsc::OwnedPermit<Outbound>,
-    /// Fully-owned response frame, or an invalid request/host failure.
-    pub result: Result<FrameKind, crate::native_state::NativeStateError>,
-}
-
-/// One bounded native history step routed to the owning terminal actor.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-#[derive(Debug)]
-pub struct NativeHistoryRequest {
-    /// Reserved client-mailbox capacity. The actor returns but never consumes it.
-    pub permit: mpsc::OwnedPermit<Outbound>,
-    /// Server-local owner identity authenticated against the retained cut.
-    pub owner: u64,
-    /// Wire terminal identity for this subscription.
-    pub terminal_id: phux_protocol::ids::ResourceId,
-    /// Logical stream identity.
-    pub stream_id: StreamId,
-    /// Replica generation identity.
-    pub bootstrap_id: BootstrapId,
-    /// Stable opaque capability echoed by the client.
-    pub cursor: Bytes,
-    /// Requested non-zero response byte bound.
-    pub max_bytes: u32,
-    /// Requested non-zero history row bound.
-    pub max_rows: u32,
-    /// Negotiated connection bounds.
-    pub limits: phux_protocol::caps::BootstrapLimits,
-    /// Actor result; the pump consumes the returned permit.
-    pub reply: oneshot::Sender<NativeHistoryReply>,
-}
-/// Release every retained native history cut owned by one detached client.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-#[derive(Debug)]
-pub struct NativeReleaseRequest {
-    /// Server-local owner identity.
-    pub owner: u64,
 }
 
 /// Install an interactive client's default palette; later OSC 10/11

@@ -315,7 +315,13 @@ impl Desk {
         }
     }
 
-    pub(super) fn path_target(&self) -> Option<paths::PathTarget> {
+    /// The focused pane's cursor cell, where the path picker opens.
+    pub(crate) fn cursor_anchor(&self, cx: &gpui::App) -> Option<gpui::Bounds<gpui::Pixels>> {
+        let placement = self.focused_placement()?;
+        self.panes.get(&placement.id)?.read(cx).cursor_bounds(cx)
+    }
+
+    pub(crate) fn path_target(&self) -> Option<paths::PathTarget> {
         let placement = self.focused_placement()?;
         let link = self.link.as_ref()?;
         let server = link.connection.server_id()?;

@@ -31,6 +31,7 @@ pub(crate) struct State {
     error: Option<String>,
     pending: Option<Pending>,
     _deadline: Option<gpui::Task<()>>,
+    setup_open: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -27,28 +27,35 @@ use super::goto_filter::GotoFilter;
 use super::surface::baseline;
 use super::{
     Row, Section, Target, WINDOWS, command_results, command_sections, corner, move_sections,
-    prepare_goto, query_terms, rank_sections, session_sections, settings_sections, window_sections,
+    prepare_goto, query_terms, rank_sections, session_sections, settings_sections,
+    switcher_sections, window_sections,
 };
 
-/// The header, the search field (33 with its rule), and the list's 4pt inset
-/// above and below its rows.
-const CHROME: f32 = 36. + 33. + 2. * 4.;
-const ROW: f32 = 36.;
-/// A section heading: the kit's 6pt above and below a line pinned to 16.
-const HEADING: f32 = 28.;
-const HEADING_LINE: f32 = HEADING - 12.;
+/// Heading line boxes are pinned; Kit's row/list padding follows the window rem.
+const HEADING_LINE: f32 = 16.;
 /// A row's content box; its texts share it as their line box.
 const ROW_LINE: f32 = 24.;
 const MAX_ROWS: usize = 8;
 
 /// The palette's height for `sections` under `chrome`: up to eight rows and
 /// the headings over them, ending on a whole row when `max` cuts the list.
-fn list_height(sections: &[Section], chrome: f32, max: f32) -> f32 {
+fn list_height(sections: &[Section], chrome: f32, max: f32, rem: f32) -> f32 {
+    let row_height = ROW_LINE + rem * 0.75;
     let steps = sections
         .iter()
         .flat_map(|section| {
-            let heading = if section.label.is_some() { HEADING } else { 0. };
-            (0..section.rows.len()).map(move |row| if row == 0 { heading + ROW } else { ROW })
+            let heading = if section.label.is_some() {
+                HEADING_LINE + rem * 0.75
+            } else {
+                0.
+            };
+            (0..section.rows.len()).map(move |row| {
+                if row == 0 {
+                    heading + row_height
+                } else {
+                    row_height
+                }
+            })
         })
         .take(MAX_ROWS);
     let mut height = chrome;
@@ -61,7 +68,12 @@ fn list_height(sections: &[Section], chrome: f32, max: f32) -> f32 {
         rows += 1;
     }
     // An empty list still holds a row for its "No results".
-    if rows == 0 { height + ROW } else { height }.min(max)
+    if rows == 0 {
+        height + row_height
+    } else {
+        height
+    }
+    .min(max)
 }
 
 pub(super) fn results(
@@ -98,13 +110,13 @@ pub(super) fn results(
             "Find a window or tab…",
             rank_sections(window_sections(desk, cx.entity_id(), cx), query),
         ),
-        Modal::Settings => (
-            "Find a setting…",
-            rank_sections(settings_sections(desk, &cx.weak_entity(), cx), query),
-        ),
         Modal::WindowSession => (
             "Open session…",
             rank_sections(session_sections(desk), query),
+        ),
+        Modal::Sessions => (
+            "Switch session, or name a new one…",
+            switcher_sections(desk, query),
         ),
         Modal::MoveResources => ("Move to…", rank_sections(move_sections(desk), query)),
         _ => {
@@ -159,6 +171,11 @@ pub(super) fn palette(
     let details_open =
         desk.palette_view.details && (desk.modal == Modal::Goto || preview.is_some());
     let viewport = window.viewport_size();
+    let rem = window.rem_size().as_f32();
+    // Header + 2rem search field and its rule + quarter-rem scroll padding
+    // at both ends. Typography changes must not leave a ghost row of space.
+    let chrome = 36. + rem * 2. + 1. + rem * 0.5;
+    let row_height = ROW_LINE + rem * 0.75;
     let available = (viewport.height.as_f32() - 2. * super::SHEET_GUTTER).max(0.);
     let detail_height = if details_open {
         (available * 0.4).min(160.)
@@ -173,8 +190,9 @@ pub(super) fn palette(
     };
     let list_height = list_height(
         &sections,
-        CHROME + extra_header,
+        chrome + extra_header,
         (available - detail_height).min(400.),
+        rem,
     );
     let width = (viewport.width.as_f32() - 2. * super::SHEET_GUTTER).clamp(0., 560.);
     let look = desk.look();
@@ -201,13 +219,15 @@ pub(super) fn palette(
         .line_height(px(HEADING_LINE))
         .bg(from_hex(&colors.raised))
         .placeholder(placeholder)
-        .max_h(px((list_height - CHROME + 8. - extra_header).max(ROW)))
+        .max_h(px(
+            (list_height - chrome + rem * 0.5 - extra_header).max(row_height)
+        ))
         .header(move |_, _, _| header(&header_state, &header_colors, &header_handle))
         .empty(move |_, _, _| {
             // The one row an empty list holds, its text on the rows' column.
             div()
                 .w_full()
-                .h(px(ROW))
+                .h(px(row_height))
                 .flex()
                 .items_center()
                 .px(px(8.))
@@ -247,14 +267,14 @@ pub(super) fn palette(
 
 /// Only modes that search preferences need the shared slider and font state.
 fn prepare_settings(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) {
-    if !matches!(desk.modal, Modal::Settings | Modal::Commands | Modal::Goto) {
+    if !matches!(desk.modal, Modal::Commands | Modal::Goto) {
         return;
     }
     let searching = desk
         .palette_state
         .as_ref()
         .is_some_and(|state| !state.read(cx).query(cx).trim().is_empty());
-    if desk.modal == Modal::Settings || searching {
+    if searching {
         crate::app::settings_panel::prepare(desk, window, cx);
     }
 }
@@ -358,6 +378,12 @@ fn item(
     let detail = row.detail.filter(|_| row.command.is_none());
     let selector = match &row.target {
         Target::Preference(key, _) => key.selector(),
+        Target::CreateSession(name) => format!("palette-result-create-session:{name}"),
+        Target::Work(destination) => format!(
+            "palette-result-session:{}:{}",
+            destination.host_label(),
+            destination.name
+        ),
         _ => format!("palette-result-{}", row.command.unwrap_or("destination")),
     };
     let setting = match row.target {

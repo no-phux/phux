@@ -1,5 +1,5 @@
 //! The resource-kind catalog and the closed verb classification
-//! ([ADR-0125], `docs/spec/workload-auth.md` §5-§6, `docs/spec/L1.md` §1.1).
+//! ([ADR-0125], `docs/remote.md#who-can-do-what`, `docs/protocol.md#commands-events-resources`).
 //!
 //! One table serves discovery ([`SERVER_METHODS`], [`SUBSTRATE_METHODS`],
 //! [`KINDS`]) and authorization ([`classify_frame`], [`classify_command`]):
@@ -11,7 +11,7 @@
 //! until classified; anything the tables do not name is
 //! [`Classification::Deny`].
 //!
-//! [ADR-0125]: https://github.com/no-phux/phux/blob/main/docs/adr/0125-kind-catalog-is-generated-metadata.md
+//! [ADR-0125]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0125-kind-catalog-is-generated-metadata.md
 
 use crate::caps::{ServerFeature, ServerFeatureExt};
 use crate::ids::{ResourceId, ResourceKind, SatelliteHost};

@@ -1,0 +1,80 @@
+# omarchy — phux on an Omarchy desktop.
+#
+# Written by `phux omarchy setup`, which rewrites this file on every run:
+# put your own changes in config.toml, where they win key by key.
+#
+# The keys mirror the tmux config Omarchy ships (~/.config/tmux/tmux.conf)
+# so the same hands work in phux: Ctrl+Space is the prefix, Alt+Enter
+# splits, Ctrl+Alt+arrows move between panes, Alt+1..9 pick a tab, and
+# Alt+Up/Down walk sessions. tmux's window is a phux tab and its session
+# is a phux session.
+
+[keybindings]
+prefix = "C-Space"
+
+[keybindings.prefix-table]
+# tmux: q reloads the config. ? already lists the keys, x kills the
+# pane and c opens a tab, as in tmux.
+"q" = "reload-config"
+
+# tmux: h splits below and v splits beside, in the pane's directory. Move
+# between panes with Ctrl+Alt+arrows instead of h and k.
+"h" = { action = "split-pane", direction = "horizontal" }
+"v" = { action = "split-pane", direction = "vertical" }
+
+# tmux: r renames the window, c makes one, k kills it.
+"r" = "rename-window"
+"k" = "kill-window"
+
+# tmux: R renames the session, K kills it. C, P and N keep their phux
+# meaning, which is already tmux's: new, previous and next session.
+"R" = "rename-session"
+"K" = "kill-session"
+
+# q went to tmux's meaning above, so the next pane waiting for you moves
+# to a (Q still goes back, A still lists every agent). Resizing moves
+# from R to Ctrl+Alt+Shift+arrows, below.
+"a" = "next-attention"
+
+[keybindings.global]
+# Pane controls, without the prefix.
+"M-Enter" = { action = "split-pane", direction = "horizontal" }
+"M-S-Enter" = { action = "split-pane", direction = "vertical" }
+"M-Esc" = "kill-pane"
+
+"C-M-Left" = { action = "focus-direction", direction = "left" }
+"C-M-Right" = { action = "focus-direction", direction = "right" }
+"C-M-Up" = { action = "focus-direction", direction = "up" }
+"C-M-Down" = { action = "focus-direction", direction = "down" }
+
+"C-M-S-Left" = { action = "resize-pane", direction = "left", amount = 5 }
+"C-M-S-Down" = { action = "resize-pane", direction = "down", amount = 5 }
+"C-M-S-Up" = { action = "resize-pane", direction = "up", amount = 5 }
+"C-M-S-Right" = { action = "resize-pane", direction = "right", amount = 5 }
+
+# Tabs: tmux numbers windows from 1, so Alt+1 is the first tab.
+"M-1" = { action = "select-window", index = 0 }
+"M-2" = { action = "select-window", index = 1 }
+"M-3" = { action = "select-window", index = 2 }
+"M-4" = { action = "select-window", index = 3 }
+"M-5" = { action = "select-window", index = 4 }
+"M-6" = { action = "select-window", index = 5 }
+"M-7" = { action = "select-window", index = 6 }
+"M-8" = { action = "select-window", index = 7 }
+"M-9" = { action = "select-window", index = 8 }
+
+"M-Left" = "previous-window"
+"M-Right" = "next-window"
+"M-S-Left" = { action = "move-window", delta = -1 }
+"M-S-Right" = { action = "move-window", delta = 1 }
+
+# Sessions.
+"M-Up" = "previous-session"
+"M-Down" = "next-session"
+
+[theme]
+# Let the terminal's own background show through the sidebar, status bar
+# and popups, as tmux's bg=default does, so Omarchy's glassy windows stay
+# see-through. The colours themselves come from Omarchy's current theme,
+# which `phux omarchy setup` selects in config.toml.
+surface = "reset"

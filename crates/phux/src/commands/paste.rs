@@ -2,11 +2,11 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::attach::AttachError;
 use phux_protocol::input::paste::PasteTrust;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target_for_input};
+use crate::commands::send_keys::{report_input_failure, report_receipt};
+use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 
 /// `phux paste TARGET [TEXT]` — paste `TEXT` (or all of stdin) into one pane
 /// as a single `InputEvent::Paste` over `ROUTE_INPUT`, without attaching; the
@@ -16,6 +16,7 @@ pub(crate) fn run_paste(
     target: &str,
     text: Option<String>,
     untrusted: bool,
+    json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
     let selector = match parse_selector(Some(target)) {
@@ -26,8 +27,15 @@ pub(crate) fn run_paste(
     let data = match payload {
         Ok(data) => data,
         Err(err) => {
-            error!("cannot read paste payload from stdin: {err}");
-            return ExitCode::FAILURE;
+            return json_err::emit(
+                json,
+                &json_err::CliError::new(
+                    json_err::codes::IO,
+                    format!("cannot read paste payload from stdin: {err}"),
+                    "pass the text as an argument, or pipe it on stdin",
+                ),
+                crate::exit_codes::EXIT_FAILURE,
+            );
         }
     };
     let trust = if untrusted {
@@ -41,21 +49,14 @@ pub(crate) fn run_paste(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let pane = match resolve_target_for_input(&socket_path, &selector, "paste", false).await {
+        let pane = match resolve_target_for_input(&socket_path, &selector, "paste", json).await {
             Ok(id) => id,
             Err(code) => return code,
         };
-        match phux_client::send_keys::paste_to(&socket_path, pane, data, trust).await {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err @ AttachError::Io(_)) => report_no_server(&err, &socket_path, "paste"),
-            Err(AttachError::Refused(msg)) => {
-                error!("cannot paste to '{target}': {msg} (try `phux ls`)");
-                ExitCode::FAILURE
-            }
-            Err(err) => {
-                error!("paste failed: {err}");
-                ExitCode::FAILURE
-            }
+        // One event: it either reached the pane or was refused whole.
+        match phux_client::send_keys::paste_to(&socket_path, pane.clone(), data, trust).await {
+            Ok(()) => report_receipt(json, &pane, 1),
+            Err(err) => report_input_failure(json, target, "paste", &socket_path, 0, &err),
         }
     })
 }

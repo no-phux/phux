@@ -296,14 +296,15 @@ pub(super) fn is_indexed_select_window(action: &Action) -> bool {
 }
 
 /// Collapse sorted numeric window-jump keys into one `0-9` row (a lone key
-/// when only one is bound).
+/// when only one is bound). Modified keys join with `..` (`M-1..M-9`), where
+/// a `-` would read as part of the key.
 pub(super) fn compact_window_jump_keys(keys: &[String]) -> Option<(String, String)> {
     let first = keys.first()?;
     let last = keys.last()?;
-    let key = if keys.len() == 1 {
-        first.clone()
-    } else {
-        format!("{first}-{last}")
+    let key = match (keys.len(), first.chars().count()) {
+        (1, _) => first.clone(),
+        (_, 1) => format!("{first}-{last}"),
+        _ => format!("{first}..{last}"),
     };
     Some((key, "Go to tab".to_owned()))
 }

@@ -16,7 +16,9 @@ use super::super::color::from_hex;
 use super::super::desk::Desk;
 use super::super::skin::Look;
 use super::super::ui::muted;
-use super::{click_sets, look_of, notes, prefs_of, resets, sourced, stepper, toggle};
+use super::{
+    Knob, click_sets, look_of, notes, prefs_of, resets, slider_item, sourced, stepper, toggle,
+};
 
 fn font_status(item: SettingItem, desk: &Desk, cx: &App) -> SettingItem {
     let mut font = gpui::font(desk.prefs.font_family.clone());
@@ -54,7 +56,12 @@ fn theme_source(desk: &Desk) -> String {
     notes([source.label().as_str(), applies.label()])
 }
 
-pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) -> SettingPage {
+pub(super) fn appearance_page(
+    desk: &Desk,
+    handle: &WeakEntity<Desk>,
+    controls: Option<&super::SettingsControls>,
+    cx: &App,
+) -> SettingPage {
     let mut themes = theme::themes();
     if let Some(extra) = settings::ghostty_theme(desk.ghostty()) {
         themes.insert(0, extra);
@@ -73,60 +80,75 @@ pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) 
                 .map(|theme| (theme.id.clone(), theme.name.clone()))
                 .collect();
             let writer = theme_handle.clone();
-            div().debug_selector(|| "settings-theme".into()).child(
-                Button::new("settings-theme")
-                    .label(label)
-                    .outline()
-                    .w(px(260.))
-                    .dropdown_caret(true)
-                    .dropdown_menu(move |menu, _, _| {
-                        choices.iter().fold(menu, |menu, (id, name)| {
-                            let id = id.clone();
-                            menu.item(
-                                PopupMenuItem::new(name.clone())
-                                    .checked(id == selected)
-                                    .on_click(click_sets(&writer, move |prefs| {
-                                        prefs.theme_id.clone_from(&id)
-                                    })),
-                            )
-                        })
-                    }),
-            )
+            div()
+                .debug_selector(|| "settings-theme".into())
+                .w(px(260.))
+                .child(
+                    Button::new("settings-theme")
+                        .label(label)
+                        .outline()
+                        .small()
+                        .w_full()
+                        .dropdown_caret(true)
+                        .dropdown_menu(move |menu, _, _| {
+                            choices.iter().fold(menu, |menu, (id, name)| {
+                                let id = id.clone();
+                                menu.item(
+                                    PopupMenuItem::new(name.clone())
+                                        .checked(id == selected)
+                                        .on_click(click_sets(&writer, move |prefs| {
+                                            prefs.theme_id.clone_from(&id)
+                                        })),
+                                )
+                            })
+                        }),
+                )
         }),
     )
+    .wide()
     .description(theme_source(desk))
     .keywords(["theme", "colors", "dark", "light"]);
     let mut font_group = SettingGroup::new().title("Font & theme");
-    if let Some(controls) = desk.settings_controls.as_ref() {
+    if let Some(controls) = controls {
         let font = controls.font.clone();
         let picker = SettingField::render(move |_, _, _| {
-            Select::new(&font)
-                .id("font-family")
-                .accessibility_label("Terminal font family")
+            // Select's root fills its parent; its Styled width applies only
+            // to the inner input. Give the field real intrinsic dimensions.
+            div()
+                .debug_selector(|| "settings-font".into())
                 .w(px(260.))
-                .rounded(px(10.))
-                .menu_width(px(340.))
-                .menu_max_h(px(360.))
-                .search_placeholder("Find a font family…")
-                .empty(|_, cx| {
-                    div()
-                        .p(px(20.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .child(div().text_sm().child("No matching fonts"))
-                        .child(
+                .h(gpui::rems(1.5))
+                .child(
+                    Select::new(&font)
+                        .small()
+                        .id("font-family")
+                        .accessibility_label("Terminal font family")
+                        .w_full()
+                        .rounded(px(10.))
+                        .menu_width(px(340.))
+                        .menu_max_h(px(360.))
+                        .search_placeholder("Find a font family…")
+                        .empty(|_, cx| {
                             div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("Try another family name."),
-                        )
-                })
+                                .p(px(20.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(div().text_sm().child("No matching fonts"))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Try another family name."),
+                                )
+                        }),
+                )
         });
         let item = SettingItem::new(
             "Font family",
             resets(picker, handle, |prefs| &mut prefs.font_family),
         )
+        .wide()
         .keywords(["font", "typeface", "monospace", "nerd", "glyphs"]);
         font_group = font_group.item(font_status(item, desk, cx));
     }
@@ -145,11 +167,17 @@ pub(super) fn appearance_page(desk: &Desk, handle: &WeakEntity<Desk>, cx: &App) 
                 ))
                 .item(theme_item),
         )
-        .group(look_group(desk, handle))
+        .group(super::branding::group(desk, cx))
+        .group(look_group(desk, handle, controls))
+        .group(super::backdrop::group(desk, handle, controls, cx))
 }
 
 /// Skin cards, the plain terminal switch, and motion.
-fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
+fn look_group(
+    desk: &Desk,
+    handle: &WeakEntity<Desk>,
+    controls: Option<&super::SettingsControls>,
+) -> SettingGroup {
     let plain_chord = desk
         .shown_chord("plain-terminal")
         .map(|chord| format!(" Toggle it with {chord}."))
@@ -160,11 +188,15 @@ fn look_group(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingGroup {
         .unwrap_or_default();
     let cards = handle.clone();
     SettingGroup::new()
-        .title("Look")
+        .title("Interface")
         .item(
-            SettingItem::render("Skin", move |_, _, cx| skin_cards(&cards, cx))
-                .keywords(["skin", "look", "glass", "terminal", "plain", "chrome"]),
+            SettingItem::render("Interface style", move |_, _, cx| skin_cards(&cards, cx))
+                .keywords(["skin", "look", "classic", "glass", "chrome"]),
         )
+        .item(toggle(handle, "Glassy panes", |prefs| &mut prefs.pane_glass,
+            "Translucent panes in Glass style with Blur behind window on. Classic and Plain terminal stay solid; your opacity is remembered."))
+        .items(slider_item(controls, handle, Knob::GLASS,
+            "Pane background opacity in Glass style. Lower values reveal more of the blurred desktop; terminal text stays opaque."))
         .item(
             toggle(
                 handle,
@@ -255,18 +287,25 @@ fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .when(!worn, |card| card.opacity(0.7))
+            .when(prefs.plain && !worn, |card| card.opacity(0.7))
             .child(skin_preview(skin, &look.chrome, &prefs))
             .child(
                 div()
                     .px(px(2.))
                     .pb(px(2.))
                     .text_sm()
-                    .text_color(ink.opacity(if selected { 1. } else { 0.65 }))
+                    .text_color(if selected {
+                        ink
+                    } else {
+                        from_hex(&look.chrome.subtext)
+                    })
                     .child(skin.name),
             )
             .on_click(click_sets(handle, move |prefs| {
-                prefs.skin_id = skin.id.to_owned()
+                prefs.skin_id = skin.id.to_owned();
+                if skin.id == "glass" {
+                    prefs.window_background = settings::WindowBackground::Blur;
+                }
             }))
     };
     div()
@@ -275,11 +314,12 @@ fn skin_cards(handle: &WeakEntity<Desk>, cx: &App) -> AnyElement {
         .gap(px(8.))
         .children(hint)
         .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(10.))
-                .children(settings::skins().iter().map(card)),
+            div().flex().flex_wrap().gap(px(10.)).children(
+                settings::skins()
+                    .iter()
+                    .filter(|skin| skin.id != "terminal" || picked == "terminal")
+                    .map(card),
+            ),
         )
         .into_any_element()
 }

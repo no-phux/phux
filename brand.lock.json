@@ -1,0 +1,62 @@
+{
+  "consumer": "phux",
+  "files": {
+    "desktop/AppIcon.png": {
+      "destination": "clients/desktop/packaging/AppIcon.png",
+      "sha256": "3a02b69904509332d21714d2835b39024b3f2d753df85c78cc9cc0fad7a6aa99"
+    },
+    "desktop/AppIcon.svg": {
+      "destination": "clients/desktop/packaging/AppIcon.svg",
+      "sha256": "a3f51b813da499d90a99932120d3fc19b5e270e1c1dff52d5f02ae251d1495ac"
+    },
+    "identity/profile.json": {
+      "destination": "clients/desktop/packaging/brand-profile.json",
+      "sha256": "72fef4e697a5e7dece601664d4565b6829e681f8fae94ab9dd46cd2876f9454a"
+    },
+    "logos/docs-wordmark.png": {
+      "destination": "docs/assets/logo.png",
+      "sha256": "cb98b384bc38c309edcff441d845fd2232bf3d0e9ae66cf528c21808c4f51a18"
+    },
+    "logos/docs-wordmark.svg": {
+      "destination": "docs/assets/logo.svg",
+      "sha256": "6bc7d8192283ea1dfb9dc9ab9da82af5846cfdb18b77770924304311b4694c59"
+    },
+    "playground/fox/atlas.json": {
+      "destination": "clients/desktop/native/assets/playground/fox/atlas.json",
+      "sha256": "1746458a63b8e058164a95357aa06e65ee679e957df608ff3c84bc9fb87af20a"
+    },
+    "playground/fox/celebrate.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/celebrate.png",
+      "sha256": "a79bc727667ad713251c249e3715cc5a1a029688280a93e05f8687ed7ff33133"
+    },
+    "playground/fox/dash.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/dash.png",
+      "sha256": "8a002bd86c3a61bad58852206d37b2c5a70d3e61fabc37275cf1bc55ca2bd3fb"
+    },
+    "playground/fox/idle.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/idle.png",
+      "sha256": "285d5f94618f0e4bb4a52926dfa49e786dfe3d42018379f63db0c18c82f44f9e"
+    },
+    "playground/fox/sleep.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/sleep.png",
+      "sha256": "bd8ff0baed270e9f69c7c48a1c55ce778fed0c166f98512533ed55fe18a24973"
+    },
+    "playground/fox/still.png": {
+      "destination": "clients/desktop/native/assets/playground/fox/still.png",
+      "sha256": "6656ece802cb23de95e4559c9fed7a3796edc6b2f57459938a0fa2d5f7c366e7"
+    },
+    "runtime/desktop/profiles.json": {
+      "destination": "clients/desktop/packaging/brand-profiles.json",
+      "sha256": "48e670fd24a81322c6b0003d8f925ac462e15c23a5db9384e0479b224da969e2"
+    },
+    "tooling/brand.py": {
+      "destination": "scripts/brand.py",
+      "sha256": "7c1b9f2253ce695d65748b10ea2b2a0cf9a22c45f0d2d2d45001dc289a603e1d"
+    }
+  },
+  "schema": 1,
+  "sha256": "8995194fb14065225e886c3db9edba9a520d540002c88fcd05f4adfdfda1f320",
+  "source_revision": "786354266582d7144de749b4b4a19bfc57b96a38",
+  "url": "https://phux.sh/brand/releases/1.4.0/phux-brand.zip",
+  "version": "1.4.0"
+}

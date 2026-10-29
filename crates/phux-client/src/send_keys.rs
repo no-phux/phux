@@ -5,7 +5,7 @@
 //! before `Enter` is instead one paste followed by the real key, so a
 //! paste-aware TUI can tell text from submission. Bytes go through the same
 //! [`StdinParser`] the interactive client uses, and events ride the
-//! side-effect-free `ROUTE_INPUT` command (L1.md §5.1): nothing attaches,
+//! side-effect-free `ROUTE_INPUT` command (docs/protocol.md): nothing attaches,
 //! subscribes, or resizes the pane.
 
 use std::path::Path;
@@ -246,8 +246,41 @@ async fn first_arranged_leaf(conn: &mut Connection, session: SessionId) -> Optio
 /// Connection or `ROUTE_INPUT` failures; an unknown pane is
 /// [`AttachError::Refused`].
 pub async fn send_to(socket: &Path, pane: ResourceId, keys: &[String]) -> Result<(), AttachError> {
-    let mut conn = Connection::connect(socket).await?;
-    route_keys(&mut conn, &pane, keys).await
+    send_counted(socket, &pane, keys)
+        .await
+        .map(drop)
+        .map_err(|failure| failure.error)
+}
+
+/// A [`send_counted`] that stopped partway.
+#[derive(Debug)]
+pub struct SendFailure {
+    /// Input events the server acknowledged before the failure. Zero after a
+    /// connect failure or a refusal of the first event: nothing reached the
+    /// pane. Anything else means part of the keys did.
+    pub delivered: usize,
+    /// Why it stopped.
+    pub error: AttachError,
+}
+
+/// [`send_to`], answering how many input events the server acknowledged, so
+/// a caller can tell "nothing sent" from "partly sent".
+///
+/// # Errors
+///
+/// A [`SendFailure`] carrying the events delivered before it.
+pub async fn send_counted(
+    socket: &Path,
+    pane: &ResourceId,
+    keys: &[String],
+) -> Result<usize, SendFailure> {
+    let mut conn = Connection::connect(socket)
+        .await
+        .map_err(|error| SendFailure {
+            delivered: 0,
+            error,
+        })?;
+    route_keys_counted(&mut conn, pane, keys).await
 }
 
 /// Paste `data` into a pre-resolved `pane` as one [`InputEvent::Paste`] via
@@ -283,12 +316,30 @@ pub(crate) async fn route_keys(
     pane: &ResourceId,
     keys: &[String],
 ) -> Result<(), AttachError> {
-    for (i, event) in events_for(keys).into_iter().enumerate() {
+    route_keys_counted(conn, pane, keys)
+        .await
+        .map(drop)
+        .map_err(|failure| failure.error)
+}
+
+/// [`route_keys`], counting the events acknowledged.
+async fn route_keys_counted(
+    conn: &mut Connection,
+    pane: &ResourceId,
+    keys: &[String],
+) -> Result<usize, SendFailure> {
+    let events = events_for(keys);
+    let total = events.len();
+    for (delivered, event) in events.into_iter().enumerate() {
         // Id 1 may have been a preceding GET_STATE on this connection.
-        let request_id = u32::try_from(i).unwrap_or(u32::MAX - 1).saturating_add(2);
-        route_input(conn, request_id, pane.clone(), event).await?;
+        let request_id = u32::try_from(delivered)
+            .unwrap_or(u32::MAX - 1)
+            .saturating_add(2);
+        route_input(conn, request_id, pane.clone(), event)
+            .await
+            .map_err(|error| SendFailure { delivered, error })?;
     }
-    Ok(())
+    Ok(total)
 }
 
 /// One `ROUTE_INPUT`. The interleave is safely ignored: this connection

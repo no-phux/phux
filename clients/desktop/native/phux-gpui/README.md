@@ -16,6 +16,10 @@ patches provide.
 ## Use it
 
 ```rust
+// Opt in before connecting; text-only runtime consumers leave this empty.
+options.control.image_protocols = phux_protocol::caps::ImageProtocolSet::with(&[
+    phux_protocol::caps::ImageProtocol::KittyGraphics,
+]);
 let client = Arc::new(Runtime::connect(Target::uds(socket), options)?);
 // once the session is attached:
 let view = client.create_view(&terminal_id)?;
@@ -26,6 +30,10 @@ let terminal = cx.new(|cx| Terminal::new(client, view, terminal_id, Settings::de
 `ViewId` when the entity is dropped. When closing a view on a shared
 `Client`, the host must call `client.destroy_view(view)`. Keep sibling views
 and the shared client alive.
+
+The opt-in uses the matching `phux-protocol` dependency. The view paints immutable
+runtime image planes automatically; see [Kitty graphics](PAINTER.md#kitty-graphics)
+for layering, texture lifetime and compatibility limits.
 
 Wake GPUI from the runtime's `Listener`, drain `Client::take_activity` on
 the UI thread, and `cx.notify()` the terminal on `Event::TerminalChanged`.
@@ -60,6 +68,7 @@ Enable it only when your build serves gpui-fast from phux's patched sources
 | 0006 bulk glyph sprites | A row's glyphs are retained atlas sprites, one paint call per row. | Glyphs paint from their shaped lines each frame. Same glyphs, more work per frame. |
 | 0001 drawable presented | A delivery fence clears only after the exact drawable was presented on a visible window. | It clears when the next frame begins: the scene was submitted, not proven on screen. |
 | 0005 press-and-hold | A held key repeats on macOS. | macOS shows its accent menu for a held letter. |
+| 0014–0016 image-source sampling | Filtering clamps to the original source crop independently of each visible placeholder cell. | Images paint through the existing GPUI image API; crop-edge filtering is not exact. |
 
 Patch 0003 has no API and no feature: on macOS it ties a fallback family to
 the font data registered in memory. On published gpui-fast, a bundled Nerd

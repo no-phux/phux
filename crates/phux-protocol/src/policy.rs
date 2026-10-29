@@ -1,5 +1,5 @@
 //! Transport-derived peer identity and the QUIC ALPN tokens
-//! (`docs/spec/proto.md` §10). None of these types are encoded on the wire;
+//! (`docs/remote.md#who-can-connect`). None of these types are encoded on the wire;
 //! policy logic lives in `phux-server` (ADR-0072).
 
 use std::net::IpAddr;
@@ -24,7 +24,7 @@ pub struct PeerIdentity {
     pub source_addr: Option<IpAddr>,
 }
 
-/// ALPN protocol id for the QUIC transport (`docs/spec/proto.md` §10). Both
+/// ALPN protocol id for the QUIC transport (`docs/remote.md#who-can-connect`). Both
 /// ends must offer it exactly, so a non-phux QUIC client never reaches the
 /// frame layer.
 pub const QUIC_ALPN: &[u8] = b"phux-quic/1";
@@ -36,18 +36,27 @@ pub const QUIC_RELAY_ALPN: &[u8] = b"phux-relay/1";
 
 /// ALPN protocol id for workload enrollment on a QUIC listener.
 ///
-/// See `docs/spec/workload-auth.md` §8.2 and ADR-0154. A connection that
+/// See `docs/remote.md#pairing-with-a-link` and ADR-0154. A connection that
 /// negotiates it carries one enrollment exchange ([`crate::enroll`]) and no
 /// phux frame, so it MUST never equal [`QUIC_ALPN`].
 pub const ENROLL_ALPN: &[u8] = b"phux-enroll/1";
 
 /// ALPN protocol id for a satellite's outbound link to its hub.
 ///
-/// See `docs/spec/workload-auth.md` §8.3 and ADR-0182. The satellite dials
+/// See `docs/remote.md#linking-machines` and ADR-0182. The satellite dials
 /// and presents its satellite credential; the hub then opens bidirectional
 /// streams, each one phux connection with the hub as the client. It MUST
 /// never equal any other phux ALPN: the ALPN alone decides the role.
 pub const SATELLITE_ALPN: &[u8] = b"phux-satellite/1";
+
+/// ALPN protocol id for a satellite's mail and claims on its hub.
+///
+/// See `docs/agents.md#mail-and-path-claims`. The satellite dials with its
+/// satellite credential and opens one bidirectional stream per call: one
+/// work-store request line, answered with one reply line, against the hub's
+/// store and in the satellite's own name. It carries no phux frame and
+/// grants no terminal, so it MUST never equal any other phux ALPN.
+pub const COORD_ALPN: &[u8] = b"phux-coord/1";
 
 /// Transport classification for peer identity.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Hash, Eq, PartialEq)]
@@ -80,9 +89,12 @@ mod tests {
         assert_ne!(ENROLL_ALPN, QUIC_ALPN);
         assert_ne!(ENROLL_ALPN, QUIC_RELAY_ALPN);
         assert_eq!(SATELLITE_ALPN, b"phux-satellite/1");
+        assert_eq!(COORD_ALPN, b"phux-coord/1");
         for other in [QUIC_ALPN, QUIC_RELAY_ALPN, ENROLL_ALPN] {
             assert_ne!(SATELLITE_ALPN, other);
+            assert_ne!(COORD_ALPN, other);
         }
+        assert_ne!(COORD_ALPN, SATELLITE_ALPN);
         assert_ne!(
             QUIC_ALPN, QUIC_RELAY_ALPN,
             "the relay connector leg must never reuse the consumer ALPN \

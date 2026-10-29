@@ -6,7 +6,7 @@
 //! crate lists them in a `&'static [Metric]` table; [`snapshot`] walks it
 //! into a [`PerfReport`] (JSON for `GET_PERF`), and [`PerfReport::delta`]
 //! folds two reports into an interval for `phux perf --watch`. See
-//! `docs/operations.md` §"Performance observability" for the catalog.
+//! `docs/troubleshooting.md#lag` for the catalog.
 
 // `deny`, not `forbid`: native RSS in `process`, pthread QoS in `sched` and
 // the `GlobalAlloc` impl in `alloc` have narrowly scoped `allow`s with

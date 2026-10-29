@@ -59,7 +59,7 @@ pub(super) struct ClientTable {
     /// Cancellation root per live transport (dropping one sender clone
     /// cannot close writers held by others). Connection-scoped.
     pub(super) connection_cancellations: HashMap<ClientId, CancellationToken>,
-    /// The authority minted at HELLO (`docs/spec/workload-auth.md` §5, §7),
+    /// The authority minted at HELLO (`docs/remote.md#who-can-do-what`),
     /// enforced at every dispatch; no entry means everything is refused.
     pub(super) grants: HashMap<ClientId, crate::policy::ConnectionGrant>,
     /// Revocation signal per connection: once a goodbye is set, the writer

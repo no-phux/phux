@@ -26,12 +26,16 @@ const DOC_INPUTS: Record<string, Surface[]> = {
 
 /** Shipped agent skills are product inputs, not documentation. */
 const PRODUCT_PROSE = [
+  "distros/crew/**",
   ".agents/skills/{using-phux,using-phux-mcp}/**",
   "integrations/*/skills/**",
   "integrations/muse/SKILL.md",
 ];
 
 const ROUTES: Record<string, Surface[]> = {
+  // Distro layers and manifests are exercised by native config tests; Crew's
+  // credential-free launcher tests also run in guards.
+  "distros/**": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
   // its shared actions: a change to how lanes run reruns every lane.
   ".github/workflows/*.{yml,yaml}": [],
@@ -39,9 +43,21 @@ const ROUTES: Record<string, Surface[]> = {
   // Commit-message policy is enforced by commitlint, not product builds.
   "commitlint.config.mjs": [],
   ".github/cockpit-history-tip": [],
+  // Issue forms are GitHub metadata, not a product input.
+  ".github/ISSUE_TEMPLATE/**": [],
   ".github/workflows/ci.yml": [...SURFACES],
   ".github/actions/**": [...SURFACES],
   "scripts/ci/setup-linux-release-userspace.sh": [],
+  "scripts/ci/prune-build-cache.sh": [],
+  "scripts/ci/publish-desktop-release.sh": [],
+  // The separate Windows WSL workflow exercises PowerShell and real WSL;
+  // these distribution scripts do not change the Unix Rust build.
+  "scripts/{install-windows,test-install-windows,test-windows-wsl}.ps1": [],
+  "scripts/test-windows-mcp.py": [],
+  "scripts/test-windows-terminal.py": [],
+  // Native Windows distribution contracts have their own hosted GUI workflow.
+  "scripts/{install-desktop-windows,test-install-desktop-windows,install-zig-windows}.ps1": [],
+  "scripts/test-windows-bridge-{teardown.ps1,fixture.py}": [],
   // Tools code runs in the lanes whose builds import it.
   "tools/**": [],
   // Passive maintainer task exports/configuration are not product inputs.
@@ -65,6 +81,15 @@ const ROUTES: Record<string, Surface[]> = {
   // not unrelated root/browser/integration builds. Other desktop files can be
   // root CLI inputs (e.g. phux-protocol), so they still fail closed.
   "clients/desktop/native/**": ["desktop"],
+  "clients/desktop/packaging/AppIcon.svg": ["desktop"],
+  "clients/desktop/packaging/AppIcon.png": ["desktop"],
+  "clients/desktop/packaging/brand-profile{,s}.json": ["desktop"],
+  "clients/desktop/scripts/brand.ts": ["desktop"],
+  "clients/desktop/scripts/package-{app,dmg}.ts": ["desktop"],
+  "clients/desktop/scripts/dmg-*.{py,swift}": ["desktop"],
+  "clients/desktop/packaging/dmg-requirements.txt": ["desktop"],
+  "clients/desktop/tests/tooling/{package-dmg.test.ts,verify-dmg.py,verify-dmg.swift}": ["desktop"],
+  "clients/desktop/scripts/*windows*": ["desktop"],
   "just/desktop.just": ["desktop"],
   "just/web.just": ["web"],
   // Root crates reach the web and desktop lanes only through Cargo (see
@@ -84,6 +109,8 @@ const ROUTES: Record<string, Surface[]> = {
   "just/setup.just": ["native"],
   "scripts/{doctor,test-dev-setup,native-smoke}.sh": ["native"],
   "scripts/setup-rust.sh": ["native", "desktop"],
+  "scripts/{setup,test}-macos-desktop.sh": ["native", "desktop"],
+  "scripts/lib/macos-desktop.sh": ["native", "desktop"],
   // How the native, web-engine and desktop lanes get libghostty's Zig; the Nix
   // lanes use flake.nix's compiler.
   ".config/zig-toolchain.json": [...SHARED, ...ZIG],
@@ -97,6 +124,10 @@ const ROUTES: Record<string, Surface[]> = {
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
   "scripts/check-*": [],
+  // Brand release plumbing is verified by guards. Changed application artwork
+  // still routes through its destination's packaging/build checks.
+  "brand.{config,lock}.json": [],
+  "scripts/{brand,update-brand,test_brand_update}.py": [],
   "scripts/{export-product-skills.sh,product-skills}": [],
   "scripts/skills-package/**": [],
   "scripts/{build-ffi-xcframework,build-mobile-ffi-android}.sh": [],

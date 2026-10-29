@@ -88,7 +88,7 @@ pub const DEFAULT_BOOTSTRAP_CHUNK_BYTES: u32 = 256 * 1024;
 /// Default advertised maximum for one history page (1 MiB).
 pub const DEFAULT_HISTORY_PAGE_BYTES: u32 = 1024 * 1024;
 
-/// A frame-payload compression algorithm (`docs/spec/proto.md` §6.4).
+/// A frame-payload compression algorithm (`docs/protocol.md#framing`).
 ///
 /// Decode-invisible: `FRAME_COMPRESSED` inflates back to the exact inner
 /// frame bytes, so native records stay byte-identical end to end (§6.2).

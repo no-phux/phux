@@ -212,6 +212,21 @@ impl Owner {
         self.render_presentations(id, false)
     }
 
+    /// Drop pitch-republish buffers nobody has acquired.
+    ///
+    /// The frame a cell-pitch change replaces has often not been acquired.
+    /// Leaving it in the reuse pool would make the next cold redraw start
+    /// from that buffer instead of allocating the one fresh buffer the
+    /// headless perf budget counts. A frame a painter still holds stays.
+    pub(super) fn discard_unheld_retired(&mut self, id: &ResourceId) {
+        if let Some(presentation) = self.presentations.get_mut(id) {
+            presentation.retired.discard_unheld();
+        }
+        for view in self.views.values_mut().filter(|view| &view.terminal == id) {
+            view.presentation.retired.discard_unheld();
+        }
+    }
+
     /// Publish every presentation of `id` a consumer has caught up with, and
     /// defer the rest to their next acquire (see `publication`).
     pub(super) fn render_damage(&mut self, id: &ResourceId) -> Result<bool, EngineError> {

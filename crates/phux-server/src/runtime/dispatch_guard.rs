@@ -1,5 +1,5 @@
 //! Turns a [`crate::policy::enforce`] denial into the reply
-//! `docs/spec/workload-auth.md` §6-§7 asks for: a correlated frame or
+//! `docs/remote.md#who-can-do-what` asks for: a correlated frame or
 //! command gets its correlated `PERMISSION_DENIED`; an uncorrelated one is
 //! dropped with at most one `ERROR` per second; the connection stays up. The
 //! reply names no subject and no rule.

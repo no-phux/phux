@@ -71,6 +71,7 @@ fn remember(history: &mut VecDeque<Reading>, sample: &Sample) {
 
 /// Kit installs the Root; only the window owns the returned content entity.
 pub(crate) fn open(cx: &mut App) -> anyhow::Result<gpui_kit::AnyWindowHandle> {
+    super::ui::typography::install(cx);
     open_with_focus(crate::diag::may_activate(), cx)
 }
 

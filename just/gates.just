@@ -32,7 +32,7 @@ crate-check PACKAGE FEATURES="": worktree-claim
 # The `guards` lane: compile-free repository contracts, on every change.
 [group('gates')]
 [doc('Compile-free contracts: workflows, shell, tools, docs, installers, pins.')]
-guards: shellcheck tools-check docs-check install-surface-check
+guards: brand-check shellcheck tools-check docs-check install-surface-check
     actionlint .github/workflows/*.yml
     bash scripts/check-action-pins.sh
     bash scripts/check-file-tokens_test.sh
@@ -45,6 +45,7 @@ guards: shellcheck tools-check docs-check install-surface-check
     bash scripts/check-file-tokens_test.sh
     node --test scripts/test-npm-audit-gate.mjs
     bash examples/agents/tests/placed-fleet-smoke.sh
+    python3 -B -m unittest discover -s distros/crew -p 'test_*.py'
     bun tools/main.ts desktop-host-lock
 
 
@@ -185,3 +186,18 @@ worktree-verify CALLER:
 [doc("Release this agent session's worktree lease for the next session.")]
 worktree-release:
     @bash scripts/worktree-release.sh worktree-release
+
+# Verify committed branding without accessing the private source library.
+[group('gates')]
+brand-check:
+    python3 -B scripts/brand.py check
+    python3 -B -m unittest discover -s scripts -p 'test_brand*.py'
+
+# Install an explicitly checksummed approved release (or roll back to one).
+[positional-arguments]
+brand-sync ARCHIVE SHA256:
+    python3 -B scripts/brand.py sync --archive "$1" --sha256 "$2"
+
+# Restore the current release pin from the public brand archive.
+brand-restore:
+    python3 -B scripts/brand.py restore

@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "id": "emblem-fox",
+  "name": "Emblem Fox",
+  "finish": "flat",
+  "ink": "text",
+  "available": [
+    {
+      "id": "emblem-fox",
+      "name": "Emblem Fox",
+      "finish": "flat"
+    },
+    {
+      "id": "flat-fox",
+      "name": "Flat Fox",
+      "finish": "flat"
+    },
+    {
+      "id": "silver-fox",
+      "name": "Silver Fox",
+      "finish": "metallic"
+    },
+    {
+      "id": "classic-prompt",
+      "name": "Classic Prompt",
+      "finish": "flat"
+    }
+  ]
+}

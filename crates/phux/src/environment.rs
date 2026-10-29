@@ -160,7 +160,8 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         lines: &[
             "Set to `1`, `true`, `yes`, or `on` to enable dev telemetry:",
             "server heap accounting; in the desktop, also the HUD and",
-            "owner-only dev socket. Off by default.",
+            "owner-only dev socket, whatever its saved Developer mode",
+            "setting says. Off by default.",
         ],
     },
     EnvVarSpec {

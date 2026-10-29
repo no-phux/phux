@@ -59,7 +59,7 @@ fn run_in_pty(dir: &Path, args: &[&str], needles: &[&str]) -> String {
     seen
 }
 
-/// `workload-auth.md` §8/§9 secret sweep across an enrolled lifecycle,
+/// `docs/remote.md#who-can-connect` secret sweep across an enrolled lifecycle,
 /// revocation included: the private key never reaches argv, environment,
 /// stdout, stderr, or the server's trace log.
 #[test]

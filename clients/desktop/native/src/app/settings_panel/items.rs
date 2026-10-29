@@ -51,8 +51,33 @@ pub(super) fn click_runs(
     action: impl Fn(&mut Desk, &mut Window, &mut Context<Desk>) + 'static,
 ) -> OnClick {
     let handle = handle.clone();
+    let action = std::rc::Rc::new(action);
     Box::new(move |_, window, cx| {
-        let _ = handle.update(cx, |desk, cx| action(desk, window, cx));
+        let Some(desk) = handle.upgrade() else {
+            return;
+        };
+        let owner = desk
+            .read(cx)
+            .desktop
+            .read(cx)
+            .desk_windows()
+            .find(|(_, candidate, _)| candidate.entity_id() == desk.entity_id())
+            .map(|(window, _, _)| window);
+        if let Some(owner) = owner
+            && owner.window_id() != window.window_handle().window_id()
+        {
+            // Dialogs and navigation belong to the workspace, not this utility
+            // window. Release its lease before updating the originating window.
+            // Only dialog/navigation actions activate it; ordinary edits stay here.
+            let action = action.clone();
+            cx.defer(move |cx| {
+                let _ = owner.update(cx, |_, window, cx| {
+                    desk.update(cx, |desk, cx| action(desk, window, cx));
+                });
+            });
+        } else {
+            desk.update(cx, |desk, cx| action(desk, window, cx));
+        }
     })
 }
 
@@ -114,14 +139,12 @@ pub(super) fn fact(title: impl Into<SharedString>, value: String) -> SettingItem
 
 /// A slider with its value beside it, and a reset to the shipped default.
 pub(super) fn slider_item(
-    desk: &Desk,
+    controls: Option<&SettingsControls>,
     handle: &WeakEntity<Desk>,
     knob: Knob,
     description: impl Into<String>,
 ) -> Option<SettingItem> {
-    let slider = desk
-        .settings_controls
-        .as_ref()?
+    let slider = controls?
         .sliders
         .iter()
         .find(|(owned, _)| owned.title == knob.title)?
@@ -149,7 +172,11 @@ pub(super) fn slider_item(
         move |cx| knob.shown(&prefs_of(&dirty, cx)) != shipped(),
         move |_, cx| set_prefs(&reset, cx, |prefs| knob.store(prefs, shipped())),
     );
-    Some(SettingItem::new(knob.title, field).description(description.into()))
+    Some(
+        SettingItem::new(knob.title, field)
+            .wide()
+            .description(description.into()),
+    )
 }
 
 /// `text`, then where the value came from and when an edit to that source applies.

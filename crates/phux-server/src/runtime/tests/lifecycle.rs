@@ -1,7 +1,7 @@
 use super::*;
 
 /// Seeding fires `after-new-pane`, and the exit watcher fires
-/// `pane-exit` with the exit code (docs/consumers/tui.md §9).
+/// `pane-exit` with the exit code (docs/hooks.md).
 #[test]
 fn pane_lifecycle_hooks_fire() {
     let rt = Builder::new_current_thread().enable_all().build().unwrap();

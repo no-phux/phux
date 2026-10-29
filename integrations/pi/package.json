@@ -1,7 +1,8 @@
 {
   "name": "@phux/pi",
-  "version": "0.7.1",
-  "description": "Pi integration for controlling shared phux terminals",
+  "version": "0.8.1",
+  "description": "phux integration for pi: terminal tools and agent status.",
+  "homepage": "https://docs.phux.sh/",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {

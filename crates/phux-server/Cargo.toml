@@ -45,6 +45,8 @@ phux-agent-rules.workspace = true
 base64.workspace = true
 # Canonical scrollback bounds and config schema defaults.
 phux-config.workspace = true
+# A hub answers its satellites' mail and claims against its own work store.
+phux-work.workspace = true
 # The shared child-process runner behind event hooks.
 phux-plugin.workspace = true
 # Hook `when` predicates are `toml::Value`s.

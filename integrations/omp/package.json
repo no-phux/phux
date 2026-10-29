@@ -1,7 +1,8 @@
 {
   "name": "@phux/omp",
-  "version": "0.3.1",
-  "description": "Native Oh My Pi extension for CLI-backed persistent terminal control",
+  "version": "0.4.1",
+  "description": "phux integration for Oh My Pi: terminal tools and agent status.",
+  "homepage": "https://docs.phux.sh/",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {

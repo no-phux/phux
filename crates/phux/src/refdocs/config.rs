@@ -365,6 +365,7 @@ mod tests {
             client_cert: PathBuf::from("/state/uplinks/uplink.sandbox.pem"),
             client_key: PathBuf::from("/state/uplinks/uplink.sandbox.key"),
             enabled: true,
+            mail_only: false,
         }];
         config.remote = vec![RemoteConfigEntry {
             name: "mini".to_owned(),
@@ -375,6 +376,7 @@ mod tests {
             session: Some("main".to_owned()),
             ssh: Some("me@mini".to_owned()),
             direct: None,
+            remote_phux: None,
             client_cert: Some(PathBuf::from("/state/remotes/mini.client.pem")),
             client_key: Some(PathBuf::from("/state/remotes/mini.client.key")),
         }];

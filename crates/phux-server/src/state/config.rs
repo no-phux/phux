@@ -39,7 +39,7 @@ pub(super) struct ServerConfig {
     /// HELLO authorization engine (ADR-0072); the `local` engine unless
     /// configured.
     pub(super) policy_engine: std::sync::Arc<dyn crate::policy::PolicyEngine>,
-    /// The startup authorization posture (`docs/spec/workload-auth.md` §8).
+    /// The startup authorization posture (`docs/remote.md#who-can-connect`).
     pub(super) policy_posture: crate::policy::PolicyPosture,
     /// Whether an attach-time `CreateIfMissing` seeds a real PTY pane
     /// (tests default to the cheaper PTY-less actor).

@@ -215,6 +215,7 @@ fn desktop_archive(target: &str) -> (&'static str, &'static str) {
     match target {
         "x86_64-unknown-linux-gnu" => ("linux-x64", "tar.gz"),
         "aarch64-unknown-linux-gnu" => ("linux-arm64", "tar.gz"),
+        "x86_64-pc-windows-msvc" => ("windows-x64", "zip"),
         _ => ("macos-arm64", "zip"),
     }
 }
@@ -417,6 +418,23 @@ mod tests {
                 format!("{}.sha256.minisig", asset.url)
             );
         }
+    }
+
+    #[test]
+    fn windows_desktop_assets_do_not_use_the_macos_fallback() {
+        let target = "x86_64-pc-windows-msvc";
+        let stable = asset(Product::Desktop, &Build::Stable(version("1.2.3")), target);
+        assert_eq!(stable.name, "phux-desktop-1.2.3-windows-x64.zip");
+        assert_eq!(
+            stable.signature_url(),
+            "https://github.com/no-phux/phux/releases/download/desktop-v1.2.3/phux-desktop-1.2.3-windows-x64.zip.sha256.minisig"
+        );
+        let sha = "b".repeat(40);
+        let next = asset(Product::Desktop, &Build::Next(sha.clone()), target);
+        assert_eq!(
+            next.name,
+            format!("phux-desktop-next.{sha}-windows-x64.zip")
+        );
     }
 
     #[test]

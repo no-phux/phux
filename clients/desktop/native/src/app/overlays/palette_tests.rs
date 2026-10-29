@@ -38,6 +38,7 @@ pub(in crate::app) fn fixture(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle
                 quick: false,
                 dev_telemetry: false,
                 startup_error: None,
+                cli_install: None,
             },
             cx,
         )
@@ -173,7 +174,10 @@ fn path_picker() -> crate::connection::path::PickerState {
 }
 
 mod capture;
+#[cfg(unix)]
+mod machines;
 mod modals;
 mod navigation;
 mod search;
 mod settings;
+mod themes;

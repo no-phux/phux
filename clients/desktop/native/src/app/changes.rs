@@ -17,6 +17,9 @@
 //! | [`actions`] | staging, line staging, conflict resolution, commit, comments |
 
 mod actions;
+mod checkout;
+pub(crate) use checkout::expand_home;
+use checkout::read_checkout;
 mod navigate;
 pub(crate) mod review;
 pub(crate) mod tree;
@@ -404,6 +407,9 @@ impl Desk {
 
     /// The local folder the focused pane is in, or why there is none.
     fn changes_folder(&self) -> Result<PathBuf, String> {
+        if cfg!(windows) {
+            return Err("This terminal runs in WSL. Review and stage its changes with Git in the terminal; the local Changes panel cannot read WSL paths.".into());
+        }
         if let Some(host) = self.remote.as_deref() {
             return Err(format!(
                 "This window is on {host}. Changes are read from folders on this Mac."
@@ -510,43 +516,6 @@ impl Changes {
         self.viewed.clear();
         self.suspended_conflicts.clear();
         self.review_root = Some(root.to_owned());
-    }
-}
-
-/// Status, then both comparisons, then the text of each conflicted file.
-fn read_checkout(folder: &std::path::Path) -> Result<Option<(Status, Comparisons)>, String> {
-    let Some(status) = git::read_status(folder)? else {
-        return Ok(None);
-    };
-    let root = status.root.clone();
-    let untracked: Vec<String> = status
-        .in_area(Area::Untracked)
-        .map(|entry| entry.path.clone())
-        .collect();
-    let conflicts: Vec<(String, String)> = status
-        .in_area(Area::Conflicted)
-        .filter_map(|entry| {
-            git::read_file(&root, &entry.path)
-                .ok()
-                .map(|text| (entry.path.clone(), text))
-        })
-        .collect();
-    let changes = git::read_patch(&root, Source::Changes, &untracked, review::FETCH_CONTEXT)?;
-    let staged = git::read_patch(&root, Source::Staged, &[], review::FETCH_CONTEXT)?;
-    let comparisons = Comparisons {
-        changes: Loaded::parse(changes, conflicts),
-        staged: Loaded::parse(staged, Vec::new()),
-    };
-    Ok(Some((status, comparisons)))
-}
-
-/// `~/x` as an absolute path, for a shell that reported its folder that way.
-fn expand_home(cwd: &str) -> PathBuf {
-    match (cwd.strip_prefix('~'), std::env::var_os("HOME")) {
-        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
-            PathBuf::from(home).join(rest.trim_start_matches('/'))
-        }
-        _ => PathBuf::from(cwd),
     }
 }
 

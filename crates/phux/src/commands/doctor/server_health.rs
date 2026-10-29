@@ -28,13 +28,34 @@ pub(super) fn check_server_health(socket_path: &std::path::Path) -> Vec<Check> {
         .filter(|theirs| *theirs != ours)
         .map(|theirs| (theirs, ours));
 
+    let incompatible = version_skew.is_some() && incompatible_running_server(socket_path);
+    let pid = incompatible
+        .then(|| crate::commands::diagnostics::server_pid(socket_path))
+        .flatten();
     server_health_checks(
         crash_loop,
         legacy_unit,
         armed_unit.as_deref(),
         version_skew,
+        incompatible.then_some((socket_path, pid)),
         || phux_server::health::recent_starts(phux_server::health::CRASH_LOOP_WINDOW).len(),
     )
+}
+
+/// Whether the live server at `socket` refused this binary's protocol.
+fn incompatible_running_server(socket: &std::path::Path) -> bool {
+    if !socket.exists() {
+        return false;
+    }
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    runtime
+        .block_on(phux_client::state::get_state(socket))
+        .is_err_and(|err| phux_client::attach::is_incompatible_protocol(&err))
 }
 
 /// The pure half of [`check_server_health`]. `recent_starts` is only read for
@@ -44,6 +65,7 @@ pub(super) fn server_health_checks(
     legacy_unit: Option<&std::path::Path>,
     armed_unit: Option<&std::path::Path>,
     version_skew: Option<(&str, &str)>,
+    recovery: Option<(&std::path::Path, Option<i32>)>,
     recent_starts: impl FnOnce() -> usize,
 ) -> Vec<Check> {
     let mut checks = Vec::new();
@@ -98,8 +120,7 @@ pub(super) fn server_health_checks(
         checks.push(Check::warn(
             "server-health",
             format!("the running server is {theirs}; this binary is {ours}"),
-            "run `phux upgrade` to hand the server over in place (panes survive), \
-             or attach with `phux`, which now does it automatically",
+            version_skew_hint(theirs, ours, recovery),
         ));
     }
 
@@ -111,6 +132,32 @@ pub(super) fn server_health_checks(
     }
 
     checks
+}
+
+/// Choose the remedy by release ordering. Checkout builds that cannot be
+/// ordered retain auto-attach's replaced-binary hand-over policy.
+///
+/// `recovery` is set when the live server refused this protocol. That case
+/// cannot hand over in place, so the hint is the stop-and-start recovery.
+fn version_skew_hint(
+    theirs: &str,
+    ours: &str,
+    recovery: Option<(&std::path::Path, Option<i32>)>,
+) -> String {
+    use phux_client_runtime::release::Version;
+
+    if let Some((socket, pid)) = recovery {
+        return crate::commands::diagnostics::old_server_recovery_lines(socket, pid).join("\n");
+    }
+
+    match (Version::parse(theirs), Version::parse(ours)) {
+        (Some(theirs), Some(ours)) if theirs > ours => {
+            "run `phux update` to update this binary; leave the newer server running".to_owned()
+        }
+        _ => "run `phux upgrade` to hand the server over in place (panes survive), \
+             or attach with `phux`, which now does it automatically"
+            .to_owned(),
+    }
 }
 
 /// Whether `unit`'s restart behavior is dangerous: not failure-only, or not

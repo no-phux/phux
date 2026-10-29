@@ -128,7 +128,7 @@ impl HostInventory {
 ///
 /// # Wire shape
 ///
-/// Positional (`docs/spec/L1.md` §9.1): three `u32`-counted lists, the focus
+/// Positional (`docs/protocol.md`): three `u32`-counted lists, the focus
 /// triple, then trailing elements in fixed order: resource facets
 /// (`kind`/`parent`/`agent` rows joined by id), [`Self::hosts`], session
 /// facets (`id: u32 || flags: u8`, bit 0 = `keep_empty`), the optional

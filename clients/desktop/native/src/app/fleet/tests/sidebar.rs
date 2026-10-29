@@ -1,6 +1,111 @@
 use super::*;
 
 #[gpui::test]
+fn inactive_session_marks_use_their_own_host_and_update_without_selection(cx: &mut TestAppContext) {
+    use crate::app::pane_identity::{Harness, PaneOrigin};
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut gpui::VisualTestContext::from_window(*handle, cx);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    desk.update(cx, |desk, cx| {
+        install(
+            desk,
+            with_agent(
+                connection(1, vec![session(7, "main")]),
+                1,
+                AgentState::Working,
+            ),
+        );
+        let mut remote = with_agent(
+            connection(2, vec![session(8, "remote")]),
+            1,
+            AgentState::Idle,
+        );
+        remote.agents.get_mut(&ResourceId::local(1)).unwrap().kind = Some("codex".into());
+        observe(&mut desk.fleet, Some("mini"), remote);
+        desk.prefs.sidebar_visible = true;
+        cx.notify();
+    });
+    desk.update_in(cx, |desk, window, cx| {
+        desk.execute("expand-sessions", window, cx)
+    });
+    draw(cx);
+    assert!(shown(cx, "harness-mark-OpenCode"));
+    assert!(
+        shown(cx, "harness-mark-Codex"),
+        "inactive host retains its harness, not a terminal logo"
+    );
+    desk.update(cx, |desk, cx| {
+        let observer = desk.fleet.observers.get_mut(&Some("mini".into())).unwrap();
+        let connection = observer.connection.as_mut().unwrap();
+        let info = connection.agents.get_mut(&ResourceId::local(1)).unwrap();
+        info.state = AgentState::Unknown;
+        info.attention = crate::connection::AgentAttention::High;
+        assert!(
+            observer.refresh_inventory(&Some("mini".into())),
+            "state is part of visible inventory"
+        );
+        let pane = &observer.last[0].panes[0];
+        assert_eq!(pane.origin, PaneOrigin::Agent(Harness::Codex));
+        assert_eq!(pane.agent.as_ref().unwrap().state, AgentState::Unknown);
+        cx.notify();
+    });
+    draw(cx);
+    assert!(
+        shown(cx, "harness-mark-Codex"),
+        "attention does not erase identity"
+    );
+    assert!(
+        shown(cx, "harness-attention"),
+        "unknown lifecycle does not erase urgency"
+    );
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(desk.session, "main");
+        assert!(
+            desk.remote.is_none(),
+            "browsing never selects the other host"
+        );
+    });
+}
+
+#[gpui::test]
+fn inventory_identity_includes_bound_sessions_and_survives_offline_retention(
+    cx: &mut TestAppContext,
+) {
+    use crate::app::pane_identity::{Harness, PaneOrigin};
+    let _dial = DeterministicDial::arm();
+    let _ = cx;
+    let mut connection = with_pane(connection(1, vec![session(7, "main")]));
+    connection.topology.as_mut().unwrap().agent_sessions.push(
+        phux_client_runtime::control::AgentSessionDescriptor {
+            id: ResourceId::local(2),
+            parent: Some(ResourceId::local(1)),
+            provider: Some("claude-acp".into()),
+            native_id: None,
+            state: None,
+        },
+    );
+    let mut observer = Observer {
+        connection: Some(connection),
+        workspace: None,
+        last: Vec::new(),
+        error: None,
+        _wake: None,
+    };
+    observer.refresh_inventory(&None);
+    let pane = observer.last[0].panes[0].clone();
+    assert_eq!(pane.origin, PaneOrigin::Agent(Harness::Claude));
+    assert!(pane.agent.is_none(), "a bound session needs no badge");
+    observer.connection.as_mut().unwrap().status = Status::Closed;
+    observer.refresh_inventory(&None);
+    assert!(!observer.last[0].online);
+    assert_eq!(
+        observer.last[0].panes[0], pane,
+        "retained inventory keeps identity"
+    );
+}
+
+#[gpui::test]
 fn the_host_filter_opens_at_its_trigger_and_filters_without_navigation(cx: &mut TestAppContext) {
     use gpui::{Modifiers, VisualTestContext};
     let _dial = DeterministicDial::arm();
@@ -34,7 +139,13 @@ fn the_host_filter_opens_at_its_trigger_and_filters_without_navigation(cx: &mut 
         let menu_cx = &mut VisualTestContext::from_window(menu, cx);
         draw(menu_cx);
         let local = menu_cx
-            .debug_bounds("glass-menu-show-host-This Mac")
+            .debug_bounds(
+                format!(
+                    "glass-menu-show-host-{}",
+                    crate::platform::local_machine_label()
+                )
+                .leak(),
+            )
             .expect("machine checkboxes open directly, without a View submenu");
         menu_cx.simulate_click(local.center(), Modifiers::none());
         menu_cx.run_until_parked();
@@ -380,4 +491,75 @@ fn the_main_menu_header_switches_to_a_session_on_any_machine(cx: &mut TestAppCon
         assert_eq!(desk.remote.as_deref(), Some("mini"));
         assert_eq!(desk.session, "remote");
     });
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn command_up_and_down_step_through_the_sidebar_sessions(cx: &mut TestAppContext) {
+    use gpui::{VisualTestContext, px, size};
+    let _dial = DeterministicDial::arm();
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut VisualTestContext::from_window(*handle, cx);
+    cx.simulate_resize(size(px(1000.), px(700.)));
+    let local = || {
+        with_pane(connection(
+            1,
+            vec![session(7, "main"), session(9, "sibling")],
+        ))
+    };
+    desk.update(cx, |desk, cx| {
+        desk.prefs.sidebar_visible = true;
+        desk.prefs.sidebar_grouping = crate::settings::SidebarGrouping::Machine;
+        install(desk, local());
+        observe(&mut desk.fleet, None, local());
+        observe(
+            &mut desk.fleet,
+            Some("mini"),
+            with_pane(connection(2, vec![session(8, "main")])),
+        );
+        desk.hosts.push(super::super::host::RemoteHost {
+            name: "mini".into(),
+            endpoint: "quic://fixture.invalid:1".into(),
+        });
+        cx.notify();
+    });
+    draw(cx);
+    let active = |desk: &Desk| {
+        crate::app::view::listed_sessions(desk)
+            .into_iter()
+            .find(|destination| desk.work_is_active(destination))
+            .map(|destination| (destination.host, destination.name))
+    };
+    let at = |host: Option<&str>, name: &str| Some((host.map(str::to_owned), name.to_owned()));
+    assert_eq!(desk.read_with(cx, |desk, _| active(desk)), at(None, "main"));
+    // Top to bottom as listed, wrapping past the last back to the first.
+    for (key, host, name) in [
+        ("cmd-down", None, "sibling"),
+        ("cmd-down", Some("mini"), "main"),
+        ("cmd-down", None, "main"),
+        ("cmd-up", Some("mini"), "main"),
+        ("cmd-up", None, "sibling"),
+    ] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(
+            desk.read_with(cx, |desk, _| active(desk)),
+            at(host, name),
+            "{key}"
+        );
+        // Attach what the step asked for, as the server would.
+        desk.update(cx, |desk, cx| {
+            let topology = if desk.remote.is_some() {
+                with_pane(connection(2, vec![session(8, "main")])).topology
+            } else {
+                local().topology
+            };
+            let link = desk.link.as_mut().unwrap();
+            link.connection.topology = topology;
+            link.connection.status = Status::Attached;
+            cx.notify();
+        });
+        draw(cx);
+    }
 }

@@ -59,7 +59,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub viewport: (u16, u16),
     /// Host cell size in pixels, derived like the server's (`pixel / cells`,
     /// 8x16 fallback, never zero); `INPUT_MOUSE` is scaled by it at the send
-    /// boundary (SPEC input.md §3.1).
+    /// boundary (docs/protocol.md#input).
     pub cell_px: (u16, u16),
     /// Monotonic source of request ids.
     pub next_request_id: &'a mut u32,

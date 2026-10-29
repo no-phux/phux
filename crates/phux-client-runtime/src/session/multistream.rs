@@ -1,4 +1,4 @@
-//! QUIC per-Terminal streams (proto.md §4.2, ADR-0115).
+//! QUIC per-Terminal streams (docs/protocol.md#quic-stream-routing, ADR-0115).
 //!
 //! Each bound Terminal has its own bidi stream, so per-stream backpressure
 //! never stalls another pane or the control channel. The client opens every

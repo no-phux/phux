@@ -107,7 +107,7 @@ pub(super) struct ResourceTable {
 }
 
 /// Who spawned a resource and whether another connection used it since
-/// (ADR-0109, `docs/spec/L1.md` §5.2.1).
+/// (ADR-0109, `docs/protocol.md#receipts-retries-and-backpressure`).
 #[derive(Debug, Clone, Copy)]
 struct SpawnRecord {
     /// The spawning connection (its own use never counts).

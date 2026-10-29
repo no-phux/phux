@@ -7,6 +7,9 @@ owns grants and revocation; [embedding](./embedding.md#runtime-consumer-contract
 owns the runtime consumer boundary. [Substrate](./substrate.md) is the org's
 principals, home keeper, and adapters.
 
+Brand artwork and cross-repository release delivery are documented in
+[brand assets](./brand-assets.md).
+
 ## One server, many clients
 
 Each user runs one `phux-server` process per profile. It owns the
@@ -61,7 +64,7 @@ Cargo manifests define the actual edges.
 | `phux-core`           | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O                                                 |
 | `phux-config-core`    | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths                                                        |
 | `phux-perf`           | lock-free histograms and counters behind `GET_PERF` and `phux perf`                                                                                   |
-| `phux-git`            | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging; shared by the desktop Changes panel and `CHECKOUT` |
+| `phux-git`            | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and GitHub pull request review; shared by the desktop Changes panel, desktop Reviews and `CHECKOUT` |
 | `phux-agent-rules`    | agent detection manifests: regions, rules, `phux agent explain`                                                                                       |
 | `phux-crash`          | fatal-signal handler that restores the terminal before re-raising                                                                                     |
 | `portable-pty-adopt`  | rebuild portable-pty handles from inherited fds after `execve`                                                                                        |
@@ -98,6 +101,14 @@ packages for agent hosts; they run the `phux` CLI and never speak the wire.
 
 ## Clients
 
+The one-shot tmux onboarding adapter lives in
+`phux/src/commands/config/import_tmux/`: it reads an existing tmux,
+translates a finite set of commands into native TOML, and validates it
+through `phux-config`. Installation uses the shared locked,
+comment-preserving config writer and `extends`, with existing user layers
+winning. No tmux syntax or compatibility behavior enters the loader,
+server, protocol or client runtime. See the [import contract](./tmux-import.md).
+
 `phux-client-core` is the part every client shares: a synchronous kernel
 that takes wire frames in and produces effects (paint this, send that),
 with no I/O of its own. `phux-client-runtime` wraps it with the async
@@ -126,6 +137,8 @@ local Git work off the UI thread and rejects results for a stale folder.
 
 A click, a selection, a hover or a scroll never resizes or moves other UI
 unless the resize is the point, such as dragging the sidebar edge or a split.
+Tab peeking deliberately translates the workspace under its live thumbnail shelf;
+it retains the full layout allocation and clips the bottom, never resizing a PTY.
 Chrome keeps the size its style names. Something that appears on interaction
 either has space held for it or floats over the content:
 
@@ -177,6 +190,22 @@ keeper/store, distinct from the organization database. The org's home
 keeper is the [substrate decision](./substrate.md). A multi-host
 coordinator and autonomous Lead are not shipping contracts.
 
+### Cache-friendly agent context
+
+Stable instructions and tool definitions must not carry live fleet values.
+Fleet observations belong in bounded, attributed, persistent tail messages so
+an unchanged prefix can remain reusable; pi's shared awareness stream emits a
+checkpoint, then only changes, with fresh checkpoints after compaction or tree
+movement. Provider caching itself remains the harness/provider's concern.
+
+OpenCode V2 currently defaults automatic fleet awareness off. Its opt-in path
+places full checkpoints in the per-request system context, not that persistent
+tail; do not assume it preserves the conversation prefix when fleet state
+changes (or even stays unchanged, since checkpoint sequence numbers advance).
+The [bootload-cache research](./research/context-bootload-cache.md)
+records this difference from historical ADR-0067, measurements, and the cache
+ownership recommendation. No keeper bootload service exists today.
+
 ## Where to look
 
 | To change       | Start at                                                                                                                                                                                                     |
@@ -185,8 +214,8 @@ coordinator and autonomous Lead are not shipping contracts.
 | organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
 | input handling  | `phux-server/src/runtime/input_lane/`                                                                                                                                                                        |
 | TUI rendering   | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay`                                                                                                                        |
-| the wire        | `phux-protocol/src/wire/frame/mod.rs` (types and tags), `wire/field.rs` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
-| a CLI verb      | `crates/phux/src/commands/mod.rs` (`enum Command`), `src/lib.rs` (dispatch), `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen`                                           |
+| the wire        | `phux-protocol/src/wire/frame/mod.rs` (type bytes), `wire/frame/{tags,command_tags}.rs` (sub-tags), `wire/field/` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
+| a CLI verb      | `crates/phux/src/commands/cli.rs` (`enum Command`) and `commands/cli/` (each verb's `Args`), `src/dispatch.rs` (dispatch), `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
 | config          | `phux-config/src/schema.rs`, `default/*.toml`; then `just docs-gen`                                                                                                                                         |
 | agent detection | `phux-agent-rules/rules/*.toml`, `phux-server/src/agent_detect/`                                                                                                                                             |
 | authorization   | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs`                                                                                                                                     |

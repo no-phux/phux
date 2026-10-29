@@ -56,16 +56,13 @@ pub(super) fn header(state: &Header, colors: &Palette, handle: &WeakEntity<Desk>
         .when(
             matches!(
                 modal,
-                Modal::Commands | Modal::Goto | Modal::Settings | Modal::Windows
+                Modal::Commands | Modal::Goto
             ),
             |modes| {
                 modes.children(
                     [
                         (Modal::Goto, "Work", "palette-mode-goto"),
                         (Modal::Commands, "Actions", "palette-mode-commands"),
-                        (Modal::Settings, "Settings", "palette-mode-settings"),
-                        (Modal::Windows, "Windows", "palette-mode-windows"),
-                        (Modal::Capture, "Capture !", "palette-mode-capture"),
                     ]
                     .into_iter()
                     .map(|(choice, label, id)| {
@@ -102,10 +99,36 @@ pub(super) fn header(state: &Header, colors: &Palette, handle: &WeakEntity<Desk>
         .when(modal == Modal::WindowSession, |modes| {
             modes.child(div().px(px(4.)).child("Sessions"))
         })
+        .when(modal == Modal::Sessions, |modes| {
+            modes.child(div().px(px(4.)).child("Switch session"))
+        })
         .when(modal == Modal::MoveResources, |modes| {
             modes.child(div().px(px(4.)).child("Move to"))
+        })
+        .when(modal == Modal::Windows, |modes| {
+            modes.child(div().debug_selector(|| "palette-windows-title".into()).px(px(4.)).child("Windows"))
         });
-    let controls = header_controls(state, handle);
+    let settings_handle = handle.clone();
+    let controls = header_controls(state, handle).when(
+        matches!(modal, Modal::Goto | Modal::Commands | Modal::Windows),
+        |controls| {
+            controls.child(
+                div()
+                    .debug_selector(|| "palette-open-settings".into())
+                    .child(
+                        Button::new("palette-open-settings")
+                            .icon(gpui_kit::component::IconName::Settings)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Settings · ⌘,")
+                            .on_click(move |_, window, cx| {
+                                let _ = settings_handle
+                                    .update(cx, |desk, cx| desk.execute("settings", window, cx));
+                            }),
+                    ),
+            )
+        },
+    );
     let wrapped = wraps_controls(&modal, state.compact, state.empty_query);
     div()
         .h(px(if wrapped { 68. } else { 36. }))

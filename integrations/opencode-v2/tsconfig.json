@@ -20,5 +20,9 @@
     "src/**/*.ts",
     "src/**/*.tsx",
     "index.d.ts"
+  ],
+  "exclude": [
+    "src/gui.tsx",
+    "src/gui/**"
   ]
 }

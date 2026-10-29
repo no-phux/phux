@@ -225,3 +225,42 @@ fn a_policy_refused_listener_names_the_mode() {
         "{hint}"
     );
 }
+
+/// A dead socket may still be called stale. A live incompatible server fails
+/// with the stop-and-start recovery and is not told to remove the socket.
+#[test]
+fn an_incompatible_remote_probe_is_not_told_to_remove_the_socket() {
+    use phux_client::attach::AttachError;
+
+    let dead = AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+    let dead_check = remote_probe_failure(std::path::Path::new("/tmp/dead.sock"), &dead, None);
+    assert_eq!(dead_check.status, Status::Warn);
+    let dead_hint = dead_check.hint.expect("hint");
+    assert!(dead_hint.contains("stale"), "{dead_hint}");
+    assert!(
+        dead_hint.contains("remove it and start a fresh server"),
+        "{dead_hint}"
+    );
+
+    let err = AttachError::IncompatibleProtocol(
+        "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
+         update the phux server so protocol major.minor match"
+            .to_owned(),
+    );
+    let check = remote_probe_failure(std::path::Path::new("/tmp/old.sock"), &err, Some(4242));
+    assert_eq!(check.status, Status::Fail);
+    let text = format!("{}\n{}", check.detail, check.hint.expect("hint"));
+    assert!(text.contains("kill 4242"), "{text}");
+    assert!(text.contains("pkill -f 'phux server'"), "{text}");
+    assert!(text.contains("`phux server --ensure`"), "{text}");
+    for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+        assert!(!text.contains(forbidden), "{forbidden} in {text}");
+    }
+
+    let other = AttachError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    let other_check = remote_probe_failure(std::path::Path::new("/tmp/denied.sock"), &other, None);
+    assert_eq!(other_check.status, Status::Warn);
+    let other_hint = other_check.hint.expect("hint");
+    assert!(!other_hint.contains("stale"), "{other_hint}");
+    assert!(!other_hint.contains("remove"), "{other_hint}");
+}

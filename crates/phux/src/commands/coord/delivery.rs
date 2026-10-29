@@ -92,7 +92,14 @@ pub(super) fn wait(args: WaitArgs, me: &str, json: bool) -> ExitCode {
     };
     let text = inbox_text(&mail);
     let line = if json {
-        json!({"schema": SCHEMA, "reader": me, "mail": mail, "text": text}).to_string()
+        json!({
+            "schema": SCHEMA,
+            "schema_version": super::SCHEMA_VERSION,
+            "reader": me,
+            "mail": mail,
+            "text": text,
+        })
+        .to_string()
     } else {
         text.unwrap_or_else(|| format!("no mail for {me}"))
     };

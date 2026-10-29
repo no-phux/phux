@@ -50,9 +50,9 @@ dropping the GPUI entity alone leaves that view registered. Sibling views
 and their shared client remain alive.
 
 It builds on the published gpui-fast. Its `patched-gpui` feature adds retained
-glyph sprites, drawable-presented receipts and macOS key repeat. Phux Desktop
-enables it; the contract below distinguishes the product guarantee from the
-unpatched compatibility lane.
+glyph sprites, drawable-presented receipts, macOS key repeat and exact image-source
+sampling. Phux Desktop enables it; the contract below distinguishes the product
+guarantee from the unpatched compatibility lane.
 
 ### Frames, wakes, and input
 
@@ -99,6 +99,35 @@ fn draw(client: &Client, view: ViewId, theme: &Theme<Rgb>) -> Option<DrawList<Rg
 optional theme colours, and the list arrives in your colours. Send input
 through `Client::with_control` the way `phux-gpui`'s `input` module does, and
 resize the terminal from the view that owns its size.
+
+### Inline images
+
+Image capabilities default to empty: text-only and ABI consumers must not
+advertise protocols they cannot paint. A Rust renderer that paints Kitty images
+adds the matching `phux-protocol` dependency and opts in before connecting:
+
+```rust
+options.control.image_protocols = phux_protocol::caps::ImageProtocolSet::with(&[
+    phux_protocol::caps::ImageProtocol::KittyGraphics,
+]);
+```
+
+`phux-gpui` paints the image planes automatically; its embedding example opts in.
+Other renderers consume `GridFrame.images` alongside the text draw list. Each
+placement borrows immutable, shared RGBA pixels through an `Arc<ImageData>`,
+with signed cell-space geometry, pixel-space source/crop rectangles and a signed
+z-order. Apply `sample_source` to texture filtering independently of the visible
+`source` slice, so Unicode placeholder cells do not introduce sampling seams.
+Follow the [painter layering contract](../clients/desktop/native/phux-gpui/PAINTER.md#kitty-graphics).
+Report actual cell pixels through `Client::resize_terminal_with_cell` so native
+image sizes and offsets match the renderer.
+
+Kitty consumers negotiate synthesized Raw/StateSync bootstrap: native GHOSTSNP
+does not include the engine's image/placement registry. Synthesized replay
+includes unplaced payloads and virtual prototypes for later live placements.
+External file/shared-memory media stay disabled. See
+[desktop compatibility limits](./clients.md#desktop). The C/Swift draw-list ABI
+is still text-only; no image fields were added to it.
 
 ## C and Swift
 

@@ -10,7 +10,7 @@ explains itself at the top.
 | Product                                                      | Tag                                          | From                                     |
 | ------------------------------------------------------------ | -------------------------------------------- | ---------------------------------------- |
 | `phux` + `phux-mcp` (macOS arm64, Linux x86_64, Linux arm64) | `vX.Y.Z`                                     | `release.yml` → `build-cli.yml`          |
-| Phux Desktop (macOS arm64, Linux x64 and arm64)              | `desktop-vX.Y.Z`                             | `desktop-release.yml`                    |
+| Phux Desktop (macOS arm64, Linux x64/arm64, Windows x64)     | `desktop-vX.Y.Z`                             | `desktop-release.yml`                    |
 | mobile FFI (xcframework, Android)                            | attached to `vX.Y.Z`                         | `ffi-xcframework.yml`, `ffi-android.yml` |
 | `@phux/pi`, `@phux/opencode`, `@phux/omp` on npm             | `<component>-vX.Y.Z`                         | `agent-integration-release.yml`          |
 | Claude and Grok plugins                                      | `claude-plugin-vX.Y.Z`, `grok-plugin-vX.Y.Z` | same; GitHub release only                |
@@ -19,8 +19,9 @@ explains itself at the top.
 | channel manifests `stable.json`, `next.json`                 | the `channels` release                       | `bun tools/main.ts release-manifest`     |
 
 Linux CLI builds link against glibc 2.35 (built in an `ubuntu:22.04`
-container). The desktop does not inherit that promise. macOS desktop builds
-are ad-hoc signed and not notarized. Only CLI releases are GitHub's
+container). The desktop does not inherit that promise. Stable macOS desktop
+releases require Developer ID signing and Apple notarization; next and local
+builds remain ad-hoc signed. Only CLI releases are GitHub's
 "Latest"; the Homebrew tap renders its formula from Latest on a schedule.
 
 ## Stable
@@ -92,6 +93,85 @@ unpack if it changes.
 The desktop is qualified before upload: `smoke-app.ts` on macOS, and
 `smoke-linux.ts` under Xvfb and lavapipe on Linux, against an isolated
 server built from the same checkout.
+
+Windows builds with MSVC and the pinned GPUI Direct3D/DirectWrite backend.
+Windows is mandatory from Desktop 0.50.0 onward and on next; older stable
+desktop releases retain their original macOS/Linux target set.
+`windows-desktop.yml` packages the executable with the app-local CRT and
+licenses, installs it per user, and requires native-window OCR, real keyboard
+input, clipboard, PTY resize, reconnect and crash/relaunch against the
+same-source WSL coordinator. Diagnostic build artifacts are not qualified
+release artifacts. A failed GUI run blocks checksum signing and publication.
+Hosted D3D/software-adapter evidence is not real-GPU qualification. The
+installer verifies minisign-signed checksums; that is not Authenticode signing
+or a claim of SmartScreen reputation. A native Windows coordinator is not shipped.
+
+For GUI harness iteration without rebuilding MSVC, dispatch **Windows WSL**
+with `desktop-build-run` and `desktop-build-sha` from a retained Windows build.
+Use its logged `PHUX_BUILD_SHA` (a PR merge revision can differ from its head).
+This diagnostic records both product and harness revisions and cannot hand
+assets to publication. The normal same-source Windows Desktop gate is still required.
+
+### macOS desktop signing
+
+Stable macOS releases contain a drag-to-Applications **DMG** and an updater
+**ZIP** of the same stapled `Phux.app`. Both receive SHA-256 sidecars and
+minisign signatures; the channel manifest continues to name the ZIP so
+existing installers and automatic updates keep working. Linux is unchanged.
+The DMG's `Phux.app` bundles the phux CLI and server. It does not replace an
+existing CLI or restart running sessions. Linux desktop archives do not
+include the CLI. macOS 26.0 on Apple silicon is the desktop minimum; the
+standalone CLI's Mach-O floor stays at macOS 11.0. Both the bundle's minimum
+version and each executable's Mach-O deployment floor are checked before
+publication; a newer build host must not raise either one.
+
+The Apple credentials are separate from minisign. Configure these repository
+Actions secrets before marking the desktop release PR ready:
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_DEVELOPER_ID_P12` | Base64 of an exported **Developer ID Application** certificate **and private key** (`.p12`) |
+| `APPLE_DEVELOPER_ID_PASSWORD` | Password protecting that P12 export |
+| `APPLE_NOTARY_KEY_P8` | Base64 of an App Store Connect team API private key (`.p8`) with notarization access |
+| `APPLE_NOTARY_KEY_ID` | Its 10-character key ID |
+| `APPLE_NOTARY_ISSUER_ID` | Its issuer UUID |
+
+An **Apple Distribution** or **Apple Development** certificate is not a
+Developer ID Application certificate and cannot substitute for it. The Apple
+Developer Program **Account Holder** creates the exportable Developer ID
+certificate in [Certificates, Identifiers & Profiles](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)
+and exports it with its private key from Keychain Access. Use an authorized
+team API key from App Store Connect for notarization; an existing mobile
+release key may suffice if it has the required access. Keep the originals
+and export password outside the repo.
+Upload locally with `gh secret set --repo no-phux/phux`, reading values
+from files/stdin rather than putting private material in command arguments
+or chat. Do not commit P12/P8 files or notarization credentials.
+
+`scripts/ci/sign-macos-desktop.sh --check-config` checks required settings
+before an expensive stable build. Missing credentials fail closed: stable
+publication never silently falls back to ad-hoc signing. The script imports
+the P12 into a temporary keychain, signs with hardened runtime and a secure
+timestamp, waits for Apple's `Accepted` result, staples/validates the app,
+and creates the ZIP and DMG. It then signs, notarizes, and staples the DMG.
+Temporary keys and keychain are removed even on failure. No JIT or sandbox
+exceptions are needed for the native GPUI executable.
+
+The workflow checks Gatekeeper acceptance of both the copied app and image,
+mounts the image read-only, and smoke-tests its copied app on an isolated
+same-checkout server. It checksums only the final stapled bytes, uploads and
+downloads them again, and signs all five desktop checksum sidecars (two
+macOS, two Linux, one Windows) before making the draft public. Apple submission receipts
+and runtime evidence are retained as Actions artifacts. A failure leaves the
+release in draft. The `next` channel remains the existing ad-hoc ZIP path.
+
+For local packaging, `just desktop-dmg` creates
+`clients/desktop/dist/Phux.dmg` without installing anything or accessing
+Apple credentials. Remove that task-owned output before rebuilding; the
+packager refuses to overwrite an existing image. This is a development
+artifact, not evidence of notarization. Stable macOS apps and DMGs are
+Developer ID signed, Apple-notarized, and stapled. Local ad-hoc tests cannot
+prove those Apple checks.
 
 ## Release-key custody and rotation
 

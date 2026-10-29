@@ -1,4 +1,4 @@
-//! Keyed supervisory commands (`docs/spec/L1.md` §5.1.1): `KILL_RESOURCE`,
+//! Keyed supervisory commands (`docs/protocol.md`): `KILL_RESOURCE`,
 //! `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and `SIGNAL_TERMINAL` with an
 //! `operation_id`, on the shared dedupe record (ADR-0126).
 //!
@@ -145,7 +145,7 @@ fn conflict() -> CommandResult {
 }
 
 /// The per-id outcome of a `KILL_RESOURCES` that named a satellite id
-/// (`docs/spec/L1.md` §5.2): one entry per requested id, so a batch split
+/// (`docs/protocol.md#commands-events-resources`): one entry per requested id, so a batch split
 /// across hosts never reports one `OK` for parts that failed.
 #[derive(Debug, Default)]
 pub(crate) struct KillResults {

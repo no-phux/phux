@@ -8,6 +8,9 @@
 #             justfiles define
 #   crates    docs/architecture.md names every crates/* directory, and
 #             names none that is gone
+#   citations every `docs/...md` path (and #anchor) that a code comment
+#             under crates/ or clients/ cites exists, and no comment cites
+#             a retired spec page (L1.md, proto.md, consumers/tui.md, ...)
 #
 # The command list comes from docs/reference/cli.md, which a unit test keeps
 # identical to the binary, so this needs no build.
@@ -22,12 +25,13 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/output.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ALL_GATES=(links commands crates)
+ALL_GATES=(links commands crates citations)
 ONLY=""
 
 usage() {
     cat <<'EOF'
-check-docs.sh: dead links, dead anchors, and commands that no longer exist
+check-docs.sh: dead links, dead anchors, commands that no longer exist, and
+code comments that cite missing docs
 
 USAGE:
     bash scripts/check-docs.sh [--help] [--list] [--only=<gate>]
@@ -35,7 +39,7 @@ USAGE:
 OPTIONS:
     --help          show this message and exit
     --list          print the gates and exit
-    --only=<gate>   run one gate (links, commands, crates)
+    --only=<gate>   run one gate (links, commands, crates, citations)
 EOF
 }
 
@@ -294,6 +298,77 @@ gate_crates() {
     while IFS= read -r name; do
         check_named_crate "$page" "$name"
     done <<<"$named"
+}
+
+# Source files under crates/ and clients/ whose comments may cite a doc,
+# relative to $ROOT.
+collect_sources() {
+    if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git -C "$ROOT" ls-files --cached --others --exclude-standard -- crates clients
+    else
+        (cd "$ROOT" && find crates clients -type f 2>/dev/null || true)
+    fi | grep -E '\.(rs|h|c|m|mm|swift|ts|tsx|js|mjs|kt|java|py|sh|toml|zig|go)$' |
+        grep -v -E '(^|/)(node_modules|target|vendor)/' || true
+}
+
+# Prints "<file>\t<line>\t<citation>" for each docs path, and each retired
+# spec page name, in a comment. The comment is the text from the first `//`
+# (not `://`) or `/*`, or a whole line that starts with `*` or `#`. URLs are
+# dropped first, so a permalink into history is not a citation.
+# shellcheck disable=SC2016 # awk program, not shell expansion
+CITATIONS_AWK='
+    {
+        line = $0
+        text = ""
+        if (line ~ /^[[:space:]]*(\*|#)/) {
+            text = line
+        } else {
+            rest = line
+            while (match(rest, /\/\/|\/\*/)) {
+                if (RSTART > 1 && substr(rest, RSTART - 1, 1) == ":") {
+                    rest = substr(rest, RSTART + 2)
+                    continue
+                }
+                text = substr(rest, RSTART)
+                break
+            }
+        }
+        if (text == "") next
+        gsub(/[a-z][a-z0-9+.-]*:\/\/[^ )>`"]*/, "", text)
+        t = text
+        while (match(t, /docs\/[A-Za-z0-9_.\/-]*[A-Za-z0-9_-]\.md(#[A-Za-z0-9_-]+)?/)) {
+            print FILENAME "\t" FNR "\t" substr(t, RSTART, RLENGTH)
+            t = substr(t, RSTART + RLENGTH)
+        }
+        t = text
+        while (match(t, /(^|[^A-Za-z0-9_\/.-])(spec\/)?(L[0-9]|proto|input|workload-auth|appendix-[a-z]+|tui)\.md/)) {
+            hit = substr(t, RSTART, RLENGTH)
+            sub(/^[^A-Za-z]/, "", hit)
+            print FILENAME "\t" FNR "\tretired:" hit
+            t = substr(t, RSTART + RLENGTH)
+        }
+    }
+'
+
+gate_citations() {
+    local file lineno cite path anchor
+    while IFS=$'\t' read -r file lineno cite; do
+        if [[ "$cite" == retired:* ]]; then
+            violate citations "$ROOT/$file" \
+                "line $lineno: ${cite#retired:} is a retired spec page; cite its live page under docs/"
+            continue
+        fi
+        path="${cite%%#*}"
+        anchor=""
+        [[ "$cite" == *'#'* ]] && anchor="${cite#*#}"
+        if ! exists_exact "$ROOT/$path"; then
+            violate citations "$ROOT/$file" "line $lineno: $path does not exist"
+            continue
+        fi
+        if [[ -n "$anchor" ]] && ! has_anchor "$ROOT/$path" "$anchor"; then
+            violate citations "$ROOT/$file" "line $lineno: $path has no heading #$anchor"
+        fi
+    done < <(collect_sources | (cd "$ROOT" && tr '\n' '\0' | xargs -0 awk "$CITATIONS_AWK" /dev/null))
 }
 
 for gate in "${ALL_GATES[@]}"; do

@@ -15,6 +15,7 @@ use phux_client_runtime::release::{self, Build, MANIFEST_CURL_ARGS, Product, Ver
 use serde_json::{Value, json};
 
 mod install;
+mod progress;
 mod runtime;
 
 pub use install::*;
@@ -87,12 +88,26 @@ impl Preferences {
 }
 
 fn config_path() -> PathBuf {
+    config_dir().join("updates.json")
+}
+
+/// The desktop's app-wide configuration directory: `phux-desktop` under
+/// `LOCALAPPDATA` / `APPDATA` on Windows; `XDG_CONFIG_HOME`, else `~/.config`, on Unix.
+pub(crate) fn config_dir() -> PathBuf {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("APPDATA"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join("AppData/Local")
+        });
+    #[cfg(not(windows))]
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
         });
-    base.join("phux-desktop/updates.json")
+    base.join("phux-desktop")
 }
 
 #[cfg(target_os = "macos")]
@@ -101,6 +116,13 @@ const TARGET: &str = "aarch64-apple-darwin";
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 const TARGET: &str = "aarch64-unknown-linux-gnu";
+#[cfg(windows)]
+const TARGET: &str = WINDOWS_TARGET;
+const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
+#[cfg(windows)]
+const CURL: &str = "curl.exe";
+#[cfg(not(windows))]
+const CURL: &str = "/usr/bin/curl";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const STAGE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -134,9 +156,14 @@ pub fn own_protocol() -> String {
 /// Only the installed, standard bundle can replace itself; bare development
 /// executables must never turn a test into an installation.
 pub fn app_bundle(executable: &Path) -> Option<PathBuf> {
-    if cfg!(target_os = "linux") {
-        return linux_bundle(executable);
+    match std::env::consts::OS {
+        "linux" => linux_bundle(executable),
+        "windows" => windows_bundle(executable),
+        _ => macos_bundle(executable),
     }
+}
+
+fn macos_bundle(executable: &Path) -> Option<PathBuf> {
     if !executable.ends_with("Phux.app/Contents/MacOS/phux-desktop") {
         return None;
     }
@@ -153,11 +180,34 @@ fn linux_bundle(executable: &Path) -> Option<PathBuf> {
 }
 
 fn linux_release(bundle: &Path) -> anyhow::Result<Release> {
-    let value: Value = serde_json::from_slice(&std::fs::read(
-        bundle.join("share/phux-desktop/release.json"),
-    )?)?;
+    portable_release(&bundle.join("share/phux-desktop/release.json"), None)
+}
+
+fn windows_bundle(executable: &Path) -> Option<PathBuf> {
+    let standard = executable.ends_with("phux-desktop/phux-desktop.exe")
+        || executable.ends_with("current/phux-desktop.exe");
+    if !standard {
+        return None;
+    }
+    let bundle = executable.parent()?;
+    windows_release(bundle).ok()?;
+    Some(bundle.to_path_buf())
+}
+
+fn windows_release(bundle: &Path) -> anyhow::Result<Release> {
+    portable_release(
+        &bundle.join("share/phux-desktop/release.json"),
+        Some(WINDOWS_TARGET),
+    )
+}
+
+fn portable_release(metadata: &Path, target: Option<&str>) -> anyhow::Result<Release> {
+    let value: Value = serde_json::from_slice(&std::fs::read(metadata)?)?;
     if value["identifier"] != "dev.phux.desktop" {
         bail!("Not a Phux Desktop bundle");
+    }
+    if target.is_some_and(|target| value["target"] != target) {
+        bail!("The Desktop bundle is not built for this target");
     }
     let version = value["version"]
         .as_str()
@@ -183,6 +233,9 @@ fn linux_release(bundle: &Path) -> anyhow::Result<Release> {
 pub fn installed_release(bundle: &Path) -> anyhow::Result<Release> {
     if cfg!(target_os = "linux") {
         return linux_release(bundle);
+    }
+    if cfg!(windows) {
+        return windows_release(bundle);
     }
     let read = |key: &str| -> anyhow::Result<String> {
         output(
@@ -211,9 +264,24 @@ fn not_published(channel: Channel) -> anyhow::Error {
     )
 }
 
+/// Native updater utilities must not open console windows over the desktop UI.
+fn native_command(program: &str) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new(program);
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(program)
+    }
+}
+
 pub fn latest(channel: Channel) -> anyhow::Result<Release> {
     let body = output(
-        Command::new("/usr/bin/curl")
+        native_command(CURL)
             .args(MANIFEST_CURL_ARGS)
             .arg(release::manifest_url(channel)),
     )
@@ -264,18 +332,53 @@ fn decode_output(result: std::process::Output) -> anyhow::Result<String> {
     String::from_utf8(result.stdout).context("Invalid updater output")
 }
 
-/// Run `command` in a private process group, feeding `input` on stdin, and kill
-/// the whole group (its downloaders included) when `timeout` elapses, so no
-/// update control stays busy forever.
-fn run_bounded(
+/// Run `command`, feeding `input` on stdin, and kill its private Unix process
+/// group or recorded Windows process tree on timeout. Never cancel by name.
+pub(crate) fn run_bounded(
     command: &mut Command,
     input: Option<&'static [u8]>,
     timeout: Duration,
     timed_out: &str,
 ) -> anyhow::Result<String> {
-    use std::os::unix::process::CommandExt;
+    run_bounded_with_progress(command, input, timeout, timed_out, None, None, false)
+}
+
+/// Like [`run_bounded`], but the child calls `setsid` and captured stdout stops
+/// at `max_stdout`. A timeout still kills that session's process group.
+pub(crate) fn run_bounded_session(
+    command: &mut Command,
+    timeout: Duration,
+    timed_out: &str,
+    max_stdout: usize,
+) -> anyhow::Result<String> {
+    run_bounded_with_progress(
+        command,
+        None,
+        timeout,
+        timed_out,
+        None,
+        Some(max_stdout),
+        true,
+    )
+}
+
+fn run_bounded_with_progress(
+    command: &mut Command,
+    input: Option<&'static [u8]>,
+    timeout: Duration,
+    timed_out: &str,
+    progress: Option<std::sync::mpsc::Sender<StageProgress>>,
+    max_stdout: Option<usize>,
+    new_session: bool,
+) -> anyhow::Result<String> {
+    #[cfg(unix)]
+    if new_session {
+        detach_session(command);
+    } else {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     command
-        .process_group(0)
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
@@ -292,22 +395,116 @@ fn run_bounded(
             let _ = stdin.write_all(bytes);
         });
     }
+    // Drain stderr while the command runs: curl redraws its meter with CR,
+    // not newline, and progress must not wait for the installer to exit.
+    let stderr = child.stderr.take().context("No updater stderr")?;
+    let stderr = std::thread::spawn(move || progress::read_stderr(stderr, progress));
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        let result = collect_output(&mut child, stderr, max_stdout);
+        // Retain the Windows process handle through cancellation or receipt.
+        // An exited child's PID must not be reused before taskkill sees it.
+        let _ = tx.send((result, child));
     });
     match rx.recv_timeout(timeout) {
-        Ok(result) => decode_output(result?),
+        Ok((result, _child)) => decode_output(result?),
         Err(_) => {
-            let _ = Command::new("/bin/kill")
-                .args(["-KILL", "--", &format!("-{pid}")])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            cancel_process_tree(pid);
             let _ = rx.recv_timeout(Duration::from_secs(2));
             bail!("{timed_out}")
         }
     }
+}
+
+/// `setsid` in the forked child, before exec, so the probe shell is a session
+/// and process-group leader. Do not also `setpgid`: a session leader cannot
+/// change its process group, and spawn would fail.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn detach_session(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs only in the forked child, before any non-safe
+    // allocation and before exec. `setsid` is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            nix::unistd::setsid()
+                .map(|_| ())
+                .map_err(std::io::Error::from)
+        });
+    }
+}
+
+#[cfg(unix)]
+fn cancel_process_tree(pid: u32) {
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(windows)]
+fn cancel_process_tree(pid: u32) {
+    // The PID belongs to the child we spawned, never a process-name/port match.
+    // This cancels native descendants only, not Linux commands behind wsl.exe.
+    // Windows runtime operations must therefore remain read-only.
+    // Bound taskkill too: cancellation must not leave the Updates UI waiting.
+    let Ok(mut killer) = native_command("taskkill.exe")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while matches!(killer.try_wait(), Ok(None)) {
+        if std::time::Instant::now() >= deadline {
+            let _ = killer.kill();
+            let _ = killer.wait();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn collect_output(
+    child: &mut std::process::Child,
+    stderr: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    max_stdout: Option<usize>,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    let mut stdout = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        if let Some(max) = max_stdout {
+            // Keep the cap, but keep reading so a noisy shell does not block
+            // on a full pipe or die from SIGPIPE before it exits.
+            let mut buf = [0u8; 8192];
+            loop {
+                match pipe.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        if stdout.len() < max {
+                            let room = max - stdout.len();
+                            stdout.extend_from_slice(&buf[..read.min(room)]);
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(err) => return Err(err),
+                }
+            }
+        } else {
+            pipe.read_to_end(&mut stdout)?;
+        }
+    }
+    let stderr = stderr
+        .join()
+        .map_err(|_| std::io::Error::other("Updater stderr reader panicked"))??;
+    Ok(std::process::Output {
+        status: child.wait()?,
+        stdout,
+        stderr,
+    })
 }
 
 fn failure_message(bytes: &[u8]) -> String {

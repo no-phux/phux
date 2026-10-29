@@ -391,15 +391,12 @@ pub fn session_layout_paths(socket: &str, key: phux_protocol::ids::SessionKey) -
 }
 
 fn paths_in(scope: PathBuf) -> LayoutPaths {
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".local/state")
-        })
-        .join("phux-desktop");
+    let state = crate::platform::state_dir();
+    #[cfg(windows)]
+    let state = state.join("wsl").join(target_hash(
+        &std::env::var("PHUX_WSL_DISTRO").unwrap_or_default(),
+        "",
+    ));
     let directory = state.join(scope);
     LayoutPaths {
         layout: directory.join("layout.json"),
@@ -520,7 +517,13 @@ impl RecentProjects {
             StoreValue::Present(value) => serde_json::from_value::<Vec<PathBuf>>(value)
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|path| path.is_absolute())
+                .filter(|path| {
+                    path.is_absolute()
+                        || (cfg!(windows)
+                            && path
+                                .to_str()
+                                .is_some_and(crate::platform::coordinator_absolute))
+                })
                 .take(8)
                 .collect(),
             StoreValue::Missing | StoreValue::Damaged => Vec::new(),
@@ -611,293 +614,8 @@ pub fn quick_display(main: Option<&DisplayPrefs>, quick: Option<&SavedLayout>) -
     display
 }
 
-fn sha256(message: &[u8]) -> [u8; 32] {
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-        0xc67178f2,
-    ];
-    let mut state = [
-        0x6a09e667_u32,
-        0xbb67ae85,
-        0x3c6ef372,
-        0xa54ff53a,
-        0x510e527f,
-        0x9b05688c,
-        0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    let bit_len = (message.len() as u64).saturating_mul(8);
-    let mut data = message.to_vec();
-    data.push(0x80);
-    while (data.len() % 64) != 56 {
-        data.push(0);
-    }
-    data.extend(bit_len.to_be_bytes());
-    for chunk in data.chunks(64) {
-        let mut words = [0_u32; 64];
-        for (index, word) in chunk.chunks(4).enumerate() {
-            words[index] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for index in 16..64 {
-            let small0 = words[index - 15].rotate_right(7)
-                ^ words[index - 15].rotate_right(18)
-                ^ (words[index - 15] >> 3);
-            let small1 = words[index - 2].rotate_right(17)
-                ^ words[index - 2].rotate_right(19)
-                ^ (words[index - 2] >> 10);
-            words[index] = words[index - 16]
-                .wrapping_add(small0)
-                .wrapping_add(words[index - 7])
-                .wrapping_add(small1);
-        }
-        let mut working = state;
-        for index in 0..64 {
-            let big1 = working[4].rotate_right(6)
-                ^ working[4].rotate_right(11)
-                ^ working[4].rotate_right(25);
-            let choice = (working[4] & working[5]) ^ (!working[4] & working[6]);
-            let temp1 = working[7]
-                .wrapping_add(big1)
-                .wrapping_add(choice)
-                .wrapping_add(K[index])
-                .wrapping_add(words[index]);
-            let big0 = working[0].rotate_right(2)
-                ^ working[0].rotate_right(13)
-                ^ working[0].rotate_right(22);
-            let majority =
-                (working[0] & working[1]) ^ (working[0] & working[2]) ^ (working[1] & working[2]);
-            let temp2 = big0.wrapping_add(majority);
-            working[7] = working[6];
-            working[6] = working[5];
-            working[5] = working[4];
-            working[4] = working[3].wrapping_add(temp1);
-            working[3] = working[2];
-            working[2] = working[1];
-            working[1] = working[0];
-            working[0] = temp1.wrapping_add(temp2);
-        }
-        for (slot, word) in state.iter_mut().zip(working) {
-            *slot = slot.wrapping_add(word);
-        }
-    }
-    let mut out = [0_u8; 32];
-    for (index, word) in state.iter().enumerate() {
-        out[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    out
-}
+mod digest;
+use digest::sha256;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn key_scoped_paths_are_rename_stable_and_separate_from_name_scoped_paths() {
-        let key = phux_protocol::ids::SessionKey::new([1; 16]).unwrap();
-        let keyed = session_layout_paths("private-server.sock", key);
-        assert_eq!(keyed, session_layout_paths("private-server.sock", key));
-        assert_ne!(
-            keyed.layout,
-            layout_paths("private-server.sock", "A").layout
-        );
-        assert_ne!(
-            keyed.layout,
-            layout_paths("private-server.sock", "renamed-A").layout
-        );
-        assert_ne!(
-            keyed.layout,
-            session_layout_paths("another-server.sock", key).layout
-        );
-    }
-
-    #[test]
-    fn key_store_imports_without_overwriting_old_or_conflicting_layouts() {
-        let scratch = Scratch::new("layout-key");
-        let old = scratch.join("name.json");
-        let keyed = scratch.join("key.json");
-        let old_value = serde_json::json!({"version": 2, "serverId": "old", "tabs": []});
-        fs::write(&old, old_value.to_string()).unwrap();
-        let store = FileLayoutStore::new(&keyed, Some(old.clone()));
-        assert_eq!(store.read(), StoreValue::Present(old_value.clone()));
-        assert!(
-            !keyed.exists(),
-            "reading the fallback does not migrate destructively"
-        );
-        for bytes in ["damaged", r#"{"version":99,"serverId":"other","tabs":[]}"#] {
-            fs::write(&keyed, bytes).unwrap();
-            assert!(load_layout(&store.read()).blocked);
-            assert_eq!(fs::read_to_string(&keyed).unwrap(), bytes);
-            assert_eq!(fs::read_to_string(&old).unwrap(), old_value.to_string());
-        }
-        let conflicting = serde_json::json!({"version": 2, "serverId": "other", "tabs": []});
-        fs::write(&keyed, conflicting.to_string()).unwrap();
-        assert_eq!(store.read(), StoreValue::Present(conflicting.clone()));
-        assert_eq!(fs::read_to_string(&keyed).unwrap(), conflicting.to_string());
-        assert_eq!(fs::read_to_string(&old).unwrap(), old_value.to_string());
-    }
-
-    #[test]
-    fn sha256_matches_the_empty_and_abc_vectors() {
-        assert_eq!(
-            hex(sha256(b"")),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        assert_eq!(
-            hex(sha256(b"abc")),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
-
-    fn hex(bytes: [u8; 32]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
-
-    #[test]
-    fn version_one_migrates_into_even_row_splits_and_future_versions_are_blocked() {
-        let parsed = parse_layout(&serde_json::json!({
-            "version": 1,
-            "serverId": "s",
-            "tabs": [{ "id": "t", "terminals": ["a", "b", "c"], "focusedTerminal": "b" }],
-            "display": { "fontSize": 15, "optionAsAlt": true }
-        }))
-        .expect("v1");
-        assert_eq!(parsed.version, 2);
-        assert_eq!(parsed.display.font_size, 15.0);
-        assert!(parsed.display.option_as_alt);
-        let SavedNode::Split { ratio, second, .. } = &parsed.tabs[0].root else {
-            panic!("row");
-        };
-        assert!((f64::from(*ratio) - 1.0 / 3.0).abs() < 1e-5);
-        let SavedNode::Split { ratio, .. } = second.as_ref() else {
-            panic!("inner");
-        };
-        assert!((ratio - 0.5).abs() < 1e-5);
-        assert!(
-            parse_layout(&serde_json::json!({ "version": 9, "serverId": "s", "tabs": [] }))
-                .is_none()
-        );
-        let damaged =
-            StoreValue::Present(serde_json::json!({ "version": 99, "serverId": "s", "tabs": [] }));
-        assert!(load_layout(&damaged).blocked);
-        assert!(!load_layout(&StoreValue::Missing).blocked);
-    }
-
-    #[test]
-    fn sanitize_bounds_unknown_themes() {
-        use crate::settings::{DisplayPrefs, SIDEBAR_MAX, sanitize_display};
-        let clean = sanitize_display(&DisplayPrefs {
-            font_size: 400.0,
-            line_height: f64::NAN,
-            sidebar_width: 9000.0,
-            theme_id: "neon".into(),
-            font_family: "   ".into(),
-            terminal_opacity: 0.1,
-            ..DisplayPrefs::default()
-        });
-        assert_eq!(clean.font_size, 28.0);
-        assert_eq!(clean.line_height, DisplayPrefs::default().line_height);
-        assert_eq!(clean.sidebar_width, SIDEBAR_MAX);
-        assert_eq!(clean.theme_id, DisplayPrefs::default().theme_id);
-        assert_eq!(clean.font_family, "Paper Mono");
-        assert_eq!(clean.terminal_opacity, 0.55);
-    }
-    #[test]
-    fn recent_folders_survive_restart_reorder_and_forget_without_exceeding_limit() {
-        let scratch = Scratch::new("recent");
-        let store = FileLayoutStore::new(scratch.join("projects.json"), None);
-        let mut history = RecentProjects::from_store(store.clone());
-        for index in 0..10 {
-            history
-                .record(PathBuf::from(format!("/checkouts/{index}")))
-                .expect("save");
-        }
-        assert_eq!(history.entries().len(), 8);
-        assert_eq!(history.entries()[0], Path::new("/checkouts/9"));
-        assert!(!history.entries().contains(&PathBuf::from("/checkouts/0")));
-
-        history
-            .record(PathBuf::from("/checkouts/4"))
-            .expect("reorder");
-        assert!(history.flush().is_empty());
-        let mut restarted = RecentProjects::from_store(store.clone());
-        assert_eq!(restarted.entries()[0], Path::new("/checkouts/4"));
-        assert_eq!(restarted.entries().len(), 8);
-        restarted.forget(Path::new("/checkouts/4")).expect("forget");
-        assert!(restarted.flush().is_empty());
-        assert!(
-            !RecentProjects::from_store(store)
-                .entries()
-                .contains(&PathBuf::from("/checkouts/4"))
-        );
-    }
-
-    #[test]
-    fn failed_rename_removes_the_staging_file_and_keeps_the_destination() {
-        let scratch = Scratch::new("layout-rename");
-        let path = scratch.join("layout.json");
-        fs::create_dir(&path).unwrap();
-        let marker = path.join("marker");
-        fs::write(&marker, b"kept").unwrap();
-        let store = FileLayoutStore::new(&path, None);
-        assert!(store.write(&serde_json::json!(1)).is_err());
-        assert_eq!(fs::read(&marker).unwrap(), b"kept");
-        assert!(
-            !scratch.has_staging(),
-            "a failed replace must not leave a staging file"
-        );
-    }
-
-    /// A unique temporary directory, removed (even when read-only) on drop.
-    pub(super) struct Scratch {
-        pub(super) path: PathBuf,
-    }
-
-    impl Scratch {
-        pub(super) fn new(label: &str) -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "phux-desktop-{label}-{}-{nonce}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self { path }
-        }
-
-        pub(super) fn join(&self, name: &str) -> PathBuf {
-            self.path.join(name)
-        }
-
-        pub(super) fn has_staging(&self) -> bool {
-            fs::read_dir(&self.path).unwrap().any(|entry| {
-                entry
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".next")
-            })
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = fs::metadata(&self.path) {
-                let mut perms = metadata.permissions();
-                perms.set_mode(perms.mode() | 0o200);
-                let _ = fs::set_permissions(&self.path, perms);
-            }
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-}
+mod tests;

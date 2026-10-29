@@ -5,6 +5,8 @@ target/
 target-*/
 # Packaging output (pack-release.sh, desktop-package).
 dist/
+# The OpenCode plugin's desktop bundle ships checked in, like its index.js.
+!integrations/opencode-v2/dist/
 # Local checkout of the no-phux/skills publish mirror.
 .skills-mirror/
 result

@@ -1,5 +1,5 @@
 //! The end-to-end TLS session a consumer runs inside a relayed stream
-//! (ADR-0154 item 5, `docs/spec/workload-auth.md` §3).
+//! (ADR-0154 item 5, `docs/remote.md#who-can-connect`).
 //!
 //! A relay terminates the consumer's outer QUIC TLS to route it, so neither
 //! the consumer's certificate nor its bytes may ride that leg. Every relayed

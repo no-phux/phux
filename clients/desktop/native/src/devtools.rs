@@ -1,5 +1,10 @@
-//! Dev telemetry: what `PHUX_DEV=1` (or `--dev`) turns on in the desktop,
-//! reachable by a person and by an agent alike.
+//! Dev telemetry: what Developer mode turns on in the desktop, reachable by
+//! a person and by an agent alike.
+//!
+//! Developer mode is on when **Settings > Developer > Developer mode** is
+//! saved on ([`prefs`]), or for one run with `PHUX_DEV=1` or `--dev`. The
+//! setting applies live: [`set_dev_mode`] turns heap accounting, the HUD and
+//! the socket on or off in every window without a restart.
 //!
 //! - **Frames.** [`frames`] keeps the last ten seconds of desk renders, for
 //!   FPS, build percentiles, jank and the HUD sparkline. Always on.
@@ -17,12 +22,17 @@
 //!   `phux perf --desktop` looks.
 
 pub mod frames;
+pub mod prefs;
 pub mod server;
+#[cfg(unix)]
+pub mod socket;
+#[cfg(windows)]
+#[path = "devtools/socket_windows.rs"]
 pub mod socket;
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use gpui::App;
@@ -34,18 +44,43 @@ pub use server::{ServerCli, ServerPoller};
 /// Process-wide devtools state, set once by [`init`].
 #[derive(Debug)]
 pub struct DevTools {
-    /// Dev mode is on.
-    pub dev: bool,
+    /// `PHUX_DEV` or `--dev` holds Developer mode on for this run, whatever
+    /// the saved setting says.
+    pub forced: bool,
     /// How to reach the server's CLI; `None` when no CLI was found.
     pub cli: Option<ServerCli>,
     /// The server's report for the HUD and the monitor.
     pub poller: ServerPoller,
-    /// Where the dev socket listens, once it does.
-    pub socket: OnceLock<PathBuf>,
+    socket: Mutex<SocketState>,
     ui: OnceLock<async_channel::Sender<UiRequest>>,
 }
 
+impl DevTools {
+    fn new(forced: bool, cli: Option<ServerCli>) -> Self {
+        Self {
+            forced,
+            cli,
+            poller: ServerPoller::default(),
+            socket: Mutex::new(SocketState::Off),
+            ui: OnceLock::new(),
+        }
+    }
+}
+
+/// Where the dev socket stands.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SocketState {
+    /// Developer mode is off, or the GPUI side has not started yet.
+    #[default]
+    Off,
+    /// Serving at this path.
+    Listening(PathBuf),
+    /// It could not start: the reason, for the Developer page.
+    Failed(String),
+}
+
 static DEVTOOLS: OnceLock<DevTools> = OnceLock::new();
+static DEV_MODE: AtomicBool = AtomicBool::new(false);
 static HUD_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 /// A request the dev socket thread makes of the GPUI thread.
@@ -61,44 +96,126 @@ pub fn requested(flag: bool) -> bool {
     flag || phux_perf::dev::requested()
 }
 
+/// Developer mode as it applies: forced by the launch, or saved on.
+#[must_use]
+pub fn effective(forced: bool, saved: bool) -> bool {
+    forced || saved
+}
+
 /// Record the mode and the server CLI. Call once, before the event loop.
-/// In dev mode this also turns heap accounting on and shows the HUD.
-pub fn init(dev: bool, cli: Option<ServerCli>) {
-    if dev {
-        phux_perf::alloc::enable();
-        HUD_VISIBLE.store(true, Relaxed);
-        log::info!(
-            "dev mode on: heap accounting {}, HUD, dev socket",
-            if phux_perf::alloc::installed() {
-                "installed"
-            } else {
-                "not installed"
-            }
-        );
+/// `forced` is [`requested`]; `saved` is the Developer mode setting. In
+/// Developer mode this also turns heap accounting on and shows the HUD.
+pub fn init(forced: bool, saved: bool, cli: Option<ServerCli>) {
+    let _ = DEVTOOLS.set(DevTools::new(forced, cli));
+    if !effective(forced, saved) {
+        return;
     }
-    let _ = DEVTOOLS.set(DevTools {
-        dev,
-        cli,
-        poller: ServerPoller::default(),
-        socket: OnceLock::new(),
-        ui: OnceLock::new(),
-    });
+    DEV_MODE.store(true, Relaxed);
+    phux_perf::alloc::enable();
+    HUD_VISIBLE.store(true, Relaxed);
+    log::info!(
+        "developer mode on ({}): heap accounting {}, HUD, dev socket",
+        if forced {
+            "PHUX_DEV or --dev"
+        } else {
+            "setting"
+        },
+        if phux_perf::alloc::installed() {
+            "installed"
+        } else {
+            "not installed"
+        }
+    );
 }
 
 /// The state [`init`] recorded, or an inert default in tests and fixtures.
 #[must_use]
 pub fn get() -> &'static DevTools {
-    DEVTOOLS.get_or_init(|| DevTools {
-        dev: false,
-        cli: None,
-        poller: ServerPoller::default(),
-        socket: OnceLock::new(),
-        ui: OnceLock::new(),
-    })
+    DEVTOOLS.get_or_init(|| DevTools::new(false, None))
 }
 
-/// Start the GPUI side: the UI bridge, the HUD pacer, and in dev mode the
-/// socket. Call once, inside `Application::run`.
+/// Is Developer mode on now?
+#[must_use]
+pub fn dev_mode() -> bool {
+    DEV_MODE.load(Relaxed)
+}
+
+/// Save Developer mode and apply it to this run: heap accounting, the HUD
+/// and the dev socket follow it in every window. `PHUX_DEV` or `--dev` keeps
+/// it on for this run whatever is saved.
+///
+/// # Errors
+///
+/// The setting could not be saved. It still applies to this run.
+pub fn set_dev_mode(saved: bool, cx: &mut App) -> anyhow::Result<()> {
+    let result = prefs::save(saved);
+    apply_dev_mode(effective(get().forced, saved));
+    refresh_windows(cx);
+    result
+}
+
+fn apply_dev_mode(on: bool) {
+    if DEV_MODE.swap(on, Relaxed) == on {
+        return;
+    }
+    if on {
+        phux_perf::alloc::enable();
+        start_socket();
+    } else {
+        phux_perf::alloc::disable();
+        stop_socket();
+    }
+    set_hud(on);
+    log::info!("developer mode {}", if on { "on" } else { "off" });
+}
+
+/// Where the dev socket stands now.
+#[must_use]
+pub fn socket_state() -> SocketState {
+    socket_slot().clone()
+}
+
+/// Where the dev socket listens, while it does.
+#[must_use]
+pub fn socket_path() -> Option<PathBuf> {
+    match socket_state() {
+        SocketState::Listening(path) => Some(path),
+        SocketState::Off | SocketState::Failed(_) => None,
+    }
+}
+
+fn socket_slot() -> MutexGuard<'static, SocketState> {
+    get().socket.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn start_socket() {
+    let mut slot = socket_slot();
+    if matches!(*slot, SocketState::Listening(_)) {
+        return;
+    }
+    let server = get().cli.as_ref().map(ServerCli::socket);
+    *slot = match socket::path_for(server).and_then(|path| socket::serve(&path)) {
+        Ok(path) => {
+            log::info!("dev socket listening at {}", path.display());
+            SocketState::Listening(path)
+        }
+        Err(error) => {
+            log::warn!("dev socket did not start: {error:#}");
+            SocketState::Failed(format!("{error:#}"))
+        }
+    };
+}
+
+fn stop_socket() {
+    let mut slot = socket_slot();
+    if let SocketState::Listening(path) = std::mem::take(&mut *slot) {
+        socket::stop(&path);
+        log::info!("dev socket closed at {}", path.display());
+    }
+}
+
+/// Start the GPUI side: the UI bridge, the HUD pacer, and in Developer mode
+/// the socket. Call once, inside `Application::run`.
 pub fn install(cx: &mut App) {
     let (tx, rx) = async_channel::unbounded();
     let devtools = get();
@@ -113,16 +230,8 @@ pub fn install(cx: &mut App) {
     })
     .detach();
     ensure_hud_pacer(cx);
-    if devtools.dev {
-        match socket::path_for(devtools.cli.as_ref().map(ServerCli::socket))
-            .and_then(|path| socket::serve(&path))
-        {
-            Ok(path) => {
-                log::info!("dev socket listening at {}", path.display());
-                let _ = devtools.socket.set(path);
-            }
-            Err(error) => log::warn!("dev socket did not start: {error:#}"),
-        }
+    if dev_mode() {
+        start_socket();
     }
 }
 
@@ -156,7 +265,7 @@ fn ensure_hud_pacer(cx: &mut App) {
 /// Remove the dev socket on a clean exit; a killed desktop's socket is
 /// pruned by the next `phux perf --desktop` that finds it dead.
 pub fn shutdown() {
-    if let Some(path) = get().socket.get() {
+    if let SocketState::Listening(path) = &*socket_slot() {
         let _ = std::fs::remove_file(path);
     }
 }
@@ -175,7 +284,7 @@ pub fn set_hud(visible: bool) {
     }
 }
 
-/// Toggle only this desktop's allocation counters, not dev mode, socket
+/// Toggle only this desktop's allocation counters, not Developer mode, socket
 /// publication or the server. Counts begin now; this is intentionally unsaved.
 pub fn set_allocation_counting(enabled: bool, cx: &mut App) {
     if enabled {
@@ -213,7 +322,6 @@ pub struct Snapshot {
 /// Take a [`Snapshot`] now.
 #[must_use]
 pub fn snapshot() -> Snapshot {
-    let devtools = get();
     // `diag::report` starts from the kernel's report and keeps its role;
     // to a reader of the dev socket this whole process is the desktop.
     let mut report = crate::diag::report();
@@ -222,8 +330,8 @@ pub fn snapshot() -> Snapshot {
         report,
         frames: frames::last_second(),
         hud: hud_visible(),
-        dev: devtools.dev,
-        socket: devtools.socket.get().cloned(),
+        dev: dev_mode(),
+        socket: socket_path(),
         physical_footprint_bytes: ProcessStats::physical_footprint_bytes(),
         native_heap: phux_perf::alloc::native::stats(),
     }
@@ -415,7 +523,7 @@ fn sample_counters() {
 /// `path` without the home directory, for a status line.
 #[must_use]
 pub fn display_path(path: &Path) -> String {
-    std::env::var_os("HOME")
+    crate::platform::home_dir()
         .and_then(|home| {
             path.strip_prefix(home)
                 .ok()

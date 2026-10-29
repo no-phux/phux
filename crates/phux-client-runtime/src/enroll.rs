@@ -1,6 +1,6 @@
 //! Device enrollment for clients without ssh.
 //!
-//! ADR-0154, `docs/spec/workload-auth.md` §8.2: a key the platform keystore
+//! ADR-0154, `docs/remote.md#pairing-with-a-link`: a key the platform keystore
 //! holds, a CSR it signs, the enrollment ALPN exchange, and the identity every
 //! later dial presents.
 //!
@@ -64,7 +64,7 @@ pub fn held_identity(
 
 /// Enroll the device key with `ticket_hex` over `target`'s QUIC endpoint,
 /// trusting the server as a dial to `target` would, and check the reply
-/// before returning it (`workload-auth.md` §8.1 step 3).
+/// before returning it (`docs/remote.md#adding-a-machine`).
 ///
 /// # Errors
 ///

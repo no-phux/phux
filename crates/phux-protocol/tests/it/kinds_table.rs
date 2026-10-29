@@ -15,10 +15,144 @@
 use std::collections::BTreeSet;
 
 use bytes::BytesMut;
-use phux_protocol::ids::ResourceId;
+use phux_protocol::caps::{ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet};
+use phux_protocol::ids::{ResourceId, ResourceKind};
 use phux_protocol::kinds::{self, COMMAND_RULES, Carrier, Classification, FRAME_RULES, Rule};
 use phux_protocol::wire::error::DecodeError;
 use phux_protocol::wire::frame::{Command, FrameKind};
+
+#[test]
+fn host_methods_are_not_resource_facets_but_checkout_is() {
+    for name in [
+        "GET_FILE",
+        "SERVICE_HTTP_OPEN",
+        "SERVICE_HTTP_READ",
+        "SERVICE_HTTP_CLOSE",
+    ] {
+        let method = kinds::SERVER_METHODS
+            .iter()
+            .find(|method| method.name == name)
+            .expect("host operation is a server method");
+        assert!(method.rules.iter().all(|rule| matches!(
+            rule.subject,
+            kinds::Subject::Global {
+                owner_uds_only: false
+            }
+        )));
+        assert!(
+            !kinds::SUBSTRATE_METHODS
+                .iter()
+                .any(|method| method.name == name)
+        );
+        assert!(
+            kinds::KINDS
+                .iter()
+                .all(|kind| kind.methods.iter().all(|method| method.name != name))
+        );
+    }
+    let terminal = kinds::kind_spec(ResourceKind::Terminal).expect("Terminal");
+    let checkout = terminal
+        .methods
+        .iter()
+        .find(|method| method.name == "CHECKOUT")
+        .expect("CHECKOUT still names a Terminal");
+    assert!(
+        checkout
+            .rules
+            .iter()
+            .all(|rule| rule.subject == kinds::Subject::NamedTerminal)
+    );
+    assert!(
+        !kinds::SERVER_METHODS
+            .iter()
+            .any(|method| method.name == "CHECKOUT")
+    );
+}
+
+#[test]
+fn path_query_catalog_requires_its_extended_feature() {
+    let method = kinds::method_named("PATH_QUERY").expect("PATH_QUERY");
+    assert_eq!(
+        method.gate,
+        Some(kinds::FeatureGate::FeaturesExt {
+            mask: ServerFeatureExt::PathQuery.mask(),
+            wire_name: ServerFeatureExt::PathQuery.wire_name(),
+        })
+    );
+    assert!(!method.advertised(
+        ServerFeatureSet::with(ServerFeature::ALL),
+        ServerFeatureExtSet::new()
+    ));
+    assert!(!method.advertised(
+        ServerFeatureSet::new(),
+        ServerFeatureExtSet::with(&[ServerFeatureExt::Checkout])
+    ));
+    assert!(method.advertised(
+        ServerFeatureSet::new(),
+        ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery])
+    ));
+}
+
+#[test]
+fn shared_advertised_predicate_matches_typed_feature_sets() {
+    for &feature in ServerFeature::ALL {
+        let gate = kinds::FeatureGate::Features(feature);
+        for &advertised in ServerFeature::ALL {
+            let features = ServerFeatureSet::with(&[advertised]);
+            assert_eq!(
+                gate.advertised(features, ServerFeatureExtSet::with(ServerFeatureExt::ALL)),
+                features.contains(feature)
+            );
+        }
+    }
+    for &feature in ServerFeatureExt::ALL {
+        let gate = kinds::FeatureGate::FeaturesExt {
+            mask: feature.mask(),
+            wire_name: feature.wire_name(),
+        };
+        for &advertised in ServerFeatureExt::ALL {
+            let features_ext = ServerFeatureExtSet::with(&[advertised]);
+            assert_eq!(
+                gate.advertised(ServerFeatureSet::with(ServerFeature::ALL), features_ext),
+                features_ext.contains(feature)
+            );
+        }
+    }
+}
+
+#[test]
+fn extended_masks_require_all_bits_and_reject_zero_and_unknown_bits() {
+    let empty = ServerFeatureSet::new();
+    let path = ServerFeatureExt::PathQuery.mask();
+    let checkout = ServerFeatureExt::Checkout.mask();
+    for mask in [
+        0,
+        !ServerFeatureExtSet::with(ServerFeatureExt::ALL).as_wire(),
+        path | checkout,
+    ] {
+        let gate = kinds::FeatureGate::FeaturesExt {
+            mask,
+            wire_name: "SYNTHETIC",
+        };
+        assert!(!gate.advertised(
+            empty,
+            ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery])
+        ));
+    }
+    let combined = kinds::FeatureGate::FeaturesExt {
+        mask: path | checkout,
+        wire_name: "SYNTHETIC",
+    };
+    assert!(combined.advertised(
+        empty,
+        ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery, ServerFeatureExt::Checkout])
+    ));
+    assert!(
+        kinds::method_named("GET_SCREEN")
+            .expect("GET_SCREEN")
+            .advertised(empty, ServerFeatureExtSet::new())
+    );
+}
 
 /// Read the allocated event tags from the codec declarations, not a second
 /// hand-maintained table. This also covers `AgentSession`'s native result event.
@@ -43,7 +177,7 @@ fn every_agent_event_tag_is_catalogued_once() {
     let manifest =
         std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR");
     let source =
-        std::fs::read_to_string(std::path::PathBuf::from(manifest).join("src/wire/frame/mod.rs"))
+        std::fs::read_to_string(std::path::PathBuf::from(manifest).join("src/wire/frame/tags.rs"))
             .expect("read the event codec declarations");
     let declared: Vec<_> = source.lines().filter_map(declared_event).collect();
     assert!(

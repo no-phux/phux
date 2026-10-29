@@ -4,6 +4,133 @@ use super::*;
 use crate::app::ui::list::{ROW, ROW_INSET};
 
 #[gpui::test]
+fn side_tabs_stay_under_the_header_not_under_the_catalog(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, selectable_work);
+    run(&desk, "tabs-side", cx);
+    for height in [360., 700., 1200.] {
+        cx.simulate_resize(gpui::size(px(1000.), px(height)));
+        for count in [1, 3, 12] {
+            desk.update(cx, |desk, cx| {
+                desk.link.as_mut().unwrap().workspace.tabs = tabs(count);
+                cx.notify();
+            });
+            draw(cx);
+            let header = cx.debug_bounds("titlebar").unwrap();
+            let shelf = cx.debug_bounds("sidebar-tab-shelf").unwrap();
+            let catalog = cx.debug_bounds("sidebar-list").unwrap();
+            let filter = cx.debug_bounds("sidebar-host-filter").unwrap();
+            let first = cx.debug_bounds("tab-fixture-a").unwrap();
+            let footer = cx.debug_bounds("sidebar-footer").unwrap();
+            assert_eq!(shelf.top(), header.bottom());
+            assert!(
+                first.top() - shelf.top() <= px(28.),
+                "no dead space before tabs"
+            );
+            assert!(shelf.bottom() <= filter.top());
+            assert!(filter.bottom() <= catalog.top());
+            assert!(catalog.size.height > px(0.), "catalog remains reachable");
+            assert!(catalog.bottom() <= footer.top());
+            assert_eq!(footer.bottom(), px(height));
+        }
+    }
+}
+
+#[gpui::test]
+fn off_top_tabs_reclaim_the_header_and_keep_global_actions_in_the_sidebar(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, selectable_work);
+    desk.update(cx, |desk, cx| {
+        desk.update_prefs(
+            |prefs| {
+                prefs.agent_fleet = true;
+                prefs.native_agents = true;
+            },
+            cx,
+        )
+    });
+    for (width, sidebar_width) in [(760., 180.), (1280., 248.), (1280., 440.)] {
+        desk.update(cx, |desk, cx| {
+            desk.update_prefs(|prefs| prefs.sidebar_width = sidebar_width, cx)
+        });
+        cx.simulate_resize(gpui::size(px(width), px(800.)));
+        for command in ["tabs-side", "tabs-bottom"] {
+            run(&desk, command, cx);
+            let main = cx.debug_bounds("main-column").unwrap();
+            let header = cx.debug_bounds("titlebar").unwrap();
+            let tools = cx.debug_bounds("sidebar-tools").unwrap();
+            let card = cx.debug_bounds("pane-card-fixture-c").unwrap();
+            assert_eq!(main.origin.y, px(0.), "the old tab strip is not reserved");
+            assert_eq!(
+                card.origin.y,
+                px(12.),
+                "only the intentional sheet gutter remains"
+            );
+            assert!(
+                header.right() <= main.origin.x,
+                "window header belongs to the rail"
+            );
+            for selector in [
+                "notifications",
+                "skin-toggle",
+                "native-agents-toggle",
+                "agent-fleet",
+            ] {
+                let button = cx.debug_bounds(selector).unwrap();
+                assert!(
+                    tools.contains(&button.center()),
+                    "{selector} remains reachable"
+                );
+                assert!(
+                    button.right() <= main.origin.x,
+                    "no control overlays terminal input"
+                );
+            }
+            let trigger = cx.debug_bounds("main-menu-rail").unwrap();
+            assert!(
+                trigger.right() <= main.origin.x,
+                "the session trigger never overlaps the workspace"
+            );
+            let drag = cx.debug_bounds("workspace-drag").unwrap();
+            assert_eq!(drag.size.height, px(12.));
+            assert!(
+                drag.bottom() <= card.origin.y,
+                "native drag strip never intercepts terminal text"
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn collapsing_side_navigation_keeps_tabs_in_one_compact_header_without_a_dead_gutter(
+    cx: &mut TestAppContext,
+) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    cx.simulate_resize(gpui::size(px(1000.), px(800.)));
+    desk.update(cx, selectable_work);
+    run(&desk, "tabs-side", cx);
+    run(&desk, "sidebar", cx);
+    let header = cx.debug_bounds("titlebar").unwrap();
+    let card = cx.debug_bounds("pane-card-fixture-c").unwrap();
+    assert_eq!(header.size.height, px(38.));
+    assert_eq!(card.origin.y, header.bottom());
+    assert!(cx.debug_bounds("top-tabs").is_some());
+    assert!(cx.debug_bounds("side-tabs").is_none());
+    assert!(cx.debug_bounds("sidebar-tools").is_none());
+    run(&desk, "sidebar", cx);
+    assert_eq!(
+        cx.debug_bounds("pane-card-fixture-c").unwrap().origin.y,
+        px(12.)
+    );
+}
+
+#[gpui::test]
 fn sidebar_tabs_and_background_rows_share_columns_and_keep_actions_inside(cx: &mut TestAppContext) {
     let _dial = DeterministicDial::arm();
     let (handle, desk, _) = fixture(cx);

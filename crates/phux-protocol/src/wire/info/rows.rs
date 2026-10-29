@@ -13,8 +13,8 @@ use super::{
 /// hostile nesting cannot overflow the stack.
 pub const MAX_LAYOUT_DEPTH: usize = 64;
 
-/// Skip a tree in the retired `WindowInfo` layout slot (`docs/spec/L1.md`
-/// §1.1): a sender writes the slot absent, and a receiver discards a present
+/// Skip a tree in the retired `WindowInfo` layout slot (`docs/protocol.md`):
+/// a sender writes the slot absent, and a receiver discards a present
 /// tree after walking it to its end, bounding depth at [`MAX_LAYOUT_DEPTH`].
 pub(super) fn skip_layout_tree(dec: &mut Decoder<'_>, depth: usize) -> Result<(), DecodeError> {
     if depth >= MAX_LAYOUT_DEPTH {

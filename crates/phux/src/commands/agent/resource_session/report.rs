@@ -93,8 +93,9 @@ pub(super) fn report_session_error(
         AgentSessionError::NotProducer { .. } => (
             json_err::codes::NOT_PRODUCER,
             EXIT_USAGE,
-            "only the client that ran `phux agent session open` may append; open a session of \
-             your own"
+            "append from a local connection (this machine's socket or localhost); a remote \
+             peer cannot feed a session, and an SDK-owned session takes appends only from its \
+             native controller"
                 .to_owned(),
         ),
         AgentSessionError::Overflow(_) => (
