@@ -47,12 +47,6 @@ pub unsafe extern "C" fn phux_client_new(
     }
 }
 
-/// True when the requested history page row bound is zero or above the
-/// protocol limit.
-const fn history_page_rows_out_of_range(rows: u32) -> bool {
-    rows == 0 || rows > phux_client_core::history::MAX_HISTORY_PAGE_ROWS
-}
-
 /// True when the requested cache bounds cannot retain one opaque page.
 pub(super) fn history_cache_cannot_retain_page(options: &PhuxClientOptions) -> bool {
     options.max_history_cache_bytes == 0
@@ -71,7 +65,8 @@ pub(crate) fn client_limits(options: &PhuxClientOptions) -> Result<Limits, Bridg
     .ok_or_else(|| {
         BridgeError::invalid("bootstrap/history bounds are zero or exceed protocol limits")
     })?;
-    if history_page_rows_out_of_range(options.max_history_page_rows) {
+    let page_rows = options.max_history_page_rows;
+    if page_rows == 0 || page_rows > phux_client_core::history::MAX_HISTORY_PAGE_ROWS {
         return Err(BridgeError::invalid(
             "history page row bound is zero or exceeds the protocol limit",
         ));

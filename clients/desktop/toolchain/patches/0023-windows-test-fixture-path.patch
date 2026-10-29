@@ -1,0 +1,12 @@
+diff --git a/gpui-fast-windows/src/fast/layers/tests.rs b/gpui-fast-windows/src/fast/layers/tests.rs
+--- a/gpui-fast-windows/src/fast/layers/tests.rs
++++ b/gpui-fast-windows/src/fast/layers/tests.rs
+@@ -51,7 +51,7 @@
+ const TILE: u32 = 512;
+ 
+ #[cfg(feature = "test-support")]
+-#[path = "../../../../gpui/src/fast/rounded_clip_fixtures.rs"]
++#[path = "../../../../gpui-fast/src/fast/rounded_clip_fixtures.rs"]
+ mod rounded_clip_tests;
+ 
+ #[cfg(feature = "test-support")]

@@ -38,6 +38,10 @@ use phux_server::{ServerConfig, ServerEnv, ServerRuntime};
 use portable_pty::CommandBuilder;
 
 fn main() {
+    // stderr is the browser gate's server.log. Without a subscriber, `RUST_LOG`
+    // is ignored and the stale-output resync (debug only) never shows up there.
+    let _log_guard = phux_server::telemetry::init().ok().flatten();
+
     let addr: std::net::SocketAddr = std::env::var("PHUX_WS_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:47654".to_owned())
         .parse()

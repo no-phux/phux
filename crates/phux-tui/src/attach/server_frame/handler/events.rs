@@ -74,7 +74,7 @@ pub(super) fn handle_agent_event<W: crate::attach::RenderSink>(
     }
 }
 
-/// An organization event (`docs/spec/L1.md` §5.7), matched by record key.
+/// An organization event (`docs/organization.md`), matched by record key.
 /// A rename of any session renames it in the roster (and on the status line
 /// when it is ours); a peer's arrangement change asks for a re-read of the
 /// peer caches. About the attached session: deletion detaches (R15), a

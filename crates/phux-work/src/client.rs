@@ -1,6 +1,7 @@
 //! The work API every surface uses: the CLI, Lead, the board, MCP, and later
 //! the desktop. A [`Client`] sends each call to the store's keeper and starts
-//! one when none answers.
+//! one when none answers, or hands it to an [`Exchange`] that carries it to a
+//! keeper on another host.
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -8,12 +9,9 @@ use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::coord::{
-    AckMail, Claim, ClaimFilter, ClaimOutcome, Mail, ReadMail, ReleaseClaim, ReleaseMail,
-    RenewClaim, SendMail, Sent, TakeClaim, WaitMail,
-};
 use crate::error::Error;
 use crate::id::Alias;
 use crate::service::Endpoint;
@@ -24,6 +22,7 @@ use crate::store::{
 };
 use crate::wire::{BUILD, Envelope, Fault, MAX_LINE, Request, Response};
 
+mod coord;
 mod lifeline;
 use lifeline::{Patience, await_reply};
 
@@ -82,9 +81,39 @@ impl Launcher {
     }
 }
 
+/// Carries one request line to a keeper on another host and brings back its
+/// reply line, such as a satellite's link to its hub ([`crate::federation`]).
+pub trait Exchange: std::fmt::Debug + Send + Sync {
+    /// Send `line` and return the one reply line, waiting at most `reply`
+    /// for it. Once `lifeline` (see [`Client::wait_mail_while`]) closes, give
+    /// up so the far keeper takes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Keeper`] when the exchange breaks or `lifeline` closes first.
+    fn exchange(
+        &self,
+        line: &str,
+        reply: Duration,
+        lifeline: Option<std::os::fd::BorrowedFd<'_>>,
+    ) -> Result<String, Error>;
+}
+
 /// A connection-per-call client of one store's keeper.
 #[derive(Debug, Clone)]
 pub struct Client {
+    route: Route,
+}
+
+#[derive(Debug, Clone)]
+enum Route {
+    Local(Local),
+    Remote(Arc<dyn Exchange>),
+}
+
+/// This host's keeper, at its socket.
+#[derive(Debug, Clone)]
+struct Local {
     endpoint: Endpoint,
     launcher: Option<Launcher>,
 }
@@ -94,7 +123,24 @@ impl Client {
     /// none answers. Without a launcher, a missing keeper is an error.
     #[must_use]
     pub const fn new(endpoint: Endpoint, launcher: Option<Launcher>) -> Self {
-        Self { endpoint, launcher }
+        Self {
+            route: Route::Local(Local { endpoint, launcher }),
+        }
+    }
+
+    /// Talk to a keeper on another host through `exchange`. That keeper is
+    /// never started or replaced from here.
+    #[must_use]
+    pub fn remote(exchange: Arc<dyn Exchange>) -> Self {
+        Self {
+            route: Route::Remote(exchange),
+        }
+    }
+
+    /// Whether calls go to another host's keeper.
+    #[must_use]
+    pub const fn is_remote(&self) -> bool {
+        matches!(self.route, Route::Remote(_))
     }
 
     /// Insert an objective. See [`crate::Store::add`].
@@ -263,144 +309,27 @@ impl Client {
         }
     }
 
-    /// Send a message. See [`crate::Store::send_mail`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
-    pub fn send_mail(&self, request: SendMail) -> Result<Sent, Error> {
-        match self.call(Request::SendMail(request))? {
-            Response::Sent(sent) => Ok(sent),
-            other => Err(unexpected(&other)),
+    fn call(&self, request: Request) -> Result<Response, Error> {
+        self.call_within(request, prompt())
+    }
+
+    /// One request, whose reply may take as long as `patience` allows.
+    fn call_within(&self, request: Request, patience: Patience<'_>) -> Result<Response, Error> {
+        let line = encode_request(request)?;
+        match &self.route {
+            Route::Local(local) => local.call_within(&line, patience),
+            Route::Remote(remote) => {
+                let reply = remote.exchange(&line, patience.reply, patience.lifeline)?;
+                let response = serde_json::from_str(&reply)
+                    .map_err(|err| Error::Keeper(format!("unreadable reply: {err}")))?;
+                classify_reply(response, false)?
+                    .ok_or_else(|| Error::Keeper("the far keeper is another build".to_owned()))
+            }
         }
     }
+}
 
-    /// A reader's mail. See [`crate::Store::read_mail`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
-    pub fn read_mail(&self, request: ReadMail) -> Result<Vec<Mail>, Error> {
-        match self.call(Request::ReadMail(request))? {
-            Response::Mail(mail) => Ok(mail),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Acknowledge a message. See [`crate::Store::ack_mail`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`], plus [`Error::NoMail`].
-    pub fn ack_mail(&self, request: AckMail) -> Result<Mail, Error> {
-        match self.call(Request::AckMail(request))? {
-            Response::Acked(mail) => Ok(mail),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Take the reader's undelivered mail, waiting up to the request's
-    /// timeout for some to arrive. The keeper holds the request open; an
-    /// empty result means the deadline passed. See [`crate::Store::take_mail`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
-    pub fn wait_mail(&self, request: WaitMail) -> Result<Vec<Mail>, Error> {
-        self.wait_mail_bound(request, None)
-    }
-
-    /// [`Client::wait_mail`], abandoned without taking anything as soon as
-    /// `lifeline` (the read end of a pipe the caller's parent holds open)
-    /// closes. A wait whose parent died cannot take the next message.
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`], and [`Error::Keeper`] once the lifeline closes.
-    pub fn wait_mail_while(
-        &self,
-        request: WaitMail,
-        lifeline: std::os::fd::BorrowedFd<'_>,
-    ) -> Result<Vec<Mail>, Error> {
-        self.wait_mail_bound(request, Some(lifeline))
-    }
-
-    fn wait_mail_bound(
-        &self,
-        request: WaitMail,
-        lifeline: Option<std::os::fd::BorrowedFd<'_>>,
-    ) -> Result<Vec<Mail>, Error> {
-        let patience = Patience {
-            reply: Duration::from_millis(request.timeout_ms).saturating_add(REPLY_TIMEOUT),
-            lifeline,
-        };
-        match self.call_within(Request::WaitMail(request), patience)? {
-            Response::Mail(mail) => Ok(mail),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Return taken mail to the reader's undelivered mail. See
-    /// [`crate::Store::release_mail`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
-    pub fn release_mail(&self, request: ReleaseMail) -> Result<u64, Error> {
-        match self.call(Request::ReleaseMail(request))? {
-            Response::Released(count) => Ok(count),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Acquire a new lease. See [`crate::Store::take_claim`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
-    pub fn take_claim(&self, request: TakeClaim) -> Result<ClaimOutcome, Error> {
-        match self.call(Request::TakeClaim(request))? {
-            Response::ClaimOutcome(outcome) => Ok(outcome),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Renew a live lease. See [`crate::Store::renew_claim`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`], or [`Error::NoClaim`] for a stale receipt.
-    pub fn renew_claim(&self, request: RenewClaim) -> Result<Vec<Claim>, Error> {
-        match self.call(Request::RenewClaim(request))? {
-            Response::Claims(claims) => Ok(claims),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Release claims. See [`crate::Store::release_claim`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
-    pub fn release_claim(&self, request: ReleaseClaim) -> Result<u64, Error> {
-        match self.call(Request::ReleaseClaim(request))? {
-            Response::Released(count) => Ok(count),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Live claims. See [`crate::Store::claims`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Client::add`].
-    pub fn claims(&self, filter: ClaimFilter) -> Result<Vec<Claim>, Error> {
-        match self.call(Request::Claims(filter))? {
-            Response::Claims(claims) => Ok(claims),
-            other => Err(unexpected(&other)),
-        }
-    }
-
+impl Local {
     /// A legacy parser can reject a new operation before checking compatibility.
     /// Probe it once with the stable, read-only v1 List shape. With a different
     /// compatibility stamp it retires before dispatching even that operation.
@@ -449,13 +378,7 @@ impl Client {
         Ok(())
     }
 
-    fn call(&self, request: Request) -> Result<Response, Error> {
-        self.call_within(request, prompt())
-    }
-
-    /// One request, whose reply may take as long as `patience` allows.
-    fn call_within(&self, request: Request, patience: Patience<'_>) -> Result<Response, Error> {
-        let line = encode_request(request)?;
+    fn call_within(&self, line: &str, patience: Patience<'_>) -> Result<Response, Error> {
         let started = Instant::now();
         let mut pause = PAUSE_START;
         let mut keeper: Option<Child> = None;
@@ -464,7 +387,7 @@ impl Client {
         loop {
             match UnixStream::connect(&self.endpoint.socket) {
                 Ok(stream) => {
-                    match self.compatible_exchange(&stream, &line, !replaced_stale, patience)? {
+                    match self.compatible_exchange(&stream, line, !replaced_stale, patience)? {
                         // That keeper exits after saying so; start this build's.
                         None => {
                             replaced_stale = true;

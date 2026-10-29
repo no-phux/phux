@@ -30,13 +30,13 @@ pub struct SessionInfo {
     /// reports [`Self::lifetime`] keeps it equal to
     /// `lifetime == Persistent`.
     pub keep_empty: bool,
-    /// The session's lifetime (`docs/spec/L1.md` §5.7), from the extension
+    /// The session's lifetime (`docs/organization.md`), from the extension
     /// block's `SESSION_STATE`; `None` from a server that does not report it.
     pub lifetime: Option<SessionLifetime>,
     /// The session's persistent key, from the extension block's
     /// `SESSION_STATE`; `None` from a server that does not report it.
     pub key: Option<SessionKey>,
-    /// The session's descriptive attributes (`docs/spec/L2.md` §2.2), in
+    /// The session's descriptive attributes (`docs/organization.md`), in
     /// order, from the extension block's `SESSION_STATE`; empty from a
     /// server that does not report them.
     pub attrs: Vec<(String, String)>,

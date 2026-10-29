@@ -15,7 +15,7 @@ impl Connection {
         if socket.as_os_str().is_empty() {
             anyhow::bail!("InvalidConnectOptions");
         }
-        Self::connect_target(Target::uds(socket), session, key)
+        Self::connect_target(crate::platform::local_target(socket), session, key)
     }
 
     /// Attach `session` on a host from the remote registry.
@@ -40,6 +40,9 @@ impl Connection {
             ControlOptions {
                 client_name: "phux-desktop".to_owned(),
                 viewport: (0, 0),
+                image_protocols: phux_protocol::caps::ImageProtocolSet::with(&[
+                    phux_protocol::caps::ImageProtocol::KittyGraphics,
+                ]),
                 attach: key.is_none().then(|| AttachTarget::ByName(session.clone())),
                 session_recovery: if key.is_some() {
                     SessionRecovery::CallerValidated
@@ -49,6 +52,8 @@ impl Connection {
                 attach_role: Some(RolePolicy::PRIMARY),
                 auto_attach_foreign_spawns: false,
                 subscribe_agent_sessions: true,
+                // Typing reads as typed: predicted echo is plain text.
+                prediction_style: phux_client_runtime::control::PredictionStyle::Plain,
                 ..ControlOptions::default()
             },
         )?;
@@ -65,13 +70,16 @@ impl Connection {
     pub(crate) fn browse(socket: &std::path::Path, remote: Option<&str>) -> anyhow::Result<Self> {
         let target = match remote {
             Some(host) => remote_target(host)?,
-            None => Target::uds(socket.to_path_buf()),
+            None => crate::platform::local_target(socket.to_path_buf()),
         };
         let client = open_client(
             target,
             ControlOptions {
                 client_name: "phux-desktop-catalog".to_owned(),
                 viewport: (0, 0),
+                image_protocols: phux_protocol::caps::ImageProtocolSet::with(&[
+                    phux_protocol::caps::ImageProtocol::KittyGraphics,
+                ]),
                 attach: None,
                 attach_role: Some(RolePolicy::PRIMARY),
                 auto_attach_foreign_spawns: false,
@@ -134,7 +142,7 @@ impl Connection {
         true
     }
 
-    fn from_client(client: Client, session: String) -> Self {
+    pub(crate) fn from_client(client: Client, session: String) -> Self {
         let (tx, wake_rx) = async_channel::bounded(1);
         client.set_listener(Arc::new(ActivityListener { tx }));
         let status = client.status();
@@ -172,5 +180,33 @@ impl Connection {
             wake_rx,
             revision: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_fence_snapshot_ignores_unknown_and_closed_terminals() {
+        let mut connection = Connection::from_client(
+            Runtime::embedded(ControlOptions::default()),
+            "test".to_owned(),
+        );
+        let known = ResourceId::local(7);
+        let unknown = ResourceId::local(8);
+        connection.known.insert(known.clone());
+        assert!(!connection.fenced(&known));
+        assert!(
+            connection
+                .fenced_placements([&known, &unknown].into_iter())
+                .is_empty()
+        );
+        connection.closed = true;
+        assert!(
+            connection
+                .fenced_placements([&known].into_iter())
+                .is_empty()
+        );
     }
 }

@@ -56,8 +56,15 @@ pub enum AttachError {
     Ghostty(#[from] libghostty_vt::Error),
 
     /// The server answered with a structured `ERROR` instead of the reply.
-    #[error("server refused attach: {0}")]
+    #[error("server refused the request: {0}")]
     Refused(String),
+
+    /// The server answered `HELLO` (or `ATTACH`) with
+    /// `ERROR { VERSION_INCOMPATIBLE }`. Same sentence as [`Self::Refused`];
+    /// the variant is how a caller tells a live old server from a policy
+    /// refusal without reading the message text.
+    #[error("server refused the request: {0}")]
+    IncompatibleProtocol(String),
 
     /// `GET_SCREEN` asked for a rendered capture and the `Ok` reply carried
     /// none: an older server ignores the `format` byte, or the server's own
@@ -84,8 +91,15 @@ impl From<SessionError> for AttachError {
             SessionError::Protocol(detail) => Self::Protocol(detail),
             SessionError::Framing(violation) => Self::Framing(violation),
             SessionError::Refused(message) => Self::Refused(message),
+            SessionError::IncompatibleProtocol(message) => Self::IncompatibleProtocol(message),
         }
     }
+}
+
+/// Whether `err` is a live server that speaks another protocol major.
+#[must_use]
+pub const fn is_incompatible_protocol(err: &AttachError) -> bool {
+    matches!(err, AttachError::IncompatibleProtocol(_))
 }
 
 impl AttachError {
@@ -155,7 +169,7 @@ pub fn describe_exit(exit_status: Option<i32>) -> String {
 mod tests {
     use phux_client_runtime::session::SessionError;
 
-    use super::AttachError;
+    use super::{AttachError, is_incompatible_protocol};
 
     /// The conversion keeps each variant, so the reconnect loop's
     /// `Disconnected` and the fatal-refusal rule mean what the runtime
@@ -177,5 +191,20 @@ mod tests {
             !AttachError::from(SessionError::Refused("no such session".to_owned()))
                 .is_fatal_refusal()
         );
+        let old = SessionError::IncompatibleProtocol("incompatible protocol".to_owned());
+        assert!(matches!(
+            AttachError::from(old),
+            AttachError::IncompatibleProtocol(message) if message == "incompatible protocol"
+        ));
+        assert_eq!(
+            AttachError::IncompatibleProtocol("no".to_owned()).to_string(),
+            AttachError::Refused("no".to_owned()).to_string(),
+        );
+        assert!(is_incompatible_protocol(
+            &AttachError::IncompatibleProtocol("no".to_owned())
+        ));
+        assert!(!is_incompatible_protocol(&AttachError::Refused(
+            "no".to_owned()
+        )));
     }
 }

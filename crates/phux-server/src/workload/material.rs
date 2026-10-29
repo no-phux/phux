@@ -1,5 +1,5 @@
 //! Public enrollment material for `phux workload add-key`
-//! (`workload-auth.md` §8): PEM client certificate(s) or one CSR. Anything
+//! (`docs/remote.md#who-can-connect`): PEM client certificate(s) or one CSR. Anything
 //! carrying a private key is refused undecoded, and errors never echo input.
 
 use rustls::pki_types::pem::{PemObject, SectionKind};
@@ -93,7 +93,7 @@ impl ClientMaterial {
     }
 
     /// A DER certificate signing request, as the enrollment ALPN carries it
-    /// (`workload-auth.md` §8.2). Its self-signature must verify.
+    /// (`docs/remote.md#pairing-with-a-link`). Its self-signature must verify.
     ///
     /// # Errors
     ///

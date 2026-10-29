@@ -5,6 +5,7 @@
 pub mod layout;
 pub mod persist;
 
+mod adopt;
 mod operations;
 mod restore;
 
@@ -39,6 +40,8 @@ pub struct WorkspaceOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Destination {
     Tab,
+    /// A tab of its own that leaves the active tab where it is.
+    QuietTab,
     Background,
     Split {
         tab_id: String,
@@ -46,6 +49,13 @@ enum Destination {
         axis: Axis,
         before: bool,
     },
+}
+
+/// Ownership of a navigation-only pending open, including any quiet open it replaced.
+/// Consuming this intent restores the previous destination without cancelling a spawn.
+pub(crate) struct PendingOpen {
+    label: String,
+    previous: Option<Destination>,
 }
 
 /// A message for the window's notification feed. Workspace command errors reach the feed only through here.
@@ -72,6 +82,9 @@ pub struct Workspace {
     views_epoch: Option<u64>,
     spawns: HashMap<u32, Destination>,
     awaiting: HashMap<String, Destination>,
+    /// Successful spawn receipts identify live processes even before bootstrap
+    /// or inventory, and must never be dismissed as missing saved placeholders.
+    spawned: HashSet<String>,
     owners: HashMap<String, String>,
     restoring: Option<SavedLayout>,
     restored: bool,
@@ -79,6 +92,8 @@ pub struct Workspace {
     unresolved: HashSet<String>,
     attaching: HashSet<String>,
     closed_terminals: HashSet<String>,
+    /// Home-session terminals already offered a tab, adopted or not.
+    considered: HashSet<String>,
     notices: Vec<Notice>,
     noticed_create: HashSet<String>,
 }
@@ -215,31 +230,52 @@ impl Workspace {
         }
     }
 
-    /// Place ready terminals and finish a pending restore. Call after [`Self::handle`].
+    /// Place answered spawns and finish a pending restore. Call after [`Self::handle`].
     pub fn settle(&mut self, connection: &Connection) {
         self.sync_server(connection);
         if connection.status != Status::Attached || !connection.session_validated() {
             return;
         }
         self.rearm_views(connection);
-        let ready: Vec<(String, Destination)> = self
-            .awaiting
-            .extract_if(|label, _| parse_terminal(label).is_some_and(|id| connection.ready(&id)))
-            .collect();
-        for (label, destination) in ready {
-            self.place_ready(connection, &label, destination);
-        }
+        self.land_answered(connection);
         if !self.restored {
             self.finish_restore(connection);
         }
         self.resolve_restored(connection);
+        if self.restored {
+            self.adopt_session_terminals(connection);
+        }
     }
 
-    /// Place one terminal the server reports ready at its recorded
-    /// destination. A tab spawn whose terminal is already shown is revealed
-    /// instead of landing twice; a split always lands in its own tab.
+    /// Put every answered spawn on screen. The view binds later, in
+    /// [`Self::resolve_restored`], once the terminal accepts input.
+    fn land_answered(&mut self, connection: &Connection) {
+        let landed: Vec<(String, Destination)> = self
+            .awaiting
+            .extract_if(|label, _| {
+                self.spawned.contains(label)
+                    || parse_terminal(label).is_some_and(|id| connection.ready(&id))
+            })
+            .collect();
+        for (label, destination) in landed {
+            self.place_ready(connection, &label, destination);
+        }
+    }
+
+    /// Place one answered terminal at its recorded destination. A tab spawn
+    /// whose terminal is already shown is revealed instead of landing twice;
+    /// a split always lands in its own tab.
     fn place_ready(&mut self, connection: &Connection, label: &str, destination: Destination) {
         self.awaiting.remove(label);
+        if destination == Destination::QuietTab {
+            if !self
+                .all_placements()
+                .any(|placement| placement.terminal_label == label)
+            {
+                self.land(connection, label, destination);
+            }
+            return;
+        }
         let revealed = self.reveal(label);
         if !revealed || matches!(destination, Destination::Split { .. }) {
             self.land(connection, label, destination);
@@ -270,11 +306,11 @@ impl Workspace {
             .all_placements()
             .filter_map(|placement| placement.terminal_id.as_ref())
         {
-            if connection.pane(terminal).is_some() {
-                let _ = connection
-                    .client
-                    .attach_terminal_preserving_geometry(terminal);
-            }
+            // A placed spawn may still lack bootstrap and be absent from the
+            // home inventory. Recover its exact id on every new connection too.
+            let _ = connection
+                .client
+                .attach_terminal_preserving_geometry(terminal);
         }
     }
 
@@ -357,8 +393,12 @@ impl Workspace {
         };
         match (terminal, error) {
             (Some(terminal), None) => {
-                if destination != Destination::Background {
-                    self.awaiting.insert(terminal_label(terminal), destination);
+                if destination == Destination::Background {
+                    self.considered.insert(terminal_label(terminal));
+                } else {
+                    let label = terminal_label(terminal);
+                    self.spawned.insert(label.clone());
+                    self.awaiting.insert(label, destination);
                 }
             }
             _ => self.error(
@@ -371,6 +411,7 @@ impl Workspace {
     fn closed(&mut self, label: &str) {
         self.closed_terminals.insert(label.to_owned());
         self.awaiting.remove(label);
+        self.spawned.remove(label);
         let doomed: Vec<String> = self
             .all_placements()
             .filter(|placement| placement.terminal_label == label)
@@ -418,7 +459,9 @@ impl Workspace {
             root: leaf(placement),
             zoomed_id: None,
         });
-        self.active_id = id;
+        if destination != Destination::QuietTab || self.active_id.is_empty() {
+            self.active_id = id;
+        }
     }
 
     fn place(&mut self, connection: &Connection, label: &str, id: Option<String>) -> Placement {
@@ -534,5 +577,7 @@ mod close_tests;
 #[cfg(test)]
 pub(crate) mod view_tests;
 
+#[cfg(test)]
+mod adopt_tests;
 #[cfg(test)]
 mod home_tests;

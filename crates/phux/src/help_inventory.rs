@@ -153,7 +153,9 @@ fn long_help_has_one_complete_grouped_inventory() {
 /// It rose to 100 with `download`: the pull sits beside `upload`, where
 /// someone looking for the push will find it. It rose to 101 with `idea`:
 /// capture is a root verb, and the spool is invisible if the line is hidden.
-/// It rose to 102 with `terminal`: one discoverable row for complete creation
+/// It rose to 102 with `omarchy`: someone on an Omarchy desktop scans the
+/// root page for their desktop's name, and `setup` is the whole onboarding.
+/// It rose to 103 with `terminal`: one discoverable row for complete creation
 /// and receipt lookup, rather than another command choreography.
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
@@ -166,7 +168,7 @@ fn root_long_help_fits_eighty_columns_and_stays_short() {
     }
     let lines = long.lines().count();
     assert!(
-        lines <= 102,
+        lines <= 103,
         "root help grew to {lines} lines; the page is meant to be one screen"
     );
     assert!(

@@ -115,6 +115,7 @@ fn remote(
         session: None,
         ssh: Some(format!("me@{name}")),
         direct: None,
+        remote_phux: None,
         client_cert: cert,
         client_key: key.map(PathBuf::from),
     }

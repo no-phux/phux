@@ -8,9 +8,7 @@ use std::path::Path;
 
 use phux_protocol::caps::{ServerFeatureExtSet, ServerFeatureSet};
 use phux_protocol::ids::{ResourceId, ResourceKind};
-use phux_protocol::kinds::{
-    FeatureGate, KINDS, KindSpec, MethodSpec, SUBSTRATE_METHODS, Verb, Verbs,
-};
+use phux_protocol::kinds::{KINDS, KindSpec, MethodSpec, SUBSTRATE_METHODS, Verb, Verbs};
 use serde_json::{Value, json};
 
 use super::LookupError;
@@ -146,7 +144,7 @@ fn judge(
         .gate
         .into_iter()
         .chain(facet.and_then(|spec| spec.gate))
-        .any(|gate| !advertised(negotiated, gate));
+        .any(|gate| !gate.advertised(negotiated.features, negotiated.features_ext));
     if unadvertised {
         return Some(Unavailable::FeatureUnadvertised);
     }
@@ -154,18 +152,6 @@ fn judge(
         return Some(Unavailable::Transport);
     }
     None
-}
-
-/// Whether the server advertised `gate`, in whichever `HELLO_OK` word it
-/// lives. A `features_ext` bit this build does not know reads as
-/// unadvertised, so the method is never judged safe on a guess.
-const fn advertised(negotiated: Negotiated, gate: FeatureGate) -> bool {
-    match gate {
-        FeatureGate::Features(feature) => negotiated.features.contains(feature),
-        FeatureGate::FeaturesExt { mask, .. } => {
-            mask != 0 && negotiated.features_ext.as_wire() & mask == mask
-        }
-    }
 }
 
 /// The catalog as it applies to one resource.
@@ -228,7 +214,7 @@ pub async fn methods(socket: &Path, resource: &ResourceId) -> Result<ResourceMet
 mod tests {
     use phux_protocol::caps::{ServerFeature, ServerFeatureExt};
     use phux_protocol::ids::{SessionId, WindowId};
-    use phux_protocol::kinds::{Carrier, SERVER_METHODS};
+    use phux_protocol::kinds::{Carrier, FeatureGate, SERVER_METHODS};
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
     use super::*;
@@ -328,6 +314,39 @@ mod tests {
             judge(&extended, None, ResourceKind::Terminal, with_ext),
             None
         );
+    }
+
+    #[test]
+    fn host_operations_never_appear_as_resource_methods() {
+        let negotiated = Negotiated {
+            features: ServerFeatureSet::with(ServerFeature::ALL),
+            features_ext: ServerFeatureExtSet::with(ServerFeatureExt::ALL),
+            owner_uds: true,
+        };
+        for kind in [ResourceKind::Terminal, ResourceKind::AgentSession] {
+            let methods = availability(kind, negotiated);
+            for name in [
+                "GET_FILE",
+                "SERVICE_HTTP_OPEN",
+                "SERVICE_HTTP_READ",
+                "SERVICE_HTTP_CLOSE",
+            ] {
+                assert!(!methods.iter().any(|entry| entry.method.name == name));
+            }
+            let checkout = methods
+                .iter()
+                .find(|entry| entry.method.name == "CHECKOUT")
+                .expect("CHECKOUT");
+            assert_eq!(checkout.facet, Some(ResourceKind::Terminal));
+            assert_eq!(
+                checkout.unavailable,
+                if kind == ResourceKind::Terminal {
+                    None
+                } else {
+                    Some(Unavailable::WrongKind)
+                }
+            );
+        }
     }
 
     #[test]

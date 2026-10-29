@@ -14,7 +14,7 @@
 //! Without `--json` the same failure prints the shared human error label and
 //! indented hints; message values and machine documents remain unchanged.
 //! The closed `code` vocabulary lives in
-//! [`codes`]; consumers read `docs/consumers/agents.md` §5.3.
+//! [`codes`]; consumers read `docs/scripting.md#json-output-and-errors`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -31,7 +31,7 @@ pub(crate) mod codes;
 
 /// One CLI failure, carrying everything both output channels need: a stable
 /// machine `code`, the human `message`, and the `remedy` naming the way out.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CliError {
     pub(crate) code: &'static str,
     pub(crate) message: String,
@@ -39,6 +39,14 @@ pub(crate) struct CliError {
     /// Why this process's auto-start of the server failed, when it tried;
     /// emitted as `error.auto_start_error`.
     pub(crate) auto_start_error: Option<String>,
+    /// Cold metadata stays off the common error's stack footprint.
+    context: Option<Box<ErrorContext>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ErrorContext {
+    recovery: Option<phux_client::recovery::Recovery>,
+    cause_code: Option<&'static str>,
 }
 
 impl CliError {
@@ -52,7 +60,20 @@ impl CliError {
             message: message.into(),
             remedy: remedy.into(),
             auto_start_error: None,
+            context: None,
         }
+    }
+}
+
+impl CliError {
+    pub(crate) fn with_recovery(mut self, recovery: phux_client::recovery::Recovery) -> Self {
+        self.context.get_or_insert_with(Box::default).recovery = Some(recovery);
+        self
+    }
+
+    pub(crate) fn with_cause_code(mut self, code: &'static str) -> Self {
+        self.context.get_or_insert_with(Box::default).cause_code = Some(code);
+        self
     }
 }
 
@@ -111,6 +132,14 @@ pub(crate) fn error_document(err: &CliError, exit_code: u8) -> serde_json::Value
     if let Some(auto_start_error) = &err.auto_start_error {
         error["auto_start_error"] = serde_json::Value::from(auto_start_error.as_str());
     }
+    if let Some(context) = &err.context {
+        if let Some(recovery) = &context.recovery {
+            error["recovery"] = serde_json::json!(recovery);
+        }
+        if let Some(code) = context.cause_code {
+            error["cause_code"] = serde_json::json!(code);
+        }
+    }
     serde_json::json!({
         "schema_version": ERROR_SCHEMA_VERSION,
         "error": error,
@@ -161,7 +190,12 @@ pub(crate) fn report_no_server(
 /// The [`CliError`] behind [`report_no_server`]'s JSON path, also embedded
 /// by `phux status --json`.
 pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
-    let mut cli_err = connect_error(err, socket_path, verb);
+    let mut cli_err = connect_error(
+        err,
+        socket_path,
+        verb,
+        crate::commands::diagnostics::recovery_pid(err, socket_path),
+    );
     if matches!(err, AttachError::Io(_)) {
         cli_err.auto_start_error = auto_start_failure(socket_path);
         if cli_err.auto_start_error.is_some() {
@@ -176,7 +210,7 @@ pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str)
 }
 
 /// [`no_server_error`] before any auto-start context is added.
-fn connect_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
+fn connect_error(err: &AttachError, socket_path: &Path, verb: &str, pid: Option<i32>) -> CliError {
     let server_log = phux_server::telemetry::server_log_path();
     let doctor = format!(
         "server log: {}; run `phux doctor` for a health check",
@@ -207,6 +241,13 @@ fn connect_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError 
             unreachable_socket_message(verb, io_err, socket_path),
             doctor,
         ),
+        // Same `transport` code as any other non-connect failure. The remedy
+        // is the old-server recovery, not a new JSON code.
+        AttachError::IncompatibleProtocol(_) => CliError::new(
+            codes::TRANSPORT,
+            format!("{verb} failed: {err}"),
+            crate::commands::diagnostics::old_server_recovery_lines(socket_path, pid).join("\n"),
+        ),
         other => CliError::new(codes::TRANSPORT, format!("{verb} failed: {other}"), doctor),
     }
 }
@@ -228,6 +269,33 @@ pub(crate) fn unreachable_socket_message(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recovery_is_additive_and_never_extracted_from_message_text() {
+        use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
+        let error = super::CliError::new(
+            "session_create_failed",
+            "opaque diagnostic",
+            "inspect state",
+        )
+        .with_cause_code("outcome_unknown")
+        .with_recovery(Recovery::new(
+            ScopeKind::OrganizationAuthority,
+            Some("actual-operation".into()),
+            EffectCertainty::Unknown,
+            NextAction::Reconcile,
+        ));
+        let doc = super::error_document(&error, 1);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["error"]["code"], "session_create_failed");
+        assert_eq!(doc["error"]["cause_code"], "outcome_unknown");
+        assert_eq!(doc["error"]["recovery"]["operation_id"], "actual-operation");
+        assert_eq!(
+            doc["error"]["recovery"]["scope"]["kind"],
+            "organization_authority"
+        );
+        assert!(doc["error"]["recovery"]["scope"].get("id").is_none());
+    }
+
     use std::path::Path;
 
     use phux_client::attach::AttachError;
@@ -310,6 +378,66 @@ mod tests {
 
         let gone = no_server_error(&AttachError::Disconnected, socket, "new");
         assert!(gone.auto_start_error.is_none());
+    }
+
+    /// An old-protocol server stays on the existing `transport` code. The
+    /// remedy is the stop-and-start recovery, with the pid when it is known.
+    #[test]
+    fn an_incompatible_server_keeps_transport_and_names_the_stop_recovery() {
+        let socket = Path::new("/tmp/old.sock");
+        let err = AttachError::IncompatibleProtocol(
+            "incompatible protocol: client offered 1.4.0, server requires 0.9.x; \
+             update the phux server so protocol major.minor match"
+                .to_owned(),
+        );
+        let with_pid = super::connect_error(&err, socket, "ls", Some(4242));
+        assert_eq!(with_pid.code, codes::TRANSPORT);
+        assert!(
+            with_pid.message.contains("server refused the request"),
+            "{}",
+            with_pid.message
+        );
+        assert!(with_pid.remedy.contains("kill 4242"), "{}", with_pid.remedy);
+        assert!(
+            with_pid.remedy.contains("pkill -f 'phux server'"),
+            "{}",
+            with_pid.remedy
+        );
+        assert!(
+            with_pid.remedy.contains("`phux server --ensure`"),
+            "{}",
+            with_pid.remedy
+        );
+        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+            assert!(
+                !with_pid.remedy.contains(forbidden),
+                "{forbidden}: {}",
+                with_pid.remedy
+            );
+            assert!(
+                !with_pid.message.contains(forbidden),
+                "{forbidden}: {}",
+                with_pid.message
+            );
+        }
+        let line = serde_json::to_string(&error_document(&with_pid, 1)).unwrap_or_default();
+        assert!(!line.contains('\n'), "error line must be single-line");
+
+        let unknown = super::connect_error(&err, socket, "ls", None);
+        assert_eq!(unknown.code, codes::TRANSPORT);
+        assert!(
+            unknown.remedy.contains("pkill -f 'phux server'"),
+            "{}",
+            unknown.remedy
+        );
+        assert!(!unknown.remedy.contains("`kill "), "{}", unknown.remedy);
+        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+            assert!(
+                !unknown.remedy.contains(forbidden),
+                "{forbidden}: {}",
+                unknown.remedy
+            );
+        }
     }
 
     /// The agent verbs' codes are part of the closed vocabulary frozen by

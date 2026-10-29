@@ -126,7 +126,7 @@ pub(super) struct ConnectionClose {
     pub(super) message: String,
 }
 
-/// One bound Terminal stream's outbound half (proto.md §4.2): a mailbox
+/// One bound Terminal stream's outbound half (docs/protocol.md#quic-stream-routing): a mailbox
 /// drained by the same writer task every transport uses. Retirement closes
 /// admission, then drains with a bound.
 pub(super) struct StreamBinding {

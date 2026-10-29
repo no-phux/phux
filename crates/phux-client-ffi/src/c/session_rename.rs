@@ -1,5 +1,5 @@
 //! Rename a session on the connected server (`phux.session.name/v1`,
-//! `docs/spec/L3.md` section 3.1), with the shared `phux_client_core::rename`
+//! `docs/protocol.md#commands-events-resources`), with the shared `phux_client_core::rename`
 //! policy: judge against the latest session list, send `SET_METADATA`
 //! (`current\0new`), then a `GET_STATE` barrier whose answer is the outcome.
 //!

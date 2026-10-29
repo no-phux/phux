@@ -30,7 +30,9 @@ permissions:
 
 jobs:
   plan:
-    if: github.event.action != 'closed' && github.event.pull_request.draft != true
+    # Drafts skip the suite. A release-please head stays draft while it
+    # accumulates, and still needs every lane.
+    if: github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -327,6 +329,9 @@ jobs:
           - platform: macOS
             os: xcode-27
             smoke: --allow-unconfirmed-present
+          - platform: macOS-26
+            os: macos-26
+            smoke: --allow-unconfirmed-present
           - platform: Linux
             os: ubuntu-24.04
             smoke: --require-backend Vulkan
@@ -340,6 +345,11 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-macos-desktop
         if: runner.os == 'macOS'
+      - name: Require the compatibility runner's macOS and Xcode 26
+        if: matrix.platform == 'macOS-26'
+        run: |
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 26
+          xcodebuild -version | grep -E '^Xcode 26[.]'
       - uses: ./.github/actions/setup-linux-desktop
         if: runner.os == 'Linux'
       - uses: ./.github/actions/setup-bun
@@ -391,7 +401,8 @@ jobs:
   ci:
     name: ci
     needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, desktop, native]
-    if: always() && github.event.action != 'closed' && github.event.pull_request.draft != true
+    # Same draft exception as plan: release-please heads always reach this gate.
+    if: always() && github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -481,24 +492,9 @@ jobs:
     permissions:
       actions: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          keep_newest() {
-            gh api --paginate \
-              "repos/${GITHUB_REPOSITORY}/actions/caches?key=${1}&sort=created_at&direction=desc&per_page=100" \
-              --jq '.actions_caches[].id' | tail -n +2 | while read -r id; do
-              echo "deleting ${1} entry ${id}"
-              # A 404 means another main run already pruned it.
-              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" --silent || true
-              sleep 0.25
-            done
-          }
-          for prefix in linux-arm64-mbx-phux-check- linux-arm64-mbx-phux-test- \
-            v0-rust-phux-uniffi-Linux- linux-x64-mbx-phux-icount- v0-rust-ffi-android-Linux-x64- \
-            v0-rust-release-deps-Linux-x64- v0-rust-release-deps-Linux-arm64- \
-            v0-rust-release-deps-Darwin-arm64- v0-rust-mini-v1-desktop-release- \
-            mini-v1-ffi-xcframework-zig-; do
-            keep_newest "$prefix"
-          done
+        run: bash scripts/ci/prune-build-cache.sh

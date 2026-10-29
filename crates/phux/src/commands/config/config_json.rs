@@ -66,7 +66,7 @@ pub(super) fn print_plugins_json(plugins: &[LoadedPlugin]) -> ExitCode {
 /// 1 -> 2 when the rows grew `source` / `declared` / `runtime` and
 /// `state`/`attention` became the *effective* (runtime-first) values; the
 /// document also gained the top-level `live` flag. See
-/// `docs/consumers/agents.md` section 4.6 for the schema notes.
+/// `docs/scripting.md#json-output-and-errors` for the schema notes.
 pub(super) fn print_agents_json(agents: &[AgentProjection], live: bool) -> ExitCode {
     crate::output::json(&serde_json::json!({
         "schema_version": 2,

@@ -8,6 +8,7 @@ use gpui::{ClipboardItem, Context};
 
 use super::desk::Desk;
 use super::notifications::Kind;
+use crate::devtools::SocketState;
 use crate::diag::{Receipt, development_version, recent_errors, redact};
 
 impl Desk {
@@ -55,6 +56,30 @@ impl Desk {
                     .into(),
             ),
         );
+    }
+
+    /// Save Developer mode and apply it to every window now. A setting that
+    /// could not be saved still applies to this run, and says so.
+    pub(crate) fn set_developer_mode(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Err(error) = crate::devtools::set_dev_mode(on, cx) {
+            self.post(
+                Kind::Error,
+                "Developer mode was not saved",
+                Some(format!(
+                    "It applies until you quit. {}",
+                    redact(&format!("{error:#}"))
+                )),
+            );
+        }
+        cx.notify();
+    }
+
+    /// `Toggle Developer Mode`, with a notice of where things stand.
+    pub(crate) fn toggle_developer_mode(&mut self, cx: &mut Context<Self>) {
+        let on = !crate::devtools::dev_mode();
+        self.set_developer_mode(on, cx);
+        let (title, body) = developer_mode_notice(on, crate::devtools::dev_mode());
+        self.post(Kind::Info, title, Some(body));
     }
 
     /// `Toggle Performance HUD`.
@@ -105,4 +130,31 @@ impl Desk {
         })
         .detach();
     }
+}
+
+/// What `Toggle Developer Mode` says: what was asked, and what applies now.
+fn developer_mode_notice(asked: bool, now: bool) -> (&'static str, String) {
+    match (asked, now) {
+        (false, true) => (
+            "Developer mode stays on",
+            "PHUX_DEV or --dev holds it on until you quit. It is saved off for the next launch."
+                .to_owned(),
+        ),
+        (_, false) => (
+            "Developer mode off",
+            "The HUD, allocation counting and the dev socket are off.".to_owned(),
+        ),
+        (true, true) => ("Developer mode on", developer_mode_on_body()),
+    }
+}
+
+fn developer_mode_on_body() -> String {
+    let socket = match crate::devtools::socket_state() {
+        SocketState::Listening(path) => {
+            format!("the dev socket at {}", crate::devtools::display_path(&path))
+        }
+        SocketState::Failed(error) => format!("no dev socket ({})", redact(&error)),
+        SocketState::Off => "no dev socket yet".to_owned(),
+    };
+    format!("Performance HUD, allocation counting and {socket}. Settings > Developer has the rest.")
 }

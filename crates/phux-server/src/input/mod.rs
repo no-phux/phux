@@ -1,5 +1,5 @@
 //! Server-side input plumbing: wire events -> libghostty-vt events -> PTY
-//! bytes (docs/spec/input.md, ADR-0006, ADR-0008).
+//! bytes (docs/protocol.md#input, ADR-0006, ADR-0008).
 //!
 //! The wire's input atoms are libghostty's own types, so this layer only
 //! composes libghostty's allocator-bound events, gates emission on terminal

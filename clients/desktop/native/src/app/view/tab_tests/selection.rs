@@ -185,3 +185,24 @@ fn split_tab_selects_only_its_focused_terminal_and_keyless_tabs_still_activate(
     cx.simulate_mouse_up(a, MouseButton::Left, modifier);
     draw(cx);
 }
+
+#[gpui::test]
+fn side_rail_marks_only_the_terminal_the_window_shows(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    desk.update(cx, selectable_work);
+    run(&desk, "tabs-side", cx);
+    let mark = cx
+        .debug_bounds("current-mark")
+        .expect("selected tab is marked");
+    let selected = cx.debug_bounds("tab-fixture-c").unwrap();
+    assert!(
+        selected.contains(&mark.center()),
+        "the mark sits on the selected tab"
+    );
+    for other in ["tab-fixture-a", "tab-fixture-b"] {
+        let row = cx.debug_bounds(other).unwrap();
+        assert!(!row.contains(&mark.center()), "{other} is not marked");
+    }
+}

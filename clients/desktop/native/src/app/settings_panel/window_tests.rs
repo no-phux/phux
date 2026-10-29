@@ -1,0 +1,444 @@
+//! Settings lives in a native utility window; palette searches stay lightweight.
+
+use super::{Page, window::SettingsWindow};
+use crate::app::desk::Desk;
+use gpui::{Entity, TestAppContext, VisualTestContext};
+
+#[gpui::test]
+fn appearance_pickers_fit_the_page_at_narrow_medium_and_wide_widths(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    for width in [700., 804., 860., 924., 1100.] {
+        settings.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+        draw(settings);
+        let sidebar = settings.debug_bounds("settings-sidebar").unwrap();
+        for selector in ["settings-font", "settings-theme", "settings-brand-profile"] {
+            let picker = settings.debug_bounds(selector).unwrap();
+            assert!(
+                picker.left() >= sidebar.right() + gpui::px(20.)
+                    && picker.right() <= gpui::px(width - 20.),
+                "{selector} stays inside the page gutter at {width}: {picker:?}"
+            );
+            assert_eq!(
+                picker.size.width,
+                gpui::px(260.),
+                "{selector} owns its input's full width at {width}"
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn category_labels_share_one_column_instead_of_centering_each_buttons_contents(
+    cx: &mut TestAppContext,
+) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    draw(settings);
+    let baseline = settings
+        .debug_bounds("settings-category-label-Appearance")
+        .unwrap();
+    for selector in [
+        "settings-category-label-Layout",
+        "settings-category-label-Keyboard",
+        "settings-category-label-Spacing",
+        "settings-category-label-Ghostty",
+        "settings-category-label-Updates",
+        "settings-category-label-Connections",
+        "settings-category-label-Developer",
+    ] {
+        let label = settings.debug_bounds(selector).unwrap();
+        assert_eq!(
+            label.left(),
+            baseline.left(),
+            "every category starts on one text column"
+        );
+        assert_eq!(label.size.height, baseline.size.height);
+    }
+    settings.update(|_, cx| {
+        use gpui_kit::component::ActiveTheme as _;
+        assert_eq!(
+            cx.theme().font_family.as_ref(),
+            crate::app::ui::typography::FAMILY
+        );
+        assert_eq!(
+            cx.theme().font_size,
+            gpui::px(crate::app::ui::typography::BASE)
+        );
+    });
+}
+
+pub(in crate::app) fn opened(
+    desk: &Entity<Desk>,
+    cx: &gpui::TestAppContext,
+) -> (gpui::AnyWindowHandle, Entity<SettingsWindow>) {
+    desk.read_with(cx, |desk, cx| {
+        desk.desktop
+            .read(cx)
+            .settings
+            .clone()
+            .expect("settings window")
+    })
+}
+
+fn draw(cx: &mut VisualTestContext) {
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn permissions_search_reaches_setup_for_the_desktop_and_local_launcher(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, view) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    settings.simulate_keystrokes("cmd-f");
+    settings.simulate_input("full disk access");
+    draw(settings);
+    assert_eq!(
+        view.read_with(settings, |view, _| view.page),
+        Page::Permissions
+    );
+    for selector in [
+        "settings-permissions-desktop",
+        "settings-permissions-server",
+    ] {
+        assert!(settings.debug_bounds(selector).is_some(), "{selector}");
+    }
+}
+
+#[gpui::test]
+fn settings_shortcut_opens_a_separate_reusable_window(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    assert_ne!(handle, owner);
+    assert_eq!(
+        desk.read_with(workspace, |desk, _| desk.modal.clone()),
+        crate::app::desk::Modal::None
+    );
+    assert!(workspace.debug_bounds("palette-panel").is_none());
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    assert_eq!(opened(&desk, workspace).0, handle);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    draw(settings);
+    assert!(settings.debug_bounds("settings-sidebar").is_some());
+    assert!(settings.debug_bounds("settings-content").is_some());
+    settings.simulate_keystrokes("cmd-w");
+    settings.run_until_parked();
+    assert!(desk.read_with(settings, |desk, cx| {
+        desk.desktop.read(cx).settings.is_none()
+    }));
+}
+
+#[gpui::test]
+fn settings_categories_search_clear_and_live_edits(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.update(|window, cx| desk.update(cx, |desk, cx| desk.execute("settings", window, cx)));
+    draw(workspace);
+    let (handle, view) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    draw(settings);
+    let sidebar_before = settings.debug_bounds("settings-sidebar").unwrap();
+    let category = settings.debug_bounds("settings-category-Layout").unwrap();
+    settings.simulate_click(category.center(), gpui::Modifiers::none());
+    draw(settings);
+    assert_eq!(view.read_with(settings, |view, _| view.page), Page::Layout);
+    let choice = settings.debug_bounds("tab-position-bottom").unwrap();
+    settings.simulate_click(choice.center(), gpui::Modifiers::none());
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.tab_position),
+        crate::settings::TabPosition::Bottom
+    );
+    assert_eq!(
+        settings.debug_bounds("settings-sidebar").unwrap(),
+        sidebar_before
+    );
+    settings.simulate_keystrokes("cmd-f");
+    settings.simulate_input("line height");
+    draw(settings);
+    assert_eq!(view.read_with(settings, |view, _| view.page), Page::Spacing);
+    assert!(settings.debug_bounds("settings-category-Spacing").is_some());
+    assert!(settings.debug_bounds("settings-category-Updates").is_none());
+    settings.simulate_keystrokes("cmd-a");
+    settings.simulate_input("no-such-preference-xyz");
+    draw(settings);
+    assert!(settings.debug_bounds("settings-empty").is_some());
+    settings.simulate_keystrokes("escape");
+    draw(settings);
+    assert!(settings.debug_bounds("settings-empty").is_none());
+    assert!(
+        settings
+            .debug_bounds("settings-category-Appearance")
+            .is_some()
+    );
+}
+
+#[gpui::test]
+fn settings_wide_controls_fit_and_palette_shortcut_returns_to_workspace(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    for width in [700., 860., 1100.] {
+        settings.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+        draw(settings);
+        let content = settings.debug_bounds("settings-content").unwrap();
+        let theme = settings.debug_bounds("settings-theme").unwrap();
+        assert!(
+            theme.left() >= content.left() && theme.right() <= content.right(),
+            "theme fits at {width}: {theme:?}"
+        );
+    }
+    settings.simulate_keystrokes("cmd-p");
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.modal.clone()),
+        crate::app::desk::Modal::Goto
+    );
+    assert!(
+        settings.debug_bounds("palette-panel").is_none(),
+        "the palette belongs to the workspace"
+    );
+    let workspace = &mut VisualTestContext::from_window(owner, settings);
+    draw(workspace);
+    assert!(workspace.debug_bounds("palette-panel").is_some());
+}
+
+#[gpui::test]
+fn updates_product_details_fit_inside_the_grid_at_every_settings_width(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    let updater = desk.read_with(workspace, |desk, _| desk.updates.clone());
+    updater.update(workspace, |updater, cx| {
+        updater.prefs = crate::updates::Preferences::default();
+        updater.development = false;
+        updater.current = Some(crate::updates::Release {
+            version: "0.50.0".into(),
+            ..Default::default()
+        });
+        updater.target = Some(crate::updates::Release {
+            version: "0.51.0".into(),
+            ..Default::default()
+        });
+        updater.runtime = Some(crate::updates::RuntimeRelease {
+            current: "0.50.0".into(),
+            target: "0.51.0-next.12345".into(),
+            available: true,
+            mutable: true,
+            native_command: None,
+            protocol_current: None,
+            protocol_target: None,
+        });
+        cx.notify();
+    });
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    draw(settings);
+    let category = settings.debug_bounds("settings-category-Updates").unwrap();
+    settings.simulate_click(category.center(), gpui::Modifiers::none());
+    for width in [700., 860., 1100.] {
+        settings.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+        draw(settings);
+        let overview = settings.debug_bounds("updates-overview").unwrap();
+        // Inspect the actual name, version and status cells, not just the card.
+        for selector in [
+            "updates-name-Phux Desktop",
+            "updates-installed-Phux Desktop",
+            "updates-incoming-Phux Desktop",
+            "updates-status-Phux Desktop",
+            "updates-name-phux CLI & server",
+            "updates-installed-phux CLI & server",
+            "updates-incoming-phux CLI & server",
+            "updates-status-phux CLI & server",
+            "updates-actions",
+        ] {
+            let cell = settings.debug_bounds(selector).expect(selector);
+            assert!(
+                cell.left() >= overview.left() + gpui::px(18.)
+                    && cell.right() <= overview.right() - gpui::px(18.),
+                "{selector} fits inside the card at {width}: {cell:?} in {overview:?}"
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn closing_the_owner_closes_its_settings_without_leaking_a_desk(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let settings = opened(&desk, workspace).0;
+    owner
+        .update(workspace, |_, window, _| window.remove_window())
+        .unwrap();
+    workspace.run_until_parked();
+    assert!(settings.update(workspace, |_, _, _| ()).is_err());
+    assert!(desk.read_with(workspace, |desk, cx| {
+        desk.desktop.read(cx).settings.is_none()
+    }));
+}
+
+#[gpui::test]
+fn native_edit_menu_edits_settings_search_not_the_terminal(cx: &mut TestAppContext) {
+    use crate::app::actions::Run;
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, view) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    settings.dispatch_action(Run::new("find"));
+    settings.simulate_input("no-such-setting-xyz");
+    draw(settings);
+    assert!(settings.debug_bounds("settings-empty").is_some());
+    settings.update(|_, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("line height".into()))
+    });
+    settings.dispatch_action(Run::new("select-all"));
+    settings.dispatch_action(Run::new("paste"));
+    draw(settings);
+    assert_eq!(view.read_with(settings, |view, _| view.page), Page::Spacing);
+    assert!(settings.debug_bounds("settings-empty").is_none());
+    settings.dispatch_action(Run::new("select-all"));
+    settings.dispatch_action(Run::new("copy"));
+    settings.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("line height".into())
+        )
+    });
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.modal.clone()),
+        crate::app::desk::Modal::None
+    );
+}
+
+#[gpui::test]
+fn leader_presets_custom_validation_and_off_apply_to_the_owner(cx: &mut TestAppContext) {
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.update(|window, cx| {
+        desk.update(cx, |desk, cx| {
+            desk.show_settings_page(Page::Keyboard, window, cx)
+        });
+    });
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    settings.simulate_resize(gpui::size(gpui::px(860.), gpui::px(1100.)));
+    draw(settings);
+    let preset = settings.debug_bounds("leader-key-ctrl+b").unwrap();
+    settings.simulate_click(preset.center(), gpui::Modifiers::none());
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.leader_key.clone())
+            .as_deref(),
+        Some("ctrl+b")
+    );
+    let input = settings.debug_bounds("leader-custom-input").unwrap();
+    settings.simulate_click(input.center(), gpui::Modifiers::none());
+    settings.simulate_keystrokes("cmd-a");
+    settings.simulate_input("a");
+    settings.simulate_keystrokes("enter");
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.leader_key.clone())
+            .as_deref(),
+        Some("ctrl+b")
+    );
+    settings.simulate_keystrokes("cmd-a");
+    settings.simulate_input("C-M-a");
+    settings.simulate_keystrokes("enter");
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.leader_key.clone())
+            .as_deref(),
+        Some("ctrl+alt+a")
+    );
+    let off = settings.debug_bounds("leader-key-off").unwrap();
+    settings.simulate_click(off.center(), gpui::Modifiers::none());
+    draw(settings);
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.leader_key.clone()),
+        None
+    );
+}
+
+#[gpui::test]
+fn brand_picker_changes_the_running_icon_and_persists_outside_workspace_preferences(
+    cx: &mut TestAppContext,
+) {
+    use crate::app::branding::{self, Branding};
+    use crate::workspace::persist::FileLayoutStore;
+    use gpui::AppContext as _;
+    let path = std::env::temp_dir().join(format!(
+        "phux-brand-ui-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let config = path.join("appearance.json");
+    let (owner, desk) = crate::app::overlays::palette_tests::fixture(cx);
+    let branding = cx.new(|_| Branding::from_store(FileLayoutStore::new(&config, None)));
+    let original_preferences = desk.read_with(cx, |desk, _| desk.prefs.clone());
+    let desktop = desk.read_with(cx, |desk, _| desk.desktop.clone());
+    desktop.update(cx, |desktop, _| desktop.branding = branding.clone());
+    desk.update(cx, |desk, _| desk.branding = branding.clone());
+    let workspace = &mut VisualTestContext::from_window(owner, cx);
+    workspace.simulate_keystrokes("cmd-,");
+    draw(workspace);
+    let (handle, _) = opened(&desk, workspace);
+    let settings = &mut VisualTestContext::from_window(handle, workspace);
+    settings.simulate_resize(gpui::size(gpui::px(860.), gpui::px(1000.)));
+    draw(settings);
+    let field = settings.debug_bounds("settings-brand-profile").unwrap();
+    settings.simulate_click(
+        gpui::point(field.center().x, field.bottom() - gpui::px(12.)),
+        gpui::Modifiers::none(),
+    );
+    draw(settings);
+    settings.simulate_keystrokes("up");
+    settings.simulate_keystrokes("enter");
+    draw(settings);
+    let selected = branding.read_with(settings, |brand, _| brand.id.clone());
+    assert_eq!(selected, "classic-prompt");
+    assert_eq!(
+        settings.app_icon_png().unwrap(),
+        branding::profile(&selected).png().unwrap()
+    );
+    assert_eq!(
+        Branding::from_store(FileLayoutStore::new(&config, None)).id,
+        selected
+    );
+    assert_eq!(
+        desk.read_with(settings, |desk, _| desk.prefs.clone()),
+        original_preferences
+    );
+    std::fs::remove_dir_all(path).unwrap();
+}

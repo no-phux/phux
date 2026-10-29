@@ -1,4 +1,4 @@
-//! Wire-frame encoder (`docs/spec/appendix-encoding.md`).
+//! Wire-frame encoder (`docs/protocol.md#framing`).
 //!
 //! Message bodies are field-tagged TLV; inside a field's value, primitives
 //! are positional and big-endian, with `u32`-length-prefixed strings and
@@ -6,7 +6,7 @@
 
 use bytes::BytesMut;
 
-/// TLV wire types (`docs/spec/appendix-encoding.md` §1).
+/// TLV wire types (`docs/protocol.md#framing`).
 pub mod wire_type {
     /// Length-delimited `varint length || bytes`: the only type emitted at the
     /// body level, so an unknown field always skips by length.
@@ -140,7 +140,7 @@ impl<'a> Encoder<'a> {
     }
 
     /// Write one body-level TLV field: `field_id || BYTES || varint length ||
-    /// value` (`docs/spec/appendix-encoding.md` §1). Absent values are simply
+    /// value` (`docs/protocol.md#framing`). Absent values are simply
     /// not written.
     pub fn write_field(&mut self, field_id: u32, value: &[u8]) {
         self.write_varint(u64::from(field_id));

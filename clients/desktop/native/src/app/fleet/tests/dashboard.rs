@@ -91,12 +91,11 @@ fn fleet_is_opt_in_and_the_empty_view_dismisses_with_escape(cx: &mut TestAppCont
     });
     draw(cx);
     assert!(!shown(cx, "agent-fleet-panel"));
-    desk.read_with(cx, |desk, _| {
-        assert_eq!(
-            desk.settings_page,
-            Some(super::super::super::settings_panel::Page::Layout)
-        )
-    });
+    let (_, settings) = super::super::super::settings_panel::window_tests::opened(&desk, cx);
+    assert_eq!(
+        settings.read_with(cx, |settings, _| settings.page),
+        super::super::super::settings_panel::Page::Layout
+    );
     desk.update_in(cx, |desk, window, cx| {
         desk.close_modal(window, cx);
         desk.update_prefs(|prefs| prefs.agent_fleet = true, cx);
@@ -145,8 +144,8 @@ fn fleet_keyboard_navigation_survives_a_narrow_resize(cx: &mut TestAppContext) {
     let panel = cx.debug_bounds("agent-fleet-panel").unwrap();
     assert!(panel.right() <= gpui::px(360.));
     assert!(panel.bottom() <= gpui::px(480.));
-    let first = cx.debug_bounds("fleet-agent-mini-@9").unwrap();
-    let second = cx.debug_bounds("fleet-agent-mini-@10").unwrap();
+    let first = cx.debug_bounds("fleet-agent-remote-mini-@9").unwrap();
+    let second = cx.debug_bounds("fleet-agent-remote-mini-@10").unwrap();
     assert!(
         second.top() > first.top(),
         "a phone-width window has one column"
@@ -156,7 +155,7 @@ fn fleet_keyboard_navigation_survives_a_narrow_resize(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("enter");
     draw(cx);
     desk.read_with(cx, |desk, _| {
-        assert!(desk.fleet_view.pending.is_none());
+        assert!(desk.fleet_view.pending.is_some());
         assert!(
             desk.link.as_ref().unwrap().workspace.awaiting_output(&[
                 phux_client_runtime::control::Event::TerminalChanged {
@@ -198,12 +197,12 @@ fn fleet_click_revalidates_the_agent_and_pins_the_remote_incarnation(cx: &mut Te
         desk.execute("agent-fleet", window, cx);
     });
     draw(cx);
-    click_on(cx, "fleet-agent-mini-@9");
+    click_on(cx, "fleet-agent-remote-mini-@9");
     desk.read_with(cx, |desk, _| {
         assert_eq!(desk.remote.as_deref(), Some("mini"));
         assert_eq!(desk.session, "remote");
         assert_eq!(desk.modal, super::super::super::desk::Modal::None);
-        assert!(desk.fleet_view.pending.is_none());
+        assert!(desk.fleet_view.pending.is_some());
         assert!(
             desk.link.as_ref().unwrap().workspace.awaiting_output(&[
                 phux_client_runtime::control::Event::TerminalChanged {
@@ -237,11 +236,55 @@ fn fleet_click_revalidates_the_agent_and_pins_the_remote_incarnation(cx: &mut Te
         install(desk, attached);
         desk.fleet_view.pending = Some(target.clone());
         desk.settle_fleet_terminal();
-        assert!(desk.fleet_view.pending.is_none());
+        assert!(desk.fleet_view.pending.is_some());
         assert_eq!(
             desk.link.as_ref().unwrap().workspace.pending(),
             1,
             "a valid topology reveals the terminal without waiting for its badge"
         );
+    });
+}
+
+#[gpui::test]
+fn the_playground_shows_every_ghost_as_the_same_tile_a_card_is(cx: &mut TestAppContext) {
+    let _dial = DeterministicDial::arm();
+    let (handle, desk, _) = launch(cx);
+    let cx = &mut gpui::VisualTestContext::from_window(handle.into(), cx);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    desk.update_in(cx, |desk, window, cx| {
+        desk.prefs.agent_fleet = true;
+        install(desk, connection(1, vec![session(7, "main")]));
+        let remote = with_agent(
+            with_agent(
+                connection(2, vec![session(8, "remote")]),
+                9,
+                AgentState::Working,
+            ),
+            10,
+            AgentState::Blocked,
+        );
+        observe(&mut desk.fleet, Some("mini"), remote);
+        desk.execute("agent-fleet", window, cx);
+    });
+    draw(cx);
+    assert!(!shown(cx, "fleet-playground"), "cards come first");
+    click_on(cx, "fleet-playground-toggle");
+    assert!(shown(cx, "fleet-playground"));
+    assert!(!shown(cx, "fleet-grid"), "one view at a time");
+    let panel = cx.debug_bounds("agent-fleet-panel").unwrap();
+    let scene = cx.debug_bounds("fleet-playground").unwrap();
+    assert!(panel.contains(&scene.origin) && scene.right() <= panel.right());
+    let ghost = cx.debug_bounds("fleet-agent-remote-mini-@10").unwrap();
+    assert!(
+        scene.contains(&ghost.center()),
+        "a ghost stands inside its scene"
+    );
+    click_on(cx, "fleet-agent-remote-mini-@10");
+    desk.read_with(cx, |desk, _| {
+        assert_eq!(
+            desk.fleet_view.pending.as_ref().map(|a| a.terminal.clone()),
+            Some(ResourceId::local(10))
+        );
+        assert_eq!(desk.remote.as_deref(), Some("mini"));
     });
 }

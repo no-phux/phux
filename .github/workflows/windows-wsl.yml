@@ -1,0 +1,87 @@
+# The Windows distribution is the verified Linux release running in WSL,
+# exposed by PowerShell launchers. Test the real boundary in both PS hosts.
+name: Windows WSL
+
+on:
+  pull_request:
+    paths:
+      - scripts/install-windows.ps1
+      - scripts/test-install-windows.ps1
+      - scripts/test-windows-wsl.ps1
+      - scripts/test-windows-mcp.py
+      - scripts/test-windows-terminal.py
+      - .github/workflows/windows-wsl.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/install-windows.ps1
+      - scripts/test-install-windows.ps1
+      - scripts/test-windows-wsl.ps1
+      - scripts/test-windows-mcp.py
+      - scripts/test-windows-terminal.py
+      - .github/workflows/windows-wsl.yml
+  workflow_dispatch:
+    inputs:
+      desktop-build-run:
+        description: Optional retained native desktop run for GUI diagnostics only
+        type: string
+        default: ''
+      desktop-build-sha:
+        description: Exact product SHA for that retained diagnostic build
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.desktop-build-run != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/windows-desktop-diagnostic.yml
+    with:
+      build-run: ${{ inputs.desktop-build-run }}
+      build-sha: ${{ inputs.desktop-build-sha }}
+  windows:
+    if: inputs.desktop-build-run == ''
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Install the test-only native ConPTY adapter
+        run: |
+          python -m pip install --disable-pip-version-check --no-input --only-binary=:all: pywinpty==3.1.0
+      - name: Installer contracts in Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/test-install-windows.ps1
+      - name: Installer contracts in PowerShell 7
+        shell: pwsh
+        run: ./scripts/test-install-windows.ps1
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          wsl-shell-user: phux-ci
+          additional-packages: curl ca-certificates python3 minisign
+          use-cache: 'false'
+      - name: Set the disposable distribution's default user
+        id: user
+        shell: pwsh
+        run: |
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec sh -c "printf '[user]\ndefault=phux-ci\n' >> /etc/wsl.conf"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot configure the WSL test user' }
+          wsl.exe --terminate Ubuntu-24.04
+      - name: Real WSL release installation and PowerShell 5.1 launchers
+        shell: powershell
+        run: ./scripts/test-windows-wsl.ps1 -Distribution Ubuntu-24.04
+      - name: Real WSL release installation and PowerShell 7 launchers
+        if: always() && steps.user.outcome == 'success'
+        shell: pwsh
+        run: ./scripts/test-windows-wsl.ps1 -Distribution Ubuntu-24.04

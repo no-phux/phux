@@ -70,7 +70,14 @@ impl TerminalInput {
     /// Hiding keeps this input and that timer. Delivery rechecks that this
     /// view is still the visible size owner of the generation that armed the
     /// proposal, so a hidden former owner cannot override the focused view.
+    ///
+    /// The painted cell pitch is not that proposal. The first time it changes,
+    /// it is stored on the local replica immediately, for the size owner and
+    /// for every other view, before settle, readiness, or the viewer gate.
+    /// Unchanged paints do not republish. The server still learns the pitch
+    /// only from the settled resize.
     pub fn fit(&mut self, owner: bool, window: &Window, cx: &mut Context<Self>) {
+        self.apply_local_cell_pixels();
         let active = window.is_window_active();
         let reactivated = active && !self.fit_active;
         self.fit_active = active;
@@ -158,6 +165,30 @@ impl TerminalInput {
         self.settling = None;
     }
 
+    /// Store this paint's cell pitch locally when it changed. No server frame.
+    fn apply_local_cell_pixels(&mut self) {
+        let Some(metrics) = self.metrics else {
+            return;
+        };
+        let cell = cell_px(metrics);
+        if self.applied_cell == Some(cell) {
+            return;
+        }
+        let Ok(client) = self.client() else {
+            return;
+        };
+        let stored = client.with_control(|control| {
+            if control.engine().is_none() {
+                return false;
+            }
+            control.set_local_cell_pixels(&self.terminal, cell.0, cell.1);
+            true
+        });
+        if stored {
+            self.applied_cell = Some(cell);
+        }
+    }
+
     fn claim_fit(&self) {
         if let Ok(client) = self.client() {
             fit_claims().insert(claim_key(&client, &self.terminal), self.fit_token);
@@ -203,8 +234,8 @@ pub(super) fn cell_px(metrics: InputMetrics) -> (u16, u16) {
 
 /// `None` when this proposal was already sent, or on the first look when the
 /// grid matches and the pitch is [`DEFAULT_CELL_PX`]. Any other pitch is
-/// reported so mouse pixels and the encoder share one cell. Sending a new
-/// pitch tombstones native history once; that is the server's resize contract.
+/// reported so mouse encoding and image geometry share one cell. Pixel-only
+/// changes preserve native history; only a text-grid reflow retires its cursors.
 pub(super) fn pending_fit(
     fitted: Option<FitProposal>,
     capacity: (u16, u16),

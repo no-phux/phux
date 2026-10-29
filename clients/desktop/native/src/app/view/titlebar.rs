@@ -12,7 +12,6 @@ use gpui::{
     AnimationExt, AnyElement, Context, FontWeight, IntoElement, MouseButton, Window, div, px,
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::Button;
 use gpui_kit::component::{Icon, Sizable};
 
 use crate::settings::TabPosition;
@@ -58,35 +57,56 @@ fn titlebar_lead(quick: bool, sidebar: bool, sidebar_width: f32) -> f32 {
 
 pub(super) fn build(desk: &mut Desk, _: &mut Window, cx: &mut Context<Desk>) -> AnyElement {
     let look = desk.look();
-    titlebar(desk, &look, cx).into_any_element()
+    titlebar(desk, &look, false, cx).into_any_element()
 }
 
-fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+pub(super) fn sidebar_header(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
+    titlebar(desk, look, true, cx).into_any_element()
+}
+
+/// Global actions live above sidebar search when it owns the window header,
+/// leaving the work canvas free all the way to the window's top gutter.
+pub(super) fn sidebar_tools(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    div()
+        .debug_selector(|| "sidebar-tools".into())
+        .flex_shrink_0()
+        .min_h(px(36.))
+        .px(px(8.))
+        .flex()
+        .flex_col()
+        .children(
+            super::status::status_chips(desk, look, cx)
+                .map(|chip| div().flex().flex_wrap().gap(px(4.)).child(chip)),
+        )
+        .child(div().py(px(4.)).child(action_buttons(desk, 1., look, cx)))
+}
+
+fn titlebar(
+    desk: &mut Desk,
+    look: &Look,
+    embedded: bool,
+    cx: &mut Context<Desk>,
+) -> impl IntoElement {
     let region = desk
         .drag_region
         .get_or_insert_with(|| cx.new(crate::chrome::DragRegion::new))
         .clone();
     let skin = &look.skin;
-    let height = skin.chrome.titlebar;
-    let fit = controls_fit(height);
+    let height = if embedded {
+        skin.chrome.titlebar
+    } else {
+        super::titlebar_height(desk, skin)
+    };
+    let fit = controls_fit(skin.chrome.titlebar);
     let quick = super::quick(desk);
     let sidebar = navigator::wanted(desk);
     let presence = skin.chrome.sidebar.clamp(0., 1.);
     let full = titlebar_lead(quick, sidebar, desk.prefs.sidebar_width as f32 * presence);
     let lead = (TRAFFIC_LIGHTS + (full - TRAFFIC_LIGHTS) * fit).max(TRAFFIC_LIGHTS);
-    let top_tabs = tabs_at(desk, skin, TabPosition::Top);
-    let title = (fit < 1. && !top_tabs).then(|| {
-        let title = desk
-            .active_tab()
-            .map(|tab| desk::tab_title(desk, tab))
-            .unwrap_or_else(|| "phux".to_owned());
-        match desk.remote.as_deref() {
-            Some(host) => format!("{title} · {}", machine_name::display(host)),
-            None => title,
-        }
-    });
+    let top_tabs = !embedded && tabs_at(desk, skin, TabPosition::Top);
     div()
         .id("titlebar")
+        .debug_selector(|| "titlebar".into())
         .group("titlebar")
         .h(px(height))
         .w_full()
@@ -96,26 +116,7 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
         .flex_shrink_0()
         .when(fit < 1., |bar| bar.overflow_hidden())
         .child(div().absolute().inset_0().child(region))
-        .children(title.map(|title| {
-            // Centred on the window with no hitbox, so the strip still drags.
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(px(TRAFFIC_LIGHTS + 8.))
-                .when(fit > 0., |row| row.opacity(1. - fit))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(from_hex(&look.chrome.subtext))
-                        .child(title),
-                )
-        }))
+        .children(quiet_title(desk, look, fit, top_tabs || embedded))
         .child(
             div()
                 .w(px(lead))
@@ -146,13 +147,7 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
                                 }),
                             ))
                         })
-                        .child(icon_button(
-                            "new-tab",
-                            IconName::Plus,
-                            "New Terminal",
-                            desk.shown_chord("new"),
-                            cx.listener(|desk, _, window, cx| desk.execute("new", window, cx)),
-                        ))
+                        .when(!(embedded && desk.prefs.sidebar_width < 216.), |lead| lead.child(new_terminal(desk, cx)))
                 })
                 .with_spring(
                     "main-menu-rail",
@@ -163,8 +158,59 @@ fn titlebar(desk: &mut Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoEl
         .when(top_tabs, |bar| {
             bar.child(tabs::strip(desk, TabPosition::Top, look, cx))
         })
-        .when(!top_tabs, |bar| bar.child(div().flex_1()))
-        .child(actions(desk, fit, look, cx))
+        .when(!top_tabs && !embedded, |bar| {
+            bar.child(div().flex_1().min_w_0().px(px(8.)).truncate()
+                .text_size(px(13.)).font_weight(FontWeight::MEDIUM)
+                .opacity(fit).child(active_title(desk)))
+        })
+        .when(!embedded, |bar| bar.child(actions(desk, fit, look, cx)))
+}
+
+fn new_terminal(desk: &Desk, cx: &mut Context<Desk>) -> impl IntoElement {
+    icon_button(
+        "new-tab",
+        IconName::Plus,
+        "New Terminal",
+        desk.shown_chord("new"),
+        cx.listener(|desk, _, window, cx| desk.execute("new", window, cx)),
+    )
+}
+
+fn active_title(desk: &Desk) -> String {
+    let title = desk
+        .active_tab()
+        .map(|tab| desk::tab_title(desk, tab))
+        .unwrap_or_else(|| "phux".to_owned());
+    match desk.remote.as_deref() {
+        Some(host) => format!("{title} · {}", machine_name::display(host)),
+        None => title,
+    }
+}
+
+/// The plain terminal's centered title has no hit box: its strip still drags.
+fn quiet_title(desk: &Desk, look: &Look, fit: f32, occupied: bool) -> Option<gpui::Div> {
+    if fit >= 1. || occupied {
+        return None;
+    }
+    Some(
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .px(px(TRAFFIC_LIGHTS + 8.))
+            .opacity(1. - fit)
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(from_hex(&look.chrome.subtext))
+                    .child(active_title(desk)),
+            ),
+    )
 }
 
 /// The bell, the skin toggle and a ready update.
@@ -176,29 +222,61 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
         .gap(px(2.))
         .pr(px(8.))
         .children(super::status::status_chips(desk, look, cx))
+        .child(action_buttons(desk, fit, look, cx))
+}
+
+fn action_buttons(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
+    let integrated = super::integrated_titlebar(desk, &look.skin);
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(2.))
+        .when(integrated, |tools| tools.w_full().min_w_0().flex_wrap())
         .when(fit > 0., |cluster| {
             cluster.child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(2.))
+                    .when(integrated && desk.prefs.sidebar_width < 216., |tools| {
+                        tools.child(new_terminal(desk, cx))
+                    })
                     .when(fit < 1., |actions| actions.opacity(fit))
                     .when(
                         desk.role != super::super::desk::WindowRole::Quick,
                         |actions| {
-                            actions.child(icon_button(
-                                "changes",
-                                IconName::GitBranch,
-                                if desk.changes.open {
-                                    "Hide Changes"
-                                } else {
-                                    "Show Changes"
-                                },
-                                desk.shown_chord("changes"),
-                                cx.listener(|desk, _, window, cx| {
-                                    desk.execute("changes", window, cx)
-                                }),
-                            ))
+                            actions
+                                .child(icon_button(
+                                    "changes",
+                                    IconName::GitBranch,
+                                    if desk.changes.open {
+                                        "Hide Changes"
+                                    } else {
+                                        "Show Changes"
+                                    },
+                                    desk.shown_chord("changes"),
+                                    cx.listener(|desk, _, window, cx| {
+                                        desk.execute("changes", window, cx)
+                                    }),
+                                ))
+                                // A narrow bar keeps its room for tabs;
+                                // Reviews stays in the View menu and palette.
+                                .when(desk.reviews.open || desk.wide_titlebar(), |actions| {
+                                    actions.child(icon_button(
+                                        "reviews",
+                                        IconName::GitPullRequest,
+                                        if desk.reviews.open {
+                                            "Hide Reviews"
+                                        } else {
+                                            "Show Reviews"
+                                        },
+                                        desk.shown_chord("reviews"),
+                                        cx.listener(|desk, _, window, cx| {
+                                            desk.execute("reviews", window, cx)
+                                        }),
+                                    ))
+                                })
                         },
                     )
                     .when(desk.native_agents_offered(), |actions| {
@@ -235,7 +313,7 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                     IconName::SquareTerminal,
                     // Named for the skin it switches to.
                     if desk.prefs.plain {
-                        "Liquid Glass"
+                        "Return to interface"
                     } else {
                         "Plain terminal"
                     },
@@ -243,7 +321,7 @@ fn actions(desk: &Desk, fit: f32, look: &Look, cx: &mut Context<Desk>) -> impl I
                     cx.listener(|desk, _, window, cx| desk.execute("plain-terminal", window, cx)),
                 )),
         )
-        .children(update_button(desk, cx))
+        .children(super::super::updates::trigger(desk, look, cx))
 }
 
 /// Snap every agent pane to its conversation or back to its terminal; lit
@@ -348,18 +426,6 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
             gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
         })
         .into_any_element()
-}
-
-fn update_button(desk: &Desk, cx: &mut Context<Desk>) -> Option<AnyElement> {
-    let entity = desk.updates.clone();
-    let action = entity.read(cx).action()?;
-    Some(
-        Button::new("desktop-update-ready")
-            .label(action.label())
-            .small()
-            .on_click(move |_, _, cx| entity.update(cx, |updater, cx| updater.act(cx)))
-            .into_any_element(),
-    )
 }
 
 /// The titlebar's way into the notification list, with the unread count.

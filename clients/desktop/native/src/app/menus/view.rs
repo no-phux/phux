@@ -55,6 +55,7 @@ pub(super) fn view_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
                 .checked(desk.prefs.sidebar_visible)
                 .gap(),
             command(desk, handle, "changes", IconName::GitBranch).checked(desk.changes.open),
+            command(desk, handle, "reviews", IconName::GitPullRequest).checked(desk.reviews.open),
             command(desk, handle, "plain-terminal", IconName::SquareTerminal)
                 .checked(desk.prefs.plain),
             command(desk, handle, "native-agents", IconName::MessagesSquare)
@@ -80,7 +81,9 @@ fn host_filter_page(desk: &Desk, handle: &WeakEntity<Desk>) -> MenuPage {
     }];
     items.extend(hosts.into_iter().map(|host| {
         let shown = desk.prefs.sidebar_shows_host(host.as_deref());
-        let name = host.clone().unwrap_or_else(|| "This Mac".into());
+        let name = host
+            .clone()
+            .unwrap_or_else(|| crate::platform::local_machine_label().into());
         let label = super::machine_name::label(host.as_deref());
         let handle = handle.clone();
         MenuItem::action(label, move |_, cx| {

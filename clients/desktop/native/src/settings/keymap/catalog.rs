@@ -11,9 +11,11 @@ const CATALOG: &str = "\
     capture | Capture… | General | cmd+shift+space | Dispatch a thought to OpenCode. Enter follows; Command/Control+Enter stays; Shift+Enter adds a line. | thought idea bug intake
     goto | Go To… | General | cmd+p | Find and focus a terminal, agent or tab. | switch navigate
     settings | Settings… | General | cmd+, | Adjust appearance, key bindings and desktop preferences. | preferences theme
+    theme | Select Theme… | General |  | Preview themes as you move through them; Enter keeps one, Escape restores. | colors colours appearance dark light
     new | New Terminal | Terminal | cmd+t | Open a new terminal in its own tab. | shell
     native-agent | New Agent… | Terminal |  | Start a native agent in the focused folder, on this host. | agent acp opencode remote headless login
     new-session | New Session… | Terminal | cmd+shift+n | Create a named session. |
+    switch-session | Switch Session… | Terminal | cmd+shift+s | Filter the sessions on every machine; Enter switches this window, or creates a session with the name you typed. | session switch create filter
     rename-session | Rename Session… | Terminal |  | Change the current session's name. |
     select-session-work | Select All in Session | Organization |  | Select the current session's work for organization. |
     move-resources | Move to Session… | Organization | cmd+shift+m | Choose a session for the selected work. |
@@ -23,7 +25,7 @@ const CATALOG: &str = "\
     kill-session | Kill Session… | Terminal |  | Confirm termination of a session and its processes. | delete
     new-home | New Terminal in Home Directory | Terminal | cmd+shift+t | Open a new terminal starting in your home directory. | shell
     folder | Open Folder… | Terminal | cmd+o | Choose a folder for a new terminal. | directory project
-    insert-path | Insert Path… | Terminal | cmd+shift+i | Choose a file or folder path to insert into the terminal. |
+    insert-path | Insert Path… | Terminal | cmd+shift+i alt+; | Choose a file or folder path to insert at the cursor. | complete picker file
     split-right | Split Right | Panes | cmd+d | Open a terminal beside the focused pane. | vertical
     split-down | Split Down | Panes | cmd+shift+d | Open a terminal below the focused pane. | horizontal
     split-left | Split Left | Panes |  | Open a terminal to the left of the focused pane. |
@@ -41,6 +43,9 @@ const CATALOG: &str = "\
     pane-prev | Previous Pane | Panes | cmd+[ | Focus the previous pane in the active tab. |
     tab-next | Next Tab | Tabs | cmd+shift+] | Switch to the next tab. |
     tab-prev | Previous Tab | Tabs | cmd+shift+[ | Switch to the previous tab. |
+    tab-peek | Peek Tabs | Tabs | cmd+shift+\\ | Show live terminal miniatures without resizing your work. Escape closes; arrows browse; Enter opens. | preview thumbnails overview
+    session-next | Next Session | Tabs |  | Switch to the next session in the sidebar. | navigator sidebar
+    session-prev | Previous Session | Tabs |  | Switch to the previous session in the sidebar. | navigator sidebar
     tab-move-left | Move Tab Left | Tabs |  | Move the active tab earlier in the tab bar. | reorder
     tab-move-right | Move Tab Right | Tabs |  | Move the active tab later in the tab bar. | reorder
     rename | Rename Tab… | Tabs |  | Set a custom name for the active tab. |
@@ -60,6 +65,8 @@ const CATALOG: &str = "\
     conversation | Toggle Conversation | Agents |  | Show the focused agent pane's conversation, or its terminal. | chat transcript native acp
     sidebar | Toggle Sidebar | View | cmd+b | Show or hide the navigation sidebar. |
     changes | Toggle Changes | View | cmd+alt+g | Show the focused terminal's Git changes beside the panes: diffs, staging and commit. | git diff stage commit status branch review
+    backdrop-shader-next | Next Backdrop Shader | View |  | Cycle the shader behind your panes: off, the built-ins, then your own files. | shader wgsl background wallpaper animated aurora nebula rain grid silk
+    reviews | Toggle Reviews | View | cmd+alt+r | Review your open GitHub pull requests: diffs, comments, checks and merge. | github pr pull request inbox merge ci checks approve
     plain-terminal | Toggle Plain Terminal | View | cmd+ctrl+t | Switch between the glass desk and a plain terminal window. | skin minimal ghostty chrome glass
     tabs-top | Tabs on Top | View |  | Place workspace tabs in the titlebar. | layout horizontal placement
     tabs-bottom | Tabs on Bottom | View |  | Place workspace tabs below your work, including in plain terminal mode. | layout horizontal placement
@@ -105,6 +112,7 @@ const CATALOG: &str = "\
     performance-monitor | Performance Monitor | Utilities |  | Inspect desktop CPU, memory and render timings. | telemetry cpu memory rss
     copy-diagnostics | Copy Diagnostics | Utilities |  | Copy app, runtime, server and connection identity with recent errors. No terminal content. | support debug report version log
     performance-monitor-stop | Stop Performance Monitoring | Utilities |  | Close the performance window and stop its sampler. | telemetry cpu memory rss
+    developer-mode | Toggle Developer Mode | Utilities |  | Turn Developer mode on or off and save it: the performance HUD, allocation counting and the dev socket. | dev debug developer telemetry socket profiling diagnostics
     perf-hud | Toggle Performance HUD | Utilities |  | Show frame rate, frame build time, CPU, memory, heap and the server's load over the window. | fps hud overlay telemetry frames jank heap
     perf-trace | Capture Performance Trace | Utilities |  | Record five seconds of desktop and server spans to a Perfetto file and copy its path. | trace perfetto profile timeline spans flamegraph
     tab-1 | Go to Tab | Tabs | cmd+1 | Switch to the tab at this position. |

@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest a change to phux.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: request
+    attributes:
+      label: What you want
+      description: The change you want phux to make.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The task this is for, and what you do today.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you tried to do this.

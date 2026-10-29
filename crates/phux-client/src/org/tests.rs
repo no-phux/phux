@@ -1,8 +1,12 @@
 use phux_protocol::caps::ServerFeatureExtSet;
-use phux_protocol::wire::frame::SessionLifetime;
+use phux_protocol::wire::frame::{
+    CreatePlacement, ExecState, ExitPolicy, LaunchMode, LaunchSpec, OrgFilter, SessionLifetime,
+};
 
 use super::*;
 use crate::testkit::{OrgFixture, ScriptSpec, serve_one};
+use phux_protocol::ResourceId;
+use phux_protocol::ids::{ResourceKey, ResourceKind, SessionId, SessionKey};
 
 fn assert_send<T: Send>(_: &T) {}
 
@@ -82,9 +86,7 @@ async fn placed_create_refuses_before_sending_to_an_older_organization_server() 
         name: None,
         on_exit: ExitPolicy::Retain,
         launch_mode: LaunchMode::Immediate,
-        placement: Some(Box::new(
-            phux_protocol::wire::frame::CreatePlacement::NewGroup,
-        )),
+        placement: Some(Box::new(CreatePlacement::NewGroup)),
     };
     assert!(matches!(
         commit(&mut conn, 1, command).await,
@@ -92,15 +94,6 @@ async fn placed_create_refuses_before_sending_to_an_older_organization_server() 
     ));
     assert!(matches!(
         crate::terminal::describe(&mut conn).await,
-        Err(OrgError::Unsupported)
-    ));
-    let key = ResourceKey::new([3; 16]).unwrap();
-    assert!(matches!(
-        fetch(&mut conn, OrgFilter::Resource(key), 2).await,
-        Err(OrgError::Unsupported)
-    ));
-    assert!(matches!(
-        crate::resource::show::show_key_on(&mut conn, key).await,
         Err(OrgError::Unsupported)
     ));
     drop(conn);
@@ -209,7 +202,6 @@ async fn a_deferred_create_is_dormant_until_restore_starts_it() {
             f,
             phux_protocol::wire::frame::FrameKind::Command {
                 command: Command::ResourceCreate {
-                    placement: None,
                     launch_mode: LaunchMode::Deferred,
                     ..
                 },

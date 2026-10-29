@@ -1,5 +1,5 @@
 //! Which hub consumer asked for each satellite resource this hub spawned
-//! (ADR-0109, `docs/spec/L1.md` §9.1).
+//! (ADR-0109, `docs/protocol.md`).
 //!
 //! A satellite sees all hub consumers as one connection, so it cannot tell
 //! the spawner's use from another consumer's. This hub-side ledger records

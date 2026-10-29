@@ -1,5 +1,5 @@
 //! The hub's incarnation fence and actor correlation for keyed operations it
-//! forwards to one satellite (`docs/spec/L1.md` §9.1).
+//! forwards to one satellite (`docs/protocol.md`).
 //!
 //! A satellite's dedupe record dies with its process (a changed
 //! `HELLO_OK.server_id`), which a consumer behind the hub cannot see. The

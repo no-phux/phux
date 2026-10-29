@@ -21,22 +21,15 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
+        | Modal::Sessions
         | Modal::Windows
         | Modal::MoveResources
+        | Modal::Themes
         | Modal::Path => {
             desk.palette_view = PaletteView::default();
             let state = palette_state(desk, window, cx);
             state.update(cx, |state, cx| {
                 state.set_loading(false, window, cx);
-                state.set_query("", window, cx);
-                state.focus(window, cx);
-            });
-        }
-        Modal::Settings => {
-            desk.settings_page = None;
-            desk.palette_view = PaletteView::default();
-            let state = palette_state(desk, window, cx);
-            state.update(cx, |state, cx| {
                 state.set_query("", window, cx);
                 state.focus(window, cx);
             });
@@ -111,6 +104,7 @@ pub(crate) fn prepare(desk: &mut Desk, window: &mut Window, cx: &mut Context<Des
                 cx,
             );
             target.update(cx, |input, cx| input.focus(window, cx));
+            desk.prepare_add_machine(cx);
         }
         Modal::KillSession { .. }
         | Modal::NativeLaunch
@@ -191,7 +185,7 @@ pub(super) fn input_with(
 }
 
 impl Desk {
-    pub(super) fn input_entity(&self, slot: InputSlot) -> Option<Entity<InputState>> {
+    pub(crate) fn input_entity(&self, slot: InputSlot) -> Option<Entity<InputState>> {
         self.modal_inputs
             .iter()
             .find(|(owned, _, _)| *owned == slot)

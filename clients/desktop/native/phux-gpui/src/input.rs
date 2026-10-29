@@ -17,6 +17,7 @@ mod tests;
 
 pub use clipboard::{HeldPaste, copy_too_large, paste_needs_confirmation};
 use fit::{FitProposal, PendingFit, next_fit_token};
+pub use keys::event as key_event;
 pub(crate) use link::{LinkAdmit, admit_path, admit_url};
 
 use composition::Composition;
@@ -167,6 +168,9 @@ pub struct TerminalInput {
     /// OSC 8 and row URLs for the frame last painted, plus a Command-click
     /// captured from that frame.
     painted_links: link::PaintedLinks,
+    /// Where the pointer last rested over the grid, and whether Command was
+    /// held: a link under it is underlined while Command is down.
+    hover: Option<(Point<Pixels>, bool)>,
     /// The cell the last motion event already delivered. A later move inside
     /// that cell is not a new event.
     last_motion_cell: Option<(u16, u16)>,
@@ -185,6 +189,9 @@ pub struct TerminalInput {
     last_error: Option<InputError>,
     /// The size and cell pitch this view last proposed.
     fitted: Option<FitProposal>,
+    /// Cell pitch last stored on the local replica. An unchanged paint does
+    /// not touch the engine, so it does not republish.
+    applied_cell: Option<(u16, u16)>,
     /// A proposal waiting to hold still for `FIT_SETTLE`.
     settling: Option<PendingFit>,
     /// Distinguishes this input from a later one bound to the same view.
@@ -221,6 +228,7 @@ impl TerminalInput {
             autoscroll_run: 0,
             reported_button: None,
             painted_links: link::PaintedLinks::default(),
+            hover: None,
             last_motion_cell: None,
             scroll_remainder: 0.0,
             scroll_fraction: None,
@@ -229,6 +237,7 @@ impl TerminalInput {
             window_remote: None,
             last_error: None,
             fitted: None,
+            applied_cell: None,
             settling: None,
             fit_token: next_fit_token(),
             fit_active: false,
@@ -240,6 +249,13 @@ impl TerminalInput {
     pub fn focus_handle(&self) -> &FocusHandle {
         &self.focus
     }
+
+    /// The cursor cell as last painted, in window coordinates. Empty until
+    /// the first frame is presented.
+    pub fn cursor_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.metrics.map(|metrics| metrics.cursor_bounds)
+    }
+
     pub fn set_option_as_alt(&mut self, enabled: bool) {
         self.option_as_alt = enabled;
     }
@@ -278,6 +294,7 @@ impl TerminalInput {
                 self.painted_links.forget();
                 self.metrics = None;
                 self.fitted = None;
+                self.applied_cell = None;
                 self.revoke_fit();
                 self.key_probe.forget();
                 Err(InputError::StalePresentation)

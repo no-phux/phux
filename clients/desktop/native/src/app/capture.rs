@@ -174,7 +174,7 @@ impl Desk {
             None => {
                 let input = cx.new(|cx| {
                     TextareaState::new(window, cx)
-                        .placeholder("What needs changing?")
+                        .placeholder("What needs doing?")
                         .default_value(self.capture.draft.clone())
                         .auto_grow(3, 8)
                         .submit_on_enter(true)
@@ -315,10 +315,11 @@ impl Desk {
             return false;
         };
         !pending.follow
-            || self
-                .link
-                .as_ref()
-                .is_some_and(|link| link.workspace.views_of(terminal) > 0)
+            || self.link.as_ref().is_some_and(|link| {
+                // Placement can precede bootstrap; keep the capture field's
+                // keyboard until the followed terminal can accept input.
+                link.connection.ready(terminal) && link.workspace.views_of(terminal) > 0
+            })
     }
 
     fn capture_source_matches(&self, pending: &Pending) -> bool {

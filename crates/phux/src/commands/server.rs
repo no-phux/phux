@@ -25,7 +25,7 @@ const AUTO_SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Version of the `phux server --ensure --json` availability document.
-const ENSURE_SCHEMA_VERSION: u8 = 1;
+pub(crate) const ENSURE_SCHEMA_VERSION: u8 = 1;
 
 /// Which owner made the selected socket available. `--ensure` proves only
 /// that the socket accepts; HELLO still negotiates protocol and features.

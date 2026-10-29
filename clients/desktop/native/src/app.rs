@@ -6,6 +6,8 @@
 
 mod actions;
 mod approvals;
+mod backdrop_shader;
+pub(crate) mod branding;
 mod capture;
 mod changes;
 mod color;
@@ -27,9 +29,12 @@ mod overlays;
 mod pane_identity;
 mod panes;
 mod performance;
+mod reviews;
 mod session;
 mod settings_panel;
+mod shader_view;
 mod skin;
+mod tab_peek;
 mod typed;
 mod ui;
 mod updates;
@@ -68,6 +73,17 @@ pub struct AppOptions {
     pub dev_telemetry: bool,
     /// Shown in the window when the server could not be ensured. Not hidden as an empty inventory.
     pub startup_error: Option<String>,
+    /// CLI automatic discovery found or installed. `phux` stays the command
+    /// name (`phux`) so later launches keep searching.
+    pub cli_install: Option<CliInstall>,
+}
+
+/// The CLI this process resolved before the command was rewritten to `phux`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliInstall {
+    pub path: PathBuf,
+    /// True only when this launch copied the bundled CLI into place.
+    pub installed: bool,
 }
 
 /// Open the desktop on an already-initialized GPUI app.
@@ -79,24 +95,37 @@ pub struct AppOptions {
 /// and drains on that edge. Terminal entities are kept per placement until the
 /// view id changes.
 pub fn open(options: AppOptions, cx: &mut App) -> anyhow::Result<WindowHandle<Root>> {
+    open_with_restore(options, false, cx)
+}
+
+/// The installed entry point opts into a pending update's one-time handoff.
+pub(crate) fn open_with_restore(
+    options: AppOptions,
+    restore: bool,
+    cx: &mut App,
+) -> anyhow::Result<WindowHandle<Root>> {
     let desktop = Desktop::install(cx);
-    desktop.update(cx, |desktop, cx| desktop.launch(options, cx))
+    desktop.update(cx, |desktop, cx| {
+        desktop.launch_with_restore(options, restore, cx)
+    })
 }
 
 /// Open the real menu material in a standalone native fixture.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn open_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
+    ui::typography::install(cx);
     ui::menu::preview(cx)
 }
 
 /// Preview or capture the real monitor without a daemon or production state.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn preview_performance_monitor(capture: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
+    ui::typography::install(cx);
     performance::preview(capture, cx)
 }
 
 /// Open a desk and capture every Settings page into `directory`, then quit.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn capture_settings_fixture(
     options: AppOptions,
     directory: PathBuf,
@@ -106,8 +135,51 @@ pub fn capture_settings_fixture(
     settings_panel::preview::capture(root, directory, cx)
 }
 
+/// Capture the real fleet composition with isolated, representative inventory.
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
+pub fn capture_fleet_fixture(
+    options: AppOptions,
+    directory: PathBuf,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let root = open(options, cx)?;
+    fleet::dashboard::preview::capture(root, directory, cx)
+}
+
+/// Open a desk and render the scripted fleet film into `directory`, then quit.
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
+pub fn capture_fleet_film(
+    options: AppOptions,
+    directory: PathBuf,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let root = open(options, cx)?;
+    fleet::dashboard::preview::film(root, directory, cx)
+}
+
+/// Capture the real desktop layouts with an embedded, server-free runtime.
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
+pub fn capture_design_fixture(
+    options: AppOptions,
+    directory: PathBuf,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    view::preview::open(options, directory, cx)
+}
+
+/// Capture the desk wearing each built-in backdrop shader, in a dark and a
+/// light theme, with an embedded, server-free runtime.
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
+pub fn capture_backdrop_fixture(
+    options: AppOptions,
+    directory: PathBuf,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    view::preview::open_backdrops(options, directory, cx)
+}
+
 /// Measure native menu creation without opening visible windows.
-#[cfg(feature = "ui-fixtures")]
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
 pub fn benchmark_menu_fixture(cx: &mut App) -> anyhow::Result<()> {
     ui::menu::benchmark(cx)
 }
@@ -118,3 +190,6 @@ pub fn command_ids() -> impl Iterator<Item = &'static str> {
         .iter()
         .map(|command| command.id)
 }
+
+#[cfg(all(feature = "ui-fixtures", target_os = "macos"))]
+pub use branding::verify_runtime_branding;

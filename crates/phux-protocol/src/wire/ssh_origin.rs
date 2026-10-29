@@ -1,5 +1,5 @@
 //! The ssh origin `phux stdio-bridge` stamps on the HELLO it relays
-//! (`docs/spec/proto.md` §6.1 field 9, `docs/spec/L3.md` §3.9).
+//! (`docs/protocol.md#handshake` field 9, `docs/remote.md#who-can-do-what`).
 //!
 //! The bridge, a Unix-socket client of HOST's server, rewrites the relayed
 //! HELLO to carry sshd's `SSH_CONNECTION` endpoints. The server accepts the

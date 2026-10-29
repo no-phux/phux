@@ -9,28 +9,33 @@
 //!
 //! Who you are: `--as`, else `$PHUX_AGENT_ADDRESS`, else this pane (`@N`
 //! from `$PHUX_TERMINAL_ID`), else `$USER`.
+//!
+//! On a host joined to a hub with `phux host join`, both use the hub's store
+//! instead, in this host's name ([`phux_client::hub_mail`]).
 
-use std::io::Read as _;
 use std::process::ExitCode;
 
-use phux_work::{
-    AckMail, Claim, ClaimFilter, ClaimOutcome, ReadMail, ReleaseClaim, RenewClaim, SendMail,
-    TakeClaim,
-};
+use phux_work::{Claim, ClaimFilter, ClaimOutcome, ReleaseClaim, RenewClaim, TakeClaim};
 
 use super::json_err::{self, codes};
 
 mod delivery;
+mod mail;
 use delivery::HookEvent;
+use mail::{ack, read, send};
 
 /// Schema of every `phux mail` and `phux claim` JSON document.
 const SCHEMA: &str = "phux.coord/v1";
+/// The `schema_version` every coordination document carries beside `schema`,
+/// as every other `--json` document does.
+pub(crate) const SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum MailAction {
     /// Store a message for each recipient
     Send {
-        /// Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name.
+        /// Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name,
+        /// led by `SATELLITE/` or `hub/` for one on another host.
         #[usage(required, value_name = "TO")]
         to: Vec<String>,
         /// The message. `-` reads it from stdin.
@@ -39,6 +44,9 @@ pub(crate) enum MailAction {
         /// Thread slug, such as the branch or task the message is about.
         #[usage(short = 't', long, value_name = "SLUG")]
         thread: String,
+        /// Durable retry identity: nonzero 32-hex. Reuse only with identical sender, recipients, thread and body in the same work store.
+        #[usage(long, value_name = "KEY")]
+        operation_id: Option<String>,
         #[usage(flatten)]
         me: AsOpt,
         #[usage(flatten)]
@@ -198,9 +206,17 @@ pub(crate) fn run_mail(action: &MailAction) -> ExitCode {
             to,
             message,
             thread,
+            operation_id,
             me,
             json,
-        } => send(to, message, thread, &whoami(me), json.json),
+        } => send(
+            to,
+            message,
+            thread,
+            &whoami(me),
+            json.json,
+            operation_id.as_deref(),
+        ),
         MailAction::Read {
             thread,
             all,
@@ -259,12 +275,27 @@ pub(crate) fn run_claim(action: &ClaimAction) -> ExitCode {
     }
 }
 
+/// The hub's store when this host joined one, else this host's.
 fn store(json: bool) -> Result<phux_work::Client, ExitCode> {
-    super::mission::client(json)
+    match phux_client::hub_mail::hub_link() {
+        Ok(Some(link)) => Ok(phux_work::Client::remote(std::sync::Arc::new(link))),
+        Ok(None) => super::mission::client(json),
+        Err(message) => Err(json_err::emit(
+            json,
+            &json_err::CliError::new(
+                codes::INVALID_CONFIG,
+                message,
+                "fix the [[uplink]] entry `phux host join` wrote, or join again",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        )),
+    }
 }
 
 fn emit(document: &serde_json::Value) {
-    match serde_json::to_string(document) {
+    let mut document = document.clone();
+    document["schema_version"] = SCHEMA_VERSION.into();
+    match serde_json::to_string(&document) {
         Ok(line) => outln!("{line}"),
         Err(err) => error!("could not encode the result: {err}"),
     }
@@ -276,116 +307,6 @@ fn usage_error(json: bool, message: impl Into<String>, remedy: &str) -> ExitCode
         &json_err::CliError::new(codes::USAGE_ERROR, message, remedy),
         crate::exit_codes::EXIT_USAGE,
     )
-}
-
-fn send(to: &[String], message: &str, thread: &str, me: &str, json: bool) -> ExitCode {
-    let body = if message == "-" {
-        let mut text = String::new();
-        if let Err(err) = std::io::stdin().read_to_string(&mut text) {
-            return usage_error(json, format!("could not read stdin: {err}"), "pass -m TEXT");
-        }
-        text
-    } else {
-        message.to_owned()
-    };
-    let client = match store(json) {
-        Ok(client) => client,
-        Err(code) => return code,
-    };
-    let operation_id = match phux_work::OperationId::generate() {
-        Ok(id) => id,
-        Err(err) => return super::mission::report_as(json, &err, SCHEMA),
-    };
-    let sent = match client.send_mail(SendMail {
-        thread: thread.to_owned(),
-        from: me.to_owned(),
-        to: to.to_vec(),
-        body,
-        operation_id,
-    }) {
-        Ok(sent) => sent,
-        Err(err) => return super::mission::report_as(json, &err, SCHEMA),
-    };
-    if json {
-        emit(&serde_json::json!({"schema": SCHEMA, "mail": sent.mail}));
-    } else {
-        outln!(
-            "sent {} to {}",
-            sent.mail.id.to_hex(),
-            sent.mail.to.join(", ")
-        );
-    }
-    ExitCode::SUCCESS
-}
-
-fn read(thread: Option<String>, all: bool, peek: bool, me: &str, json: bool) -> ExitCode {
-    let client = match store(json) {
-        Ok(client) => client,
-        Err(code) => return code,
-    };
-    let mail = match client.read_mail(ReadMail {
-        reader: me.to_owned(),
-        thread,
-        all,
-        mark_read: !peek,
-        limit: 0,
-    }) {
-        Ok(mail) => mail,
-        Err(err) => return super::mission::report_as(json, &err, SCHEMA),
-    };
-    if json {
-        emit(&serde_json::json!({"schema": SCHEMA, "reader": me, "mail": mail}));
-    } else if mail.is_empty() {
-        outln!("no mail for {me}");
-    } else {
-        for message in &mail {
-            outln!(
-                "{}  {}  {} -> {}  [{}]{}",
-                message.created_at,
-                message.id.to_hex(),
-                message.from,
-                message.to.join(", "),
-                message.thread,
-                if message.acked_at.is_some() {
-                    "  acked"
-                } else {
-                    ""
-                }
-            );
-            for line in message.body.lines() {
-                outln!("    {line}");
-            }
-        }
-    }
-    ExitCode::SUCCESS
-}
-
-fn ack(id: &str, me: &str, json: bool) -> ExitCode {
-    let Ok(id) = serde_json::from_value(serde_json::Value::from(id)) else {
-        return usage_error(
-            json,
-            format!("not a message id: {id}"),
-            "use the 32 hex digits `phux mail read` prints",
-        );
-    };
-    let client = match store(json) {
-        Ok(client) => client,
-        Err(code) => return code,
-    };
-    match client.ack_mail(AckMail {
-        reader: me.to_owned(),
-        id,
-    }) {
-        Ok(mail) => {
-            if json {
-                emit(&serde_json::json!({"schema": SCHEMA, "mail": mail}));
-            } else {
-                outln!("acknowledged {} from {}", mail.id.to_hex(), mail.from);
-            }
-            ExitCode::SUCCESS
-        }
-        Err(err) => super::mission::report_as(json, &err, SCHEMA),
-    }
 }
 
 /// A claimed path as the store wants it: absolute and normalized, resolved

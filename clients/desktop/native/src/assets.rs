@@ -12,10 +12,19 @@ gpui_kit::assets::icon_assets!(
         PanelsTopLeft,
         // Settings > Layout: tab placement.
         PanelTop,
+        // Settings categories.
+        Lock,
+        Keyboard,
+        Terminal,
+        Download,
         Server,
+        // Dismiss the corner update card.
+        X,
         Clock,
         FolderPlus,
         Layers,
+        // The fleet playground's colour scheme button.
+        Palette,
         ListTree,
         // Sidebar view: Collapse All Sessions (Expand uses Kit's ChevronsUpDown).
         ChevronsDownUp,
@@ -39,6 +48,10 @@ gpui_kit::assets::icon_assets!(
         Rows2,
         List,
         Send,
+        // The Reviews surface.
+        GitPullRequest,
+        GitMerge,
+        MessageSquare,
         // Native conversation rows and controls.
         Brain,
         Wrench,
@@ -46,7 +59,10 @@ gpui_kit::assets::icon_assets!(
         MessagesSquare,
         // The terminal's right-click menu.
         ClipboardPaste,
-        ScanText
+        ScanText,
+        // Fleet close and exact-agent navigation.
+        X,
+        ArrowUpRight
     ]
 );
 
@@ -55,6 +71,16 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        if let Some(id) = path
+            .strip_prefix("brand/")
+            .and_then(|p| p.strip_suffix(".png"))
+        {
+            return crate::app::branding::profiles()
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.png().map(Cow::Owned))
+                .transpose();
+        }
         match MenuIcons.load(path)? {
             Some(bytes) => Ok(Some(bytes)),
             None => gpui_kit::assets::Assets.load(path),
@@ -64,6 +90,13 @@ impl AssetSource for Assets {
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
         let mut paths = gpui_kit::assets::Assets.list(path)?;
         paths.extend(MenuIcons.list(path)?);
+        paths.extend(
+            crate::app::branding::profiles()
+                .iter()
+                .map(|p| format!("brand/{}.png", p.id))
+                .filter(|name| name.starts_with(path))
+                .map(Into::into),
+        );
         paths.sort();
         paths.dedup();
         Ok(paths)
@@ -76,13 +109,34 @@ mod tests {
     use gpui_kit::assets::IconName;
 
     #[test]
+    fn asset_listing_respects_folders_and_exposes_every_approved_brand() {
+        for prefix in ["brand/", "icons/", "fonts/", "missing/"] {
+            let paths = Assets.list(prefix).unwrap();
+            assert!(
+                paths.iter().all(|name| name.starts_with(prefix)),
+                "{prefix}"
+            );
+        }
+        let brands = Assets.list("brand/").unwrap();
+        assert_eq!(brands.len(), crate::app::branding::profiles().len());
+        for name in brands {
+            assert!(Assets.load(&name).unwrap().is_some());
+        }
+    }
+
+    #[test]
     fn menu_and_component_icons_are_embedded() {
         for icon in [
             IconName::SquareTerminal,
+            IconName::Lock,
+            IconName::Keyboard,
+            IconName::Terminal,
+            IconName::Download,
             IconName::AppWindow,
             IconName::LaptopMinimal,
             IconName::PanelsTopLeft,
             IconName::Server,
+            IconName::X,
             IconName::Clock,
             IconName::FolderPlus,
             IconName::Layers,
@@ -125,6 +179,8 @@ mod tests {
             IconName::Plus,
             IconName::ArrowRight,
             IconName::RefreshCw,
+            IconName::X,
+            IconName::ArrowUpRight,
         ] {
             assert!(Assets.load(&icon.path()).unwrap().is_some(), "{icon:?}");
         }

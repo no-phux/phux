@@ -158,8 +158,18 @@ pub async fn read_pane_occupant(
     socket: &Path,
     terminal: &ResourceId,
 ) -> Option<PaneOccupantRecord> {
+    read_pane_occupant_within(socket, terminal, PANE_OCCUPANT_WAIT).await
+}
+
+/// [`read_pane_occupant`] with its own patience: `Duration::ZERO` reads once,
+/// for a caller sweeping many panes that cannot wait out each first tick.
+pub async fn read_pane_occupant_within(
+    socket: &Path,
+    terminal: &ResourceId,
+    wait: Duration,
+) -> Option<PaneOccupantRecord> {
     let mut conn = Connection::connect(socket).await.ok()?;
-    let deadline = tokio::time::Instant::now() + PANE_OCCUPANT_WAIT;
+    let deadline = tokio::time::Instant::now() + wait;
     let mut request_id = 70;
     loop {
         let reply = conn
@@ -317,6 +327,8 @@ impl AgentRecord {
         serde_json::to_vec(self).unwrap_or_default()
     }
 }
+
+pub use phux_client_core::agent_record::MAX_AGENT_RECORD_BYTES;
 
 /// Decode a `phux.agent/v1` value; anything but a JSON object with a
 /// non-blank `name` is "no declared agent". The record is read by

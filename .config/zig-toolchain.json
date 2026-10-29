@@ -1,6 +1,10 @@
 {
   "version": "0.16.0",
   "archives": {
+    "x86_64-windows": {
+      "archive": "zig-x86_64-windows-0.16.0.zip",
+      "sha256": "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e"
+    },
     "aarch64-macos": {
       "archive": "zig-aarch64-macos-0.16.0.tar.xz",
       "sha256": "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"

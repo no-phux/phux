@@ -15,5 +15,7 @@ runs:
         bash scripts/setup-rust.sh native
         bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
         brew install just
-        xcodebuild -downloadComponent MetalToolchain
-        xcrun metal --version
+        source scripts/lib/dev-toolchain.sh
+        source scripts/lib/macos-desktop.sh
+        prepare_macos_desktop
+        printf '%s\n' "DEVELOPER_DIR=$DEVELOPER_DIR" "SDKROOT=$SDKROOT" "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET" >> "$GITHUB_ENV"

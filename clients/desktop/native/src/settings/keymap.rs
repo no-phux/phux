@@ -115,7 +115,7 @@ pub fn default_chords() -> Vec<(String, String)> {
     let mut chords = Vec::new();
     // Keep Super bindings available, but put terminal-native Linux shortcuts
     // first so menus show them. Plain Ctrl-C/Z/D stay with the terminal.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     chords.extend(
         [
             ("ctrl+shift+p", "palette"),
@@ -128,6 +128,19 @@ pub fn default_chords() -> Vec<(String, String)> {
         ]
         .map(|(chord, id)| (chord.to_owned(), id.to_owned())),
     );
+    #[cfg(windows)]
+    chords.extend(
+        [
+            ("ctrl+shift+r", "reconnect"),
+            ("ctrl+shift+d", "split-right"),
+            ("ctrl+alt+d", "split-down"),
+            ("ctrl+shift+o", "folder"),
+            ("ctrl+shift+,", "settings"),
+            ("ctrl+shift+pageup", "tab-prev"),
+            ("ctrl+shift+pagedown", "tab-next"),
+        ]
+        .map(|(chord, id)| (chord.to_owned(), id.to_owned())),
+    );
     for command in builtin_commands() {
         if let Some(chord) = command.chord {
             chords.push((chord.to_owned(), command.id.to_owned()));
@@ -135,6 +148,21 @@ pub fn default_chords() -> Vec<(String, String)> {
         for alias in command.aliases {
             chords.push(((*alias).to_owned(), command.id.to_owned()));
         }
+    }
+    // On a Mac, Command+arrows walk the work: sideways through tabs, up and
+    // down through the sidebar's sessions.
+    #[cfg(target_os = "macos")]
+    {
+        chords.retain(|(chord, _)| chord != "cmd+up" && chord != "cmd+down");
+        chords.extend(
+            [
+                ("cmd+left", "tab-prev"),
+                ("cmd+right", "tab-next"),
+                ("cmd+up", "session-prev"),
+                ("cmd+down", "session-next"),
+            ]
+            .map(|(chord, id)| (chord.to_owned(), id.to_owned())),
+        );
     }
     chords
 }
@@ -412,12 +440,12 @@ pub fn plain_key(key: &str) -> String {
 /// Platform modifier labels, followed by the key.
 #[must_use]
 pub fn display_chord(chord: &str) -> String {
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     {
         chord
             .split('+')
             .map(|part| match part {
-                "cmd" => "Super".to_owned(),
+                "cmd" => if cfg!(windows) { "Win" } else { "Super" }.to_owned(),
                 "ctrl" => "Ctrl".to_owned(),
                 "alt" => "Alt".to_owned(),
                 "shift" => "Shift".to_owned(),
@@ -426,11 +454,11 @@ pub fn display_chord(chord: &str) -> String {
             .collect::<Vec<_>>()
             .join("+")
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     display_apple_chord(chord)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn display_apple_chord(chord: &str) -> String {
     let parts: Vec<&str> = chord.split('+').collect();
     let key = parts.last().copied().unwrap_or("");
@@ -448,7 +476,7 @@ fn display_apple_chord(chord: &str) -> String {
     shown
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn glyph(name: &str) -> &str {
     match name {
         "cmd" => "⌘",
@@ -479,7 +507,10 @@ pub fn text_field_has_keys(
 /// Select All and Ghostty text/esc binds stay with a text field.
 #[must_use]
 pub fn yields_to_text_field(command_id: &str) -> bool {
-    command_id == "select-all" || command_id.starts_with("send:")
+    matches!(
+        command_id,
+        "select-all" | "tab-prev" | "tab-next" | "session-prev" | "session-next"
+    ) || command_id.starts_with("send:")
 }
 
 /// The key with shifted punctuation folded to its base key, and whether the

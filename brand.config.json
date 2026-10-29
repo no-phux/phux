@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "consumer": "phux",
+  "targets": {
+    "desktop/AppIcon.svg": "clients/desktop/packaging/AppIcon.svg",
+    "logos/docs-wordmark.svg": "docs/assets/logo.svg",
+    "logos/docs-wordmark.png": "docs/assets/logo.png",
+    "tooling/brand.py": "scripts/brand.py",
+    "desktop/AppIcon.png": "clients/desktop/packaging/AppIcon.png",
+    "identity/profile.json": "clients/desktop/packaging/brand-profile.json",
+    "runtime/desktop/profiles.json": "clients/desktop/packaging/brand-profiles.json",
+    "playground/fox/idle.png": "clients/desktop/native/assets/playground/fox/idle.png",
+    "playground/fox/celebrate.png": "clients/desktop/native/assets/playground/fox/celebrate.png",
+    "playground/fox/dash.png": "clients/desktop/native/assets/playground/fox/dash.png",
+    "playground/fox/sleep.png": "clients/desktop/native/assets/playground/fox/sleep.png",
+    "playground/fox/still.png": "clients/desktop/native/assets/playground/fox/still.png",
+    "playground/fox/atlas.json": "clients/desktop/native/assets/playground/fox/atlas.json"
+  }
+}

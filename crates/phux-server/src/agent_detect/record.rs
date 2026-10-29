@@ -1,5 +1,5 @@
 //! The server's copy of the `phux.agent/v1` record shape (ADR-0040,
-//! `docs/spec/L3.md` §3.7), duplicated from `phux-client` (no dependency).
+//! `docs/agents.md#agent-states`), duplicated from `phux-client` (no dependency).
 //! `metadata_set` dedups on byte equality, so field order (`name`, `kind`,
 //! `state`, `attention`, `session`) and the skip set are pinned by a golden
 //! test.

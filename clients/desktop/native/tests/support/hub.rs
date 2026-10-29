@@ -48,6 +48,7 @@ fn render_appearance(light: bool) {
                 quick: false,
                 dev_telemetry: false,
                 startup_error: None,
+                cli_install: None,
             },
             cx,
         )
@@ -63,7 +64,6 @@ fn render_appearance(light: bool) {
         ("capture", "capture-empty"),
         ("goto", "work"),
         ("palette", "actions"),
-        ("settings", "settings"),
     ] {
         cx.update_window(window.into(), |_, window, cx| {
             desk.update(cx, |desk, cx| desk.execute(command, window, cx))
@@ -99,32 +99,31 @@ fn render_appearance(light: bool) {
             );
         }
     }
-    for character in "layout".chars() {
-        cx.update_window(window.into(), |_, window, cx| {
-            let key = character.to_string();
-            window.dispatch_keystroke(
-                Keystroke {
-                    key: key.clone(),
-                    key_char: Some(key),
-                    ..Default::default()
-                },
-                cx,
-            );
-        })
-        .unwrap();
-        draw(&mut cx, window.into());
-    }
     cx.update_window(window.into(), |_, window, cx| {
-        window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+        desk.update(cx, |desk, cx| desk.execute("settings", window, cx));
     })
     .unwrap();
     draw(&mut cx, window.into());
+    let settings = cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .find(|handle| *handle != window.into())
+            .expect("separate settings window")
+    });
+    draw(&mut cx, settings);
+    save(&mut cx, settings, &format!("{appearance}-settings"));
+    cx.update_window(settings, |_, window, cx| {
+        window.dispatch_keystroke(Keystroke::parse("cmd-f").unwrap(), cx);
+    })
+    .unwrap();
+    type_text(&mut cx, settings, "layout");
+    draw(&mut cx, settings);
     assert_eq!(
         desk.read_with(&cx, |desk, _| desk.modal.clone()),
-        Modal::Settings
+        Modal::None
     );
-    save(&mut cx, window.into(), &format!("{appearance}-layout"));
-    ghostty_settings_render(&mut cx, window.into(), &desk, appearance);
+    save(&mut cx, settings, &format!("{appearance}-layout"));
+    ghostty_settings_render(&mut cx, settings, &desk, appearance);
     cx.update(|cx| desk.update(cx, |desk, cx| desk.prepare_close(cx)));
     // Release the window and its real-I/O wake subscriptions before the
     // deterministic scheduler enters App::shutdown's blocking quit hook drain.
@@ -176,27 +175,17 @@ fn ghostty_settings_render(
         assert_eq!(desk.ghostty().unsupported.len(), 1);
     });
     for query in ["conflicts", "skipped"] {
-        // `settings` toggles, so an open panel closes first and reopens
-        // with an empty search.
-        for _ in 0..2 {
-            cx.update_window(window, |_, window, cx| {
-                desk.update(cx, |desk, cx| desk.execute("settings", window, cx));
-            })
-            .unwrap();
-            draw(cx, window);
-            if desk.read_with(cx, |desk, _| desk.modal.clone()) == Modal::Settings {
-                break;
-            }
-        }
-        type_text(cx, window, query);
         cx.update_window(window, |_, window, cx| {
-            window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+            window.dispatch_keystroke(Keystroke::parse("cmd-f").unwrap(), cx);
+            window.dispatch_keystroke(Keystroke::parse("cmd-a").unwrap(), cx);
         })
         .unwrap();
         draw(cx, window);
+        type_text(cx, window, query);
+        draw(cx, window);
         assert_eq!(
             desk.read_with(cx, |desk, _| desk.modal.clone()),
-            Modal::Settings
+            Modal::None
         );
         // Import warnings also create timed toasts. Their legitimate expiry
         // between the retained and scratch captures is not a stale-frame bug;

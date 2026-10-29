@@ -296,7 +296,7 @@ fn detached_without_a_reason_is_the_legacy_empty_body() {
 
 /// A reason value allocated by a *later* draft must decode as unstated rather
 /// than failing the frame: `DETACHED` plus transport close is the only
-/// termination signal a consumer may act on (proto.md §9), so rejecting it
+/// termination signal a consumer may act on (docs/protocol.md), so rejecting it
 /// would turn an explained ending into an unexplained disconnect — and would
 /// make every future `DetachReason` a fleet-wide break.
 #[test]
@@ -318,7 +318,7 @@ fn detached_unknown_reason_decodes_as_unstated_and_keeps_the_message() {
     assert!(tail.is_empty());
 }
 
-/// `DetachReason` wire values are normative (proto.md §7.2). Pin them here so
+/// `DetachReason` wire values are normative (docs/protocol.md#attach-and-output). Pin them here so
 /// a reordering of the enum cannot silently renumber the wire.
 #[test]
 fn detach_reason_wire_values_match_spec() {

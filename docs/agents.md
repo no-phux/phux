@@ -66,6 +66,11 @@ hooks, reports its state to phux as it changes.
 
 Start a new agent session inside a phux pane to use it.
 
+The OpenCode plugin also adds phux to OpenCode Desktop: a side panel with
+every pane and its agent's state, a live view of any pane you can type into,
+terminals the session owns, and notifications when an agent needs you. See
+[its README](../integrations/opencode-v2/README.md#opencode-desktop).
+
 ### Claude Code from any terminal
 
 `phux agent install-claude` makes a plain `claude` command start inside a
@@ -183,8 +188,34 @@ phux claim list
 
 An address is a pane (`@749`), a labelled pane (`pi@749`), or a plain name
 for something outside a pane. You speak as `--as`, else
-`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`. Addresses are panes on
-this machine; `host/@N` is refused.
+`$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`. A pane on another
+machine of the same hub is led by its host, as
+[below](#mail-across-a-hub).
+
+For a send that may need recovery, choose a fresh unique nonzero 32-hex operation ID and
+keep the original sender, recipients, thread and body:
+
+```sh
+phux mail send @7 -m 'rebased onto main; rerun tests' -t fix-login \
+  --operation-id 12345678123456781234567812345678 --json
+```
+
+The reply includes `operation_id`, `scope.kind: "work_store"`, and
+`replayed`. If omitted, an ID is generated for that invocation. A keeper
+exchange can fail **after** committing mail: an uncertain error preserves
+that ID in `error.recovery`. Reconcile first; an explicit identical send
+with the original ID against the same work store replays its receipt,
+without creating another Mail. Changing the payload under the same ID
+is refused. Do not blindly retry with a fresh durable ID.
+
+MCP's `phux_mail_send` accepts the same durable `operation_id`. Its optional
+`idempotency_key` is a **different** identity: an invocation in one adapter's
+in-memory ledger. Adapter receipt documents expose `adapter_receipt_id`
+(the old `operation_id` field remains its alias) and
+`scope.kind: "mcp_adapter"`. Retrying the same adapter key returns its
+cached outcome, including failure. Explicit durable recovery may use a new
+adapter key with the original mail operation ID and identical arguments;
+restarting the adapter does not erase the work-store receipt.
 
 Sending mail only stores it. Nothing is ever typed into the recipient's
 pane: its harness takes the mail and puts it in the agent's conversation,
@@ -219,6 +250,46 @@ deadline (an hour by default), not when its process exits.
 **Claims and addresses are advisory.** They tell agents who is working
 where. Nothing stops a write, and an address is not proof of who sent a
 message.
+
+### Mail across a hub
+
+On a machine joined to a hub with `phux host join`, such as a
+[Minimal box](./remote.md#minimal-boxes), `phux mail`, `phux claim` and the
+MCP mail and claim tools use the hub's store instead of their own. Agents in
+boxes and on the hub then read the same mail and see the same claims, and the
+hub's agents' harnesses deliver mail from boxes like any other.
+
+Each side writes addresses as it would at home. For a box joined as
+`min-api`:
+
+| On the hub | In the box |
+| --- | --- |
+| `@749` | `hub/@749` |
+| `min-api/@3` | `@3` |
+| `min-web/@2`, another box | `min-web/@2` |
+
+```sh
+phux mail send hub/@749 -t fix-login -m 'tests pass in the box'   # in the box
+phux mail send min-api/@3 -t fix-login -m 'merge it'               # on the hub
+```
+
+**A box speaks only as itself.** The hub puts every sender, reader and
+claim holder a satellite names under that satellite's name, the one its
+credential was issued for. A box can't read, take or acknowledge the hub's
+mail, or renew or release the hub's claims. It can write to any address and
+list every claim. Mail and claims are all it reaches: it still opens no
+terminal on the hub.
+
+The satellite dials the hub's QUIC listener with the credential it joined
+with, so this needs nothing beyond the join. When the hub can't be reached,
+the command fails; it never falls back to the box's own store. Revoking the
+satellite's credential on the hub cuts it off. A hub that adds a machine
+with `phux host add --role satellite` dials that machine instead, and that
+machine keeps its own mail.
+
+Claims compare paths as each side writes them. A box usually sees the
+project at a different path from the hub, so its claims show up on the hub
+but don't conflict with the hub's own.
 
 ## Plan usage
 
@@ -340,8 +411,8 @@ says why it is command-line only.
 
 `agent answer`, `agent prompt`, `agent send-keys`, `agent wait`,
 `approvals`, `ask`, `channel`, `config agents`, `config run`, `host add`,
-`host ls`, `host renew`, `host upgrade`, `kill`, `launch`, `logs`, `ls`,
-`mcp`, `new`, `organize`, `play`, `rec mark`, `relaunch`, `resize`,
+`host discover`, `host ls`, `host renew`, `host upgrade`, `kill`, `launch`,
+`logs`, `ls`, `mcp`, `new`, `organize`, `play`, `rec mark`, `relaunch`, `resize`,
 `resource methods`, `resource show`, `resource wait`, `restore`, `rm`,
 `run`, `signal`, `snapshot`, `spawn`, `status`, `terminal create`,
 `terminal describe`, `terminal operation`, `update`, `wait`, `watch`,

@@ -185,7 +185,7 @@ impl ControlPlane {
     /// fits one `APPLY_INPUT` goes acknowledged (the returned correlation
     /// resolves [`Event::InputDelivery`]). A larger one, or one for a
     /// satellite pane (acknowledged input is local-only), goes as one atomic
-    /// `INPUT_PASTE` event, never split (input.md §5.1), and has no receipt:
+    /// `INPUT_PASTE` event, never split (docs/protocol.md#input), and has no receipt:
     /// `None`. Unresolved acknowledged input for the terminal refuses the
     /// raw event with a receipt rather than let it reach the PTY first.
     pub fn apply_user_paste(&mut self, terminal_id: &ResourceId, text: &str) -> Option<u64> {

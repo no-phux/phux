@@ -14,15 +14,17 @@ use phux_server::workload::{WorkloadPaths, WorkloadRegistry, tickets};
 use super::mixed_window::spawn_cat;
 use super::*;
 
+mod satellite_mail;
+
 /// A hub in `paired` mode with a loopback QUIC listener and one
 /// `inbound://` satellite named `sat`; its workload authority lives in `dir`.
-struct PairedHub {
+pub(super) struct PairedHub {
     shutdown: oneshot::Sender<()>,
     task: ServerTask,
-    quic: SocketAddr,
+    pub(super) quic: SocketAddr,
 }
 
-fn private_dir() -> TempDir {
+pub(super) fn private_dir() -> TempDir {
     let dir = TempDir::new().unwrap();
     std::fs::set_permissions(
         dir.path(),
@@ -32,7 +34,7 @@ fn private_dir() -> TempDir {
     dir
 }
 
-fn hub_paths(dir: &std::path::Path) -> WorkloadPaths {
+pub(super) fn hub_paths(dir: &std::path::Path) -> WorkloadPaths {
     WorkloadPaths::with_overrides(
         Some(dir.join("workload-ca.pem")),
         Some(dir.join("workload-ca.key")),
@@ -54,6 +56,15 @@ impl PairedHub {
     /// Boot the hub on `port` (0 for any), its certificate issued by the
     /// workload CA in `dir`.
     async fn boot(dir: &std::path::Path, port: u16) -> Self {
+        Self::boot_with(dir, port, None).await
+    }
+
+    /// [`Self::boot`], answering satellites' mail from `work_store`.
+    pub(super) async fn boot_with(
+        dir: &std::path::Path,
+        port: u16,
+        work_store: Option<Box<phux_work::Client>>,
+    ) -> Self {
         let paths = hub_paths(dir);
         let (cert, key) = (dir.join("hub-cert.pem"), dir.join("hub-key.pem"));
         phux_server::transport::tls::ensure_server_identity(&cert, &key, &[], &paths)
@@ -71,6 +82,7 @@ impl PairedHub {
                 workload_keys: Some(paths.registry),
                 ..phux_server::ServerEnv::default()
             },
+            work_store,
             ..ServerConfig::with_default_socket()
         };
         let (shutdown, rx) = oneshot::channel::<()>();
@@ -99,7 +111,7 @@ impl PairedHub {
         }
     }
 
-    async fn stop(self) {
+    pub(super) async fn stop(self) {
         stop(self.shutdown, self.task).await;
     }
 }
@@ -126,7 +138,7 @@ fn spawn_uplinked_satellite(
     (tx, handle)
 }
 
-fn mint(dir: &std::path::Path, ticket_seconds: i64) -> tickets::MintedTicket {
+pub(super) fn mint(dir: &std::path::Path, ticket_seconds: i64) -> tickets::MintedTicket {
     tickets::mint_satellite_ticket(
         &tickets::tickets_path(&hub_paths(dir).registry),
         "sat",
@@ -136,7 +148,11 @@ fn mint(dir: &std::path::Path, ticket_seconds: i64) -> tickets::MintedTicket {
     .expect("mint a satellite ticket")
 }
 
-fn code(hub: &PairedHub, dir: &std::path::Path, ticket: &tickets::MintedTicket) -> JoinCode {
+pub(super) fn code(
+    hub: &PairedHub,
+    dir: &std::path::Path,
+    ticket: &tickets::MintedTicket,
+) -> JoinCode {
     let ca = phux_server::workload::ca_fingerprint(&hub_paths(dir).ca_cert).expect("CA pin");
     JoinCode {
         hub: hub.quic.to_string(),

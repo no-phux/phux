@@ -1,16 +1,18 @@
-//! Inventory: extracted from the shared module.
-use super::{
-    ArrangementValue, AuthorityId, Command, CommandValue, Connection, Degradation, ExecState,
-    FIRST_REQUEST_ID, KEY_MIN_PREFIX, OrgError, OrgFilter, OrgOutcome, OrganizationPage, Outcome,
-    ResourceId, ResourceKey, ResourceKind, ResourceRecord, Revision, SessionId, SessionKey,
-    SessionRecord, outcome_error, request, supported,
+use phux_client_core::org_ops::OrgOutcome;
+use phux_protocol::ResourceId;
+use phux_protocol::ids::{
+    AuthorityId, KEY_MIN_PREFIX, ResourceKey, ResourceKind, Revision, SessionId, SessionKey,
+};
+use phux_protocol::wire::frame::{
+    ArrangementValue, Command, CommandValue, ExecState, OrgFilter, OrganizationPage, Outcome,
+    ResourceRecord, SessionRecord,
 };
 
-/// Records requested per `GET_ORGANIZATION` page.
-pub(super) const PAGE_SIZE: u32 = 512;
+use crate::attach::connection::Connection;
+use crate::state::Degradation;
 
-/// Most pages one [`fetch`] reads before giving up on a runaway cursor.
-pub(super) const MAX_PAGES: usize = 4096;
+use super::edit::FIRST_REQUEST_ID;
+use super::{MAX_PAGES, OrgError, PAGE_SIZE, outcome_error, request, supported};
 
 /// Every record one `GET_ORGANIZATION` filter covers, read across all pages.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +42,7 @@ impl OrgInventory {
         self.inbox
     }
 
-    pub(super) fn from_page(page: &OrganizationPage) -> Self {
+    fn from_page(page: &OrganizationPage) -> Self {
         Self {
             authority: page.authority,
             inbox: page.inbox,
@@ -179,7 +181,7 @@ impl OrgInventory {
 /// [`OrgInventory::resolve_key_prefix`] resolves both.
 #[derive(Debug, Clone, Default)]
 pub struct KeyNames {
-    pub(super) keys: Vec<phux_core::ResourceKey>,
+    keys: Vec<phux_core::ResourceKey>,
 }
 
 impl KeyNames {

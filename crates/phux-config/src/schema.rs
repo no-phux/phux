@@ -1,4 +1,4 @@
-//! Typed schema for `config.toml` (`docs/consumers/tui.md` §4).
+//! Typed schema for `config.toml` (`docs/config.md`).
 //!
 //! TOML keys are kebab-case; serde renames bridge them to `snake_case`.
 //! Every table is `#[serde(default)]`, so a missing key takes the value from
@@ -16,7 +16,7 @@ use crate::{
     uplink::UplinkConfigEntry,
 };
 
-/// Top-level config (`docs/consumers/tui.md` §4.2).
+/// Top-level config (`docs/config.md`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -53,7 +53,7 @@ pub struct Config {
     /// Opt-in unstable features; may change without notice.
     pub experimental: ExperimentalCfg,
     /// `[policy]`: the server's authorization posture
-    /// (`docs/spec/workload-auth.md` §8).
+    /// (`docs/remote.md#who-can-connect`).
     pub policy: PolicyCfg,
     /// `[voice]`: the server-side transcriber behind `TRANSCRIBE`.
     pub voice: VoiceCfg,
@@ -163,7 +163,7 @@ pub enum SidebarPosition {
     Right,
 }
 
-/// `[chrome]`: responsive-chrome breakpoints (`docs/consumers/tui.md` §4.5).
+/// `[chrome]`: responsive-chrome breakpoints (`docs/status-bar.md#breakpoints`).
 /// `0` disables a threshold; a very large value pins the opposite.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
@@ -188,7 +188,7 @@ impl Default for ChromeCfg {
 }
 
 /// `[notifications]`: how the TUI tells you an agent needs you or finished
-/// (`docs/consumers/tui.md` §"Notifications"). Read by the client, live on
+/// (`docs/status-bar.md#notifications`). Read by the client, live on
 /// reload.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
@@ -259,7 +259,7 @@ pub enum NotifyProtocol {
 }
 
 /// A status-bar widget: a bare kind (`"session"`) or an inline table with
-/// `kind` plus options (`docs/consumers/tui.md` §8.1).
+/// `kind` plus options (`docs/status-bar.md#widget-kinds`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Widget {
@@ -293,7 +293,7 @@ pub struct WidgetSpec {
     pub opts: BTreeMap<String, toml::Value>,
 }
 
-/// One `[[hooks.<event>]]` entry (`docs/consumers/tui.md` §9).
+/// One `[[hooks.<event>]]` entry (`docs/hooks.md`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HookEntry {
@@ -341,7 +341,7 @@ pub struct ThemeCfg {
 }
 
 /// `[policy]`: the server's authorization posture
-/// (`docs/spec/workload-auth.md` §8, ADR-0116). Read once at start.
+/// (`docs/remote.md#who-can-connect`, ADR-0116). Read once at start.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PolicyCfg {
@@ -350,7 +350,7 @@ pub struct PolicyCfg {
     pub mode: Option<PolicyMode>,
 }
 
-/// The two closed policy modes (`docs/spec/workload-auth.md` §8).
+/// The two closed policy modes (`docs/remote.md#who-can-connect`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum PolicyMode {

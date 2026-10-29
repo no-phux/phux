@@ -1,7 +1,7 @@
 //! Host-originated background push (ADR-0155).
 //!
 //! A phone that wants to hear about an ask while it is suspended registers a
-//! *push grant* under `phux.push/v1/<device>` ([L3](../../../docs/spec/L3.md)
+//! *push grant* under `phux.push/v1/<device>` ([protocol](../../../docs/protocol.md)
 //! §3.11): the gateway it trusts, a bearer secret that gateway minted for it,
 //! and the id the phone knows this server by. When an agent asks and the
 //! connection that wrote a grant is gone, the server posts a content-free

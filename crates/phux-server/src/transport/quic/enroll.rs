@@ -1,4 +1,4 @@
-//! The enrollment ALPN on a QUIC listener (`workload-auth.md` §8.2,
+//! The enrollment ALPN on a QUIC listener (`docs/remote.md#pairing-with-a-link`,
 //! ADR-0154): one request, one reply, then the connection closes. Nothing
 //! here reads a phux frame or mints a grant.
 

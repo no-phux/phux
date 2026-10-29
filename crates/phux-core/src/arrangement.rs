@@ -6,7 +6,7 @@
 //! that session's members. Clients edit trees in their own leaf type (live
 //! handles) and translate to [`EntryRef`] leaves with [`LayoutNode::map`].
 //!
-//! Spec ref: `docs/spec/L3.md` §3.2 Layout (binary subset). Pane-rect
+//! Spec ref: `docs/organization.md` Layout (binary subset). Pane-rect
 //! tiling and directional focus live client-side in `phux-client-core`.
 
 use std::collections::HashSet;

@@ -1,5 +1,13 @@
-//! Command: extracted from the shared module.
-use super::{CommandBuilder, warn};
+//! Pane command construction: the shell, login mode, and the environment
+//! a pane child starts with.
+
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "private submodule re-exported by spawn at crate visibility"
+)]
+
+use portable_pty::CommandBuilder;
+use tracing::warn;
 
 /// The shell for server-spawned panes: `configured` (`defaults.shell`) when
 /// non-blank, else `$SHELL`, else `/bin/sh`.
@@ -22,7 +30,7 @@ pub(super) fn resolve_shell_from(configured: Option<&str>, env_shell: Option<Str
 ///
 /// Matched on basename: `-l` for bash/zsh/sh, `--login` for fish, `None` for anything else.
 /// Unknown shells get no flag because an unrecognized flag can fail the exec
-/// (ADR-0073, `docs/operations.md`).
+/// (ADR-0073).
 #[must_use]
 pub fn login_flag_for_shell(shell: &str) -> Option<&'static str> {
     let name = std::path::Path::new(shell)
@@ -37,7 +45,7 @@ pub fn login_flag_for_shell(shell: &str) -> Option<&'static str> {
 }
 
 /// Add `shell`'s login flag to `cmd` when `login` is set and the shell is known.
-pub(super) fn apply_login_mode(cmd: &mut CommandBuilder, shell: &str, login: bool) {
+fn apply_login_mode(cmd: &mut CommandBuilder, shell: &str, login: bool) {
     if !login {
         return;
     }
@@ -104,14 +112,11 @@ pub(crate) fn clear_upgrade_handoff_env(cmd: &mut CommandBuilder) {
 
 /// Claude Code's nested-session markers. A `claude` that inherits
 /// `CLAUDE_CODE_CHILD_SESSION` silently keeps no transcript.
-pub(super) const CLAUDE_CODE_ENV_PREFIX: &str = "CLAUDE_CODE_";
-
-pub(super) const CLAUDE_CODE_ENV_BARE: &str = "CLAUDECODE";
+const CLAUDE_CODE_ENV_PREFIX: &str = "CLAUDE_CODE_";
+const CLAUDE_CODE_ENV_BARE: &str = "CLAUDECODE";
 
 /// Strip Claude Code's `CLAUDE_CODE_*` / `CLAUDECODE` markers from a pane
-/// child's environment.
-///
-/// A server started from inside a Claude Code session
+/// child's environment. A server started from inside a Claude Code session
 /// carries them forever, and every later `claude` in a pane would then run
 /// as a nested session with no transcript. Matched by prefix because Claude
 /// Code owns that vocabulary.
@@ -124,14 +129,6 @@ pub(crate) fn clear_agent_host_env(cmd: &mut CommandBuilder) {
     for key in leaked {
         cmd.env_remove(key);
     }
-}
-
-pub(in crate::resource::terminal) const STRICT_CWD_KEY: &str = "PHUX_FD_SHRINK_STRICT_CWD";
-
-/// Apply recorded cwd intent without permitting any executor fallback directory.
-pub(crate) fn apply_strict_spawn_cwd(builder: &mut CommandBuilder, cwd: &std::path::Path) {
-    builder.cwd(cwd);
-    builder.env(STRICT_CWD_KEY, "1");
 }
 
 /// Apply a wire-supplied cwd to `cmd`.
@@ -161,9 +158,18 @@ pub fn apply_spawn_cwd(builder: &mut CommandBuilder, cwd: Option<&str>, session:
     }
 }
 
+/// Env mark that forbids falling back to another directory when the recorded cwd cannot be entered.
+pub(crate) const STRICT_CWD_KEY: &str = "PHUX_FD_SHRINK_STRICT_CWD";
+
+/// Apply recorded cwd intent without permitting any executor fallback directory.
+pub(crate) fn apply_strict_spawn_cwd(builder: &mut CommandBuilder, cwd: &std::path::Path) {
+    builder.cwd(cwd);
+    builder.env(STRICT_CWD_KEY, "1");
+}
+
 /// `path` is a directory the child can `chdir` into (search permission, not
 /// just `is_dir`). Best effort: TOCTOU can still fail the spawn.
-pub(super) fn dir_is_enterable(path: &std::path::Path) -> bool {
+fn dir_is_enterable(path: &std::path::Path) -> bool {
     path.is_dir() && rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok()
 }
 

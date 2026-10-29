@@ -1,0 +1,34 @@
+id = "com.phux.crew"
+name = "Crew"
+version = "0.1.0"
+min_phux_version = "0.111.0"
+description = "One lead. A visible crew. Finished work, not terminal babysitting."
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "lead"
+title = "Crew: open lead"
+description = "Start your chosen coding agent in an isolated, restartable Crew home."
+placement = "tab"
+command = ["python3", "crew.py", "start"]
+
+[[panes]]
+id = "board"
+title = "Crew: fleet board"
+description = "Live native mission and agent status; never changes focus or answers a prompt."
+placement = "tab"
+command = ["python3", "crew.py", "board"]
+
+[[actions]]
+id = "doctor"
+title = "Crew: check setup"
+description = "Check local prerequisites without installing tools or contacting a model provider."
+contexts = ["workspace"]
+command = ["python3", "crew.py", "doctor"]
+
+[[actions]]
+id = "pulse"
+title = "Crew: fleet pulse"
+description = "Read native mission and agent status once."
+contexts = ["workspace"]
+command = ["python3", "crew.py", "status"]

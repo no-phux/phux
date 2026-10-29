@@ -1,0 +1,71 @@
+name: Windows client runtime
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows-client.yml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - clients/desktop/toolchain/**
+      - clients/desktop/packaging/brand-profiles.json
+      - scripts/ci/test-windows-brand-icons.ps1
+      - crates/phux-client-runtime/**
+      - crates/phux-client-core/**
+      - crates/phux-config-core/**
+      - crates/phux-core/**
+      - crates/phux-dial/**
+      - crates/phux-git/**
+      - crates/phux-perf/**
+      - crates/phux-protocol/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/windows-client.yml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - clients/desktop/toolchain/**
+      - clients/desktop/packaging/brand-profiles.json
+      - scripts/ci/test-windows-brand-icons.ps1
+      - crates/phux-client-runtime/**
+      - crates/phux-client-core/**
+      - crates/phux-config-core/**
+      - crates/phux-core/**
+      - crates/phux-dial/**
+      - crates/phux-git/**
+      - crates/phux-perf/**
+      - crates/phux-protocol/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-client-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-client:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the repository Rust pin
+        shell: pwsh
+        run: |
+          $toolchain = (Select-String -Path rust-toolchain.toml -Pattern '^channel = "([^"]+)"').Matches.Groups[1].Value
+          if (-not $toolchain) { throw 'No Rust toolchain pin' }
+          rustup toolchain install $toolchain --profile minimal --no-self-update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile the native Windows transport without the terminal engine
+        run: cargo check --locked -p phux-client-runtime --no-default-features --lib
+      - name: Compile portable local Git helpers without the Unix coordinator API
+        run: cargo check --locked -p phux-git --lib
+      - uses: ./.github/actions/setup-bun
+      - name: Materialize the approved Windows framework patches
+        run: bun tools/main.ts desktop-source
+      - name: Apply every approved icon through the native Windows API
+        shell: pwsh
+        run: ./scripts/ci/test-windows-brand-icons.ps1

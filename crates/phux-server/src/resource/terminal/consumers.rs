@@ -112,6 +112,7 @@ impl TerminalActor {
             bootstrap_id,
             wants_state_sync,
             state_sync_scrollback,
+            image_protocols,
             bootstrap_max_bytes,
             bootstrap_max_frames,
             bootstrap_chunk_bytes,
@@ -137,8 +138,11 @@ impl TerminalActor {
                     bootstrap_chunk_bytes,
                 )?;
                 Some(StateSyncBootstrap {
-                    snapshot: self
-                        .synthesize_with_scrollback_bounded(state_sync_scrollback, max_bytes)?,
+                    snapshot: self.synthesize_with_scrollback_bounded(
+                        state_sync_scrollback,
+                        max_bytes,
+                        image_protocols,
+                    )?,
                     base_seq,
                 })
             } else {

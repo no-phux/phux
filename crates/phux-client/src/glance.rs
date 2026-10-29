@@ -1,5 +1,5 @@
 //! The human glance over one listing: what each session's terminals are
-//! doing, and which of them need a person (`docs/consumers/attention.md`).
+//! doing, and which of them need a person (`docs/concepts.md#sessions-tabs-and-panes`).
 //!
 //! Pure projection over data a listing already holds: the `GET_STATE`
 //! snapshot, the organization records beside it, and the `phux.agent/v1`

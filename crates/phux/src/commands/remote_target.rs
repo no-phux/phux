@@ -189,7 +189,7 @@ fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
             );
             match enroll::ensure_remote_server(
                 &ssh_host,
-                "phux",
+                entry.remote_phux(),
                 quic_port,
                 enroll::ServicePolicy::Install,
             ) {
@@ -371,7 +371,10 @@ pub(crate) fn upgrade_to_quic(entry: &RemoteEntry, deadline: Duration) -> QuicUp
             current.cert_fingerprint.as_deref(),
             current.session.as_deref(),
         )
-        .map(|new| new.with_ssh(current.ssh.as_deref()))
+        .map(|new| {
+            new.with_ssh(current.ssh.as_deref())
+                .with_remote_phux(current.remote_phux.as_deref())
+        })
         .and_then(|new| new.with_client_identity(current.client_identity_paths()))
         .and_then(|new| remote::add_or_update(&new).map(|()| new.endpoint))
     });
@@ -546,6 +549,7 @@ fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEnt
         session: None,
         ssh: None,
         direct: new.direct.clone(),
+        remote_phux: new.remote_phux.clone(),
         client_cert: new.client_cert.clone(),
         client_key: new.client_key.clone(),
     })
@@ -572,7 +576,7 @@ fn register_over_ssh(
     let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
     let req = enroll::EnrollRequest {
         ssh_host,
-        remote_phux: "phux",
+        remote_phux: existing.map_or("phux", RemoteEntry::remote_phux),
         endpoint_override: endpoint_override.as_deref(),
         quic_port: target.port.unwrap_or(DEFAULT_QUIC_PORT),
         service: enroll::ServicePolicy::Install,
@@ -652,6 +656,7 @@ mod tests {
             session: None,
             ssh: None,
             direct: None,
+            remote_phux: None,
             client_cert: None,
             client_key: None,
         }

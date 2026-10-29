@@ -2,7 +2,7 @@
 //!
 //! A server provisioning its TLS pair for the first time asks the workload CA
 //! for it, so clients can pin the CA instead of one leaf
-//! (`workload-auth.md` §2). The certificate file holds the chain, leaf then
+//! (`docs/remote.md#who-can-connect`). The certificate file holds the chain, leaf then
 //! CA, which is how a client learns which authority issued the leaf. An
 //! existing pair is never re-issued here: devices pin its leaf.
 //!

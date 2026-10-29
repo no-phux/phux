@@ -1,8 +1,10 @@
-//! Agent reports: extracted from the shared module.
-use super::{
-    AskedPayload, AskedSource, ClientId, CommandResult, ControlRequest, ErrorCode, Outbound,
-    ResolvedOwned, SharedState, actor_reply, debug, local_terminal, oneshot, terminal_not_found,
-};
+//! Agent state, terminal event, and asked reports.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the split command modules share the parent command namespace"
+)]
+
+use super::*;
 
 /// Feed integration-hook lifecycle evidence into a pane (ADR-0085): as a
 /// synthesized record on a live `AgentSession` child's stream, else straight
@@ -128,11 +130,7 @@ pub(crate) fn handle_report_asked(
     CommandResult::Ok
 }
 
-pub(super) fn validate_asked_payload(
-    id: &str,
-    question: &str,
-    suggestions: &[String],
-) -> Option<String> {
+fn validate_asked_payload(id: &str, question: &str, suggestions: &[String]) -> Option<String> {
     const MAX_ID_BYTES: usize = 128;
     const MAX_QUESTION_BYTES: usize = 4096;
     const MAX_SUGGESTIONS: usize = 16;
@@ -163,15 +161,4 @@ pub(super) fn validate_asked_payload(
         }
     }
     None
-}
-
-/// A `SessionSnapshot` describing a server with no sessions: empty lists,
-/// sentinel focus ids. Used by `GET_STATE` when the registry is empty.
-pub(crate) const fn empty_session_snapshot() -> phux_protocol::wire::info::SessionSnapshot {
-    use phux_protocol::ids::{ResourceId, SessionId, WindowId};
-    phux_protocol::wire::info::SessionSnapshot::new(
-        SessionId::new(0),
-        WindowId::new(0),
-        ResourceId::local(0),
-    )
 }

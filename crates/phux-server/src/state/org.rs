@@ -13,8 +13,6 @@
 
 use std::collections::HashSet;
 
-mod lifecycle;
-
 use phux_core::ids::{ResourceId, SessionId};
 use phux_core::{
     Actor, AgentLaunch, Applied, Command, Committed, ExecState, ExitOutcome, ExitPolicy, FreshKeys,
@@ -67,7 +65,7 @@ pub(super) struct OrgSide {
     /// their engines must not write another transition: memory still has the
     /// records, and that write would put the rows back.
     retirement_suppressed: HashSet<ResourceKey>,
-    /// At most one start and one end per extant activation; never launch work.
+    /// Executor evidence waiting for a durable store write.
     pending_reports: std::collections::VecDeque<lifecycle::PendingActivation>,
 }
 
@@ -440,9 +438,276 @@ impl ServerState {
             self.forget_layout_keys_of_session(wire);
         }
     }
-}
 
-mod execution_records;
+    // ---- creation --------------------------------------------------------
+
+    /// Create a Terminal record, and with `session: None` a new session
+    /// named `new_session` around it, in one commit. Returns the session and
+    /// the Terminal handles; the activation is `Starting` until
+    /// [`Self::activation_started`].
+    ///
+    /// # Errors
+    ///
+    /// The [`Refusal`]; nothing was created.
+    pub fn create_terminal(
+        &mut self,
+        target: TerminalTarget<'_>,
+        launch: TerminalLaunch,
+        on_exit: ExitPolicy,
+        actor: &Actor,
+    ) -> Result<(SessionId, ResourceId), Refusal> {
+        let resource = NewResource {
+            kind: ResourceKind::Terminal,
+            name: None,
+            launch: Some(LaunchSpec::Terminal(launch)),
+            on_exit,
+            parent: None,
+            launch_mode: phux_core::LaunchMode::Immediate,
+        };
+        let op = match target {
+            TerminalTarget::Session(session) => Op::ResourceCreate {
+                placement: None,
+                session: Some(
+                    self.sessions
+                        .registry
+                        .session_key(session)
+                        .ok_or(Refusal::NotFound)?,
+                ),
+                resource,
+            },
+            TerminalTarget::NewSession { name, lifetime } => Op::SessionCreate {
+                name: name.to_owned(),
+                lifetime,
+                attrs: phux_core::Attrs::default(),
+                resource: Some(resource),
+            },
+        };
+        let commit = self.commit(op, actor)?;
+        let created = match commit.applied.reply {
+            phux_core::Reply::Ok { created, .. } | phux_core::Reply::Accepted { created } => {
+                created
+            }
+        };
+        let resource = created
+            .resource
+            .and_then(|k| self.sessions.registry.resource_id(&k))
+            .ok_or(Refusal::NotFound)?;
+        let session = self
+            .sessions
+            .registry
+            .session_of(resource)
+            .ok_or(Refusal::NotFound)?;
+        Ok((session, resource))
+    }
+
+    /// Create an empty session record.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refusal`]; nothing was created.
+    pub fn create_empty_session(
+        &mut self,
+        name: &str,
+        lifetime: SessionLifetime,
+        actor: &Actor,
+    ) -> Result<SessionId, Refusal> {
+        let commit = self.commit(
+            Op::SessionCreate {
+                name: name.to_owned(),
+                lifetime,
+                attrs: phux_core::Attrs::default(),
+                resource: None,
+            },
+            actor,
+        )?;
+        let phux_core::Reply::Ok { created, .. } = commit.applied.reply else {
+            return Err(Refusal::NotFound);
+        };
+        created
+            .session
+            .and_then(|k| self.sessions.registry.session_id(&k))
+            .ok_or(Refusal::NotFound)
+    }
+
+    /// Create an agent conversation bound to Terminal `parent`, in the
+    /// parent's session, and record it running: its engine starts in the
+    /// same lock.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refusal`]; nothing was created.
+    pub fn create_agent_session(
+        &mut self,
+        parent: ResourceId,
+        facet: &phux_core::AgentFacet,
+        actor: &Actor,
+    ) -> Result<ResourceId, Refusal> {
+        let parent_key = self
+            .sessions
+            .registry
+            .resource_key(parent)
+            .ok_or(Refusal::NotFound)?;
+        let session = self
+            .sessions
+            .registry
+            .record(parent)
+            .map(|r| r.session)
+            .ok_or(Refusal::NotFound)?;
+        let commit = self.commit(
+            Op::ResourceCreate {
+                placement: None,
+                session: Some(session),
+                resource: NewResource {
+                    kind: ResourceKind::AgentSession,
+                    name: None,
+                    launch: Some(LaunchSpec::Agent(AgentLaunch {
+                        provider: facet.provider.clone(),
+                        native_id: facet.native_id.clone(),
+                    })),
+                    on_exit: ExitPolicy::Remove,
+                    parent: Some(parent_key),
+                    launch_mode: phux_core::LaunchMode::Immediate,
+                },
+            },
+            actor,
+        )?;
+        let phux_core::Reply::Ok { created, .. } = commit.applied.reply else {
+            return Err(Refusal::NotFound);
+        };
+        let id = created
+            .resource
+            .and_then(|k| self.sessions.registry.resource_id(&k))
+            .ok_or(Refusal::NotFound)?;
+        if let Some(agent) = self
+            .sessions
+            .registry
+            .resource_mut(id)
+            .and_then(|d| d.agent.as_mut())
+        {
+            agent.state.clone_from(&facet.state);
+        }
+        self.activation_started(id, None);
+        Ok(id)
+    }
+
+    /// End `resource`'s activation if it is still current, then remove its
+    /// record: a reap, a kill, a purge. A no-op during shutdown, which
+    /// leaves records for the next start to reconcile.
+    pub(crate) fn retire_record(&mut self, resource: ResourceId, outcome: ExitOutcome) {
+        if self.org.shutting_down {
+            return;
+        }
+        // The key's removal is already durable. Writing it again would apply
+        // against memory that still has the row.
+        if self
+            .sessions
+            .registry
+            .resource_key(resource)
+            .is_some_and(|key| self.org.retirement_suppressed.contains(&key))
+        {
+            return;
+        }
+        self.activation_ended(resource, outcome, false);
+        if self.org.terminating.remove(&resource) {
+            return;
+        }
+        let Some(record) = self.sessions.registry.record(resource) else {
+            return;
+        };
+        let key = record.key;
+        if let Err(refusal) = self.commit_system(Op::ResourceRemove { resource: key }) {
+            tracing::warn!(?resource, %refusal, "record removal refused");
+        }
+    }
+
+    fn current_activation(
+        &self,
+        resource: ResourceId,
+        accept: impl Fn(ExecState) -> bool,
+    ) -> Option<(phux_core::ResourceKey, phux_core::ActivationId)> {
+        let record = self.sessions.registry.record(resource)?;
+        let activation = record.activation.as_ref()?;
+        accept(activation.state).then_some((record.key, activation.id))
+    }
+
+    /// Startup reconciliation (ADR-0162 §5): every activation a previous
+    /// run left current or lost, and no engine in this process vouches for,
+    /// becomes `Lost` when its process still runs on this boot with the
+    /// recorded start time, `Failed` when launch intent committed and no
+    /// process was recorded, and `Completed`/`Unobserved` when a recorded
+    /// process is gone. Nothing is relaunched. Idempotent.
+    pub fn reconcile(&mut self) -> Reconciled {
+        self.reconcile_with(crate::reconcile::boot_id(), crate::reconcile::observe)
+    }
+
+    /// [`Self::reconcile`] against a given boot identity and OS probe.
+    pub fn reconcile_with(
+        &mut self,
+        boot: Option<[u8; 16]>,
+        observe: impl Fn(i32) -> crate::reconcile::Observed,
+    ) -> Reconciled {
+        use crate::reconcile::{Verdict, decide};
+        let candidates: Vec<_> = self
+            .org()
+            .resources()
+            .filter_map(|r| {
+                let a = r.activation.as_ref()?;
+                Some((r.key, a.id, a.state, a.host_proc))
+            })
+            .collect();
+        let mut out = Reconciled::default();
+        for (key, activation, state, proc) in candidates {
+            let vouched = self
+                .sessions
+                .registry
+                .resource_id(&key)
+                .is_some_and(|id| self.resource_handle(id).is_some());
+            let op = match decide(state, vouched, proc, boot, &observe) {
+                Verdict::Keep => continue,
+                Verdict::Lost => {
+                    out.lost += 1;
+                    Op::ActivationLost {
+                        resource: key,
+                        activation,
+                    }
+                }
+                Verdict::Unobserved => {
+                    out.unobserved += 1;
+                    Op::ActivationEnded {
+                        resource: key,
+                        activation,
+                        state: ExecState::Completed,
+                        outcome: Outcome::Unobserved,
+                        diagnostic: None,
+                    }
+                }
+                Verdict::NeverLaunched => {
+                    out.never_launched += 1;
+                    Op::ActivationEnded {
+                        resource: key,
+                        activation,
+                        state: ExecState::Failed,
+                        outcome: Outcome::Unobserved,
+                        diagnostic: None,
+                    }
+                }
+            };
+            if let Err(refusal) = self.commit_system(op) {
+                tracing::warn!(resource = %key, %refusal, "reconcile verdict not recorded");
+            }
+        }
+        out
+    }
+
+    /// Whether any activation is current: the server still executes work
+    /// (R13).
+    #[must_use]
+    pub fn has_live_activation(&self) -> bool {
+        self.org()
+            .resources()
+            .any(|r| r.activation.as_ref().is_some_and(|a| a.state.is_current()))
+    }
+}
 
 /// What [`ServerState::reconcile`] recorded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -451,6 +716,8 @@ pub struct Reconciled {
     pub lost: u32,
     /// Activations that ended unobserved.
     pub unobserved: u32,
+    /// Activations whose launch intent committed and never started a process.
+    pub never_launched: u32,
 }
 
 /// Where [`ServerState::create_terminal`] puts a new Terminal.
@@ -469,7 +736,244 @@ pub enum TerminalTarget<'a> {
 
 #[cfg(test)]
 mod creation_bounds;
+mod lifecycle;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
-mod tests;
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    /// The arrangement `session` names.
+    fn arrangement_of(state: &ServerState, session: SessionId) -> phux_core::Arrangement {
+        let key = state
+            .registry()
+            .session(session)
+            .and_then(|s| s.arrangement)
+            .expect("every session has an arrangement");
+        state.org().arrangement(&key).cloned().expect("arrangement")
+    }
+
+    /// A session created with its first terminal shows it in one group from
+    /// the creating commit on; an empty session's arrangement has no groups.
+    #[test]
+    fn a_launched_session_is_created_with_its_terminal_arranged() {
+        let mut state = ServerState::new();
+        let (session, terminal) = state.seed_session("work");
+        let key = state.registry().record(terminal).expect("record").key;
+        let arrangement = arrangement_of(&state, session);
+        assert_eq!(arrangement.revision, phux_core::Revision::FIRST);
+        assert_eq!(arrangement.groups.len(), 1);
+        assert_eq!(arrangement.groups[0].name, None);
+        assert_eq!(arrangement.resources(), vec![key]);
+
+        let empty = state.seed_empty_session("empty").expect("empty session");
+        assert!(arrangement_of(&state, empty).groups.is_empty());
+    }
+
+    #[test]
+    fn a_failed_store_write_refuses_and_leaves_memory_unchanged() {
+        let mut state = ServerState::new();
+        let (session, terminal) = state.seed_session("work");
+        let store = MemOrgStore::default();
+        let fail = store.fail_commits();
+        state.set_org_store(Box::new(store));
+        let before = state.org().clone();
+        let wire_before = state.idspace.session_wire(session);
+
+        fail.store(true, Ordering::Relaxed);
+        let refused = state.commit(
+            Op::SessionCreate {
+                name: "other".to_owned(),
+                lifetime: SessionLifetime::Persistent,
+                attrs: phux_core::Attrs::default(),
+                resource: None,
+            },
+            &Actor::owner(),
+        );
+        assert!(
+            matches!(refused, Err(Refusal::StoreFailure { .. })),
+            "{refused:?}"
+        );
+        state.retire_record(terminal, ExitOutcome::exited(0));
+        assert_eq!(state.org(), &before, "no record moved");
+        assert!(state.registry().record(terminal).is_some());
+        assert_eq!(state.idspace.session_wire(session), wire_before);
+
+        fail.store(false, Ordering::Relaxed);
+        state.retire_record(terminal, ExitOutcome::exited(0));
+        assert!(state.registry().record(terminal).is_none());
+    }
+
+    #[test]
+    fn a_committed_launch_with_no_process_fails_instead_of_completing() {
+        let mut state = ServerState::new();
+        let (_, terminal) = state.seed_session("work");
+        let before = state
+            .registry()
+            .record(terminal)
+            .unwrap()
+            .activation
+            .clone()
+            .unwrap();
+        assert_eq!(before.state, ExecState::Starting);
+        assert!(before.host_proc.is_none());
+        let counts = state.reconcile_with(None, |_| panic!("must not probe"));
+        let after = state
+            .registry()
+            .record(terminal)
+            .unwrap()
+            .activation
+            .clone()
+            .unwrap();
+        assert_eq!(after.state, ExecState::Failed);
+        assert_ne!(after.state, ExecState::Completed);
+        assert_eq!(counts.never_launched, 1);
+        assert_eq!(counts.unobserved, 0);
+    }
+
+    #[test]
+    fn executor_reports_are_refused_from_a_client() {
+        let mut state = ServerState::new();
+        let (_, terminal) = state.seed_session("work");
+        let record = state.registry().record(terminal).unwrap().clone();
+        let refused = state.commit(
+            Op::ActivationLost {
+                resource: record.key,
+                activation: phux_core::ActivationId::FIRST,
+            },
+            &Actor::owner(),
+        );
+        assert!(matches!(refused, Err(Refusal::Unauthorized { .. })));
+    }
+
+    #[test]
+    fn a_remove_policy_exit_removes_the_record_and_an_ephemeral_session() {
+        let mut state = ServerState::new();
+        let (session, terminal) = state
+            .create_terminal(
+                TerminalTarget::NewSession {
+                    name: "quick",
+                    lifetime: SessionLifetime::Ephemeral,
+                },
+                TerminalLaunch::default(),
+                ExitPolicy::Remove,
+                &Actor::owner(),
+            )
+            .unwrap();
+        state.activation_started(terminal, None);
+        assert!(state.has_live_activation());
+        state.activation_ended(terminal, ExitOutcome::exited(0), false);
+        assert!(state.registry().record(terminal).is_none());
+        assert!(state.registry().session(session).is_none());
+        assert!(!state.has_live_activation());
+    }
+
+    #[test]
+    fn a_retain_policy_exit_keeps_the_record_with_its_outcome() {
+        let mut state = ServerState::new();
+        let (_, terminal) = state
+            .create_terminal(
+                TerminalTarget::NewSession {
+                    name: "kept",
+                    lifetime: SessionLifetime::Persistent,
+                },
+                TerminalLaunch::default(),
+                ExitPolicy::Retain,
+                &Actor::owner(),
+            )
+            .unwrap();
+        state.activation_ended(terminal, ExitOutcome::exited(3), false);
+        let record = state.registry().record(terminal).expect("retained");
+        let activation = record.activation.as_ref().unwrap();
+        assert_eq!(activation.state, ExecState::Completed);
+        assert_eq!(
+            activation.outcome,
+            Some(Outcome::Exit(ExitOutcome::exited(3)))
+        );
+    }
+
+    /// ADR-0163 §8: every journaled organization event names a principal:
+    /// the one the committing connection authenticated as, or the server.
+    #[test]
+    fn every_journaled_organization_event_names_its_principal() {
+        use phux_protocol::wire::frame::AgentEvent;
+
+        let mut state = ServerState::new();
+        let (session, terminal) = state.seed_session("work");
+        let owner = ClientId(1);
+        state.set_connection_grant(owner, crate::policy::ConnectionGrant::owner());
+        let workload = ClientId(2);
+        let workload_id = format!("sha256:{}", "a".repeat(64));
+        state.set_connection_grant(
+            workload,
+            crate::policy::ConnectionGrant::scoped(
+                phux_protocol::scope::TerminalScopeSet::parse_all(&["*@global"]).unwrap(),
+                Some(workload_id.clone()),
+            )
+            .unwrap(),
+        );
+        let first = state.journal.head() + 1;
+
+        let key = state.registry().session_key(session).unwrap();
+        let rename = Command {
+            operation: state.mint_operation(),
+            op: Op::SessionRename {
+                session: key,
+                name: "renamed".to_owned(),
+            },
+        };
+        let as_owner = state.actor_for(owner);
+        state
+            .commit_command_from(&rename, &as_owner, Some(owner))
+            .unwrap();
+        let create = Command {
+            operation: state.mint_operation(),
+            op: Op::SessionCreate {
+                name: "made-by-automation".to_owned(),
+                lifetime: SessionLifetime::Persistent,
+                attrs: phux_core::Attrs::default(),
+                resource: None,
+            },
+        };
+        let as_workload = state.actor_for(workload);
+        assert_eq!(
+            as_workload.principal,
+            PrincipalId::Credential(workload_id.clone())
+        );
+        state
+            .commit_command_from(&create, &as_workload, Some(workload))
+            .unwrap();
+        state.retire_record(terminal, ExitOutcome::exited(0));
+
+        let principals: Vec<_> = state
+            .journal
+            .retained()
+            .filter(|entry| entry.seq() >= first)
+            .filter(|entry| !matches!(entry.event, AgentEvent::TerminalControl { .. }))
+            .map(|entry| {
+                entry
+                    .stamp
+                    .actor
+                    .as_ref()
+                    .and_then(phux_protocol::wire::frame::ActorRef::principal)
+                    .unwrap_or_else(|| panic!("no principal on {:?}", entry.event))
+            })
+            .collect();
+        let id = |principal: PrincipalId| crate::org_wire::principal_id(&principal).unwrap();
+        assert!(principals.len() >= 3, "{principals:?}");
+        assert!(principals.contains(&id(PrincipalId::Owner)));
+        assert!(principals.contains(&id(PrincipalId::Credential(workload_id))));
+        assert!(principals.contains(&id(PrincipalId::System)));
+    }
+
+    #[test]
+    fn shutdown_leaves_records_for_the_next_start() {
+        let mut state = ServerState::new();
+        let (_, terminal) = state.seed_session("work");
+        state.begin_shutdown();
+        state.retire_record(terminal, ExitOutcome::exited(0));
+        assert!(state.registry().record(terminal).is_some());
+    }
+}

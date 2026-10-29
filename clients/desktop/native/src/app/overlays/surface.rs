@@ -22,16 +22,27 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
         Modal::None => return div().into_any_element(),
         Modal::Capture => crate::app::capture::panel(desk, &look, window, cx),
         Modal::AgentFleet => crate::app::fleet::dashboard::panel(desk, &look, window, cx),
+        Modal::Sessions => {
+            let panel = launcher::palette(desk, colors, window, cx);
+            return match desk.anchors.get(crate::app::menus::MAIN) {
+                Some(rail) => drop_from(rail, window, cx, panel),
+                None => backdrop(colors, window, cx, panel),
+            };
+        }
         Modal::Commands
         | Modal::Goto
         | Modal::WindowSession
         | Modal::Windows
         | Modal::MoveResources => launcher::palette(desk, colors, window, cx),
-        Modal::Path => path_panel(desk, colors, &look, cx),
-        Modal::Settings if desk.settings_page.is_some() => {
-            crate::app::settings_panel::panel(desk, window, cx)
+        Modal::Path => {
+            let cursor = desk.cursor_anchor(cx);
+            let panel = path_panel(desk, colors, &look, cursor.is_some(), cx);
+            return match cursor {
+                Some(cursor) => at_cursor(cursor, window, cx, panel),
+                None => backdrop(colors, window, cx, panel),
+            };
         }
-        Modal::Settings => launcher::palette(desk, colors, window, cx),
+        Modal::Themes => super::theme_panel::theme_panel(desk, &look, window, cx),
         Modal::Notifications => {
             let panel = notifications_panel(desk, colors, &look, window, cx);
             return match desk.anchors.get("notifications") {
@@ -39,7 +50,7 @@ pub fn layer(desk: &mut Desk, window: &mut Window, cx: &mut Context<Desk>) -> An
                 None => backdrop(colors, window, cx, panel),
             };
         }
-        Modal::NativeLaunch => crate::app::native_launch::panel(desk, &look, cx),
+        Modal::NativeLaunch => crate::app::native_launch::panel(desk, &look, window, cx),
         Modal::Rename { .. } => rename_dialog(desk, colors, &look, cx),
         Modal::Session { create, .. } => session_dialog(desk, create, colors, &look, cx),
         Modal::Project { name, current, .. } => {
@@ -157,6 +168,109 @@ pub(super) fn popover(
         .into_any_element()
 }
 
+/// The width and tallest height of a panel opened at the terminal cursor.
+pub(super) const AT_CURSOR: (f32, f32) = (460., 300.);
+
+/// A panel opened at the terminal cursor, as a completion list opens: below
+/// the cursor's line, or above it when the window has no room below; kept
+/// inside the window, no dimming, and a click outside closes it.
+pub(super) fn at_cursor(
+    cursor: gpui::Bounds<gpui::Pixels>,
+    window: &Window,
+    cx: &mut Context<Desk>,
+    card: impl IntoElement,
+) -> AnyElement {
+    let spot = cursor_spot(cursor, window.viewport_size());
+    let placed = div().absolute().left(spot.left);
+    let placed = match spot.edge {
+        Edge::Top(top) => placed.top(top),
+        Edge::Bottom(bottom) => placed.bottom(bottom),
+    };
+    div()
+        .id("modal-backdrop")
+        .absolute()
+        .inset_0()
+        .size_full()
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)),
+        )
+        .child(
+            placed
+                .debug_selector(|| "path-at-cursor".into())
+                .child(card),
+        )
+        .into_any_element()
+}
+
+/// Where a panel at the cursor sits: its left edge, and the edge it hangs
+/// from (a top below the cursor's line, or a bottom above it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Spot {
+    pub(super) left: gpui::Pixels,
+    pub(super) edge: Edge,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Edge {
+    Top(gpui::Pixels),
+    Bottom(gpui::Pixels),
+}
+
+/// Below the cursor's line when the tallest panel fits there, else above it;
+/// shifted left as far as it must to stay inside the window.
+pub(super) fn cursor_spot(
+    cursor: gpui::Bounds<gpui::Pixels>,
+    viewport: gpui::Size<gpui::Pixels>,
+) -> Spot {
+    let gutter = px(SHEET_GUTTER / 2.);
+    let (width, height) = (px(AT_CURSOR.0), px(AT_CURSOR.1));
+    let left = cursor
+        .left()
+        .min(viewport.width - width - gutter)
+        .max(gutter);
+    let edge = if viewport.height - cursor.bottom() - gutter >= height {
+        Edge::Top(cursor.bottom() + px(4.))
+    } else {
+        Edge::Bottom(viewport.height - cursor.top() + px(4.))
+    };
+    Spot { left, edge }
+}
+
+/// A panel dropped from a trigger at the window's leading edge, its left
+/// edge on the trigger's and kept inside the window; no dimming, and a click
+/// outside closes it.
+pub(super) fn drop_from(
+    trigger: gpui::Bounds<gpui::Pixels>,
+    window: &Window,
+    cx: &mut Context<Desk>,
+    card: impl IntoElement,
+) -> AnyElement {
+    let viewport = window.viewport_size();
+    div()
+        .id("modal-backdrop")
+        .absolute()
+        .inset_0()
+        .size_full()
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)),
+        )
+        .child(
+            div()
+                .absolute()
+                .debug_selector(|| "session-switcher".into())
+                .top(trigger.bottom() + px(6.))
+                .left(trigger.left().max(px(SHEET_GUTTER / 2.)))
+                .max_w(viewport.width - px(SHEET_GUTTER))
+                .max_h(viewport.height - trigger.bottom() - px(SHEET_GUTTER))
+                .child(card),
+        )
+        .into_any_element()
+}
+
 /// A dialog or palette card. The skin decides how much it lifts; the backing
 /// stays near-opaque so text reads over terminal content.
 pub(crate) fn card(look: &Look, width: f32) -> gpui::Div {
@@ -199,4 +313,32 @@ pub(super) fn baseline(cx: &gpui::App, size: gpui::Pixels, line: gpui::Pixels) -
     let ascent = text.ascent(font, size);
     let descent = text.descent(font, size).abs();
     (line - ascent - descent) / 2. + ascent
+}
+
+#[cfg(test)]
+mod cursor_spot_tests {
+    use super::{Edge, Spot, cursor_spot};
+    use gpui::{Bounds, point, px, size};
+
+    fn cell(x: f32, y: f32) -> Bounds<gpui::Pixels> {
+        Bounds::new(point(px(x), px(y)), size(px(8.), px(16.)))
+    }
+
+    #[test]
+    fn the_list_hangs_below_the_cursor_and_flips_above_near_the_bottom() {
+        let window = size(px(1280.), px(800.));
+        assert_eq!(
+            cursor_spot(cell(300., 200.), window),
+            Spot {
+                left: px(300.),
+                edge: Edge::Top(px(220.))
+            }
+        );
+        assert_eq!(
+            cursor_spot(cell(300., 700.), window).edge,
+            Edge::Bottom(px(104.))
+        );
+        // Near the right edge it shifts left to stay whole.
+        assert_eq!(cursor_spot(cell(1200., 200.), window).left, px(812.));
+    }
 }

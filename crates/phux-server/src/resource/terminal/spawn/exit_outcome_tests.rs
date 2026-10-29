@@ -1,6 +1,8 @@
 use std::os::unix::process::ExitStatusExt;
 
-use super::{ExitOutcome, exit_outcome};
+use phux_core::process::ExitOutcome;
+
+use super::exit_outcome;
 
 fn std_death_by(signal: i32) -> portable_pty::ExitStatus {
     portable_pty::ExitStatus::from(std::process::ExitStatus::from_raw(signal))

@@ -139,7 +139,7 @@ fn install_release(
 
     // The gate: nothing below runs unless a release key signed the digest
     // and the bytes match it.
-    let expected = signed_digest(env, &artifact, staging.path())?;
+    let expected = signed_digest(env.releases, env.release_keys, &artifact, staging.path())?;
     if let Some(entry) = plan.vouched()
         && entry.sha256 != expected
     {
@@ -194,15 +194,15 @@ fn install_release(
 /// fetched refuses like one that does not verify: an unsigned release is
 /// never installed.
 fn signed_digest(
-    env: &UpdateEnv<'_>,
+    releases: &dyn ReleaseSource,
+    release_keys: &[&str],
     artifact: &Asset,
     staging: &std::path::Path,
 ) -> Result<String, UpdateError> {
     let sidecar_path = staging.join(format!("{}.sha256", artifact.name));
-    env.releases
-        .download(&artifact.sidecar_url(), &sidecar_path)?;
+    releases.download(&artifact.sidecar_url(), &sidecar_path)?;
     let signature_path = staging.join(format!("{}.sha256.minisig", artifact.name));
-    env.releases
+    releases
         .download(&artifact.signature_url(), &signature_path)
         .map_err(|err| {
             UpdateError::Signature(format!(
@@ -220,8 +220,74 @@ fn signed_digest(
         &read(&sidecar_path)?,
         &read(&signature_path)?,
         &artifact.name,
-        env.release_keys,
+        release_keys,
     )
+}
+
+/// The build this process is: its stable version, or the next commit it was
+/// compiled from. Boxes take this build, not a later one the channel has
+/// published since.
+pub(crate) fn own_build() -> Result<Build, UpdateError> {
+    match channel::of_build() {
+        Channel::Stable => Ok(Build::Stable(release::current_version()?)),
+        Channel::Next => {
+            let sha = channel::build_sha().ok_or_else(|| {
+                UpdateError::Install(
+                    "this next build has no commit sha, so its Linux box binary cannot be \
+                     downloaded"
+                        .to_owned(),
+                )
+            })?;
+            let lowercase_hex = sha.len() == 40
+                && sha
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+            if !lowercase_hex {
+                return Err(UpdateError::Install(format!(
+                    "this next build's commit sha `{sha}` is not 40 lowercase hex digits"
+                )));
+            }
+            Ok(Build::Next(sha.to_owned()))
+        }
+    }
+}
+
+/// Download this process's own phux for `target` into `into` and unpack it
+/// after the same signature and digest gate `phux update` installs through.
+/// The channel manifest names the channel's latest build, which may be newer
+/// than the hub the box has to speak to, so it is not consulted: the signed
+/// digest of this build's asset is the gate. Returns the build and the
+/// staged directory holding `phux`.
+pub(crate) fn fetch_published(
+    target: &str,
+    into: &std::path::Path,
+) -> Result<(Build, PathBuf), UpdateError> {
+    let build = own_build()?;
+    let staged = fetch_build(
+        &release::NetworkReleaseSource,
+        signature::RELEASE_KEYS,
+        &build,
+        target,
+        into,
+    )?;
+    Ok((build, staged))
+}
+
+/// Download and verify `build` for `target` from `releases`. `release_keys`
+/// are the minisign keys that may have signed its digest.
+fn fetch_build(
+    releases: &dyn ReleaseSource,
+    release_keys: &[&str],
+    build: &Build,
+    target: &str,
+    into: &std::path::Path,
+) -> Result<PathBuf, UpdateError> {
+    let artifact = shared::asset(Product::Phux, build, target);
+    let archive = into.join(&artifact.name);
+    releases.download(&artifact.url, &archive)?;
+    let expected = signed_digest(releases, release_keys, &artifact, into)?;
+    apply::verify_digest(&archive, &expected, &artifact.name)?;
+    apply::unpack_verified(&archive, &artifact.stem, into)
 }
 
 /// Restore the binaries saved by the previous update. The handoff runs here

@@ -27,38 +27,64 @@ new pane and never overwrites an existing one.
 
 ## Desktop
 
-Phux Desktop is a native app for macOS 27 or later on Apple silicon, and for
-Linux on x86_64 or arm64 with Vulkan. Install it with:
+The phux desktop is a native app for macOS 26.0 or later on Apple silicon
+and Linux on x86_64 or arm64 with Vulkan. On macOS and Linux, install it with:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
 ```
 
+Windows: the CLI and server run in WSL 2, with PowerShell launchers. The
+[native x64 desktop](../clients/desktop/README.md#windows) uses Direct3D 11,
+Windows input/clipboard, and the same WSL coordinator. Its installer requires
+a Windows-capable desktop release; WSLg is not needed. Updates are manual on
+Windows, and the local Changes panel and external Unix developer socket are
+unavailable there.
+
 It shows every session on this machine and on each machine you added with
-`phux host add`, grouped by machine or by repository. One window shows one
+`phux host add` or the app's **Add Machine…**, grouped by machine or by
+repository. Add Machine lists the machines on your Tailscale network and
+installs phux on the one you pick ([Remote machines](./remote.md#machines-on-your-tailnet)). One window shows one
 session, and the sidebar switches between them. Agents that need you are
 marked where they are. <kbd>⌘P</kbd> opens a palette of sessions, actions,
 and settings. The app checks for updates and installs them on restart.
+An update reopens the same windows, hosts, sessions, tabs and focused panes,
+bringing the foreground window back to the front.
 
 Each window keeps one live connection per machine, so switching back to a
 session you just left is instant. Machines you aren't looking at keep their
 data current without drawing anything. Disconnecting, forgetting a machine,
 or closing the window closes its connections.
 
-The app starts or reaches the server through the installed `phux` command,
-so install the CLI first; the desktop installer does it if you haven't. The
-app never creates sessions on its own and never stops the server. Quitting
-it detaches.
+On macOS the app bundles the CLI/server. On Linux, install the CLI first
+or use the desktop installer, which supplies it when none is found.
+The app never creates sessions on its own or stops the server. Quitting detaches.
+
+Terminal panes and previews render inline Kitty graphics: PNG and raw RGB/RGBA,
+chunked transfers, classic placements and Unicode placeholders, cropping,
+transparency and z-order. Visible images survive attach and reconnect through
+synthesized terminal replay. File, temporary-file and shared-memory transfers are
+disabled; applications must send image bytes inline. Sixel, Kitty animations and
+relative placements are not supported. Image-number (`I=`) references are not
+preserved across a synthesized reattach; use explicit image IDs (`i=`).
+Classic placements outside the captured bootstrap viewport are not reconstructed;
+resident virtual prototypes remain available to Unicode placeholders in history.
+
+For `icat`, use `kitten icat --transfer-mode=stream image.png`
+([transfer modes](https://sw.kovidgoyal.net/kitty/kittens/icat/#cmdoption-kitty-kitten-icat-transfer-mode)).
 
 - [Quick Capture](./desktop-capture.md) turns a thought into a new agent
   terminal.
 - The [Changes panel](./desktop-changes.md) reviews and stages Git changes
   beside your panes.
+- [Reviews](./desktop-reviews.md) lists your open GitHub pull requests and
+  reviews, merges or checks out each one.
 - [Agent panes](./desktop-panes.md) explains how panes an agent drives look.
 
-The desktop app has its own version and release notes. The macOS build is
-signed ad hoc, not notarized. Expect rough edges: the terminal UI is ahead
-of it.
+The desktop app has its own version and release notes. The macOS app and
+DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app
+requires macOS 26.0; the standalone CLI requires macOS 11.0. Expect rough
+edges: the terminal UI is ahead of the desktop.
 
 ## Browser
 

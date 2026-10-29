@@ -13,7 +13,7 @@ pub(in crate::layout) struct VersionProbe {
     pub version: u8,
 }
 
-/// The v3 multi-window envelope (docs/spec/L3.md §3.2).
+/// The v3 multi-window envelope (docs/organization.md#records-handles-and-arrangements).
 #[derive(Debug, Serialize, Deserialize)]
 pub(in crate::layout) struct CborWorkspaceEnvelope {
     /// Envelope schema version (`3`).

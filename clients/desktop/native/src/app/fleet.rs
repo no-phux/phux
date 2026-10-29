@@ -11,7 +11,8 @@ use phux_protocol::wire::frame::{ExecState, ResourceRecord};
 
 use super::desk::Desk;
 use super::notifications::Kind;
-use crate::connection::{AgentState, Connection};
+use super::pane_identity::PaneOrigin;
+use crate::connection::{AgentInfo, AgentState, Connection};
 
 mod agents;
 pub(crate) mod dashboard;
@@ -37,6 +38,8 @@ pub(crate) struct WorkPane {
     pub descriptor: PaneDescriptor,
     /// Resolve the same name/title/directory/group fallback on every host.
     pub label: String,
+    pub origin: PaneOrigin,
+    pub agent: Option<AgentInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -267,6 +270,8 @@ fn work_on(connection: &Connection, host: Option<String>) -> Vec<Work> {
                                 Some(pane),
                                 connection.group_name(&pane.terminal_id),
                             ),
+                            origin: PaneOrigin::on(connection, &pane.terminal_id),
+                            agent: connection.agents.get(&pane.terminal_id).cloned(),
                         })
                         .collect(),
                     resources,
@@ -391,6 +396,22 @@ impl Desk {
             }
             None => self.session == destination.name,
         }
+    }
+
+    /// Step through the sidebar's sessions, wrapping at either end.
+    pub(crate) fn step_session(&mut self, step: isize, cx: &mut Context<Self>) {
+        let sessions = super::view::listed_sessions(self);
+        let len = sessions.len() as isize;
+        if len == 0 {
+            return;
+        }
+        let next = sessions
+            .iter()
+            .position(|destination| self.work_is_active(destination))
+            .map_or(if step > 0 { 0 } else { len - 1 }, |at| {
+                (at as isize + step).rem_euclid(len)
+            });
+        self.navigate_work(sessions[next as usize].clone(), cx);
     }
 
     /// Revalidate the catalog destination before replacing the active projection.

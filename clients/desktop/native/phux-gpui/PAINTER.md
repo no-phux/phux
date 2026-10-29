@@ -51,7 +51,11 @@ those that entered. That search runs when most rows would otherwise be
 reshaped. The terminal is a cached GPUI view, so a chrome refresh reuses
 that paint until the terminal itself is notified. The desk withholds that
 notification until the session is attached, then notifies placed terminals
-once. A rejected reacquire keeps the last scene while the bounds still
+once. Its foreground wake pump drains an isolated wake immediately and pauses
+for one millisecond only when another wake is already queued. A refilled channel
+must return control to GPUI for painting and input; an already-ready `recv`
+is not a yield. The channel coalesces wake hints, not terminal bytes or events.
+A rejected reacquire keeps the last scene while the bounds still
 match, so a reconnect does not blank the pane. A missing scene, or bounds
 that no longer match, clears the canvas.
 
@@ -71,6 +75,17 @@ fraction. Input hit-testing and the IME rectangle undo the same shift
 fringe, the fringe moves with the viewport: the row leaving the bottom
 becomes the new fringe and the old fringe can enter, each checked cell by
 cell like any kept row. A one-row move through history then shapes one row.
+
+For the bundled fixed-pitch fonts, printable ASCII runs reuse a validated
+glyph alphabet and a grid-width position ruler per face. The ruler preserves
+GPUI's natural offsets within one pixel of the grid, including at fractional
+advances; colour and face spans remain independent. Tables survive full-row
+and full-screen rewrites, but not changes to font, size or cell geometry.
+Custom fonts, Unicode, missing glyphs and fallback fonts keep platform shaping.
+`desktop.shaped` counts prepared line layouts; `desktop.platform_shaped` counts
+actual platform-shaper calls, including table warmup. The real-GPU pixel oracle
+compares all printable ASCII in regular, bold, italic and mixed-colour faces
+against platform-shaped rows at multiple sizes.
 
 A row's contiguous single-width cells are one shaped line on the cell grid,
 not one shape per cell or word. Spaces and blank cells between glyphs stay in
@@ -113,8 +128,35 @@ over 170 ms. The beam is painted over the cached scene and never enters it,
 asks for animation frames only while it burns, and is off under macOS
 reduce motion.
 Hyperlink metadata stays in the retained `GridFrame`. Cross-cell ligatures,
-procedural box drawing, blink timers, and Kitty/sixel graphics (`GridFrame`
-carries no image data) are not provided.
+procedural box drawing and blink timers are not provided.
+
+## Kitty graphics
+
+`GridFrame.images` carries classic and Unicode-placeholder placements with
+immutable shared RGBA pixels, signed cell geometry, source rectangles and z-order.
+libghostty owns APC parsing, image storage, chunk assembly, placement and deletion;
+the runtime projects its state rather than parsing a second graphics protocol.
+PNG decoding uses the engine's bounded allocator. Inline RGB/RGBA and PNG are
+supported; external file, temporary-file and shared-memory media remain disabled.
+See [client compatibility limits](../../../../docs/clients.md#desktop).
+
+The painter retains a texture per immutable pixel allocation, converting RGBA
+to GPUI's straight-alpha BGRA once. Deletion, replacement and view release evict
+unused atlas entries. Text-only frames allocate no image cache.
+Planes below `z = -1073741824` paint beneath non-default cell backgrounds;
+other negative planes paint beneath glyphs; nonnegative planes paint above text.
+An explicitly set background masks the lowest plane even if its RGB equals the
+theme default. Placeholder glyphs and their decorations do not paint, but their
+backgrounds still participate.
+
+Virtual prototypes preserve aspect ratio and resolve omitted grid dimensions
+from image dimensions and actual cell pitch. Palette foreground/underline IDs,
+combining marks and placeholder inheritance select image, placement and source
+cells. The runtime preserves original source-crop bounds separately from each
+visible placeholder slice. Patches 0014–0016 clamp filtering to that original crop;
+independently rounded shared mask edges avoid alpha overlap at fractional preview
+sizes. A plain GPUI build uses its existing image API without exact crop-edge
+filtering. Cell-pixel changes republish quiet views without replacing their pixels.
 
 ## Fixture
 
@@ -144,7 +186,8 @@ qualification run.
 `just desktop-perf-headless` runs the same main-thread GPUI pixel binary in
 benchmark mode. No CLI, server, socket, visible window, or production profile:
 an embedded runtime feeds an 80×24 terminal, and GPUI draws it offscreen.
-Four JSON lines report 128 cached redraws, one-row updates, sustained
+Five JSON lines report 128 cached redraws, one-row updates, full-screen
+printable-ASCII animation (zero warm platform-shaping calls), sustained
 full-width scrolling, and wheel steps of three eighths of a row back through
 that history, dispatched as real wheel events. Four more (`wide_*`) repeat
 them on a 200×60 grid of faint, bold and coloured prose with box drawing,
@@ -177,8 +220,13 @@ measure the terminal view only, and the `window_*` phases add the chrome's
 layout and paint. None measures input-to-pixel latency, compositor
 presentation or production thread contention. Use `perf-bench.ts` with a
 visible desktop for those; it refuses to report a locked-display run that
-never drew a frame. The hosted packaged-app smoke remains the visual release
-qualification.
+never drew a frame or a visible workload that never reshaped terminal content.
+Use `--workload cmatrix` (with cmatrix installed on the benchmark host) to
+exercise actual sparse, full-screen animation instead of the default 60 Hz
+full-screen flood. The summary counts terminal paints, not compositor FPS:
+several visible panes can paint in one draw. Desk build p99 covers only the
+root element-tree build, not the GPU or the terminal-only cached redraws.
+The hosted packaged-app smoke remains the visual release qualification.
 
-phux-d4x9.4 remains open for Retina/scale-change GPU evidence, wider
-script/box-drawing fidelity, and a graphics product decision.
+phux-d4x9.4 remains open for Retina/scale-change GPU evidence and wider
+script/box-drawing fidelity.

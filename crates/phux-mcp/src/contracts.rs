@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 pub(crate) fn operation_status_schema() -> Value {
     crate::cli_tools::schema(
         "phux_operation_status",
-        "Observe a keyed mutation in this MCP adapter: pending, completed with result, or failed with a structured error. Pending operations may need phux_approvals and a separate authorized phux_approve caller. No waiting or execution. The ledger does not survive adapter restart.",
+        "Observe an adapter_receipt_id via its legacy idempotency_key argument: pending, completed with result, or failed with a structured error. This adapter-local identity is not a durable mail or input operation identity. Pending operations may need phux_approvals and a separate authorized phux_approve caller. No waiting or execution. The ledger does not survive adapter restart.",
         json!({ "idempotency_key": key_schema() }),
         &["idempotency_key"],
     )
@@ -78,6 +78,7 @@ pub(crate) fn output_schemas() -> Value {
         "phux_api_describe".into(),
         crate::terminal_tools::description_schema(),
     );
+    schemas.insert("phux_operation_status".into(), operation_output());
     let mut durable = phux_protocol::api::resource_observed_schema();
     let definitions = durable
         .as_object_mut()
@@ -168,7 +169,9 @@ pub(crate) fn result_document(mut value: Value) -> Value {
 pub(crate) fn operation_output() -> Value {
     json!({ "type": "object", "required": ["schema_version", "operation_id", "state"], "properties": {
         "schema_version": { "type": "integer", "const": 1 },
-        "operation_id": { "type": "string" },
+        "operation_id": { "type": "string", "description": "Legacy alias of adapter_receipt_id, not a backend operation identity." },
+        "adapter_receipt_id": { "type": "string" },
+        "scope": { "type": "object", "required": ["kind"], "properties": { "kind": { "type": "string", "const": "mcp_adapter" }, "id": { "type": "string" } } },
         "state": { "type": "string", "enum": ["pending", "completed", "failed"] },
         "result": {}, "error": { "type": "object" },
         "status_tool": { "type": "string" }, "approval_check": { "type": "object" },

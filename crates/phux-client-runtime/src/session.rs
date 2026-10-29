@@ -67,7 +67,8 @@ use std::collections::VecDeque;
 use bytes::{Bytes, BytesMut};
 use phux_protocol::caps::{BootstrapLimits, ClientCapabilities, Layer, LayerSet, ServerFeature};
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{FrameKind, RolePolicy};
+use phux_protocol::wire::frame::{ErrorCode, FrameKind, RolePolicy};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 
 use crate::connection::establish;
@@ -89,7 +90,7 @@ pub use reply::{Answer, Refusal, Reply, error_code_label, unexpected_reply};
 pub use requests::METADATA_WINDOW;
 
 use framed::decode_frame;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use {
     crate::control::encode,
     framed::{check_barrier_bound, is_pong},
@@ -132,7 +133,7 @@ const _: () = {
 impl Session {
     /// Dial `dial` within [`DIAL_TIMEOUT`] and negotiate `HELLO` as
     /// `client_name` offering `client_caps`. On a plain QUIC link the offer
-    /// adds per-Terminal streams (proto.md §4.2).
+    /// adds per-Terminal streams (docs/protocol.md#quic-stream-routing).
     ///
     /// A development build refuses the production Unix socket
     /// (`phux_config_core::socket::refuse_dev_on_production`).
@@ -178,6 +179,7 @@ impl Session {
     /// An unnegotiated session over an already-connected [`UnixStream`]:
     /// the in-process seam tests use for either end of a socket pair.
     #[must_use]
+    #[cfg(unix)]
     pub fn from_stream(stream: UnixStream) -> Self {
         Self::over(Io::from_unix_stream(stream))
     }
@@ -196,13 +198,14 @@ impl Session {
     }
 
     /// Negotiate the protocol once. [`Self::connect`] already did; this is
-    /// for a [`Self::from_stream`] session.
+    /// for a `Self::from_stream` session on Unix.
     ///
     /// # Errors
     ///
-    /// [`SessionError::Refused`] when the server answers with an `ERROR`;
-    /// [`SessionError::Protocol`] for a second negotiation, a `HELLO_OK`
-    /// outside the offer, or any other reply.
+    /// [`SessionError::IncompatibleProtocol`] when the server answers with
+    /// `VERSION_INCOMPATIBLE`; [`SessionError::Refused`] for any other
+    /// `ERROR`; [`SessionError::Protocol`] for a second negotiation, a
+    /// `HELLO_OK` outside the offer, or any other reply.
     pub async fn negotiate(
         &mut self,
         client_name: String,
@@ -337,7 +340,7 @@ impl Session {
 impl Session {
     /// Whether this negotiated QUIC session carries per-Terminal streams:
     /// a plain QUIC link (never UDS, WebSocket, or a relayed end-to-end
-    /// session, proto.md §4.2) whose `HELLO_OK` advertised `QUIC_STREAMS`.
+    /// session, docs/protocol.md#quic-stream-routing) whose `HELLO_OK` advertised `QUIC_STREAMS`.
     #[must_use]
     pub fn multistream_enabled(&self) -> bool {
         self.multistream.is_some() && self.advertises(ServerFeature::QuicStreams)
@@ -423,7 +426,7 @@ fn accept_hello_reply(
         }
         .accept(offered)
         .map_err(|error| SessionError::Protocol(error.to_string())),
-        FrameKind::Error { message, .. } => Err(SessionError::Refused(message)),
+        FrameKind::Error { code, message, .. } => Err(hello_refusal(code, message)),
         _ => Err(SessionError::Protocol(unexpected_reply("HELLO"))),
     }
 }
@@ -441,12 +444,24 @@ fn refuse_production_socket(dial: &Dial) -> Result<(), SessionError> {
     })
 }
 
+/// `VERSION_INCOMPATIBLE` is a live server from another protocol major.
+/// Every other `ERROR` on `HELLO` stays a plain refusal.
+fn hello_refusal(code: ErrorCode, message: String) -> SessionError {
+    if code == ErrorCode::VersionIncompatible {
+        SessionError::IncompatibleProtocol(message)
+    } else {
+        SessionError::Refused(message)
+    }
+}
+
 fn dial_timed_out() -> SessionError {
     SessionError::Unreachable(format!("no answer within {}s", DIAL_TIMEOUT.as_secs()))
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests;
 
 #[cfg(test)]
+#[cfg(unix)]
 mod newer_server_tests;

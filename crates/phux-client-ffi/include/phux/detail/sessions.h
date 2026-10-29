@@ -32,7 +32,7 @@ PhuxClientResult phux_client_session_query_status(const PhuxClient *client, uint
 
 /* ---------------------------------------------------- conditional kill
  *
- * ADR-0109, docs/spec/L1.md sections 3.1 and 5.2.1. Additive to ABI version
+ * ADR-0109, docs/protocol.md#commands-events-resources. Additive to ABI version
  * 2: bind_instance stays a separate function, and PhuxOperationResult is
  * unchanged. All of it
  * requires HELLO_OK to have advertised CONDITIONAL_KILL (0x00200000);
@@ -139,7 +139,7 @@ PhuxClientResult phux_client_keep_empty_supported(const PhuxClient *client, bool
 /* ------------------------------------------------------- session rename
  *
  * Rename a session on the connected server (phux.session.name/v1,
- * docs/spec/L3.md section 3.1). Additive to ABI version 2; no existing
+ * docs/protocol.md#commands-events-resources). Additive to ABI version 2; no existing
  * declaration changes. Works on a negotiated client whether or not it has
  * attached: a rename writes metadata and never attaches or sizes anything.
  *

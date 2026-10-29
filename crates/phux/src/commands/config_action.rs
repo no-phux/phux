@@ -3,6 +3,39 @@ use usage::Subcommands;
 /// `phux config <action>` — local config inspection and scaffolding.
 #[derive(Debug, Subcommands)]
 pub(crate) enum ConfigAction {
+    /// Bring tmux bindings and preferences into a native phux config layer.
+    ///
+    /// Reads global options and key tables from an already running tmux,
+    /// without sourcing files or changing either server. By default, prints
+    /// TOML on stdout and a fidelity report on stderr. Unsupported bindings
+    /// are never executed or silently replaced with a different phux action.
+    /// This configures the terminal UI; desktop shortcuts are separate.
+    ImportTmux {
+        /// Read this tmux socket instead of tmux's current/default server.
+        #[usage(long, value_name = "PATH")]
+        tmux_socket: Option<std::path::PathBuf>,
+
+        /// Save a new standalone TOML file; refuse to overwrite any file.
+        #[usage(long, value_name = "PATH", conflicts = "--apply")]
+        output: Option<std::path::PathBuf>,
+
+        /// Install tmux-import.toml below your existing config layers.
+        /// Existing phux settings win. Refuses to overwrite a previous import.
+        /// Remove its extends entry to undo. Does not reload a running server.
+        #[usage(long)]
+        apply: bool,
+
+        /// Emit TOML, the fidelity report, and saved paths in one JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Discover or switch distro layers without overwriting personal config.
+    /// Changes are local only; run `phux config reload` afterwards for running
+    /// clients. Server startup settings apply on the next server start.
+    Distro {
+        #[usage(subcommand)]
+        action: DistroAction,
+    },
     /// Write a commented starter config to the canonical path.
     ///
     /// The file is the shipped defaults, fully commented out: inert until
@@ -134,6 +167,38 @@ pub(crate) enum ConfigAction {
         cwd: Option<std::path::PathBuf>,
 
         /// Emit the structured action result as JSON.
+        #[usage(long)]
+        json: bool,
+    },
+}
+
+/// Local distro selection; no server contact.
+#[derive(Debug, Subcommands)]
+pub(crate) enum DistroAction {
+    /// List bundled names in search precedence, sorted by name.
+    List {
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Show the selected managed distro, not arbitrary user extends layers.
+    Current {
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Validate and select a bundled name or a layer file/directory path.
+    /// Preserves comments, user overrides, and other extends entries.
+    Use {
+        #[usage(value_name = "NAME_OR_PATH")]
+        spec: String,
+        /// Emit a stable JSON document.
+        #[usage(long)]
+        json: bool,
+    },
+    /// Remove only the managed distro entry, leaving personal config intact.
+    Off {
+        /// Emit a stable JSON document.
         #[usage(long)]
         json: bool,
     },

@@ -14,7 +14,7 @@ fn capture_prefix_takes_typing_and_retains_a_refused_draft(cx: &mut TestAppConte
         assert!(desk.capture.error.is_some());
     });
     keys(cx, "escape cmd-shift-p");
-    click(cx, "palette-mode-capture");
+    type_text(cx, "!");
     desk.read_with(cx, |desk, cx| {
         let (input, _) = desk.capture.editor.as_ref().unwrap();
         assert_eq!(input.read(cx).value().as_str(), "fix the sidebar");

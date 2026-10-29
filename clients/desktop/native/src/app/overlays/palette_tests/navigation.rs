@@ -62,7 +62,7 @@ fn navigation_details_are_explicit_and_preserve_search_focus(cx: &mut TestAppCon
     render(cx);
     assert!(cx.debug_bounds("palette-facts").is_none());
     let panel = cx.debug_bounds("palette-panel").unwrap();
-    let modes = cx.debug_bounds("palette-mode-settings").unwrap();
+    let modes = cx.debug_bounds("palette-mode-commands").unwrap();
     let filter = cx.debug_bounds("palette-filter").unwrap();
     let details_bounds = cx.debug_bounds("palette-details").unwrap();
     for bounds in [modes, filter, details_bounds] {
@@ -138,7 +138,7 @@ fn destination_pickers_drop_the_global_strip_and_keep_every_route(cx: &mut TestA
         for global in [
             "palette-mode-goto",
             "palette-mode-commands",
-            "palette-mode-settings",
+            "palette-open-settings",
             "palette-filter",
         ] {
             assert!(
@@ -157,7 +157,7 @@ fn destination_pickers_drop_the_global_strip_and_keep_every_route(cx: &mut TestA
     for route in [
         "palette-mode-goto",
         "palette-mode-commands",
-        "palette-mode-settings",
+        "palette-open-settings",
         "palette-filter",
     ] {
         assert!(cx.debug_bounds(route).is_some(), "{route} stays reachable");

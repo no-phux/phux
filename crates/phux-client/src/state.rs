@@ -254,7 +254,7 @@ pub(crate) fn state_view(
 }
 
 /// The uncorrelated `ERROR` messages (a hub's per-satellite degradation
-/// notices, `proto.md` §9) among frames interleaved ahead of a reply.
+/// notices, `docs/protocol.md`) among frames interleaved ahead of a reply.
 #[must_use]
 pub fn degradation_notices(interleaved: &[FrameKind]) -> Vec<String> {
     interleaved

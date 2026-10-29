@@ -53,7 +53,7 @@ pub fn apply(
     fresh: &mut dyn FreshKeys,
 ) -> Result<Applied, Refusal> {
     if let Some(receipt) = org.receipt(&cmd.operation) {
-        return if receipt.op == cmd.op {
+        return if receipt.op == idempotent_op(&cmd.op) {
             Ok(Applied {
                 operation: cmd.operation,
                 transition: Transition::default(),
@@ -74,7 +74,7 @@ pub fn apply(
     let receipt = (!cmd.op.is_report()).then(|| Receipt {
         operation: cmd.operation,
         actor: actor.clone(),
-        op: cmd.op.clone(),
+        op: idempotent_op(&cmd.op),
         at: now,
         reply,
         undo,
@@ -90,6 +90,52 @@ pub fn apply(
         reply,
         replayed: false,
     })
+}
+
+/// Receipt identity without secret environment values. The resource record
+/// keeps the real values for execution; only the retained operation does not.
+fn idempotent_op(op: &Op) -> Op {
+    let mut op = op.clone();
+    match &mut op {
+        Op::SessionCreate { resource, .. } => {
+            if let Some(launch) = resource.as_mut().and_then(|spec| spec.launch.as_mut()) {
+                redact_launch(launch);
+            }
+        }
+        Op::ResourceCreate { resource, .. } => {
+            if let Some(launch) = resource.launch.as_mut() {
+                redact_launch(launch);
+            }
+        }
+        Op::ResourceRelaunch { launch, .. } => {
+            if let Some(launch) = launch.as_mut() {
+                redact_launch(launch);
+            }
+        }
+        _ => {}
+    }
+    op
+}
+
+fn redact_launch(launch: &mut LaunchSpec) {
+    let LaunchSpec::Terminal(terminal) = launch else {
+        return;
+    };
+    for (_, value) in &mut terminal.env {
+        *value = hash_env_value(value);
+    }
+}
+
+fn hash_env_value(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(value.as_bytes());
+    let mut encoded = String::from("sha256:");
+    for byte in digest {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    encoded
 }
 
 struct Out {

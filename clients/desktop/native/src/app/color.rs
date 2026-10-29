@@ -26,6 +26,7 @@ pub fn from_hex(color: &str) -> Hsla {
 /// Paint Kit controls (buttons, inputs, palette, settings, switches, sliders)
 /// with the phux palette, in the theme's own light or dark mode, shaped by the skin.
 pub fn apply_kit_theme(colors: &Palette, skin: &Skin, cx: &mut App) {
+    super::ui::typography::install(cx);
     let theme = &colors.theme;
     let light = theme.appearance == "light";
     let mode = if light {

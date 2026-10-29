@@ -1,4 +1,4 @@
-//! Live revocation (`docs/spec/workload-auth.md` §7, ADR-0116).
+//! Live revocation (`docs/remote.md#managing-credentials`, ADR-0116).
 //!
 //! The `Watcher` re-judges every connection whose authority someone else can
 //! withdraw (a scoped workload grant, or a grant a pairing-store bearer
@@ -222,7 +222,7 @@ impl Kept {
     }
 }
 
-/// Withdraw `client`'s authority while it is live (`workload-auth.md` §7).
+/// Withdraw `client`'s authority while it is live (`docs/remote.md#managing-credentials`).
 /// Idempotent: a connection already revoked is left alone.
 pub(crate) fn revoke_connection(state: &SharedState, client: ClientId, revocation: Revocation) {
     let mut revoked_now = false;

@@ -35,9 +35,13 @@ fn an_unknown_record_type_is_a_record_invalid_refusal_not_a_usage_error() {
         "--json",
     ])
     .expect("an unknown --type must reach the verb, not die at argv");
-    let Some(crate::commands::Command::Agent {
-        action: super::super::AgentAction::Emit { event_type, .. },
-    }) = cli.command
+    let Some(crate::commands::Command::Agent(crate::commands::AgentArgs {
+        action:
+            super::super::AgentAction::Emit {
+                flags: super::super::action_flags::EmitFlags { event_type, .. },
+                ..
+            },
+    })) = cli.command
     else {
         panic!("`agent emit` must parse to the emit action");
     };
@@ -104,7 +108,10 @@ fn every_library_error_lands_on_its_registered_code_and_exit() {
             2,
         ),
         (
-            AgentSessionError::NotProducer { resource: at },
+            AgentSessionError::NotProducer {
+                resource: at,
+                message: "x".to_owned(),
+            },
             json_err::codes::NOT_PRODUCER,
             2,
         ),

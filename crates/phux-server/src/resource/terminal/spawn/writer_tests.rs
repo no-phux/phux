@@ -1,5 +1,5 @@
 use super::*;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 
 /// A `Write` whose every call is scripted.
 struct ScriptedWriter {

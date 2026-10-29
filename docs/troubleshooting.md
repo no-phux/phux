@@ -53,6 +53,10 @@ was in your panes. Read it, and remove anything private, before you share
 it. phux never logs what you type or paste, and its log files are readable
 only by you.
 
+Desktop's palette has **Copy Diagnostics**; [log locations](../clients/desktop/README.md#what-it-does).
+File [an issue](https://github.com/no-phux/phux/issues) with your OS/CPU,
+CLI and desktop versions, install method, reproduction steps, and actual error.
+
 ## The server
 
 **`no server running at /tmp/phux-me/phux.sock`.** Nothing is listening on
@@ -84,15 +88,30 @@ way `phux doctor` warns on its `instance` line. If that is fine, see
 
 ## Versions
 
-**`incompatible protocol: client offered X, server requires Y`.** The binary
-and the running server speak different protocol majors, usually because you
-updated and the old server is still running. Releases on the same major
-work together in either direction. Attaching with `phux` upgrades an older
-server automatically; a newer one is left running. From a script,
-`phux upgrade` moves the server onto the installed binary with every pane
-kept.
+**Desktop update says `new binary failed validation` and names an `extends
+layer ... No such file or directory`.** The server upgrade checks your
+configuration before replacing the running server image. The CLI may already
+have been updated. Run `phux config check`, then correct the
+missing path in your config's `extends` array. A distribution layer pointing
+inside a source checkout must follow that checkout if you move it. Keep the
+layer's plugin files with it; removing the import also removes its settings.
+Run `phux config check` again before retrying the update. This error is a
+missing file, not a macOS permission refusal.
 
-**`the running server is X; this binary is Y`.** The same fix: `phux upgrade`.
+**`incompatible protocol: client offered X, server requires Y`.** The binary
+and the running server speak different protocols, usually because you updated
+and an older server is still running. Stop that server, then start a fresh
+one. When its pid is known, run `kill <pid>` (or `pkill -f 'phux server'`).
+When it is not, run `pkill -f 'phux server'`. Then run `phux server --ensure`.
+Stopping the old server closes the panes it is running.
+
+**Releases on the same protocol major.** They work together in either
+direction. Attaching with `phux` upgrades an older server in place; a newer
+one is left running. From a script, `phux upgrade` moves the server onto the
+installed binary and panes survive.
+
+**`the running server is X; this binary is Y`.** On the same protocol, the
+same fix: `phux upgrade`.
 
 ## Attaching
 
@@ -142,8 +161,9 @@ phux perf trace --seconds 5     # the server
 phux perf trace --desktop       # the desktop app and the server, on one timeline
 ```
 
-Start either process with `PHUX_DEV=1` to add memory figures. A desktop app
-started that way also shows a frame-rate overlay, and `phux perf --desktop`
+Start either process with `PHUX_DEV=1` to add memory figures, or turn on
+**Settings > Developer > Developer mode** in the desktop app. A desktop app in
+Developer mode also shows a frame-rate overlay, and `phux perf --desktop`
 reads it. Agents get the same numbers from the `phux_perf` and
 `phux_perf_trace` MCP tools.
 

@@ -62,7 +62,7 @@ pub(super) fn decode_agent_facet_str(
     utf8_value(value)
 }
 
-/// Enforce `SPAWN_RESOURCE`'s per-kind field rules (`docs/spec/L1.md` §3.1).
+/// Enforce `SPAWN_RESOURCE`'s per-kind field rules (`docs/protocol.md#commands-events-resources`).
 ///
 /// An `Unknown` kind passes unvalidated so the server can answer
 /// `UnsupportedKind` rather than fail the connection.

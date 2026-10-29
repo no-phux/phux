@@ -1,4 +1,4 @@
-//! Wire decode errors (`docs/spec/proto.md` §5, `appendix-encoding.md`).
+//! Wire decode errors (`docs/protocol.md#framing`, `docs/protocol.md#framing`).
 
 use thiserror::Error;
 
@@ -27,7 +27,7 @@ pub enum DecodeError {
     },
 
     /// A declared length exceeds the buffer or the 16 MiB frame cap
-    /// (`docs/spec/proto.md` §5).
+    /// (`docs/protocol.md#framing`).
     #[error("declared length exceeds buffer or protocol cap")]
     LengthOverflow,
 
@@ -133,7 +133,7 @@ pub enum DecodeError {
     },
 
     /// A `SPAWN_RESOURCE` body broke its kind's field rules
-    /// (`docs/spec/L1.md` §3.1).
+    /// (`docs/protocol.md#commands-events-resources`).
     #[error(
         "SPAWN_RESOURCE field {field} violates the field rules for kind {kind} (required: {required})"
     )]
@@ -167,7 +167,7 @@ pub enum DecodeError {
 
     /// An organization body exceeded a protocol bound: a name over 256
     /// bytes, an arrangement over 64 KiB, or a list, cursor, or restore
-    /// record over its cap (`docs/spec/L1.md` §5.7).
+    /// record over its cap (`docs/organization.md`).
     #[error("organization body exceeds protocol limits")]
     OrganizationLimitExceeded,
 

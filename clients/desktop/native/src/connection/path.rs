@@ -30,6 +30,9 @@ pub struct PathTarget {
 pub struct PickerState {
     /// Admission target.
     pub target: PathTarget,
+    /// The root the picker opened at, normally the pane's working
+    /// directory. Paths under it insert relative to it.
+    pub origin: String,
     /// Current root.
     pub root: String,
     /// Query text.
@@ -49,9 +52,11 @@ pub struct PickerState {
 /// Start a picker at `root`.
 #[must_use]
 pub fn begin_picker(target: PathTarget, root: impl Into<String>) -> PickerState {
+    let root = root.into();
     PickerState {
         target,
-        root: root.into(),
+        origin: root.clone(),
+        root,
         query: String::new(),
         rows: Vec::new(),
         parent: None,
@@ -204,7 +209,32 @@ pub fn prepared_insertion(
         && ready
         && same_target(&state.target, current)
         && state.rows.iter().any(|row| row.path == path);
-    admitted.then(|| shell_quote_path(path)).flatten()
+    admitted.then(|| shell_word(path, &state.origin)).flatten()
+}
+
+/// `path` as one POSIX-shell word for a prompt standing in `origin`: relative
+/// when it lies under `origin`, bare when every character is safe, otherwise
+/// single-quoted. A relative word that would read as an option gets `./`.
+#[must_use]
+pub fn shell_word(path: &str, origin: &str) -> Option<String> {
+    shell_quote_path(path)?;
+    let relative = origin
+        .starts_with('/')
+        .then(|| path.strip_prefix(origin.trim_end_matches('/')))
+        .flatten()
+        .and_then(|rest| rest.strip_prefix('/'))
+        .filter(|rest| !rest.is_empty());
+    let word = match relative {
+        Some(rest) if rest.starts_with('-') => format!("./{rest}"),
+        Some(rest) => rest.to_owned(),
+        None => path.to_owned(),
+    };
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_-./+@%=:,".contains(c);
+    Some(if word.chars().all(safe) {
+        word
+    } else {
+        format!("'{}'", word.replace('\'', r#"'"'"'"#))
+    })
 }
 
 /// A single POSIX-shell word. Not a command, and not a line ending in Enter.
@@ -394,6 +424,40 @@ mod tests {
             prepared_insertion(found.as_ref(), "/host/it's here", Some(&replaced), true).is_none()
         );
         assert!(shell_quote_path("/host/evil\ncommand").is_none());
+        let opened = |root: &str| {
+            let mut state = begin_picker(target(), root);
+            state.rows = vec![PathRow {
+                path: "/repo/Sources/Settings View.swift".into(),
+                kind: "file".into(),
+            }];
+            state
+        };
+        assert_eq!(
+            prepared_insertion(
+                Some(&opened("/repo")),
+                "/repo/Sources/Settings View.swift",
+                Some(&target()),
+                true
+            )
+            .as_deref(),
+            Some("'Sources/Settings View.swift'")
+        );
+        assert_eq!(
+            shell_word("/repo/Sources/App.swift", "/repo/").as_deref(),
+            Some("Sources/App.swift")
+        );
+        assert_eq!(shell_word("/repo/-rf", "/repo").as_deref(), Some("./-rf"));
+        assert_eq!(
+            shell_word("/elsewhere/a", "/repo").as_deref(),
+            Some("/elsewhere/a")
+        );
+        assert_eq!(
+            shell_word("/repository/a", "/repo").as_deref(),
+            Some("/repository/a")
+        );
+        assert_eq!(shell_word("/repo", "/repo").as_deref(), Some("/repo"));
+        assert_eq!(shell_word("/repo/a b", "~").as_deref(), Some("'/repo/a b'"));
+        assert!(shell_word("/repo/a\nrm", "/repo").is_none());
         assert!(shell_quote_path("relative").is_none());
         assert_eq!(
             display_path("/host/x\u{1b}]0;pwn\u{7}\ny"),

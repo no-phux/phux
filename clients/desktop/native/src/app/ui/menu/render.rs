@@ -10,7 +10,7 @@ impl Render for GlassMenu {
         let washes = Washes::of(ink, &skin);
         let springs = spring(&skin);
         let radius = px(skin.shape.popover_radius);
-        let row_radius = px(skin.shape.kit_radius_lg);
+        let row_radius = px(super::super::list::row_radius(&skin));
         let native = self.native_glass;
         let surface = if skin.material.backdrop == Backdrop::Opaque {
             cx.theme().popover.alpha(1.)
@@ -43,7 +43,7 @@ impl Render for GlassMenu {
             .map(|(index, item)| self.row(index, item, ink, washes, cx))
             .collect::<Vec<_>>();
         let top = self.header_height() + INSET;
-        let header = self.header(ink, washes, cx);
+        let header = self.header(washes, cx);
         div()
             .id("glass-menu")
             .role(gpui::Role::Menu)
@@ -55,6 +55,7 @@ impl Render for GlassMenu {
             .overflow_hidden()
             .text_size(px(13.))
             .text_color(ink)
+            .line_height(gpui::relative(super::super::typography::LEADING))
             .when(!native, |el| {
                 el.bg(surface).child(
                     div()

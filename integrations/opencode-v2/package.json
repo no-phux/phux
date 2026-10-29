@@ -1,7 +1,8 @@
 {
   "name": "@phux/opencode",
-  "version": "0.6.2",
-  "description": "OpenCode V2 plugin: phux owns the terminals, OpenCode owns the session",
+  "version": "0.7.1",
+  "description": "phux integration for OpenCode: terminal tools, agent status, and live panes in OpenCode Desktop.",
+  "homepage": "https://docs.phux.sh/",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -19,6 +20,7 @@
     "index.d.ts",
     "index.js",
     "tui.js",
+    "dist/gui-experimental.cjs",
     "README.md"
   ],
   "sideEffects": false,
@@ -27,28 +29,32 @@
       "types": "./index.d.ts",
       "import": "./index.js"
     },
-    "./tui": "./tui.js"
+    "./tui": "./tui.js",
+    "./gui-experimental": "./dist/gui-experimental.cjs"
   },
   "scripts": {
     "compile": "bun scripts/build.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.gui.json --noEmit",
     "test": "bun test",
     "gates": "bun run typecheck && bun run compile && bun test"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.32"
+    "@opencode/plugin": "2.2.0"
   },
   "devDependencies": {
-    "@opentui/core": "0.5.17",
-    "@opentui/solid": "0.5.17",
+    "@opentui/core": "0.7.0",
+    "@opentui/solid": "0.7.0",
     "@types/bun": "1.4.3",
+    "effect": "4.0.1",
     "solid-js": "1.9.12",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "vite": "7.3.7",
+    "vite-plugin-solid": "2.11.14"
   },
   "peerDependencies": {
     "solid-js": "1.9.12",
-    "@opentui/core": "0.5.17",
-    "@opentui/solid": "0.5.17"
+    "@opentui/core": "0.7.0",
+    "@opentui/solid": "0.7.0"
   },
   "overrides": {
     "seroval": "1.6.9",

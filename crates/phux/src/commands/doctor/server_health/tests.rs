@@ -11,6 +11,7 @@ fn every_applicable_server_health_condition_is_reported() {
         Some(unit),
         None,
         Some(("0.13.0", "0.14.0")),
+        None,
         || panic!("recent_starts must not be read once another condition already applies"),
     );
 
@@ -32,10 +33,81 @@ fn every_applicable_server_health_condition_is_reported() {
     assert!(checks[2].detail.contains("0.14.0"), "{}", checks[2].detail);
 }
 
+/// Version remedies follow release ordering, never lexical ordering, and never
+/// tell an older client to replace a newer server. Unordered checkout builds
+/// keep the same hand-over policy as auto-attach.
+#[test]
+fn version_skew_hint_updates_the_older_side() {
+    for (theirs, ours, remedy, forbidden) in [
+        ("0.13.0", "0.14.0", "phux upgrade", "phux update"),
+        ("0.14.0", "0.13.0", "phux update", "phux upgrade"),
+        ("0.9.0", "0.10.0", "phux upgrade", "phux update"),
+        ("0.10.0", "0.9.0", "phux update", "phux upgrade"),
+        ("1.0.0", "0.99.0", "phux update", "phux upgrade"),
+        ("0.43.0-dev", "0.43.0", "phux upgrade", "phux update"),
+        ("0.43.0", "next", "phux upgrade", "phux update"),
+    ] {
+        let checks = server_health_checks(None, None, None, Some((theirs, ours)), None, || {
+            panic!("version skew must not report a clean host")
+        });
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].status, Status::Warn);
+        assert!(checks[0].detail.contains(theirs), "{checks:?}");
+        assert!(checks[0].detail.contains(ours), "{checks:?}");
+        let hint = checks[0]
+            .hint
+            .as_deref()
+            .expect("version skew needs a remedy");
+        assert!(hint.contains(remedy), "{theirs} vs {ours}: {hint}");
+        assert!(!hint.contains(forbidden), "{theirs} vs {ours}: {hint}");
+    }
+}
+
+/// A live server that refused this protocol gets the stop-and-start recovery,
+/// not the same-major `phux upgrade` hand-over.
+#[test]
+fn an_incompatible_version_skew_names_the_stop_recovery() {
+    let socket = std::path::Path::new("/tmp/old.sock");
+    let checks = server_health_checks(
+        None,
+        None,
+        None,
+        Some(("0.9.0", "1.4.0")),
+        Some((socket, Some(4242))),
+        || panic!("version skew must not report a clean host"),
+    );
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0].status, Status::Warn);
+    let hint = checks[0]
+        .hint
+        .as_deref()
+        .expect("incompatible skew needs a remedy");
+    assert!(hint.contains("kill 4242"), "{hint}");
+    assert!(hint.contains("pkill -f 'phux server'"), "{hint}");
+    assert!(hint.contains("`phux server --ensure`"), "{hint}");
+    assert!(hint.contains("closes the panes"), "{hint}");
+    for forbidden in ["phux upgrade", "stale", "survive", "remove", "in place"] {
+        assert!(!hint.contains(forbidden), "{forbidden} in {hint}");
+    }
+
+    let unknown = server_health_checks(
+        None,
+        None,
+        None,
+        Some(("0.9.0", "1.4.0")),
+        Some((socket, None)),
+        || panic!("version skew must not report a clean host"),
+    );
+    let hint = unknown[0].hint.as_deref().expect("hint");
+    assert!(hint.contains("pkill -f 'phux server'"), "{hint}");
+    assert!(!hint.contains("`kill "), "{hint}");
+    assert!(!hint.contains("remove"), "{hint}");
+}
+
 /// A clean host gets exactly one pass line.
 #[test]
 fn server_health_passes_when_nothing_applies() {
-    let checks = server_health_checks(None, None, None, None, || 2);
+    let checks = server_health_checks(None, None, None, None, None, || 2);
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, Status::Pass);
     assert!(checks[0].detail.contains("2 server start(s)"));
@@ -45,7 +117,7 @@ fn server_health_passes_when_nothing_applies() {
 #[test]
 fn armed_supervision_is_surfaced_as_informational() {
     let unit = std::path::Path::new("/home/u/Library/LaunchAgents/com.phux.server.plist");
-    let checks = server_health_checks(None, None, Some(unit), None, || {
+    let checks = server_health_checks(None, None, Some(unit), None, None, || {
         panic!("recent_starts must not be read once another condition already applies")
     });
 
@@ -84,7 +156,7 @@ fn armed_supervision_is_surfaced_as_informational() {
 #[test]
 fn legacy_unit_hint_stays_honest_about_its_own_remedy() {
     let unit = std::path::Path::new("/home/u/Library/LaunchAgents/com.phux.server.plist");
-    let checks = server_health_checks(None, Some(unit), None, None, || 0);
+    let checks = server_health_checks(None, Some(unit), None, None, None, || 0);
     let hint = checks[0]
         .hint
         .as_ref()

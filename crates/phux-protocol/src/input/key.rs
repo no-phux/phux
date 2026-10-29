@@ -253,7 +253,7 @@ pub enum PhysicalKey {
     Paste = 175,
 }
 
-/// One key event on a pane (docs/spec/input.md §2): the physical key plus
+/// One key event on a pane (docs/protocol.md#input): the physical key plus
 /// the layout-resolved text. `Debug` never prints `text` or
 /// `unshifted_codepoint`, which reconstruct keystrokes (ADR-0028).
 #[derive(Clone, PartialEq, Eq)]

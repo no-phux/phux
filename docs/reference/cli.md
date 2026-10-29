@@ -14,7 +14,7 @@ One section per command, in the order `phux <command> --help` would print them. 
 
 ```text
 phux
-A terminal multiplexer you can drive by hand or script.
+A terminal multiplexer whose server you can drive from code.
 
 Run `phux` alone to attach to your session; every other verb is headless.
 
@@ -84,6 +84,7 @@ Maintain:
   upgrade       Hot-swap the running server to the installed binary
   channel       Show or switch the release channel
   theme         Install, list, and select colour themes
+  omarchy       Fit phux into an Omarchy desktop
 
 More:
   rec           Record a pane to a cast, GIF, or APNG
@@ -214,12 +215,19 @@ Global flags:
 ```text
 Clear a pane's declared agent identity.
 
-Usage: phux agent clear [TARGET]
+Deletes the agent record, then reads it back. Exits 1
+(`agent_record_unconfirmed`) when a record is still there or the server refused
+the read.
+
+Usage: phux agent clear [--json] [TARGET]
 
 Arguments:
   [TARGET]  Target selector (resolves to one pane). Omit for the focused pane.
 
 Flags:
+      --json           Print the confirmed `{schema_version, action, terminal,
+                       record}` document; failures are one JSON error line on
+                       stderr.
   -h, --help           Print help
 
 Global flags:
@@ -236,8 +244,10 @@ The record is one `AgentEventsJsonlV1` line: `--type` from the closed set
 `stop`, `session_end`, `state`, `provider_raw`) and `--data`, a JSON object. The
 server stamps `seq` and `ts_ms` and derives the agent's lifecycle state from the
 stream (`prompt` / `tool_start` -> working, `ask` -> blocked, `stop` -> done,
-`session_end` -> retract). Only the client that opened the session may append;
-nothing is written on a refusal. Prints nothing on success.
+`session_end` -> retract). Any local connection (this machine's socket or
+localhost) may append, not only the one that opened the session; a remote peer
+is refused with `not_producer`. Nothing is written on a refusal. Prints nothing
+on success.
 
 Usage: phux agent emit <FLAGS> <TARGET>
 
@@ -565,9 +575,9 @@ Spawns an `AgentSession` resource whose parent is the Terminal TARGET resolves
 to: the server-side, producer-fed event log the agent's harness appends to with
 `phux agent emit`, and the thing `%name`, `phux agent log`, and the sidebar
 read. Closing the pane closes the session; closing the session never touches the
-pane. The caller becomes the session's producer — only the client that opened a
-session may append to it. The server does not deduplicate: a pane that already
-has a live session gets a second one.
+pane. Any local connection (this machine's socket or localhost) may append to
+it, not only the one that opened it; a remote peer never may. The server does
+not deduplicate: a pane that already has a live session gets a second one.
 
 Refused with `unsupported_server` on a server that does not advertise
 `RESOURCE_KINDS` (see `phux status --json`'s `features`).
@@ -594,6 +604,10 @@ Global flags:
 ```text
 Declare the agent identity and state associated with a pane.
 
+Writes the whole agent record (last writer wins), then reads it back. Exits 1
+(`agent_record_unconfirmed`) when the read-back shows the write did not land or
+the server refused the read; prints the confirmed record on success.
+
 Usage: phux agent set <FLAGS> [TARGET]
 
 Arguments:
@@ -610,6 +624,9 @@ Flags:
                                state).
                                [possible values: none, low, normal, high]
       --session <SESSION>      Free-form association label (fleet/job name).
+      --json                   Print the confirmed `{schema_version, action,
+                               terminal, record}` document; failures are one
+                               JSON error line on stderr.
   -h, --help                   Print help
 
 Global flags:
@@ -817,13 +834,16 @@ Releases the held action ID once: the server runs it as the workload that asked,
 under that workload's own grant, and answers that workload. Asks on a terminal;
 pass `--yes` when stdin is not one.
 
-Usage: phux approve [--yes] <ID>
+Usage: phux approve [--yes] [--json] <ID>
 
 Arguments:
   <ID>  The approval id `phux approvals` lists.
 
 Flags:
       --yes            Approve without asking.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -1272,21 +1292,30 @@ place.
 Usage: phux config <SUBCOMMAND>
 
 Commands:
-  agents   List configured agents, merged with live pane state when a server is
-           running.
-  check    Validate the config and report every problem, with full key paths.
-  init     Write a commented starter config to the canonical path.
-  keys     List every key binding in effect and where it came from.
-  path     Print the resolved config path. Pure path math — prints the path
-           whether or not the file exists.
-  plugins  List plugin manifests declared by `[[plugins]]`.
-  reload   Re-read the layered config and apply it to running clients in place.
-  run      Execute one action declared by a configured plugin manifest.
-  show     Print the effective config (shipped defaults + your overrides) as
-           TOML. With `--default`, print the shipped defaults verbatim instead,
-           ignoring any user config. With `--layers`, print which layer of the
-           `extends` stack set each effective key instead of the values.
-  help     Print this message or the help of the given subcommand(s)
+  agents       List configured agents, merged with live pane state when a server
+               is running.
+  check        Validate the config and report every problem, with full key
+               paths.
+  distro       Discover or switch distro layers without overwriting personal
+               config. Changes are local only; run `phux config reload`
+               afterwards for running clients. Server startup settings apply on
+               the next server start.
+  import-tmux  Bring tmux bindings and preferences into a native phux config
+               layer.
+  init         Write a commented starter config to the canonical path.
+  keys         List every key binding in effect and where it came from.
+  path         Print the resolved config path. Pure path math — prints the path
+               whether or not the file exists.
+  plugins      List plugin manifests declared by `[[plugins]]`.
+  reload       Re-read the layered config and apply it to running clients in
+               place.
+  run          Execute one action declared by a configured plugin manifest.
+  show         Print the effective config (shipped defaults + your overrides) as
+               TOML. With `--default`, print the shipped defaults verbatim
+               instead, ignoring any user config. With `--layers`, print which
+               layer of the `extends` stack set each effective key instead of
+               the values.
+  help         Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -1337,6 +1366,124 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro`
+
+```text
+Discover or switch distro layers without overwriting personal config. Changes
+are local only; run `phux config reload` afterwards for running clients. Server
+startup settings apply on the next server start.
+
+Usage: phux config distro <SUBCOMMAND>
+
+Commands:
+  current  Show the selected managed distro, not arbitrary user extends layers.
+  list     List bundled names in search precedence, sorted by name.
+  off      Remove only the managed distro entry, leaving personal config intact.
+  use      Validate and select a bundled name or a layer file/directory path.
+           Preserves comments, user overrides, and other extends entries.
+  help     Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro current`
+
+```text
+Show the selected managed distro, not arbitrary user extends layers.
+
+Usage: phux config distro current [--json]
+
+Flags:
+      --json           Emit a stable JSON document.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro list`
+
+```text
+List bundled names in search precedence, sorted by name.
+
+Usage: phux config distro list [--json]
+
+Flags:
+      --json           Emit a stable JSON document.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro off`
+
+```text
+Remove only the managed distro entry, leaving personal config intact.
+
+Usage: phux config distro off [--json]
+
+Flags:
+      --json           Emit a stable JSON document.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config distro use`
+
+```text
+Validate and select a bundled name or a layer file/directory path. Preserves
+comments, user overrides, and other extends entries.
+
+Usage: phux config distro use [--json] <NAME_OR_PATH>
+
+Arguments:
+  <NAME_OR_PATH>
+
+Flags:
+      --json           Emit a stable JSON document.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux config import-tmux`
+
+```text
+Bring tmux bindings and preferences into a native phux config layer.
+
+Reads global options and key tables from an already running tmux, without
+sourcing files or changing either server. By default, prints TOML on stdout and
+a fidelity report on stderr. Unsupported bindings are never executed or silently
+replaced with a different phux action. This configures the terminal UI; desktop
+shortcuts are separate.
+
+Usage: phux config import-tmux [FLAGS]
+
+Flags:
+      --tmux-socket <PATH>  Read this tmux socket instead of tmux's
+                            current/default server.
+      --output <PATH>       Save a new standalone TOML file; refuse to overwrite
+                            any file.
+      --apply               Install tmux-import.toml below your existing config
+                            layers. Existing phux settings win. Refuses to
+                            overwrite a previous import. Remove its extends
+                            entry to undo. Does not reload a running server.
+      --json                Emit TOML, the fidelity report, and saved paths in
+                            one JSON document.
+  -h, --help                Print help
+
+Global flags:
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config init`
@@ -1496,12 +1643,15 @@ Deny a held action
 Refuses the held action ID: the workload that asked gets a permission-denied
 answer and nothing runs.
 
-Usage: phux deny <ID>
+Usage: phux deny [--json] <ID>
 
 Arguments:
   <ID>  The approval id `phux approvals` lists.
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -1518,7 +1668,7 @@ client attached to that session; with no argument, detaches every attached
 client on the server. Each target client's TUI exits cleanly. Useful for
 scripting or reclaiming a session that's attached (or wedged) elsewhere.
 
-Usage: phux detach [--yes] [--remote <[USER@]HOST[:PORT]>] [SESSION]
+Usage: phux detach [FLAGS] [SESSION]
 
 Arguments:
   [SESSION]  Session to detach clients from. Omit to detach every attached
@@ -1530,6 +1680,10 @@ Flags:
                                   Without it, `phux detach` asks on a terminal,
                                   and when stdin is not one it refuses with exit
                                   2 having sent nothing.
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -1629,12 +1783,15 @@ Give back input control taken with `take`
 Releases the input lease taken with `phux take`, returning the pane to open
 input. A no-op if you do not hold the lease. TARGET is a selector.
 
-Usage: phux give <TARGET>
+Usage: phux give [--json] <TARGET>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -1655,23 +1812,25 @@ directions; this verb absorbs the split into a flag.
 Usage: phux host <SUBCOMMAND>
 
 Commands:
-  add      Add a machine so `phux attach NAME` reaches it.
-  attach   Attach to a registered remote host (same as `phux attach NAME`).
-  disable  Disable a satellite without forgetting it; a running hub drops its
-           link.
-  enable   Enable a satellite; a running local hub dials it now.
-  join     Join a hub as a satellite with the code `phux host ticket` printed.
-  ls       List registered machines from both registries. [aliases: list]
-  rename   Rename a registered machine without changing its route or
-           credentials.
-  renew    Renew a remote's workload client certificate over ssh.
-  rm       Remove a registered machine. Its token file is left in place.
-           [aliases: remove]
-  show     Show a registered machine, including its route and credential
-           references.
-  ticket   Mint a one-time code a machine this hub cannot reach joins with.
-  upgrade  Move registered remotes from `wss://` (or ssh) onto QUIC.
-  help     Print this message or the help of the given subcommand(s)
+  add       Add a machine so `phux attach NAME` reaches it.
+  attach    Attach to a registered remote host (same as `phux attach NAME`).
+  disable   Disable a satellite without forgetting it; a running hub drops its
+            link.
+  discover  List the machines on this computer's Tailscale network.
+  enable    Enable a satellite; a running local hub dials it now.
+  join      Join a hub as a satellite with the code `phux host ticket` printed.
+  ls        List registered machines from both registries. [aliases: list]
+  minimal   Make Minimal boxes join this hub as satellites.
+  rename    Rename a registered machine without changing its route or
+            credentials.
+  renew     Renew a remote's workload client certificate over ssh.
+  rm        Remove a registered machine. Its token file is left in place.
+            [aliases: remove]
+  show      Show a registered machine, including its route and credential
+            references.
+  ticket    Mint a one-time code a machine this hub cannot reach joins with.
+  upgrade   Move registered remotes from `wss://` (or ssh) onto QUIC.
+  help      Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -1727,8 +1886,24 @@ Flags:
                                  contacting the host at all.
       --remote-phux <PATH>       The `phux` to run on the host, for when a
                                  non-interactive ssh shell's `PATH` does not
-                                 find it (a Homebrew or Nix install).
+                                 find it (a Homebrew or Nix install). It is
+                                 recorded in the entry, so later attaches and
+                                 renewals use it too; omitted, a re-add keeps
+                                 the one recorded.
                                  (default: phux)
+      --install                  Install phux on the host with the official
+                                 installer when it is missing, or update it with
+                                 its own `phux update` when it is older than
+                                 this one, on this machine's release channel.
+                                 The installer puts it in the host's
+                                 `~/.local/bin`; an update keeps the host's
+                                 panes.
+      --accept-new-host-key      Let ssh record the host key of a machine it has
+                                 never connected to
+                                 (`StrictHostKeyChecking=accept-new`) instead of
+                                 refusing it; a key that changed is still
+                                 refused. For a host whose address something
+                                 else vouches for, such as a Tailscale peer.
       --token-file <PATH>        Manual form only: absolute path to a file
                                  holding the pairing token minted by `phux pair`
                                  on the other machine.
@@ -1803,6 +1978,33 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux host discover`
+
+```text
+List the machines on this computer's Tailscale network.
+
+Reads the local Tailscale client (`tailscale status --json`): whether it is
+signed in and connected, every other machine on the tailnet, which run an OS
+phux ships for, and which are already registered. Set one up with `phux host add
+DNS_NAME --name NAME --install`. Nothing is registered or contacted. `--login`
+first brings the client up: it opens the macOS app, reconnects a stopped client,
+or starts a browser sign-in and prints its link (`tailscale.auth_url` under
+`--json`), returning once the link is known while the sign-in finishes in the
+browser.
+
+Usage: phux host discover [--login] [--json]
+
+Flags:
+      --login          Sign in to Tailscale, or reconnect it, before listing.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux host enable`
 
 ```text
@@ -1834,13 +2036,16 @@ dial the hub. The server keeps that connection up, redialing after any drop, and
 needs no listener of its own: the hub reaches this machine's terminals through
 it.
 
-Usage: phux host join [--json] <CODE>
+Usage: phux host join [--mail-only] [--json] <CODE>
 
 Arguments:
   <CODE>  The `phux://satellite?...` code from the hub, or `-` to read it from
           stdin and keep it out of `ps` and shell history.
 
 Flags:
+      --mail-only      For mail and claims only: `phux mail` and `phux claim`
+                       here use the hub's store, and the server never dials the
+                       hub, so the hub reaches no terminal here.
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
                        carries one JSON error object.
@@ -1870,6 +2075,123 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal`
+
+```text
+Make Minimal boxes join this hub as satellites.
+
+A Minimal (minimal.dev) box cannot be dialed, but it reaches this machine's
+loopback as `host.min.internal`. `setup` once, then every box `min session
+activate` creates shows up here as `min-NAME`, its panes as `min-NAME/@N`, and
+leaves when it is destroyed.
+
+Usage: phux host minimal <SUBCOMMAND>
+
+Commands:
+  remove  Undo `setup`: stop the watcher, remove the loadout, forget every box.
+  setup   Make every Minimal box join this hub.
+  sync    Join each running box that has not joined, and forget destroyed ones.
+  watch   Run `sync` every few seconds until stopped; what the service runs.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal remove`
+
+```text
+Undo `setup`: stop the watcher, remove the loadout, forget every box.
+
+Running boxes keep their phux; they stop reaching this hub because their
+credentials are revoked.
+
+Usage: phux host minimal remove
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal setup`
+
+```text
+Make every Minimal box join this hub.
+
+Writes the `phux` Minimal loadout, which copies a Linux phux into each box and
+starts its server, adds it to Minimal's `default_loadouts`, makes this machine's
+service a federation hub, and installs a per-user service running `phux host
+minimal watch`. On macOS the box binary is this phux's own version for Linux,
+downloaded and signature-checked like `phux update`, and replaced when the
+cached copy is a different version. Run it again after the hub's QUIC port
+changes. The hub must run `[policy] mode = "paired"` with a QUIC listener on
+loopback or all addresses.
+
+Usage: phux host minimal setup [FLAGS]
+
+Flags:
+      --hub <HOST:PORT>  `HOST:PORT` boxes dial. Omitted: `host.min.internal`
+                         and the port of this server's live QUIC listener.
+      --min <PATH>       The `min` CLI. Omitted: `min` on `PATH`, else
+                         `~/.local/bin/min`.
+      --box-phux <PATH>  The Linux phux to copy into boxes, instead of this
+                         version's Linux build (macOS) or this binary (Linux).
+      --no-service       Skip the watcher service; run `phux host minimal watch`
+                         yourself.
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal sync`
+
+```text
+Join each running box that has not joined, and forget destroyed ones.
+
+A box joins as satellite `min-NAME`, NAME being its Minimal session name, and
+gets session `min-NAME` here: one pane running `min session attach` into the
+box, ending when the box is destroyed. A box without phux on its `PATH`
+(activated without the `phux` loadout) is skipped.
+
+Usage: phux host minimal sync [--hub <HOST:PORT>] [--min <PATH>]
+
+Flags:
+      --hub <HOST:PORT>  `HOST:PORT` boxes dial. Omitted: `host.min.internal`
+                         and the port of this server's live QUIC listener.
+      --min <PATH>       The `min` CLI. Omitted: `min` on `PATH`, else
+                         `~/.local/bin/min`.
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host minimal watch`
+
+```text
+Run `sync` every few seconds until stopped; what the service runs.
+
+Usage: phux host minimal watch [FLAGS]
+
+Flags:
+      --hub <HOST:PORT>  `HOST:PORT` boxes dial. Omitted: `host.min.internal`
+                         and the port of this server's live QUIC listener.
+      --min <PATH>       The `min` CLI. Omitted: `min` on `PATH`, else
+                         `~/.local/bin/min`.
+      --interval <SECS>  Seconds between passes.
+                         (default: 2)
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host rename`
@@ -1914,6 +2236,8 @@ Arguments:
 Flags:
       --remote-phux <PATH>  The `phux` to run on the host, for when a
                             non-interactive ssh shell's `PATH` does not find it.
+                            Omitted: the one the entry recorded when it was
+                            added.
                             (default: phux)
       --json                Emit stable, versioned JSON on stdout instead of the
                             human view. On failure, stdout stays empty and
@@ -1996,6 +2320,10 @@ Flags:
                               advertises it.
       --expires-in <MINUTES>  Minutes the code stays redeemable.
                               (default: 10)
+      --mail-only             For mail and claims only: register no `inbound://`
+                              entry, so this hub never reaches the machine's
+                              terminals. Pair with `phux host join --mail-only`
+                              there.
       --json                  Emit stable, versioned JSON on stdout instead of
                               the human view. On failure, stdout stays empty and
                               stderr carries one JSON error object.
@@ -2148,6 +2476,9 @@ Flags:
                                   terminal, and when stdin is not one it refuses
                                   with exit 2 having sent nothing. `--server`
                                   never asks.
+      --json                      Emit a schema-versioned JSON result or error:
+                                  `target`, and `killed`, the members a session
+                                  kill ended (`null` for a pane kill).
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -2315,8 +2646,10 @@ Send, read and acknowledge mail between agents
 
 Mail lives in this host's work store beside `phux mission` tasks and survives
 restarts. An agent is addressed by its pane here, `@749`, optionally labelled,
-`pi@749`; anything outside a pane uses a name. `send` stores the message and
-nothing more: nothing is typed into a recipient's terminal. The recipient's
+`pi@749`; anything outside a pane uses a name. On a host joined to a hub with
+`phux host join`, mail and claims use the hub's store: the hub's panes are
+`hub/@749`, and on the hub this host's are `NAME/@N`. `send` stores the message
+and nothing more: nothing is typed into a recipient's terminal. The recipient's
 harness integration takes it (`wait`, `hook-context`) and puts it in the agent's
 conversation; an agent idle under a hook-only harness sees it at its next hook.
 You speak as `--as`, else `$PHUX_AGENT_ADDRESS`, else your pane, else `$USER`.
@@ -2441,20 +2774,24 @@ Store a message for each recipient
 Usage: phux mail send <FLAGS> <TO>…
 
 Arguments:
-  <TO>…  Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name.
+  <TO>…  Recipients: a pane (`@749`), a labelled pane (`pi@749`), or a name, led
+         by `SATELLITE/` or `hub/` for one on another host.
 
 Flags:
-  -m, --message <TEXT>  The message. `-` reads it from stdin.
-  -t, --thread <SLUG>   Thread slug, such as the branch or task the message is
-                        about.
-      --as <ADDRESS>    Speak as this address instead of this pane.
-      --json            Emit stable, versioned JSON on stdout instead of the
-                        human view. On failure, stdout stays empty and stderr
-                        carries one JSON error object.
-  -h, --help            Print help
+  -m, --message <TEXT>      The message. `-` reads it from stdin.
+  -t, --thread <SLUG>       Thread slug, such as the branch or task the message
+                            is about.
+      --operation-id <KEY>  Durable retry identity: nonzero 32-hex. Reuse only
+                            with identical sender, recipients, thread and body
+                            in the same work store.
+      --as <ADDRESS>        Speak as this address instead of this pane.
+      --json                Emit stable, versioned JSON on stdout instead of the
+                            human view. On failure, stdout stays empty and
+                            stderr carries one JSON error object.
+  -h, --help                Print help
 
 Global flags:
-      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux mail wait`
@@ -2853,6 +3190,106 @@ Global flags:
                                   `$PHUX_SOCKET`)
 ```
 
+## `phux omarchy`
+
+```text
+Fit phux into an Omarchy desktop
+
+`setup` makes phux at home on Omarchy (<https://omarchy.org>): its keys match
+Omarchy's tmux config (Ctrl+Space prefix, Alt+Enter splits, Alt+1..9 tabs), its
+colours follow the Omarchy theme and repaint when you switch, Super+Ctrl+Return
+opens it, Super+Ctrl+K lists its keys, and its server starts with the desktop
+session. `remove` undoes all of it; your own config.toml keeps winning
+throughout.
+
+Usage: phux omarchy <SUBCOMMAND>
+
+Commands:
+  keys    Print every key binding as `KEYS → what it does`, one per line.
+  remove  Undo `setup`: restore the previous distro and theme selection and
+          delete the hook, the layer, and the marked Hyprland blocks.
+  setup   Put phux in place on this Omarchy desktop. Safe to run again.
+  status  Show which parts of the Omarchy integration are in place.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux omarchy keys`
+
+```text
+Print every key binding as `KEYS → what it does`, one per line.
+
+The input Omarchy's `omarchy-menu-select` takes, so Super+Ctrl+K can show phux's
+keys in Omarchy's own menu.
+
+Usage: phux omarchy keys
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux omarchy remove`
+
+```text
+Undo `setup`: restore the previous distro and theme selection and delete the
+hook, the layer, and the marked Hyprland blocks.
+
+Usage: phux omarchy remove [--dry-run]
+
+Flags:
+      --dry-run        Print what would change without writing anything.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux omarchy setup`
+
+```text
+Put phux in place on this Omarchy desktop. Safe to run again.
+
+Installs a distro layer with Omarchy's tmux keys and selects it (a distro you
+had selected stays underneath), follows Omarchy's current theme unless your
+config already picks one, adds a theme hook under
+`~/.config/omarchy/hooks/theme-set.d/`, and adds a marked block to
+`~/.config/hypr/bindings.lua` and `autostart.lua` that rebinds Super+Ctrl+Return
+and Super+Ctrl+K to phux and starts its server. Text outside the marked blocks
+is never touched.
+
+Usage: phux omarchy setup [--dry-run]
+
+Flags:
+      --dry-run        Print what would change without writing anything.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux omarchy status`
+
+```text
+Show which parts of the Omarchy integration are in place.
+
+Usage: phux omarchy status [--json]
+
+Flags:
+      --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux organize`
 
 ```text
@@ -2914,7 +3351,12 @@ bound listener, `--host` with no wss listener, or `--qr` with no address a
 device can dial. On a tailnet with `MagicDNS` the link names the host's
 `MagicDNS` name rather than its tailnet address. `--relay-route` mints for a
 relay route instead, which needs the server to answer but no bound listener.
-`ls`, `prune`, `rotate`, and `revoke` only edit the store and need no server.
+When nothing is bound because `[policy] mode` is unset, a terminal asks once
+whether to write `mode = "paired"` and restart the server (panes are kept).
+`--json`, and a run whose stdin is not a terminal, do not ask. `--enable`
+answers yes without a prompt. A mode that is already set is left as it is; that
+refusal names `--listen` or `--quic`. `ls`, `prune`, `rotate`, and `revoke` only
+edit the store and need no server.
 
 Usage: phux pair [FLAGS] [SUBCOMMAND]
 
@@ -2996,6 +3438,15 @@ Flags:
                              including through a relay. The ticket expires in
                              ten minutes. With `--relay-route` the device
                              enrolls end to end through the relay.
+      --enable               When no remote listener is bound because `[policy]
+                             mode` is unset, write `mode = "paired"` and restart
+                             the server (`phux upgrade`, panes kept) without
+                             asking. On a terminal, `phux pair` asks once and
+                             this flag is the yes. With no terminal, or with
+                             `--json`, and without this flag, pairing refuses in
+                             one line that names this flag and the setting. A
+                             listener that is already bound is left alone, and a
+                             mode that is already set is not rewritten.
   -h, --help                 Print help
 
 Global flags:
@@ -3125,7 +3576,7 @@ Examples:
 phux paste demo 'SELECT count(*) FROM users;'
 git diff | phux paste review
 
-Usage: phux paste [--untrusted] <TARGET> [TEXT]
+Usage: phux paste [--untrusted] [--json] <TARGET> [TEXT]
 
 Arguments:
   <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
@@ -3138,6 +3589,9 @@ Flags:
                        silently drop an unsafe payload — e.g. anything
                        multiline. Without this flag the paste is trusted and
                        forwarded verbatim.
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -3162,10 +3616,11 @@ Does not start a server.
 `phux perf trace` records a span trace of the server for Perfetto; `phux perf
 alloc on|off` switches its heap accounting.
 
-`--desktop` reads a phux desktop running in dev mode (`PHUX_DEV=1`) instead: its
-frame rate, frame build times, jank, CPU, memory, heap and every desktop
-histogram. `phux perf trace --desktop` records the desktop and the server onto
-one timeline; `phux perf hud on|off` shows the desktop's in-window HUD.
+`--desktop` reads a phux desktop running in dev mode (`PHUX_DEV=1`, or Developer
+mode in its Settings) instead: its frame rate, frame build times, jank, CPU,
+memory, heap and every desktop histogram. `phux perf trace --desktop` records
+the desktop and the server onto one timeline; `phux perf hud on|off` shows the
+desktop's in-window HUD.
 
 Usage: phux perf [FLAGS] [SUBCOMMAND]
 
@@ -4015,13 +4470,17 @@ Reassigns `TARGET`'s human-readable name to `NEW_NAME` in one round-trip.
 pick up the new name on their next snapshot. An unknown `TARGET`, or a session
 `NEW_NAME` already in use, is an error.
 
-Usage: phux rename [--remote <[USER@]HOST[:PORT]>] <TARGET> <NEW_NAME>
+Usage: phux rename [--json] [--remote <[USER@]HOST[:PORT]>] <TARGET> <NEW_NAME>
 
 Arguments:
   <TARGET>    Current session name, or a pane selector.
   <NEW_NAME>  New name.
 
 Flags:
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -4390,14 +4849,18 @@ followed by the real key, honoring the pane's live bracketed-paste mode. TARGET
 is resolved client-side to one pane, so the live pane is neither attached nor
 resized.
 
-Flags (`--socket`) MUST precede TARGET: KEYS is a trailing var-arg, so anything
-after TARGET is taken as a key to send.
+Flags (`--json`, `--socket`) MUST precede TARGET: KEYS is a trailing var-arg, so
+anything after TARGET is taken as a key to send.
+
+`--json` prints how many input events the server acknowledged. A failure partway
+carries `error.recovery`: part of the keys reached the pane, so read it before
+sending again.
 
 Examples:
 phux send-keys demo "echo hi" Enter
 phux send-keys work:1.0 C-c
 
-Usage: phux send-keys <TARGET> <KEYS>…
+Usage: phux send-keys [--json] <TARGET> <KEYS>…
 
 Arguments:
   <TARGET>  Target selector: session, session:group, session:group.pane, @id, or
@@ -4405,6 +4868,9 @@ Arguments:
   <KEYS>…   Keys to send: named keys and/or literal strings, in order.
 
 Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -4704,7 +5170,7 @@ Examples:
 phux signal build freeze
 phux signal . kill
 
-Usage: phux signal [--idempotency-key <HEX32>] [--yes] <TARGET> <SIGNAL>
+Usage: phux signal [FLAGS] <TARGET> <SIGNAL>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
@@ -4723,6 +5189,9 @@ Flags:
                                  when stdin is not one they refuse with exit 2
                                  having sent nothing. `freeze` and `resume`, the
                                  reversible brake, never ask.
+      --json                     Emit stable, versioned JSON on stdout instead
+                                 of the human view. On failure, stdout stays
+                                 empty and stderr carries one JSON error object.
   -h, --help                     Print help
 
 Global flags:
@@ -5042,7 +5511,7 @@ agent's `send-keys`) are locked out. Use it to grab control of a pane an agent
 is driving. Release with `phux give`. TARGET is a selector (see the top-level
 help).
 
-Usage: phux take [--ttl <SECS>] <TARGET>
+Usage: phux take [--ttl <SECS>] [--json] <TARGET>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
@@ -5053,6 +5522,9 @@ Flags:
                        exiting. Omit to hold the lease until `phux give` or a
                        disconnect, today's default. The wire's `ttl_ms` is a
                        `u32`, so this caps at 4294967 (about 49.7 days).
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
   -h, --help           Print help
 
 Global flags:
@@ -5601,18 +6073,23 @@ Manage the mTLS workload authority
 The workload CA and the registry of client credentials it admits over mutual
 TLS. `authority` prints the CA fingerprint (`--init` creates the CA); `add-key`
 enrolls a client certificate or signs a CSR read from stdin or `--file`, never
-from the command line; `list` and `revoke` show and retire credentials. These
-write the state directory directly and never contact a server; a running server
-applies each change on its next connection, with no restart.
+from the command line; `list` and `revoke` show and retire credentials.
+`repair-paired` explicitly restores the permissions missing from an old
+full-control paired device. These write the state directory directly and never
+contact a server; a running server applies each change on its next connection,
+with no restart.
 
 Usage: phux workload [--json] <SUBCOMMAND>
 
 Commands:
-  add-key    Enroll a client certificate, or sign a CSR into one.
-  authority  Print the workload CA fingerprint.
-  list       List enrolled credentials.
-  revoke     Revoke a credential: new connections are refused and live ones end.
-  help       Print this message or the help of the given subcommand(s)
+  add-key        Enroll a client certificate, or sign a CSR into one.
+  authority      Print the workload CA fingerprint.
+  list           List enrolled credentials.
+  repair-paired  Restore full control to a device enrolled with the old pairing
+                 ceiling.
+  revoke         Revoke a credential: new connections are refused and live ones
+                 end.
+  help           Print this message or the help of the given subcommand(s)
 
 Flags:
       --json           Emit the result as JSON on stdout.
@@ -5669,10 +6146,10 @@ Flags:
       --principal <PRINCIPAL>    Who the credential is for: `human` (a device a
                                  person uses) or `automation`. Decides
                                  input-lease precedence, never scope. Omitted,
-                                 the credential is a person's device when its
-                                 ceiling is exactly the one `phux host add` and
-                                 `phux pair --enroll` grant, and an automation
-                                 otherwise.
+                                 the legacy six-verb pairing ceiling infers a
+                                 person's device; other ceilings infer
+                                 automation. Pairing records `human` explicitly.
+                                 This flag never adds permissions.
                                  [possible values: human, automation]
   -h, --help                     Print help
 
@@ -5716,6 +6193,30 @@ Usage: phux workload list [--public-keys]
 
 Flags:
       --public-keys    Also print each credential's public key (hex DER).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload repair-paired`
+
+```text
+Restore full control to a device enrolled with the old pairing ceiling.
+
+Adds organize and terminate only to the named active human device whose ceiling
+is exactly the legacy full-control pairing grant. Custom scopes, automation,
+expired and revoked credentials are refused. Keeps its key and expiry; no
+re-pair or server restart is needed. Reconnect the device afterwards to use the
+new permissions. Repeating this for an already repaired device changes nothing.
+
+Usage: phux workload repair-paired <CREDENTIAL_ID>
+
+Arguments:
+  <CREDENTIAL_ID>  The device's `sha256:...` id from `phux workload list`.
+
+Flags:
   -h, --help           Print help
 
 Global flags:

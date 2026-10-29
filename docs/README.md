@@ -17,12 +17,14 @@ Every page in the phux docs, grouped by what you're trying to do.
 - [Status bar and sidebar](./status-bar.md): what the bar and the sidebar show, and how to change it.
 - [Hooks](./hooks.md): run a command when something happens.
 - [Plugins](./plugins.md): add actions, panes, and sidebar sections.
+- [Distributions](./distros.md): switch curated defaults without replacing your config; run the Crew agent distro.
+- [Omarchy](./omarchy.md): one command to fit phux into an Omarchy desktop, with its keys, theme, and launcher.
 - [Projects](./projects.md): open a project's session from a recipe in its repository.
 
 ## Automate
 
 - [Public terminal workflow](./public-api.md): create, place and start a terminal with durable identity, receipts and connected-server schemas.
-
+- [Using phux as an agent](./agent-quickstart.md): install phux and drive sessions, panes, input, and scrollback from code.
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
 - [Coding agents](./agents.md): see which agent needs you, connect your agent's host, and use the MCP server.
 - [ACP sessions](./acp.md): run an agent through the Agent Client Protocol, and answer its permission requests yourself.
@@ -38,11 +40,17 @@ Every page in the phux docs, grouped by what you're trying to do.
 - [Clients](./clients.md): the terminal UI, the desktop app, the browser client, and phones.
 - [Desktop Quick Capture](./desktop-capture.md): start an agent from a thought without leaving what you're doing.
 - [Desktop Changes panel](./desktop-changes.md): review, stage, and commit the focused checkout.
+- [Desktop Reviews](./desktop-reviews.md): review, comment on, and merge your open GitHub pull requests.
 - [Desktop agent panes](./desktop-panes.md): how the desktop app shows agent panes.
 
 ## Help
 
 - [Troubleshooting](./troubleshooting.md): what to run first, and the failures people hit.
+- [Supported platforms](./install.md#requirements) and [desktop installation](./install.md#desktop-app): choose the right download.
+- [Desktop first launch and recovery](../clients/desktop/README.md#first-launch-and-recovery): bundled runtime, retry, and startup failures.
+- [Report a bug](./troubleshooting.md#reporting-a-bug): gather diagnostics and remove private information before sharing.
+- [Discord](https://discord.gg/dUv5rzdHp): questions and setup help.
+- [GitHub issues](https://github.com/no-phux/phux/issues): reproducible bugs and feature proposals.
 
 ## Reference
 

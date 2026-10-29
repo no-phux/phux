@@ -10,7 +10,9 @@
 //! [`predict`]) and the headless client (`phux-client`) cannot link it.
 //! `testkit` turns on `phux_client::testkit` for downstream tests.
 
-#![forbid(unsafe_code)]
+// Tokio's `AsyncFd` registration requires a caller-side lifetime proof. Keep
+// unsafe denied except for the two audited registrations in `attach::tty_input`.
+#![deny(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 

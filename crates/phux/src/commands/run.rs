@@ -67,8 +67,14 @@ pub(crate) fn run_run(
             Some(Ok(id)) => id,
             Some(Err(code)) => return code,
             None => {
-                error!("run timed out while resolving '{target}'; nothing was sent");
-                return ExitCode::from(RUN_TIMEOUT_EXIT_CODE);
+                return json_err::emit(
+                    json,
+                    &timeout_error(
+                        &format!("run timed out while resolving '{target}'; nothing was sent"),
+                        Submission::NotSent,
+                    ),
+                    RUN_TIMEOUT_EXIT_CODE,
+                );
             }
         };
         let result = phux_client::run::run_in_with_deadline(
@@ -93,12 +99,9 @@ fn report_outcome(
     match outcome {
         Ok(RunOutcome::Completed(result)) => {
             if json {
-                match serde_json::to_string_pretty(&result) {
-                    Ok(s) => outln!("{s}"),
-                    Err(err) => {
-                        error!("failed to serialize run result: {err}");
-                        return ExitCode::FAILURE;
-                    }
+                let code = crate::output::json(&result_document(&result));
+                if code != ExitCode::SUCCESS {
+                    return code;
                 }
             } else {
                 print_run_result(&result);
@@ -121,14 +124,18 @@ fn report_outcome(
             submission,
             ..
         }) => {
-            error!("{}", timeout_message(&command, duration_ms, submission));
+            let err = timeout_error(
+                &timeout_message(&command, duration_ms, submission),
+                submission,
+            );
             // 125, not 124: `run` mirrors the child's code into 0..=255,
             // and 124 is a code real commands (notably GNU `timeout`)
             // produce. 125 is the wrapper-failure convention (env/timeout),
             // so a caller can distinguish "phux gave up" from the child.
-            ExitCode::from(RUN_TIMEOUT_EXIT_CODE)
+            json_err::emit(json, &err, RUN_TIMEOUT_EXIT_CODE)
         }
         Err(err @ AttachError::Io(_)) => json_err::report_no_server(json, &err, socket_path, "run"),
+        Err(err) if json => json_err::report_no_server(json, &err, socket_path, "run"),
         Err(AttachError::Refused(msg)) => {
             error!("cannot run in '{target}': {msg} (try `phux ls`)");
             ExitCode::FAILURE
@@ -186,6 +193,47 @@ fn not_available_error(
     }
 }
 
+/// Version of the `run --json` result document. Additive fields do not bump it.
+pub(crate) const RESULT_SCHEMA_VERSION: u8 = 1;
+
+/// The `run --json` document: the result plus its `schema_version`.
+fn result_document(result: &phux_client::run::RunResult) -> serde_json::Value {
+    let mut doc = serde_json::json!(result);
+    doc["schema_version"] = RESULT_SCHEMA_VERSION.into();
+    doc
+}
+
+/// The `timed_out` error for a run that gave up, with what the deadline
+/// proves about delivery: nothing sent may be retried, anything else is
+/// reconciled by reading the pane, never blindly resent.
+fn timeout_error(message: &str, submission: Submission) -> json_err::CliError {
+    use phux_client::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
+    let (certainty, next, remedy) = match submission {
+        Submission::NotSent => (
+            EffectCertainty::NotApplied,
+            NextAction::RetryNewOperation,
+            "nothing reached the pane; raise `--timeout` and run it again",
+        ),
+        Submission::Partial => (
+            EffectCertainty::Unknown,
+            NextAction::Reconcile,
+            "read the pane with `phux snapshot` and clear any half-typed line before the next run",
+        ),
+        Submission::Complete => (
+            EffectCertainty::Applied,
+            NextAction::Reconcile,
+            "the command is still running; `phux wait` on the pane or read it with `phux snapshot` \
+             instead of running it again",
+        ),
+    };
+    json_err::CliError::new(codes::TIMED_OUT, message, remedy).with_recovery(Recovery::new(
+        ScopeKind::InputServerIncarnation,
+        None,
+        certainty,
+        next,
+    ))
+}
+
 /// The stderr line for a run that gave up, distinct per [`Submission`] so
 /// a caller never mistakes a half-typed line for a command that ran.
 fn timeout_message(command: &str, duration_ms: u64, submission: Submission) -> String {
@@ -238,6 +286,57 @@ mod tests {
     use phux_client::agent_meta::ShellAvailability;
 
     use super::{codes, not_available_error, run_nonce};
+
+    /// A timed-out run says what the deadline proves about delivery: only
+    /// "nothing sent" may be retried; anything else is reconciled.
+    #[test]
+    fn a_timeout_carries_what_reached_the_pane() {
+        use phux_client::recovery::{EffectCertainty, NextAction};
+        use phux_client::run::Submission;
+        for (submission, certainty, next) in [
+            (
+                Submission::NotSent,
+                EffectCertainty::NotApplied,
+                NextAction::RetryNewOperation,
+            ),
+            (
+                Submission::Partial,
+                EffectCertainty::Unknown,
+                NextAction::Reconcile,
+            ),
+            (
+                Submission::Complete,
+                EffectCertainty::Applied,
+                NextAction::Reconcile,
+            ),
+        ] {
+            let err = super::timeout_error("gave up", submission);
+            let doc = crate::commands::json_err::error_document(&err, 125);
+            assert_eq!(doc["error"]["code"], codes::TIMED_OUT);
+            assert_eq!(
+                doc["error"]["recovery"]["effect_certainty"],
+                serde_json::json!(certainty)
+            );
+            assert_eq!(
+                doc["error"]["recovery"]["next_action"],
+                serde_json::json!(next)
+            );
+            assert_eq!(doc["exit_code"], 125);
+        }
+    }
+
+    #[test]
+    fn the_result_document_is_versioned() {
+        let doc = super::result_document(&phux_client::run::RunResult {
+            command: "true".to_owned(),
+            exit_code: 0,
+            output: String::new(),
+            duration_ms: 1,
+            truncated: false,
+        });
+        assert_eq!(doc["schema_version"], super::RESULT_SCHEMA_VERSION);
+        assert_eq!(doc["exit_code"], 0);
+    }
 
     #[test]
     fn run_nonce_is_unique_across_invocations() {

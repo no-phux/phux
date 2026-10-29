@@ -1,0 +1,332 @@
+--- a/gpui-fast/src/window.rs
++++ b/gpui-fast/src/window.rs
+@@ -5270,6 +5270,7 @@
+             self.next_frame.scene.insert_primitive(PolychromeSprite {
+                 order: 0,
+                 pad: 0,
++                sample_bounds: Default::default(),
+                 grayscale: false.into(),
+                 bounds,
+                 corner_radii: Default::default(),
+@@ -5441,13 +5442,42 @@
+ 
+         self.next_frame.scene.insert_primitive(PolychromeSprite {
+             order: 0,
+-            pad: 0,
++            // Reserved sprite word: bit 0 clamps image filtering to the crop.
++            pad: 1,
+             grayscale: grayscale.into(),
+             bounds: visible_bounds_snapped,
+             content_mask,
+             corner_radii,
+             tile: sub_tile,
+             opacity,
++            sample_bounds: Default::default(),
++        });
++        Ok(())
++    }
++
++    /// Paint a full image with an explicit source-pixel filtering rectangle.
++    /// Content masks clip visibility without changing interpolation limits.
++    /// A fractional source slice can therefore span many terminal cells.
++    pub fn paint_image_with_sampling(
++        &mut self,
++        bounds: Bounds<Pixels>,
++        sample_bounds: Bounds<f32>,
++        data: Arc<RenderImage>,
++    ) -> Result<()> {
++        self.invalidator.debug_assert_paint();
++        if bounds.size.width <= Pixels::ZERO || bounds.size.height <= Pixels::ZERO {
++            return Ok(());
++        }
++        let params = RenderImageParams { image_id: data.id, frame_index: 0 };
++        let tile = self.sprite_atlas.get_or_insert_with(params.into(), &mut || {
++            Ok(Some((data.size(0), Cow::Borrowed(data.as_bytes(0).expect("image frame")))))
++        })?.expect("image pixels");
++        let bounds = self.snap_bounds(bounds);
++        let content_mask = self.snapped_content_mask();
++        let opacity = self.element_opacity();
++        self.next_frame.scene.insert_primitive(PolychromeSprite {
++            order: 0, pad: 1, grayscale: false.into(), bounds, content_mask,
++            corner_radii: Default::default(), tile, opacity, sample_bounds,
+         });
+         Ok(())
+     }
+--- a/gpui-fast/src/scene.rs
++++ b/gpui-fast/src/scene.rs
+@@ -336,16 +336,12 @@
+                 tile: self.tile,
+                 transformation: TransformationMatrix::unit(),
+             }),
+-            GlyphSpriteKind::Polychrome => Primitive::PolychromeSprite(PolychromeSprite {
+-                order,
+-                pad: 0,
+-                grayscale: false.into(),
+-                opacity,
+-                bounds,
+-                content_mask,
+-                corner_radii: Corners::default(),
+-                tile: self.tile,
+-            }),
++            GlyphSpriteKind::Polychrome => Primitive::PolychromeSprite(PolychromeSprite { order, pad: 0, sample_bounds: Default::default(), grayscale: false.into(),
++            opacity,
++            bounds,
++            content_mask,
++            corner_radii: Corners::default(),
++            tile: self.tile, }),
+         }
+     }
+ }
+@@ -949,6 +945,8 @@
+     pub content_mask: ContentMask<ScaledPixels>,
+     pub corner_radii: Corners<ScaledPixels>,
+     pub tile: AtlasTile,
++    /// Image-space filtering limits, independent of the visibility mask.
++    pub sample_bounds: Bounds<f32>,
+ }
+ 
+ impl From<PolychromeSprite> for Primitive {
+--- a/gpui-fast/src/fast/rounded_clip_fixtures.rs
++++ b/gpui-fast/src/fast/rounded_clip_fixtures.rs
+@@ -227,24 +227,20 @@
+         ),
+     );
+     let mut scene = gpui::Scene::default();
+-    scene.insert_primitive(gpui::PolychromeSprite {
+-        order: 0,
+-        pad: 0,
+-        grayscale: false.into(),
+-        opacity: 1.,
+-        bounds,
+-        content_mask: gpui::ContentMask { bounds: mask },
+-        corner_radii: Default::default(),
+-        tile: gpui::AtlasTile {
+-            texture_id: gpui::layer_tile_texture_id(frame.key),
+-            tile_id: gpui::layer_tile_id(coord),
+-            padding: 0,
+-            bounds: gpui::Bounds::new(
+-                gpui::point(gpui::DevicePixels(0), gpui::DevicePixels(0)),
+-                gpui::size(gpui::DevicePixels(512), gpui::DevicePixels(512)),
+-            ),
+-        },
+-    });
++    scene.insert_primitive(gpui::PolychromeSprite { order: 0, pad: 0, sample_bounds: Default::default(), grayscale: false.into(),
++    opacity: 1.,
++    bounds,
++    content_mask: gpui::ContentMask { bounds: mask },
++    corner_radii: Default::default(),
++    tile: gpui::AtlasTile {
++        texture_id: gpui::layer_tile_texture_id(frame.key),
++        tile_id: gpui::layer_tile_id(coord),
++        padding: 0,
++        bounds: gpui::Bounds::new(
++            gpui::point(gpui::DevicePixels(0), gpui::DevicePixels(0)),
++            gpui::size(gpui::DevicePixels(512), gpui::DevicePixels(512)),
++        ),
++    }, });
+     scene.layers.frames.push(frame);
+     scene.finish();
+     scene
+--- a/gpui-fast/src/fast/rounded_clip_scene.rs
++++ b/gpui-fast/src/fast/rounded_clip_scene.rs
+@@ -73,26 +73,22 @@
+                     content: LayerContent::from(child),
+                     dirty_tiles: Vec::new(),
+                 });
+-                parent.insert_primitive(PolychromeSprite {
+-                    order: 0,
+-                    pad: 0,
+-                    grayscale: false.into(),
+-                    opacity: 1.,
++                parent.insert_primitive(PolychromeSprite { order: 0, pad: 0, sample_bounds: Default::default(), grayscale: false.into(),
++                opacity: 1.,
++                bounds: shape.bounds,
++                content_mask: ContentMask {
+                     bounds: shape.bounds,
+-                    content_mask: ContentMask {
+-                        bounds: shape.bounds,
++                },
++                corner_radii: shape.radii.map(|radius| radius.width),
++                tile: AtlasTile {
++                    texture_id: AtlasTextureId {
++                        index: CLIP_TEXTURE_BASE + key.0 - 0x0100_0000,
++                        kind: AtlasTextureKind::Polychrome,
+                     },
+-                    corner_radii: shape.radii.map(|radius| radius.width),
+-                    tile: AtlasTile {
+-                        texture_id: AtlasTextureId {
+-                            index: CLIP_TEXTURE_BASE + key.0 - 0x0100_0000,
+-                            kind: AtlasTextureKind::Polychrome,
+-                        },
+-                        tile_id: TileId(0),
+-                        padding: 0,
+-                        bounds: Default::default(),
+-                    },
+-                });
++                    tile_id: TileId(0),
++                    padding: 0,
++                    bounds: Default::default(),
++                }, });
+             }
+             PaintOperation::Primitive(primitive) => stack
+                 .last_mut()
+--- a/gpui-fast/src/fast/layers/paint.rs
++++ b/gpui-fast/src/fast/layers/paint.rs
+@@ -500,30 +500,26 @@
+         for x in x0..x1 {
+             let coord = TileCoord { x, y };
+             let tile = frame.tile_bounds(coord);
+-            scene.insert_primitive(PolychromeSprite {
+-                order: 0,
+-                pad: 0,
+-                grayscale: false.into(),
+-                opacity: 1.,
++            scene.insert_primitive(PolychromeSprite { order: 0, pad: 0, sample_bounds: Default::default(), grayscale: false.into(),
++            opacity: 1.,
++            bounds: Bounds {
++                origin: tile.origin + translation,
++                size: tile.size,
++            },
++            content_mask: ContentMask { bounds: viewport },
++            corner_radii: Corners::default(),
++            tile: AtlasTile {
++                texture_id,
++                tile_id: layer_tile_id(coord),
++                padding: 0,
+                 bounds: Bounds {
+-                    origin: tile.origin + translation,
+-                    size: tile.size,
++                    origin: Point::default(),
++                    size: size2(
++                        DevicePixels(TILE_SIZE as i32),
++                        DevicePixels(TILE_SIZE as i32),
++                    ),
+                 },
+-                content_mask: ContentMask { bounds: viewport },
+-                corner_radii: Corners::default(),
+-                tile: AtlasTile {
+-                    texture_id,
+-                    tile_id: layer_tile_id(coord),
+-                    padding: 0,
+-                    bounds: Bounds {
+-                        origin: Point::default(),
+-                        size: size2(
+-                            DevicePixels(TILE_SIZE as i32),
+-                            DevicePixels(TILE_SIZE as i32),
+-                        ),
+-                    },
+-                },
+-            });
++            }, });
+         }
+     }
+     scene.pop_layer();
+--- a/gpui-fast/src/fast/layers/tiles.rs
++++ b/gpui-fast/src/fast/layers/tiles.rs
+@@ -311,6 +311,11 @@
+             hash_mask(&sprite.content_mask, tile, hasher);
+             hash_corners(&sprite.corner_radii, hasher);
+             hash_tile(&sprite.tile, hasher);
++            hasher.write_u32(sprite.pad);
++            hash_f32(sprite.sample_bounds.origin.x, hasher);
++            hash_f32(sprite.sample_bounds.origin.y, hasher);
++            hash_f32(sprite.sample_bounds.size.width, hasher);
++            hash_f32(sprite.sample_bounds.size.height, hasher);
+         }
+         Primitive::Surface(surface) => {
+             // A surface's pixels come from outside the scene; layers never
+--- a/gpui-fast/src/fast/tests/layers.rs
++++ b/gpui-fast/src/fast/tests/layers.rs
+@@ -438,16 +438,12 @@
+     assert_eq!(moved.content_mask.bounds, moved_mask);
+     assert_eq!(moved.transformation, expected);
+ 
+-    let poly = PolychromeSprite {
+-        order: 0,
+-        pad: 0,
+-        grayscale: false.into(),
+-        opacity: 1.,
+-        bounds: sp(1., 2., 3., 4.),
+-        content_mask: mask,
+-        corner_radii: Default::default(),
+-        tile: atlas_tile(),
+-    };
++    let poly = PolychromeSprite { order: 0, pad: 0, sample_bounds: Default::default(), grayscale: false.into(),
++    opacity: 1.,
++    bounds: sp(1., 2., 3., 4.),
++    content_mask: mask,
++    corner_radii: Default::default(),
++    tile: atlas_tile(), };
+     let Primitive::PolychromeSprite(moved) = translate(poly.into()) else {
+         unreachable!()
+     };
+--- a/gpui-fast/src/fast/tests/layers_oracle.rs
++++ b/gpui-fast/src/fast/tests/layers_oracle.rs
+@@ -122,27 +122,23 @@
+     layered.push_layer(viewport);
+     for &tile in tiles {
+         let bounds = frame.tile_bounds(tile);
+-        layered.insert_primitive(PolychromeSprite {
+-            order: 0,
+-            pad: 0,
+-            grayscale: false.into(),
+-            opacity: 1.,
++        layered.insert_primitive(PolychromeSprite { order: 0, pad: 0, sample_bounds: Default::default(), grayscale: false.into(),
++        opacity: 1.,
++        bounds: Bounds {
++            origin: bounds.origin + translation,
++            size: bounds.size,
++        },
++        content_mask: ContentMask { bounds: viewport },
++        corner_radii: Default::default(),
++        tile: crate::AtlasTile {
++            texture_id: layer_tile_texture_id(frame.key),
++            tile_id: layer_tile_id(tile),
++            padding: 0,
+             bounds: Bounds {
+-                origin: bounds.origin + translation,
+-                size: bounds.size,
++                origin: point(crate::DevicePixels(0), crate::DevicePixels(0)),
++                size: size(crate::DevicePixels(512), crate::DevicePixels(512)),
+             },
+-            content_mask: ContentMask { bounds: viewport },
+-            corner_radii: Default::default(),
+-            tile: crate::AtlasTile {
+-                texture_id: layer_tile_texture_id(frame.key),
+-                tile_id: layer_tile_id(tile),
+-                padding: 0,
+-                bounds: Bounds {
+-                    origin: point(crate::DevicePixels(0), crate::DevicePixels(0)),
+-                    size: size(crate::DevicePixels(512), crate::DevicePixels(512)),
+-                },
+-            },
+-        });
++        }, });
+     }
+     layered.pop_layer();
+     layered.insert_primitive(quad(sp(40., 140., 300., 20.), WINDOW, 0.9));
+--- a/gpui-fast/src/fast/tests/scene_order.rs
++++ b/gpui-fast/src/fast/tests/scene_order.rs
+@@ -207,16 +207,12 @@
+                             tile: tile(id, AtlasTextureKind::Subpixel, texture),
+                             transformation: TransformationMatrix::unit(),
+                         }),
+-                        Kind::Polychrome => scene.insert_primitive(PolychromeSprite {
+-                            order: 0,
+-                            pad: 0,
+-                            grayscale: false.into(),
+-                            opacity: 1.,
+-                            bounds: b,
+-                            content_mask,
+-                            corner_radii: Corners::default(),
+-                            tile: tile(id, AtlasTextureKind::Polychrome, texture),
+-                        }),
++                        Kind::Polychrome => scene.insert_primitive(PolychromeSprite { order: 0, pad: 0, sample_bounds: Default::default(), grayscale: false.into(),
++                        opacity: 1.,
++                        bounds: b,
++                        content_mask,
++                        corner_radii: Corners::default(),
++                        tile: tile(id, AtlasTextureKind::Polychrome, texture), }),
+                         Kind::Quad => unreachable!(),
+                     }
+                     painted.push(Painted {

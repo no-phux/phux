@@ -304,6 +304,29 @@ impl Connection {
         !self.closed && self.known.contains(id) && self.client.delivery_fenced(id)
     }
 
+    /// Snapshot the fences for a window's placements with one short control-lock
+    /// acquisition. A paint wake must not take the lock once per hidden pane
+    /// while the same lock also admits keyboard input.
+    pub fn fenced_placements<'a>(
+        &self,
+        terminals: impl Iterator<Item = &'a ResourceId>,
+    ) -> Vec<ResourceId> {
+        if self.closed {
+            return Vec::new();
+        }
+        let known: Vec<_> = terminals.filter(|id| self.known.contains(*id)).collect();
+        if known.is_empty() {
+            return Vec::new();
+        }
+        self.client.with_control(|control| {
+            known
+                .into_iter()
+                .filter(|id| control.delivery_fenced(id))
+                .cloned()
+                .collect()
+        })
+    }
+
     /// One pane from the latest topology.
     #[must_use]
     pub fn pane(&self, id: &ResourceId) -> Option<&PaneDescriptor> {
@@ -517,7 +540,7 @@ mod authority_tests;
 #[cfg(test)]
 mod inventory_tests;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod remote_acceptance;
 
 #[cfg(test)]

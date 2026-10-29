@@ -8,6 +8,8 @@ mod common;
 
 mod config_agents;
 mod config_check_semantics;
+mod config_distro;
+mod config_import_tmux;
 mod config_init_distro;
 mod config_plugin_actions;
 mod config_show_layers;

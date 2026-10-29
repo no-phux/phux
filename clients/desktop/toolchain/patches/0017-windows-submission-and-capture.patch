@@ -1,0 +1,419 @@
+diff --git a/gpui-fast-windows/src/directx_renderer.rs b/gpui-fast-windows/src/directx_renderer.rs
+index f675037..6a414fc 100644
+--- a/gpui-fast-windows/src/directx_renderer.rs
++++ b/gpui-fast-windows/src/directx_renderer.rs
+@@ -6,9 +6,11 @@ use std::{
+ 
+ use anyhow::{Context, Result};
+ use gpui_util::ResultExt;
++#[cfg(test)]
++use windows::Win32::Foundation::DXGI_STATUS_OCCLUDED;
+ use windows::{
+     Win32::{
+-        Foundation::HWND,
++        Foundation::{HWND, S_OK},
+         Graphics::{
+             Direct3D::*,
+             Direct3D11::*,
+@@ -30,6 +32,167 @@ pub(crate) const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
+ const PATH_MULTISAMPLE_COUNT: u32 = 4;
+ const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
+ 
++/// DXGI success statuses such as OCCLUDED are not successful submissions.
++/// Even S_OK only queues a present; it never confirms display of this frame.
++fn report_submission(
++    status: windows::core::HRESULT,
++    on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++) -> Result<Option<u64>> {
++    use std::sync::atomic::{AtomicU64, Ordering};
++    static NEXT_SUBMISSION: AtomicU64 = AtomicU64::new(1);
++    status.ok().context("Presenting swap chain failed")?;
++    if status != S_OK {
++        return Ok(None);
++    }
++    let Ok(id) =
++        NEXT_SUBMISSION.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
++    else {
++        return Ok(None);
++    };
++    if let Some(callback) = on_presented {
++        callback(id, false);
++    }
++    Ok(Some(id))
++}
++
++fn map_capture(
++    context: &ID3D11DeviceContext,
++    staging: &ID3D11Texture2D,
++) -> Result<D3D11_MAPPED_SUBRESOURCE> {
++    use std::time::{Duration, Instant};
++    let deadline = Instant::now() + Duration::from_secs(30);
++    // Submit the copy before polling; DO_NOT_WAIT prevents a lost/hung GPU
++    // from blocking the UI thread indefinitely inside Map.
++    unsafe { context.Flush() };
++    loop {
++        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
++        match unsafe {
++            context.Map(
++                staging,
++                0,
++                D3D11_MAP_READ,
++                D3D11_MAP_FLAG_DO_NOT_WAIT.0 as u32,
++                Some(&mut mapped),
++            )
++        } {
++            Ok(()) => return Ok(mapped),
++            Err(error) if error.code() == DXGI_ERROR_WAS_STILL_DRAWING => {
++                anyhow::ensure!(
++                    Instant::now() < deadline,
++                    "D3D11 capture timed out after 30 seconds"
++                );
++                std::thread::sleep(Duration::from_millis(1));
++            }
++            Err(error) => return Err(error).context("Mapping D3D11 capture"),
++        }
++    }
++}
++
++fn read_staging_image(
++    context: &ID3D11DeviceContext,
++    staging: &ID3D11Texture2D,
++    width: u32,
++    height: u32,
++) -> Result<image::RgbaImage> {
++    let row_bytes = (width as usize)
++        .checked_mul(4)
++        .context("capture row size overflow")?;
++    let len = row_bytes
++        .checked_mul(height as usize)
++        .context("capture image size overflow")?;
++    let mut pixels = vec![0u8; len];
++    let mapped = map_capture(context, staging)?;
++    if mapped.pData.is_null() || (mapped.RowPitch as usize) < row_bytes {
++        unsafe { context.Unmap(staging, 0) };
++        anyhow::bail!("invalid D3D11 capture mapping");
++    }
++    // SAFETY: Map succeeded and RowPitch >= row_bytes. The staging texture's
++    // dimensions are width/height; the mapping outlives these disjoint copies.
++    unsafe {
++        let src = mapped.pData as *const u8;
++        for row in 0..height as usize {
++            std::ptr::copy_nonoverlapping(
++                src.add(row * mapped.RowPitch as usize),
++                pixels.as_mut_ptr().add(row * row_bytes),
++                row_bytes,
++            );
++        }
++        context.Unmap(staging, 0);
++    }
++    // D3D's UNORM target holds premultiplied BGRA. PNG/image consumers
++    // expect straight RGBA (no sRGB conversion for this UNORM target).
++    straight_rgba(&mut pixels);
++    image::RgbaImage::from_raw(width, height, pixels)
++        .context("Failed to build RgbaImage from staging readback")
++}
++
++fn straight_rgba(pixels: &mut [u8]) {
++    for pixel in pixels.chunks_exact_mut(4) {
++        pixel.swap(0, 2);
++        let alpha = u32::from(pixel[3]);
++        if alpha == 0 {
++            pixel[..3].fill(0);
++            continue;
++        }
++        for channel in &mut pixel[..3] {
++            *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
++        }
++    }
++}
++
++#[cfg(test)]
++mod evidence_tests {
++    use super::{
++        DXGI_ERROR_DEVICE_REMOVED, DXGI_STATUS_OCCLUDED, S_OK, report_submission, straight_rgba,
++    };
++
++    #[test]
++    fn successful_presents_have_unique_submission_only_receipts() {
++        let (sender, receiver) = std::sync::mpsc::channel();
++        let first = report_submission(
++            S_OK,
++            Some(Box::new(move |id, confirmed| {
++                sender.send((id, confirmed)).unwrap();
++            })),
++        )
++        .unwrap()
++        .unwrap();
++        assert_eq!(receiver.recv().unwrap(), (first, false));
++        assert!(receiver.recv().is_err(), "callback runs exactly once");
++        let second = report_submission(S_OK, None).unwrap().unwrap();
++        assert_ne!(first, second);
++    }
++
++    #[test]
++    fn occlusion_and_failed_presents_never_report_a_drawable() {
++        for status in [DXGI_STATUS_OCCLUDED, DXGI_ERROR_DEVICE_REMOVED] {
++            let (sender, receiver) = std::sync::mpsc::channel();
++            let receipt = report_submission(
++                status,
++                Some(Box::new(move |id, confirmed| {
++                    sender.send((id, confirmed)).unwrap();
++                })),
++            );
++            if status == DXGI_STATUS_OCCLUDED {
++                assert!(receipt.unwrap().is_none());
++            } else {
++                assert!(receipt.is_err());
++            }
++            assert!(receiver.recv().is_err(), "failed callback must be dropped");
++        }
++    }
++
++    #[test]
++    fn capture_converts_bgra_to_straight_rgba() {
++        let mut pixels = [64, 32, 16, 128, 6, 5, 4, 255, 9, 8, 7, 0, 2, 1, 0, 1];
++        straight_rgba(&mut pixels);
++        assert_eq!(
++            pixels,
++            [32, 64, 128, 128, 4, 5, 6, 255, 0, 0, 0, 0, 0, 255, 255, 1]
++        );
++    }
++}
++
+ pub(crate) struct FontInfo {
+     pub gamma_ratios: [f32; 4],
+     pub grayscale_enhanced_contrast: f32,
+@@ -249,14 +412,19 @@ impl DirectXRenderer {
+ 
+     #[inline]
+     pub(crate) fn present(&mut self) -> Result<()> {
+-        let result = unsafe {
++        self.present_status()
++            .ok()
++            .context("Presenting swap chain failed")
++    }
++
++    fn present_status(&mut self) -> windows::core::HRESULT {
++        unsafe {
+             self.resources
+                 .as_ref()
+                 .expect("resources missing")
+                 .swap_chain
+                 .Present(0, DXGI_PRESENT(0))
+-        };
+-        result.ok().context("Presenting swap chain failed")
++        }
+     }
+ 
+     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
+@@ -341,13 +509,23 @@ impl DirectXRenderer {
+         scene: &Scene,
+         background_appearance: WindowBackgroundAppearance,
+     ) -> Result<()> {
++        self.draw_for_presentation(scene, background_appearance, None)
++            .map(|_| ())
++    }
++
++    pub(crate) fn draw_for_presentation(
++        &mut self,
++        scene: &Scene,
++        background_appearance: WindowBackgroundAppearance,
++        on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++    ) -> Result<Option<u64>> {
+         if self.skip_draws {
+             // skip drawing this frame, we just recovered from a device lost event
+             // and so likely do not have the textures anymore that are required for drawing
+-            return Ok(());
++            return Ok(None);
+         }
+         self.render(scene, background_appearance)?;
+-        self.present()
++        report_submission(self.present_status(), on_presented)
+     }
+ 
+     /// Clear the render target for `background_appearance` and encode every
+@@ -417,12 +595,8 @@ impl DirectXRenderer {
+         Ok(())
+     }
+ 
+-    /// Render `scene` to an offscreen CPU image **without presenting** so
+-    /// the window need never be shown or visible (the macOS headless path
+-    /// goes through MetalRenderer; this is the Windows analogue). Draws into
+-    /// the existing render target, copies it into a `D3D11_USAGE_STAGING`
+-    /// texture, maps it, and converts BGRA to RGBA.
+-    #[cfg(any(test, feature = "test-support"))]
++    /// Capture the scene using the live atlas, without presenting or reporting a
++    /// drawable. Native decorations and compositor effects are not included.
+     pub(crate) fn render_to_image(
+         &mut self,
+         scene: &Scene,
+@@ -435,8 +609,52 @@ impl DirectXRenderer {
+             !self.skip_draws,
+             "render_to_image unavailable while recovering from a lost device"
+         );
+-        self.render(scene, background_appearance)?;
++        // Substitute only the color target. Keep the swap chain untouched, and
++        // restore it on failure too; capture must not alter the next present.
++        let device = &self.devices.as_ref().context("devices missing")?.device;
++        let resources = self.resources.as_ref().context("resources missing")?;
++        let mut desc = D3D11_TEXTURE2D_DESC::default();
++        unsafe {
++            resources
++                .render_target
++                .as_ref()
++                .context("render target missing")?
++                .GetDesc(&mut desc)
++        };
++        desc.Usage = D3D11_USAGE_DEFAULT;
++        desc.BindFlags = D3D11_BIND_RENDER_TARGET.0 as u32;
++        desc.CPUAccessFlags = 0;
++        desc.MiscFlags = 0;
++        let mut texture = None;
++        let mut view = None;
++        unsafe {
++            device.CreateTexture2D(&desc, None, Some(&mut texture))?;
++            device.CreateRenderTargetView(
++                texture.as_ref().context("capture texture missing")?,
++                None,
++                Some(&mut view),
++            )?;
++        }
++        let resources = self.resources.as_mut().unwrap();
++        let original_texture = std::mem::replace(&mut resources.render_target, texture);
++        let original_view = std::mem::replace(&mut resources.render_target_view, view);
++        let result = self
++            .render(scene, background_appearance)
++            .and_then(|_| self.read_image());
++        let resources = self.resources.as_mut().unwrap();
++        resources.render_target = original_texture;
++        resources.render_target_view = original_view;
++        unsafe {
++            self.devices
++                .as_ref()
++                .unwrap()
++                .device_context
++                .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
++        }
++        result
++    }
+ 
++    fn read_image(&self) -> Result<image::RgbaImage> {
+         let devices = self.devices.as_ref().context("devices missing")?;
+         let device = &devices.device;
+         let context = &devices.device_context;
+@@ -451,6 +669,10 @@ impl DirectXRenderer {
+         unsafe { render_target.GetDesc(&mut desc) };
+         let width = desc.Width;
+         let height = desc.Height;
++        anyhow::ensure!(
++            desc.Format == RENDER_TARGET_FORMAT,
++            "unsupported capture format"
++        );
+         let staging_desc = D3D11_TEXTURE2D_DESC {
+             Usage: D3D11_USAGE_STAGING,
+             BindFlags: 0,
+@@ -469,30 +691,7 @@ impl DirectXRenderer {
+         let staging = staging.context("creating staging texture")?;
+         unsafe { context.CopyResource(&staging, render_target) };
+ 
+-        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+-        unsafe { context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))? };
+-        let row_bytes = (width as usize) * 4;
+-        let mut pixels = vec![0u8; row_bytes * height as usize];
+-        // SAFETY: `Map` succeeded, so `pData` points at `RowPitch * height`
+-        // readable bytes for as long as the mapping is held, and `RowPitch >=
+-        // row_bytes` (it only ever adds trailing padding). `pixels` is sized
+-        // `row_bytes * height`, so every copy stays in bounds on both sides,
+-        // and the regions cannot overlap (`pixels` is a fresh allocation).
+-        unsafe {
+-            let src = mapped.pData as *const u8;
+-            for row in 0..height as usize {
+-                let s = src.add(row * mapped.RowPitch as usize);
+-                let d = pixels.as_mut_ptr().add(row * row_bytes);
+-                std::ptr::copy_nonoverlapping(s, d, row_bytes);
+-            }
+-            context.Unmap(&staging, 0);
+-        }
+-        // The render target is BGRA; image::RgbaImage expects RGBA.
+-        for px in pixels.chunks_exact_mut(4) {
+-            px.swap(0, 2);
+-        }
+-        image::RgbaImage::from_raw(width, height, pixels)
+-            .context("Failed to build RgbaImage from staging readback")
++        read_staging_image(context, &staging, width, height)
+     }
+ 
+     pub(crate) fn resize(&mut self, new_size: Size<DevicePixels>) -> Result<()> {
+@@ -1515,7 +1714,7 @@ fn create_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
+     desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+     desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+     desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+-    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
++    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+     desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
+     unsafe {
+         let mut state = None;
+@@ -1576,7 +1775,7 @@ fn create_blend_state_for_path_sprite(device: &ID3D11Device) -> Result<ID3D11Ble
+     desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+     desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+     desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+-    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
++    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+     desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
+     unsafe {
+         let mut state = None;
+diff --git a/gpui-fast-windows/src/window.rs b/gpui-fast-windows/src/window.rs
+index 890c226..87b6d8c 100644
+--- a/gpui-fast-windows/src/window.rs
++++ b/gpui-fast-windows/src/window.rs
+@@ -1035,11 +1035,40 @@ impl PlatformWindow for WindowsWindow {
+     }
+ 
+     fn draw(&self, scene: &Scene) {
++        let _ = self.draw_for_presentation(scene, None);
++    }
++
++    fn native_visibility(&self) -> NativeVisibility {
++        // Win32 visibility is not a full occlusion test or presentation proof.
++        if !unsafe { IsWindow(Some(self.hwnd)) }.as_bool() {
++            return NativeVisibility::Unavailable;
++        }
++        if !unsafe { IsWindowVisible(self.hwnd) }.as_bool()
++            || unsafe { IsIconic(self.hwnd) }.as_bool()
++        {
++            return NativeVisibility::Obscured;
++        }
++        let mut rect = RECT::default();
++        if unsafe { GetClientRect(self.hwnd, &mut rect) }.is_err()
++            || rect.right <= rect.left
++            || rect.bottom <= rect.top
++        {
++            return NativeVisibility::Obscured;
++        }
++        NativeVisibility::Visible
++    }
++
++    fn draw_for_presentation(
++        &self,
++        scene: &Scene,
++        on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++    ) -> Option<u64> {
+         self.state
+             .renderer
+             .borrow_mut()
+-            .draw(scene, self.state.background_appearance.get())
+-            .log_err();
++            .draw_for_presentation(scene, self.state.background_appearance.get(), on_presented)
++            .log_err()
++            .flatten()
+     }
+ 
+     fn draw_composed(&self, scene: ComposedScene<'_>) {
+@@ -1058,7 +1087,6 @@ impl PlatformWindow for WindowsWindow {
+         crate::fast::composition::set_composition_order(self, surfaces)
+     }
+ 
+-    #[cfg(any(test, feature = "test-support"))]
+     fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
+         self.state
+             .renderer

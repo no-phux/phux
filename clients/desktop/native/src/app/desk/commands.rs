@@ -4,8 +4,9 @@ use super::*;
 
 impl Desk {
     pub fn execute(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if id == "agent-fleet" && !self.prefs.agent_fleet {
-            self.show_settings_page(super::super::settings_panel::Page::Layout, window, cx);
+        // A later user command supersedes a fleet choice still restoring.
+        self.cancel_fleet_navigation();
+        if self.settings_command(id, window, cx) {
             return;
         }
         if self.text_field_has_keys() && settings::yields_to_text_field(id) {
@@ -19,16 +20,13 @@ impl Desk {
                 return;
             }
         }
+        if id == "tab-peek" {
+            self.toggle_tab_peek(window, cx);
+            return;
+        }
+        self.dismiss_tab_peek(window, cx);
         if let Some(classified) = settings::classify_command(id) {
-            use settings::BoundAction::*;
-            match classified {
-                Ignore => {}
-                Send(text) => self.send_text(&text),
-                WriteFile { region, mode } => self.write_file(&region, &mode, cx),
-                FontSize(size) => self.update_prefs(|prefs| prefs.font_size = size, cx),
-                ScrollLines(rows) => self.scroll(Scroll::Delta(rows as i64), cx),
-                PromptJump(prompts) => self.scroll(Scroll::Prompt(prompts as i64), cx),
-            }
+            self.run_bound_action(classified, cx);
             return;
         }
         if !self.run_organization(id, window, cx) {
@@ -36,17 +34,46 @@ impl Desk {
         }
     }
 
+    /// Settings entry points open a utility window, never a workspace modal.
+    fn settings_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match id {
+            "settings" => self.open_settings(None, window, cx),
+            "agent-fleet" if !self.prefs.agent_fleet => {
+                self.show_settings_page(super::super::settings_panel::Page::Layout, window, cx)
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn run_bound_action(&mut self, action: settings::BoundAction, cx: &mut Context<Self>) {
+        use settings::BoundAction::*;
+        match action {
+            Ignore => {}
+            Send(text) => self.send_text(&text),
+            WriteFile { region, mode } => self.write_file(&region, &mode, cx),
+            FontSize(size) => self.update_prefs(|prefs| prefs.font_size = size, cx),
+            ScrollLines(rows) => self.scroll(Scroll::Delta(rows as i64), cx),
+            PromptJump(prompts) => self.scroll(Scroll::Prompt(prompts as i64), cx),
+        }
+    }
+
     pub(super) fn run_catalog(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reviews.open {
+            // The hidden terminal must not take a copy, paste or selection.
+            if matches!(id, "copy" | "paste" | "select-all") {
+                return;
+            }
+            if super::super::reviews::hides_reviews(id) {
+                self.close_reviews(window, cx);
+            }
+        }
         match id {
             // A pending approval is server state, not a message: it leaves
             // the Inbox when it is decided, expires, or is withdrawn.
             "clear-notifications" => self.feed.retain(|entry| entry.kind == Kind::Approval),
             "new" | "new-home" => {
-                let home = std::env::var("HOME").ok().filter(|_| id == "new-home");
-                self.workspace_call(|link| {
-                    link.workspace
-                        .new_terminal(&link.connection, home.as_deref())
-                });
+                self.new_catalog_terminal(id);
             }
             "new-session" => {
                 self.modal = Modal::Session {
@@ -60,6 +87,7 @@ impl Desk {
             "folder" => self.open_folder(window, cx),
             "native-agent" => self.open_native_launch(window, cx),
             "insert-path" => self.open_path_picker(),
+            "theme" => self.open_theme_picker(),
             "view" => self.workspace_call(|link| link.workspace.duplicate_view(&link.connection)),
             "close" => self.fold_pane(window, cx),
             "close-tab" => {
@@ -73,6 +101,8 @@ impl Desk {
             "pane-prev" => self.workspace_call(|link| link.workspace.cycle_pane(-1)),
             "tab-next" => self.workspace_call(|link| link.workspace.step_tab(1)),
             "tab-prev" => self.workspace_call(|link| link.workspace.step_tab(-1)),
+            "session-next" => self.step_session(1, cx),
+            "session-prev" => self.step_session(-1, cx),
             "tab-move-left" => self.move_active_tab(-1),
             "tab-move-right" => self.move_active_tab(1),
             "rename" => self.rename_active(),
@@ -90,9 +120,11 @@ impl Desk {
             "native-agents" => self.toggle_native_agents(window, cx),
             "conversation" => self.toggle_focused_conversation(window, cx),
             "changes" => self.toggle_changes(cx),
+            "reviews" => self.toggle_reviews(window, cx),
             "sidebar" => {
                 self.update_prefs(|prefs| prefs.sidebar_visible = !prefs.sidebar_visible, cx)
             }
+            "backdrop-shader-next" => self.cycle_backdrop(cx),
             "plain-terminal" => self.update_prefs(|prefs| prefs.plain = !prefs.plain, cx),
             "tabs-top" => self.update_prefs(|prefs| prefs.tab_position = TabPosition::Top, cx),
             "tabs-bottom" => {
@@ -145,6 +177,7 @@ impl Desk {
             }
             "add-host" => self.modal = Modal::AddHost,
             "copy-diagnostics" => self.copy_diagnostics(cx),
+            "developer-mode" => self.toggle_developer_mode(cx),
             "perf-hud" => self.toggle_hud(cx),
             "perf-trace" => self.capture_trace(cx),
             // Opening/closing windows must wait until this desk's window lease ends.
@@ -159,6 +192,18 @@ impl Desk {
             other => self.run_patterned(other),
         }
         self.after_command(window, cx);
+    }
+
+    fn new_catalog_terminal(&mut self, id: &str) {
+        let home = crate::platform::coordinator_home().filter(|_| id == "new-home");
+        if id == "new-home" && home.is_none() {
+            self.post(Kind::Refusal, "Home directory unavailable", Some("The coordinator did not report its home directory. Relaunch the app and try again.".into()));
+            return;
+        }
+        self.workspace_call(|link| {
+            link.workspace
+                .new_terminal(&link.connection, home.as_deref())
+        });
     }
 
     /// Commands named by pattern: a modal, a direction, or a tab number.
@@ -208,6 +253,7 @@ impl Desk {
     /// Every command and pointer action ends here: modal controls take the
     /// keyboard, or the terminal gets it back, and a changed layout is saved.
     pub(crate) fn after_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settle_tab_peek();
         self.take_notices();
         self.retain_panes();
         if self.modal != self.prepared {
@@ -226,6 +272,14 @@ impl Desk {
     /// Keys the window owns outside its key bindings. Escape closes the modal,
     /// else the find bar that holds the keys, and otherwise reaches the terminal.
     pub fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab_peek_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
+        if self.reviews_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         if self.modal == Modal::AgentFleet && self.fleet_key(event, window, cx) {
             cx.stop_propagation();
             return;

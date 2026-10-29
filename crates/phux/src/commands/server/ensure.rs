@@ -19,11 +19,8 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// falls back to `TIMEOUT`: a harness typo must not uncap the wait.
 pub const ENSURE_TIMEOUT_ENV: &str = "PHUX_ENSURE_TIMEOUT_SECS";
 
-fn timeout() -> Duration {
-    timeout_from(std::env::var(ENSURE_TIMEOUT_ENV).ok().as_deref())
-}
-
-/// The parsing half, testable without touching the process environment.
+/// Parses an `ENSURE_TIMEOUT_ENV` value, apart from the env read so tests
+/// need not touch the process environment.
 fn timeout_from(raw: Option<&str>) -> Duration {
     raw.and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|secs| *secs > 0)
@@ -145,7 +142,7 @@ async fn watch(socket_path: PathBuf) -> io::Result<super::EnsureDisposition> {
             HELPERS.set(None);
             let _ = sender.send(result);
         })?;
-    let deadline = timeout();
+    let deadline = timeout_from(std::env::var(ENSURE_TIMEOUT_ENV).ok().as_deref());
     tokio::select! {
         result = receiver => result.map_err(io::Error::other)?,
         () = tokio::time::sleep(deadline) => Err(io::Error::new(

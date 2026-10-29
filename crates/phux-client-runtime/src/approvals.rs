@@ -1,4 +1,4 @@
-//! Server-held approvals (ADR-0128, `docs/spec/L3.md` §3.10): the record a
+//! Server-held approvals (ADR-0128, `docs/agents.md#safety`): the record a
 //! server publishes for each held action, and the decision a client sends.
 //!
 //! The pending set is the server-owned `phux.approval/v1/<id>` records under

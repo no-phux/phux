@@ -54,6 +54,21 @@ pub(crate) fn row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::Stateful
         .hover(move |style| style.bg(hover))
 }
 
+/// The bar on the terminal this window shows, in the focused pane's edge
+/// colour, so the row reads as selected apart from its session's wash and
+/// from hover. Its row must be `relative`, as [`row`] is.
+pub(crate) fn current_mark(look: &Look) -> gpui::Div {
+    div()
+        .debug_selector(|| "current-mark".into())
+        .absolute()
+        .left_0()
+        .top(px(5.))
+        .bottom(px(5.))
+        .w(px(3.))
+        .rounded_full()
+        .bg(look.lit)
+}
+
 /// A tab or terminal nested under its session, with the same label column.
 pub(crate) fn child_row(id: impl Into<gpui::ElementId>, look: &Look) -> gpui::Stateful<gpui::Div> {
     row(id, look).min_h(px(CHILD_ROW)).pl(px(CHILD_INSET))
@@ -87,7 +102,7 @@ pub(crate) fn row_label(
         .flex_1()
         .min_w_0()
         .truncate()
-        .text_sm()
+        .text_size(px(13.))
         .font_weight(weight)
         .text_color(color)
         .child(text.into())
@@ -100,7 +115,7 @@ pub(crate) fn row_detail(text: impl Into<SharedString>, look: &Look) -> gpui::Di
         .max_w(px(96.))
         .truncate()
         .text_xs()
-        .text_color(from_hex(&look.chrome.faint))
+        .text_color(from_hex(&look.chrome.muted))
         .child(text.into())
 }
 

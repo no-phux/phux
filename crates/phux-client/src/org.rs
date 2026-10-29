@@ -1,5 +1,5 @@
-//! Organization commands over one CLI or MCP connection (`docs/spec/L1.md`
-//! §5.7), behind `features_ext.ORGANIZATION`.
+//! Organization commands over one CLI or MCP connection (`docs/organization.md`),
+//! behind `features_ext.ORGANIZATION`.
 //!
 //! Every helper here refuses before sending when the server does not
 //! advertise the bit ([`OrgError::Unsupported`]); callers that keep a legacy
@@ -18,17 +18,9 @@
 //! bulk move, undo, and Intake resolve; the CLI and MCP adapters own
 //! selector parsing and rendering.
 
-use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeatureExt;
-use phux_protocol::ids::{
-    AuthorityId, KEY_MIN_PREFIX, OperationId, ResourceKey, ResourceKind, Revision, SessionId,
-    SessionKey,
-};
-use phux_protocol::wire::frame::{
-    ArrangementDoc, ArrangementValue, Command, CommandValue, Committed, ErrorCode, ExecState,
-    ExitPolicy, LaunchMode, LaunchSpec, MAX_ORG_BATCH, MoveItem, OrgFilter, OrganizationPage,
-    Outcome, Refusal, ResourceRecord, SessionRecord, TerminateMode,
-};
+use phux_protocol::ids::OperationId;
+use phux_protocol::wire::frame::{Command, Committed, ErrorCode, Refusal};
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
@@ -36,6 +28,28 @@ use crate::state::Degradation;
 
 pub use phux_client_core::org_ops::{OrgOutcome, is_inactive, live_target, refusal_sentence};
 pub use phux_client_runtime::control::mint_operation;
+
+mod edit;
+mod inventory;
+mod verbs;
+
+pub use inventory::{KeyMatch, KeyNames, OrgInventory, arrangement, fetch, fetch_from_socket};
+pub use verbs::{
+    BatchResult, create_resource, delete_session, inbox_resolve, intake_resolve, move_many,
+    move_resource, relaunch, remove_resource, rename_resource, replace_arrangement_of_member,
+    replace_session_arrangement, restore, restore_session_on, session_project_supported,
+    set_session_project, terminate, undo,
+};
+
+/// Most attempts a compare-and-swap edit makes before reporting the
+/// conflict.
+pub const MAX_CAS_ATTEMPTS: u32 = 4;
+
+/// Records requested per `GET_ORGANIZATION` page.
+const PAGE_SIZE: u32 = 512;
+
+/// Most pages one [`fetch`] reads before giving up on a runaway cursor.
+const MAX_PAGES: usize = 4096;
 
 /// Why an organization request did not succeed.
 #[derive(Debug, thiserror::Error)]
@@ -90,6 +104,28 @@ impl OrgError {
         }
     }
 
+    /// Recovery facts preserved from this typed failure. Unknown identities stay absent.
+    #[must_use]
+    pub fn recovery(&self) -> crate::recovery::Recovery {
+        use crate::recovery::{EffectCertainty, NextAction, Recovery, ScopeKind};
+        let operation = match self {
+            Self::OutcomeUnknown { operation } => operation.map(OperationId::to_hex),
+            _ => None,
+        };
+        let certainty = match self {
+            Self::Unsupported | Self::Refused(_) | Self::NotFound(_) | Self::Ambiguous { .. } => {
+                EffectCertainty::NotApplied
+            }
+            _ => EffectCertainty::Unknown,
+        };
+        Recovery::new(
+            ScopeKind::OrganizationAuthority,
+            operation,
+            certainty,
+            NextAction::Reconcile,
+        )
+    }
+
     /// A stable lowercase code for `--json` output.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -136,44 +172,39 @@ fn require(conn: &Connection) -> Result<(), OrgError> {
 /// # Errors
 ///
 /// [`OrgError::Unsupported`] with nothing sent; [`OrgError::OutcomeUnknown`]
-/// when the connection drops before the reply; [`OrgError::Attach`] for any
-/// other transport failure.
+/// after any transport/decode failure following a possible mutating send.
+/// Read-only requests retain their ordinary transport errors.
 pub async fn request(
     conn: &mut Connection,
     request_id: u32,
     command: Command,
 ) -> Result<(OrgOutcome, Degradation), OrgError> {
     require(conn)?;
-    if additive_feature(&command)
-        .is_some_and(|feature| !conn.server_features_ext().contains(feature))
+    if matches!(
+        &command,
+        Command::ResourceCreate {
+            placement: Some(_),
+            ..
+        }
+    ) && !conn
+        .server_features_ext()
+        .contains(ServerFeatureExt::CreatePlacement)
     {
         return Err(OrgError::Unsupported);
     }
     let operation = command.idempotency_key().copied();
+    let receipt_operation = operation.filter(|_| command.is_organization());
     match conn.request(request_id, command).await {
         Ok(reply) => {
             let (result, interleaved) = reply.into_parts();
             Ok((
-                OrgOutcome::from_result(&result),
+                checked_outcome(&result, receipt_operation)?,
                 Degradation::from_interleaved(&interleaved),
             ))
         }
         Err(_) if operation.is_some() => Err(OrgError::OutcomeUnknown { operation }),
         Err(AttachError::Disconnected) => Err(OrgError::OutcomeUnknown { operation }),
         Err(err) => Err(OrgError::Attach(err)),
-    }
-}
-
-const fn additive_feature(command: &Command) -> Option<ServerFeatureExt> {
-    match command {
-        Command::ResourceCreate {
-            placement: Some(_), ..
-        } => Some(ServerFeatureExt::CreatePlacement),
-        Command::GetOrganization {
-            filter: OrgFilter::Resource(_),
-            ..
-        } => Some(ServerFeatureExt::DurableResourceInspection),
-        _ => None,
     }
 }
 
@@ -190,8 +221,15 @@ pub async fn commit(
 ) -> Result<Committed, OrgError> {
     let operation = command.idempotency_key().copied();
     match request(conn, request_id, command).await?.0 {
-        OrgOutcome::Committed(committed) => Ok(*committed),
-        OrgOutcome::Unknown { .. } => Err(OrgError::OutcomeUnknown { operation }),
+        OrgOutcome::Committed(committed) => {
+            if operation.is_some_and(|operation| operation != committed.operation) {
+                return Err(OrgError::OutcomeUnknown { operation });
+            }
+            Ok(*committed)
+        }
+        OrgOutcome::Unknown { .. } | OrgOutcome::Accepted => {
+            Err(OrgError::OutcomeUnknown { operation })
+        }
         other => Err(outcome_error(other)),
     }
 }
@@ -213,6 +251,26 @@ pub async fn accept(
     }
 }
 
+/// Keep ambiguous or foreign acknowledgements uncertain for every mutation caller,
+/// including session creation paths that inspect the raw organization outcome.
+fn checked_outcome(
+    result: &phux_protocol::wire::frame::CommandResult,
+    operation: Option<OperationId>,
+) -> Result<OrgOutcome, OrgError> {
+    let outcome = OrgOutcome::from_result(result);
+    match &outcome {
+        OrgOutcome::Committed(receipt)
+            if operation.is_some_and(|expected| expected != receipt.operation) =>
+        {
+            Err(OrgError::OutcomeUnknown { operation })
+        }
+        OrgOutcome::Unknown { .. } | OrgOutcome::Value(_) if operation.is_some() => {
+            Err(OrgError::OutcomeUnknown { operation })
+        }
+        _ => Ok(outcome),
+    }
+}
+
 fn outcome_error(outcome: OrgOutcome) -> OrgError {
     match outcome {
         OrgOutcome::Refused(refusal) => OrgError::Refused(refusal),
@@ -228,7 +286,10 @@ fn outcome_error(outcome: OrgOutcome) -> OrgError {
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests;
 
-mod inventory;
-pub use inventory::*;
-mod edits;
-pub use edits::*;
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "recovery regression assertions"
+)]
+mod recovery_tests;

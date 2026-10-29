@@ -1,4 +1,4 @@
-//! The server-wide event journal (ADR-0123, `docs/spec/L1.md` §7.3).
+//! The server-wide event journal (ADR-0123, `docs/protocol.md#receipts-retries-and-backpressure`).
 //!
 //! Every event is stamped here once with a server-wide `seq` and kept in a
 //! ring bounded by count and estimated size, oldest evicted first. A restart

@@ -49,6 +49,7 @@ pub(super) fn column(desk: &Desk, width: f32, look: &Look, cx: &mut Context<Desk
             .into_any_element(),
     };
     div()
+        .debug_selector(|| "changes-diff-column".into())
         .flex_1()
         .min_w_0()
         .h_full()
@@ -84,15 +85,22 @@ fn toolbar(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement
         None
     };
     let tab = |id: &'static str, label: &str, target: Source| {
-        Button::new(id)
-            .label(format!("{label} {}", count(target)))
-            .ghost()
-            .xsmall()
-            .selected(source == target)
-            .on_click(cx.listener(move |desk, _, _, cx| desk.set_change_source(target, cx)))
+        toolbar_action(
+            id,
+            Button::new(id)
+                .label(format!("{label} {}", count(target)))
+                .ghost()
+                .xsmall()
+                .selected(source == target)
+                .on_click(cx.listener(move |desk, _, _, cx| desk.set_change_source(target, cx))),
+        )
     };
     div()
+        .debug_selector(|| "changes-diff-toolbar".into())
+        .w_full()
+        .min_w_0()
         .flex()
+        .flex_wrap()
         .flex_shrink_0()
         .items_center()
         .gap(px(4.))
@@ -105,18 +113,19 @@ fn toolbar(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement
         .when(total > 0, |bar| {
             bar.child(muted(look, format!("{viewed}/{total} viewed")).ml(px(6.)))
         })
-        .children(note.map(|note| muted(look, note).ml(px(6.)).truncate()))
-        .child(div().flex_1())
+        .children(note.map(|note| muted(look, note).w_full().min_w_0().truncate()))
         .when(selection.is_some(), |bar| {
-            bar.child(
+            bar.child(toolbar_action(
+                "changes-stage-lines",
                 ghost_button("changes-stage-lines", stage_label)
                     .xsmall()
                     .tooltip(stage_tip)
                     .disabled(desk.changes.busy)
                     .on_click(cx.listener(|desk, _, _, cx| desk.stage_selected_lines(cx))),
-            )
+            ))
         })
-        .child(
+        .child(toolbar_action(
+            "changes-previous",
             ghost_icon("changes-previous", IconName::ArrowUp, "Previous Change").on_click(
                 cx.listener(|desk, _, _, cx| {
                     if let Some((state, _)) = &desk.changes.diff {
@@ -124,8 +133,9 @@ fn toolbar(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement
                     }
                 }),
             ),
-        )
-        .child(
+        ))
+        .child(toolbar_action(
+            "changes-next",
             ghost_icon("changes-next", IconName::ArrowDown, "Next Change").on_click(cx.listener(
                 |desk, _, _, cx| {
                     if let Some((state, _)) = &desk.changes.diff {
@@ -133,14 +143,15 @@ fn toolbar(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement
                     }
                 },
             )),
-        )
+        ))
         .when(comments > 0, |bar| {
             let label = if comments == 1 {
                 "Send 1 Note".to_owned()
             } else {
                 format!("Send {comments} Notes")
             };
-            bar.child(
+            bar.child(toolbar_action(
+                "changes-send-review",
                 Button::new("changes-send-review")
                     .icon(IconName::Send)
                     .label(label)
@@ -148,8 +159,16 @@ fn toolbar(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement
                     .xsmall()
                     .tooltip("Paste the review into the agent's terminal")
                     .on_click(cx.listener(|desk, _, _, cx| desk.send_review(cx))),
-            )
+            ))
         })
+}
+
+/// Keep whole actions together when the toolbar wraps into a narrow diff column.
+fn toolbar_action(selector: &'static str, button: Button) -> impl IntoElement {
+    div()
+        .debug_selector(move || selector.into())
+        .flex_shrink_0()
+        .child(button)
 }
 
 /// Colors an annotation paints with; the renderer runs without the desk.

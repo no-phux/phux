@@ -306,52 +306,6 @@
       "decision"
     ]
   },
-  "phux_operation_status": {
-    "type": "object",
-    "required": [
-      "schema_version",
-      "operation_id",
-      "state"
-    ],
-    "properties": {
-      "schema_version": {
-        "type": "integer",
-        "const": 1
-      },
-      "operation_id": {
-        "type": "string"
-      },
-      "state": {
-        "type": "string",
-        "enum": [
-          "pending",
-          "completed",
-          "failed"
-        ]
-      },
-      "result": {},
-      "error": {
-        "type": "object"
-      },
-      "approval_check": {
-        "type": "object"
-      },
-      "request": {
-        "type": "object",
-        "properties": {
-          "tool": { "type": "string" },
-          "arguments": { "type": "object" }
-        }
-      },
-      "status_tool": {
-        "type": "string"
-      },
-      "resource_id": {
-        "type": "string",
-        "description": "Exact reusable resource ID, when this result identifies one resource."
-      }
-    }
-  },
   "phux_perf": {
     "type": "object",
     "properties": {

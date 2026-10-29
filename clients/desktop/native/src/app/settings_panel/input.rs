@@ -4,6 +4,7 @@ use super::catalog::{Content as SettingPage, Group as SettingGroup, Item as Sett
 use gpui::prelude::*;
 use gpui::{WeakEntity, div, px};
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::Input;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::setting::SettingField;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable};
@@ -11,9 +12,14 @@ use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable};
 use crate::settings;
 
 use super::super::desk::Desk;
-use super::{click_runs, notes, sourced, toggle};
+use super::super::ui::segmented::{Segment, segmented};
+use super::{click_runs, click_sets, look_of, notes, prefs_of, resets, sourced, toggle};
 
-pub(super) fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPage {
+pub(super) fn keyboard_page(
+    desk: &Desk,
+    handle: &WeakEntity<Desk>,
+    controls: Option<&super::SettingsControls>,
+) -> SettingPage {
     let input = SettingGroup::new()
         .title("Input")
         .item(toggle(
@@ -93,11 +99,93 @@ pub(super) fn keyboard_page(desk: &Desk, handle: &WeakEntity<Desk>) -> SettingPa
         }));
     let page = SettingPage::new("Keyboard")
         .icon(IconName::ALargeSmall)
-        .group(input);
+        .group(input)
+        .group(leader_group(handle, controls));
     match conflicts_group(desk) {
         Some(conflicts) => page.group(conflicts).group(shortcuts),
         None => page.group(shortcuts),
     }
+}
+
+fn leader_group(
+    handle: &WeakEntity<Desk>,
+    controls: Option<&super::SettingsControls>,
+) -> SettingGroup {
+    let reader = handle.clone();
+    let selection = SettingField::render(move |_, _, cx| {
+        let prefs = prefs_of(&reader, cx);
+        let current = match prefs.leader_key.as_deref() {
+            None => "off",
+            Some("ctrl+a") => "ctrl+a",
+            Some("ctrl+b") => "ctrl+b",
+            Some("ctrl+space") => "ctrl+space",
+            Some(_) => "custom",
+        };
+        segmented(
+            &look_of(&reader, cx),
+            current,
+            [
+                ("off", "Off"),
+                ("ctrl+a", "Ctrl+A"),
+                ("ctrl+b", "Ctrl+B"),
+                ("ctrl+space", "Ctrl+Space"),
+            ]
+            .map(|(value, label)| Segment {
+                value,
+                label,
+                icon: None,
+                selector: format!("leader-key-{value}"),
+            }),
+            |value| {
+                click_sets(&reader, move |prefs| {
+                    prefs.leader_key = settings::leader::normalize_leader(value);
+                })
+            },
+        )
+    });
+    let mut group = SettingGroup::new()
+        .title("Desktop leader")
+        .description("An optional prefix for desktop commands. Existing Command and Ghostty shortcuts stay available. Press the leader twice to send it literally to the terminal; Escape cancels.")
+        .item(
+            SettingItem::new(
+                "Leader key",
+                resets(selection, handle, |prefs| &mut prefs.leader_key),
+            )
+            .wide()
+            .description("Off by default. Choose a preset, or enter a custom modifier chord below.")
+            .keywords(["leader", "prefix", "tmux"]),
+        );
+    if let Some(controls) = controls {
+        let input = controls.leader.clone();
+        let reader = handle.clone();
+        group = group.item(
+            SettingItem::new("Custom leader", SettingField::render(move |_, _, cx| {
+                let text = input.read(cx).value();
+                let normalized = settings::leader::normalize_leader(text.as_ref());
+                let saved = prefs_of(&reader, cx).leader_key;
+                let status = if text.is_empty() {
+                    "Enter a chord such as ctrl+alt+a."
+                } else if normalized.is_none() {
+                    "Invalid chord: use Control, Alt or Command plus one key."
+                } else if normalized == saved {
+                    "Saved."
+                } else {
+                    "Press Enter to save this chord."
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .w(px(260.))
+                    .child(div().debug_selector(|| "leader-custom-input".into()).child(Input::new(&input).small()))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(status))
+            }))
+            .wide()
+            .description("One modifier chord only; bare typing, Escape and multi-key sequences are refused. Invalid input leaves the saved leader unchanged.")
+            .keywords(["leader", "custom", "control", "alt", "command"]),
+        );
+    }
+    group
 }
 
 /// Chords the Ghostty config binds to different actions, each with every

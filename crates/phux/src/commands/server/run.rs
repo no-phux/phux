@@ -184,6 +184,9 @@ pub(super) fn build_server_config(
         // The durable organization store under the instance's state
         // directory (ADR-0162).
         org_store: phux_server::OrgStoreLocation::for_socket(socket_path),
+        // This user's work store, the one `phux mail` uses, for the mail
+        // and claims of satellites that joined this hub.
+        work_store: crate::commands::mission::client(false).ok().map(Box::new),
     }
 }
 

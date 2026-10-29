@@ -9,11 +9,23 @@ fn allocation_settings_are_discoverable_without_a_development_launch(cx: &mut Te
     keys(cx, "cmd-p");
     type_text(cx, "allocation");
     assert!(
-        cx.debug_bounds("palette-setting:Performance:Desktop profiling:Count Rust allocations")
+        cx.debug_bounds("palette-setting:Developer:Profiling:Count Rust allocations")
             .is_some()
     );
-    assert_eq!(desk.read_with(cx, |desk, _| desk.settings_page), None);
     assert_eq!(modal(&desk, cx), Modal::Goto);
+}
+
+#[gpui::test]
+fn developer_mode_is_one_search_away(cx: &mut TestAppContext) {
+    let (handle, _) = fixture(cx);
+    let cx = &mut VisualTestContext::from_window(handle, cx);
+    keys(cx, "cmd-p");
+    type_text(cx, "developer mode");
+    // Only discovered here: switching it would save to the real config.
+    assert!(
+        cx.debug_bounds("palette-setting:Developer::Developer mode")
+            .is_some()
+    );
 }
 
 #[gpui::test]
@@ -26,22 +38,22 @@ fn empty_actions_show_only_essentials_and_last_row_fits(cx: &mut TestAppContext)
         .debug_bounds("palette-result-find")
         .expect("last essential action");
     let panel = cx.debug_bounds("palette-panel").unwrap();
-    // The row's 6pt kit padding, the list's 4pt inset, the card's 1pt border.
-    assert_eq!(
-        panel.bottom() - last.bottom(),
-        gpui::px(11.),
+    // Kit's row padding and list inset follow rem; allow pixel snapping across
+    // five rows, not a fixed 16pt document-font assumption.
+    let inset = cx.update(|window, _| window.rem_size() * 0.625 + gpui::px(1.));
+    assert!(
+        ((panel.bottom() - last.bottom()) - inset).abs() <= gpui::px(2.),
         "the panel ends the list's inset below its last row"
     );
 }
 
 #[gpui::test]
-fn work_search_discovers_a_preference_and_settings_keep_one_native_hub(cx: &mut TestAppContext) {
+fn work_search_discovers_a_preference_without_opening_settings(cx: &mut TestAppContext) {
     let (handle, desk) = fixture(cx);
     let cx = &mut VisualTestContext::from_window(handle, cx);
     keys(cx, "cmd-p");
     type_text(cx, "line height");
     keys(cx, "enter");
-    assert_eq!(desk.read_with(cx, |desk, _| desk.settings_page), None);
     assert!(cx.debug_bounds("palette-setting-editor").is_some());
     assert_eq!(
         desk.read_with(cx, |desk, _| desk
@@ -55,15 +67,7 @@ fn work_search_discovers_a_preference_and_settings_keep_one_native_hub(cx: &mut 
     assert_eq!(modal(&desk, cx), Modal::Commands);
     keys(cx, "escape");
     assert_desk_focus(&desk, cx);
-    keys(cx, "cmd-,");
-    type_text(cx, "Hosts & connections");
-    keys(cx, "enter");
-    assert_eq!(
-        desk.read_with(cx, |desk, _| desk.settings_page),
-        Some(crate::app::settings_panel::Page::Connections)
-    );
-    keys(cx, "escape");
-    assert_desk_focus(&desk, cx);
+    assert!(desk.read_with(cx, |desk, cx| desk.desktop.read(cx).settings.is_none()));
 }
 
 #[gpui::test]
@@ -77,9 +81,8 @@ fn palette_query_ranks_a_title_before_incidental_metadata_and_dispatches_it(
     assert_eq!(query(&desk, cx), "settings");
     assert_eq!(selected_command(&desk, cx), Some("settings"));
     keys(cx, "enter");
-    assert_eq!(modal(&desk, cx), Modal::Settings);
-    keys(cx, "escape");
-    assert_desk_focus(&desk, cx);
+    assert_eq!(modal(&desk, cx), Modal::None);
+    assert!(desk.read_with(cx, |desk, cx| desk.desktop.read(cx).settings.is_some()));
 }
 
 #[gpui::test]
@@ -94,7 +97,8 @@ fn palette_mode_controls_row_click_and_backdrop_keep_native_focus(cx: &mut TestA
     click(cx, "palette-mode-commands");
     assert_eq!(modal(&desk, cx), Modal::Commands);
     click(cx, "palette-result-settings");
-    assert_eq!(modal(&desk, cx), Modal::Settings);
+    assert_eq!(modal(&desk, cx), Modal::None);
+    assert!(desk.read_with(cx, |desk, cx| desk.desktop.read(cx).settings.is_some()));
     keys(cx, "escape cmd-shift-p");
     cx.simulate_click(
         gpui::point(gpui::px(8.), gpui::px(8.)),

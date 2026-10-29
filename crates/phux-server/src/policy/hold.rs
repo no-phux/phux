@@ -1,4 +1,4 @@
-//! The guard's third outcome, Hold (ADR-0128, `workload-auth.md` §6.1): for
+//! The guard's third outcome, Hold (ADR-0128, `docs/agents.md#safety`): for
 //! a request [`super::enforce`] admitted, whether a `SIGNAL` it needs is
 //! reachable only through a holding clause. A held command waits for a
 //! decision; a held `SIGNAL` on any other frame is refused.

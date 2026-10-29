@@ -1,4 +1,4 @@
-//! Negotiated frame compression (`docs/spec/proto.md` §6.4): an attach that
+//! Negotiated frame compression (`docs/protocol.md#framing`): an attach that
 //! offers DEFLATE decodes the same bootstrap as one that offers nothing, for
 //! a fraction of the wire bytes.
 
@@ -137,7 +137,7 @@ fn compression_shrinks_the_bootstrap_without_changing_it() {
         assert_eq!(
             deflated.prefix, plain.prefix,
             "the engine's opaque bytes must survive the transform exactly \
-             (docs/spec/proto.md §6.2)",
+             (docs/protocol.md#handshake)",
         );
         assert!(
             !plain.prefix.is_empty(),

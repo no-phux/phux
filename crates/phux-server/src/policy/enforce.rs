@@ -1,5 +1,5 @@
 //! The dispatch guard: [`enforce`] behind three entry points
-//! (`docs/spec/workload-auth.md` §6, §7).
+//! (`docs/remote.md#who-can-do-what`).
 //!
 //! The classification is [`phux_protocol::kinds`]; this module resolves each
 //! row's subject against state (side-effect-free) and checks the grant's

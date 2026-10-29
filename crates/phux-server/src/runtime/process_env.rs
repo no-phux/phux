@@ -121,7 +121,7 @@ impl ServerEnv {
     /// Whether any workload authority location is configured
     /// (`PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, `PHUX_WORKLOAD_KEYS`).
     /// With no `[policy] mode` the server refuses to start beside one
-    /// (`docs/spec/workload-auth.md` §8). An empty value names nothing.
+    /// (`docs/remote.md#who-can-connect`). An empty value names nothing.
     #[must_use]
     pub fn workload_authority_configured(&self) -> bool {
         [

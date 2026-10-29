@@ -1,4 +1,4 @@
-//! Satellites that dial in (ADR-0182, `workload-auth.md` §8.3).
+//! Satellites that dial in (ADR-0182, `docs/remote.md#linking-machines`).
 //!
 //! A satellite with no reachable listener dials the hub's QUIC listener under
 //! [`SATELLITE_ALPN`] and presents its satellite credential. The listener
@@ -24,6 +24,8 @@ use std::time::Duration;
 
 use phux_protocol::ids::SatelliteHost;
 use tokio::sync::Notify;
+
+pub(crate) mod coord;
 use tracing::{debug, info, warn};
 
 /// How often a live adopted connection re-checks its credential.
@@ -59,11 +61,29 @@ struct Slot {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SatelliteAdopter {
     slots: Arc<Mutex<BTreeMap<SatelliteHost, Slot>>>,
+    /// The store satellites' mail and claims go to ([`coord`]).
+    work_store: Arc<Mutex<Option<phux_work::Client>>>,
 }
 
 impl SatelliteAdopter {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<SatelliteHost, Slot>> {
         self.slots.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Answer satellites' mail and claims from `store`, or refuse them.
+    pub(crate) fn set_work_store(&self, store: Option<phux_work::Client>) {
+        *self
+            .work_store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = store;
+    }
+
+    /// The store satellites' mail and claims go to, if any.
+    pub(crate) fn work_store(&self) -> Option<phux_work::Client> {
+        self.work_store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Accept connections for `host` from now on (its supervisor started).
@@ -199,7 +219,7 @@ pub(crate) fn admit(
 
 /// Close `connection` once its credential stops being an active satellite
 /// credential of `name` (revoked, expired, or the registry broke).
-async fn watch_revocation(
+pub(crate) async fn watch_revocation(
     connection: quinn::Connection,
     registry: Arc<crate::workload::ReloadingWorkloadRegistry>,
     credential: String,
@@ -218,7 +238,7 @@ async fn watch_revocation(
     }
 }
 
-fn peer_leaf(connection: &quinn::Connection) -> Option<Vec<u8>> {
+pub(crate) fn peer_leaf(connection: &quinn::Connection) -> Option<Vec<u8>> {
     let identity = connection.peer_identity()?;
     let certs = identity.downcast_ref::<Vec<rustls::pki_types::CertificateDer<'static>>>()?;
     certs.first().map(|leaf| leaf.as_ref().to_vec())

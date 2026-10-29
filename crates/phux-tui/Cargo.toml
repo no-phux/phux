@@ -51,8 +51,8 @@ phux-plugin.workspace = true
 # crate registers an async-signal-safe handler that writes the DECSET resets
 # with a raw `write(2)` and restores termios before re-raising. It is the only
 # Apache-2.0-ONLY dependency in the workspace (vendored -- see its NOTICE); the
-# `unsafe` it needs lives behind that crate boundary so this crate keeps
-# `#![forbid(unsafe_code)]`.
+# `unsafe` it needs lives behind that crate boundary, separate from this
+# crate's audited Tokio descriptor registrations.
 phux-crash.workspace = true
 # ADR-0060: the asciicast event/codec vocabulary the `--rec` tee speaks.
 # `default-features = false` drops phux-record's `render` feature, so the TUI
@@ -76,9 +76,9 @@ ratatui.workspace = true
 # `WidgetSpec::opts` with the same vocabulary.
 toml.workspace = true
 # Raw-mode + alt-screen toggling on the outer terminal needs safe `termios(3)`
-# access. `rustix` is a pure-Rust wrapper that keeps this crate's
-# `#![forbid(unsafe_code)]` intact -- preferred over a direct `libc` dep
-# (which would require relaxing the unsafe lint) and over `crossterm` (which
+# access. `rustix` is a pure-Rust wrapper that needs no unsafe here --
+# preferred over a direct `libc` dep (which would expand this crate's
+# audited unsafe surface) and over `crossterm` (which
 # pulls its own event loop we don't use). `fs` supplies the profile-scoped
 # onboarding `flock`; rustix's default crate-feature set is opt-in beyond that.
 # `event` adds only `poll(2)` (no new crate): the OSC 10/11 palette probe waits

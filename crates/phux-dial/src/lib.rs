@@ -53,7 +53,7 @@ pub enum DialError {
     Unreachable(String),
 
     /// The server did not present the certificate authority this client
-    /// pinned (`workload-auth.md` §2 `authority_changed`, ADR-0153). Never
+    /// pinned (`docs/remote.md#who-can-connect` `authority_changed`, ADR-0153). Never
     /// retried: the remedy is re-pairing, after checking the change was the
     /// operator's rotation.
     #[error("{0}")]

@@ -1,5 +1,4 @@
-//! Stat-generation hot reload of the workload registry (`workload-auth.md`
-//! §7).
+//! Stat-generation hot reload of the workload registry (`docs/remote.md#managing-credentials`).
 //!
 //! Each lookup stats the file and re-reads only on change, never holding
 //! the lock across I/O; a probe sequence number makes the newest probe win.
@@ -65,7 +64,7 @@ impl Cached {
 }
 
 /// What the registry file holds right now, as the live revocation watcher
-/// needs to tell it (`workload-auth.md` §7).
+/// needs to tell it (`docs/remote.md#managing-credentials`).
 #[derive(Debug, Clone)]
 pub enum RegistryObservation {
     /// A valid registry: its verdicts apply at once.

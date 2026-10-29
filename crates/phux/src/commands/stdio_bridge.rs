@@ -5,7 +5,7 @@
 //! Byte-transparent except for the opening HELLO, which it stamps with the
 //! `SSH_CONNECTION` endpoints as `ssh_origin` (always replacing the client's
 //! own), so the server reports the connection as `ssh-stdio`
-//! (`docs/spec/L3.md` §3.9). The stamp is a label, not a verified fact, and
+//! (`docs/remote.md#who-can-do-what`). The stamp is a label, not a verified fact, and
 //! grants nothing. Trust comes from the UDS's owner-only permissions; ssh
 //! supplies authentication, so no bearer preamble is consumed. stdout carries
 //! protocol bytes only.
@@ -14,6 +14,7 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use phux_protocol::wire::LENGTH_PREFIX_LEN;
 use phux_protocol::wire::frame::TYPE_PING;
@@ -21,6 +22,10 @@ use phux_protocol::wire::framing::decode_length;
 use phux_protocol::wire::ssh_origin::{SshOrigin, restamp_hello};
 use phux_server::runtime::default_socket_path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+// Idle reads are unlimited. A wedged peer must not keep the bridge alive
+// forever after its SSH/WSL launcher closes while a write is backpressured.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run the bridge until either side closes: exit 0 on a clean close, 1 when
 /// the socket cannot be connected or the splice fails.
@@ -104,16 +109,21 @@ async fn bridge(stream: tokio::net::UnixStream, origin: Option<SshOrigin>) -> Ex
     let mut stdout = tokio::io::stdout();
     let inbound = async {
         forward_hello(&mut stdin, &mut to_server, origin).await?;
-        tokio::io::copy(&mut stdin, &mut to_server).await
+        copy_with_write_deadline(&mut stdin, &mut to_server, WRITE_TIMEOUT).await
     };
     let result = tokio::select! {
         inbound = inbound => inbound,
-        outbound = tokio::io::copy(&mut from_server, &mut stdout) => outbound,
+        outbound = copy_with_write_deadline(&mut from_server, &mut stdout, WRITE_TIMEOUT) => outbound,
     };
     // Flush what the winning (or losing) copy already buffered toward
     // the remote peer before exiting; stdout may be a pipe with bytes
     // in flight.
-    let _ = stdout.flush().await;
+    let result = match result {
+        Ok(copied) => flush_with_deadline(&mut stdout, WRITE_TIMEOUT)
+            .await
+            .map(|()| copied),
+        Err(error) => Err(error),
+    };
     match result {
         Ok(_) => ExitCode::SUCCESS,
         // A closed stdout is the normal end (the ssh client hung up), so it exits
@@ -123,6 +133,47 @@ async fn bridge(stream: tokio::net::UnixStream, origin: Option<SshOrigin>) -> Ex
             error!("stdio-bridge: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+async fn write_with_deadline<W: AsyncWrite + Unpin>(
+    output: &mut W,
+    bytes: &[u8],
+    timeout: Duration,
+) -> io::Result<()> {
+    tokio::time::timeout(timeout, output.write_all(bytes))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "stdio bridge write stalled"))?
+}
+
+async fn flush_with_deadline<W: AsyncWrite + Unpin>(
+    output: &mut W,
+    timeout: Duration,
+) -> io::Result<()> {
+    tokio::time::timeout(timeout, output.flush())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "stdio bridge flush stalled"))?
+}
+
+/// Do not time out a quiet shell; only a write with no completion is bounded.
+async fn copy_with_write_deadline<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    input: &mut R,
+    output: &mut W,
+    timeout: Duration,
+) -> io::Result<u64> {
+    let mut buffer = vec![0; 32 * 1024].into_boxed_slice();
+    let mut copied = 0;
+    loop {
+        let count = input.read(&mut buffer).await?;
+        if count == 0 {
+            flush_with_deadline(output, timeout).await?;
+            return Ok(copied);
+        }
+        write_with_deadline(output, &buffer[..count], timeout).await?;
+        // Tokio stdout accepts writes into a blocking-worker buffer. Bound
+        // completion before returning to an unlimited idle read.
+        flush_with_deadline(output, timeout).await?;
+        copied += count as u64;
     }
 }
 
@@ -142,15 +193,18 @@ where
     loop {
         let frame = match read_opening_frame(input).await? {
             Opening::Closed => return Ok(()),
-            Opening::Unframed(bytes) => return output.write_all(&bytes).await,
+            Opening::Unframed(bytes) => {
+                return write_with_deadline(output, &bytes, WRITE_TIMEOUT).await;
+            }
             Opening::Frame(frame) => frame,
         };
         if frame.get(LENGTH_PREFIX_LEN) == Some(&TYPE_PING) {
-            output.write_all(&frame).await?;
+            write_with_deadline(output, &frame, WRITE_TIMEOUT).await?;
             continue;
         }
         let stamped = restamp_hello(&frame, origin);
-        return output.write_all(stamped.as_deref().unwrap_or(&frame)).await;
+        return write_with_deadline(output, stamped.as_deref().unwrap_or(&frame), WRITE_TIMEOUT)
+            .await;
     }
 }
 
@@ -197,6 +251,10 @@ where
 }
 
 #[cfg(test)]
+#[path = "stdio_bridge_flush_tests.rs"]
+mod flush_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, reason = "tests")]
     #![allow(clippy::panic, reason = "tests")]
@@ -208,6 +266,48 @@ mod tests {
     use phux_protocol::wire::ssh_origin::SshOrigin;
 
     use super::{forward_hello, ssh_origin_from_env};
+
+    #[tokio::test]
+    async fn a_backpressured_bridge_write_has_a_deadline() {
+        let mut input: &[u8] = &[7; 4096];
+        let (mut writer, _unread_peer) = tokio::io::duplex(1);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::copy_with_write_deadline(
+                &mut input,
+                &mut writer,
+                std::time::Duration::from_millis(10),
+            ),
+        )
+        .await
+        .expect("teardown bound")
+        .expect_err("write cannot finish");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn the_write_deadline_does_not_disconnect_an_idle_bridge() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let (mut input, mut source) = tokio::io::duplex(32);
+        let (mut output, mut destination) = tokio::io::duplex(32);
+        let copy = tokio::spawn(async move {
+            super::copy_with_write_deadline(
+                &mut input,
+                &mut output,
+                std::time::Duration::from_millis(10),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(!copy.is_finished(), "an idle read must not expire");
+        source.write_all(b"hello").await.unwrap();
+        source.shutdown().await.unwrap();
+        assert_eq!(copy.await.unwrap().unwrap(), 5);
+        let mut bytes = Vec::new();
+        destination.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, b"hello");
+    }
 
     fn origin(client: &str, server: Option<&str>) -> SshOrigin {
         SshOrigin {

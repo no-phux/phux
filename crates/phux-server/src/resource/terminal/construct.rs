@@ -131,6 +131,14 @@ impl TerminalActor {
     ) -> Result<TerminalActorBundle, TerminalActorError> {
         let mut terminal = {
             let mut terminal = GhosttyTerminal::new(cols, rows)?;
+            // The canonical image geometry must match the fallback winsize
+            // before a client donates real cell metrics.
+            terminal.resize(
+                cols,
+                rows,
+                u32::from(DEFAULT_CELL_PX.0),
+                u32::from(DEFAULT_CELL_PX.1),
+            )?;
             terminal.set_scrollback_max_lines(Some(scrollback.lines as usize))?;
             terminal
         };

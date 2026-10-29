@@ -1,10 +1,11 @@
 //! Process-wide windows, native menus, and the quick-terminal hotkey.
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod journey_tests;
 mod keys;
 mod projects;
 mod quick;
+mod resume;
 #[cfg(test)]
 mod tests;
 mod windows;
@@ -67,7 +68,11 @@ const MENU_BAR: &[(&str, &[&str])] = &[
             "sidebar",
             "plain-terminal",
             "native-agents",
+            "backdrop-shader-next",
             "quick-terminal",
+            MENU_SEPARATOR,
+            "changes",
+            "reviews",
             MENU_SEPARATOR,
             "font-up",
             "font-down",
@@ -100,8 +105,11 @@ struct Opened {
 }
 
 pub struct Desktop {
+    pub(crate) branding: Entity<super::branding::Branding>,
     pub(crate) updates: Entity<super::updates::Updater>,
     phux: PathBuf,
+    /// CLI discovery found or installed, when launch recorded one.
+    pub(crate) cli_install: Option<super::CliInstall>,
     socket: PathBuf,
     home_session: String,
     home_key: Option<SessionKey>,
@@ -117,6 +125,10 @@ pub struct Desktop {
     windows: Vec<Opened>,
     quick: Option<Opened>,
     performance: Option<AnyWindowHandle>,
+    pub(crate) settings: Option<(
+        AnyWindowHandle,
+        Entity<super::settings_panel::window::SettingsWindow>,
+    )>,
     /// The keymap last installed as GPUI bindings, so an unchanged keymap is not rebound.
     keymap: Option<Vec<(String, String)>>,
     /// GPUI strokes bound to [`Run`]; a stroke a later keymap drops is masked with `NoAction`.
@@ -149,9 +161,18 @@ impl Desktop {
             updater.watch_quit(cx);
             updater
         });
+        let branding = cx.new(|cx| {
+            let mut state = super::branding::Branding::load();
+            if !cfg!(test) {
+                state.restore(cx);
+            }
+            state
+        });
         let desktop = cx.new(|_| Self {
+            branding,
             updates,
             phux: PathBuf::new(),
+            cli_install: None,
             socket: PathBuf::new(),
             home_session: String::new(),
             home_key: None,
@@ -166,6 +187,7 @@ impl Desktop {
             windows: Vec::new(),
             quick: None,
             performance: None,
+            settings: None,
             keymap: None,
             bound: Vec::new(),
             hotkey_chords: Vec::new(),
@@ -173,6 +195,10 @@ impl Desktop {
             _hotkey: None,
             _closed: None,
             fonts: false,
+        });
+        let updates = desktop.read(cx).updates.clone();
+        updates.update(cx, |updater, _| {
+            updater.desktop = Some(desktop.downgrade());
         });
         let weak = desktop.downgrade();
         // Deferred: a window can be removed from inside a `Desktop` update (quick toggle).
@@ -207,7 +233,17 @@ impl Desktop {
         options: AppOptions,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<WindowHandle<Root>> {
+        self.launch_with_restore(options, false, cx)
+    }
+
+    pub(in crate::app) fn launch_with_restore(
+        &mut self,
+        options: AppOptions,
+        restore: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<WindowHandle<Root>> {
         self.phux = options.phux;
+        self.cli_install = options.cli_install;
         self.socket = options.socket;
         self.home_session = options.session.clone();
         self.home_key = None;
@@ -227,7 +263,13 @@ impl Desktop {
             self.fonts = true;
         }
         let focus = crate::diag::may_activate();
-        let handle = if options.quick {
+        let resumed = restore
+            .then(|| self.restore_update(focus, cx))
+            .transpose()?
+            .flatten();
+        let handle = if let Some(handle) = resumed {
+            handle
+        } else if options.quick {
             let mut request = self.quick_request(cx);
             request.initial_terminal = options.initial_terminal;
             request.startup_error = options.startup_error;
@@ -271,9 +313,22 @@ impl Desktop {
 
     /// Reopen the window `old` on `session`, for a launch that could not name
     /// a session: the home session and the layout files follow it.
-    pub fn rehome(&mut self, old: EntityId, session: String, cx: &mut Context<Self>) {
+    pub fn rehome(
+        &mut self,
+        old: EntityId,
+        session: String,
+        key: Option<SessionKey>,
+        phux: PathBuf,
+        socket: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.phux = phux;
+        self.socket = socket;
+        self.updates.update(cx, |updater, _| {
+            updater.retarget(self.phux.clone(), self.socket.clone());
+        });
         self.home_session = session.clone();
-        self.home_key = None;
+        self.home_key = key;
         if !self.explicit_layout {
             self.follow_layout(&session);
         }
@@ -286,6 +341,7 @@ impl Desktop {
         } else {
             OpenRequest {
                 session,
+                home_key: key,
                 layout_path: self.layout.clone(),
                 legacy_layout: self.legacy_layout.clone(),
                 stable_layout: !self.explicit_layout,

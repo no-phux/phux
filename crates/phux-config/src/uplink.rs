@@ -40,6 +40,51 @@ pub struct UplinkConfigEntry {
     /// Whether the server keeps this uplink up.
     #[serde(default = "default_true")]
     pub enabled: bool,
+
+    /// Joined for mail and claims only (`phux host join --mail-only`): the
+    /// server never dials this hub, so the hub reaches no terminal here.
+    #[serde(default, rename = "mail-only", skip_serializing_if = "is_false")]
+    pub mail_only: bool,
+}
+
+impl UplinkConfigEntry {
+    /// The hub's host and port from [`Self::hub`].
+    ///
+    /// # Errors
+    ///
+    /// As [`split_host_port`].
+    pub fn hub_host_port(&self) -> Result<(String, u16), String> {
+        split_host_port(&self.hub)
+    }
+}
+
+/// Split a hub endpoint, `HOST:PORT` with IPv6 bracketed and no scheme, the
+/// way a join code and an `[[uplink]]` entry read it.
+///
+/// # Errors
+///
+/// Wording naming the endpoint, for an empty host or a missing or zero port.
+pub fn split_host_port(hub: &str) -> Result<(String, u16), String> {
+    let malformed = || format!("{hub:?} is not HOST:PORT");
+    let (host, port) = match hub.strip_prefix('[') {
+        Some(rest) => rest.split_once("]:").ok_or_else(malformed)?,
+        None => hub.rsplit_once(':').ok_or_else(malformed)?,
+    };
+    let port = port.parse::<u16>().ok().filter(|port| *port != 0);
+    match port {
+        Some(port) if !host.is_empty() && !host.contains(['/', '[', ']']) => {
+            Ok((host.to_owned(), port))
+        }
+        _ => Err(malformed()),
+    }
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if signature"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 const fn default_true() -> bool {

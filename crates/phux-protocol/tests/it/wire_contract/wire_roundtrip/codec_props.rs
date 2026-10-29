@@ -348,7 +348,7 @@ fn layer_set_round_trips_drops_unknown_bits_and_forces_l1() {
 
 #[test]
 fn unknown_field_id_is_skipped_forward_compat() {
-    // Forward-compat (`docs/spec/appendix-encoding.md`): a decoder MUST skip a
+    // Forward-compat (`docs/protocol.md#framing`): a decoder MUST skip a
     // field id it does not recognise, by that field's declared length, and
     // decode the rest of the message normally. Encode a real PING (nonce field
     // id 1), then splice in an unknown field id (99) carrying junk *before* the

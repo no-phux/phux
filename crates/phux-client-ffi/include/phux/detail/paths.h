@@ -5,7 +5,7 @@
 
 /* ------------------------------------------------- host directory listing
  *
- * LIST_DIRECTORY / DIRECTORY_LISTING (docs/spec/L3.md section 4): the child
+ * LIST_DIRECTORY / DIRECTORY_LISTING (docs/protocol.md#commands-events-resources): the child
  * directories of one path on the serving server's host, for a go-to-directory
  * picker. Additive to ABI version 2; no existing declaration changes. The
  * answer comes from whichever server this client is connected to, local or
@@ -78,7 +78,7 @@ typedef struct PhuxDirectoryEntry {
     PhuxBytes name;
 } PhuxDirectoryEntry;
 
-/* A satellite's directories (docs/spec/L3.md section 4.1). Additive to ABI
+/* A satellite's directories (docs/protocol.md#commands-events-resources). Additive to ABI
  * version 2. Attached to a federation hub, a satellite pane's directories
  * live on the satellite; LIST_DIRECTORY.host names it and the hub relays the
  * request. An older hub skips the field and lists ITSELF, so a nonempty host

@@ -170,6 +170,49 @@ fn every_tab_fits_a_short_window_and_keyboard_pauses(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn toolbar_slots_stay_fixed_across_pause_hud_and_recording_states(cx: &mut TestAppContext) {
+    let (handle, monitor) = monitor(cx);
+    let cx = &mut gpui::VisualTestContext::from_window(*handle, cx);
+    cx.simulate_resize(size(px(760.), px(480.)));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let selectors = [
+        "performance-pause",
+        "performance-hud",
+        "performance-trace",
+        "performance-copy",
+    ];
+    let baseline = selectors.map(|selector| cx.debug_bounds(selector).expect(selector));
+    let hud = crate::devtools::hud_visible();
+    for (paused, visible, recording) in [
+        (false, false, false),
+        (true, true, true),
+        (false, true, false),
+        (true, false, true),
+    ] {
+        crate::devtools::set_hud(visible);
+        monitor.update(cx, |monitor, cx| {
+            monitor.paused = paused;
+            monitor.recording = recording;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let toolbar = cx.debug_bounds("performance-toolbar").unwrap();
+        let bounds = selectors.map(|selector| cx.debug_bounds(selector).expect(selector));
+        assert_eq!(bounds, baseline, "labels never move neighboring controls");
+        for action in bounds {
+            assert!(
+                action.left() >= toolbar.left() && action.right() <= toolbar.right(),
+                "inner action stays in its toolbar: {action:?} in {toolbar:?}"
+            );
+        }
+        assert!(toolbar.right() <= px(760.));
+    }
+    crate::devtools::set_hud(hud);
+}
+
+#[gpui::test]
 fn pause_cancels_sampling_and_resume_starts_a_fresh_interval(cx: &mut TestAppContext) {
     let (_, monitor) = monitor(cx);
     monitor.update(cx, |monitor, cx| {

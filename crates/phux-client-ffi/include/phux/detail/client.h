@@ -53,7 +53,7 @@ PhuxClientResult phux_client_queue_spawn(PhuxClient *client, const PhuxSpawnOpti
 PhuxClientResult phux_client_subscribe_events(PhuxClient *client, const PhuxResourceId *terminal, const uint64_t *after_seq);
 PhuxClientResult phux_client_queue_attach_resource(PhuxClient *client, const PhuxAttachResourceOptions *options);
 /* Declare the role every later ATTACH and ATTACH_RESOURCE carries (ADR-0127).
- * Additive to ABI version 2. role_policy is the L1.md 8.1 byte: 0 the default
+ * Additive to ABI version 2. role_policy is the attach role byte (docs/protocol.md): 0 the default
  * (sends nothing), 1 VIEWER (observe-only: the subscription's input is
  * refused), 2 PRIMARY with DELIBERATE takeover (attach and seize the input
  * lease). Any other value is PHUX_CLIENT_INVALID_ARGUMENT. A non-zero role
@@ -64,7 +64,7 @@ PhuxClientResult phux_client_attach_role(PhuxClient *client, uint8_t role_policy
 
 /* ---------------------------------------------------------- input lease
  *
- * ADR-0033, docs/spec/L1.md 5.1 and 8.1. Additive to ABI version 2. The
+ * ADR-0033, docs/protocol.md#commands-events-resources. Additive to ABI version 2. The
  * input lease is the one arbitration of who types: while a client holds it,
  * only that client's keys reach the PTY and everyone else's are acked and
  * dropped. Both verbs need only a negotiated client and are correlated like

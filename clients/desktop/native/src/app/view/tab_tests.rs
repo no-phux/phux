@@ -46,6 +46,7 @@ fn fixture(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Desk>, PathBuf) 
                 quick: false,
                 dev_telemetry: false,
                 startup_error: None,
+                cli_install: None,
             },
             cx,
         )
@@ -186,9 +187,13 @@ fn selectable_work(desk: &mut Desk, cx: &mut gpui::Context<Desk>) {
     cx.notify();
 }
 
+mod backdrop;
 mod chrome;
 mod closing;
 mod geometry;
+mod hover;
+mod indicators;
 mod panes;
+mod peek;
 mod placement;
 mod selection;

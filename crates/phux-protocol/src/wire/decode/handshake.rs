@@ -220,7 +220,7 @@ impl Decoder<'_> {
     }
 
     /// Largest inflated body a `FRAME_COMPRESSED` envelope may declare
-    /// (`docs/spec/proto.md` §6.4).
+    /// (`docs/protocol.md#framing`).
     ///
     /// The sender picks `uncompressed_len` and we allocate it before
     /// inflating, so it is bounded by this connection's negotiated payload

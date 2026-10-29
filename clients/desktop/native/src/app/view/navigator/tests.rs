@@ -68,7 +68,10 @@ fn every_grouping_lists_the_same_work() {
     assert_eq!(
         labels(&group(catalog.clone(), SidebarGrouping::Machine)),
         [
-            (Some("This Mac"), vec!["desk", "notes"]),
+            (
+                Some(crate::platform::local_machine_label()),
+                vec!["desk", "notes"]
+            ),
             (Some("ci"), vec!["build"]),
             (Some("studio"), vec!["api"]),
         ]
@@ -151,7 +154,10 @@ fn empty_sessions_sink_below_work_within_their_group() {
     assert_eq!(
         labels(&group(catalog.clone(), SidebarGrouping::Machine)),
         [
-            (Some("This Mac"), vec!["omega", "zeta", "alpha", "beta"]),
+            (
+                Some(crate::platform::local_machine_label()),
+                vec!["omega", "zeta", "alpha", "beta"]
+            ),
             (Some("mini"), vec!["delta", "gamma"]),
         ]
     );

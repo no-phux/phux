@@ -1,5 +1,5 @@
 //! QUIC transport ([ADR-0007]): the identical length-prefixed phux frames
-//! (`docs/spec/proto.md` §5) over one bidirectional QUIC stream per
+//! (`docs/protocol.md#framing`) over one bidirectional QUIC stream per
 //! connection, plus the per-Terminal stream multiplexer (§4.2).
 //!
 //! TLS 1.3 is intrinsic to QUIC. Routable consumers authenticate with a
@@ -7,7 +7,7 @@
 //! the stream, validated inside `Incoming::accept` before any frame is read:
 //! the QUIC analogue of the WebSocket `Authorization` header (ADR-0031).
 //!
-//! [ADR-0007]: ../../../docs/adr/0007-mosh-class-transport-and-satellites.md
+//! [ADR-0007]: https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0007-mosh-class-transport-and-satellites.md
 
 use std::io;
 use std::net::SocketAddr;
@@ -38,7 +38,7 @@ pub(super) const KEEP_ALIVE: Duration = Duration::from_secs(10);
 /// QUIC application close code for a connection refused at admission.
 const AUTH_FAILED_CODE: u32 = 0x01;
 
-/// Cap on client-opened bidi streams per connection (proto.md §4.2): far
+/// Cap on client-opened bidi streams per connection (docs/protocol.md#quic-stream-routing): far
 /// above panes-per-attach, far below task exhaustion. quinn enforces it.
 const MAX_CONCURRENT_BIDI_STREAMS: u64 = 128;
 
@@ -54,7 +54,7 @@ pub(crate) struct QuicListener {
     admission: QuicAdmission,
     workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
     /// Where the enrollment ALPN issues into, when this listener offers it
-    /// (`workload-auth.md` §8.2): the configured listener only.
+    /// (`docs/remote.md#pairing-with-a-link`): the configured listener only.
     enrollment: Option<Arc<crate::workload::WorkloadPaths>>,
     /// Where satellites that dial in under the satellite ALPN go (ADR-0182):
     /// the configured listener only.

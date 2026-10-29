@@ -57,7 +57,7 @@ impl PerTerminalMouseEncoder {
     /// format refreshed from `terminal`.
     ///
     /// The encoder converts surface pixels to cells through the grid size
-    /// and `cell_px` (SPEC input.md §3.2); zero geometry would encode every
+    /// and `cell_px` (docs/protocol.md#input); zero geometry would encode every
     /// event to nothing, so each axis is clamped to at least 1px.
     pub fn encode(
         &mut self,

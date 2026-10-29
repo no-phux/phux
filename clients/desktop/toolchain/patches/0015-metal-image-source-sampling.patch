@@ -1,0 +1,128 @@
+--- a/gpui-fast-apple/src/shaders.metal
++++ b/gpui-fast-apple/src/shaders.metal
+@@ -716,8 +716,22 @@
+   PolychromeSprite sprite = sprites[input.sprite_id];
+   constexpr sampler atlas_texture_sampler(mag_filter::linear,
+                                           min_filter::linear);
+-  float4 sample =
+-      atlas_texture.sample(atlas_texture_sampler, input.tile_position);
++  float2 position = input.tile_position;
++  if ((sprite.pad & 1u) != 0) {
++    // Sampling limits are the original crop, not the visibility mask.
++    float2 tile_origin(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y);
++    float2 tile_extent(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height);
++    float2 crop_origin(sprite.sample_bounds.origin.x, sprite.sample_bounds.origin.y);
++    float2 crop_extent(sprite.sample_bounds.size.width, sprite.sample_bounds.size.height);
++    if (any(crop_extent <= 0.0)) { crop_origin = 0.0; crop_extent = tile_extent; }
++    float2 first = tile_origin + crop_origin;
++    float2 last = first + crop_extent;
++    float2 inset = min(float2(0.5), (last - first) * 0.5);
++    float2 atlas_size(atlas_texture.get_width(), atlas_texture.get_height());
++    position = clamp(position, (first + inset) / atlas_size, (last - inset) / atlas_size);
++    position = clamp(position, (tile_origin + 0.5) / atlas_size, (tile_origin + tile_extent - 0.5) / atlas_size);
++  }
++  float4 sample = atlas_texture.sample(atlas_texture_sampler, position);
+   float distance =
+       quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
+ 
+--- a/gpui-fast-apple/src/fast/layers/tests.rs
++++ b/gpui-fast-apple/src/fast/layers/tests.rs
+@@ -534,29 +534,25 @@
+     viewport: Bounds<ScaledPixels>,
+ ) -> PolychromeSprite {
+     let bounds = layer.tile_bounds(tile);
+-    PolychromeSprite {
+-        order: 0,
+-        pad: 0,
+-        grayscale: false.into(),
+-        opacity: 1.,
+-        bounds: sp(
+-            bounds.origin.x.0 + translation.0,
+-            bounds.origin.y.0 + translation.1,
+-            TILE as f32,
+-            TILE as f32,
+-        ),
+-        content_mask: ContentMask { bounds: viewport },
+-        corner_radii: Corners::default(),
+-        tile: AtlasTile {
+-            texture_id: layer_tile_texture_id(key),
+-            tile_id: layer_tile_id(tile),
+-            padding: 0,
+-            bounds: Bounds {
+-                origin: point(DevicePixels(0), DevicePixels(0)),
+-                size: device_size(TILE as i32, TILE as i32),
+-            },
++    PolychromeSprite { order: 0, pad: 0, sample_bounds: Default::default(), grayscale: false.into(),
++    opacity: 1.,
++    bounds: sp(
++        bounds.origin.x.0 + translation.0,
++        bounds.origin.y.0 + translation.1,
++        TILE as f32,
++        TILE as f32,
++    ),
++    content_mask: ContentMask { bounds: viewport },
++    corner_radii: Corners::default(),
++    tile: AtlasTile {
++        texture_id: layer_tile_texture_id(key),
++        tile_id: layer_tile_id(tile),
++        padding: 0,
++        bounds: Bounds {
++            origin: point(DevicePixels(0), DevicePixels(0)),
++            size: device_size(TILE as i32, TILE as i32),
+         },
+-    }
++    }, }
+ }
+ 
+ /// A frame of `window` that composites `tiles` of `layer` at `translation`,
+@@ -754,16 +750,12 @@
+         tile: mono,
+         transformation: TransformationMatrix::unit(),
+     });
+-    scene.insert_primitive(PolychromeSprite {
+-        order: 0,
+-        pad: 0,
+-        grayscale: false.into(),
+-        opacity: 1.,
+-        bounds: at(300., 500., 20., 20.),
+-        content_mask: mask(clip),
+-        corner_radii: Corners::all(ScaledPixels(4.)),
+-        tile: image_tile(harness),
+-    });
++    scene.insert_primitive(PolychromeSprite { order: 0, pad: 0, sample_bounds: Default::default(), grayscale: false.into(),
++    opacity: 1.,
++    bounds: at(300., 500., 20., 20.),
++    content_mask: mask(clip),
++    corner_radii: Corners::all(ScaledPixels(4.)),
++    tile: image_tile(harness), });
+ }
+ 
+ /// A path of lines and a curve over the viewport's edge, in window space.
+--- a/gpui-fast-apple/src/fast/release_gpui/src/scene.rs
++++ b/gpui-fast-apple/src/fast/release_gpui/src/scene.rs
+@@ -756,6 +756,7 @@
+     pub content_mask: ContentMask<ScaledPixels>,
+     pub corner_radii: Corners<ScaledPixels>,
+     pub tile: AtlasTile,
++    pub sample_bounds: Bounds<f32>,
+ }
+ 
+ impl From<PolychromeSprite> for Primitive {
+--- a/gpui-fast-apple/src/fast/release_gpui/src/window.rs
++++ b/gpui-fast-apple/src/fast/release_gpui/src/window.rs
+@@ -5014,6 +5014,7 @@
+             self.next_frame.scene.insert_primitive(PolychromeSprite {
+                 order: 0,
+                 pad: 0,
++                sample_bounds: Default::default(),
+                 grayscale: false.into(),
+                 bounds,
+                 corner_radii: Default::default(),
+@@ -5186,6 +5187,7 @@
+         self.next_frame.scene.insert_primitive(PolychromeSprite {
+             order: 0,
+             pad: 0,
++            sample_bounds: Default::default(),
+             grayscale: grayscale.into(),
+             bounds: visible_bounds_snapped,
+             content_mask,

@@ -11,7 +11,7 @@ use crate::connection::{AgentState, state_rank};
 use super::super::color::from_hex;
 use super::super::pane_identity::Harness;
 use super::super::skin::Look;
-use super::atoms::{dot, shadow};
+use super::atoms::dot;
 
 /// Agent lifecycle colours stay fixed across themes.
 pub(crate) fn agent_swatch(state: AgentState) -> &'static str {
@@ -29,38 +29,13 @@ pub(crate) fn strongest(states: impl IntoIterator<Item = AgentState>) -> Option<
     states.into_iter().min_by_key(|state| state_rank(*state))
 }
 
-/// The wash a row or tab wears while something in it needs a person.
-pub(crate) fn attention_wash(state: AgentState) -> Hsla {
-    from_hex(agent_swatch(state)).opacity(0.1)
-}
-
-/// A row's state at a glance: a lit dot while something needs a person, a
-/// quiet one while an agent is otherwise active, nothing at all otherwise.
-pub(crate) fn state_dot(attention: Option<AgentState>, agent: Option<AgentState>) -> gpui::Div {
-    match (attention, agent) {
-        (Some(state), _) => {
-            let color = from_hex(agent_swatch(state));
-            dot(8., color).shadow(vec![shadow(color.opacity(0.5), 0., 6., 0., false)])
-        }
-        (None, Some(state)) => dot(6., from_hex(agent_swatch(state)).opacity(0.7)),
-        (None, None) => div(),
+/// Only actionable attention earns a dot. Routine lifecycle state remains in
+/// the tooltip instead of adding another signal beside every name.
+pub(crate) fn state_dot(attention: Option<AgentState>, _agent: Option<AgentState>) -> gpui::Div {
+    match attention {
+        Some(state) => dot(4., from_hex(agent_swatch(state))),
+        None => div(),
     }
-}
-
-/// A dot pinned to the top-right corner of its (relative) parent, ringed in
-/// the sheet so it reads over any wash. The parent stays the click target.
-pub(crate) fn attention_mark(state: AgentState, look: &Look) -> gpui::Div {
-    let color = from_hex(agent_swatch(state));
-    div()
-        .absolute()
-        .top(px(-2.))
-        .right(px(-2.))
-        .size(px(8.))
-        .rounded_full()
-        .bg(color)
-        .border_1()
-        .border_color(look.sheet.opacity(1.))
-        .shadow(vec![shadow(color.opacity(0.45), 0., 6., 0., false)])
 }
 
 /// A harness mark's colour in this theme: its own tint, else muted ink.
@@ -71,16 +46,28 @@ pub(crate) fn harness_tint(harness: Harness, look: &Look) -> Hsla {
     )
 }
 
-/// Which harness drives a pane: its mark `size` points across, with the
-/// agent's calm `state` as a small dot on its lower corner.
+/// Which harness drives a pane. Ordinary lifecycle state adds no decoration.
 pub(crate) fn harness_mark(
     harness: Harness,
-    state: Option<AgentState>,
+    _state: Option<AgentState>,
     size: f32,
     look: &Look,
 ) -> gpui::Div {
-    let pip = (size * 0.45).max(4.);
+    harness_status(harness, None, None, size, look)
+}
+
+/// A retained identity with independent attention. Urgency keeps its pip even
+/// when lifecycle state is unknown; routine states have no pip.
+pub(crate) fn harness_status(
+    harness: Harness,
+    _state: Option<AgentState>,
+    attention: Option<AgentState>,
+    size: f32,
+    look: &Look,
+) -> gpui::Div {
+    let pip = 4.;
     div()
+        .debug_selector(move || format!("harness-mark-{harness:?}"))
         .flex_shrink_0()
         .relative()
         .size(px(size))
@@ -89,18 +76,16 @@ pub(crate) fn harness_mark(
                 .size(px(size))
                 .text_color(harness_tint(harness, look)),
         )
-        .children(
-            state
-                .filter(|state| *state != AgentState::Unknown)
-                .map(|state| {
-                    dot(pip, from_hex(agent_swatch(state)))
-                        .absolute()
-                        .right(px(-pip / 3.))
-                        .bottom(px(-pip / 3.))
-                        .border_1()
-                        .border_color(look.sheet.opacity(1.))
-                }),
-        )
+        .children(attention.map(|state| {
+            let color = from_hex(agent_swatch(state));
+            dot(pip, color)
+                .absolute()
+                .right(px(-pip / 3.))
+                .bottom(px(-pip / 3.))
+                .border_1()
+                .border_color(look.sheet.opacity(1.))
+                .debug_selector(|| "harness-attention".into())
+        }))
 }
 
 #[cfg(test)]

@@ -1,24 +1,29 @@
-//! Opt-in mission control: status tiles, not terminal thumbnails or synthetic telemetry.
-//! Entry motion is finite; settled fleets cost no animation loop.
+//! Live mission control. Inventory only until a person opens an agent.
+//! Entry motion is bounded; a settled fleet schedules no animation frames.
+
+mod cards;
+mod overview;
+mod playground;
+#[cfg(feature = "ui-fixtures")]
+pub(crate) mod preview;
 
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, FontWeight, KeyDownEvent, ScrollHandle, Window, div, px};
-use gpui_kit::assets::IconName;
+use gpui::{AnyElement, Context, KeyDownEvent, ScrollHandle, Window, div, px};
 
 use super::{Agent, Reach};
-use crate::app::color::from_hex;
 use crate::app::desk::Desk;
-use crate::app::overlays::{SHEET_GUTTER, corner, sheet};
+use crate::app::overlays::{SHEET_GUTTER, sheet};
 use crate::app::skin::Look;
-use crate::app::ui::{agent_swatch, dot, icon_button, muted};
-use crate::connection::AgentState;
+use crate::app::ui::muted;
 
 const ENTER: Duration = Duration::from_millis(360);
 const STAGGER: Duration = Duration::from_millis(18);
-const TILE_HEIGHT: f32 = 158.;
-const GAP: f32 = 10.;
+const GAP: f32 = 12.;
+const INSET: f32 = 24.;
+/// The playground's frame interval.
+const TICK: Duration = Duration::from_millis(80);
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -26,10 +31,19 @@ pub(crate) struct State {
     selected: Option<Agent>,
     scroll: ScrollHandle,
     pub pending: Option<Agent>,
+    pub(super) pending_open: Option<crate::workspace::PendingOpen>,
+    /// The playground: the same agents as ghosts in their hosts' rooms.
+    pub(super) playground: playground::View,
+    /// A playground frame is already on its way.
+    tick_scheduled: bool,
+    #[cfg(feature = "ui-fixtures")]
+    fixture: Option<Vec<Agent>>,
 }
 
 impl State {
     pub fn open(&mut self) {
+        self.pending = None;
+        self.pending_open = None;
         self.opened = Some(Instant::now());
         self.selected = None;
         self.scroll = ScrollHandle::new();
@@ -47,14 +61,14 @@ impl State {
 }
 
 fn columns(width: f32) -> usize {
-    ((width + GAP) / (224. + GAP)).floor().clamp(1., 5.) as usize
+    ((width + GAP) / (280. + GAP)).floor().clamp(1., 3.) as usize
 }
 
 fn width(window: &Window) -> f32 {
-    (window.viewport_size().width.as_f32() - SHEET_GUTTER * 2.).clamp(0., 1240.)
+    (window.viewport_size().width.as_f32() - SHEET_GUTTER * 2.).clamp(0., 1200.)
 }
 
-/// An eased, capped cascade: even a huge fleet finishes in half a second.
+/// Even a large fleet finishes entering in half a second. Reduced motion snaps.
 fn presence(opened: Option<Instant>, index: usize, now: Instant, animate: bool) -> f32 {
     if !animate {
         return 1.;
@@ -73,14 +87,13 @@ impl Desk {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let key = event.keystroke.key.as_str();
         if event.keystroke.modifiers.modified() {
             return false;
         }
         let agents = self.agent_catalog();
         let current = self.fleet_view.align(&agents);
-        let step = columns((width(window) - 40.).max(0.)) as isize;
-        let delta = match key {
+        let step = columns((width(window) - INSET * 2.).max(0.)) as isize;
+        let delta = match event.keystroke.key.as_str() {
             "left" => -1,
             "right" => 1,
             "up" => -step,
@@ -109,18 +122,46 @@ pub(crate) fn panel(
     cx: &mut Context<Desk>,
 ) -> AnyElement {
     let agents = desk.agent_catalog();
+    #[cfg(feature = "ui-fixtures")]
+    let agents = desk.fleet_view.fixture.clone().unwrap_or(agents);
     let selected = desk.fleet_view.align(&agents);
     let animate = desk.prefs.animations && !cx.reduce_motion();
     let now = Instant::now();
-    let opening = presence(desk.fleet_view.opened, 8, now, animate) < 1.;
-    if opening {
+    if presence(desk.fleet_view.opened, 8, now, animate) < 1. {
         let handle = cx.weak_entity();
         window.on_next_frame(move |_, cx| {
             let _ = handle.update(cx, |_, cx| cx.notify());
         });
     }
     let width = width(window);
-    let inner = (width - 40.).max(0.);
+    let inner = (width - INSET * 2.).max(0.);
+    let playground = desk.fleet_view.playground.on;
+    // The playground's own clock: a dozen frames a second while it is open
+    // and motion is allowed, nothing otherwise. ponytail: this re-renders the
+    // desk's chrome each tick; move the scene into its own entity if that
+    // ever shows in the HUD.
+    if playground && animate && !desk.fleet_view.tick_scheduled {
+        desk.fleet_view.tick_scheduled = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TICK).await;
+            let _ = this.update(cx, |desk, cx| {
+                desk.fleet_view.tick_scheduled = false;
+                if desk.fleet_view.playground.on
+                    && matches!(desk.modal, crate::app::desk::Modal::AgentFleet)
+                {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+    let time = if animate {
+        desk.fleet_view
+            .opened
+            .map_or(0., |opened| now.duration_since(opened).as_secs_f32())
+    } else {
+        0.
+    };
     let cols = columns(inner);
     let tile_width = ((inner - GAP * (cols - 1) as f32) / cols as f32).max(0.);
     let height = (window.viewport_size().height.as_f32() - 2. * SHEET_GUTTER).max(0.);
@@ -134,8 +175,9 @@ pub(crate) fn panel(
                 .pb(px(GAP))
                 .children(chunk.iter().enumerate().map(|(col, agent)| {
                     let index = row * cols + col;
-                    tile(
+                    cards::tile(
                         agent,
+                        index,
                         tile_width,
                         selected == index,
                         presence(desk.fleet_view.opened, index, now, animate),
@@ -152,80 +194,71 @@ pub(crate) fn panel(
         .flex()
         .flex_col()
         .overflow_hidden()
-        .child(header(&agents, look, cx))
-        .children(machine_notices(desk, look))
+        .child(overview::header(
+            &agents,
+            playground.then(|| {
+                (
+                    playground::Map::from_id(&desk.prefs.playground_map),
+                    playground::Scheme::from_id(&desk.prefs.playground_scheme),
+                )
+            }),
+            look,
+            cx,
+        ))
+        .when(playground, |panel| {
+            let scene_height = (height - 300.).max(240.);
+            panel.child(
+                div()
+                    .px(px(INSET))
+                    .pt(px(4.))
+                    .flex_shrink_0()
+                    .child(playground::scene(
+                        desk,
+                        &agents,
+                        inner,
+                        scene_height,
+                        time,
+                        look,
+                        cx,
+                    )),
+            )
+        })
+        .when(!playground, |panel| {
+            panel.child(
+                div()
+                    .id("fleet-grid")
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&desk.fleet_view.scroll)
+                    .px(px(INSET))
+                    .pt(px(4.))
+                    .children(rows)
+                    .when(agents.is_empty(), |grid| grid.child(overview::empty(look)))
+                    .children(machine_notices(desk, look)),
+            )
+        })
         .child(
             div()
-                .id("fleet-grid")
-                .min_h_0()
-                .overflow_y_scroll()
-                .track_scroll(&desk.fleet_view.scroll)
-                .px(px(20.))
-                .children(rows)
-                .when(agents.is_empty(), |grid| grid.child(empty(look))),
-        )
-        .child(
-            muted(look, "↑ ↓ ← → to explore · Enter to open · Esc to return")
-                .px(px(20.))
+                .flex()
+                .flex_wrap()
+                .justify_between()
+                .gap(px(6.))
+                .px(px(INSET))
                 .py(px(12.))
-                .flex_shrink_0(),
+                .flex_shrink_0()
+                .border_t_1()
+                .border_color(look.divider)
+                .child(muted(look, "↑ ↓ ← → explore   ↵ open   esc return"))
+                .child(muted(look, "Observe freely. Open deliberately.")),
         )
         .into_any_element()
 }
 
-fn header(agents: &[Agent], look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {
-    let working = agents.iter().filter(|agent| agent.info.working()).count();
-    let attention = agents.iter().filter(|agent| agent.info.needs_you()).count();
-    div()
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .p(px(20.))
-        .flex_shrink_0()
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(muted(look, "MISSION CONTROL"))
-                .child(
-                    div()
-                        .text_size(px(25.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Agent fleet"),
-                )
-                .child(muted(
-                    look,
-                    format!(
-                        "{} agents · {working} working · {attention} need you",
-                        agents.len()
-                    ),
-                )),
-        )
-        .child(icon_button(
-            "fleet-refresh",
-            IconName::RefreshCw,
-            "Refresh machines",
-            None,
-            cx.listener(|desk, _, _, cx| {
-                if matches!(
-                    desk.machine_reach(desk.remote.as_deref()),
-                    Reach::Unavailable(_)
-                ) {
-                    desk.reconnect(cx);
-                }
-                desk.retry_fleet(cx);
-            }),
-        ))
-        .child(icon_button(
-            "fleet-close",
-            IconName::X,
-            "Close fleet",
-            None,
-            cx.listener(|desk, _, window, cx| desk.close_modal(window, cx)),
-        ))
-}
-
 fn machine_notices(desk: &Desk, look: &Look) -> Vec<gpui::Div> {
+    #[cfg(feature = "ui-fixtures")]
+    if desk.fleet_view.fixture.is_some() {
+        return Vec::new();
+    }
     std::iter::once(None)
         .chain(desk.hosts.iter().map(|host| Some(host.name.as_str())))
         .filter_map(|host| {
@@ -236,154 +269,11 @@ fn machine_notices(desk: &Desk, look: &Look) -> Vec<gpui::Div> {
             };
             Some(
                 muted(look, format!("{} · {message}", host.unwrap_or("Local")))
-                    .px(px(20.))
-                    .pb(px(8.)),
+                    .py(px(8.))
+                    .w_full(),
             )
         })
         .collect()
-}
-
-fn empty(look: &Look) -> impl IntoElement {
-    div().debug_selector(|| "fleet-empty".into()).py(px(40.)).flex().flex_col().gap(px(8.))
-        .child(div().text_lg().child("Your fleet starts here."))
-        .child(muted(look, "Agents running in phux appear automatically. Start one in a terminal, or use New Agent… from the command palette."))
-}
-
-fn tile(
-    agent: &Agent,
-    width: f32,
-    selected: bool,
-    presence: f32,
-    look: &Look,
-    cx: &mut Context<Desk>,
-) -> AnyElement {
-    let color = from_hex(agent_swatch(agent.info.state));
-    let target = agent.clone();
-    let selector = format!(
-        "fleet-agent-{}-{}",
-        agent.destination.host_label(),
-        agent.terminal
-    );
-    let label = state_label(&agent.info);
-    div()
-        .w(px(width))
-        .h(px(TILE_HEIGHT))
-        .flex_shrink_0()
-        .relative()
-        .child(
-            div()
-                .id(selector.clone())
-                .debug_selector(move || selector.clone())
-                .relative()
-                .top(px((1. - presence) * 18.))
-                .opacity(presence)
-                .size_full()
-                .rounded(corner(look, 12.))
-                .overflow_hidden()
-                .cursor_pointer()
-                .bg(from_hex(&look.chrome.raised))
-                .border_1()
-                .border_color(if selected { color } else { color.opacity(0.22) })
-                .hover(|style| style.bg(color.opacity(0.12)).border_color(color))
-                .on_click(cx.listener(move |desk, _, window, cx| {
-                    desk.open_fleet_agent(target.clone(), window, cx)
-                }))
-                .child(div().h(px(3.)).w_full().bg(color.opacity(0.8)))
-                .child(
-                    div()
-                        .p(px(14.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(dot(7., color))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .truncate()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(agent.info.name.clone()),
-                                )
-                                .child(muted(look, agent.terminal.to_string())),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(21.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(label),
-                        )
-                        .child(
-                            muted(
-                                look,
-                                format!(
-                                    "{} / {}",
-                                    agent.destination.host_label(),
-                                    agent.destination.name
-                                ),
-                            )
-                            .truncate(),
-                        )
-                        .child(
-                            muted(
-                                look,
-                                if agent.title.is_empty() {
-                                    agent.info.kind.clone().unwrap_or_else(|| "Agent".into())
-                                } else {
-                                    agent.title.clone()
-                                },
-                            )
-                            .truncate(),
-                        ),
-                )
-                .child(signal(agent.info.state, presence, color)),
-        )
-        .into_any_element()
-}
-
-fn state_label(info: &crate::connection::AgentInfo) -> String {
-    let word = if info.word().is_empty() {
-        "unknown"
-    } else {
-        info.word()
-    };
-    if info.urgent() && info.state != AgentState::Blocked {
-        format!("needs you · {word}")
-    } else {
-        word.to_owned()
-    }
-}
-
-fn signal(state: AgentState, presence: f32, color: gpui::Hsla) -> gpui::Div {
-    div()
-        .absolute()
-        .bottom_0()
-        .left_0()
-        .right_0()
-        .h(px(30.))
-        .opacity(0.13)
-        .flex()
-        .items_end()
-        .gap(px(3.))
-        .children((0..24).map(|i| {
-            // A state emblem, not a fabricated CPU or throughput chart.
-            let height = match state {
-                AgentState::Working => 5. + ((i * 7 + 3) % 23) as f32,
-                AgentState::Blocked => {
-                    if i % 5 == 0 {
-                        26.
-                    } else {
-                        5.
-                    }
-                }
-                AgentState::Done => 5. + i as f32,
-                AgentState::Idle | AgentState::Unknown => 4.,
-            };
-            div().flex_1().h(px(height * presence)).bg(color)
-        }))
 }
 
 #[cfg(test)]
@@ -403,8 +293,8 @@ mod tests {
     #[test]
     fn grid_fits_narrow_windows_and_caps_wide_ones() {
         assert_eq!(columns(0.), 1);
-        assert_eq!(columns(220.), 1);
-        assert_eq!(columns(460.), 2);
-        assert_eq!(columns(1200.), 5);
+        assert_eq!(columns(240.), 1);
+        assert_eq!(columns(580.), 2);
+        assert_eq!(columns(1200.), 3);
     }
 }

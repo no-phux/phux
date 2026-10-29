@@ -117,6 +117,9 @@ pub(in crate::runtime) fn mirror_config_into_state(
 ) {
     // A zero TTL would expire every hold before anyone could see it.
     let approval_ttl = Duration::from_secs(u64::from(cfg.approval_ttl_secs.max(1)));
+    state
+        .with(crate::state::ServerState::satellite_adopter)
+        .set_work_store(cfg.work_store.as_deref().cloned());
     state.with_mut(|s| {
         s.set_pre_seeded_session(cfg.pre_seeded_session.clone());
         // Only the PTY mode is mirrored: a `CreateIfMissing` session runs its

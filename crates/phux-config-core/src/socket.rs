@@ -6,6 +6,7 @@
 
 use std::ffi::OsString;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -26,12 +27,22 @@ use crate::instance;
 /// each `cargo run` inside a pane trip [`refuse_dev_on_production`] instead of
 /// starting the dev server.
 #[must_use]
+#[cfg(not(windows))]
 pub fn default_socket_path() -> PathBuf {
     let dev = instance::build_kind() == instance::BuildKind::Dev;
     inherited_socket(std::env::var_os("PHUX_SOCKET"), dev)
         .unwrap_or_else(|| instance::runtime_dir().join("phux.sock"))
 }
 
+/// A native Windows runtime path, not an inherited Linux coordinator socket.
+/// WSL transports carry their Linux socket path explicitly.
+#[must_use]
+#[cfg(windows)]
+pub fn default_socket_path() -> PathBuf {
+    instance::runtime_dir().join("phux.sock")
+}
+
+#[cfg(not(windows))]
 fn inherited_socket(env: Option<OsString>, dev: bool) -> Option<PathBuf> {
     let path = PathBuf::from(env?);
     let production = production_socket_candidates()
@@ -49,6 +60,7 @@ fn inherited_socket(env: Option<OsString>, dev: bool) -> Option<PathBuf> {
 /// `XDG_RUNTIME_DIR` a login session provides (`/run/user/<uid>`), and an
 /// inherited `XDG_RUNTIME_DIR` unless it sits inside the temp directory.
 #[must_use]
+#[cfg(unix)]
 pub fn production_socket_candidates() -> Vec<PathBuf> {
     let mut candidates =
         vec![PathBuf::from(format!("/tmp/phux-{}", instance::user_segment())).join("phux.sock")];
@@ -61,7 +73,15 @@ pub fn production_socket_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+/// A native non-Unix client owns no Unix coordinator socket on this OS.
+#[must_use]
+#[cfg(not(unix))]
+pub const fn production_socket_candidates() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 /// A login session's runtime directory: `/run/user/<uid>/phux/phux.sock`.
+#[cfg(unix)]
 fn is_login_runtime_socket(socket: &Path) -> bool {
     let Ok(rest) = socket.strip_prefix("/run/user") else {
         return false;
@@ -74,6 +94,12 @@ fn is_login_runtime_socket(socket: &Path) -> bool {
     numeric_uid && parts.as_path() == Path::new("phux/phux.sock")
 }
 
+#[cfg(not(unix))]
+const fn is_login_runtime_socket(_socket: &Path) -> bool {
+    false
+}
+
+#[cfg(unix)]
 fn is_inside(path: &Path, dir: &Path) -> bool {
     let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     canonical(path).starts_with(canonical(dir))
@@ -149,13 +175,12 @@ fn resolved_socket(path: &Path) -> PathBuf {
 #[must_use]
 pub fn spawn_lock_path(socket: &Path) -> PathBuf {
     let lock_name = match socket.file_name() {
-        Some(name) if name == "phux.sock" => OsString::from("spawn.lock"),
-        Some(name) => {
+        Some(name) if name != "phux.sock" => {
             let mut lock_name = name.to_os_string();
             lock_name.push(".spawn.lock");
             lock_name
         }
-        None => OsString::from("spawn.lock"),
+        _ => OsString::from("spawn.lock"),
     };
     socket
         .parent()
@@ -203,6 +228,7 @@ impl SocketState {
 /// server's socket, while the cost of a false `Live` is a clear error
 /// message.
 #[must_use]
+#[cfg(unix)]
 pub fn probe(path: &Path) -> SocketState {
     if !path.exists() {
         return SocketState::Absent;
@@ -220,7 +246,20 @@ pub fn probe(path: &Path) -> SocketState {
     }
 }
 
+/// Without Unix-socket probing an existing entry is conservatively live,
+/// never stale: callers must not unlink an unprobeable path.
+#[must_use]
+#[cfg(not(unix))]
+pub fn probe(path: &Path) -> SocketState {
+    if path.exists() {
+        SocketState::Live
+    } else {
+        SocketState::Absent
+    }
+}
+
 /// Whether a connect error means "no process is bound here".
+#[cfg(unix)]
 fn is_unbound(err: &io::Error) -> bool {
     matches!(
         err.kind(),
@@ -251,6 +290,7 @@ pub fn reap_stale(path: &Path) -> io::Result<bool> {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
@@ -395,5 +435,27 @@ mod tests {
             spawn_lock_path(first),
             Path::new("/tmp/phux/first.sock.spawn.lock")
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(unix))]
+mod portable_tests {
+    use super::*;
+
+    #[test]
+    fn unprobeable_entries_are_never_reaped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("not-a-native-socket");
+        std::fs::write(&path, "do not remove").expect("fixture");
+        assert_eq!(probe(&path), SocketState::Live);
+        assert!(!reap_stale(&path).expect("conservative reap"));
+        assert!(path.exists());
+        assert_eq!(probe(&dir.path().join("absent")), SocketState::Absent);
+    }
+
+    #[test]
+    fn linux_paths_are_not_native_production_sockets() {
+        assert!(refuse_dev_on_production(Path::new("/run/user/1000/phux/phux.sock")).is_ok());
     }
 }

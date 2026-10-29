@@ -1,7 +1,7 @@
 //! `phux tag` — read and write a Terminal's L3 tags (ADR-0027).
 //!
 //! Tags are a JSON array of strings under [`RESOURCE_TAGS_KEY`], scoped to
-//! a `ResourceId` (`docs/spec/L3.md` §3.6). [`apply`] is the list/add/rm
+//! a `ResourceId` (`docs/protocol.md#commands-events-resources`). [`apply`] is the list/add/rm
 //! orchestration both `phux tag` and MCP `phux_tag` call.
 
 use phux_protocol::ids::ResourceId;

@@ -55,15 +55,15 @@ pub enum RenameRefusal {
 }
 
 /// Longest session name, in UTF-8 bytes: the `name` bound of the
-/// organization commands (`docs/spec/L1.md`) and of a session record
-/// (`docs/spec/L2.md` "Session").
+/// organization commands (`docs/protocol.md`) and of a session record
+/// (`docs/organization.md`).
 pub const MAX_SESSION_NAME_BYTES: usize = 256;
 
 /// Why a session name cannot be used.
 ///
 /// The server would refuse it (too long, or a control character), or the
 /// selector grammar every CLI verb, hook, and keybinding resolves
-/// (`docs/consumers/tui.md` "Selectors") would read it as something other
+/// (`docs/concepts.md#targets`) would read it as something other
 /// than this session, or as nothing.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionNameError {

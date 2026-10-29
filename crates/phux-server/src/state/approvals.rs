@@ -1,5 +1,5 @@
-//! Held actions awaiting approval (ADR-0128, `docs/spec/workload-auth.md`
-//! §6.1): the pending table, its server-owned `phux.approval/v1/<id>`
+//! Held actions awaiting approval (ADR-0128, `docs/agents.md#safety`):
+//! the pending table, its server-owned `phux.approval/v1/<id>`
 //! records, and the two journaled events.
 //!
 //! Opening, deciding, expiring, and withdrawing an approval each run in one
@@ -308,7 +308,7 @@ impl ServerState {
     }
 }
 
-/// The record `phux.approval/v1/<id>` holds (`docs/spec/L3.md` §3.10).
+/// The record `phux.approval/v1/<id>` holds (`docs/agents.md#safety`).
 fn approval_record(
     requester: &ActorRef,
     id: ApprovalId,

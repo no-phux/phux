@@ -23,12 +23,12 @@ use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, ls};
-// Feature bits by their `snake_case` name (the `docs/spec/proto.md` constant
+// Feature bits by their `snake_case` name (the `docs/protocol.md` constant
 // lower-cased), from the table `--capabilities --json` shares.
 
 /// Version of the `phux status --json` document. Additive fields do not
 /// bump it.
-const STATUS_SCHEMA_VERSION: u8 = 1;
+pub(crate) const STATUS_SCHEMA_VERSION: u8 = 1;
 
 /// Everything one `phux status` reports, collected before any rendering.
 #[derive(Debug)]

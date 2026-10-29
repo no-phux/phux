@@ -12,6 +12,22 @@ restore that constraint rather than silently dropping it.
 
 <!-- bd-doctor-divergence: ok -->
 
+## Using phux as an agent
+
+The rest of this file is how to change the phux repository. To install
+phux and drive sessions from code, follow
+[Using phux as an agent](./docs/agent-quickstart.md).
+
+```sh
+curl -fsSL https://phux.sh/install | sh
+phux server --ensure
+phux new --json -s agent -c "$PWD" -- claude
+```
+
+`phux` and `phux attach` need a terminal. Scripts use `--json` and address
+panes as `@N` from `terminal_id`. `phux skill` prints the guide built into
+the binary you have installed.
+
 ## Build and validate
 
 `mise install` or `nix develop`, then `just doctor <area>` and the smallest

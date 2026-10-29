@@ -1,6 +1,40 @@
 use super::super::ghostty::parse_ghostty;
 use super::{ChordSource, chord_source, default_chords, effective_keymap, keymap_conflicts};
 
+#[cfg(windows)]
+#[test]
+fn windows_shortcuts_do_not_intercept_shell_signals() {
+    let chords = default_chords();
+    for (key, action) in [
+        ("ctrl+shift+c", "copy"),
+        ("ctrl+shift+v", "paste"),
+        ("ctrl+shift+r", "reconnect"),
+        ("ctrl+shift+d", "split-right"),
+    ] {
+        assert!(chords.contains(&(key.into(), action.into())));
+    }
+    for key in ["ctrl+c", "ctrl+z", "ctrl+d"] {
+        assert!(!chords.iter().any(|(chord, _)| chord == key));
+    }
+    assert_eq!(super::display_chord("ctrl+shift+c"), "Ctrl+Shift+C");
+    assert_eq!(super::display_chord("cmd+t"), "Win+T");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn mac_command_arrows_walk_tabs_and_sessions() {
+    let chords = default_chords();
+    for (key, action) in [
+        ("cmd+left", "tab-prev"),
+        ("cmd+right", "tab-next"),
+        ("cmd+up", "session-prev"),
+        ("cmd+down", "session-next"),
+    ] {
+        let bound: Vec<_> = chords.iter().filter(|(chord, _)| chord == key).collect();
+        assert_eq!(bound, [&(key.to_owned(), action.to_owned())]);
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_shortcuts_leave_shell_control_keys_alone() {
@@ -126,4 +160,15 @@ fn clear_and_built_in_restores_drop_earlier_binds() {
     assert!(keymap_conflicts(&config).is_empty());
     assert_eq!(config.binds.len(), 1);
     assert_eq!(config.binds[0].origin.line, 3);
+}
+
+#[test]
+fn option_semicolon_opens_the_path_picker_at_the_cursor() {
+    let chords = default_chords();
+    let bound: Vec<&str> = chords
+        .iter()
+        .filter(|(chord, _)| chord == "alt+;")
+        .map(|(_, id)| id.as_str())
+        .collect();
+    assert_eq!(bound, ["insert-path"]);
 }

@@ -4,7 +4,7 @@ use phux_protocol::ids::SessionId as WireSessionId;
 
 use super::ServerState;
 
-/// The layout-family key suffix `.layout/v1/<wire session id>` (L3.md §3.2,
+/// The layout-family key suffix `.layout/v1/<wire session id>` (docs/organization.md,
 /// §3.5), used to find every layout key naming a reaped session.
 fn layout_key_suffix(session: WireSessionId) -> String {
     format!(".layout/v1/{}", session.get())

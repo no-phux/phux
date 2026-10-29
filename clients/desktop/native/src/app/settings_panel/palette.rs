@@ -18,7 +18,7 @@ pub(crate) fn entries(
     Page::ALL
         .into_iter()
         .flat_map(|page| {
-            content(desk, page, handle, cx)
+            content(desk, page, handle, desk.settings_controls.as_ref(), cx)
                 .entries
                 .into_iter()
                 .filter(|(_, item)| item.actionable)
@@ -47,13 +47,16 @@ pub(crate) fn editor(
         .into_iter()
         .find(|(candidate, _)| candidate == key)
         .map(|(_, item)| item);
+    let viewport = window.viewport_size();
+    let width = (viewport.width.as_f32() - 32.).clamp(0., 720.);
     let page = gpui_kit::component::setting::SettingPage::new(key.title.clone()).group(
-        gpui_kit::component::setting::SettingGroup::new().items(item.map(|item| item.control)),
+        gpui_kit::component::setting::SettingGroup::new().items(
+            item.map(|item| item.responsive_control(width < super::catalog::STACK_CONTROLS_BELOW)),
+        ),
     );
     let settings = native_settings(SharedString::from(format!("palette-setting-{key:?}")), page);
     let look = desk.look();
-    let viewport = window.viewport_size();
-    overlays::sheet(&look, (viewport.width.as_f32() - 32.).clamp(0., 720.))
+    overlays::sheet(&look, width)
         .id("palette-panel")
         .debug_selector(|| "palette-panel".into())
         .h(px((viewport.height.as_f32() - 32.).clamp(0., 440.)))

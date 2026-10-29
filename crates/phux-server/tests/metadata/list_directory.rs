@@ -1,4 +1,4 @@
-//! `LIST_DIRECTORY` over the wire (`docs/spec/L3.md` §4): the serving host's
+//! `LIST_DIRECTORY` over the wire (`docs/protocol.md`): the serving host's
 //! child directories, sorted, and a typed refusal (not an `ERROR`) for a
 //! missing path.
 

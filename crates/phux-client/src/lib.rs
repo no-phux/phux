@@ -3,7 +3,7 @@
 //! The control-plane half of a phux client: connect over UDS, QUIC, or
 //! WebSocket through the client runtime's one transport (ADR-0171), and
 //! drive the wire verbs behind every `phux` agent verb and the `phux-mcp`
-//! adapter (`docs/consumers/sdk.md`). It owns
+//! adapter (`docs/architecture.md#crates`). It owns
 //! no PTY and no screen and links no `ratatui`; the interactive attach is
 //! `phux-tui`, which depends on this crate (ADR-0100). The pane-interior
 //! substrate is `phux-client-core`, re-exported as [`layout`],
@@ -40,6 +40,7 @@ pub mod delegation;
 pub mod detach;
 pub mod explain;
 pub mod glance;
+pub mod hub_mail;
 // `Global` L3 metadata reads and confirmed writes (`phux agent usage --publish`).
 pub mod global_metadata;
 // `SHUTDOWN` / `KILL_RESOURCES` / `KILL_RESOURCE` (`phux kill`).
@@ -53,6 +54,7 @@ pub mod org;
 pub mod organize;
 pub mod pane_move;
 pub mod perf;
+pub mod recovery;
 // Complete-intention terminal creation and connected-server API discovery.
 pub mod terminal;
 // Project identity (ADR-0168): discovery, the stored document, grouping.

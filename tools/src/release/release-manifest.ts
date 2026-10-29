@@ -26,7 +26,7 @@ import {
   PROTOCOL,
   render,
   SHA,
-  TARGETS,
+  targets,
   valid,
   VERSION,
   type Channel,
@@ -104,7 +104,10 @@ export function assetDigests(
     return valid(DIGEST, value.slice("sha256:".length), `${name} sha256`);
   };
   return Object.fromEntries(
-    TARGETS.map((target) => [target, digest(assetName(product, channel, id, target))]),
+    targets(product, channel, id).map((target) => [
+      target,
+      digest(assetName(product, channel, id, target)),
+    ]),
   );
 }
 
@@ -215,7 +218,7 @@ function stable(out: string, publish: boolean): number {
  */
 export function verifiedDist(product: Product, sha: string, dist: string): Record<string, string> {
   const verified: Record<string, string> = {};
-  for (const target of TARGETS) {
+  for (const target of targets(product)) {
     const name = assetName(product, "next", sha, target);
     const path = join(dist, name);
     const digest = new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex");
@@ -265,11 +268,13 @@ function publishNext(product: Product, sha: string, dist: string): void {
   const current = publishedManifest("next");
 
   ensurePrerelease("next", "Moving next channel (green main). Not a stable release.", sha);
-  const paths = TARGETS.map((target) => join(dist, assetName(product, "next", sha, target)));
+  const paths = targets(product).map((target) =>
+    join(dist, assetName(product, "next", sha, target)),
+  );
   const files = paths.flatMap((path) => [path, `${path}.sha256`, `${path}.sha256.minisig`]);
   ghRelease("upload", "next", ...files, "--clobber");
   const digests = assetDigests(assetsOf(release("next")), product, "next", sha);
-  if (TARGETS.some((target) => digests[target] !== built[target])) {
+  if (targets(product).some((target) => digests[target] !== built[target])) {
     throw new Failure("the uploaded bytes do not match the build");
   }
 

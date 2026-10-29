@@ -22,12 +22,12 @@ fn allocation_counting_toggles_live_without_enabling_dev_mode(cx: &mut gpui::Tes
     assert!(during.allocs > before.allocs);
     drop(block);
     assert!(alloc::stats().unwrap().frees > during.frees);
-    assert!(!devtools::get().dev);
-    assert!(devtools::get().socket.get().is_none());
+    assert!(!devtools::dev_mode());
+    assert!(devtools::socket_path().is_none());
     cx.update(|cx| devtools::set_allocation_counting(false, cx));
     assert!(!alloc::enabled());
     assert!(alloc::stats().is_none());
-    assert!(!devtools::get().dev);
+    assert!(!devtools::dev_mode());
     cx.update(|cx| devtools::set_allocation_counting(true, cx));
     assert!(
         alloc::stats().is_some(),
