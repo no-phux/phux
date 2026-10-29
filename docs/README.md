@@ -41,6 +41,7 @@ unshipped experiment, and phone apps are not available yet. See
 ## Build for phux
 
 - [OSC 7501: report status from any program](./program-protocol.md): the Program Status Protocol sequence phux reads, and what a pane shows from it.
+- [Any program can report status](./any-program-status.md): a short OSC 7501 emitter, a demo with no hooks, and how phux ranks that report.
 - [Program sequences and agent reports](./program-sequences.md): titles, `phux-ask` questions, OSC 133, OSC 52, and the other sequences phux reads, plus the agent record.
 
 ## Machines and clients
