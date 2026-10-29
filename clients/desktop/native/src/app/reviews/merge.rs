@@ -167,7 +167,7 @@ impl Desk {
         let Some((root, remote)) = clone else {
             self.post(
                 Kind::Refusal,
-                "No clone on this Mac",
+                &format!("No clone on {}", crate::platform::this_machine()),
                 Some(format!(
                     "Clone {} first, or open a terminal in its clone.",
                     pull.repo
