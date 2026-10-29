@@ -127,10 +127,12 @@ doc:
 deny:
     cargo deny check
     # The generator is its own workspace, so the root check never sees its lock.
+    # Probe it first: a shared-dep bump leaves this lock stale, and cargo-deny
+    # --locked then only says the lock cannot be updated.
+    bash scripts/plugin-index/check-toml-version.sh
     # Call the binary: mbx wraps `cargo` and would forward `--config` into
     # `cargo metadata`, which then rejects deny.toml.
     cargo-deny --manifest-path scripts/plugin-index/Cargo.toml --config deny.toml --locked check
-    bash scripts/plugin-index/check-toml-version.sh
 
 
 # Shell scripts at warning severity: the examples carry deliberate info-level
