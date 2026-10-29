@@ -33,6 +33,13 @@ pub enum Shortcut {
     Palette,
     ToggleSidebar,
     JumpToAttention,
+    SplitRight,
+    SplitDown,
+    ZoomPane,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
 }
 
 pub fn mods(mods: Mods) -> ModSet {
@@ -182,6 +189,9 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
         'k' | 'p' => Shortcut::Palette,
         'b' => Shortcut::ToggleSidebar,
         'j' => Shortcut::JumpToAttention,
+        'd' if mods.shift && cfg!(target_os = "macos") => Shortcut::SplitDown,
+        'd' => Shortcut::SplitRight,
+        'e' => Shortcut::SplitDown,
         'n' => Shortcut::NewSession,
         ']' | '}' => Shortcut::NextTerminal,
         '[' | '{' => Shortcut::PreviousTerminal,
@@ -197,6 +207,19 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
 pub fn scroll_shortcut(key: &Key, mods: Mods) -> Option<Shortcut> {
     if !(mods.cmd && cfg!(target_os = "macos")) {
         return None;
+    }
+    // ⌘⌥ arrows move between panes; ⌘⇧↩ zooms one.
+    if mods.alt {
+        return match key {
+            Key::Left => Some(Shortcut::FocusLeft),
+            Key::Right => Some(Shortcut::FocusRight),
+            Key::Up => Some(Shortcut::FocusUp),
+            Key::Down => Some(Shortcut::FocusDown),
+            _ => None,
+        };
+    }
+    if mods.shift && *key == Key::Enter {
+        return Some(Shortcut::ZoomPane);
     }
     match key {
         Key::Home | Key::Up => Some(Shortcut::ScrollTop),

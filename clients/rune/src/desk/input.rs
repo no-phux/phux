@@ -1,7 +1,10 @@
 //! What the user does to the shown terminal: keys and shortcuts, paste and
 //! copy, history scrolling, and selection.
 
+use phux_client_core::layout::{Direction, SplitDir};
+use phux_client_runtime::ViewId;
 use phux_client_runtime::engine::{Scroll, SelectionGestureEvent};
+use phux_protocol::ids::ResourceId;
 use rune::{Phase, Tx};
 
 use super::Desk;
@@ -109,6 +112,13 @@ impl Desk {
             Shortcut::Palette => self.toggle_palette(),
             Shortcut::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
             Shortcut::JumpToAttention => self.jump_to_attention(),
+            Shortcut::SplitRight => self.split(SplitDir::Horizontal),
+            Shortcut::SplitDown => self.split(SplitDir::Vertical),
+            Shortcut::ZoomPane => self.toggle_zoom(),
+            Shortcut::FocusLeft => self.focus_toward(Direction::Left),
+            Shortcut::FocusRight => self.focus_toward(Direction::Right),
+            Shortcut::FocusUp => self.focus_toward(Direction::Up),
+            Shortcut::FocusDown => self.focus_toward(Direction::Down),
         }
     }
 
@@ -175,7 +185,7 @@ impl Desk {
     }
 
     /// Wheel over the grid: whole rows through the view's history.
-    pub fn wheel(&mut self, dy: f32) {
+    pub fn wheel(&mut self, terminal: &ResourceId, dy: f32) {
         let cell_h = self.metrics().cell_h;
         self.wheel_rows += dy / cell_h;
         let rows = self.wheel_rows.trunc();
@@ -183,8 +193,22 @@ impl Desk {
             return;
         }
         self.wheel_rows -= rows;
+        let Some(view) = self.view_of(terminal) else {
+            return;
+        };
+        let Some(client) = &self.client else { return };
         // Content follows the fingers: positive dy reveals older rows.
-        self.scroll(Scroll::Delta(-(rows as i64)));
+        let _ =
+            client.with_control(|control| control.scroll_view(view, Scroll::Delta(-(rows as i64))));
+        self.generation += 1;
+    }
+
+    /// The view showing `terminal`, focused or not.
+    fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
+        match &self.shown {
+            Some(shown) if &shown.terminal == terminal => Some(shown.view),
+            _ => self.others.get(terminal).copied(),
+        }
     }
 
     /// A press, drag, or release over the grid selects through the engine.

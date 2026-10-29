@@ -7,6 +7,7 @@ use std::time::Duration;
 use phux_client_runtime::control::Status;
 use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, ViewId};
+use phux_protocol::ids::ResourceId;
 use rune::Tx;
 
 use super::{Desk, Painted};
@@ -50,42 +51,44 @@ impl Desk {
         self.blink_on = true;
     }
 
-    /// The grid area moved or resized.
-    pub fn laid_out(&mut self, area: [f32; 2]) {
-        self.area = area;
+    /// A pane's grid area moved or resized.
+    pub fn laid_out(&mut self, terminal: ResourceId, area: [f32; 2]) {
+        self.areas.insert(terminal, area);
         self.fit();
     }
 
-    /// Propose the shown terminal's size from the grid area. The runtime
-    /// refuses it for observers and before the terminal is ready; a later
-    /// drain retries.
+    /// Propose every pane's size from its grid area. The runtime refuses it
+    /// for observers and before a terminal is ready; a later drain retries.
     pub(super) fn fit(&mut self) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
+        let Some(client) = self.client.clone() else {
             return;
         };
-        if self.area[0] < 1.0 || self.area[1] < 1.0 {
-            return;
-        }
+        let mut on_screen: Vec<ResourceId> = self.others.keys().cloned().collect();
+        on_screen.extend(self.shown.as_ref().map(|s| s.terminal.clone()));
         let metrics = self.metrics();
-        let size = metrics.fit(self.area);
         let cell = metrics.cell_px();
-        if self
-            .fitted
-            .as_ref()
-            .is_some_and(|(id, fitted, px)| id == &shown.terminal && *fitted == size && *px == cell)
-        {
-            return;
-        }
-        let outcome = client.with_control(|control| {
-            control.resize_terminal_with_cell(
-                &shown.terminal,
-                size.0.into(),
-                size.1.into(),
-                Some(cell),
-            )
-        });
-        if outcome == phux_client_runtime::control::TerminalResizeOutcome::Queued {
-            self.fitted = Some((shown.terminal.clone(), size, cell));
+        for terminal in on_screen {
+            let Some(area) = self.areas.get(&terminal).copied() else {
+                continue;
+            };
+            if area[0] < 1.0 || area[1] < 1.0 {
+                continue;
+            }
+            let size = metrics.fit(area);
+            if self.fitted.get(&terminal) == Some(&(size, cell)) {
+                continue;
+            }
+            let outcome = client.with_control(|control| {
+                control.resize_terminal_with_cell(
+                    &terminal,
+                    size.0.into(),
+                    size.1.into(),
+                    Some(cell),
+                )
+            });
+            if outcome == phux_client_runtime::control::TerminalResizeOutcome::Queued {
+                self.fitted.insert(terminal, (size, cell));
+            }
         }
     }
 

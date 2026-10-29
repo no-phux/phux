@@ -6,15 +6,15 @@
 //! size, and turning Rune events into runtime calls.
 
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use phux_client_runtime::control::{
-    ControlOptions, Event, ProjectionFence, SpawnRequest, Status, Topology,
-};
+use phux_client_core::layout::{LayoutNode, SplitDir};
+use phux_client_runtime::control::{ControlOptions, Event, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target, ViewId};
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{ArrangementKey, ResourceId};
 use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
 use rune::{Tx, Waker};
 
@@ -23,7 +23,11 @@ use crate::launch::Resolved;
 
 mod frame;
 mod input;
+mod layout;
 mod palette;
+mod sessions;
+
+pub use layout::SplitPath;
 
 /// Wakes Rune's loop from the runtime's driver thread. Only posts; never
 /// re-enters the client.
@@ -49,9 +53,9 @@ pub struct Painted {
     pub epoch: u64,
 }
 
-/// A size this window asked for: the terminal, its cells, and the cell's
-/// device pixels.
-type Fitted = (ResourceId, (u16, u16), (u16, u16));
+/// A size this window asked for: a terminal's cells and the cell's device
+/// pixels.
+type Fitted = ((u16, u16), (u16, u16));
 
 /// The terminal on screen.
 pub struct Shown {
@@ -98,10 +102,25 @@ pub struct Desk {
     pub font_size: f32,
     /// The window's device pixels per point, as the last view build saw it.
     pub scale: Cell<f32>,
-    /// The grid area in points, from its last layout.
-    pub area: [f32; 2],
+    /// Each pane's grid area in points, from its last layout.
+    areas: HashMap<ResourceId, [f32; 2]>,
     /// The size this window last asked the server for, per terminal.
-    fitted: Option<Fitted>,
+    fitted: HashMap<ResourceId, Fitted>,
+    /// What the terminal area shows: the session's split tree, or the
+    /// focused pane alone.
+    pub layout: Option<LayoutNode>,
+    /// Views of the panes on screen besides the focused one.
+    pub others: HashMap<ResourceId, ViewId>,
+    /// The pane shown alone, by this window's choice.
+    pub zoomed: Option<ResourceId>,
+    /// A divider drag's split and ratio, previewed until release.
+    dragging: Option<(SplitPath, f32)>,
+    /// Spawns that become splits: the pane split and the direction.
+    pending_splits: HashMap<u32, (ResourceId, SplitDir)>,
+    /// Each split's size in points, for turning a divider drag into a ratio.
+    split_sizes: HashMap<SplitPath, [f32; 2]>,
+    /// Arrangements already asked for, so a missing one is fetched once.
+    fetched: HashSet<ArrangementKey>,
     pub focused: bool,
     gesture: u64,
     wheel_rows: f32,
@@ -137,8 +156,15 @@ impl Desk {
             generation: 0,
             font_size: grid::DEFAULT_FONT_SIZE,
             scale: Cell::new(2.0),
-            area: [0.0, 0.0],
-            fitted: None,
+            areas: HashMap::new(),
+            fitted: HashMap::new(),
+            layout: None,
+            others: HashMap::new(),
+            zoomed: None,
+            dragging: None,
+            pending_splits: HashMap::new(),
+            split_sizes: HashMap::new(),
+            fetched: HashSet::new(),
             focused: true,
             gesture: 0,
             wheel_rows: 0.0,
@@ -192,10 +218,14 @@ impl Desk {
         if self.server.is_none() {
             self.server = client.server().map(|info| format!("{info:?}"));
         }
+        let events = !observation.events.is_empty();
         for event in observation.events {
             changed |= self.apply(&client, event, tx);
         }
         changed |= self.open_wanted(&client);
+        if changed || events {
+            changed |= self.refresh_layout(&client);
+        }
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();
         changed | self.blink(&client, tx)
@@ -211,8 +241,20 @@ impl Desk {
     fn apply_view(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
         let shown = |id: &ResourceId| self.shown.as_ref().is_some_and(|s| &s.terminal == id);
         match event {
-            Event::TerminalChanged { terminal_id } if shown(&terminal_id) => {
+            Event::TerminalChanged { terminal_id }
+                if shown(&terminal_id) || self.others.contains_key(&terminal_id) =>
+            {
                 self.generation += 1;
+                true
+            }
+            Event::TerminalSpawned {
+                request_id,
+                terminal_id: Some(new),
+                ..
+            } if self.pending_splits.contains_key(&request_id) => {
+                if let Some((target, dir)) = self.pending_splits.remove(&request_id) {
+                    self.place_split(client, &target, &new, dir);
+                }
                 true
             }
             Event::TerminalSpawned {
@@ -230,7 +272,20 @@ impl Desk {
                 true
             }
             Event::TerminalClosed { terminal_id, .. } if shown(&terminal_id) => {
+                self.unplace(client, &terminal_id);
+                // Keep the keyboard in the split: a sibling takes focus.
+                let sibling = self.others.keys().next().cloned();
                 self.close_shown(client);
+                if let Some(sibling) = sibling {
+                    self.focus_pane(&sibling);
+                }
+                true
+            }
+            Event::TerminalClosed { terminal_id, .. } if self.others.contains_key(&terminal_id) => {
+                self.unplace(client, &terminal_id);
+                if let Some(view) = self.others.remove(&terminal_id) {
+                    let _ = client.destroy_view(view);
+                }
                 true
             }
             // OSC 52 only from the terminal on screen, while the window has
@@ -239,7 +294,10 @@ impl Desk {
                 tx.copy(text.0);
                 false
             }
-            Event::StatusChanged(_) | Event::TopologyChanged | Event::Attached { .. } => true,
+            Event::StatusChanged(_)
+            | Event::TopologyChanged
+            | Event::OrganizationChanged
+            | Event::Attached { .. } => true,
             _ => false,
         }
     }
@@ -251,7 +309,7 @@ impl Desk {
     fn drop_shown(&mut self, client: &Client) -> Option<ResourceId> {
         let shown = self.shown.take()?;
         let _ = client.destroy_view(shown.view);
-        self.fitted = None;
+        self.fitted.remove(&shown.terminal);
         self.painted.replace(None);
         Some(shown.terminal)
     }
@@ -265,6 +323,11 @@ impl Desk {
     /// A new connection may be a new server incarnation, whose engine forgot
     /// every view: open the shown terminal again on this connection.
     fn reopen_after_reconnect(&mut self, client: &Client) -> bool {
+        for (_, view) in self.others.drain() {
+            let _ = client.destroy_view(view);
+        }
+        self.fetched.clear();
+        self.fitted.clear();
         let Some(terminal) = self.drop_shown(client) else {
             return false;
         };
@@ -317,11 +380,20 @@ impl Desk {
             self.wanted = None;
             return false;
         }
+        if self.others.contains_key(&target) {
+            self.focus_pane(&target);
+            self.wanted = None;
+            return true;
+        }
         let Ok(view) = client.create_view(&target) else {
             self.want(target);
             return false;
         };
-        self.drop_shown(client);
+        // The old focus stays on screen if the layout still shows it.
+        if let Some(old) = self.shown.take() {
+            self.others.insert(old.terminal, old.view);
+            self.painted.replace(None);
+        }
         self.activities.seen(&target);
         self.shown = Some(Shown {
             terminal: target,
@@ -333,120 +405,11 @@ impl Desk {
         true
     }
 
-    pub fn show(&mut self, terminal: ResourceId, session_name: &str) {
-        let attached = self.selected_session_name();
-        if attached.as_deref() != Some(session_name)
-            && let Some(client) = &self.client
-        {
-            client.attach_session(AttachTarget::ByName(session_name.to_owned()));
-        }
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        // A click on the shown terminal whose view died reopens it.
-        if let Some(shown) = &self.shown
-            && shown.terminal == terminal
-            && client.acquire_view(shown.view).is_none()
-        {
-            self.drop_shown(&client);
-        }
-        self.pending_session = None;
-        self.want(terminal);
-        self.open_wanted(&client);
-    }
-
-    pub fn selected_session_name(&self) -> Option<String> {
-        let id = self.client.as_ref()?.selected_session()?;
-        let topology = self.topology.as_ref()?;
-        topology
-            .sessions
-            .iter()
-            .find(|s| s.id == id)
-            .map(|s| s.name.clone())
-    }
-
-    pub fn new_terminal(&mut self) {
-        let Some(client) = &self.client else { return };
-        let session_id = client.selected_session();
-        let request = client.spawn_terminal(SpawnRequest {
-            command: None,
-            cwd: None,
-            env: None,
-            session_id,
-            initial_size: None,
-        });
-        self.pending_spawns.push(request);
-    }
-
-    pub fn new_session(&mut self) {
-        let Some(client) = &self.client else { return };
-        let taken: Vec<String> = self
-            .topology
-            .iter()
-            .flat_map(|t| t.sessions.iter().map(|s| s.name.clone()))
-            .collect();
-        let name = loop {
-            self.sessions_seq += 1;
-            let name = format!("rune-{}", self.sessions_seq);
-            if !taken.contains(&name) {
-                break name;
-            }
-        };
-        client.attach_session(AttachTarget::CreateIfMissing {
-            name: name.clone(),
-            command: None,
-            cwd: None,
-        });
-        // Show its seed pane once the topology lists it as selected; the
-        // current terminal stays until then.
-        self.pending_session = Some(name);
-        self.wanted = None;
-    }
-
-    /// Step through every terminal the server lists.
-    pub fn cycle(&mut self, step: isize) {
-        let Some(topology) = &self.topology else {
-            return;
-        };
-        let panes = &topology.panes;
-        if panes.is_empty() {
-            return;
-        }
-        let current = self
-            .shown
-            .as_ref()
-            .and_then(|s| panes.iter().position(|p| p.terminal_id == s.terminal))
-            .unwrap_or(0);
-        let next = (current as isize + step).rem_euclid(panes.len() as isize) as usize;
-        let pane = panes[next].clone();
-        self.show(pane.terminal_id, &pane.session_name);
-    }
-
-    /// Show the next terminal, after the shown one, that needs a person.
-    pub fn jump_to_attention(&mut self) {
-        let Some(topology) = &self.topology else {
-            return;
-        };
-        let panes = &topology.panes;
-        let start = self
-            .shown
-            .as_ref()
-            .and_then(|s| panes.iter().position(|p| p.terminal_id == s.terminal))
-            .map_or(0, |i| i + 1);
-        let next = (0..panes.len())
-            .map(|k| &panes[(start + k) % panes.len()])
-            .find(|p| self.activities.mark(&p.terminal_id).needs_you())
-            .cloned();
-        if let Some(pane) = next {
-            self.show(pane.terminal_id, &pane.session_name);
-        }
-    }
-
     pub fn zoom(&mut self, size: Option<f32>) {
         self.font_size = size.map_or(grid::DEFAULT_FONT_SIZE, |s| {
             s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
         });
-        self.fitted = None;
+        self.fitted.clear();
         self.fit();
     }
 
@@ -458,8 +421,12 @@ impl Desk {
 
 impl Drop for Desk {
     fn drop(&mut self) {
-        if let (Some(client), Some(shown)) = (&self.client, self.shown.take()) {
+        let Some(client) = &self.client else { return };
+        if let Some(shown) = self.shown.take() {
             let _ = client.destroy_view(shown.view);
+        }
+        for (_, view) in self.others.drain() {
+            let _ = client.destroy_view(view);
         }
     }
 }

@@ -7,12 +7,12 @@ use rune::{Color, Cx, El, Family, TextStyle, col, el, row, text};
 use crate::desk::Desk;
 
 mod palette;
+mod panes;
 mod sidebar;
-use crate::grid;
 
 const SIDEBAR_W: f32 = 236.0;
 /// Space between the terminal area's edge and its grid.
-const PAD: f32 = 6.0;
+pub(crate) const PAD: f32 = 6.0;
 pub(crate) const LABEL: TextStyle = TextStyle::new(12.0, 400.0);
 pub(crate) const LABEL_STRONG: TextStyle = TextStyle::new(12.0, 600.0);
 pub(crate) const CAPTION: TextStyle = TextStyle::new(11.0, 500.0);
@@ -82,7 +82,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .min_h(0.0)
                 .children(top)
                 .children(paste_bar(desk, &p))
-                .child(terminal(desk, &p, cx))
+                .child(panes::view(desk, &p, cx))
                 .child(el().w_full().h(1.0).fill(p.separator))
                 .child(status_line(desk, &p)),
         );
@@ -106,52 +106,6 @@ pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(
         .cursor(rune::Cursor::Pointer)
         .on_press(press)
         .child(text(label).font(CAPTION).color(p.text))
-}
-
-fn terminal(desk: &Desk, p: &Ink, cx: &mut Cx<Desk>) -> El {
-    let area = el()
-        .key("terminal")
-        .grow(1.0)
-        .w_full()
-        .min_h(0.0)
-        .padding(PAD)
-        .on_layout(|desk: &mut Desk, rect| {
-            desk.laid_out([rect[2] - 2.0 * PAD, rect[3] - 2.0 * PAD])
-        });
-    desk.scale.set(cx.env().scale);
-    let shown = desk.client.as_ref().zip(desk.shown.as_ref());
-    let Some((frame, view)) =
-        shown.and_then(|(client, shown)| client.acquire_view(shown.view).map(|f| (f, shown.view)))
-    else {
-        desk.painted.replace(None);
-        return area.fill(p.bg).center().child(placeholder(desk, p));
-    };
-    // The exact frame this build paints, for the drawn receipt.
-    desk.painting(view, &frame);
-    let metrics = desk.metrics();
-    area.fill(grid::background(&frame))
-        .cursor(rune::Cursor::Text)
-        .on_wheel(|desk: &mut Desk, event, _| {
-            desk.wheel(event.dy);
-            true
-        })
-        .on_drag(|desk: &mut Desk, drag, _| {
-            // Drag points include the padding; the grid starts inside it.
-            desk.select(drag.phase, drag.x - PAD, drag.y - PAD, drag.clicks);
-        })
-        .child(
-            el().child(grid::paint(&frame, desk.focused, desk.blink_on, &metrics))
-                .children(
-                    (desk.focused && !desk.palette_open && desk.held_paste.is_none()).then(|| {
-                        grid::ime_layer(
-                            &frame,
-                            desk.preedit.as_deref(),
-                            &metrics,
-                            (p.text, p.raised),
-                        )
-                    }),
-                ),
-        )
 }
 
 /// A held paste: what it would do, and the choice.
@@ -186,7 +140,7 @@ fn paste_bar(desk: &Desk, p: &Ink) -> Option<El> {
     )
 }
 
-fn placeholder(desk: &Desk, p: &Ink) -> El {
+pub(crate) fn placeholder(desk: &Desk, p: &Ink) -> El {
     let (title, detail, color) = match (&desk.error, desk.status) {
         (Some(error), _) => ("Can't reach phux", error.clone(), p.danger),
         (None, Status::Idle | Status::Connecting) => ("Connecting…", String::new(), p.dim),
