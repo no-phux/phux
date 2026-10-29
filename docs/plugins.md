@@ -79,8 +79,35 @@ subdirectory is an error, and the message names both.
 
 ```sh
 phux plugin install someone/phux-plugin --rev v1.2.0
+phux plugin install someone/phux-plugin --rev 0123456789abcdef0123456789abcdef01234567
 phux plugin install https://github.com/someone/plugins --subdir plugins/usage
 ```
+
+`--rev` is a branch, a tag, or a full 40-character commit SHA. A SHA is
+fetched and checked out, and that commit stays pinned. A password or
+token in a URL (`https://user:token@host/...`) is removed before the
+address is stored or printed; the clone itself still uses the URL you
+typed. A git install whose manifest has `[[build]]` steps prints those
+commands and asks `y/N` on a terminal. Pass `--yes` to run them without
+asking. Without a terminal, `--yes` is required.
+
+### What install and update trust
+
+`install` and `update` fetch with the system `git`: a shallow clone of a
+branch or tag, or a fetch of one commit when `--rev` is a SHA. The only
+protocols git is allowed are `https`, `ssh`, `git`, and `file`. GitHub
+shorthand is `https://github.com/owner/repo` and nothing else is
+contacted. The resolved commit SHA is written to `plugins.lock`.
+
+`update` moves a branch only when the new commit is that recorded SHA or
+a descendant of it. A force-moved or rewritten branch is refused.
+`--latest` accepts the rewritten history. A commit pinned with `--rev`
+does not move unless you pass `--latest`, which then follows the
+repository's default branch.
+
+A plugin is not reviewed. It runs as you, unsandboxed: its commands and
+its build steps can do anything your user can. Read it before you
+install it.
 
 `link` takes a manifest path, or a directory holding one. The entry it
 writes looks like this, and you can write it by hand:
