@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::github::{self, CatalogMeta, RepoMeta};
+use crate::github::{self, CatalogMeta, Fetched, RepoMeta};
 use crate::validate::{self, Facts};
 use crate::{Error, Index, NOTICE, Options, Plugin, SCHEMA_VERSION, Skipped};
 
@@ -22,8 +22,9 @@ pub(crate) fn build(options: &Options) -> Result<Index, Error> {
     let repos = github::search(&options.source)?;
     let mut plugins = Vec::new();
     let mut skipped = Vec::new();
+    let read = |repo: &RepoMeta, path: &str| github::read_text(&options.source, repo, path);
     for repo in &repos {
-        index_repo(&options.source, repo, &mut plugins, &mut skipped)?;
+        index_repo(&read, repo, &mut plugins, &mut skipped)?;
     }
     add_examples(options, &repos, &mut plugins, &mut skipped)?;
     plugins.sort_by(|left, right| {
@@ -46,12 +47,15 @@ pub(crate) fn build(options: &Options) -> Result<Index, Error> {
     })
 }
 
-fn index_repo(
-    source: &crate::Source,
+fn index_repo<R>(
+    read: &R,
     repo: &RepoMeta,
     plugins: &mut Vec<Plugin>,
     skipped: &mut Vec<Skipped>,
-) -> Result<(), Error> {
+) -> Result<(), Error>
+where
+    R: Fn(&RepoMeta, &str) -> Result<Fetched, Error>,
+{
     if repo.default_branch.is_empty() {
         skipped.push(skip(repo, "", "missing default branch"));
         return Ok(());
@@ -69,23 +73,25 @@ fn index_repo(
         return Ok(());
     }
     let meta = CatalogMeta::from(repo);
-    let root = github::read_text(source, repo, "phux-plugin.toml")?;
-    let dirs = github::read_text(source, repo, "phux-plugin-dirs.toml")?;
+    let root = take(read, repo, "phux-plugin.toml", "", skipped)?;
+    let dirs = take(read, repo, "phux-plugin-dirs.toml", "", skipped)?;
     let mut listed = false;
-    if let Some(text) = &root {
+    if let Got::Text(text) = &root {
         listed = true;
-        match materialize_and_judge(source, repo, "", text)? {
-            Ok(facts) => plugins.push(plugin_from(facts, &meta, &repo.full_name, "")),
-            Err(reason) => skipped.push(skip(repo, "", &reason)),
+        match materialize_and_judge(read, repo, "", text) {
+            Ok(Ok(facts)) => plugins.push(plugin_from(facts, &meta, &repo.full_name, "")),
+            Ok(Err(reason)) => skipped.push(skip(repo, "", &reason)),
+            Err(err) => return Err(err),
         }
     }
     match dirs {
-        None => {
-            if root.is_none() {
+        Got::Missing => {
+            if matches!(root, Got::Missing) {
                 skipped.push(skip(repo, "", "no valid manifest"));
             }
         }
-        Some(text) => match parse_dirs(&text) {
+        Got::Failed => {}
+        Got::Text(text) => match parse_dirs(&text) {
             Err(reason) => skipped.push(skip(repo, "", &reason)),
             Ok(subdirs) => {
                 if subdirs.is_empty() && !listed {
@@ -100,17 +106,23 @@ fn index_repo(
                         Err(reason) => skipped.push(skip(repo, "", &reason)),
                         Ok(subdir) => {
                             let path = format!("{subdir}/phux-plugin.toml");
-                            match github::read_text(source, repo, &path)? {
-                                None => skipped.push(skip(repo, &subdir, "no valid manifest")),
-                                Some(body) => {
-                                    match materialize_and_judge(source, repo, &subdir, &body)? {
-                                        Ok(facts) => plugins.push(plugin_from(
+                            match take(read, repo, &path, &subdir, skipped)? {
+                                Got::Missing => {
+                                    skipped.push(skip(repo, &subdir, "no valid manifest"))
+                                }
+                                Got::Failed => {}
+                                Got::Text(body) => {
+                                    match materialize_and_judge(read, repo, &subdir, &body) {
+                                        Ok(Ok(facts)) => plugins.push(plugin_from(
                                             facts,
                                             &meta,
                                             &repo.full_name,
                                             &subdir,
                                         )),
-                                        Err(reason) => skipped.push(skip(repo, &subdir, &reason)),
+                                        Ok(Err(reason)) => {
+                                            skipped.push(skip(repo, &subdir, &reason))
+                                        }
+                                        Err(err) => return Err(err),
                                     }
                                 }
                             }
@@ -123,35 +135,74 @@ fn index_repo(
     Ok(())
 }
 
-fn materialize_and_judge(
-    source: &crate::Source,
+fn materialize_and_judge<R>(
+    read: &R,
     repo: &RepoMeta,
     subdir: &str,
     manifest: &str,
-) -> Result<Result<Facts, String>, Error> {
+) -> Result<Result<Facts, String>, Error>
+where
+    R: Fn(&RepoMeta, &str) -> Result<Fetched, Error>,
+{
     let logical = logical_root(&repo.full_name, subdir);
-    let temp = validate::scratch()?;
+    let temp = match validate::scratch() {
+        Ok(temp) => temp,
+        Err(err) => return Ok(Err(err.to_string())),
+    };
     let manifest_path = temp.path().join("phux-plugin.toml");
-    fs::write(&manifest_path, manifest)
-        .map_err(|err| Error::new(format!("writing a temporary manifest: {err}")))?;
+    if let Err(err) = fs::write(&manifest_path, manifest) {
+        return Ok(Err(format!("could not store manifest: {err}")));
+    }
     for relative in validate::theme_color_rels(manifest) {
         let remote = if subdir.is_empty() {
             relative.clone()
         } else {
             format!("{subdir}/{relative}")
         };
-        let Some(body) = github::read_text(source, repo, &remote)? else {
-            continue;
+        let body = match read(repo, &remote) {
+            Ok(Fetched::Text(body)) => body,
+            Ok(Fetched::Missing) => continue,
+            Ok(Fetched::Skip(reason)) => return Ok(Err(reason)),
+            Err(err) => return Err(err),
         };
         let destination = temp.path().join(&relative);
         if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| Error::new(format!("writing a theme file: {err}")))?;
+            if let Err(err) = fs::create_dir_all(parent) {
+                return Ok(Err(format!("could not store manifest: {err}")));
+            }
         }
-        fs::write(&destination, body)
-            .map_err(|err| Error::new(format!("writing a theme file: {err}")))?;
+        if let Err(err) = fs::write(&destination, body) {
+            return Ok(Err(format!("could not store manifest: {err}")));
+        }
     }
     Ok(validate::judge(&manifest_path, &logical))
+}
+
+enum Got {
+    Text(String),
+    Missing,
+    Failed,
+}
+
+fn take<R>(
+    read: &R,
+    repo: &RepoMeta,
+    path: &str,
+    subdir: &str,
+    skipped: &mut Vec<Skipped>,
+) -> Result<Got, Error>
+where
+    R: Fn(&RepoMeta, &str) -> Result<Fetched, Error>,
+{
+    match read(repo, path) {
+        Ok(Fetched::Text(text)) => Ok(Got::Text(text)),
+        Ok(Fetched::Missing) => Ok(Got::Missing),
+        Ok(Fetched::Skip(reason)) => {
+            skipped.push(skip(repo, subdir, &reason));
+            Ok(Got::Failed)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn add_examples(
@@ -315,5 +366,82 @@ mod tests {
         assert!(valid_stamp("2026-01-15T00:00:00Z"));
         assert!(!valid_stamp("2026-01-15T00:00:00+00:00"));
         assert!(!valid_stamp("2026-01-15"));
+    }
+
+    #[test]
+    fn one_hostile_repo_does_not_abort_the_index() {
+        let root = validate::scratch().expect("temp");
+        let fixtures = root.path().join("fixtures");
+        write_plugin(&fixtures, "acme/good", b"id = \"acme.good\"\nname = \"Good\"\nversion = \"0.1.0\"\nmin_phux_version = \"0.0.2\"\n");
+        write_bytes(&fixtures, "acme/binary", &[0xff, 0xfe, 0xfd]);
+        write_bytes(&fixtures, "acme/huge", &vec![b'a'; (1024 * 1024) + 1]);
+        let dir_manifest = fixtures.join("repos/acme/dir/phux-plugin.toml");
+        fs::create_dir_all(&dir_manifest).expect("directory manifest");
+        let offline = crate::Source::Offline { fixtures };
+        let read = |repo: &RepoMeta, path: &str| {
+            if repo.full_name == "acme/denied" {
+                return github::classify_body(403, "", b"forbidden".to_vec(), 1024 * 1024);
+            }
+            github::read_text(&offline, repo, path)
+        };
+        let mut plugins = Vec::new();
+        let mut skipped = Vec::new();
+        for name in [
+            "acme/good",
+            "acme/binary",
+            "acme/huge",
+            "acme/dir",
+            "acme/denied",
+        ] {
+            index_repo(&read, &sample_repo(name), &mut plugins, &mut skipped).expect("index");
+        }
+        assert_eq!(plugins.len(), 1, "{skipped:?}");
+        assert_eq!(plugins[0].name, "Good");
+        let reasons: Vec<&str> = skipped.iter().map(|skip| skip.reason.as_str()).collect();
+        assert!(
+            reasons.iter().any(|reason| reason.contains("not UTF-8")),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("exceeds 1 MiB")),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons.iter().any(|reason| reason.contains("directory")),
+            "{reasons:?}"
+        );
+        assert!(reasons.contains(&"HTTP 403"), "{reasons:?}");
+        let limited = github::classify_body(
+            403,
+            "retry-after: 60\n",
+            b"rate limit".to_vec(),
+            1024 * 1024,
+        );
+        assert!(limited.is_err(), "a rate limit stays fatal");
+    }
+
+    fn sample_repo(name: &str) -> RepoMeta {
+        RepoMeta {
+            full_name: name.to_owned(),
+            archived: false,
+            fork: false,
+            private: false,
+            default_branch: "main".to_owned(),
+            stars: 1,
+            pushed_at: "2026-01-01T00:00:00Z".to_owned(),
+            license: None,
+        }
+    }
+
+    fn write_plugin(fixtures: &Path, repo: &str, body: &[u8]) {
+        write_bytes(fixtures, repo, body);
+    }
+
+    fn write_bytes(fixtures: &Path, repo: &str, body: &[u8]) {
+        let path = fixtures.join("repos").join(repo).join("phux-plugin.toml");
+        fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        fs::write(path, body).expect("write");
     }
 }

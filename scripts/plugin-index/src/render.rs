@@ -85,11 +85,59 @@ pub fn render_markdown(index: &Index) -> String {
 }
 
 fn cell(text: &str) -> String {
-    one_cell(text).replace('|', "\\|")
+    escape_markdown(text)
 }
 
 fn one_cell(text: &str) -> String {
-    text.replace(['\n', '\r'], " ")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    escape_markdown(text)
+}
+
+/// Escape characters that would start a link, an image, an autolink, or a new table cell.
+fn escape_markdown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\\' | '`' | '[' | ']' | '(' | ')' | '!' | '|' | '<' | '>' | '*' | '_' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '\n' | '\r' => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Index, NOTICE, Plugin, SCHEMA_VERSION};
+
+    #[test]
+    fn names_cannot_inject_a_markdown_link_or_image() {
+        let index = Index {
+            schema_version: SCHEMA_VERSION,
+            generated_at: "2026-01-15T00:00:00Z".to_owned(),
+            notice: NOTICE.to_owned(),
+            plugins: vec![Plugin {
+                repo: "acme/widgets".to_owned(),
+                subdir: String::new(),
+                id: "acme.widgets".to_owned(),
+                name: "![x](https://evil.example/a.png)".to_owned(),
+                description: "[click](https://evil.example)".to_owned(),
+                kinds: vec!["actions".to_owned()],
+                min_phux_version: "0.0.2".to_owned(),
+                stars: Some(1),
+                pushed_at: None,
+                license: None,
+                install: "phux plugin install https://github.com/acme/widgets".to_owned(),
+            }],
+            skipped: Vec::new(),
+        };
+        let markdown = render_markdown(&index);
+        assert!(!markdown.contains("]("), "{markdown}");
+        assert!(!markdown.contains("!["), "{markdown}");
+        assert!(markdown.contains("\\[click\\]"), "{markdown}");
+        assert!(markdown.contains("\\!\\[x\\]"), "{markdown}");
+    }
 }

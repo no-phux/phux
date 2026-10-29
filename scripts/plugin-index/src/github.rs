@@ -8,6 +8,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -17,7 +19,17 @@ use crate::{Error, Source};
 const SEARCH_URL: &str =
     "https://api.github.com/search/repositories?q=topic%3Aphux-plugin+fork%3Atrue&per_page=100";
 const API_ROOT: &str = "https://api.github.com/";
-const FILE_LIMIT: u64 = 1024 * 1024 + 1;
+/// A manifest larger than this is skipped. Checked from `Content-Length` or
+/// the file size before the body is stored.
+const FILE_LIMIT: u64 = 1024 * 1024;
+
+/// One repository file. [`Fetched::Skip`] is that repository only.
+#[derive(Debug)]
+pub(crate) enum Fetched {
+    Text(String),
+    Missing,
+    Skip(String),
+}
 const SEARCH_LIMIT: u64 = 2 * 1024 * 1024;
 const MAX_PAGES: usize = 10;
 const MAX_WAIT: Duration = Duration::from_secs(20);
@@ -90,28 +102,26 @@ trait Get {
 pub(crate) fn search(source: &Source) -> Result<Vec<RepoMeta>, Error> {
     match source {
         Source::Offline { fixtures } => offline_search(fixtures),
-        Source::Github { token } => {
+        Source::Github { token, budget } => {
             let client = CurlClient {
                 token: token.clone(),
+                budget: Arc::clone(budget),
             };
             collect_search(&client, &mut |delay| std::thread::sleep(delay))
         }
     }
 }
 
-pub(crate) fn read_text(
-    source: &Source,
-    repo: &RepoMeta,
-    path: &str,
-) -> Result<Option<String>, Error> {
+pub(crate) fn read_text(source: &Source, repo: &RepoMeta, path: &str) -> Result<Fetched, Error> {
     match source {
         Source::Offline { fixtures } => offline_file(fixtures, &repo.full_name, path),
-        Source::Github { token } => {
+        Source::Github { token, budget } => {
             let client = CurlClient {
                 token: token.clone(),
+                budget: Arc::clone(budget),
             };
             let url = contents_url(&repo.full_name, &repo.default_branch, path)?;
-            http_text(&client, &url, "application/vnd.github.raw", FILE_LIMIT)
+            read_online(&client, &url, "application/vnd.github.raw", FILE_LIMIT)
         }
     }
 }
@@ -142,19 +152,18 @@ pub(crate) fn fetch_repo(source: &Source, full_name: &str) -> Result<Option<Repo
             }
             Ok(Some(repo))
         }
-        Source::Github { token } => {
+        Source::Github { token, budget } => {
             let client = CurlClient {
                 token: token.clone(),
+                budget: Arc::clone(budget),
             };
             let url = format!("{API_ROOT}repos/{full_name}");
-            match http_text(&client, &url, "application/vnd.github+json", SEARCH_LIMIT)? {
-                None => Ok(None),
-                Some(text) => {
-                    let raw: RawRepo = serde_json::from_str(&text).map_err(|err| {
-                        Error::new(format!("repository {full_name} metadata: {err}"))
-                    })?;
-                    Ok(Some(normalize_repo(raw)?))
-                }
+            match read_online(&client, &url, "application/vnd.github+json", SEARCH_LIMIT)? {
+                Fetched::Text(text) => match serde_json::from_str::<RawRepo>(&text) {
+                    Ok(raw) => Ok(normalize_repo(raw).ok()),
+                    Err(_) => Ok(None),
+                },
+                Fetched::Missing | Fetched::Skip(_) => Ok(None),
             }
         }
     }
@@ -222,37 +231,49 @@ pub(crate) fn valid_repo_name(name: &str) -> bool {
     ok(owner) && ok(repo)
 }
 
-fn offline_file(fixtures: &Path, repo: &str, path: &str) -> Result<Option<String>, Error> {
+fn offline_file(fixtures: &Path, repo: &str, path: &str) -> Result<Fetched, Error> {
     let base = repo_dir(fixtures, repo)?;
     if !base.is_dir() {
-        return Ok(None);
+        return Ok(Fetched::Missing);
     }
-    crate::validate::safe_relative(path).map_err(Error::new)?;
+    if crate::validate::safe_relative(path).is_err() {
+        return Ok(Fetched::Skip(format!("invalid plugin directory: {path}")));
+    }
     let full = base.join(path);
+    if full.is_dir() {
+        return Ok(Fetched::Skip("manifest path is a directory".to_owned()));
+    }
     if !full.is_file() {
-        return Ok(None);
+        return Ok(Fetched::Missing);
     }
-    let canon_base = base
-        .canonicalize()
-        .map_err(|err| Error::new(format!("fixture {}: {err}", base.display())))?;
-    let canon = full
-        .canonicalize()
-        .map_err(|err| Error::new(format!("fixture {}: {err}", full.display())))?;
+    let canon_base = match base.canonicalize() {
+        Ok(path) => path,
+        Err(err) => return Ok(Fetched::Skip(format!("could not read manifest: {err}"))),
+    };
+    let canon = match full.canonicalize() {
+        Ok(path) => path,
+        Err(err) => return Ok(Fetched::Skip(format!("could not read manifest: {err}"))),
+    };
     if !canon.starts_with(&canon_base) {
-        return Err(Error::new("fixture path escapes the repository directory"));
+        return Ok(Fetched::Skip(
+            "fixture path escapes the repository directory".to_owned(),
+        ));
     }
-    let len = fs::metadata(&canon)
-        .map_err(|err| Error::new(err.to_string()))?
-        .len();
+    let len = match fs::metadata(&canon) {
+        Ok(meta) => meta.len(),
+        Err(err) => return Ok(Fetched::Skip(format!("could not read manifest: {err}"))),
+    };
     if len > FILE_LIMIT {
-        return Err(Error::new(format!(
-            "{} exceeds the manifest size limit",
-            full.display()
-        )));
+        return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
     }
-    fs::read_to_string(&canon)
-        .map(Some)
-        .map_err(|err| Error::new(format!("reading {}: {err}", full.display())))
+    let bytes = match fs::read(&canon) {
+        Ok(bytes) => bytes,
+        Err(err) => return Ok(Fetched::Skip(format!("could not read manifest: {err}"))),
+    };
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(Fetched::Text(text)),
+        Err(_) => Ok(Fetched::Skip("manifest is not UTF-8".to_owned())),
+    }
 }
 
 fn repo_dir(fixtures: &Path, repo: &str) -> Result<PathBuf, Error> {
@@ -332,27 +353,99 @@ fn collect_search(
     Ok(repos)
 }
 
-fn http_text(
-    client: &dyn Get,
-    url: &str,
-    accept: &str,
+fn read_online(client: &CurlClient, url: &str, accept: &str, limit: u64) -> Result<Fetched, Error> {
+    let head = match exchange(client, url, accept, limit, true) {
+        Ok(call) => call,
+        Err(err) => return Ok(Fetched::Skip(format!("could not fetch manifest: {err}"))),
+    };
+    let Call::Done(head) = head else {
+        return Ok(Fetched::Skip("request cap reached".to_owned()));
+    };
+    if rate_limited(head.status, &head.headers, &head.body) {
+        return Err(Error::new(
+            "GitHub rate limit needs longer than 20s; set GITHUB_TOKEN to raise it",
+        ));
+    }
+    if let Some(len) = content_length(&head.headers) {
+        if len > limit {
+            return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
+        }
+    }
+    match head.status {
+        404 => return Ok(Fetched::Missing),
+        403 => return Ok(Fetched::Skip("HTTP 403".to_owned())),
+        200 => {}
+        other => return Ok(Fetched::Skip(format!("HTTP {other}"))),
+    }
+    let got = match exchange(client, url, accept, limit, false) {
+        Ok(call) => call,
+        Err(err) => return Ok(Fetched::Skip(format!("could not fetch manifest: {err}"))),
+    };
+    let Call::Done(got) = got else {
+        return Ok(Fetched::Skip("request cap reached".to_owned()));
+    };
+    if let Some(len) = content_length(&got.headers) {
+        if len > limit {
+            return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
+        }
+    }
+    if rate_limited(got.status, &got.headers, &got.body) {
+        return Err(Error::new(
+            "GitHub rate limit needs longer than 20s; set GITHUB_TOKEN to raise it",
+        ));
+    }
+    classify_body(got.status, &got.headers, got.body, limit)
+}
+
+pub(crate) fn classify_body(
+    status: u16,
+    headers: &str,
+    body: Vec<u8>,
     limit: u64,
-) -> Result<Option<String>, Error> {
-    let response = get_retrying(client, url, accept, limit, &mut |delay| {
-        std::thread::sleep(delay)
-    })?;
-    if response.status == 404 {
-        return Ok(None);
+) -> Result<Fetched, Error> {
+    if rate_limited(status, headers, &body) {
+        return Err(Error::new(
+            "GitHub rate limit needs longer than 20s; set GITHUB_TOKEN to raise it",
+        ));
     }
-    if response.status != 200 {
-        return Err(Error::new(format!(
-            "GitHub returned HTTP {} for {url}",
-            response.status
-        )));
+    if status == 404 {
+        return Ok(Fetched::Missing);
     }
-    let text = String::from_utf8(response.body)
-        .map_err(|_| Error::new(format!("GitHub file was not UTF-8: {url}")))?;
-    Ok(Some(text))
+    if status == 403 {
+        return Ok(Fetched::Skip("HTTP 403".to_owned()));
+    }
+    if status != 200 {
+        return Ok(Fetched::Skip(format!("HTTP {status}")));
+    }
+    if body.len() as u64 > limit {
+        return Ok(Fetched::Skip("manifest exceeds 1 MiB".to_owned()));
+    }
+    if header(headers, "content-type").is_some_and(|kind| kind.contains("application/json"))
+        && body.first().is_none_or(|byte| *byte == b'[')
+    {
+        return Ok(Fetched::Skip("manifest path is a directory".to_owned()));
+    }
+    match String::from_utf8(body) {
+        Ok(text) => Ok(Fetched::Text(text)),
+        Err(_) => Ok(Fetched::Skip("manifest is not UTF-8".to_owned())),
+    }
+}
+
+fn rate_limited(status: u16, headers: &str, body: &[u8]) -> bool {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    status == 429 || (status == 403 && retry_wait(status, headers, body, now).is_some())
+}
+
+fn content_length(headers: &str) -> Option<u64> {
+    header(headers, "content-length").and_then(|text| text.parse().ok())
+}
+
+enum Call {
+    Done(Response),
+    Capped,
 }
 
 fn response_url_ok(url: &str) -> bool {
@@ -451,10 +544,51 @@ fn percent_encode(text: &str) -> String {
 
 struct CurlClient {
     token: Option<String>,
+    budget: Arc<AtomicU32>,
+}
+
+impl CurlClient {
+    fn charge(&self) -> bool {
+        loop {
+            let left = self.budget.load(Ordering::Relaxed);
+            if left == 0 {
+                return false;
+            }
+            if self
+                .budget
+                .compare_exchange(left, left - 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+}
+
+fn exchange(
+    client: &CurlClient,
+    url: &str,
+    accept: &str,
+    limit: u64,
+    head: bool,
+) -> Result<Call, Error> {
+    if !client.charge() {
+        return Ok(Call::Capped);
+    }
+    client.perform(url, accept, limit, head).map(Call::Done)
 }
 
 impl Get for CurlClient {
     fn get(&self, url: &str, accept: &str, limit: u64) -> Result<Response, Error> {
+        if !self.charge() {
+            return Err(Error::new("request cap reached"));
+        }
+        self.perform(url, accept, limit, false)
+    }
+}
+
+impl CurlClient {
+    fn perform(&self, url: &str, accept: &str, limit: u64, head: bool) -> Result<Response, Error> {
         if !url.starts_with(API_ROOT) {
             return Err(Error::new("refusing a request outside api.github.com"));
         }
@@ -462,7 +596,8 @@ impl Get for CurlClient {
         let header_path = dir.path().join("headers");
         let body_path = dir.path().join("body");
         let config = curl_config(accept, self.token.as_deref());
-        let mut child = Command::new("curl")
+        let mut command = Command::new("curl");
+        command
             .arg("--silent")
             .arg("--show-error")
             .arg("--location")
@@ -475,9 +610,17 @@ impl Get for CurlClient {
             .arg("--config")
             .arg("-")
             .arg("--dump-header")
-            .arg(&header_path)
-            .arg("--output")
-            .arg(&body_path)
+            .arg(&header_path);
+        if head {
+            command.arg("--head").arg("--output").arg("/dev/null");
+        } else {
+            command
+                .arg("--max-filesize")
+                .arg(limit.to_string())
+                .arg("--output")
+                .arg(&body_path);
+        }
+        let mut child = command
             .arg("--write-out")
             .arg("%{http_code} %{url_effective}")
             .arg(url)
@@ -499,6 +642,13 @@ impl Get for CurlClient {
             &String::from_utf8_lossy(&output.stderr),
             self.token.as_deref(),
         );
+        if output.status.code() == Some(63) {
+            return Ok(Response {
+                status: 200,
+                headers: format!("content-length: {}\n", limit.saturating_add(1)),
+                body: Vec::new(),
+            });
+        }
         if !output.status.success() {
             return Err(Error::new(format!(
                 "curl failed ({status}): {stderr}",
@@ -512,16 +662,26 @@ impl Get for CurlClient {
             return Err(Error::new("GitHub response URL left api.github.com"));
         }
         let headers = fs::read_to_string(&header_path).unwrap_or_default();
-        let len = fs::metadata(&body_path).map(|meta| meta.len()).unwrap_or(0);
-        if len > limit {
-            return Err(Error::new(format!(
-                "GitHub response exceeded {limit} bytes"
-            )));
-        }
-        let body = fs::read(&body_path).unwrap_or_default();
+        let len = if head {
+            0
+        } else {
+            fs::metadata(&body_path).map(|meta| meta.len()).unwrap_or(0)
+        };
+        // The announced size was checked before this GET. A body that still
+        // grew past the cap is not stored.
+        let body = if head || len > limit {
+            Vec::new()
+        } else {
+            fs::read(&body_path).unwrap_or_default()
+        };
+        let headers = if !head && len > limit {
+            format!("content-length: {len}\n")
+        } else {
+            last_header_block(&headers).to_owned()
+        };
         Ok(Response {
             status,
-            headers: last_header_block(&headers).to_owned(),
+            headers,
             body,
         })
     }
@@ -662,5 +822,33 @@ mod tests {
     fn a_long_rate_limit_wait_is_refused() {
         let wait = retry_wait(403, "retry-after: 60\n", b"", 0);
         assert!(wait.is_some_and(|delay| delay > MAX_WAIT));
+    }
+
+    #[test]
+    fn a_plain_403_is_a_skip_and_a_rate_limit_is_fatal() {
+        let skipped = classify_body(403, "", b"forbidden".to_vec(), FILE_LIMIT).expect("skip");
+        assert!(matches!(skipped, Fetched::Skip(reason) if reason == "HTTP 403"));
+        let fatal = classify_body(403, "retry-after: 60\n", b"rate limit".to_vec(), FILE_LIMIT);
+        assert!(fatal.is_err());
+    }
+
+    #[test]
+    fn the_request_cap_skips_without_calling_curl() {
+        let source = Source::Github {
+            token: None,
+            budget: Arc::new(AtomicU32::new(0)),
+        };
+        let repo = RepoMeta {
+            full_name: "acme/widgets".to_owned(),
+            archived: false,
+            fork: false,
+            private: false,
+            default_branch: "main".to_owned(),
+            stars: 0,
+            pushed_at: "2026-01-01T00:00:00Z".to_owned(),
+            license: None,
+        };
+        let fetched = read_text(&source, &repo, "phux-plugin.toml").expect("capped");
+        assert!(matches!(fetched, Fetched::Skip(reason) if reason == "request cap reached"));
     }
 }

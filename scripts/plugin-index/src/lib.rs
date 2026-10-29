@@ -16,11 +16,21 @@ mod render;
 mod validate;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 pub use render::{render_json, render_markdown};
 
 /// Document version written into every index.
+///
+/// Adding, removing, or renaming a field bumps this. A reader that only
+/// knows an older `schema_version` must not assume the new fields are absent
+/// in a compatible way: an additive field is still a new document.
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// GitHub requests one index build will make before later repositories are
+/// skipped. Search pages count, and so does each manifest fetch.
+pub const MAX_HTTP_REQUESTS: u32 = 500;
 
 /// The line the index carries about how plugins run.
 pub const NOTICE: &str = "Plugins run as the user and aren't sandboxed (see docs/plugins.md).";
@@ -59,7 +69,20 @@ pub enum Source {
     Github {
         /// `GITHUB_TOKEN` when one was provided. Empty means unauthenticated.
         token: Option<String>,
+        /// Remaining HTTP calls for this build. Shared across every fetch.
+        budget: Arc<AtomicU32>,
     },
+}
+
+impl Source {
+    /// GitHub source with a fresh [`MAX_HTTP_REQUESTS`] budget.
+    #[must_use]
+    pub fn github(token: Option<String>) -> Self {
+        Self::Github {
+            token,
+            budget: Arc::new(AtomicU32::new(MAX_HTTP_REQUESTS)),
+        }
+    }
 }
 
 /// Inputs for one index build.

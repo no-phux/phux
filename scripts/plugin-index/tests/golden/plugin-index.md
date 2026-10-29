@@ -13,7 +13,7 @@ Generated 2026-01-15T00:00:00Z.
 ## Skipped
 
 - `acme/baddirs` — invalid plugin directory: ../escape
-- `acme/broken` — invalid manifest: acme/broken/phux-plugin.toml: event `nope` listens for `on-startup`, which is not a hook event; it will never fire
+- `acme/broken` — invalid manifest: acme/broken/phux-plugin.toml: event \`nope\` listens for \`on-startup\`, which is not a hook event; it will never fire
 - `acme/empty` — no valid manifest
 - `acme/forked` — fork
 - `acme/old` — archived

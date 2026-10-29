@@ -65,7 +65,7 @@ fn run() -> Result<(), Failure> {
         .map_err(|err| Failure::fail(err.to_string()))?;
     let source = match args.offline {
         Some(fixtures) => Source::Offline { fixtures },
-        None => Source::Github { token },
+        None => Source::github(token),
     };
     let index = build_index(&Options {
         source,

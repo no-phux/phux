@@ -8,7 +8,7 @@
   "required": ["schema_version", "generated_at", "notice", "plugins", "skipped"],
   "properties": {
     "schema_version": {
-      "description": "Index document version.",
+      "description": "Index document version. Adding, removing, or renaming a field bumps this value, including an additive field.",
       "const": 1
     },
     "generated_at": {
@@ -64,13 +64,15 @@
           "minLength": 1
         },
         "name": {
-          "description": "Manifest name.",
+          "description": "Manifest name, capped at 200 characters.",
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 200
         },
         "description": {
-          "description": "Manifest description, or an empty string when the manifest omits it.",
-          "type": "string"
+          "description": "Manifest description, or an empty string when the manifest omits it. Capped at 500 characters.",
+          "type": "string",
+          "maxLength": 500
         },
         "kinds": {
           "description": "Manifest sections that declare something. Order is fixed.",

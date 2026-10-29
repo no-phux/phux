@@ -110,11 +110,26 @@ pub(crate) fn facts_of(manifest: &PluginManifest) -> Facts {
     }
     Facts {
         id: manifest.id.clone(),
-        name: manifest.name.clone(),
-        description: manifest.description.clone().unwrap_or_default(),
+        name: cap_field(&manifest.name, NAME_MAX_CHARS),
+        description: cap_field(
+            &manifest.description.clone().unwrap_or_default(),
+            DESCRIPTION_MAX_CHARS,
+        ),
         min_phux_version: manifest.min_phux_version.clone(),
         kinds,
     }
+}
+
+/// Indexed `name` length, in Unicode scalars. Matches the schema `maxLength`.
+pub(crate) const NAME_MAX_CHARS: usize = 200;
+/// Indexed `description` length, in Unicode scalars.
+pub(crate) const DESCRIPTION_MAX_CHARS: usize = 500;
+
+pub(crate) fn cap_field(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    text.chars().take(max_chars).collect()
 }
 
 /// Theme palette paths (`themes/name/colors.toml`) declared by a manifest.
@@ -274,6 +289,24 @@ path = "themes/demo"
                     .unwrap_or("/tmp")
             ),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn over_long_name_and_description_are_capped() {
+        let name = "n".repeat(NAME_MAX_CHARS + 40);
+        let description = "d".repeat(DESCRIPTION_MAX_CHARS + 40);
+        let body = format!(
+            "id = \"acme.long\"\nname = \"{name}\"\nversion = \"0.1.0\"\nmin_phux_version = \"0.0.2\"\ndescription = \"{description}\"\n"
+        );
+        let (_dir, path) = write_manifest(&body);
+        let facts = judge(&path, "acme/long").expect("valid");
+        assert_eq!(facts.name.chars().count(), NAME_MAX_CHARS);
+        assert_eq!(facts.description.chars().count(), DESCRIPTION_MAX_CHARS);
+        assert!(
+            !facts
+                .description
+                .contains(&"d".repeat(DESCRIPTION_MAX_CHARS + 1))
         );
     }
 
