@@ -15,8 +15,9 @@ Download the newest `rune-v*` prerelease from
 [Releases](https://github.com/no-phux/phux/releases?q=rune-v&expanded=true):
 
 - **macOS (Apple silicon)**: `phux-rune-VERSION-macos-arm64.zip`. Unzip and
-  move **Phux Rune.app** to Applications. The alpha is ad-hoc signed, not
-  notarized: the first time, Control-click the app and choose **Open**.
+  move **Phux Rune.app** to Applications, then open it. From 0.1.0-alpha.3
+  the app is Developer ID signed, Apple-notarized and stapled, like the GPUI
+  desktop; earlier alphas were ad-hoc signed and Gatekeeper refuses them.
 - **Linux (x86_64)**: `phux-rune-VERSION-linux-x86_64.tar.gz`, then run
   `phux-rune`. Needs Vulkan and `libxkbcommon-x11`.
 
@@ -49,6 +50,15 @@ session (or `--session NAME`). It never creates a session on its own.
   selection, on device-pixel cells. Each pane follows its own size. Programs
   that track the mouse get it; the wheel scrolls history, or sends arrows in
   full-screen programs. Input methods compose at the cursor.
+- **Find.** ⌘F searches the focused pane's loaded history, newest first:
+  ↩ and ⌘G walk back, ⇧↩ and ⌘⇧G forward, Aa toggles case, ⌘E searches
+  for the selection. The match is selected and scrolled to.
+- **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
+  see where it goes in the status line; ⌘-click opens it. URLs wrapped
+  across rows count. Only `http`, `https` and `mailto` open.
+- **History.** Scrolled back, a pane shows where it is in its history and a
+  pill back to the live tail that counts the lines that arrived meanwhile.
+- Text size and the folded sidebar are remembered between launches.
 - Closing the window detaches; the server and its programs keep running. The
   window title follows the focused terminal.
 
@@ -63,12 +73,16 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘W | Close the terminal (asks unless its prompt is idle) |
 | ⌘] / ⌘[ | Next / previous terminal |
 | ⌘B | Fold the sidebar |
+| ⌘F / ⌘G / ⌘⇧G | Find / older match / newer match |
+| ⌘E | Find the selected text |
+| ⌘-click | Open the link under the pointer |
 | ⌘C / ⌘V | Copy the selection / paste (bracketed by the server) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
 | ⌘↑ / ⌘↓ | Top / bottom of history |
 | Drag, double- and triple-click | Select by cell, word, line (Shift selects over mouse-tracking programs) |
 
-On Linux the same chords use Ctrl-Shift (split down is Ctrl-Shift-E);
+On Linux the same chords use Ctrl-Shift (split down is Ctrl-Shift-E, and
+Ctrl-click opens links);
 plain Ctrl chords go to the shell. Ctrl and Alt chords follow the key's
 position, so Ctrl-C is ^C on any layout.
 
@@ -80,9 +94,13 @@ cancels).
 
 - One window; arrangement tabs (groups) other than the active one are not
   shown.
-- No settings, themes, or Kitty images; no search in history yet.
+- No settings window, themes, or Kitty images. Find covers the history the
+  window has loaded, not the server's whole scrollback.
 - Option types layout characters on macOS (no Option-as-Meta).
-- macOS builds are ad-hoc signed; no auto-update.
+- A URL that fills a row is assumed to continue on the next one (frames
+  carry no soft-wrap flag yet); the status line shows the joined target
+  before a ⌘-click.
+- No DMG or auto-update yet; the ZIP is the macOS download.
 
 ## Develop
 
@@ -109,16 +127,20 @@ cargo run -- --socket /tmp/phux-test/s --script typing.json --snap out.png --at 
 ```
 
 `scripts/package.sh VERSION OUT_DIR` builds the release archive for the
-host. Pushing a `rune-vVERSION` tag runs
+host (ad-hoc signed; a local build may link the dev shell's libraries, so
+ship only CI builds). Pushing a `rune-vVERSION` tag runs
 [`rune-client.yml`](../../.github/workflows/rune-client.yml), which tests,
-packages macOS and Linux, and publishes a prerelease.
+packages macOS and Linux, signs and notarizes the macOS app with
+`scripts/ci/sign-macos-desktop.sh --zip-only` (the GPUI desktop's Apple
+credentials), and publishes a prerelease.
 
 | Module | Owns |
 | --- | --- |
 | `launch` | command line, finding the CLI, `phux server --ensure` |
-| `desk` | the runtime client and what is on screen; `desk/*`: layout and splits, frames and fit, input, mouse, palette, sessions |
+| `desk` | the runtime client and what is on screen; `desk/*`: layout and splits, frames and fit, input, mouse, find, links, palette, sessions |
+| `links` | OSC 8 hyperlinks and written URLs under a cell |
 | `activity` | per-terminal agent state, commands and bells, and what needs you |
 | `palette` | palette items and fuzzy ranking |
 | `grid` | cell metrics and the draw list as Rune elements |
 | `keys` | Rune keys as phux key atoms and app shortcuts |
-| `ui` | window composition; `ui/*`: sidebar, panes, palette overlay |
+| `ui` | window composition; `ui/*`: sidebar, panes, pane overlays (find, history), palette |

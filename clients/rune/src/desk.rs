@@ -12,19 +12,20 @@ use std::time::{Duration, Instant};
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_client_core::org_ops::OrgOutcome;
-use phux_client_runtime::control::{ControlOptions, Event, ProjectionFence, Status, Topology};
+use phux_client_runtime::control::{Event, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
-use phux_client_runtime::{Client, ClientOptions, Listener, Runtime, Target, ViewId};
+use phux_client_runtime::{Client, Listener, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId};
-use phux_protocol::wire::frame::{AttachTarget, RolePolicy};
 use rune::{Tx, Waker};
 
 use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
+mod find;
 mod frame;
 mod input;
 mod layout;
+mod links;
 mod mouse;
 mod palette;
 mod sessions;
@@ -44,6 +45,9 @@ impl Listener for Wake {
 /// How long a requested terminal may stay missing from the server's list
 /// before the window gives up on it (a spawn's id lands before its listing).
 const WANTED_GRACE: Duration = Duration::from_secs(5);
+
+/// Where Rune keeps this app's settings; the bundle identifier.
+const PREFS_ID: &str = "sh.phux.rune";
 
 /// The exact frame a view build painted, and the unknown-delivery fence it
 /// may clear once Rune reports it drawn.
@@ -97,6 +101,13 @@ pub struct Desk {
     pub palette_query: rune::TextEdit,
     pub palette_picked: usize,
     pub sidebar_open: bool,
+    /// Find in the focused pane's history, while open.
+    pub find: Option<find::Find>,
+    pub find_query: rune::TextEdit,
+    /// The link under the pointer while ⌘ is held.
+    pub pointer: links::Pointer,
+    /// Settings that outlive the window: text size, the sidebar.
+    prefs: rune::prefs::Prefs,
     /// What every terminal is doing, for the sidebar's marks.
     pub activities: crate::activity::Activities,
     /// The input method's composition at the terminal cursor.
@@ -155,6 +166,14 @@ pub struct Desk {
 
 impl Desk {
     pub fn new(resolved: &Resolved) -> Self {
+        // `RUNE_PREFS_DIR` keeps headless runs off the real settings.
+        let prefs = rune::prefs::Prefs::open(PREFS_ID);
+        let font_size = prefs
+            .get::<f32>("font_size")
+            .map_or(grid::DEFAULT_FONT_SIZE, |s| {
+                s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
+            });
+        let sidebar_open = prefs.get("sidebar_open").unwrap_or(true);
         let mut desk = Self {
             client: None,
             error: None,
@@ -170,7 +189,11 @@ impl Desk {
             palette_open: false,
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
-            sidebar_open: true,
+            sidebar_open,
+            find: None,
+            find_query: rune::TextEdit::new(""),
+            pointer: links::Pointer::default(),
+            prefs,
             preedit: None,
             activities: crate::activity::Activities::default(),
             blink_on: true,
@@ -178,7 +201,7 @@ impl Desk {
             clock: 0.0,
             pending_spawns: Vec::new(),
             generation: 0,
-            font_size: grid::DEFAULT_FONT_SIZE,
+            font_size,
             scale: Cell::new(2.0),
             areas: HashMap::new(),
             fitted: HashMap::new(),
@@ -202,7 +225,7 @@ impl Desk {
             painted: RefCell::new(None),
         };
         match &resolved.socket {
-            Ok(socket) => match connect(socket, resolved.session.clone()) {
+            Ok(socket) => match sessions::connect(socket, resolved.session.clone()) {
                 Ok(client) => desk.client = Some(Arc::new(client)),
                 Err(error) => desk.error = Some(error),
             },
@@ -257,6 +280,7 @@ impl Desk {
         if changed || events {
             changed |= self.refresh_layout(&client);
         }
+        self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();
         changed | self.blink(&client, tx)
@@ -277,6 +301,7 @@ impl Desk {
             Event::TerminalChanged { terminal_id }
                 if shown(&terminal_id) || self.others.contains_key(&terminal_id) =>
             {
+                self.relink(&terminal_id);
                 self.generation += 1;
                 true
             }
@@ -408,7 +433,7 @@ impl Desk {
         if self.shown.is_some() {
             return None;
         }
-        default_pane(topology)
+        sessions::default_pane(topology)
     }
 
     /// Open the target terminal once its replica is ready. Retried on every
@@ -451,36 +476,14 @@ impl Desk {
         self.font_size = size.map_or(grid::DEFAULT_FONT_SIZE, |s| {
             s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
         });
+        let _ = self.prefs.set("font_size", &self.font_size);
         self.fitted.clear();
         self.fit();
     }
 
-    /// The window title: the focused terminal's label and its session, set
-    /// only when it changes.
-    fn title(&mut self, tx: &mut Tx) {
-        let title = self
-            .shown
-            .as_ref()
-            .and_then(|s| {
-                self.topology
-                    .as_ref()?
-                    .panes
-                    .iter()
-                    .find(|p| p.terminal_id == s.terminal)
-            })
-            .map_or_else(
-                || "phux".to_owned(),
-                |p| format!("{} — {}", crate::palette::pane_label(p), p.session_name),
-            );
-        if self.window_title != title {
-            tx.set_title(title.clone());
-            self.window_title = title;
-        }
-    }
-
-    pub fn focus_changed(&mut self, focused: bool) {
-        self.focused = focused;
-        self.generation += 1;
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_open = !self.sidebar_open;
+        let _ = self.prefs.set("sidebar_open", &self.sidebar_open);
     }
 }
 
@@ -494,33 +497,4 @@ impl Drop for Desk {
             let _ = client.destroy_view(view);
         }
     }
-}
-
-fn default_pane(topology: &Topology) -> Option<ResourceId> {
-    let focused = &topology.focused_pane;
-    topology
-        .panes
-        .iter()
-        .find(|p| &p.terminal_id == focused)
-        .or_else(|| topology.panes.iter().find(|p| p.is_focused))
-        .or_else(|| topology.panes.first())
-        .map(|p| p.terminal_id.clone())
-}
-
-fn connect(socket: &std::path::Path, session: Option<String>) -> Result<Client, String> {
-    let attach = session.map_or(AttachTarget::Last, AttachTarget::ByName);
-    Runtime::connect(
-        Target::uds(socket.to_owned()),
-        ClientOptions {
-            control: ControlOptions {
-                client_name: "phux-rune".to_owned(),
-                viewport: (0, 0),
-                attach: Some(attach),
-                attach_role: Some(RolePolicy::PRIMARY),
-                ..ControlOptions::default()
-            },
-            ..ClientOptions::default()
-        },
-    )
-    .map_err(|error| format!("could not connect to {}: {error}", socket.display()))
 }

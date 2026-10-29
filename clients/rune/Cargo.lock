@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.4"
 dependencies = [
  "phux-client-core",
  "phux-client-runtime",

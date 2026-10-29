@@ -84,6 +84,15 @@ jobs:
       - name: Test
         working-directory: clients/rune
         run: cargo test --locked
+      - name: Require Apple signing configuration before building
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/ci/sign-macos-desktop.sh --check-config
       - name: Version matches the tag
         if: startsWith(github.ref, 'refs/tags/rune-v')
         env:
@@ -96,7 +105,32 @@ jobs:
           REF: ${{ github.ref_name }}
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
-          bash clients/rune/scripts/package.sh "$version" "$RUNNER_TEMP/dist"
+          bash clients/rune/scripts/package.sh "$version" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/app"
+      # Releases ship the app the way the GPUI desktop does: Developer ID
+      # signed with the hardened runtime, notarized and stapled, so it opens
+      # from Finder without a Gatekeeper override.
+      - name: Sign, notarize and staple the macOS app
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
+          archive="phux-rune-$version-macos-arm64.zip"
+          rm "$RUNNER_TEMP/dist/$archive" "$RUNNER_TEMP/dist/$archive.sha256"
+          bash scripts/ci/sign-macos-desktop.sh --zip-only "$RUNNER_TEMP/app/Phux Rune.app" "$RUNNER_TEMP/signed/$archive"
+          mv "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/dist/$archive"
+          cd "$RUNNER_TEMP/dist"
+          shasum -a 256 "$archive" > "$archive.sha256"
+          # What a download gets: the stapled ticket, and Gatekeeper's yes.
+          mkdir "$RUNNER_TEMP/verify"
+          ditto -x -k "$archive" "$RUNNER_TEMP/verify"
+          xcrun stapler validate "$RUNNER_TEMP/verify/Phux Rune.app"
+          spctl --assess --type execute --verbose=2 "$RUNNER_TEMP/verify/Phux Rune.app"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rune-${{ matrix.name }}

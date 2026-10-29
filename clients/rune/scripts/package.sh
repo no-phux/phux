@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Build and package the Rune client for this host.
 #
-#   clients/rune/scripts/package.sh VERSION OUT_DIR
+#   clients/rune/scripts/package.sh VERSION OUT_DIR [APP_DIR]
 #
-# macOS: `Phux Rune.app` (ad-hoc signed, not notarized) zipped as
-# phux-rune-VERSION-macos-arm64.zip. Linux: phux-rune-VERSION-linux-ARCH.tar.gz
+# macOS: `Phux Rune.app`, ad-hoc signed, zipped as
+# phux-rune-VERSION-macos-arm64.zip. With APP_DIR the app is also left there
+# for scripts/ci/sign-macos-desktop.sh --zip-only, which releases replace the
+# ad-hoc zip with (Developer ID, notarized, stapled). Linux: phux-rune-VERSION-linux-ARCH.tar.gz
 # with the binary and README. Each archive gets a `.sha256` beside it.
 set -euo pipefail
 
 version="${1:?usage: package.sh VERSION OUT_DIR}"
 out="${2:?usage: package.sh VERSION OUT_DIR}"
+keep="${3:-}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 mkdir -p "$out"
@@ -48,6 +51,11 @@ Darwin)
     archive="phux-rune-$version-macos-arm64.zip"
     rm -f "$out/$archive"
     ditto -c -k --keepParent "$app" "$out/$archive"
+    if [[ -n "$keep" ]]; then
+        mkdir -p "$keep"
+        rm -rf "$keep/Phux Rune.app"
+        ditto "$app" "$keep/Phux Rune.app"
+    fi
     ;;
 Linux)
     arch="$(uname -m)"
