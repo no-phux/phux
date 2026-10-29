@@ -1,17 +1,23 @@
 //! `phux plugin install` / `phux plugin update` (phux-r82.8).
 //!
 //! Installs are source-agnostic fetches into one managed directory:
-//! a git URL (cloned with the system `git`), a local plugin directory
-//! (copied), or a local tarball (extracted with the system `tar`) lands
-//! under the phux data dir (`$XDG_DATA_HOME/phux/plugins`, else
-//! `~/.local/share/phux/plugins`). The fetched manifest's `[[build]]`
-//! steps for this platform then run as child processes with a bounded
-//! timeout and captured output (the phux-plugin runtime contract), the
-//! manifest is validated — including the `min_phux_version` gate — and
-//! the package is linked into `config.toml` through the same registry
-//! path as `phux plugin link`. Provenance (ref, branch, resolved commit)
-//! is recorded in the managed dir's `plugins.lock` so `phux plugin
-//! update` can re-fetch without re-asking the user.
+//! GitHub `owner/repo[/subdir]` shorthand, a git URL (cloned with the
+//! system `git`), a local plugin directory (copied), or a local tarball
+//! (extracted with the system `tar`) lands under the phux data dir
+//! (`$XDG_DATA_HOME/phux/plugins`, else `~/.local/share/phux/plugins`).
+//! The fetched manifest's `[[build]]` steps for this platform then run as
+//! child processes with a bounded timeout and captured output (the
+//! phux-plugin runtime contract), the manifest is validated — including
+//! the `min_phux_version` gate — and the package is linked into
+//! `config.toml` through the same registry path as `phux plugin link`.
+//! Provenance (ref, branch, subdirectory, resolved commit) is recorded in
+//! the managed dir's `plugins.lock` so `phux plugin update` can re-fetch
+//! without re-asking the user.
+//!
+//! Source choice lives in [`source`]; fetching lives in [`fetch`].
+
+mod fetch;
+mod source;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -20,11 +26,10 @@ use std::time::Duration;
 use phux_config::plugin::{self, PluginManifest, PluginPlatform};
 use phux_plugin::{CommandSpec, PluginActionOutcome, run_command_spec};
 
-use super::lock::{
-    PluginLockEntry, PluginSourceKind, lockfile_path, read_lockfile, upsert_entry, write_lockfile,
-};
-use super::registry::temp_nonce;
+use super::lock::{PluginLockEntry, lockfile_path, read_lockfile, upsert_entry, write_lockfile};
 use super::{fail, upsert_config_entry};
+use fetch::{StagingGuard, fetch_into_staging, locate_fetched_root, promote, swap_install_dir};
+use source::{classify_source, source_from_lock};
 
 /// Per-build-step wall-clock bound. A plugin build that cannot finish in
 /// five minutes should ship prebuilt artifacts instead of hanging the CLI.
@@ -39,10 +44,11 @@ const CURRENT_PLATFORM: Option<PluginPlatform> = Some(PluginPlatform::Windows);
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const CURRENT_PLATFORM: Option<PluginPlatform> = None;
 
-/// `phux plugin install REF [--rev REV] [--disabled] [--json]`.
+/// `phux plugin install REF [--rev REV] [--subdir PATH] [--disabled] [--json]`.
 pub(super) fn run_install(
     reference: &str,
     rev: Option<&str>,
+    subdir: Option<&str>,
     disabled: bool,
     json: bool,
 ) -> ExitCode {
@@ -50,7 +56,7 @@ pub(super) fn run_install(
         Ok(runtime) => runtime,
         Err(code) => return code,
     };
-    match install(&runtime, reference, rev, !disabled, json) {
+    match install(&runtime, reference, rev, subdir, !disabled, json) {
         Ok(code) => code,
         Err(err) => fail(json, &err),
     }
@@ -68,54 +74,21 @@ pub(super) fn run_update(name: Option<&str>, json: bool) -> ExitCode {
     }
 }
 
-/// Where a `phux plugin install` refers its package from.
-#[derive(Debug, Clone)]
-enum InstallSource {
-    /// Clone `url` with the system `git`, optionally at a branch or tag.
-    Git { url: String, branch: Option<String> },
-    /// Copy a local plugin directory.
-    Dir(PathBuf),
-    /// Extract a local tarball with the system `tar`.
-    Tarball(PathBuf),
-}
-
-impl InstallSource {
-    const fn kind(&self) -> PluginSourceKind {
-        match self {
-            Self::Git { .. } => PluginSourceKind::Git,
-            Self::Dir(_) => PluginSourceKind::Dir,
-            Self::Tarball(_) => PluginSourceKind::Tarball,
-        }
-    }
-
-    fn source_ref(&self) -> String {
-        match self {
-            Self::Git { url, .. } => url.clone(),
-            Self::Dir(path) | Self::Tarball(path) => path.display().to_string(),
-        }
-    }
-
-    fn branch(&self) -> Option<String> {
-        match self {
-            Self::Git { branch, .. } => branch.clone(),
-            Self::Dir(_) | Self::Tarball(_) => None,
-        }
-    }
-}
-
 fn install(
     runtime: &tokio::runtime::Runtime,
     reference: &str,
     rev: Option<&str>,
+    subdir: Option<&str>,
     enabled: bool,
     json: bool,
 ) -> Result<ExitCode, String> {
-    let source = classify_source(reference, rev)?;
+    let classified = classify_source(reference, rev, subdir)?;
+    let source = &classified.source;
     let plugins_dir = plugins_data_dir()?;
     std::fs::create_dir_all(&plugins_dir)
         .map_err(|err| format!("could not create {}: {err}", plugins_dir.display()))?;
 
-    let mut staged = stage_plugin(runtime, &source, &plugins_dir, reference)?;
+    let mut staged = stage_plugin(runtime, source, &plugins_dir, reference)?;
     let final_dir = plugins_dir.join(install_dir_name(&staged.manifest.id));
     promote_staged_plugin(&mut staged, &final_dir)?;
 
@@ -125,7 +98,7 @@ fn install(
 
     record_install_in_lockfile(
         &plugins_dir,
-        &source,
+        source,
         &manifest.id,
         staged.resolved_rev.as_deref(),
     )?;
@@ -134,8 +107,9 @@ fn install(
     Ok(report_installed(
         &entry,
         &final_dir,
-        &source,
+        source,
         staged.resolved_rev.as_deref(),
+        classified.note.as_deref(),
         json,
     ))
 }
@@ -158,13 +132,13 @@ struct StagedPlugin {
 /// managed plugins directory is touched.
 fn stage_plugin(
     runtime: &tokio::runtime::Runtime,
-    source: &InstallSource,
+    source: &source::InstallSource,
     plugins_dir: &Path,
     reference: &str,
 ) -> Result<StagedPlugin, String> {
     let staging = StagingGuard::claim(plugins_dir);
     let resolved_rev = fetch_into_staging(source, staging.path())?;
-    let root = locate_plugin_root(staging.path())?;
+    let root = locate_fetched_root(staging.path(), source.subdir())?;
     let manifest = load_fetched_manifest(&root, reference)?;
     run_build_steps(runtime, &manifest)?;
     Ok(StagedPlugin {
@@ -192,12 +166,12 @@ fn promote_staged_plugin(staged: &mut StagedPlugin, final_dir: &Path) -> Result<
     Ok(())
 }
 
-/// Record the install's provenance (ref, branch, resolved commit) in the
-/// managed dir's `plugins.lock`, so `phux plugin update` can re-fetch without
-/// re-asking the user.
+/// Record the install's provenance (ref, branch, subdirectory, resolved
+/// commit) in the managed dir's `plugins.lock`, so `phux plugin update` can
+/// re-fetch without re-asking the user.
 fn record_install_in_lockfile(
     plugins_dir: &Path,
-    source: &InstallSource,
+    source: &source::InstallSource,
     id: &str,
     resolved_rev: Option<&str>,
 ) -> Result<(), String> {
@@ -209,6 +183,7 @@ fn record_install_in_lockfile(
             source: source.kind(),
             source_ref: source.source_ref(),
             branch: source.branch(),
+            subdir: source.subdir().map(str::to_owned),
             rev: resolved_rev.map(str::to_owned),
         },
     );
@@ -219,8 +194,9 @@ fn record_install_in_lockfile(
 fn report_installed(
     entry: &super::registry::RegistryEntry,
     final_dir: &Path,
-    source: &InstallSource,
+    source: &source::InstallSource,
     resolved_rev: Option<&str>,
+    note: Option<&str>,
     json: bool,
 ) -> ExitCode {
     if json {
@@ -233,11 +209,16 @@ fn report_installed(
                 "source": source.kind().to_string(),
                 "ref": source.source_ref(),
                 "branch": source.branch(),
+                "subdir": source.subdir(),
                 "rev": resolved_rev,
+                "note": note,
                 "enabled": entry.enabled,
             },
         });
         return crate::output::json(&doc);
+    }
+    if let Some(note) = note {
+        info!("{note}");
     }
     let state = if entry.enabled { "enabled" } else { "disabled" };
     let rev_note = resolved_rev.map_or_else(String::new, |rev| format!(" at {rev}"));
@@ -329,7 +310,7 @@ fn update_one(
     let source = source_from_lock(entry)?;
     let mut staging = StagingGuard::claim(plugins_dir);
     let resolved_rev = fetch_into_staging(&source, staging.path())?;
-    let plugin_root = locate_plugin_root(staging.path())?;
+    let plugin_root = locate_fetched_root(staging.path(), source.subdir())?;
     let manifest = load_fetched_manifest(&plugin_root, &entry.source_ref)?;
     if manifest.id != entry.id {
         return Err(format!(
@@ -375,199 +356,6 @@ fn unguarded_plugins_data_dir() -> Result<PathBuf, String> {
         .join("share")
         .join("phux")
         .join("plugins"))
-}
-
-fn classify_source(reference: &str, rev: Option<&str>) -> Result<InstallSource, String> {
-    let path = Path::new(reference);
-    if path.is_dir() {
-        reject_rev_for_local(rev)?;
-        return Ok(InstallSource::Dir(canonicalize(path)?));
-    }
-    if path.is_file() {
-        reject_rev_for_local(rev)?;
-        if is_tarball_name(reference) {
-            return Ok(InstallSource::Tarball(canonicalize(path)?));
-        }
-        return Err(format!(
-            "{reference} is a file but not a recognized tarball (.tar, .tar.gz, .tgz)"
-        ));
-    }
-    if reference.contains("://") || reference.starts_with("git@") {
-        return Ok(InstallSource::Git {
-            url: reference.to_owned(),
-            branch: rev.map(str::to_owned),
-        });
-    }
-    Err(format!(
-        "{reference:?} is neither an existing local path nor a git URL"
-    ))
-}
-
-fn reject_rev_for_local(rev: Option<&str>) -> Result<(), String> {
-    if rev.is_some() {
-        return Err("--rev only applies to git sources".to_owned());
-    }
-    Ok(())
-}
-
-fn source_from_lock(entry: &PluginLockEntry) -> Result<InstallSource, String> {
-    match entry.source {
-        PluginSourceKind::Git => Ok(InstallSource::Git {
-            url: entry.source_ref.clone(),
-            branch: entry.branch.clone(),
-        }),
-        PluginSourceKind::Dir => {
-            let path = PathBuf::from(&entry.source_ref);
-            if path.is_dir() {
-                Ok(InstallSource::Dir(path))
-            } else {
-                Err(format!(
-                    "recorded source directory {} for plugin {} no longer exists",
-                    path.display(),
-                    entry.id,
-                ))
-            }
-        }
-        PluginSourceKind::Tarball => {
-            let path = PathBuf::from(&entry.source_ref);
-            if path.is_file() {
-                Ok(InstallSource::Tarball(path))
-            } else {
-                Err(format!(
-                    "recorded source tarball {} for plugin {} no longer exists",
-                    path.display(),
-                    entry.id,
-                ))
-            }
-        }
-    }
-}
-
-fn is_tarball_name(name: &str) -> bool {
-    // Deliberately exact-case: install refs are user-typed paths, and
-    // the managed contract documents the lowercase extensions.
-    #[allow(
-        clippy::case_sensitive_file_extension_comparisons,
-        reason = "documented lowercase tarball extensions"
-    )]
-    {
-        name.ends_with(".tar") || name.ends_with(".tar.gz") || name.ends_with(".tgz")
-    }
-}
-
-fn canonicalize(path: &Path) -> Result<PathBuf, String> {
-    path.canonicalize()
-        .map_err(|err| format!("could not resolve {}: {err}", path.display()))
-}
-
-/// Fetch `source` into the (not yet existing) `staging` directory.
-/// Returns the resolved commit hash for git sources.
-fn fetch_into_staging(source: &InstallSource, staging: &Path) -> Result<Option<String>, String> {
-    match source {
-        InstallSource::Dir(src) => {
-            copy_tree(src, staging)?;
-            Ok(None)
-        }
-        InstallSource::Tarball(file) => {
-            std::fs::create_dir_all(staging)
-                .map_err(|err| format!("could not create {}: {err}", staging.display()))?;
-            let mut cmd = std::process::Command::new("tar");
-            cmd.arg("-xf").arg(file).arg("-C").arg(staging);
-            run_tool(cmd, "tar extract")?;
-            Ok(None)
-        }
-        InstallSource::Git { url, branch } => {
-            let mut cmd = std::process::Command::new("git");
-            cmd.args(["clone", "--depth", "1"]);
-            if let Some(branch) = branch {
-                cmd.args(["--branch", branch]);
-            }
-            cmd.arg(url).arg(staging);
-            run_tool(cmd, "git clone")?;
-            let mut head = std::process::Command::new("git");
-            head.arg("-C").arg(staging).args(["rev-parse", "HEAD"]);
-            let stdout = run_tool(head, "git rev-parse HEAD")?;
-            // The managed copy is a snapshot, not a working clone
-            // (ADR-0041): drop the checkout's .git so the installed tree
-            // matches dir installs and cannot be mutated in place.
-            let git_dir = staging.join(".git");
-            std::fs::remove_dir_all(&git_dir)
-                .map_err(|err| format!("could not remove {}: {err}", git_dir.display()))?;
-            Ok(Some(stdout.trim().to_owned()))
-        }
-    }
-}
-
-/// Run one child process to completion, failing loudly with its stderr.
-fn run_tool(mut cmd: std::process::Command, what: &str) -> Result<String, String> {
-    let output = cmd
-        .output()
-        .map_err(|err| format!("could not spawn {what}: {err}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "{what} failed ({}): {}",
-            output.status,
-            stderr.trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// Copy a plugin source tree, skipping `.git` and refusing symlinks (a
-/// managed install must be a self-contained snapshot).
-fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dst)
-        .map_err(|err| format!("could not create {}: {err}", dst.display()))?;
-    let entries =
-        std::fs::read_dir(src).map_err(|err| format!("could not read {}: {err}", src.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|err| format!("could not read {}: {err}", src.display()))?;
-        if entry.file_name() == ".git" {
-            continue;
-        }
-        let from = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|err| format!("could not inspect {}: {err}", from.display()))?;
-        if file_type.is_symlink() {
-            return Err(format!(
-                "{} is a symlink; plugin dir installs must be self-contained",
-                from.display()
-            ));
-        }
-        let to = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_tree(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)
-                .map_err(|err| format!("could not copy {}: {err}", from.display()))?;
-        }
-    }
-    Ok(())
-}
-
-/// Find the fetched package's plugin root: the staging dir itself, or a
-/// single top-level directory (the usual tarball / repo layout).
-fn locate_plugin_root(staging: &Path) -> Result<PathBuf, String> {
-    if staging.join("phux-plugin.toml").is_file() {
-        return Ok(staging.to_path_buf());
-    }
-    let entries = std::fs::read_dir(staging)
-        .map_err(|err| format!("could not read {}: {err}", staging.display()))?;
-    let mut dirs = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|err| format!("could not read {}: {err}", staging.display()))?;
-        if entry.path().is_dir() {
-            dirs.push(entry.path());
-        }
-    }
-    if let [only] = dirs.as_slice()
-        && only.join("phux-plugin.toml").is_file()
-    {
-        return Ok(only.clone());
-    }
-    Err("fetched package does not contain a phux-plugin.toml at its root".to_owned())
 }
 
 fn load_fetched_manifest(plugin_root: &Path, reference: &str) -> Result<PluginManifest, String> {
@@ -642,98 +430,4 @@ fn install_dir_name(id: &str) -> String {
             }
         })
         .collect()
-}
-
-/// Move the fetched plugin root into its final managed directory
-/// (fresh install: the destination must not exist).
-fn promote(staging: &Path, plugin_root: &Path, final_dir: &Path) -> Result<(), String> {
-    std::fs::rename(plugin_root, final_dir).map_err(|err| {
-        format!(
-            "could not move {} to {}: {err}",
-            plugin_root.display(),
-            final_dir.display()
-        )
-    })?;
-    if plugin_root != staging {
-        std::fs::remove_dir_all(staging)
-            .map_err(|err| format!("could not clean up {}: {err}", staging.display()))?;
-    }
-    Ok(())
-}
-
-/// Replace an existing install with the freshly fetched tree, keeping a
-/// backup alongside so a failed swap restores the previous version.
-fn swap_install_dir(
-    plugins_dir: &Path,
-    staging: &Path,
-    plugin_root: &Path,
-    final_dir: &Path,
-) -> Result<(), String> {
-    let backup = plugins_dir.join(format!(".backup-{}-{}", std::process::id(), temp_nonce()));
-    let had_previous = final_dir.exists();
-    if had_previous {
-        std::fs::rename(final_dir, &backup).map_err(|err| {
-            format!(
-                "could not set aside {}: {err} (previous install left untouched)",
-                final_dir.display()
-            )
-        })?;
-    }
-    if let Err(err) = std::fs::rename(plugin_root, final_dir) {
-        let restore = if had_previous {
-            match std::fs::rename(&backup, final_dir) {
-                Ok(()) => " (previous install restored)".to_owned(),
-                Err(restore_err) => {
-                    format!(
-                        " (previous install stranded at {}: {restore_err})",
-                        backup.display()
-                    )
-                }
-            }
-        } else {
-            String::new()
-        };
-        return Err(format!(
-            "could not move {} to {}: {err}{restore}",
-            plugin_root.display(),
-            final_dir.display()
-        ));
-    }
-    if had_previous {
-        let _ = std::fs::remove_dir_all(&backup);
-    }
-    if plugin_root != staging {
-        let _ = std::fs::remove_dir_all(staging);
-    }
-    Ok(())
-}
-
-/// Staging directory that removes itself on drop unless disarmed, so an
-/// aborted install/update never strands a half-fetched tree.
-struct StagingGuard {
-    path: PathBuf,
-    armed: bool,
-}
-
-impl StagingGuard {
-    fn claim(plugins_dir: &Path) -> Self {
-        let path = plugins_dir.join(format!(".staging-{}-{}", std::process::id(), temp_nonce()));
-        Self { path, armed: true }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    const fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for StagingGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
 }

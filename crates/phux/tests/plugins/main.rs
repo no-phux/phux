@@ -10,4 +10,5 @@ mod plugin_demo_package;
 mod plugin_install;
 mod plugin_launch;
 mod plugin_lifecycle;
+mod plugin_ref;
 mod update_e2e;

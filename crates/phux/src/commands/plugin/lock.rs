@@ -1,8 +1,9 @@
 //! Managed-install lockfile (`plugins.lock`): records where every
 //! `phux plugin install`ed package came from — the source kind, the
-//! original ref (git URL / local path), the requested branch or tag, and
-//! the resolved commit for git sources — so `phux plugin update` can
-//! re-fetch deterministically without re-asking the user.
+//! original ref (git URL / local path), the requested branch or tag, the
+//! subdirectory inside a git clone, and the resolved commit for git sources —
+//! so `phux plugin update` can re-fetch deterministically without re-asking
+//! the user.
 
 use std::path::{Path, PathBuf};
 
@@ -45,6 +46,11 @@ pub(super) struct PluginLockEntry {
     /// Requested branch or tag (`--rev`), git sources only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) branch: Option<String>,
+    /// Subdirectory of a git clone that holds `phux-plugin.toml`.
+    /// Absent for root plugins and for locks written before subdirectory
+    /// installs, which still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) subdir: Option<String>,
     /// Resolved commit hash, git sources only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) rev: Option<String>,
@@ -130,6 +136,7 @@ mod tests {
                     source: PluginSourceKind::Git,
                     source_ref: "https://example.invalid/plugin.git".to_owned(),
                     branch: Some("main".to_owned()),
+                    subdir: Some("plugins/demo".to_owned()),
                     rev: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
                 },
                 PluginLockEntry {
@@ -137,6 +144,7 @@ mod tests {
                     source: PluginSourceKind::Dir,
                     source_ref: "/srv/plugins/dir-plugin".to_owned(),
                     branch: None,
+                    subdir: None,
                     rev: None,
                 },
             ],
@@ -182,6 +190,7 @@ mod tests {
                 source: PluginSourceKind::Git,
                 source_ref: "https://example.invalid/plugin.git".to_owned(),
                 branch: Some("main".to_owned()),
+                subdir: Some("plugins/demo".to_owned()),
                 rev: Some("fedcba9876543210fedcba9876543210fedcba98".to_owned()),
             },
         );

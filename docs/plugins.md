@@ -6,12 +6,15 @@ sidebar sections, themes, hooks, and agent declarations. Install one to
 pick up someone else's workflow, or write one to package your own.
 
 ```sh
-phux plugin install https://github.com/someone/phux-plugin
+phux plugin install someone/phux-plugin
 phux config reload
 ```
 
-`phux config reload` makes the plugin's actions, keys, panes, widgets, and
-sidebar sections appear in attached clients.
+`someone/phux-plugin` is shorthand for
+`https://github.com/someone/phux-plugin`. A plugin that lives in a
+subdirectory is `someone/dotfiles/plugins/usage`, or any git URL with
+`--subdir`. `phux config reload` makes the plugin's actions, keys, panes,
+widgets, and sidebar sections appear in attached clients.
 
 **A plugin runs as you.** phux never loads plugin code into the server,
 and every plugin command runs as a separate process, but that is not a
@@ -27,8 +30,9 @@ you and never touch a running server:
 
 | Command | Does |
 | --- | --- |
-| `phux plugin install REF` | Fetches a git URL, local directory, or tarball, runs its build steps, validates it, and links it |
+| `phux plugin install REF` | Fetches GitHub `owner/repo[/subdir]`, a git URL, a local directory, or a tarball, runs its build steps, validates it, and links it |
 | `phux plugin update [NAME]` | Re-fetches, rebuilds, and revalidates installed plugins, or just NAME |
+| `phux plugin new NAME` | Writes a minimal plugin: a manifest, one action, one hook, a script, and a README |
 | `phux plugin link PATH` | Adds a manifest already on disk, such as one you're writing |
 | `phux plugin unlink ID` | Removes a plugin's entry |
 | `phux plugin enable ID` | Turns a plugin on |
@@ -45,9 +49,38 @@ com.phux.demo.theme-pack 0.1.0 (disabled)
 
 `install` copies the plugin into `$XDG_DATA_HOME/phux/plugins` (or
 `~/.local/share/phux/plugins`) and records where it came from, so
-`update` can fetch it again. `--rev` installs a branch or tag, and
-`--disabled` links it turned off. A plugin can require a minimum phux
-version; installing it on an older phux fails with a message saying so.
+`update` can fetch it again. `--rev` installs a branch or tag of a git
+URL or of `owner/repo` shorthand, and `--disabled` links it turned off.
+A plugin can require a minimum phux version; installing it on an older
+phux fails with a message saying so.
+
+### Where `install` looks
+
+`REF` is chosen in this order:
+
+1. An existing local directory is copied. An existing local file whose
+   name ends in `.tar`, `.tar.gz`, or `.tgz` is extracted. Any other
+   existing file is an error.
+2. A git URL (`https://…`, `git@…`, `file://…`) is cloned as given, with
+   the system `git`. The URL is not rewritten. `--subdir PATH` uses the
+   plugin in that subdirectory of the clone instead of the repository
+   root.
+3. `owner/repo` or `owner/repo/sub/dir` is GitHub shorthand. phux clones
+   `https://github.com/owner/repo` and, when more path segments follow
+   the repo, uses them as the subdirectory. A trailing `.git` on the
+   repo name is ignored. Nothing is contacted except that clone.
+
+An existing local path wins over shorthand. `./foo/bar`, `../foo`, an
+absolute path, a `~` path, a trailing slash, and a reference with a `.`
+or `..` segment are always local paths, never shorthand. When a reference
+matches both an existing path and `owner/repo`, the message says which
+one was chosen. `--subdir` on a reference that already names a
+subdirectory is an error, and the message names both.
+
+```sh
+phux plugin install someone/phux-plugin --rev v1.2.0
+phux plugin install https://github.com/someone/plugins --subdir plugins/usage
+```
 
 `link` takes a manifest path, or a directory holding one. The entry it
 writes looks like this, and you can write it by hand:
@@ -66,6 +99,19 @@ plugin reaches the palette, keys, panes, widgets, and sidebar on
 reads them at start; run `phux upgrade` to restart it in place.
 
 ## Writing a plugin
+
+`phux plugin new NAME` writes a new plugin directory. `NAME` is the
+plugin id (`hello`, `com.example.tools`) and the manifest's `name`.
+Without `--dir`, the directory is `./NAME`. `min_phux_version` is the
+version of the phux that wrote the file. The directory holds one `hello`
+action that runs `scripts/hello.sh`, one `pane-exit` hook, and a README.
+A directory that already has files is left untouched.
+
+```sh
+phux plugin new hello
+phux plugin validate hello
+phux plugin link hello
+```
 
 A minimal plugin is a manifest and the scripts it runs:
 
@@ -131,6 +177,61 @@ title = "Last exit"
 format = "{window}: exit {exit}"
 rows = 3
 ```
+
+### What a plugin process receives
+
+A plugin command is a normal child process. It is not sandboxed, and it
+inherits the environment of the process that starts it. phux adds the
+variables below. These are the ones set today.
+
+**Actions** (`[[actions]]`, from the palette, a key, or
+`phux config run`) run with the plugin directory as the working
+directory. phux adds:
+
+| Variable | Value |
+| --- | --- |
+| `PHUX_PLUGIN_ID` | The plugin's manifest `id` |
+| `PHUX_PLUGIN_ACTION_ID` | The action's `id` |
+| `PHUX_PLUGIN_ROOT` | The plugin directory |
+
+An action does not get `PHUX_SOCKET` from phux. If the process that runs
+the action already has `PHUX_SOCKET`, the action inherits it.
+
+**Event hooks** (`[[events]]`) run with the plugin directory as the
+working directory. They receive the same variables as a
+[config hook](./hooks.md#what-the-command-gets), plus:
+
+| Variable | Value |
+| --- | --- |
+| `PHUX_PLUGIN_ID` | The plugin's manifest `id` |
+| `PHUX_PLUGIN_EVENT_ID` | The hook's `id` |
+| `PHUX_PLUGIN_ROOT` | The plugin directory |
+
+Every hook also gets `PHUX_EVENT` (the event name) and `PHUX_SOCKET`
+(the server's socket) when the process that fires the hook knows that
+socket. `phux worktree new` fires `worktree-created` from the CLI and
+sets `PHUX_SOCKET` to the socket that command is using. Each context key
+is an environment variable: hyphens become underscores and the name is
+uppercased with a `PHUX_` prefix, so `exit-code` is `PHUX_EXIT_CODE` and
+`terminal-id` is `PHUX_TERMINAL_ID`. The keys for each event are listed
+in [Hooks](./hooks.md#events).
+
+**Panes** (`[[panes]]`) are ordinary panes whose working directory is the
+plugin directory. The spawn adds `PHUX_PLUGIN_ID`, `PHUX_PLUGIN_ROOT`,
+and `PHUX_PLUGIN_PANE_ID`. The server also sets `PHUX_SOCKET` to its
+socket, `PHUX_TERMINAL_ID` to that pane's id, `TERM` from `defaults.term`,
+and `COLORTERM=truecolor`. It removes `PHUX_UPGRADE_SOURCE_EXE`,
+`PHUX_UPGRADE_SNAPSHOT_DIR`, and any `CLAUDE_CODE_*` or `CLAUDECODE`
+variable inherited from the server, so a nested server or `claude` does
+not reuse the outer session.
+
+**Build steps** (`[[build]]`, run by `install` and `update`) use the
+plugin directory as the working directory and receive `PHUX_PLUGIN_ID`
+and `PHUX_PLUGIN_ROOT`. Each step is killed after five minutes.
+
+An `exec` status widget contributed by a plugin is run by the client
+with no plugin variables and not in the plugin directory. Themes and
+sidebar sections do not start a process.
 
 ### Running actions
 
