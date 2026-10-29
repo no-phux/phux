@@ -23,10 +23,12 @@ The bundled name `starter` resolves through, in order: `$PHUX_DISTROS_DIR`,
 `$XDG_DATA_HOME/phux/distros` (default `~/.local/share/phux/distros`),
 then the repo checkout's `distros/` directory. A path (`--distro
 ./distros/starter` or `--distro ./distros/starter/starter.toml`) works from
-anywhere. `--distro herdr` still resolves as an alias of `starter`.
-Configs that already `extends` the old `distros/herdr/herdr.toml` path
-keep loading: that file remains as a compatibility stub, and the loader
-rewrites a missing herdr path to starter when the new file is there.
+anywhere. `--distro herdr` still resolves. `herdr` is the former name
+of phux's `starter` config layer, kept as an alias so existing configs
+keep loading. It is not [Herdr](https://herdr.dev), a separate project.
+Configs that `extends` `distros/herdr/herdr.toml` keep loading: that
+file remains as a compatibility stub, and the loader rewrites a missing
+herdr path to starter when the starter file is there.
 
 ## What you get
 
