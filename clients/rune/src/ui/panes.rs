@@ -150,15 +150,12 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .border(1.0, edge)
         .cursor(rune::Cursor::Text)
         .on_wheel(move |d: &mut Desk, event, _| {
-            d.wheel(&wheel, event.dy);
+            d.wheel(&wheel, event.dy, event.mods);
             true
         })
-        .on_drag(move |d: &mut Desk, drag, _| {
-            if drag.phase == Phase::Down {
-                d.focus_pane(&press);
-            }
+        .on_drag(move |d: &mut Desk, drag, tx| {
             // Drag points include the padding; the grid starts inside it.
-            d.select(drag.phase, drag.x - PAD, drag.y - PAD, drag.clicks);
+            d.pointer(&press, drag.phase, drag.x - PAD, drag.y - PAD, drag.clicks, tx.mods());
         })
         .child(grid_layer)
         // Panes without the keyboard sit back a little.

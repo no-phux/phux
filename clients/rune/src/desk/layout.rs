@@ -240,6 +240,7 @@ impl Desk {
             let _ = client.replace_arrangement(session, &doc);
         }
         self.refresh_layout(&client);
+        self.fit();
     }
 }
 

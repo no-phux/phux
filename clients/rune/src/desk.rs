@@ -24,6 +24,7 @@ use crate::launch::Resolved;
 mod frame;
 mod input;
 mod layout;
+mod mouse;
 mod palette;
 mod sessions;
 
@@ -114,9 +115,13 @@ pub struct Desk {
     /// The pane shown alone, by this window's choice.
     pub zoomed: Option<ResourceId>,
     /// A divider drag's split and ratio, previewed until release.
-    dragging: Option<(SplitPath, f32)>,
+    pub(crate) dragging: Option<(SplitPath, f32)>,
     /// Spawns that become splits: the pane split and the direction.
     pending_splits: HashMap<u32, (ResourceId, SplitDir)>,
+    /// The pane whose program took the last press, until its release.
+    mouse_capture: Option<ResourceId>,
+    /// The cell the last reported pointer event was in.
+    mouse_cell: Option<(u16, u16)>,
     /// Each split's size in points, for turning a divider drag into a ratio.
     split_sizes: HashMap<SplitPath, [f32; 2]>,
     /// Arrangements already asked for, so a missing one is fetched once.
@@ -163,6 +168,8 @@ impl Desk {
             zoomed: None,
             dragging: None,
             pending_splits: HashMap::new(),
+            mouse_capture: None,
+            mouse_cell: None,
             split_sizes: HashMap::new(),
             fetched: HashSet::new(),
             focused: true,

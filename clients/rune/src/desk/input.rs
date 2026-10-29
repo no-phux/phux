@@ -184,27 +184,8 @@ impl Desk {
         self.generation += 1;
     }
 
-    /// Wheel over the grid: whole rows through the view's history.
-    pub fn wheel(&mut self, terminal: &ResourceId, dy: f32) {
-        let cell_h = self.metrics().cell_h;
-        self.wheel_rows += dy / cell_h;
-        let rows = self.wheel_rows.trunc();
-        if rows == 0.0 {
-            return;
-        }
-        self.wheel_rows -= rows;
-        let Some(view) = self.view_of(terminal) else {
-            return;
-        };
-        let Some(client) = &self.client else { return };
-        // Content follows the fingers: positive dy reveals older rows.
-        let _ =
-            client.with_control(|control| control.scroll_view(view, Scroll::Delta(-(rows as i64))));
-        self.generation += 1;
-    }
-
     /// The view showing `terminal`, focused or not.
-    fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
+    pub(super) fn view_of(&self, terminal: &ResourceId) -> Option<ViewId> {
         match &self.shown {
             Some(shown) if &shown.terminal == terminal => Some(shown.view),
             _ => self.others.get(terminal).copied(),

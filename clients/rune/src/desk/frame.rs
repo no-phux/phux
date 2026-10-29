@@ -60,6 +60,11 @@ impl Desk {
     /// Propose every pane's size from its grid area. The runtime refuses it
     /// for observers and before a terminal is ready; a later drain retries.
     pub(super) fn fit(&mut self) {
+        // A divider on the move resizes only what is drawn; the programs get
+        // one resize on release, not a redraw per frame of the drag.
+        if self.dragging.is_some() {
+            return;
+        }
         let Some(client) = self.client.clone() else {
             return;
         };
