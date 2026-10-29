@@ -1,6 +1,6 @@
 # Server protocol
 
-phux has a server protocol: a client talks to the server in length-prefixed frames. The code in
+How a client talks to a phux server, in length-prefixed frames. The code in
 [`crates/phux-protocol`](../crates/phux-protocol) is the definition; this
 page is the map. [`wire-schema.json`](./spec/wire-schema.json) lists every
 frame and field and is generated from the codec, so it cannot be stale.
@@ -10,7 +10,7 @@ If you are writing a client in Rust, use `phux-client-core` and
 language, [`clients/phux-web`](../clients/phux-web) is a complete
 non-native implementation to read alongside.
 
-To read agent status, run `phux agent list --json`. To block until a pane's screen contains text, matches a pattern, or goes idle, run `phux wait` with `--until`, `--regex`, or `--idle`.
+If you only need agent status or to wait on a screen, you don't need the protocol: use `phux agent list --json` or `phux wait --until/--regex/--idle`.
 
 ## Transports
 

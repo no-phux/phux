@@ -30,7 +30,7 @@ Every page in the phux docs, grouped by what you're trying to do.
 
 ## Build for phux
 
-- [OSC 7501: report agent status from any program](./program-protocol.md): the Program Status Protocol sequence phux reads, and what a pane shows from it.
+- [OSC 7501: report status from any program](./program-protocol.md): the Program Status Protocol sequence phux reads, and what a pane shows from it.
 - [Program sequences and agent reports](./program-sequences.md): titles, `phux-ask` questions, OSC 133, OSC 52, and the other sequences phux reads, plus the agent record.
 
 ## Machines and clients

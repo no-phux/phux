@@ -5,8 +5,9 @@ terminal per pane, and a rendering client runs its own. The
 [phux README](../README.md) is the product overview. The engine's place
 on the wire is the
 [phux-protocol README](../crates/phux-protocol/README.md). The browser
-build is the [phux-vt-web README](../clients/phux-vt-web/README.md) and
-the [phux-web README](../clients/phux-web/README.md).
+client, which isn't shipped yet, is described in the
+[phux-vt-web README](../clients/phux-vt-web/README.md) and the
+[phux-web README](../clients/phux-web/README.md).
 
 ## What it does
 
@@ -30,7 +31,7 @@ paste events built from libghostty's vocabulary. The server encodes
 those events for the PTY. Selection and text extraction belong to
 libghostty ([decisions](./decisions.md)).
 
-The browser client draws with libghostty-vt compiled to WebAssembly.
+The browser client, which isn't shipped yet, draws with libghostty-vt compiled to WebAssembly.
 [phux-vt-web](../clients/phux-vt-web/README.md) loads `ghostty-vt.wasm`,
 writes VT bytes, and reads the styled grid.
 [phux-web](../clients/phux-web/README.md) paints that grid on a canvas.
