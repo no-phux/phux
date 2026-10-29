@@ -1,8 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-PHUX_BIN=${PHUX:-"$ROOT/target/debug/phux"}
+if [[ "${PHUX_DOGFOOD_REAL_AGENTS:-0}" != 1 ]]; then
+  echo "live proof uses paid Pi/Claude/Codex accounts; opt in with PHUX_DOGFOOD_REAL_AGENTS=1" >&2
+  exit 2
+fi
+
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+BINARY=${PHUX:-"$ROOT/target/debug/phux"}
 PI_EXTENSION=${PHUX_PI_EXTENSION:-"$ROOT/integrations/pi/extensions/index.ts"}
 PI_MODEL=${PI_MODEL:-openai-codex/gpt-5.6-sol}
 RUNTIME_DIR=$(mktemp -d "${TMPDIR:-/tmp}/phux-pi-proof-runtime.XXXXXX")
@@ -11,8 +16,19 @@ SERVER_LOG="$RUNTIME_DIR/server.log"
 RAW_EVENTS="$RUNTIME_DIR/pi.jsonl"
 WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/phux-pi-proof-work.XXXXXX")
 SESSION="pi-live-proof-$$"
-export PATH="$(dirname "$PHUX_BIN"):$PATH"
+PATH="$(dirname "$BINARY"):$PATH"
+export PATH
+# Preserve HOME for explicitly opted-in agent credentials, but never inherit
+# production phux listeners, state, configuration, or TLS material.
+for name in ${!PHUX_@}; do
+  unset "$name"
+done
 export PHUX_SOCKET="$SOCKET"
+export XDG_CONFIG_HOME="$RUNTIME_DIR/config" XDG_STATE_HOME="$RUNTIME_DIR/state"
+export XDG_DATA_HOME="$RUNTIME_DIR/data" XDG_CACHE_HOME="$RUNTIME_DIR/cache"
+export XDG_RUNTIME_DIR="$RUNTIME_DIR/run" SHELL=/bin/sh PHUX_NO_UPDATE_CHECK=1
+unset ENV BASH_ENV ZDOTDIR
+mkdir -p "$XDG_RUNTIME_DIR"
 
 cleanup() {
   kill "${SERVER_PID:-}" 2>/dev/null || true
@@ -20,13 +36,15 @@ cleanup() {
   rm -rf "$RUNTIME_DIR" "$WORKDIR"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-for command in "$PHUX_BIN" pi node jq; do
+for command in "$BINARY" pi node python3; do
   command -v "$command" >/dev/null || { echo "missing required command: $command" >&2; exit 1; }
 done
 [[ -f "$PI_EXTENSION" ]] || { echo "missing Pi extension: $PI_EXTENSION" >&2; exit 1; }
 
-(cd "$WORKDIR" && exec "$PHUX_BIN" server) >"$SERVER_LOG" 2>&1 &
+(cd "$WORKDIR" && exec "$BINARY" server --exit-after-idle 240) >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 100); do
   [[ -S "$SOCKET" ]] && break
@@ -47,7 +65,7 @@ EOF
 PROMPT=$(cat <<EOF
 Act as the Pi fleet orchestrator and complete this live proof. Use only the supplied phux tools; do not use shell or builtin tools.
 
-1. Create session "$SESSION" in "$WORKDIR" with command ["sh","-lc","exec zsh -f"]. Remember the exact seed selector returned.
+1. Create session "$SESSION" in "$WORKDIR" with command ["sh"]. Remember the exact seed selector returned.
 2. Launch integration "claude-code" in cwd "$WORKDIR" beside that exact seed, split vertical, ratio 0.55, alias "claude", with extra ["--dangerously-skip-permissions"].
 3. Launch integration "codex" in cwd "$WORKDIR" beside alias:claude, split horizontal, ratio 0.5, alias "codex", with extra ["--dangerously-bypass-approvals-and-sandbox"].
 4. Use bounded watch or wait calls so both real agent TUIs have initialized, and inspect each snapshot.
@@ -70,10 +88,6 @@ pi --mode json --print --no-session --no-extensions \
   --no-skills --no-prompt-templates --no-context-files \
   "$PROMPT" | tee "$RAW_EVENTS" | node "$ROOT/examples/agents/pi-proof-formatter.mjs"
 
-grep -q 'CLAUDE_LIVE_FLEET_OK' "$RAW_EVENTS"
-grep -q 'CODEX_LIVE_FLEET_OK' "$RAW_EVENTS"
-grep -q 'LIVE_PI_PHUX_FLEET_OK' "$RAW_EVENTS"
-
 printf '\nIndependent CLI verification\n----------------------------\n'
-"$PHUX_BIN" agent list --json | jq -r '.agents[] | select(.session == "'"$SESSION"'") | "\(.terminal)  agent=\(.agent.id)  kind=\(.agent.kind)  state=\(.state)"'
+python3 "$ROOT/examples/agents/verify_pi_fleet.py" "$BINARY" "$SOCKET" "$SESSION" "$WORKDIR"
 printf '\nRecorded proof complete; isolated server will now be cleaned up.\n'
