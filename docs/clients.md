@@ -2,8 +2,13 @@
 
 A client is a program that shows sessions from a phux server: the terminal
 UI, the desktop app, or something you build. Every client talks to the same
-server the same way, so any client can show any session, and several can
-show one session at once.
+server protocol, so several clients can show one session at once. Individual
+clients differ in supported features and maturity.
+
+The terminal UI is the core client. The separately released desktop is
+maintained but newer; the browser client is experimental and unshipped.
+Phone apps are not available yet. Remote hosts and agent integrations are
+optional; no extra client is required to use the server from the CLI.
 
 ```sh
 phux attach work        # the terminal UI, in this terminal
@@ -27,8 +32,9 @@ new pane and never overwrites an existing one.
 
 ## Desktop
 
-The phux desktop is a native app for macOS 26.0 or later on Apple silicon
-and Linux on x86_64 or arm64 with Vulkan. On macOS and Linux, install it with:
+The phux desktop is a native app for macOS 26.0 or later on Apple silicon,
+Linux on x86_64 or arm64 with Vulkan, and Windows x64 with a WSL 2 server.
+On macOS and Linux, install it with:
 
 ```sh
 curl -fsSL https://phux.sh/install-desktop | sh
@@ -36,10 +42,11 @@ curl -fsSL https://phux.sh/install-desktop | sh
 
 Windows: the CLI and server run in WSL 2, with PowerShell launchers. The
 [native x64 desktop](../clients/desktop/README.md#windows) uses Direct3D 11,
-Windows input/clipboard, and the same WSL coordinator. Its installer requires
-a Windows-capable desktop release; WSLg is not needed. Updates are manual on
-Windows, and the local Changes panel and external Unix developer socket are
-unavailable there.
+Windows input/clipboard, and the same WSL coordinator. Windows x64 ZIPs ship
+from [Desktop 0.50.0](https://github.com/no-phux/phux/releases/tag/desktop-v0.50.0)
+onward; older desktop tags have no Windows download. WSLg is not needed.
+Updates are manual on Windows, and the local Changes panel and external
+Unix developer socket are unavailable there.
 
 It shows every session on this machine and on each machine you added with
 `phux host add` or the app's **Add Machine…**, grouped by machine or by
@@ -47,7 +54,8 @@ repository. Add Machine lists the machines on your Tailscale network and
 installs phux on the one you pick ([Remote machines](./remote.md#machines-on-your-tailnet)). One window shows one
 session, and the sidebar switches between them. Agents that need you are
 marked where they are. <kbd>⌘P</kbd> opens a palette of sessions, actions,
-and settings. The app checks for updates and installs them on restart.
+and settings. On macOS and Linux the app checks for updates and offers to
+install them on restart; Windows updates are manual.
 An update reopens the same windows, hosts, sessions, tabs and focused panes,
 bringing the foreground window back to the front.
 

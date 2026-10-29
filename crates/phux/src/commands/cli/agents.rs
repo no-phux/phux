@@ -43,7 +43,8 @@ pub(crate) struct LaunchArgs {
     #[usage(long, value_name = "TARGET", conflicts("--list", "--print", "--acp"))]
     pub(crate) target: Option<String>,
 
-    /// Split axis for explicit placement (requires `--target`).
+    /// Placement axis: `horizontal` puts the new pane to the right;
+    /// `vertical` puts it below (requires `--target`).
     #[usage(long, value_enum, default = "horizontal", requires("--target"))]
     pub(crate) split: SpawnSplit,
 

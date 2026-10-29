@@ -1,8 +1,8 @@
 id = "com.phux.demo.agent-tools"
-name = "phux Agent Tools Demo"
+name = "phux Agent Tools"
 version = "0.1.0"
 min_phux_version = "0.0.2"
-description = "Local demo package for plugin discovery, action execution, and agent integration templates."
+description = "Agent launch templates, identity wrappers, and integration tools."
 platforms = ["linux", "macos"]
 
 [[actions]]
@@ -22,7 +22,7 @@ command = ["sh", "scripts/list-integrations.sh"]
 [[actions]]
 id = "validate-integrations"
 title = "Validate agent integration templates"
-description = "Checks the demo agent templates without requiring any local agent installation."
+description = "Checks agent templates without requiring any local agent installation."
 contexts = ["workspace"]
 command = ["sh", "scripts/validate-integrations.sh"]
 
@@ -134,7 +134,7 @@ command = ["sh"]
 [[profiles]]
 id = "agent-bench"
 title = "Agent Bench"
-description = "Composes local agent integration helpers into a herdr-like workspace profile."
+description = "Composes agent integration tools and shell roles into a workspace profile."
 contexts = ["workspace"]
 agents = ["codex", "claude-code", "gemini-cli", "grok"]
 actions = ["inspect", "list-integrations", "validate-integrations", "status-integrations", "link-integration", "unlink-integration", "detect-agents", "launch-bench", "list-bench", "drive-bench", "smoke-integrations"]

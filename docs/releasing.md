@@ -22,7 +22,10 @@ Linux CLI builds link against glibc 2.35 (built in an `ubuntu:22.04`
 container). The desktop does not inherit that promise. Stable macOS desktop
 releases require Developer ID signing and Apple notarization; next and local
 builds remain ad-hoc signed. Only CLI releases are GitHub's
-"Latest"; the Homebrew tap renders its formula from Latest on a schedule.
+"Latest". The Homebrew tap discovers stable `vX.Y.Z` CLI and
+`desktop-vX.Y.Z` desktop releases independently every fifteen minutes,
+verifies artifact checksums, and renders the formula and macOS DMG cask.
+Upstream tap credentials or dispatches are not required.
 
 ## Stable
 

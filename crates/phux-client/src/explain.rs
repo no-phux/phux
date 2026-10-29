@@ -30,56 +30,82 @@ pub fn server_too_old(what: &str, feature: &str) -> String {
     )
 }
 
-/// Stop command when the server pid is not known. Bare `pkill phux` also
-/// kills attached clients, so the pattern is the server process only.
-const FALLBACK_STOP: &str = "pkill -f 'phux server'";
-
-/// Start command. A bare `phux server` stays in the foreground and dies
-/// with the terminal or the ssh session; `--ensure` returns once the socket
-/// accepts.
-const START_SERVER: &str = "phux server --ensure";
-
 /// Lines for a live server that refused this binary's protocol.
 ///
-/// `pid` is the server process when it is safe to name. The fallback never
-/// suggests `phux upgrade` and never calls the socket stale: stopping this
-/// process closes the panes it is running.
+/// `pid` must identify the owner of this socket, not merely an owned live
+/// process. Even a known pid must be inspected again before signaling it.
+/// Stopping this process closes only the panes it is running.
 #[must_use]
 pub fn old_server_recovery_lines(socket: &Path, pid: Option<i32>) -> Vec<String> {
-    let stop = pid.map_or_else(
-        || format!("stop it with `{FALLBACK_STOP}`, then start a fresh one with `{START_SERVER}`"),
-        |pid| {
-            format!(
-                "stop it with `kill {pid}` (or `{FALLBACK_STOP}`), then start a fresh one with \
-                 `{START_SERVER}`"
-            )
-        },
-    );
-    vec![
-        format!(
-            "the server on {} is a live phux server from an older release and does not speak \
-             this binary's protocol",
-            socket.display()
-        ),
-        stop,
-        "stopping it closes the panes it is running".to_owned(),
-        format!("server log: {}", server_log_path().display()),
-    ]
+    let mut lines = vec![format!(
+        "the server on {} is a live phux server from an older release and does not speak \
+         this binary's protocol",
+        socket.display()
+    )];
+    let Some(socket) = socket.to_str() else {
+        lines.push(
+            "the socket path is not UTF-8; inspect its owner using an OS-native tool, \
+                    then restart against that exact path; no shell recovery command is emitted"
+                .to_owned(),
+        );
+        lines.push("stopping it closes only the panes it is running".to_owned());
+        return lines;
+    };
+    lines.push(format!(
+        "identify and confirm this socket's current owner with `lsof -nP -- {}`",
+        shell_quote(socket)
+    ));
+    lines.push(stop_server_line(pid.filter(|pid| *pid > 0)));
+    lines.push(format!(
+        "then start a fresh server on the same socket under the selected profile with `{}`",
+        restart_command(socket, &phux_config::instance::profile())
+    ));
+    lines.push("stopping it closes only the panes it is running".to_owned());
+    lines.push(format!(
+        "selected-profile server log: {}",
+        server_log_path().display()
+    ));
+    lines
 }
 
-/// The server's pid, when it is safe to name in `kill`.
-///
-/// Peer credentials win. Otherwise the latest `server-starts.log` record,
-/// and only when `kill(pid, 0)` succeeds and that process's real uid is
-/// `getuid`. `EPERM` and a foreign uid both yield `None`, so the hint
-/// falls back to `pkill -f 'phux server'` alone.
+fn stop_server_line(pid: Option<i32>) -> String {
+    pid.map_or_else(
+        || {
+            "inspect the reported positive owner PID with `ps -p PID -o pid=,ppid=,user=,args=`; \
+            only after verifying it still owns this socket, stop that exact PID"
+                .to_owned()
+        },
+        |pid| {
+            format!(
+                "inspect the socket owner with `ps -p {pid} -o pid=,ppid=,user=,args=`; \
+             only if it still owns this socket, stop it with `kill {pid}`"
+            )
+        },
+    )
+}
+
+/// Single-quote a shell word, including embedded apostrophes.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn restart_command(socket: &str, profile: &str) -> String {
+    format!(
+        "PHUX_PROFILE={} phux server --ensure --socket {}",
+        shell_quote(profile),
+        shell_quote(socket)
+    )
+}
+
+/// The owner pid proven by this socket's peer credentials, when available.
 ///
 /// Peer credentials are an OS fact available on connect, before `HELLO`.
 /// `Connection::connect` drops them when `HELLO` is refused, so this dials
-/// the socket without a handshake.
+/// the socket without a handshake. A live same-uid health-log pid does not
+/// prove socket ownership: it may name another profile or a reused pid.
 #[must_use]
 pub fn server_pid(socket: &Path) -> Option<i32> {
-    peer_pid(socket).or_else(live_health_pid)
+    peer_pid(socket)
 }
 
 /// Pid from the socket's peer credentials, or `None` when nothing is listening
@@ -124,7 +150,7 @@ fn tokio_peer_pid(stream: std::os::unix::net::UnixStream) -> Option<i32> {
         .peer_cred()
         .ok()?;
     let pid = cred.pid()?;
-    (cred.uid() == our_uid()).then_some(pid)
+    (pid > 0 && cred.uid() == our_uid()).then_some(pid)
 }
 
 /// Whether `kill(pid, 0)` succeeded.
@@ -136,10 +162,11 @@ pub fn pid_is_alive(pid: i32) -> bool {
     signal_probe(pid).is_ok()
 }
 
-/// A health-record pid safe to print in `kill <pid>`.
+/// A live process owned by this user, not proof that it owns any socket.
 ///
 /// Requires [`pid_is_alive`] and a real uid equal to `getuid`. Where the uid
-/// cannot be read, the pid is not safe to name.
+/// cannot be read, returns `None`. Do not use this alone for a recovery kill
+/// hint; use [`server_pid`] to establish ownership of the affected socket.
 #[must_use]
 pub fn owned_live_pid(pid: i32) -> Option<i32> {
     let uid = process_uid(pid)?;
@@ -157,7 +184,7 @@ const fn killable_owned_pid(
     process_uid: u32,
     our_uid: u32,
 ) -> Option<i32> {
-    if kill.is_ok() && process_uid == our_uid {
+    if pid > 0 && kill.is_ok() && process_uid == our_uid {
         Some(pid)
     } else {
         None
@@ -176,6 +203,9 @@ fn our_uid() -> u32 {
 
 /// `kill(pid, 0)`. An unrepresentable pid is not alive.
 fn signal_probe(pid: i32) -> Result<(), rustix::io::Errno> {
+    if pid <= 0 {
+        return Err(rustix::io::Errno::INVAL);
+    }
     #[cfg(unix)]
     {
         let Some(pid) = rustix::process::Pid::from_raw(pid) else {
@@ -210,32 +240,6 @@ fn real_uid_from_status(status: &str) -> Option<u32> {
 /// reports.
 fn server_log_path() -> std::path::PathBuf {
     phux_config::instance::state_dir().join("server.log")
-}
-
-/// The latest pid in `<state>/server-starts.log`, the record
-/// `phux_server::health` appends (`<epoch-secs> <pid> <version>`).
-fn live_health_pid() -> Option<i32> {
-    let raw = health_record_pid(&std::fs::read_to_string(health_log_path()).ok()?)?;
-    let pid = i32::try_from(raw).ok()?;
-    owned_live_pid(pid)
-}
-
-fn health_log_path() -> std::path::PathBuf {
-    phux_config::instance::state_dir().join("server-starts.log")
-}
-
-/// The last parseable record's pid. A corrupt line is skipped, matching
-/// `phux_server::health`.
-fn health_record_pid(body: &str) -> Option<u32> {
-    body.lines().rev().find_map(parse_health_pid)
-}
-
-fn parse_health_pid(line: &str) -> Option<u32> {
-    let mut parts = line.splitn(3, ' ');
-    let _at: u64 = parts.next()?.parse().ok()?;
-    let pid = parts.next()?.parse().ok()?;
-    parts.next()?;
-    Some(pid)
 }
 
 #[cfg(test)]
@@ -291,21 +295,101 @@ mod tests {
     }
 
     #[test]
-    fn old_server_recovery_names_the_pid_or_the_server_only_fallback() {
+    fn old_server_recovery_inspects_only_the_socket_owner_and_restarts_that_socket() {
         let socket = Path::new("/tmp/phux.sock");
         let with_pid = old_server_recovery_lines(socket, Some(4242)).join("\n");
         assert!(with_pid.contains("`kill 4242`"), "{with_pid}");
-        assert!(with_pid.contains("pkill -f 'phux server'"), "{with_pid}");
-        assert!(with_pid.contains("`phux server --ensure`"), "{with_pid}");
-        assert!(with_pid.contains("closes the panes"), "{with_pid}");
+        assert!(
+            with_pid.contains("`ps -p 4242 -o pid=,ppid=,user=,args=`"),
+            "{with_pid}"
+        );
+        assert!(
+            with_pid.contains("`lsof -nP -- '/tmp/phux.sock'`"),
+            "{with_pid}"
+        );
+        assert!(
+            with_pid.contains("phux server --ensure --socket '/tmp/phux.sock'`"),
+            "{with_pid}"
+        );
+        assert!(with_pid.contains("closes only the panes"), "{with_pid}");
+        assert!(with_pid.find("`ps -p").unwrap() < with_pid.find("`kill 4242`").unwrap());
         assert!(with_pid.contains("/server.log"), "{with_pid}");
         assert_recovery_is_clean(&with_pid);
 
         let unknown = old_server_recovery_lines(socket, None).join("\n");
-        assert!(unknown.contains("pkill -f 'phux server'"), "{unknown}");
-        assert!(unknown.contains("`phux server --ensure`"), "{unknown}");
+        assert!(
+            unknown.contains("`lsof -nP -- '/tmp/phux.sock'`"),
+            "{unknown}"
+        );
+        assert!(
+            unknown.contains("`ps -p PID -o pid=,ppid=,user=,args=`"),
+            "{unknown}"
+        );
+        assert!(
+            unknown.contains("phux server --ensure --socket '/tmp/phux.sock'`"),
+            "{unknown}"
+        );
         assert!(!unknown.contains("`kill "), "{unknown}");
         assert_recovery_is_clean(&unknown);
+    }
+
+    #[test]
+    fn recovery_never_names_nonpositive_pids() {
+        for pid in [0, -1, -4242] {
+            let recovery =
+                old_server_recovery_lines(Path::new("/tmp/old.sock"), Some(pid)).join("\n");
+            assert!(!recovery.contains("`kill "), "{recovery}");
+            assert!(recovery.contains("`ps -p PID "), "{recovery}");
+            assert_eq!(killable_owned_pid(pid, Ok(()), 1000, 1000), None);
+            assert!(!pid_is_alive(pid));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_quotes_socket_paths_and_preserves_selected_profiles() {
+        let directory = tempfile::tempdir().expect("private shell directory");
+        let socket = "/tmp/a profile's $(touch NEVER_RUN); `echo bad`.sock";
+        let quoted = shell_quote(socket);
+        let lines = old_server_recovery_lines(Path::new(socket), None).join("\n");
+        assert!(
+            lines.contains(&format!("`lsof -nP -- {quoted}`")),
+            "{lines}"
+        );
+        assert_recovery_is_clean(&lines);
+        for profile in ["dev", "default", "another-profile"] {
+            let command = restart_command(socket, profile);
+            // Replace the phux executable with a harmless shell function to inspect
+            // argv/environment. No phux process, socket, or signal is involved.
+            let output = std::process::Command::new("sh")
+                .current_dir(directory.path())
+                .arg("-c")
+                .arg(format!(
+                    "phux() {{ printf '%s\\n' \"$PHUX_PROFILE\" \"$@\"; }}; {command}"
+                ))
+                .output()
+                .expect("shell");
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).expect("UTF-8"),
+                format!("{profile}\nserver\n--ensure\n--socket\n{socket}\n")
+            );
+        }
+        let other = restart_command("/tmp/other.sock", "other");
+        assert!(!other.contains(&quoted), "{other}");
+        assert!(other.contains("PHUX_PROFILE='other'"), "{other}");
+        assert!(!directory.path().join("NEVER_RUN").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_socket_gets_no_lossy_shell_command() {
+        use std::os::unix::ffi::OsStrExt;
+        let socket = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff.sock"));
+        let lines = old_server_recovery_lines(socket, Some(4242)).join("\n");
+        assert!(lines.contains("not UTF-8"), "{lines}");
+        assert!(!lines.contains("`kill "), "{lines}");
+        assert!(!lines.contains("phux server --ensure"), "{lines}");
     }
 
     /// `EPERM` is not a live pid, and neither is a process with another uid,
@@ -338,27 +422,113 @@ mod tests {
         assert_eq!(real_uid_from_status("Name:\tphux\n"), None);
     }
 
-    /// The live `/proc` record for this process matches `getuid`, so the
-    /// health-record fallback would name it. This does not signal anyone else.
+    /// An owned live pid alone does not establish socket ownership.
     #[cfg(target_os = "linux")]
     #[test]
-    fn our_pid_is_a_kill_target() {
+    fn an_owned_live_pid_does_not_own_a_missing_socket() {
         let pid = i32::try_from(std::process::id()).expect("pid");
         assert_eq!(process_uid(pid), Some(our_uid()));
         assert_eq!(owned_live_pid(pid), Some(pid));
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(server_pid(&dir.path().join("missing.sock")), None);
     }
 
-    fn assert_recovery_is_clean(text: &str) {
-        for forbidden in ["phux upgrade", "stale", "survive", "remove", "pkill phux"] {
-            assert!(!text.contains(forbidden), "{forbidden} in {text}");
+    #[cfg(unix)]
+    struct SocketOwner(std::process::Child);
+
+    #[cfg(unix)]
+    impl SocketOwner {
+        fn start(socket: &Path, profile: &str) -> Self {
+            let directory = socket.parent().expect("socket directory");
+            let child =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args([
+                        "--exact",
+                        "explain::tests::socket_owner_fixture",
+                        "--ignored",
+                    ])
+                    .env("PHUX_RECOVERY_TEST_SOCKET", socket)
+                    .env("PHUX_PROFILE", profile)
+                    .env("HOME", directory)
+                    .env("XDG_STATE_HOME", directory.join("state"))
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .expect("socket owner child");
+            let owner = Self(child);
+            for _ in 0..200 {
+                if socket.exists() {
+                    return owner;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("socket owner did not bind {}", socket.display());
         }
     }
 
+    #[cfg(unix)]
+    impl Drop for SocketOwner {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// A private child process gives two sockets genuinely different peer pids.
+    #[cfg(unix)]
     #[test]
-    fn health_record_pid_is_the_last_parseable_line() {
-        let body = "not a record\n100 9 0.9.0\n200 nope 0.9.0\n300 4242 0.9.1\n";
-        assert_eq!(health_record_pid(body), Some(4242));
-        assert_eq!(parse_health_pid("300 4242 0.9.1"), Some(4242));
-        assert_eq!(parse_health_pid("garbage"), None);
+    #[ignore = "invoked only by the socket-owner regression test"]
+    fn socket_owner_fixture() {
+        let Some(socket) = std::env::var_os("PHUX_RECOVERY_TEST_SOCKET") else {
+            return;
+        };
+        let socket = Path::new(&socket);
+        let state = phux_config::instance::state_dir();
+        std::fs::create_dir_all(&state).expect("private state");
+        std::fs::write(
+            state.join("server-starts.log"),
+            format!("100 {} 0.9.0\n", std::process::id()),
+        )
+        .expect("private health log");
+        assert_eq!(
+            server_pid(&socket.with_extension("missing")),
+            None,
+            "a live same-uid health-record pid is not proof of socket ownership"
+        );
+        let listener = std::os::unix::net::UnixListener::bind(socket).expect("bind child socket");
+        // Keep this probe connected: macOS can no longer report peer credentials
+        // once the remote stream has closed. The parent reaps this fixture.
+        let (_peer, _) = listener.accept().expect("accept owner probe");
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn server_pid_names_only_the_owner_of_each_supplied_socket() {
+        let directory = tempfile::tempdir().expect("private directory");
+        let socket_a = directory.path().join("a.sock");
+        let socket_b = directory.path().join("b.sock");
+        let owner_a = SocketOwner::start(&socket_a, "recovery-a");
+        let owner_b = SocketOwner::start(&socket_b, "recovery-b");
+        let pid_a = i32::try_from(owner_a.0.id()).expect("positive pid");
+        let pid_b = i32::try_from(owner_b.0.id()).expect("positive pid");
+        assert_ne!(pid_a, pid_b);
+        assert_eq!(server_pid(&socket_a), Some(pid_a));
+        assert_eq!(server_pid(&socket_b), Some(pid_b));
+        assert_eq!(server_pid(&directory.path().join("missing.sock")), None);
+    }
+
+    fn assert_recovery_is_clean(text: &str) {
+        for forbidden in [
+            "phux upgrade",
+            "stale",
+            "survive",
+            "remove",
+            "pkill",
+            "killall",
+        ] {
+            assert!(!text.contains(forbidden), "{forbidden} in {text}");
+        }
     }
 }

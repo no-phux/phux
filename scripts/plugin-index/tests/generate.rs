@@ -189,14 +189,12 @@ fn shipped_examples_are_indexed_offline() {
         generated_at: "2026-01-15T00:00:00Z".to_owned(),
     })
     .expect("examples");
-    for dir in [
-        "agent-tools",
-        "continuum",
-        "provider-showcase",
-        "theme-pack",
-        "usage",
+    for subdir in [
+        "plugins/agent-tools",
+        "plugins/continuum",
+        "plugins/usage",
+        "examples/plugins/theme-pack",
     ] {
-        let subdir = format!("examples/plugins/{dir}");
         let plugin = index
             .plugins
             .iter()
@@ -226,7 +224,7 @@ fn shipped_examples_are_indexed_offline() {
     let usage = index
         .plugins
         .iter()
-        .find(|plugin| plugin.subdir == "examples/plugins/usage")
+        .find(|plugin| plugin.subdir == "plugins/usage")
         .expect("usage");
     assert_eq!(usage.kinds, ["actions", "events"]);
 }
@@ -292,7 +290,7 @@ fn the_offline_binary_does_not_need_a_token() {
         .expect("run");
     assert!(status.success(), "{status}");
     let text = fs::read_to_string(out.join("plugin-index.json")).expect("json");
-    assert!(text.contains("\"subdir\": \"examples/plugins/usage\""));
+    assert!(text.contains("\"subdir\": \"plugins/usage\""));
     assert!(text.contains(NOTICE));
 }
 

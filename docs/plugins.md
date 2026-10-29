@@ -162,7 +162,7 @@ result as a JSON document.
 
 Add the GitHub topic `phux-plugin` and a `phux-plugin.toml` at the root of
 the default branch that `phux plugin validate` accepts. The static index
-is built from that public topic and from the examples in this repository.
+is built from that public topic and from the plugins in this repository.
 A repository with several plugins lists their directories in
 `phux-plugin-dirs.toml`:
 
@@ -173,19 +173,20 @@ subdirs = ["plugins/pane-tools"]
 Plugins run as you and aren't sandboxed (see the top of this page). The
 index document is [plugin-index.schema.json](spec/plugin-index.schema.json).
 
-## Examples
+## First-party plugins
 
-The phux repository has working plugins to copy in
-[examples/plugins](https://github.com/no-phux/phux/tree/main/examples/plugins):
+The optional [first-party plugins](../plugins/README.md) live under `plugins/`:
 
 - `usage` publishes your AI plan limits to every client, from hooks on
   `client-attached` and `agent-state-changed`.
 - `continuum` saves and restores your workspace.
 - `agent-tools` launches and drives a bench of coding agents.
-- `theme-pack` is the smallest plugin there is: one theme.
 
 `phux config init --distro starter` writes a config that turns on
 `continuum`, `agent-tools`, and `usage` from a phux source checkout.
+
+For a minimal plugin to copy, see the working
+[theme example](../examples/plugins/theme-pack/README.md).
 
 ## Debugging
 

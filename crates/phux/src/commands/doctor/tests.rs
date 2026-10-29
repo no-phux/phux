@@ -208,10 +208,23 @@ fn a_live_incompatible_socket_is_not_told_to_remove_it() {
     assert_eq!(check.status, Status::Fail);
     let text = format!("{}\n{}", check.detail, check.hint.expect("hint"));
     assert!(text.contains("kill 4242"), "{text}");
-    assert!(text.contains("pkill -f 'phux server'"), "{text}");
-    assert!(text.contains("`phux server --ensure`"), "{text}");
-    assert!(text.contains("closes the panes"), "{text}");
-    for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+    assert!(
+        text.contains("`ps -p 4242 -o pid=,ppid=,user=,args=`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("phux server --ensure --socket '/tmp/old.sock'`"),
+        "{text}"
+    );
+    assert!(text.contains("closes only the panes"), "{text}");
+    for forbidden in [
+        "stale",
+        "phux upgrade",
+        "survive",
+        "remove",
+        "pkill",
+        "killall",
+    ] {
         assert!(!text.contains(forbidden), "{forbidden} in {text}");
     }
 }

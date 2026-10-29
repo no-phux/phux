@@ -8,37 +8,36 @@
 # until the screen meets a condition).
 #
 #   send-keys NAME KEY...   each arg is a named key (Enter, Tab, C-c, Up,
-#                           M-x, ...) or a literal string sent char by char.
+#                           M-x, ...) or literal text delivered as a paste.
 #   wait NAME --until TEXT  succeed when any visible line contains TEXT.
 #   wait NAME --idle MS     succeed when the screen holds still for MS.
 #   wait ... --timeout SECS give up after SECS (exit 124).
 #
 # Run it:   bash examples/agents/03-send-keys-and-wait.sh
 
+# shellcheck source=examples/agents/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 phux_start_server
 
 # --- send-keys: type a command and run it ----------------------------------
-# Start a backgrounded job. We use a marker that appears only in OUTPUT,
-# never in the typed command, so `wait --until` can't match the echo.
-section "send-keys: start a backgrounded job"
-phux send-keys "$PHUX_SESSION" "(sleep 1; echo JOB_FINISHED) &" Enter
+# Hold the producer behind a file latch. No amount of scheduler delay can
+# produce the result before the negative wait below has finished.
+section "send-keys: start a job behind a release signal"
+release="$PHUX_TMPDIR/release"
+phux send-keys "$PHUX_SESSION" "while [ ! -f '$release' ]; do sleep 0.05; done; printf '%s_%s\\n' JOB FINISHED" Enter
+
+# The deadline expires before output can exist. If the marker were present
+# in the echoed command, this would wrongly succeed and fail the example.
+section "wait --until (not finished yet -> exit 124)"
+phux_expect_timeout --until JOB_FINISHED --timeout 1 "$PHUX_SESSION"
+touch "$release"
 
 # --- wait --until: block until output appears ------------------------------
 # `--until` matches ANY visible line, INCLUDING the shell's echo of the
 # command you just typed. Match on text that appears only in output.
 section "wait --until JOB_FINISHED (with a timeout safety net)"
-if phux wait --until JOB_FINISHED --timeout 10 "$PHUX_SESSION"; then
-    echo "  job finished; the marker is on screen"
-fi
-
-# --- wait --timeout: the miss path -----------------------------------------
-# When the condition never occurs, `wait` exits 124 after --timeout. An
-# agent uses this to bound a poll instead of hanging forever.
-section "wait --until (deliberate miss -> exit 124)"
-phux wait --until THIS_NEVER_APPEARS --timeout 2 "$PHUX_SESSION" \
-    && echo "  (unreachable)" \
-    || echo "  timed out as expected (exit $?)"
+phux wait --until JOB_FINISHED --timeout 10 "$PHUX_SESSION"
+echo "  job finished; the marker is on screen"
 
 # --- wait --idle: block until the screen settles ---------------------------
 # No specific string to match? Wait for the pane to stop changing. Good
@@ -53,8 +52,10 @@ phux snapshot "$PHUX_SESSION"
 # send-keys is how you converse with an interactive program. Here: start
 # python, ask it something, wait for the answer, then exit it cleanly.
 section "drive a REPL with send-keys + wait"
-phux send-keys "$PHUX_SESSION" "python3 -q" Enter
-phux wait --idle 750 --timeout 10 "$PHUX_SESSION"   # let the banner/prompt settle
+# Python 3.13+'s enhanced REPL treats pasted input differently; use the basic
+# REPL so Enter submits the expression on old and new Python versions alike.
+phux send-keys "$PHUX_SESSION" "PYTHON_BASIC_REPL=1 python3 -q" Enter
+phux wait --until '>>>' --timeout 10 "$PHUX_SESSION"
 phux send-keys "$PHUX_SESSION" "print(6 * 7)" Enter
 phux wait --until 42 --timeout 10 "$PHUX_SESSION"
 echo "  the REPL answered 42"

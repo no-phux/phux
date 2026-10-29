@@ -1,7 +1,7 @@
 //! Assemble the index from GitHub (or fixtures) and the local examples.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -232,8 +232,41 @@ fn add_examples(
             },
         }
     };
-    let mut children = fs::read_dir(&options.examples_dir)
-        .map_err(|err| Error::new(format!("reading {}: {err}", options.examples_dir.display())))?
+    for examples_dir in example_dirs(options)? {
+        index_example_dir(options, &examples_dir, &meta, plugins, skipped)?;
+    }
+    Ok(())
+}
+
+/// `--examples` plus `plugins/` when that tree is a different directory.
+/// Main keeps the theme sample under `examples/plugins` and the first-party
+/// plugins under `plugins/`.
+fn example_dirs(options: &Options) -> Result<Vec<PathBuf>, Error> {
+    let mut dirs = vec![options.examples_dir.clone()];
+    let shipped = options.repo_root.join("plugins");
+    if shipped.is_dir() {
+        let same = options
+            .examples_dir
+            .canonicalize()
+            .ok()
+            .zip(shipped.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right);
+        if !same {
+            dirs.push(shipped);
+        }
+    }
+    Ok(dirs)
+}
+
+fn index_example_dir(
+    options: &Options,
+    examples_dir: &Path,
+    meta: &CatalogMeta,
+    plugins: &mut Vec<Plugin>,
+    skipped: &mut Vec<Skipped>,
+) -> Result<(), Error> {
+    let mut children = fs::read_dir(examples_dir)
+        .map_err(|err| Error::new(format!("reading {}: {err}", examples_dir.display())))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| Error::new(err.to_string()))?;
     children.sort_by_key(|entry| entry.file_name());

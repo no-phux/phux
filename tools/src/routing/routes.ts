@@ -19,8 +19,9 @@ const ZIG: Surface[] = ["native", "web_engine", "desktop"];
  * the root changelog. These leave the docs-only fast path.
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
-  // The wire schema is the Rust input under docs/spec. Other files there,
-  // including the plugin index schema, are documentation.
+  // README and the wire schema are Rust inputs. Other files under
+  // docs/spec, including the plugin index schema, are documentation.
+  "README.md": ["phux"],
   "docs/spec/wire-schema.json": ["phux"],
   "docs/{reference,assets}/**": ["phux"],
   "docs/agents.md": ["phux"],
@@ -39,6 +40,12 @@ const ROUTES: Record<string, Surface[]> = {
   // Distro layers and manifests are exercised by native config tests; Crew's
   // credential-free launcher tests also run in guards.
   "distros/**": ["phux"],
+  // First-party plugins and runnable CLI examples are native test inputs.
+  "plugins/**": ["phux"],
+  "examples/**": ["phux"],
+  "scripts/examples-smoke.sh": ["phux"],
+  "scripts/test-agent-examples.py": ["phux"],
+  "scripts/{demo-record,record-readme}.sh": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
   // its shared actions: a change to how lanes run reruns every lane.
   ".github/workflows/*.{yml,yaml}": [],
