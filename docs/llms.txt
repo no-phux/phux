@@ -17,15 +17,16 @@ Start with [Build on phux](./building.md).
   [parity table](./reference/parity.md) is generated from the tool catalog.
 - [`phux watch`](./scripting.md#watching-events). `--json` is one JSON object
   per line. `--after` resumes from the cursor printed last on stderr.
-- [Wire protocol](./protocol.md). Binary frames.
+- [Server protocol](./protocol.md). Binary frames.
   [Compatibility](./compatibility.md) is the 1.x rule.
   [`wire-schema.json`](./spec/wire-schema.json) is generated from the codec.
-- [OSC 7501](./program-protocol.md). One escape sequence, no phux library.
-- [Plugins](./plugins.md). A `phux-plugin.toml` manifest.
+- [OSC 7501: report status from any program](./program-protocol.md).
+  [Any program can report status](./any-program-status.md) is a short emitter.
+- [Plugin API](./plugins.md). A `phux-plugin.toml` manifest.
 - [Agent integrations](./agents.md#agent-setup). Includes Claude Code, pi,
   Oh My Pi, OpenCode, Grok, and any MCP client.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)
-  and [embedding](./embedding.md).
+  and [Embed phux](./embedding.md).
 
 ## Agent state
 
@@ -38,5 +39,5 @@ order is on [Build on phux](./building.md).
 There is no public SDK.
 There is no JSON socket.
 There is no example application.
-There is no plugin index.
+The static plugin index is built from the GitHub topic `phux-plugin`.
 Sources for each sentence are on [Build on phux](./building.md).

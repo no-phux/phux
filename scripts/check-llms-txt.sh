@@ -172,6 +172,7 @@ check_tree() {
         './compatibility.md'
         './spec/wire-schema.json'
         './program-protocol.md'
+        './any-program-status.md'
         './plugins.md'
         './agents.md#agent-setup'
         './agent-quickstart.md#call-phux-from-a-program'
@@ -187,15 +188,14 @@ check_tree() {
     require_phrase "$hub" 'There is no public SDK.'
     require_phrase "$hub" 'There is no JSON socket.'
     require_phrase "$hub" 'There is no example application.'
-    require_phrase "$hub" 'There is no plugin index.'
-    # When the "Any program can report status" page lands (B7), require its
-    # link from the hub's Entry points instead of the program-protocol.md
-    # target. The TODO in docs/building.md is not that check.
+    require_phrase "$hub" 'The static plugin index is built from the GitHub topic `phux-plugin`'
+    # any-program-status.md is required above. This gate does not require
+    # every file under docs/; libghostty.md is not an entry point.
     require_phrase "$index" 'evidence-ranked; screen is the floor'
     require_phrase "$index" 'There is no public SDK.'
     require_phrase "$index" 'There is no JSON socket.'
     require_phrase "$index" 'There is no example application.'
-    require_phrase "$index" 'There is no plugin index.'
+    require_phrase "$index" 'The static plugin index is built from the GitHub topic `phux-plugin`'
     require_phrase "$index" 'https://docs.phux.sh/llms.txt'
     require_phrase "$root/docs/README.md" '](./building.md)'
     require_phrase "$root/README.md" '](./docs/building.md)'
@@ -223,6 +223,7 @@ self_test() {
     printf '# Compatibility\n\n## Making a change compatible\n' >"$repo/docs/compatibility.md"
     printf '{}\n' >"$repo/docs/spec/wire-schema.json"
     printf '# Program protocol\n' >"$repo/docs/program-protocol.md"
+    printf '# Any program can report status\n' >"$repo/docs/any-program-status.md"
     printf '# Sequences\n\n## Precedence\n' >"$repo/docs/program-sequences.md"
     printf '# Plugins\n\n## Managing plugins\n\n## Examples\n' >"$repo/docs/plugins.md"
     printf '# Quickstart\n\n## Call phux from a program\n\n## Run without a terminal\n' >"$repo/docs/agent-quickstart.md"
@@ -247,6 +248,7 @@ self_test() {
 - [`phux watch`](./scripting.md#watching-events).
 - [Wire protocol](./protocol.md) and [compatibility](./compatibility.md) and [`wire-schema.json`](./spec/wire-schema.json).
 - [OSC 7501](./program-protocol.md).
+- [Any program can report status](./any-program-status.md).
 - [Plugins](./plugins.md).
 - [Agent integrations](./agents.md#agent-setup).
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program) and [embedding](./embedding.md).
@@ -262,7 +264,7 @@ It has not been measured on a live Claude Code, Codex, or OpenCode session.
 There is no public SDK.
 There is no JSON socket.
 There is no example application.
-There is no plugin index.
+The static plugin index is built from the GitHub topic `phux-plugin`.
 
 [examples](../examples/agents/README.md)
 [precedence](./program-sequences.md#precedence)
@@ -299,12 +301,13 @@ https://docs.phux.sh/llms.txt
 - [`phux watch`](./scripting.md#watching-events).
 - [Wire protocol](./protocol.md) and [compatibility](./compatibility.md) and [`wire-schema.json`](./spec/wire-schema.json).
 - [OSC 7501](./program-protocol.md).
+- [Any program can report status](./any-program-status.md).
 - [Plugins](./plugins.md).
 - [Agent integrations](./agents.md#agent-setup).
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program) and [embedding](./embedding.md).
 
 Agent state is evidence-ranked; screen is the floor.
-There is no public SDK. There is no JSON socket. There is no example application. There is no plugin index.
+There is no public SDK. There is no JSON socket. There is no example application. The static plugin index is built from the GitHub topic `phux-plugin`.
 EOF
     printf '[Build on phux](./building.md)\n' >"$repo/docs/README.md"
     printf '[Build on phux](./docs/building.md)\n' >"$repo/README.md"

@@ -4,9 +4,6 @@ One page for a program that drives a phux server, or reports status into a
 pane. Each entry links the page that specifies it; any promise here is
 quoted from there.
 
-<!-- TODO: the page titled "Any program can report status" is not on main.
-     The OSC 7501 entry below links program-protocol.md until that page exists. -->
-
 ## Entry points
 
 - [Versioned `--json`](./scripting.md#json-output-and-errors). Pass `--json`
@@ -17,16 +14,18 @@ quoted from there.
 - [`phux watch`](./scripting.md#watching-events). `--json` prints one JSON
   object per line. `--after` resumes from the cursor the previous run
   printed last on stderr.
-- [Wire protocol](./protocol.md). Length-prefixed binary frames.
+- [Server protocol](./protocol.md). Length-prefixed binary frames.
   [Compatibility](./compatibility.md) is the 1.x rule.
   [`wire-schema.json`](./spec/wire-schema.json) is generated from the codec.
-- [OSC 7501](./program-protocol.md). A program writes one escape sequence.
-  It needs no phux library and no socket.
-- [Plugins](./plugins.md). A directory with a `phux-plugin.toml` manifest.
+- [OSC 7501: report status from any program](./program-protocol.md).
+  [Any program can report status](./any-program-status.md) is a short
+  emitter. A program writes one escape sequence. It needs no phux library
+  and no socket.
+- [Plugin API](./plugins.md). A directory with a `phux-plugin.toml` manifest.
 - [Agent integrations](./agents.md#agent-setup). The table there includes
   Claude Code, pi, Oh My Pi, OpenCode, Grok, and any MCP client.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)
-  and [embedding](./embedding.md). Read these for what a library would be,
+  and [Embed phux](./embedding.md). Read these for what a library would be,
   and for the SDK status below.
 
 ```sh
@@ -72,12 +71,15 @@ reads `--json` on that process's stdout. The [CLI reference](./reference/cli.md)
 has no `phux api` command.
 
 There is no example application. [examples/agents](../examples/agents/README.md)
-is scripts that spawn the `phux` binary. [Plugin examples](./plugins.md#examples)
-are manifests. The embed example in [embedding](./embedding.md) draws a
+is scripts that spawn the `phux` binary. [First-party plugins](./plugins.md#first-party-plugins)
+are manifests. The embed example in [Embed phux](./embedding.md) draws a
 terminal.
 
-There is no plugin index. `phux plugin install` takes a git URL, a local
-directory, or a tarball ([Managing plugins](./plugins.md#managing-plugins)).
+The static plugin index is built from the GitHub topic `phux-plugin` and
+from the plugins in this repository
+([Listing a plugin](./plugins.md#listing-a-plugin)). `phux plugin install`
+takes GitHub `owner/repo[/subdir]`, a git URL, a local directory, or a
+tarball ([Managing plugins](./plugins.md#managing-plugins)).
 
 ## Version rules
 

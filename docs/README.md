@@ -40,7 +40,7 @@ unshipped experiment, and phone apps are not available yet. See
 
 ## Build on phux
 
-- [Build on phux](./building.md): the versioned `--json` CLI, the MCP server, `phux watch`, the 1.x wire protocol, OSC 7501, plugins, and the surfaces this repository does not ship.
+- [Build on phux](./building.md): the versioned `--json` CLI, the MCP server, `phux watch`, the 1.x server protocol, OSC 7501, the plugin API, and the surfaces this repository does not ship.
 
 ## Build for phux
 
