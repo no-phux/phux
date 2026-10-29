@@ -399,16 +399,27 @@ mod tests {
         );
         assert!(with_pid.remedy.contains("kill 4242"), "{}", with_pid.remedy);
         assert!(
-            with_pid.remedy.contains("pkill -f 'phux server'"),
+            with_pid
+                .remedy
+                .contains("`ps -p 4242 -o pid=,ppid=,user=,args=`"),
             "{}",
             with_pid.remedy
         );
         assert!(
-            with_pid.remedy.contains("`phux server --ensure`"),
+            with_pid
+                .remedy
+                .contains("phux server --ensure --socket '/tmp/old.sock'`"),
             "{}",
             with_pid.remedy
         );
-        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+        for forbidden in [
+            "stale",
+            "phux upgrade",
+            "survive",
+            "remove",
+            "pkill",
+            "killall",
+        ] {
             assert!(
                 !with_pid.remedy.contains(forbidden),
                 "{forbidden}: {}",
@@ -426,12 +437,19 @@ mod tests {
         let unknown = super::connect_error(&err, socket, "ls", None);
         assert_eq!(unknown.code, codes::TRANSPORT);
         assert!(
-            unknown.remedy.contains("pkill -f 'phux server'"),
+            unknown.remedy.contains("`lsof -nP -- '/tmp/old.sock'`"),
             "{}",
             unknown.remedy
         );
         assert!(!unknown.remedy.contains("`kill "), "{}", unknown.remedy);
-        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+        for forbidden in [
+            "stale",
+            "phux upgrade",
+            "survive",
+            "remove",
+            "pkill",
+            "killall",
+        ] {
             assert!(
                 !unknown.remedy.contains(forbidden),
                 "{forbidden}: {}",

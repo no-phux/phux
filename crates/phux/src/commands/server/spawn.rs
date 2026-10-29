@@ -492,11 +492,24 @@ mod tests {
         )
         .join("\n");
         assert!(text.contains("`kill 4242`"), "{text}");
-        assert!(text.contains("pkill -f 'phux server'"), "{text}");
-        assert!(text.contains("`phux server --ensure`"), "{text}");
+        assert!(
+            text.contains("`ps -p 4242 -o pid=,ppid=,user=,args=`"),
+            "{text}"
+        );
+        assert!(
+            text.contains("phux server --ensure --socket '/tmp/old.sock'`"),
+            "{text}"
+        );
         assert!(!text.contains("in place"), "{text}");
         assert!(!text.contains("continuing on"), "{text}");
-        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+        for forbidden in [
+            "stale",
+            "phux upgrade",
+            "survive",
+            "remove",
+            "pkill",
+            "killall",
+        ] {
             assert!(!text.contains(forbidden), "{forbidden} in {text}");
         }
 
@@ -508,7 +521,12 @@ mod tests {
             None,
         )
         .join("\n");
-        assert!(unknown.contains("pkill -f 'phux server'"), "{unknown}");
+        assert!(
+            unknown.contains("`lsof -nP -- '/tmp/old.sock'`"),
+            "{unknown}"
+        );
+        assert!(!unknown.contains("pkill"), "{unknown}");
+        assert!(!unknown.contains("killall"), "{unknown}");
         assert!(!unknown.contains("`kill "), "{unknown}");
     }
 

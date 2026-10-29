@@ -1156,7 +1156,7 @@ mod tests {
     }
 
     /// An old-protocol server stays on `transport`. The remedy names `kill`
-    /// when the pid is known and otherwise only the server-process fallback.
+    /// when the socket-owner pid is known; otherwise it asks to inspect that socket.
     #[test]
     fn an_incompatible_transport_error_names_the_stop_recovery() {
         let socket = Path::new("/tmp/old.sock");
@@ -1171,18 +1171,38 @@ mod tests {
         assert_eq!(doc["exit_code"], 1);
         let remedy = doc["remedy"].as_str().unwrap_or_default();
         assert!(remedy.contains("kill 4242"), "{remedy}");
-        assert!(remedy.contains("pkill -f 'phux server'"), "{remedy}");
-        assert!(remedy.contains("`phux server --ensure`"), "{remedy}");
-        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+        assert!(
+            remedy.contains("`ps -p 4242 -o pid=,ppid=,user=,args=`"),
+            "{remedy}"
+        );
+        assert!(
+            remedy.contains("phux server --ensure --socket '/tmp/old.sock'`"),
+            "{remedy}"
+        );
+        for forbidden in [
+            "stale",
+            "phux upgrade",
+            "survive",
+            "remove",
+            "pkill",
+            "killall",
+        ] {
             assert!(!remedy.contains(forbidden), "{forbidden} in {remedy}");
         }
 
         let unknown = render_transport_error(&err, socket, "spawn", None);
         let unknown_doc = unknown.document();
         let remedy = unknown_doc["remedy"].as_str().unwrap_or_default();
-        assert!(remedy.contains("pkill -f 'phux server'"), "{remedy}");
+        assert!(remedy.contains("`lsof -nP -- '/tmp/old.sock'`"), "{remedy}");
         assert!(!remedy.contains("`kill "), "{remedy}");
-        for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+        for forbidden in [
+            "stale",
+            "phux upgrade",
+            "survive",
+            "remove",
+            "pkill",
+            "killall",
+        ] {
             assert!(!remedy.contains(forbidden), "{forbidden} in {remedy}");
         }
     }
