@@ -98,10 +98,11 @@ edges: the terminal UI is ahead of the desktop.
 
 [Phux Rune](../clients/rune/README.md) is an alpha desktop client built on the
 [Rune](https://github.com/anomalyco/rune) UI framework, beside the desktop app
-as a candidate replacement for its GPUI base. It shows any session and
-terminal on the server, one terminal at a time, and ships as `rune-v*`
-prereleases (ad-hoc signed on macOS, plus a Linux tarball). It has no IME,
-splits or settings yet.
+as a candidate replacement for its GPUI base. It shows every session and
+terminal with each agent's state, a command palette, and splits from the
+session's server-stored arrangement, the same layout the terminal UI shows.
+It ships as `rune-v*` prereleases (ad-hoc signed on macOS, plus a Linux
+tarball) and has no settings or images yet.
 
 ## Browser
 

@@ -131,6 +131,8 @@ pub struct Desk {
     mouse_capture: Option<ResourceId>,
     /// The cell the last reported pointer event was in.
     mouse_cell: Option<(u16, u16)>,
+    /// The window title last set.
+    window_title: String,
     /// Each split's size in points, for turning a divider drag into a ratio.
     split_sizes: HashMap<SplitPath, [f32; 2]>,
     /// Arrangements already asked for, so a missing one is fetched once.
@@ -179,6 +181,7 @@ impl Desk {
             pending_splits: HashMap::new(),
             mouse_capture: None,
             mouse_cell: None,
+            window_title: String::new(),
             split_sizes: HashMap::new(),
             fetched: HashSet::new(),
             focused: true,
@@ -239,6 +242,7 @@ impl Desk {
             changed |= self.apply(&client, event, tx);
         }
         changed |= self.open_wanted(&client);
+        self.title(tx);
         if changed || events {
             changed |= self.refresh_layout(&client);
         }
@@ -427,6 +431,20 @@ impl Desk {
         });
         self.fitted.clear();
         self.fit();
+    }
+
+    /// The window title: the focused terminal's label and its session, set
+    /// only when it changes.
+    fn title(&mut self, tx: &mut Tx) {
+        let title = self
+            .shown
+            .as_ref()
+            .and_then(|s| self.topology.as_ref()?.panes.iter().find(|p| p.terminal_id == s.terminal))
+            .map_or_else(|| "phux".to_owned(), |p| format!("{} — {}", crate::palette::pane_label(p), p.session_name));
+        if self.window_title != title {
+            tx.set_title(title.clone());
+            self.window_title = title;
+        }
     }
 
     pub fn focus_changed(&mut self, focused: bool) {

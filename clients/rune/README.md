@@ -32,28 +32,45 @@ The app finds `phux` (`--phux`, `PHUX_BIN`, `~/.local/bin`,
 reuses the server with `phux server --ensure`, and attaches the most recent
 session (or `--session NAME`). It never creates a session on its own.
 
-- The sidebar lists every session and terminal on the server; click one to
-  show it. **New terminal** spawns into the selected session; **New session**
-  creates and selects one.
-- The terminal paints the runtime's draw list: colours, bold and italic,
-  underlines, box and block glyphs, wide characters, the cursor and the
-  selection. Cells snap to device pixels.
-- The shown terminal follows the window's size. Closing the window detaches;
-  the server and its programs keep running.
+- **Sidebar.** Every session and terminal on the server, each terminal with
+  what it is doing: a declared agent's name and state (working pulses,
+  blocked or asking needs you, done waits until you look), a running
+  command, a long command that finished or failed while you were elsewhere,
+  and a bell. Session headers count what needs you; ⌘J jumps to the next.
+  ⌘B folds the sidebar.
+- **Command palette.** ⌘K (or ⌘P) reaches every terminal, session and
+  action by fuzzy search.
+- **Splits.** The selected session's arrangement is the server-stored split
+  tree the terminal UI uses, so both show the same layout. Split, move
+  between panes, zoom one, drag dividers; new splits and ratios are written
+  back to the server.
+- **Terminal.** The runtime's draw list: colours, bold and italic,
+  underlines, box and block glyphs, wide characters, cursor (with blink) and
+  selection, on device-pixel cells. Each pane follows its own size. Programs
+  that track the mouse get it; the wheel scrolls history, or sends arrows in
+  full-screen programs. Input methods compose at the cursor.
+- Closing the window detaches; the server and its programs keep running. The
+  window title follows the focused terminal.
 
 | Keys (macOS) | Action |
 | --- | --- |
-| ⌘C / ⌘V | Copy the selection / paste (bracketed by the server) |
-| ⌘T | New terminal |
-| ⌘N | New session |
+| ⌘K / ⌘P | Command palette |
+| ⌘J | Jump to the next terminal that needs you |
+| ⌘T / ⌘N | New terminal / new session |
+| ⌘D / ⌘⇧D | Split right / down |
+| ⌘⌥ arrows | Move between panes |
+| ⌘⇧↩ | Zoom the focused pane |
+| ⌘W | Close the terminal (asks unless its prompt is idle) |
 | ⌘] / ⌘[ | Next / previous terminal |
+| ⌘B | Fold the sidebar |
+| ⌘C / ⌘V | Copy the selection / paste (bracketed by the server) |
 | ⌘= / ⌘- / ⌘0 | Bigger / smaller / default text |
 | ⌘↑ / ⌘↓ | Top / bottom of history |
-| Drag, double- and triple-click | Select by cell, word, line |
-| Wheel | Scroll history |
+| Drag, double- and triple-click | Select by cell, word, line (Shift selects over mouse-tracking programs) |
 
-On Linux the same chords use Ctrl-Shift; plain Ctrl chords go to the shell.
-Ctrl and Alt chords follow the key's position, so Ctrl-C is ^C on any layout.
+On Linux the same chords use Ctrl-Shift (split down is Ctrl-Shift-E);
+plain Ctrl chords go to the shell. Ctrl and Alt chords follow the key's
+position, so Ctrl-C is ^C on any layout.
 
 A paste with line breaks into a program that has not turned on bracketed
 paste would run each line; the window asks first (Return pastes, Esc
@@ -61,13 +78,9 @@ cancels).
 
 ## Known gaps
 
-- No IME or dead keys yet: characters a key types directly work, including
-  Option characters on macOS, but composed input (CJK input methods, ´ then
-  e) does not.
-- No splits: one terminal at a time.
-- No mouse reporting to applications; the wheel scrolls history, also in
-  full-screen programs.
-- No settings, themes, or Kitty images.
+- One window; arrangement tabs (groups) other than the active one are not
+  shown.
+- No settings, themes, or Kitty images; no search in history yet.
 - Option types layout characters on macOS (no Option-as-Meta).
 - macOS builds are ad-hoc signed; no auto-update.
 
@@ -103,7 +116,9 @@ packages macOS and Linux, and publishes a prerelease.
 | Module | Owns |
 | --- | --- |
 | `launch` | command line, finding the CLI, `phux server --ensure` |
-| `desk` | the runtime client, the shown terminal, resize, input, selection |
+| `desk` | the runtime client and what is on screen; `desk/*`: layout and splits, frames and fit, input, mouse, palette, sessions |
+| `activity` | per-terminal agent state, commands and bells, and what needs you |
+| `palette` | palette items and fuzzy ranking |
 | `grid` | cell metrics and the draw list as Rune elements |
 | `keys` | Rune keys as phux key atoms and app shortcuts |
-| `ui` | sidebar, terminal area, status line |
+| `ui` | window composition; `ui/*`: sidebar, panes, palette overlay |
