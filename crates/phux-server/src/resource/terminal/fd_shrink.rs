@@ -21,6 +21,9 @@ const TRAMPOLINE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/phux-f
 
 const SPAWN_CWD_KEY: &str = "PHUX_FD_SHRINK_CWD";
 
+#[cfg(test)]
+mod tests;
+
 /// Spawn `cmd` on `master`'s slave. Falls back to portable-pty's fork/exec
 /// when the trampoline cannot be materialized; on Linux that fallback still
 /// execs the trampoline so the table shrinks.
@@ -34,6 +37,7 @@ pub(super) fn spawn_pane_child(
     }
     match posix_spawn_child(master, &cmd) {
         Ok(child) => Ok(child),
+        Err(err) if cmd.get_env(super::spawn::STRICT_CWD_KEY).is_some() => Err(err.to_string()),
         Err(err) => {
             warn!(
                 ?err,
@@ -48,6 +52,9 @@ fn fallback_spawn(
     slave: &(dyn SlavePty + Send),
     cmd: &mut CommandBuilder,
 ) -> Result<Box<dyn Child + Send + Sync>, String> {
+    if cmd.get_env(super::spawn::STRICT_CWD_KEY).is_some() {
+        return Err("strict cwd cannot use the portable-pty fallback".into());
+    }
     let _ = install_trampoline(cmd);
     slave
         .spawn_command(cmd.clone())
@@ -74,11 +81,14 @@ fn missing_program(cmd: &CommandBuilder) -> Option<String> {
 
 fn program_is_executable(cmd: &CommandBuilder, program: &OsStr) -> bool {
     let path = Path::new(program);
+    let cwd = spawn_directory(cmd);
     if path.components().count() > 1 || program.as_bytes().contains(&b'/') {
-        return rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok();
+        let candidate = cwd
+            .as_ref()
+            .map_or_else(|| path.to_path_buf(), |cwd| cwd.join(path));
+        return rustix::fs::access(&candidate, rustix::fs::Access::EXEC_OK).is_ok();
     }
     let search = cmd.get_env("PATH").unwrap_or_else(|| OsStr::new(""));
-    let cwd = cmd.get_cwd().map(PathBuf::from);
     std::env::split_paths(search).any(|dir| {
         let candidate = cwd
             .as_ref()
@@ -191,7 +201,7 @@ fn spawn_argv(trampoline: &Path, cmd: &CommandBuilder) -> io::Result<Vec<CString
 fn spawn_envp(cmd: &CommandBuilder) -> io::Result<Vec<CString>> {
     let mut envp = Vec::new();
     for (key, value) in cmd.iter_full_env_as_str() {
-        if key == SPAWN_CWD_KEY {
+        if key == SPAWN_CWD_KEY || key == super::spawn::STRICT_CWD_KEY {
             continue;
         }
         envp.push(c_pair(key, value)?);
@@ -207,7 +217,7 @@ fn spawn_envp(cmd: &CommandBuilder) -> io::Result<Vec<CString>> {
 fn spawn_directory(cmd: &CommandBuilder) -> Option<PathBuf> {
     if let Some(cwd) = cmd.get_cwd() {
         let path = PathBuf::from(cwd);
-        if path.is_dir() {
+        if cmd.get_env(super::spawn::STRICT_CWD_KEY).is_some() || path.is_dir() {
             return Some(path);
         }
     }

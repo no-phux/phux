@@ -54,10 +54,12 @@ const fn command_variant(command: &Command) -> usize {
         Command::ServiceHttpOpen { .. } => 49,
         Command::ServiceHttpRead { .. } => 50,
         Command::ServiceHttpClose { .. } => 51,
+        Command::DescribeApi => 52,
+        Command::GetCreation { .. } => 53,
     }
 }
 
-const COMMAND_VARIANTS: usize = 52;
+const COMMAND_VARIANTS: usize = 54;
 
 fn operation() -> IdempotencyKey {
     IdempotencyKey::new([3; 16]).unwrap()
@@ -143,6 +145,7 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
         ),
         (
             Command::ResourceCreate {
+                placement: None,
                 operation: operation(),
                 session: session_key(),
                 kind: ResourceKind::Terminal,
@@ -153,6 +156,7 @@ fn org_command_samples() -> Vec<(Command, &'static Rule)> {
             },
             &C_RESOURCE_CREATE,
         ),
+        (Command::ResourceCreate { operation: operation(), session: session_key(), kind: ResourceKind::Terminal, launch: None, name: None, on_exit: ExitPolicy::Retain, launch_mode: LaunchMode::Immediate, placement: Some(Box::new(crate::wire::frame::CreatePlacement::NewGroup)) }, &C_RESOURCE_CREATE_PLACED),
         (
             Command::ResourceMove {
                 operation: operation(),
@@ -510,6 +514,8 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             },
             &C_AGENT_REPORT,
         ),
+        (Command::DescribeApi, &C_API_DESCRIBE),
+        (Command::GetCreation { operation: operation(), session: session_key() }, &C_GET_CREATION),
         (Command::GetPerf { reset: false }, &C_GET_PERF),
         (Command::GetPerf { reset: true }, &C_GET_PERF_RESET),
         (

@@ -58,6 +58,21 @@ records explain history; [look them up deliberately](./architecture.md#historica
   device revokes its OpenCode access and no service credential reaches it
   ([host services](./host-services.md)).
 
+**Public operations**
+
+- [Terminal creation](./public-api.md) expresses a complete intention: destination,
+  direct argv and placement. Membership, arrangement entry and launch intent commit
+  together; OS execution follows, not a fictitious database/process transaction.
+  New API resources retain failed/completed execution records for reconciliation.
+- Keep the binary transport and shared runtime. Public JSON DTOs and nested
+  schemas describe the workflow, not transport tags or metadata carriers. The
+  connected server serves the description; installed-binary discovery remains
+  separate. No generic invocation framework or second listener is introduced.
+- A retry identity has a bounded retained receipt, not an exactly-once promise
+  forever. A read-only creation lookup can recover lost replies without effects.
+  Missing/expired receipts leave the original outcome unknown; never infer that
+  it is safe to start again. Dispatch-time authorization remains authoritative.
+
 **Clients**
 
 - `phux-client-core` is sans-IO and dependency-light so it compiles to wasm.

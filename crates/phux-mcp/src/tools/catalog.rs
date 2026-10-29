@@ -191,6 +191,7 @@ pub(crate) fn catalog() -> Value {
         entries.extend(crate::coord_tools::schemas());
         entries.extend(crate::resource_tools::schemas());
         entries.extend(crate::approval_tools::schemas());
+        entries.extend(crate::terminal_tools::schemas());
     }
     // Hints derived from the kind catalog, never hand-set (ADR-0125).
     if let Value::Array(entries) = &mut tools {

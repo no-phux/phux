@@ -199,22 +199,7 @@ pub(super) async fn negotiate_hello(
         server_caps: ServerCapabilities::new()
             .with_layers(LayerSet::all())
             .with_features(server_features)
-            .with_features_ext(ServerFeatureExtSet::with(&[
-                ServerFeatureExt::PathQuery,
-                ServerFeatureExt::ResizeCellPx,
-                ServerFeatureExt::CommittedTeardown,
-                ServerFeatureExt::AgentStreamResume,
-                // ADR-0161: every organization command commits and is enforced.
-                ServerFeatureExt::Organization,
-                ServerFeatureExt::SessionKill,
-                ServerFeatureExt::NativeAgent,
-                ServerFeatureExt::NativeAgentLaunch,
-                ServerFeatureExt::PerfControl,
-                ServerFeatureExt::SessionProject,
-                ServerFeatureExt::FileDownload,
-                ServerFeatureExt::Checkout,
-                ServerFeatureExt::HostServiceHttp,
-            ]))
+            .with_features_ext(runtime_server_features_ext())
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
         selected_profile,
@@ -224,6 +209,28 @@ pub(super) async fn negotiate_hello(
         trace!(?client_id, "HELLO_OK send dropped: writer gone");
     }
     Ok(())
+}
+
+/// Explicitly implemented extension support, separate from HELLO negotiation.
+const fn runtime_server_features_ext() -> ServerFeatureExtSet {
+    ServerFeatureExtSet::with(&[
+        ServerFeatureExt::PathQuery,
+        ServerFeatureExt::ResizeCellPx,
+        ServerFeatureExt::CommittedTeardown,
+        ServerFeatureExt::AgentStreamResume,
+        // Every organization command commits and is enforced.
+        ServerFeatureExt::Organization,
+        ServerFeatureExt::CreatePlacement,
+        ServerFeatureExt::ApiDescription,
+        ServerFeatureExt::SessionKill,
+        ServerFeatureExt::NativeAgent,
+        ServerFeatureExt::NativeAgentLaunch,
+        ServerFeatureExt::PerfControl,
+        ServerFeatureExt::SessionProject,
+        ServerFeatureExt::FileDownload,
+        ServerFeatureExt::Checkout,
+        ServerFeatureExt::HostServiceHttp,
+    ])
 }
 
 /// Policy check: authorize HELLO only against the identity authenticated by

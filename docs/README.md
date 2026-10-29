@@ -31,6 +31,7 @@ unshipped experiment, and phone apps are not available yet. See
 
 ## Automate
 
+- [Public terminal workflow](./public-api.md): create, place and start a terminal with durable identity, receipts and connected-server schemas.
 - [Using phux as an agent](./agent-quickstart.md): install phux and drive sessions, panes, input, and scrollback from code.
 - [Driving terminals from scripts](./scripting.md): snapshot, send keys, run, wait, with JSON output and exit codes.
 - [Runnable examples](../examples/README.md): small programs for learning the CLI and integrations.

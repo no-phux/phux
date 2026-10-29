@@ -131,6 +131,7 @@ fn schema_contracts() -> Value {
         { "invocation": "phux status --json", "schema_version": crate::commands::status::STATUS_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux server --ensure --json", "schema_version": crate::commands::server::ENSURE_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux new --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux terminal create|describe|operation", "schema_version": 1, "kind": "document" },
         { "invocation": "phux spawn --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux launch --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux resize --json", "schema_version": 1, "kind": "document" },

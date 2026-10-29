@@ -32,7 +32,7 @@ mod translate;
 use self::effects::run_effect;
 use self::mutate::{mutate, session_kill};
 use self::read::{arrangement_get, organization_page};
-use self::translate::{answer, translate};
+use self::translate::{answer, lookup_creation, translate};
 
 /// Records per `GET_ORGANIZATION` page when the caller asks for the
 /// default.
@@ -127,6 +127,9 @@ pub(super) fn handle(
         } => state
             .with_mut(|s| organization_page(s, client_id, filter, page_size, cursor.as_deref())),
         Command::ArrangementGet { arrangement } => state.with(|s| arrangement_get(s, &arrangement)),
+        Command::GetCreation { operation, session } => {
+            state.with_mut(|s| lookup_creation(s, operation, session))
+        }
         Command::SessionKill { operation, session } => {
             session_kill(state, client_id, &operation, &session, root_token)
         }

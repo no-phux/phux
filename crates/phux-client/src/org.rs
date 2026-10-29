@@ -71,9 +71,9 @@ pub enum OrgError {
     /// The reply had a shape this command never produces.
     #[error("unexpected reply: {0}")]
     Unexpected(String),
-    /// The connection dropped after the command was sent: it may or may not
-    /// have committed. Resend `operation` on a new connection, or reconcile.
-    #[error("the connection dropped before the server answered; the outcome is unknown")]
+    /// No trustworthy outcome was received after a possible send. It may
+    /// have committed; reconcile before considering a retained identical retry.
+    #[error("the operation outcome could not be confirmed; reconcile before retrying")]
     OutcomeUnknown {
         /// The operation to resend or reconcile.
         operation: Option<OperationId>,
@@ -173,6 +173,18 @@ pub async fn request(
     command: Command,
 ) -> Result<(OrgOutcome, Degradation), OrgError> {
     require(conn)?;
+    if matches!(
+        &command,
+        Command::ResourceCreate {
+            placement: Some(_),
+            ..
+        }
+    ) && !conn
+        .server_features_ext()
+        .contains(ServerFeatureExt::CreatePlacement)
+    {
+        return Err(OrgError::Unsupported);
+    }
     let operation = command.idempotency_key().copied();
     let receipt_operation = operation.filter(|_| command.is_organization());
     match conn.request(request_id, command).await {

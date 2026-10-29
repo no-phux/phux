@@ -164,6 +164,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Panes", display_order = 32)]
     Resource(ResourceArgs),
 
+    #[usage(help_heading = "Panes", display_order = 31)]
+    Terminal(TerminalArgs),
+
     #[usage(help_heading = "More", display_order = 60)]
     Rec(RecArgs),
 
