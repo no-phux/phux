@@ -260,15 +260,20 @@ fn incompatible_lines_are_the_stop_recovery_with_and_without_a_pid() {
         } else {
             assert!(!text.contains("`kill "), "{text}");
         }
-        assert!(text.contains("pkill -f 'phux server'"), "{text}");
-        assert!(text.contains("`phux server --ensure`"), "{text}");
-        assert!(text.contains("closes the panes"), "{text}");
+        assert!(text.contains("`lsof -nP -- '/tmp/old.sock'`"), "{text}");
+        assert!(
+            text.contains("phux server --ensure --socket '/tmp/old.sock'`"),
+            "{text}"
+        );
+        assert!(text.contains("closes only the panes"), "{text}");
         for forbidden in [
             "stale",
             "phux upgrade",
             "survive",
             "remove",
             "run `phux doctor`",
+            "pkill",
+            "killall",
         ] {
             assert!(!text.contains(forbidden), "{forbidden} in {text}");
         }
@@ -374,10 +379,20 @@ fn old_protocol_server(
 
 fn assert_live_old_server_hint(text: &str, pid: i32) {
     assert!(text.contains(&format!("`kill {pid}`")), "{text}");
-    assert!(text.contains("pkill -f 'phux server'"), "{text}");
-    assert!(text.contains("`phux server --ensure`"), "{text}");
-    assert!(text.contains("closes the panes"), "{text}");
-    for forbidden in ["stale", "phux upgrade", "survive", "remove"] {
+    assert!(
+        text.contains(&format!("`ps -p {pid} -o pid=,ppid=,user=,args=`")),
+        "{text}"
+    );
+    assert!(text.contains("phux server --ensure --socket '"), "{text}");
+    assert!(text.contains("closes only the panes"), "{text}");
+    for forbidden in [
+        "stale",
+        "phux upgrade",
+        "survive",
+        "remove",
+        "pkill",
+        "killall",
+    ] {
         assert!(!text.contains(forbidden), "{forbidden} in {text}");
     }
 }

@@ -102,13 +102,16 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 **Substrate**
 
-- phux is the substrate: principals on phux hosts, one home keeper on the
-  Mac mini, and one-way adapters. Blackbird stays frozen. The coordinator
-  wire, when other hosts become keeper clients, is the accepted
-  `phux-coordinator/1` endpoint with its fencing witness. The terminal QUIC
-  attach stays the terminal stream. Per-agent cross-host grants, that
-  multi-host coordinator, the durable grant ledger, and org-to-org trust
-  are after the 5 November 2026 launch
+- One keeper writes each work store; shared work has one authoritative home
+  store. Adapters are one-way to avoid competing task authorities. Blackbird
+  is retired from phux coordination. Reverse join grants satellite-owner
+  authority and is only for one person's own machines; delegated credentials
+  cannot mint, and cold restart requires human reauthorization.
+- The accepted future coordinator design uses a separate
+  `phux-coordinator/1` endpoint with an external fencing witness, never the
+  terminal stream. That coordinator, durable grant ledger, autonomous Lead,
+  per-agent cross-host grants, and organization-to-organization trust do not
+  ship today
   ([substrate](./substrate.md),
   [#1689](https://github.com/no-phux/phux/pull/1689)).
 

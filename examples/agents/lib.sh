@@ -6,38 +6,42 @@
 
 set -euo pipefail
 
-# $PHUX, else `phux` on PATH, else a debug build of this checkout.
-if [[ -n "${PHUX:-}" ]]; then
-    :
-elif command -v phux >/dev/null 2>&1; then
-    PHUX="$(command -v phux)"
-else
-    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-    candidate="$repo_root/target/debug/phux"
-    if [[ ! -x "$candidate" ]]; then
-        echo "examples/agents: building phux (one-time, may be slow)..." >&2
-        # The dev shell provides zig for libghostty-vt's build.
-        ( cd "$repo_root" && nix develop -c cargo build -p phux ) >&2
-    fi
-    PHUX="$candidate"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PHUX="${PHUX:-$repo_root/target/debug/phux}"
+if [[ ! -x "$PHUX" ]]; then
+    echo "examples/agents: build this checkout first (just build), or set PHUX=/absolute/path/to/phux" >&2
+    exit 2
 fi
 export PHUX
 
+# A private socket alone does not isolate credentials, config, logs, or state.
+# Drop pane-inherited phux settings, including all listener and TLS overrides.
+for _name in ${!PHUX_@}; do
+    unset "$_name"
+done
 PHUX_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/phux-example.XXXXXX")"
 export PHUX_SOCKET="$PHUX_TMPDIR/phux.sock"
-PHUX_SESSION="${PHUX_SESSION:-demo}"
-export PHUX_SESSION
+PHUX_SESSION=demo
+export HOME="$PHUX_TMPDIR/home"
+export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
+export XDG_DATA_HOME="$HOME/.local/share" XDG_CACHE_HOME="$HOME/.cache"
+export XDG_RUNTIME_DIR="$PHUX_TMPDIR/run"
+export SHELL=/bin/sh PHUX_NO_UPDATE_CHECK=1
+unset ENV BASH_ENV ZDOTDIR PYTHONSTARTUP
+mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
 
 _phux_server_pid=""
 
 # Start the throwaway server and block until its socket is bound.
 phux_start_server() {
-    "$PHUX" server --session "$PHUX_SESSION" --socket "$PHUX_SOCKET" \
+    local attempt
+    "$PHUX" server --session "$PHUX_SESSION" --socket "$PHUX_SOCKET" --exit-after-idle 60 \
         >"$PHUX_TMPDIR/server.log" 2>&1 &
     _phux_server_pid=$!
     # Poll for the bind for up to ~5s.
-    for _ in $(seq 1 200); do
+    for (( attempt=0; attempt<200; attempt++ )); do
         [[ -S "$PHUX_SOCKET" ]] && return 0
+        kill -0 "$_phux_server_pid" 2>/dev/null || break
         sleep 0.025
     done
     echo "examples/agents: server did not bind $PHUX_SOCKET" >&2
@@ -46,13 +50,17 @@ phux_start_server() {
 }
 
 phux_cleanup() {
-    [[ -n "$_phux_server_pid" ]] && kill "$_phux_server_pid" 2>/dev/null || true
+    if [[ -n "$_phux_server_pid" ]]; then
+        kill "$_phux_server_pid" 2>/dev/null || true
+        wait "$_phux_server_pid" 2>/dev/null || true
+    fi
     rm -rf "$PHUX_TMPDIR" 2>/dev/null || true
 }
 trap phux_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-# `--socket` is a per-subcommand flag that must follow the verb and precede
-# trailing positional args, so insert it right after the verb.
+# Insert socket before trailing positional args (not into run's command).
 phux() {
     local verb="$1"
     shift
@@ -61,4 +69,20 @@ phux() {
 
 section() {
     printf '\n=== %s ===\n' "$*"
+}
+
+# A deliberate miss must be timeout (124), never a missing server/target.
+phux_expect_timeout() {
+    local rc
+    if phux wait "$@"; then
+        echo "examples/agents: expected a wait timeout, got success" >&2
+        return 1
+    else
+        rc=$?
+    fi
+    if [[ "$rc" -ne 124 ]]; then
+        echo "examples/agents: wait failed unexpectedly (exit $rc)" >&2
+        return "$rc"
+    fi
+    echo "  timed out as expected (exit 124)"
 }
