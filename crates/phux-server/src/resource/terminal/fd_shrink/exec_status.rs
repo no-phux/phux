@@ -131,6 +131,15 @@ mod tests {
             read_status(UnixStream::from(reader), Duration::from_millis(10)),
             Ok(())
         );
+        let (reader, writer) = channel().unwrap();
+        let mut writer = UnixStream::from(writer);
+        writer.write_all(&[0x00, 2, 0, 0, 0, 2]).unwrap();
+        drop(writer);
+        assert_eq!(
+            read_status(UnixStream::from(reader), Duration::from_millis(10)),
+            Err(uncertain()),
+            "a full status frame with the wrong magic is not an exec failure"
+        );
     }
 
     #[test]

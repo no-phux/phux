@@ -154,7 +154,13 @@ fn a_report_for_a_different_activation_id_is_discarded() {
     let (mut s, id, _dir, db) = retained();
     reject(&db);
     s.activation_ended(id, ExitOutcome::UNKNOWN, true);
+    let key = s.registry().record(id).unwrap().key;
+    assert!(s.activation_persistence_pending(key));
     s.org.pending_reports.front_mut().unwrap().id = phux_core::ActivationId::FIRST.next();
+    assert!(
+        !s.activation_persistence_pending(key),
+        "evidence for another activation is not this execution's pending write"
+    );
     recover(&db);
     let before = activation(&s, id);
     s.retry_activation_reports();
@@ -199,10 +205,11 @@ fn a_start_report_does_not_apply_once_the_activation_is_running() {
     assert_eq!(activation(&s, id).state, ExecState::Running);
     reject(&db);
     s.activation_started(id, None);
-    recover(&db);
-    s.retry_activation_reports();
     assert_eq!(activation(&s, id).state, ExecState::Running);
-    assert!(!s.has_pending_activation_reports());
+    assert!(
+        !s.has_pending_activation_reports(),
+        "a start for an activation that already left Starting is dropped without a store write"
+    );
 }
 
 #[test]
