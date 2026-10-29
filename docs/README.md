@@ -31,6 +31,7 @@ Every page in the phux docs, grouped by what you're trying to do.
 ## Build for phux
 
 - [Program protocol](./program-protocol.md): how a program in a pane reports what it is doing with OSC 7501, and what phux shows.
+- [Any program can report status](./any-program-status.md): a short OSC 7501 emitter, a demo with no hooks, and how phux ranks that report.
 - [Program sequences and agent reports](./program-sequences.md): titles, `phux-ask` questions, OSC 133, OSC 52, and the other sequences phux reads, plus the agent record.
 
 ## Machines and clients

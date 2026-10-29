@@ -326,8 +326,10 @@ terminal, with no integration and no socket:
 printf '\033]7501;state=blocked:kind=permission:app=mytool\033\\'
 ```
 
-The [program protocol](./program-protocol.md) specifies it, and
-[program sequences](./program-sequences.md) covers the `phux-ask` question
+The [program protocol](./program-protocol.md) specifies it.
+[Any program can report status](./any-program-status.md) walks through a
+shell emitter, a demo with no hooks, and one real `phux agent explain`.
+[Program sequences](./program-sequences.md) covers the `phux-ask` question
 title and the other sequences phux reads.
 
 A tool phux's agent rules recognize can also report through an agent

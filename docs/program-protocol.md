@@ -13,6 +13,10 @@ and `phux agent list`. It needs no phux library and no socket.
 printf '\033]7501;state=working:app=deploy\033\\'
 ```
 
+[Any program can report status](./any-program-status.md) is a short
+walkthrough: one shell function, a demo that needs no hooks, and the
+`phux agent list` and `phux agent explain` output from a real run.
+
 [Program sequences and agent reports](./program-sequences.md) covers the
 other sequences phux reads (titles, the `phux-ask` title, OSC 133, OSC 9;4,
 OSC 52, BEL), the agent record, and the commands a program can run instead

@@ -36,6 +36,9 @@ const ROUTES: Record<string, Surface[]> = {
   // Distro layers and manifests are exercised by native config tests; Crew's
   // credential-free launcher tests also run in guards.
   "distros/**": ["phux"],
+  // Reader-facing scripts. Guards shellcheck them and run the smoke tests;
+  // they are not a product build.
+  "examples/**": [],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
   // its shared actions: a change to how lanes run reruns every lane.
   ".github/workflows/*.{yml,yaml}": [],
