@@ -8,6 +8,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use phux_config::plugin::PluginManifestBuild;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -63,15 +64,28 @@ pub(super) struct PluginLockEntry {
     pub(super) build_steps: Option<String>,
 }
 
-/// Hash of the build steps a user has approved. `None` when there are none.
-pub(super) fn hash_build_steps(lines: &[String]) -> Option<String> {
-    if lines.is_empty() {
+/// SHA-256 of approved `[[build]]` steps. `None` when there are none.
+///
+/// Encoding is a count, then each field as `len:bytes`, so an argument that
+/// contains the old separator (`\u{1f}` or a newline) cannot collide with
+/// two neighbouring arguments. A lockfile written with the previous
+/// encoding does not match and `update` asks again.
+pub(super) fn hash_build_steps(steps: &[PluginManifestBuild]) -> Option<String> {
+    if steps.is_empty() {
         return None;
     }
     let mut hasher = Sha256::new();
-    for line in lines {
-        hasher.update(line.as_bytes());
-        hasher.update(b"\n");
+    feed_count(&mut hasher, steps.len());
+    for step in steps {
+        let platforms = step.platforms.as_deref().unwrap_or(&[]);
+        feed_count(&mut hasher, platforms.len());
+        for platform in platforms {
+            feed_bytes(&mut hasher, format!("{platform:?}").as_bytes());
+        }
+        feed_count(&mut hasher, step.command.len());
+        for arg in &step.command {
+            feed_bytes(&mut hasher, arg.as_bytes());
+        }
     }
     let digest = hasher.finalize();
     let mut out = String::with_capacity(digest.len() * 2);
@@ -79,6 +93,15 @@ pub(super) fn hash_build_steps(lines: &[String]) -> Option<String> {
         let _ = write!(out, "{byte:02x}");
     }
     Some(out)
+}
+
+fn feed_count(hasher: &mut Sha256, count: usize) {
+    hasher.update(format!("{count}:").as_bytes());
+}
+
+fn feed_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    feed_count(hasher, bytes.len());
+    hasher.update(bytes);
 }
 
 /// Source kinds `phux plugin install` accepts.
@@ -247,5 +270,49 @@ mod tests {
         let err = read_lockfile(dir.path()).unwrap_err();
 
         assert!(err.contains("plugins.lock"), "{err}");
+    }
+
+    fn step(argv: &[&str]) -> phux_config::plugin::PluginManifestBuild {
+        phux_config::plugin::PluginManifestBuild {
+            platforms: None,
+            command: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+
+    /// The previous encoding: `{platforms}|{args joined by \u{1f}}` per step.
+    fn legacy_build_hash(steps: &[phux_config::plugin::PluginManifestBuild]) -> String {
+        use sha2::{Digest, Sha256};
+        use std::fmt::Write as _;
+
+        let mut hasher = Sha256::new();
+        for step in steps {
+            let line = format!("|{}", step.command.join("\u{1f}"));
+            hasher.update(line.as_bytes());
+            hasher.update(b"\n");
+        }
+        let digest = hasher.finalize();
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    /// Args used to be joined with `\u{1f}`, so `["a","b"]` and `["a\u{1f}b"]`
+    /// were one hash. A lockfile still holding that digest does not match.
+    #[test]
+    fn build_step_hash_does_not_collide_on_separator_bytes() {
+        let split = step(&["sh", "build.sh", "a", "b"]);
+        let glued = step(&["sh", "build.sh", "a\u{1f}b"]);
+        let split_hash = super::hash_build_steps(std::slice::from_ref(&split)).unwrap();
+        let glued_hash = super::hash_build_steps(std::slice::from_ref(&glued)).unwrap();
+        assert_ne!(split_hash, glued_hash);
+
+        let legacy = legacy_build_hash(std::slice::from_ref(&split));
+        assert_eq!(legacy, legacy_build_hash(std::slice::from_ref(&glued)));
+        assert_ne!(
+            split_hash, legacy,
+            "an old lockfile hash must not match, so update asks again"
+        );
     }
 }

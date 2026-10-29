@@ -217,6 +217,9 @@ fn remote_build_requires_yes_off_a_terminal() {
     let (code, _, stderr) = home.run(&["plugin", "install", &url]);
     assert_ne!(code, 0, "{stderr}");
     assert!(stderr.contains("--yes"), "{stderr}");
+    assert!(stderr.contains("Nothing was installed"), "{stderr}");
+    assert!(stderr.contains("Refused:"), "{stderr}");
+    assert!(stderr.contains("echo built"), "{stderr}");
     assert!(!home.plugins_dir().join("example.remote-build").exists());
 
     let (code, _, stderr) = home.run(&["plugin", "install", &url, "--yes"]);
@@ -371,7 +374,9 @@ fn update_changed_build_steps_need_yes_off_a_terminal() {
     });
     assert_ne!(code, 0, "{stderr}");
     assert!(stderr.contains("--yes"), "{stderr}");
-    assert!(stderr.contains("Nothing was installed"), "{stderr}");
+    assert!(stderr.contains("Nothing was updated"), "{stderr}");
+    assert!(stderr.contains("Refused:"), "{stderr}");
+    assert!(stderr.contains("echo B"), "{stderr}");
     assert!(installed.join("approved.txt").is_file());
     assert!(
         !installed.join("slipped.txt").exists(),
@@ -393,6 +398,56 @@ fn update_changed_build_steps_need_yes_off_a_terminal() {
     assert_eq!(
         code, 0,
         "unchanged build steps should not ask again; stderr={stderr}"
+    );
+}
+
+#[test]
+fn update_reasks_when_the_stored_build_hash_does_not_match() {
+    let home = TestHome::new();
+    let repo = home.scratch.join("repo");
+    let marker = home.scratch.join("runs.txt");
+    let script = format!("echo ran >> {}", marker.display());
+    manifest_with_build(&repo, "stale", "0.1.0", &script);
+    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "build"]);
+    let url = format!("file://{}", repo.display());
+
+    let (code, _, stderr) = home.run_with(&["plugin", "install", &url, "--yes"], |cmd| {
+        cmd.stdin(std::process::Stdio::null());
+    });
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
+
+    // Any digest that is not the current argv hash takes the re-ask path,
+    // including a hash written with the previous separator encoding.
+    let lock_path = home.plugins_dir().join("plugins.lock");
+    let lock = std::fs::read_to_string(&lock_path).unwrap();
+    assert!(lock.contains("build_steps"), "{lock}");
+    let stale = lock
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("build_steps") {
+                "build_steps = \"legacy-encoding\""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&lock_path, stale).unwrap();
+
+    let (code, _, stderr) = home.run_with(&["plugin", "update", "stale"], |cmd| {
+        cmd.stdin(std::process::Stdio::null());
+    });
+    assert_ne!(code, 0, "{stderr}");
+    assert!(stderr.contains("--yes"), "{stderr}");
+    assert!(stderr.contains("Nothing was updated"), "{stderr}");
+    assert!(stderr.contains("Refused:"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap().lines().count(),
+        1,
+        "a stale build hash must not run the command"
     );
 }
 

@@ -89,10 +89,16 @@ token in a URL (`https://user:token@host/...`) is removed before the
 address is stored or printed; the clone itself still uses the URL you
 typed. For a private repository, use a git credential helper rather than
 putting a token in the URL. A git install or update whose manifest has
-`[[build]]` steps prints those commands and asks `y/N` on a terminal.
-Pass `--yes` to run them without asking. Without a terminal, `--yes` is
-required. `update` skips the question when the steps are the same ones
-you already approved. A refusal installs nothing.
+`[[build]]` steps prints those commands and asks `[y/N]` on a terminal.
+Pass `--yes` to run them without asking. Without a terminal, the error
+names `--yes` and lists the steps it refused. `update` stores a hash of
+the approved build commands (the argv of each step), not of the files
+those commands run. The same argv is not asked again: a changed script
+behind an approved command, such as `build.sh` after `sh build.sh` was
+approved, is not re-asked. That is the same trust model as install. A
+hash written by an older phux does not match, so `update` asks again.
+Refusing on install installs nothing. Refusing on update leaves the
+installed copy in place.
 
 ### What install and update trust
 
@@ -102,8 +108,13 @@ protocols git is allowed are `https`, `ssh`, `git`, and `file`. `file` is
 for a repository already on disk, including tests. GitHub shorthand is
 `https://github.com/owner/repo` and nothing else is contacted. Each git
 command waits at most 180 seconds (`PHUX_PLUGIN_GIT_TIMEOUT_MS` is that
-limit in milliseconds). The resolved commit SHA is written to
-`plugins.lock`. Two installs at once can lose one of those lockfile
+limit in milliseconds). If `GIT_SSH_COMMAND` is set, that command is
+kept and phux appends `-o BatchMode=yes`, unless it already sets
+`BatchMode` or the program is PuTTY `plink` or `tortoiseplink` (those
+do not take OpenSSH `-o` options, so the command is left unchanged). If
+`GIT_SSH` or git `core.sshCommand` is set, `BatchMode` is not forced, so
+a password prompt can wait until the 180 second clone timeout. The
+resolved commit SHA is written to `plugins.lock`. Two installs at once can lose one of those lockfile
 writes; the file is not locked.
 
 `update` moves a branch only when the new commit is that recorded SHA or

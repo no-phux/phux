@@ -265,13 +265,14 @@ fn git_command() -> Command {
     cmd.env("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_ASKPASS", "false");
-    // BatchMode stops ssh asking for a password. Do not replace a command
-    // the user already chose:
-    // - GIT_SSH_COMMAND is kept and gains `-o BatchMode=yes`.
-    // - GIT_SSH is only a program name, so appending options would drop it;
-    //   it is left alone.
+    // BatchMode stops OpenSSH asking for a password. Do not replace a
+    // command the user already chose:
+    // - GIT_SSH_COMMAND is kept and gains `-o BatchMode=yes`, unless the
+    //   program is PuTTY plink or tortoiseplink (`-o` is OpenSSH-only).
+    // - GIT_SSH is only a program name, so appending options would drop it.
+    //   It is left alone, and BatchMode is not forced.
     // - core.sshCommand (global or system git config) is left alone for the
-    //   same reason.
+    //   same reason. A password prompt can then wait until the clone timeout.
     // When none of those is set, this process sets GIT_SSH_COMMAND to
     // `ssh -o BatchMode=yes`.
     let inherited = std::env::var("GIT_SSH_COMMAND").ok();
@@ -300,7 +301,7 @@ pub(super) fn ssh_batch_command(
         .map(str::trim)
         .filter(|command| !command.is_empty())
     {
-        if command.contains("BatchMode") {
+        if command.contains("BatchMode") || ssh_program_is_plink(command) {
             return Some(command.to_owned());
         }
         return Some(format!("{command} -o BatchMode=yes"));
@@ -311,6 +312,33 @@ pub(super) fn ssh_batch_command(
         return None;
     }
     Some("ssh -o BatchMode=yes".to_owned())
+}
+
+/// `plink` and `tortoiseplink` do not accept OpenSSH `-o BatchMode=yes`.
+fn ssh_program_is_plink(command: &str) -> bool {
+    let token = first_program_token(command);
+    let base = token.rsplit(['/', '\\']).next().unwrap_or(token.as_str());
+    let stem = base
+        .rsplit_once('.')
+        .filter(|(_, ext)| ext.eq_ignore_ascii_case("exe"))
+        .map_or(base, |(stem, _)| stem);
+    matches!(
+        stem.to_ascii_lowercase().as_str(),
+        "plink" | "tortoiseplink"
+    )
+}
+
+fn first_program_token(command: &str) -> String {
+    let command = command.trim();
+    if let Some((quote, rest)) = command
+        .strip_prefix('"')
+        .map(|rest| ('"', rest))
+        .or_else(|| command.strip_prefix('\'').map(|rest| ('\'', rest)))
+    {
+        let end = rest.find(quote).unwrap_or(rest.len());
+        return rest[..end].to_owned();
+    }
+    command.split_whitespace().next().unwrap_or("").to_owned()
 }
 
 fn configured_core_ssh_command() -> Option<String> {
@@ -479,6 +507,23 @@ mod tests {
         );
         assert!(super::ssh_batch_command(None, Some("/usr/bin/ssh"), None).is_none());
         assert!(super::ssh_batch_command(None, None, Some("corp-ssh -J jump")).is_none());
+        assert_eq!(
+            super::ssh_batch_command(Some("plink -ssh"), None, None).as_deref(),
+            Some("plink -ssh")
+        );
+        assert_eq!(
+            super::ssh_batch_command(
+                Some(r#""C:\Program Files\PuTTY\plink.exe" -ssh"#),
+                None,
+                None
+            )
+            .as_deref(),
+            Some(r#""C:\Program Files\PuTTY\plink.exe" -ssh"#)
+        );
+        assert_eq!(
+            super::ssh_batch_command(Some("/usr/bin/tortoiseplink"), None, None).as_deref(),
+            Some("/usr/bin/tortoiseplink")
+        );
         assert!(is_full_commit("0123456789abcdef0123456789abcdef01234567"));
         assert!(is_commit_id("abcdef0"));
         assert!(!is_commit_id("abc"));

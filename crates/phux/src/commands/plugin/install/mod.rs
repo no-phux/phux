@@ -32,7 +32,7 @@ use super::lock::{
     self, PluginLockEntry, lockfile_path, read_lockfile, upsert_entry, write_lockfile,
 };
 use super::{fail, upsert_config_entry};
-use confirm::{build_step_lines, confirm_remote_build};
+use confirm::confirm_remote_build;
 use fetch::{
     PinCheck, StagingGuard, fetch_into_staging, locate_fetched_root, promote, seal_git_checkout,
     swap_install_dir,
@@ -112,7 +112,7 @@ fn install(
         source,
         &manifest.id,
         staged.resolved_rev.as_deref(),
-        lock::hash_build_steps(&build_step_lines(&manifest.build)),
+        lock::hash_build_steps(&manifest.build),
     )?;
 
     let entry = upsert_config_entry(manifest, enabled)?;
@@ -153,7 +153,7 @@ fn stage_plugin(
     // A refusal drops this staging directory and installs nothing.
     let fetched = fetch_tree(source, plugins_dir, reference, None)?;
     if matches!(source, InstallSource::Git { .. }) {
-        confirm_remote_build(&fetched.manifest, None, yes)?;
+        confirm_remote_build(&fetched.manifest, None, yes, false)?;
     }
     run_build_steps(runtime, &fetched.manifest)?;
     Ok(fetched)
@@ -381,7 +381,7 @@ fn update_one(
     // Same as install: the new steps are known only after the fetch. A
     // refusal drops staging and leaves the installed copy where it was.
     if matches!(source, InstallSource::Git { .. }) {
-        confirm_remote_build(&fetched.manifest, entry.build_steps.as_deref(), yes)?;
+        confirm_remote_build(&fetched.manifest, entry.build_steps.as_deref(), yes, true)?;
     }
     run_build_steps(runtime, &fetched.manifest)?;
     let final_dir = plugins_dir.join(install_dir_name(&entry.id));
@@ -401,7 +401,7 @@ fn update_one(
         version: fetched.manifest.version,
         rev: fetched.resolved_rev,
         branch: stored_branch,
-        build_steps: lock::hash_build_steps(&build_step_lines(&fetched.manifest.build)),
+        build_steps: lock::hash_build_steps(&fetched.manifest.build),
     })
 }
 
