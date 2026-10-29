@@ -16,6 +16,7 @@
 //!
 //! Source choice lives in [`source`]; fetching lives in [`fetch`].
 
+mod confirm;
 mod fetch;
 mod git;
 mod source;
@@ -27,10 +28,11 @@ use std::time::Duration;
 use phux_config::plugin::{self, PluginManifest, PluginPlatform};
 use phux_plugin::{CommandSpec, PluginActionOutcome, run_command_spec};
 
-use super::lock::{PluginLockEntry, lockfile_path, read_lockfile, upsert_entry, write_lockfile};
+use super::lock::{
+    self, PluginLockEntry, lockfile_path, read_lockfile, upsert_entry, write_lockfile,
+};
 use super::{fail, upsert_config_entry};
-use std::io::{IsTerminal, Write};
-
+use confirm::{build_step_lines, confirm_remote_build};
 use fetch::{
     PinCheck, StagingGuard, fetch_into_staging, locate_fetched_root, promote, seal_git_checkout,
     swap_install_dir,
@@ -65,32 +67,20 @@ pub(super) fn run_install(
         Err(code) => return code,
     };
     match install(&runtime, reference, rev, subdir, !disabled, yes, json) {
-        Ok(code) | Err(PrepareError::Exit(code)) => code,
-        Err(PrepareError::Message(err)) => fail(json, &err),
-    }
-}
-
-/// `phux plugin update [NAME] [--latest] [--json]`.
-pub(super) fn run_update(name: Option<&str>, latest: bool, json: bool) -> ExitCode {
-    let runtime = match crate::commands::cli_runtime() {
-        Ok(runtime) => runtime,
-        Err(code) => return code,
-    };
-    match update(&runtime, name, latest, json) {
         Ok(code) => code,
         Err(err) => fail(json, &err),
     }
 }
 
-enum PrepareError {
-    Message(String),
-    /// Confirmation already reported this status.
-    Exit(ExitCode),
-}
-
-impl From<String> for PrepareError {
-    fn from(message: String) -> Self {
-        Self::Message(message)
+/// `phux plugin update [NAME] [--latest] [--yes] [--json]`.
+pub(super) fn run_update(name: Option<&str>, latest: bool, yes: bool, json: bool) -> ExitCode {
+    let runtime = match crate::commands::cli_runtime() {
+        Ok(runtime) => runtime,
+        Err(code) => return code,
+    };
+    match update(&runtime, name, latest, yes, json) {
+        Ok(code) => code,
+        Err(err) => fail(json, &err),
     }
 }
 
@@ -102,14 +92,14 @@ fn install(
     enabled: bool,
     yes: bool,
     json: bool,
-) -> Result<ExitCode, PrepareError> {
+) -> Result<ExitCode, String> {
     let classified = classify_source(reference, rev, subdir)?;
     let source = &classified.source;
     let plugins_dir = plugins_data_dir()?;
     std::fs::create_dir_all(&plugins_dir)
         .map_err(|err| format!("could not create {}: {err}", plugins_dir.display()))?;
 
-    let mut staged = stage_plugin(runtime, source, &plugins_dir, reference, yes, json)?;
+    let mut staged = stage_plugin(runtime, source, &plugins_dir, reference, yes)?;
     let final_dir = plugins_dir.join(install_dir_name(&staged.manifest.id));
     promote_staged_plugin(&mut staged, &final_dir)?;
 
@@ -122,6 +112,7 @@ fn install(
         source,
         &manifest.id,
         staged.resolved_rev.as_deref(),
+        lock::hash_build_steps(&build_step_lines(&manifest.build)),
     )?;
 
     let entry = upsert_config_entry(manifest, enabled)?;
@@ -157,11 +148,12 @@ fn stage_plugin(
     plugins_dir: &Path,
     reference: &str,
     yes: bool,
-    json: bool,
-) -> Result<StagedPlugin, PrepareError> {
+) -> Result<StagedPlugin, String> {
+    // Build steps live in the fetched manifest, so the clone happens first.
+    // A refusal drops this staging directory and installs nothing.
     let fetched = fetch_tree(source, plugins_dir, reference, None)?;
     if matches!(source, InstallSource::Git { .. }) {
-        confirm_remote_build(&fetched.manifest, yes, json)?;
+        confirm_remote_build(&fetched.manifest, None, yes)?;
     }
     run_build_steps(runtime, &fetched.manifest)?;
     Ok(fetched)
@@ -172,7 +164,7 @@ fn fetch_tree(
     plugins_dir: &Path,
     reference: &str,
     pin: Option<PinCheck<'_>>,
-) -> Result<StagedPlugin, PrepareError> {
+) -> Result<StagedPlugin, String> {
     let staging = StagingGuard::claim(plugins_dir);
     let resolved_rev = fetch_into_staging(source, staging.path())?;
     let root = locate_fetched_root(staging.path(), source.subdir())?;
@@ -189,37 +181,6 @@ fn fetch_tree(
         manifest,
         resolved_rev,
     })
-}
-
-/// Remote `[[build]]` steps run as the user. A terminal must say yes, or
-/// the caller passes `--yes`. Anywhere else is a one-line refusal.
-fn confirm_remote_build(
-    manifest: &PluginManifest,
-    yes: bool,
-    json: bool,
-) -> Result<(), PrepareError> {
-    if manifest.build.is_empty() {
-        return Ok(());
-    }
-    let interactive = std::io::stdin().is_terminal();
-    if yes || interactive {
-        let steps = manifest
-            .build
-            .iter()
-            .map(|step| step.command.join(" "))
-            .collect::<Vec<_>>()
-            .join("; ");
-        info!(
-            "remote plugin {} will run build steps: {steps}",
-            manifest.id
-        );
-        let _ = std::io::stderr().flush();
-    }
-    if yes {
-        return Ok(());
-    }
-    crate::commands::confirm::confirmed_for(json, false, "run remote plugin build steps")
-        .map_err(PrepareError::Exit)
 }
 
 /// Move the staged plugin into its managed location, refusing to install over
@@ -247,6 +208,7 @@ fn record_install_in_lockfile(
     source: &source::InstallSource,
     id: &str,
     resolved_rev: Option<&str>,
+    build_steps: Option<String>,
 ) -> Result<(), String> {
     let mut lockfile = read_lockfile(plugins_dir)?;
     upsert_entry(
@@ -258,6 +220,7 @@ fn record_install_in_lockfile(
             branch: source.branch(),
             subdir: source.subdir().map(str::to_owned),
             rev: resolved_rev.map(str::to_owned),
+            build_steps,
         },
     );
     write_lockfile(plugins_dir, &lockfile)
@@ -310,12 +273,14 @@ struct UpdateReport {
     version: String,
     rev: Option<String>,
     branch: Option<String>,
+    build_steps: Option<String>,
 }
 
 fn update(
     runtime: &tokio::runtime::Runtime,
     name: Option<&str>,
     latest: bool,
+    yes: bool,
     json: bool,
 ) -> Result<ExitCode, String> {
     let plugins_dir = plugins_data_dir()?;
@@ -340,9 +305,12 @@ fn update(
     let mut reports = Vec::with_capacity(targets.len());
     for index in targets {
         let entry = lockfile.plugins[index].clone();
-        let report = update_one(runtime, &plugins_dir, &entry, latest)?;
+        let report = update_one(runtime, &plugins_dir, &entry, latest, yes)?;
         lockfile.plugins[index].rev.clone_from(&report.rev);
         lockfile.plugins[index].branch.clone_from(&report.branch);
+        lockfile.plugins[index]
+            .build_steps
+            .clone_from(&report.build_steps);
         write_lockfile(&plugins_dir, &lockfile)?;
         reports.push(report);
     }
@@ -383,6 +351,7 @@ fn update_one(
     plugins_dir: &Path,
     entry: &PluginLockEntry,
     latest: bool,
+    yes: bool,
 ) -> Result<UpdateReport, String> {
     let pinned_sha = entry.branch.as_deref().is_some_and(is_commit_id);
     let mut source = source_from_lock(entry)?;
@@ -402,16 +371,17 @@ fn update_one(
         pinned_sha,
         latest,
     });
-    let fetched =
-        fetch_tree(&source, plugins_dir, &entry.source_ref, pin).map_err(|err| match err {
-            PrepareError::Message(message) => message,
-            PrepareError::Exit(_) => "update does not prompt".to_owned(),
-        })?;
+    let fetched = fetch_tree(&source, plugins_dir, &entry.source_ref, pin)?;
     if fetched.manifest.id != entry.id {
         return Err(format!(
             "source {} now provides plugin id {:?} (expected {:?}); refusing to update",
             entry.source_ref, fetched.manifest.id, entry.id,
         ));
+    }
+    // Same as install: the new steps are known only after the fetch. A
+    // refusal drops staging and leaves the installed copy where it was.
+    if matches!(source, InstallSource::Git { .. }) {
+        confirm_remote_build(&fetched.manifest, entry.build_steps.as_deref(), yes)?;
     }
     run_build_steps(runtime, &fetched.manifest)?;
     let final_dir = plugins_dir.join(install_dir_name(&entry.id));
@@ -431,6 +401,7 @@ fn update_one(
         version: fetched.manifest.version,
         rev: fetched.resolved_rev,
         branch: stored_branch,
+        build_steps: lock::hash_build_steps(&build_step_lines(&fetched.manifest.build)),
     })
 }
 

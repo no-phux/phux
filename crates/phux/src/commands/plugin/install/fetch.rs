@@ -94,15 +94,22 @@ fn enforce_pin(repo: &Path, new_rev: &str, pin: &PinCheck<'_>) -> Result<(), Str
     if pin.latest {
         return Ok(());
     }
-    if git::is_descendant(repo, pin.previous, new_rev, pin.branch)? {
-        Ok(())
-    } else {
-        Err(format!(
-            "commit {new_rev} is not a descendant of recorded commit {}; \
-             pass --latest to accept the rewritten history",
-            pin.previous
-        ))
+    let ancestry = git::is_descendant(repo, pin.previous, new_rev, pin.branch)?;
+    if ancestry.descendant {
+        return Ok(());
     }
+    let mut message = format!(
+        "commit {new_rev} is not a descendant of recorded commit {}. \
+         The check looked {} commits deep and the history may be deeper; \
+         pass --latest to accept this update",
+        pin.previous,
+        git::ANCESTRY_DEPTH,
+    );
+    if let Some(err) = ancestry.fetch_error {
+        message.push_str(". ");
+        message.push_str(&err);
+    }
+    Err(message)
 }
 
 /// Walk `root`, skipping `.git`, and refuse every symlink. The same rule as

@@ -268,8 +268,10 @@ pub(crate) enum PluginAction {
 
         /// Run remote `[[build]]` steps without a confirmation prompt.
         ///
-        /// A git install whose manifest has build steps asks on a terminal
-        /// and refuses otherwise. A local directory or tarball does not ask.
+        /// A git install or update whose manifest has build steps asks on a
+        /// terminal and refuses otherwise. Steps that match the hash stored
+        /// at the last approval do not ask again. A local directory or
+        /// tarball does not ask.
         #[usage(long)]
         yes: bool,
 
@@ -286,8 +288,9 @@ pub(crate) enum PluginAction {
     /// records the new resolved commit. A branch update is accepted only
     /// when the new commit is the recorded one or a descendant of it. A
     /// commit pinned with `--rev` stays at that SHA. `--latest` accepts a
-    /// rewritten branch or moves off a pinned commit. `config.toml` is
-    /// untouched — the linked manifest path does not move.
+    /// rewritten branch or moves off a pinned commit. Changed `[[build]]`
+    /// steps ask for confirmation the same way `install` does. `config.toml`
+    /// is untouched — the linked manifest path does not move.
     Update {
         /// Plugin id to update. Omit to update every installed plugin.
         name: Option<String>,
@@ -295,6 +298,10 @@ pub(crate) enum PluginAction {
         /// Accept a rewritten history, or move off a commit pinned with `--rev`.
         #[usage(long)]
         latest: bool,
+
+        /// Run changed remote `[[build]]` steps without a confirmation prompt.
+        #[usage(long)]
+        yes: bool,
 
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]

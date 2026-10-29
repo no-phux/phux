@@ -332,6 +332,102 @@ fn update_refuses_a_rewritten_branch_without_latest() {
     assert!(installed.contains("version = \"0.3.0\""), "{installed}");
 }
 
+fn manifest_with_build(dir: &Path, id: &str, version: &str, script: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(
+        dir.join("phux-plugin.toml"),
+        format!(
+            "id = \"{id}\"\nname = \"Guard\"\nversion = \"{version}\"\n\
+             min_phux_version = \"0.0.1\"\n\n\
+             [[build]]\ncommand = [\"sh\", \"-c\", \"{script}\"]\n\n\
+             [[actions]]\nid = \"open\"\ntitle = \"Open\"\ncommand = [\"true\"]\n"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn update_changed_build_steps_need_yes_off_a_terminal() {
+    let home = TestHome::new();
+    let repo = home.scratch.join("repo");
+    manifest_with_build(&repo, "evil", "0.1.0", "echo A > approved.txt");
+    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "step A"]);
+    let url = format!("file://{}", repo.display());
+
+    let (code, _, stderr) = home.run_with(&["plugin", "install", &url, "--yes"], |cmd| {
+        cmd.stdin(std::process::Stdio::null());
+    });
+    assert_eq!(code, 0, "{stderr}");
+    let installed = home.plugins_dir().join("evil");
+    assert!(installed.join("approved.txt").is_file());
+
+    manifest_with_build(&repo, "evil", "0.2.0", "echo B > slipped.txt");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "step B"]);
+    let (code, _, stderr) = home.run_with(&["plugin", "update", "evil"], |cmd| {
+        cmd.stdin(std::process::Stdio::null());
+    });
+    assert_ne!(code, 0, "{stderr}");
+    assert!(stderr.contains("--yes"), "{stderr}");
+    assert!(stderr.contains("Nothing was installed"), "{stderr}");
+    assert!(installed.join("approved.txt").is_file());
+    assert!(
+        !installed.join("slipped.txt").exists(),
+        "changed build step B must not run"
+    );
+
+    let (code, _, stderr) = home.run_with(&["plugin", "update", "evil", "--yes"], |cmd| {
+        cmd.stdin(std::process::Stdio::null());
+    });
+    assert_eq!(code, 0, "{stderr}");
+    assert!(installed.join("slipped.txt").is_file());
+
+    manifest_with_build(&repo, "evil", "0.2.1", "echo B > slipped.txt");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "same steps"]);
+    let (code, _, stderr) = home.run_with(&["plugin", "update", "evil"], |cmd| {
+        cmd.stdin(std::process::Stdio::null());
+    });
+    assert_eq!(
+        code, 0,
+        "unchanged build steps should not ask again; stderr={stderr}"
+    );
+}
+
+#[test]
+fn git_ssh_command_is_kept_and_gains_batch_mode() {
+    let home = TestHome::new();
+    let log = home.scratch.join("ssh.log");
+    let wrapper = home.scratch.join("ssh-wrap");
+    executable(
+        &wrapper,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > {}\nexit 1\n",
+            log.display()
+        ),
+    );
+    let (code, _, stderr) = home.run_with(
+        &["plugin", "install", "ssh://git@127.0.0.1/no-such-plugin"],
+        |cmd| {
+            cmd.env(
+                "GIT_SSH_COMMAND",
+                format!("{} --custom-key", wrapper.display()),
+            );
+            cmd.stdin(std::process::Stdio::null());
+        },
+    );
+    assert_ne!(code, 0, "{stderr}");
+    let recorded = std::fs::read_to_string(&log).expect("ssh wrapper was invoked");
+    assert!(
+        recorded.contains(wrapper.to_str().unwrap()),
+        "wrapper was replaced: {recorded}"
+    );
+    assert!(recorded.contains("--custom-key"), "{recorded}");
+    assert!(recorded.contains("BatchMode=yes"), "{recorded}");
+}
+
 #[test]
 fn plugin_new_rejects_dot() {
     let home = TestHome::new();

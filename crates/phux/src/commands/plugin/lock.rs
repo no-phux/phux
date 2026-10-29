@@ -5,9 +5,11 @@
 //! so `phux plugin update` can re-fetch deterministically without re-asking
 //! the user.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Lockfile name inside the managed plugins directory.
 pub(super) const LOCKFILE_NAME: &str = "plugins.lock";
@@ -54,6 +56,29 @@ pub(super) struct PluginLockEntry {
     /// Resolved commit hash, git sources only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) rev: Option<String>,
+    /// SHA-256 of the `[[build]]` steps last approved with `--yes` or a
+    /// terminal answer. Absent when the plugin has no build steps, or the
+    /// install predates this field (an update then asks again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) build_steps: Option<String>,
+}
+
+/// Hash of the build steps a user has approved. `None` when there are none.
+pub(super) fn hash_build_steps(lines: &[String]) -> Option<String> {
+    if lines.is_empty() {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    for line in lines {
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(out, "{byte:02x}");
+    }
+    Some(out)
 }
 
 /// Source kinds `phux plugin install` accepts.
@@ -99,7 +124,7 @@ pub(super) fn read_lockfile(plugins_dir: &Path) -> Result<PluginLockFile, String
 /// Write the lockfile (entries sorted by id for stable diffs).
 ///
 /// No advisory lock: `fs2` and `fd-lock` are not dependencies of this
-/// workspace, so concurrent install/update is not serialized here.
+/// workspace, so two concurrent installs can lose one lockfile write.
 pub(super) fn write_lockfile(plugins_dir: &Path, lock: &PluginLockFile) -> Result<(), String> {
     let mut lock = lock.clone();
     lock.plugins.sort_by(|a, b| a.id.cmp(&b.id));
@@ -141,6 +166,7 @@ mod tests {
                     branch: Some("main".to_owned()),
                     subdir: Some("plugins/demo".to_owned()),
                     rev: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+                    build_steps: Some("abc".to_owned()),
                 },
                 PluginLockEntry {
                     id: "example.dir-plugin".to_owned(),
@@ -149,6 +175,7 @@ mod tests {
                     branch: None,
                     subdir: None,
                     rev: None,
+                    build_steps: None,
                 },
             ],
         }
@@ -195,6 +222,7 @@ mod tests {
                 branch: Some("main".to_owned()),
                 subdir: Some("plugins/demo".to_owned()),
                 rev: Some("fedcba9876543210fedcba9876543210fedcba98".to_owned()),
+                build_steps: Some("abc".to_owned()),
             },
         );
 

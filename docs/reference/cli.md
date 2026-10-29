@@ -3900,9 +3900,10 @@ Flags:
       --yes            Run remote `[[build]]` steps without a confirmation
                        prompt.
 
-                       A git install whose manifest has build steps asks on a
-                       terminal and refuses otherwise. A local directory or
-                       tarball does not ask.
+                       A git install or update whose manifest has build steps
+                       asks on a terminal and refuses otherwise. Steps that
+                       match the hash stored at the last approval do not ask
+                       again. A local directory or tarball does not ask.
       --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 
@@ -4023,10 +4024,11 @@ Reads the managed directory's `plugins.lock`, re-fetches each recorded source
 manifest, swaps the managed copy, and records the new resolved commit. A branch
 update is accepted only when the new commit is the recorded one or a descendant
 of it. A commit pinned with `--rev` stays at that SHA. `--latest` accepts a
-rewritten branch or moves off a pinned commit. `config.toml` is untouched — the
+rewritten branch or moves off a pinned commit. Changed `[[build]]` steps ask for
+confirmation the same way `install` does. `config.toml` is untouched — the
 linked manifest path does not move.
 
-Usage: phux plugin update [--latest] [--json] [NAME]
+Usage: phux plugin update [FLAGS] [NAME]
 
 Arguments:
   [NAME]  Plugin id to update. Omit to update every installed plugin.
@@ -4034,6 +4036,8 @@ Arguments:
 Flags:
       --latest         Accept a rewritten history, or move off a commit pinned
                        with `--rev`.
+      --yes            Run changed remote `[[build]]` steps without a
+                       confirmation prompt.
       --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 

@@ -20,8 +20,15 @@ const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(180);
 /// path. A missing, unparseable, or zero value keeps [`GIT_FETCH_TIMEOUT`].
 pub(super) const GIT_TIMEOUT_ENV: &str = "PHUX_PLUGIN_GIT_TIMEOUT_MS";
 
-/// Protocols a plugin fetch may use. `file` is how tests clone a local repo.
+/// Protocols a plugin fetch may use.
+///
+/// `file` is for a repository already on disk (`file://` in tests and for a
+/// local path). It is not a hosted service.
 const ALLOWED_PROTOCOLS: &str = "https:ssh:git:file";
+
+/// How many commits of branch history an update inspects when deciding
+/// whether the new tip descends from the recorded commit.
+pub(super) const ANCESTRY_DEPTH: &str = "100";
 
 /// Clone `url` at `rev` (branch, tag, or commit) into `dest` and return the
 /// full HEAD commit. `.git` is left in place so the caller can check history.
@@ -43,6 +50,16 @@ pub(super) fn is_full_commit(rev: &str) -> bool {
     rev.len() == 40 && rev.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Whether `old` is an ancestor of `new`, plus any fetch error from the
+/// history lookup. A timeout is returned as `Err`; a normal fetch failure
+/// is kept so the caller can show it with the descendant refusal.
+pub(super) struct Ancestry {
+    /// `old` is an ancestor of `new`, or they are the same commit.
+    pub(super) descendant: bool,
+    /// Fetch stderr when the deepen or the recorded-commit fetch failed.
+    pub(super) fetch_error: Option<String>,
+}
+
 /// Whether `old` is an ancestor of `new` in `repo` (equal counts).
 /// A shallow clone is deepened, then the recorded commit is fetched on its
 /// own, so a rewritten branch where that object still exists is visible.
@@ -51,24 +68,30 @@ pub(super) fn is_descendant(
     old: &str,
     new: &str,
     branch: Option<&str>,
-) -> Result<bool, String> {
+) -> Result<Ancestry, String> {
     if old.eq_ignore_ascii_case(new) {
-        return Ok(true);
+        return Ok(Ancestry {
+            descendant: true,
+            fetch_error: None,
+        });
     }
     let mut deepen = vec![
         OsStr::new("fetch"),
         OsStr::new("--depth"),
-        OsStr::new("100"),
+        OsStr::new(ANCESTRY_DEPTH),
         OsStr::new("origin"),
     ];
     if let Some(branch) = branch.filter(|branch| !is_commit_id(branch)) {
         deepen.push(OsStr::new(branch));
     }
-    let _ = run_git(Some(repo), &deepen, "git fetch", None);
+    let mut fetch_error = fetch_note(run_git(Some(repo), &deepen, "git fetch", None))?;
     if is_ancestor(repo, old, new)? {
-        return Ok(true);
+        return Ok(Ancestry {
+            descendant: true,
+            fetch_error,
+        });
     }
-    let _ = run_git(
+    let old_fetch = fetch_note(run_git(
         Some(repo),
         &[
             OsStr::new("fetch"),
@@ -80,8 +103,23 @@ pub(super) fn is_descendant(
         ],
         "git fetch",
         None,
-    );
-    is_ancestor(repo, old, new)
+    ))?;
+    if fetch_error.is_none() {
+        fetch_error = old_fetch;
+    }
+    Ok(Ancestry {
+        descendant: is_ancestor(repo, old, new)?,
+        fetch_error,
+    })
+}
+
+/// Keep a normal fetch failure. A timeout aborts the ancestry check.
+fn fetch_note(result: Result<String, String>) -> Result<Option<String>, String> {
+    match result {
+        Ok(_) => Ok(None),
+        Err(err) if err.contains("timed out") => Err(err),
+        Err(err) => Ok(Some(err)),
+    }
 }
 
 fn clone_branch(url: &str, branch: Option<&str>, dest: &Path) -> Result<String, String> {
@@ -227,9 +265,65 @@ fn git_command() -> Command {
     cmd.env("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_ASKPASS", "false");
-    cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    // BatchMode stops ssh asking for a password. Do not replace a command
+    // the user already chose:
+    // - GIT_SSH_COMMAND is kept and gains `-o BatchMode=yes`.
+    // - GIT_SSH is only a program name, so appending options would drop it;
+    //   it is left alone.
+    // - core.sshCommand (global or system git config) is left alone for the
+    //   same reason.
+    // When none of those is set, this process sets GIT_SSH_COMMAND to
+    // `ssh -o BatchMode=yes`.
+    let inherited = std::env::var("GIT_SSH_COMMAND").ok();
+    let git_ssh = std::env::var("GIT_SSH").ok();
+    let core = if inherited.is_none() && git_ssh.is_none() {
+        configured_core_ssh_command()
+    } else {
+        None
+    };
+    if let Some(command) =
+        ssh_batch_command(inherited.as_deref(), git_ssh.as_deref(), core.as_deref())
+    {
+        cmd.env("GIT_SSH_COMMAND", command);
+    }
     cmd.stdin(Stdio::null());
     cmd
+}
+
+/// The `GIT_SSH_COMMAND` value to set, or `None` to leave ssh selection alone.
+pub(super) fn ssh_batch_command(
+    git_ssh_command: Option<&str>,
+    git_ssh: Option<&str>,
+    core_ssh_command: Option<&str>,
+) -> Option<String> {
+    if let Some(command) = git_ssh_command
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+    {
+        if command.contains("BatchMode") {
+            return Some(command.to_owned());
+        }
+        return Some(format!("{command} -o BatchMode=yes"));
+    }
+    if git_ssh.is_some_and(|value| !value.trim().is_empty())
+        || core_ssh_command.is_some_and(|value| !value.trim().is_empty())
+    {
+        return None;
+    }
+    Some("ssh -o BatchMode=yes".to_owned())
+}
+
+fn configured_core_ssh_command() -> Option<String> {
+    let output = Command::new("git")
+        .args(["config", "--get", "core.sshCommand"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!text.is_empty()).then_some(text)
 }
 
 fn git_timeout() -> Duration {
@@ -334,10 +428,12 @@ fn timeout_phrase(timeout: Duration) -> String {
 }
 
 fn scrub(text: &str, secret_url: Option<&str>, extra: &str) -> String {
+    // Git's stderr is kept, then the timeout line starts on its own line
+    // so the two do not run together.
     let mut combined = if extra.is_empty() {
         text.to_owned()
     } else {
-        format!("{text} {}", extra.trim())
+        format!("{}\n{text}", extra.trim())
     };
     if let Some(secret) = secret_url {
         let redacted = redact_git_url(secret);
@@ -370,9 +466,19 @@ mod tests {
         assert_eq!(env("GIT_TERMINAL_PROMPT").as_deref(), Some("0"));
         assert_eq!(env("GIT_ASKPASS").as_deref(), Some("false"));
         assert_eq!(
-            env("GIT_SSH_COMMAND").as_deref(),
+            super::ssh_batch_command(None, None, None).as_deref(),
             Some("ssh -o BatchMode=yes")
         );
+        assert_eq!(
+            super::ssh_batch_command(Some("/wrap --custom-key"), None, None).as_deref(),
+            Some("/wrap --custom-key -o BatchMode=yes")
+        );
+        assert_eq!(
+            super::ssh_batch_command(Some("/wrap -o BatchMode=yes"), None, None).as_deref(),
+            Some("/wrap -o BatchMode=yes")
+        );
+        assert!(super::ssh_batch_command(None, Some("/usr/bin/ssh"), None).is_none());
+        assert!(super::ssh_batch_command(None, None, Some("corp-ssh -J jump")).is_none());
         assert!(is_full_commit("0123456789abcdef0123456789abcdef01234567"));
         assert!(is_commit_id("abcdef0"));
         assert!(!is_commit_id("abc"));
