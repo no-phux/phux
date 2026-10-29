@@ -1,5 +1,24 @@
-//! Flag groups flattened into [`super::action::AgentAction`] variants. The
-//! grammar is unchanged: each struct is exactly its verb's flags.
+//! Flag groups flattened into [`super::action::AgentAction`] variants.
+//! Each struct owns exactly its verb's flags.
+
+/// `phux agent list` filters, combined with AND.
+#[derive(Debug, Default, usage::Args)]
+pub(crate) struct ListFlags {
+    /// Lifecycle state to include; repeat to OR several. Omit for all states.
+    #[usage(
+        long,
+        value_name = "STATE",
+        choices("unknown", "idle", "working", "blocked", "done")
+    )]
+    pub(crate) state: Vec<String>,
+    /// Case-insensitive words matched across pane, session, agent, title and cwd.
+    /// Every word must match; terminal contents are not searched.
+    #[usage(long, value_name = "TEXT")]
+    pub(crate) query: Option<String>,
+    /// Emit machine-readable JSON instead of the table.
+    #[usage(long)]
+    pub(crate) json: bool,
+}
 
 /// `phux agent native-command` flags.
 #[derive(Debug, usage::Args)]

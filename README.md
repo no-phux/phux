@@ -39,7 +39,7 @@ after setting up the WSL CLI/server.
 | --- | --- | --- |
 | macOS, Apple silicon | macOS 11+ | macOS 26+ |
 | Linux, x86_64 or arm64 | Native, glibc | X11 or Wayland, Vulkan driver |
-| Windows | [WSL 2 and PowerShell launchers](./docs/install.md#windows-wsl) | Native x64 app, WSL 2 server |
+| Windows | [WSL 2 and PowerShell launchers](./docs/install.md#windows-wsl) | [Native x64 app, WSL 2 server](./clients/desktop/README.md#windows) |
 
 [Other installation options](./docs/install.md). No Intel Mac or musl builds.
 
@@ -78,6 +78,18 @@ client leaves the shell running; attach to the printed session to take over.
 [coding agents](./docs/agents.md) ·
 [build on phux](./docs/building.md) ·
 [remote machines](./docs/remote.md)
+
+### Find your workflow
+
+| Want to… | Start here |
+| --- | --- |
+| Find an agent across machines | [Desktop Go To](./clients/desktop/USAGE.md#command-palette), or [`phux agent list`](./docs/agents.md) |
+| Run agents in isolated worktrees | [Missions](./docs/organization.md#work-and-missions) |
+| Review, annotate and merge a pull request | [Desktop Reviews](./docs/desktop-reviews.md) |
+| Inspect and stage local changes | [Changes panel](./docs/desktop-changes.md) |
+| Work on another machine | [Remote machines](./docs/remote.md) |
+| Script a terminal or expose agent tools | [Scripting](./docs/scripting.md) · [MCP](./docs/agents.md#mcp) |
+| See agent plan usage and limits | [Plan usage](./docs/agents.md#plan-usage) |
 
 ## For agents
 

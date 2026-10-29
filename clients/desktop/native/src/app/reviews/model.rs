@@ -358,6 +358,19 @@ impl Opened {
         matches!((&self.pull.data, &self.patch.data), (Some(pull), Some(patch)) if patch.base_ref != pull.base_ref || patch.base_oid != pull.base_oid)
     }
 
+    /// Disabling never depends on a diff or the repository's current methods.
+    /// Enabling requires the loaded patch to describe the current head and base.
+    pub(crate) fn auto_merge_change(&self) -> Option<Option<MergeMethod>> {
+        let pull = self.pull.data.as_ref()?;
+        if pull.auto_merge.is_some() {
+            return Some(None);
+        }
+        if self.patch.loading || !self.patch.data.as_ref()?.matches(pull) {
+            return None;
+        }
+        self.merge_method().map(Some)
+    }
+
     /// Polling may refresh status, but must not move lines under unsent notes.
     pub(super) fn needs_patch(&self) -> bool {
         if self.patch.loading || self.has_line_notes() {

@@ -5,6 +5,7 @@ mod config;
 mod detect;
 mod hook_payload;
 mod hook_transcript;
+mod list;
 mod model;
 mod native_host;
 mod offline;
@@ -56,7 +57,7 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
                     json,
                 },
         } => native_control::run(target, activation, *operation_id, intent, *json, socket),
-        AgentAction::List { json } => run_agent_list(*json, socket),
+        AgentAction::List { flags } => list::run(flags, socket),
         // `--file` is the offline manifest debugger: no server needed.
         AgentAction::Explain {
             json,
@@ -245,25 +246,6 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
 enum AgentView {
     Show,
     Explain,
-}
-
-fn run_agent_list(json: bool, socket: Option<PathBuf>) -> ExitCode {
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let rt = match cli_runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    rt.block_on(async move {
-        let (snapshot, degradation) = match fetch_snapshot(&socket_path, "agent list").await {
-            Ok(pair) => pair,
-            Err(err) => return json_err::report_no_server(json, &err, &socket_path, "agent list"),
-        };
-        let plugins = configured_agents();
-        let states = classify_snapshot(&socket_path, &snapshot, &plugins).await;
-        // An enumeration, like `phux ls`: warn about a partial view and succeed.
-        partial::warn_partial_view("agent list", &degradation);
-        print_agent_states(&states, json, AgentView::Show)
-    })
 }
 
 fn run_agent_one(

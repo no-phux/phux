@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use super::action_flags::{
-    AnswerFlags, EmitFlags, LogFlags, NativeCommandFlags, PromptFlags, SendKeysFlags, SetFlags,
-    StartFlags, UsageFlags,
+    AnswerFlags, EmitFlags, ListFlags, LogFlags, NativeCommandFlags, PromptFlags, SendKeysFlags,
+    SetFlags, StartFlags, UsageFlags,
 };
 use super::resource_session;
 
@@ -33,9 +33,8 @@ pub(crate) enum AgentAction {
     /// and `address_refusal`.
     #[usage(alias = "ls")]
     List {
-        /// Emit machine-readable JSON instead of the table.
-        #[usage(long)]
-        json: bool,
+        #[usage(flatten)]
+        flags: ListFlags,
     },
     /// Show inferred state for one pane.
     Show {

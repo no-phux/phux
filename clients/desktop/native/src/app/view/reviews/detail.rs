@@ -310,19 +310,10 @@ fn merge_controls(
             )
         })
         .children(methods)
-        .when(pull.methods.auto_merge, |row| {
-            let on = pull.auto_merge.is_some();
-            row.child(
-                Button::new("reviews-auto-merge")
-                    .label(if on { "Auto-merge On" } else { "Auto-merge" })
-                    .ghost()
-                    .xsmall()
-                    .selected(on)
-                    .tooltip("Merge when required checks and reviews pass")
-                    .disabled(busy || method.is_none())
-                    .on_click(cx.listener(|desk, _, _, cx| desk.toggle_auto_merge(cx))),
-            )
-        })
+        .when(
+            pull.methods.auto_merge || pull.auto_merge.is_some(),
+            |row| row.child(auto_merge_control(opened, pull, cx)),
+        )
         .child({
             let button = Button::new("reviews-merge")
                 .icon(IconName::GitMerge)
@@ -336,6 +327,18 @@ fn merge_controls(
                 button.primary()
             }
         })
+}
+
+fn auto_merge_control(opened: &Opened, pull: &Pull, cx: &mut Context<Desk>) -> Button {
+    let on = pull.auto_merge.is_some();
+    Button::new("reviews-auto-merge")
+        .label(if on { "Auto-merge On" } else { "Auto-merge" })
+        .ghost()
+        .xsmall()
+        .selected(on)
+        .tooltip("Auto-merge follows future eligible revisions when checks and reviews pass; it is not pinned to this diff. Click again to disable.")
+        .disabled(opened.busy.is_some() || opened.auto_merge_change().is_none())
+        .on_click(cx.listener(|desk, _, _, cx| desk.toggle_auto_merge(cx)))
 }
 
 fn tabs(opened: &Opened, pull: &Pull, look: &Look, cx: &mut Context<Desk>) -> impl IntoElement {

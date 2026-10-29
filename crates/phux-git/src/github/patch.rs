@@ -191,6 +191,8 @@ pub fn local(
             "--no-ext-diff",
             "--no-textconv",
             "--find-renames",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
             &unified,
             &base,
             range.head_oid,

@@ -476,7 +476,11 @@ fn goto_marks_the_work_terminal_and_tab_this_window_shows(cx: &mut TestAppContex
         current_rows(&sections),
         vec![
             ("Work", "api".into(), "Current · Local · 4 terminals".into()),
-            ("Terminals", "zsh 4".into(), "Current · api · /repo".into()),
+            (
+                "Terminals",
+                "zsh 4".into(),
+                "Current · Local · api · /repo".into()
+            ),
             ("Tabs", "build".into(), "Current · Tab 2 · 2 panes".into()),
         ],
         "exactly one work, terminal and tab is marked"
@@ -508,7 +512,11 @@ fn goto_current_follows_a_tab_switch_through_the_search_cache(cx: &mut TestAppCo
         before,
         vec![
             ("Tabs", "build".into(), "Current · Tab 2 · 2 panes".into()),
-            ("Terminals", "zsh 4".into(), "Current · api · /repo".into()),
+            (
+                "Terminals",
+                "zsh 4".into(),
+                "Current · Local · api · /repo".into()
+            ),
             ("Work", "api".into(), "Current · Local · 4 terminals".into()),
         ]
     );
@@ -522,7 +530,7 @@ fn goto_current_follows_a_tab_switch_through_the_search_cache(cx: &mut TestAppCo
             (
                 "Agents",
                 "claude — zsh 2".into(),
-                "Current · working · api · /repo".into()
+                "Current · working · Local · api · /repo".into()
             ),
             ("Tabs", "build".into(), "Current · Tab 1 · 2 panes".into()),
             ("Work", "api".into(), "Current · Local · 4 terminals".into()),
@@ -531,3 +539,5 @@ fn goto_current_follows_a_tab_switch_through_the_search_cache(cx: &mut TestAppCo
     );
     assert_eq!(rows, after.len(), "\"current\" finds only the marked rows");
 }
+
+mod search;

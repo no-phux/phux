@@ -34,6 +34,9 @@ by agent state; **Details** reveals the selected destination's metadata on deman
 Work switches to Actions and keeps the rest of your search. Terminals and tabs you open often and recently rise among the
 matches for a typed query; an empty query keeps the list in its sections.
 
+Combine a host with an agent, state, pane label, or directory (for example,
+`mini claude` or `mini /repo`) to find its session; token order does not matter.
+
 Use **↑/↓** to choose and **Return** to run. **Escape** clears a nonempty
 search, then closes the panel; clicking outside also closes it. Commands that
 open a dialog move the keyboard into that dialog.

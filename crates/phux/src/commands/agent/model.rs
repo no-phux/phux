@@ -31,6 +31,27 @@ pub(super) struct AgentStateReport {
 }
 
 impl AgentStateReport {
+    /// Search only inventory fields, never screen contents or detector evidence.
+    pub(super) fn matches_query(&self, query: &str) -> bool {
+        if query.trim().is_empty() {
+            return true;
+        }
+        let fields = [
+            self.terminal.as_str(),
+            self.session.as_str(),
+            self.agent.id.as_str(),
+            self.agent.label.as_str(),
+            self.address.as_deref().unwrap_or_default(),
+            self.title.as_deref().unwrap_or_default(),
+            self.cwd.as_deref().unwrap_or_default(),
+        ]
+        .map(str::to_lowercase);
+        query.split_whitespace().all(|word| {
+            let word = word.to_lowercase();
+            fields.iter().any(|field| field.contains(&word))
+        })
+    }
+
     /// Record what `%name` makes of this pane ([`phux_client::selector::agent_address`]).
     pub(super) fn set_address(&mut self, address: Option<Result<String, &'static str>>) {
         (self.address, self.address_refusal) = match address {
