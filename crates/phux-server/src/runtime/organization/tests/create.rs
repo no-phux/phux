@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn lookup_refuses_another_sessions_creation_receipt() {
+    use phux_protocol::ids::ResourceKind;
+    use phux_protocol::wire::frame::{CreatePlacement, ExitPolicy, LaunchMode};
+    run(async {
+        let state = SharedState::new();
+        let root = CancellationToken::new();
+        let open = |n, name: &str| Command::SessionCreate {
+            operation: op(n),
+            name: name.to_owned(),
+            lifetime: SessionLifetime::Persistent,
+            attrs: Vec::new(),
+            launch: None,
+        };
+        let origin = committed(handle(&state, CLIENT, open(1, "origin"), &root))
+            .session
+            .unwrap();
+        let other = committed(handle(&state, CLIENT, open(2, "other"), &root))
+            .session
+            .unwrap();
+        let created = committed(handle(
+            &state,
+            CLIENT,
+            Command::ResourceCreate {
+                placement: Some(Box::new(CreatePlacement::NewGroup)),
+                operation: op(3),
+                session: origin,
+                kind: ResourceKind::Terminal,
+                launch: Some(Box::new(LaunchSpec::new(Vec::new()))),
+                name: None,
+                on_exit: ExitPolicy::Retain,
+                launch_mode: LaunchMode::Immediate,
+            },
+            &root,
+        ));
+        assert!(created.entry.is_some());
+        assert!(matches!(
+            handle(
+                &state,
+                CLIENT,
+                Command::GetCreation {
+                    operation: op(3),
+                    session: other,
+                },
+                &root,
+            ),
+            CommandResult::Refused(WireRefusal::NotFound)
+        ));
+        assert_eq!(
+            committed(handle(
+                &state,
+                CLIENT,
+                Command::GetCreation {
+                    operation: op(3),
+                    session: origin,
+                },
+                &root,
+            ))
+            .resource,
+            created.resource
+        );
+    });
+}
+
+#[test]
 fn create_rename_and_page_round_trip_with_typed_refusals() {
     run(async {
         let state = SharedState::new();

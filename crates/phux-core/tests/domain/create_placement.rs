@@ -31,6 +31,94 @@ const fn beside(resource: phux_core::ResourceKey, entry: [u8; 16]) -> CreatePlac
     }
 }
 #[test]
+fn placed_retain_records_a_durable_result() {
+    let mut h = Harness::new();
+    let session = h.create_session("work", SessionLifetime::Persistent);
+    let applied = h
+        .run(Op::ResourceCreate {
+            session: Some(session),
+            resource: crate::support::job(),
+            placement: Some(CreatePlacement::NewGroup),
+        })
+        .unwrap();
+    let key = created(&applied).1.unwrap();
+    assert!(h.resource(key).durable_result);
+    let plain = h.create_resource(session, crate::support::job());
+    assert!(!h.resource(plain).durable_result);
+}
+
+#[test]
+fn beside_refuses_an_entry_showing_a_different_resource() {
+    let mut h = Harness::new();
+    let (session, anchor, entry) = first(&mut h);
+    let other = h
+        .run(Op::ResourceCreate {
+            session: Some(session),
+            resource: shell(),
+            placement: Some(CreatePlacement::NewGroup),
+        })
+        .unwrap();
+    let other = created(&other).1.unwrap();
+    let refused = h.run(Op::ResourceCreate {
+        session: Some(session),
+        resource: shell(),
+        placement: Some(beside(other, entry)),
+    });
+    assert!(
+        matches!(
+            refused,
+            Err(Refusal::InvalidArgument { field: "placement", ref reason })
+                if reason.contains("observed resource")
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(h.resource(anchor).session, session);
+}
+
+#[test]
+fn beside_refuses_a_stale_activation_id() {
+    let mut h = Harness::new();
+    let (session, anchor, entry) = first(&mut h);
+    let mut placement = beside(anchor, entry);
+    let CreatePlacement::Beside { activation, .. } = &mut placement else {
+        unreachable!()
+    };
+    *activation = phux_core::ActivationId::FIRST.next();
+    let refused = h.run(Op::ResourceCreate {
+        session: Some(session),
+        resource: shell(),
+        placement: Some(placement),
+    });
+    assert!(
+        matches!(
+            refused,
+            Err(Refusal::Stale { current: Some(id) }) if id == phux_core::ActivationId::FIRST
+        ),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn beside_refuses_an_anchor_from_another_session() {
+    let mut h = Harness::new();
+    let (_session, anchor, entry) = first(&mut h);
+    let other = h.create_session("other", SessionLifetime::Persistent);
+    let refused = h.run(Op::ResourceCreate {
+        session: Some(other),
+        resource: shell(),
+        placement: Some(beside(anchor, entry)),
+    });
+    assert!(
+        matches!(
+            refused,
+            Err(Refusal::InvalidArgument { field: "placement", ref reason })
+                if reason.contains("destination session")
+        ),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn create_and_place_commit_together_and_replay_without_effects() {
     let mut h = Harness::new();
     let (session, anchor, entry) = first(&mut h);
