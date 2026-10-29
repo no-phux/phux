@@ -97,8 +97,9 @@ those commands run. The same argv is not asked again: a changed script
 behind an approved command, such as `build.sh` after `sh build.sh` was
 approved, is not re-asked. That is the same trust model as install. A
 hash written by an older phux does not match, so `update` asks again.
-Refusing on install installs nothing. Refusing on update leaves the
-installed copy in place.
+Control characters in a step are shown escaped, in the prompt and in the
+refusal, so that text is the command that will run. Refusing on install
+installs nothing. Refusing on update leaves the installed copy in place.
 
 ### What install and update trust
 

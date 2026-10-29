@@ -232,6 +232,79 @@ fn remote_build_requires_yes_off_a_terminal() {
     );
 }
 
+fn plant_stale_build_hash(home: &TestHome) {
+    let path = home.plugins_dir().join("plugins.lock");
+    let lock = std::fs::read_to_string(&path).unwrap();
+    assert!(lock.contains("build_steps"), "{lock}");
+    let stale = lock
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("build_steps") {
+                "build_steps = \"legacy-encoding\""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(path, stale).unwrap();
+}
+
+fn assert_controls_are_escaped(stderr: &str) {
+    assert!(stderr.contains(r#""x\u{1b}[2K\r\ny""#), "{stderr:?}");
+    assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
+    assert!(!stderr.contains('\r'), "{stderr:?}");
+}
+
+#[test]
+fn remote_build_refusal_escapes_control_characters() {
+    let home = TestHome::new();
+    let repo = home.scratch.join("repo");
+    let marker = home.scratch.join("runs.txt");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(
+        repo.join("phux-plugin.toml"),
+        format!(
+            "id = \"example.hostile\"\nname = \"Guard\"\nversion = \"0.1.0\"\n\
+             min_phux_version = \"0.0.1\"\n\n\
+             [[build]]\ncommand = [\"sh\", \"-c\", \"echo ran >> {}\", \"x\\u001b[2K\\r\\ny\"]\n\n\
+             [[actions]]\nid = \"open\"\ntitle = \"Open\"\ncommand = [\"true\"]\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    git(&repo, &["init", "--quiet", "--initial-branch=main"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "hostile"]);
+    let url = format!("file://{}", repo.display());
+
+    let (code, _, stderr) = home.run_with(&["plugin", "install", &url], |cmd| {
+        cmd.stdin(std::process::Stdio::null());
+    });
+    assert_ne!(code, 0, "{stderr}");
+    assert_controls_are_escaped(&stderr);
+    assert!(stderr.contains("Refused:"), "{stderr}");
+    assert!(stderr.contains("Nothing was installed"), "{stderr}");
+    assert!(!marker.exists());
+    assert!(!home.plugins_dir().join("example.hostile").exists());
+
+    let (code, _, stderr) = home.run_with(&["plugin", "install", &url, "--yes"], |cmd| {
+        cmd.stdin(std::process::Stdio::null());
+    });
+    assert_eq!(code, 0, "{stderr}");
+    assert_controls_are_escaped(&stderr);
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
+
+    plant_stale_build_hash(&home);
+    let (code, _, stderr) = home.run_with(&["plugin", "update", "example.hostile"], |cmd| {
+        cmd.stdin(std::process::Stdio::null());
+    });
+    assert_ne!(code, 0, "{stderr}");
+    assert_controls_are_escaped(&stderr);
+    assert!(stderr.contains("Nothing was updated"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
+}
+
 #[test]
 fn rev_pins_a_commit_until_latest() {
     let home = TestHome::new();
@@ -419,24 +492,8 @@ fn update_reasks_when_the_stored_build_hash_does_not_match() {
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
 
-    // Any digest that is not the current argv hash takes the re-ask path,
-    // including a hash written with the previous separator encoding.
-    let lock_path = home.plugins_dir().join("plugins.lock");
-    let lock = std::fs::read_to_string(&lock_path).unwrap();
-    assert!(lock.contains("build_steps"), "{lock}");
-    let stale = lock
-        .lines()
-        .map(|line| {
-            if line.trim_start().starts_with("build_steps") {
-                "build_steps = \"legacy-encoding\""
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(&lock_path, stale).unwrap();
-
+    // Any other digest, including an older encoding, takes this re-ask path.
+    plant_stale_build_hash(&home);
     let (code, _, stderr) = home.run_with(&["plugin", "update", "stale"], |cmd| {
         cmd.stdin(std::process::Stdio::null());
     });

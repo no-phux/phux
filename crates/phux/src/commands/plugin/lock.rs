@@ -66,10 +66,13 @@ pub(super) struct PluginLockEntry {
 
 /// SHA-256 of approved `[[build]]` steps. `None` when there are none.
 ///
-/// Encoding is a count, then each field as `len:bytes`, so an argument that
-/// contains the old separator (`\u{1f}` or a newline) cannot collide with
-/// two neighbouring arguments. A lockfile written with the previous
-/// encoding does not match and `update` asks again.
+/// Encoding is a count of steps, then for each step a presence marker
+/// (`0` when `platforms` is omitted, `1` when the key is set), the
+/// platform names as `len:bytes` when present, and each argument as
+/// `len:bytes`. Omitted platforms run on every platform; `platforms = []`
+/// runs on none, so those hashes differ. A length prefix keeps
+/// `["a\u{1f}b","c"]` distinct from `["a","b\u{1f}c"]`. A lockfile written
+/// with an older encoding does not match and `update` asks again.
 pub(super) fn hash_build_steps(steps: &[PluginManifestBuild]) -> Option<String> {
     if steps.is_empty() {
         return None;
@@ -77,10 +80,15 @@ pub(super) fn hash_build_steps(steps: &[PluginManifestBuild]) -> Option<String> 
     let mut hasher = Sha256::new();
     feed_count(&mut hasher, steps.len());
     for step in steps {
-        let platforms = step.platforms.as_deref().unwrap_or(&[]);
-        feed_count(&mut hasher, platforms.len());
-        for platform in platforms {
-            feed_bytes(&mut hasher, format!("{platform:?}").as_bytes());
+        match &step.platforms {
+            None => feed_count(&mut hasher, 0),
+            Some(platforms) => {
+                feed_count(&mut hasher, 1);
+                feed_count(&mut hasher, platforms.len());
+                for platform in platforms {
+                    feed_bytes(&mut hasher, format!("{platform:?}").as_bytes());
+                }
+            }
         }
         feed_count(&mut hasher, step.command.len());
         for arg in &step.command {
@@ -313,6 +321,44 @@ mod tests {
         assert_ne!(
             split_hash, legacy,
             "an old lockfile hash must not match, so update asks again"
+        );
+    }
+
+    /// Same argument count. Joining on `\u{1f}` without a per-arg length
+    /// still collides; the length prefix is what keeps these apart.
+    #[test]
+    fn build_step_hash_distinguishes_same_count_separator_splits() {
+        let left = step(&["a\u{1f}b", "c"]);
+        let right = step(&["a", "b\u{1f}c"]);
+        assert_eq!(left.command.len(), right.command.len());
+        assert_eq!(
+            format!("{}:{}", left.command.len(), left.command.join("\u{1f}")),
+            format!("{}:{}", right.command.len(), right.command.join("\u{1f}"))
+        );
+        assert_ne!(
+            super::hash_build_steps(std::slice::from_ref(&left)).unwrap(),
+            super::hash_build_steps(std::slice::from_ref(&right)).unwrap()
+        );
+    }
+
+    /// `platforms = []` matches no platform. An omitted key matches every
+    /// platform. The hashes record that difference.
+    #[test]
+    fn empty_platform_list_hashes_apart_from_omitted_platforms() {
+        use phux_config::plugin::PluginManifestBuild;
+
+        let command = vec!["sh".to_owned(), "build.sh".to_owned()];
+        let absent = PluginManifestBuild {
+            platforms: None,
+            command: command.clone(),
+        };
+        let empty = PluginManifestBuild {
+            platforms: Some(Vec::new()),
+            command,
+        };
+        assert_ne!(
+            super::hash_build_steps(std::slice::from_ref(&absent)).unwrap(),
+            super::hash_build_steps(std::slice::from_ref(&empty)).unwrap()
         );
     }
 }
