@@ -149,12 +149,10 @@ From strongest to weakest, as specified in
 4. Hook reports from `phux agent report-state`.
 5. The foreground program and the screen, matched against built-in rules.
 
-While a pane has any OSC 7501 record and no live session, the drain does
-not publish a screen-derived state, and it drops the state a hook report
-would have published. A declaration or a live session is left in place:
-the OSC 7501 projection returns without writing over them. This is the
-order the server is built to keep. It has not been measured on a live
-Claude Code, Codex, OpenCode, or pi session.
+While a pane has an OSC 7501 record and no live session, phux ignores hook
+reports and the screen for that pane. A declaration or a live session stays
+in place. This is the order the server is built to keep. It has not been
+measured on a live Claude Code, Codex, OpenCode, or pi session.
 
 An agent with no integration falls back to the built-in screen rules.
 Rules ship for Claude Code, Codex, OpenCode, pi, Oh My Pi, Grok, Amp,
