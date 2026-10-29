@@ -19,7 +19,10 @@ const ZIG: Surface[] = ["native", "web_engine", "desktop"];
  * the root changelog. These leave the docs-only fast path.
  */
 const DOC_INPUTS: Record<string, Surface[]> = {
-  "docs/{spec,reference,assets}/**": ["phux"],
+  // The wire schema is the Rust input under docs/spec. Other files there,
+  // including the plugin index schema, are documentation.
+  "docs/spec/wire-schema.json": ["phux"],
+  "docs/{reference,assets}/**": ["phux"],
   "docs/agents.md": ["phux"],
   "CHANGELOG.md": [],
 };
@@ -124,6 +127,9 @@ const ROUTES: Record<string, Surface[]> = {
   "just/{perf,release,mutation}.just": [],
   "release-please-config.json": [],
   "scripts/check-*": [],
+  // Nested cargo workspace. plugin-index.yml runs its tests; product lanes
+  // do not build it.
+  "scripts/plugin-index/**": [],
   // Brand release plumbing is verified by guards. Changed application artwork
   // still routes through its destination's packaging/build checks.
   "brand.{config,lock}.json": [],

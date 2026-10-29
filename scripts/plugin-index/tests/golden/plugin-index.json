@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-01-15T00:00:00Z",
+  "notice": "Plugins run as the user and aren't sandboxed (see docs/plugins.md).",
+  "plugins": [
+    {
+      "repo": "acme/pack",
+      "subdir": "plugins/theme",
+      "id": "acme.theme",
+      "name": "Theme",
+      "description": "A theme in a subdirectory.",
+      "kinds": [
+        "themes"
+      ],
+      "min_phux_version": "0.1.0",
+      "stars": 1,
+      "pushed_at": "2026-04-04T00:00:00Z",
+      "license": null,
+      "install": "phux plugin install https://github.com/acme/pack"
+    },
+    {
+      "repo": "acme/widgets",
+      "subdir": "",
+      "id": "acme.widgets",
+      "name": "Widgets",
+      "description": "Pane and action tools.",
+      "kinds": [
+        "actions",
+        "panes"
+      ],
+      "min_phux_version": "0.0.2",
+      "stars": 12,
+      "pushed_at": "2026-03-03T12:00:00Z",
+      "license": "MIT",
+      "install": "phux plugin install https://github.com/acme/widgets"
+    },
+    {
+      "repo": "fixture/demos",
+      "subdir": "examples/plugins/demo",
+      "id": "fixture.demo",
+      "name": "Demo",
+      "description": "Example plugin from the checkout.",
+      "kinds": [
+        "agents"
+      ],
+      "min_phux_version": "0.0.2",
+      "stars": 4,
+      "pushed_at": "2026-02-02T00:00:00Z",
+      "license": "Apache-2.0",
+      "install": "phux plugin install https://github.com/fixture/demos"
+    }
+  ],
+  "skipped": [
+    {
+      "repo": "acme/baddirs",
+      "subdir": "",
+      "reason": "invalid plugin directory: ../escape"
+    },
+    {
+      "repo": "acme/broken",
+      "subdir": "",
+      "reason": "invalid manifest: acme/broken/phux-plugin.toml: event `nope` listens for `on-startup`, which is not a hook event; it will never fire"
+    },
+    {
+      "repo": "acme/empty",
+      "subdir": "",
+      "reason": "no valid manifest"
+    },
+    {
+      "repo": "acme/forked",
+      "subdir": "",
+      "reason": "fork"
+    },
+    {
+      "repo": "acme/old",
+      "subdir": "",
+      "reason": "archived"
+    },
+    {
+      "repo": "acme/pack",
+      "subdir": "plugins/missing",
+      "reason": "no valid manifest"
+    },
+    {
+      "repo": "acme/secret",
+      "subdir": "",
+      "reason": "private"
+    }
+  ]
+}

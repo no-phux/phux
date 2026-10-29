@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/no-phux/phux/blob/main/docs/spec/plugin-index.schema.json",
+  "title": "phux plugin index",
+  "description": "Static catalog of phux plugins discovered from public GitHub repositories tagged phux-plugin and from the in-repo examples. Plugins run as the user and aren't sandboxed (see docs/plugins.md).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generated_at", "notice", "plugins", "skipped"],
+  "properties": {
+    "schema_version": {
+      "description": "Index document version.",
+      "const": 1
+    },
+    "generated_at": {
+      "description": "UTC time the file was built, to the second.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "notice": {
+      "description": "How a plugin runs once installed.",
+      "const": "Plugins run as the user and aren't sandboxed (see docs/plugins.md)."
+    },
+    "plugins": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/plugin" }
+    },
+    "skipped": {
+      "description": "Repositories and directories left out of plugins, with the reason.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/skipped" }
+    }
+  },
+  "$defs": {
+    "plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo",
+        "subdir",
+        "id",
+        "name",
+        "description",
+        "kinds",
+        "min_phux_version",
+        "stars",
+        "pushed_at",
+        "license",
+        "install"
+      ],
+      "properties": {
+        "repo": {
+          "description": "GitHub owner/repo.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "subdir": {
+          "description": "Plugin directory relative to the repository root. Empty when phux-plugin.toml is at the root.",
+          "type": "string",
+          "pattern": "^([A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*)?$"
+        },
+        "id": {
+          "description": "Manifest id.",
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "description": "Manifest name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "description": "Manifest description, or an empty string when the manifest omits it.",
+          "type": "string"
+        },
+        "kinds": {
+          "description": "Manifest sections that declare something. Order is fixed.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "actions",
+              "agents",
+              "events",
+              "links",
+              "panes",
+              "profiles",
+              "sidebar",
+              "themes",
+              "widgets"
+            ]
+          }
+        },
+        "min_phux_version": {
+          "description": "Manifest min_phux_version.",
+          "type": "string",
+          "minLength": 1
+        },
+        "stars": {
+          "description": "GitHub stargazer count, or null when repository metadata was not available.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "pushed_at": {
+          "description": "GitHub pushed_at, or null when repository metadata was not available.",
+          "type": ["string", "null"]
+        },
+        "license": {
+          "description": "SPDX license id reported by GitHub, or null.",
+          "type": ["string", "null"]
+        },
+        "install": {
+          "description": "Command that installs the repository.",
+          "type": "string",
+          "pattern": "^phux plugin install https://github.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        }
+      }
+    },
+    "skipped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "subdir", "reason"],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subdir": {
+          "description": "Plugin directory, or empty when the whole repository was skipped.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why this repository or directory is not in plugins. archived, fork, private, no valid manifest, or invalid manifest/directory text.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
