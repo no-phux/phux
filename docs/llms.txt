@@ -30,14 +30,17 @@ Start with [Build on phux](./building.md).
 
 ## Agent state
 
-Agent state is evidence-ranked; screen is the floor. It has not been
-measured on a live Claude Code, Codex, or OpenCode session. The evidence
-order is on [Build on phux](./building.md).
+Agent state is evidence-ranked; screen is the floor.
+It has not been measured on a live Claude Code, Codex, OpenCode, or pi session.
+The evidence order is on [Build on phux](./building.md).
 
 ## Not shipped
 
 There is no public SDK.
 There is no JSON socket.
 There is no example application.
-The static plugin index is built from the GitHub topic `phux-plugin`.
 Sources for each sentence are on [Build on phux](./building.md).
+
+## Plugin index
+
+The static plugin index is built from the GitHub topic `phux-plugin`.

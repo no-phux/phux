@@ -50,8 +50,7 @@ for one pane.
 numbered list, and says that while a pane has an OSC 7501 record and no
 live session, phux ignores hooks, the foreground program, and the screen.
 
-It has not been measured on a live Claude Code, Codex, or OpenCode session,
-with or without an integration installed.
+It has not been measured on a live Claude Code, Codex, OpenCode, or pi session, with or without an integration installed.
 
 ## Not shipped
 
@@ -74,6 +73,8 @@ There is no example application. [examples/agents](../examples/agents/README.md)
 is scripts that spawn the `phux` binary. [First-party plugins](./plugins.md#first-party-plugins)
 are manifests. The embed example in [Embed phux](./embedding.md) draws a
 terminal.
+
+## Plugin index
 
 The static plugin index is built from the GitHub topic `phux-plugin` and
 from the plugins in this repository

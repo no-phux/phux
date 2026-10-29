@@ -184,7 +184,7 @@ check_tree() {
     rm -f "$hub_links" "$index_links" "$stripped"
 
     require_phrase "$hub" 'evidence-ranked; screen is the floor'
-    require_phrase "$hub" 'It has not been measured on a live Claude Code, Codex, or OpenCode session'
+    require_phrase "$hub" 'It has not been measured on a live Claude Code, Codex, OpenCode, or pi session, with or without an integration installed.'
     require_phrase "$hub" 'There is no public SDK.'
     require_phrase "$hub" 'There is no JSON socket.'
     require_phrase "$hub" 'There is no example application.'
@@ -192,6 +192,7 @@ check_tree() {
     # any-program-status.md is required above. This gate does not require
     # every file under docs/; libghostty.md is not an entry point.
     require_phrase "$index" 'evidence-ranked; screen is the floor'
+    require_phrase "$index" 'It has not been measured on a live Claude Code, Codex, OpenCode, or pi session'
     require_phrase "$index" 'There is no public SDK.'
     require_phrase "$index" 'There is no JSON socket.'
     require_phrase "$index" 'There is no example application.'
@@ -257,7 +258,7 @@ self_test() {
 
 Agent state is evidence-ranked; screen is the floor.
 
-It has not been measured on a live Claude Code, Codex, or OpenCode session.
+It has not been measured on a live Claude Code, Codex, OpenCode, or pi session, with or without an integration installed.
 
 ## Not shipped
 
@@ -306,7 +307,7 @@ https://docs.phux.sh/llms.txt
 - [Agent integrations](./agents.md#agent-setup).
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program) and [embedding](./embedding.md).
 
-Agent state is evidence-ranked; screen is the floor.
+Agent state is evidence-ranked; screen is the floor. It has not been measured on a live Claude Code, Codex, OpenCode, or pi session.
 There is no public SDK. There is no JSON socket. There is no example application. The static plugin index is built from the GitHub topic `phux-plugin`.
 EOF
     printf '[Build on phux](./building.md)\n' >"$repo/docs/README.md"
