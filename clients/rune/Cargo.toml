@@ -1,0 +1,28 @@
+[package]
+name = "phux-rune"
+version = "0.1.0-alpha.1"
+description = "An alpha phux desktop client built on the Rune UI framework."
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[[bin]]
+name = "phux-rune"
+path = "src/main.rs"
+
+# Rune's wgpu/winit graph stays out of the main phux workspace and the GPUI
+# desktop's lock, as the GPUI host keeps its own.
+[workspace]
+
+[dependencies]
+phux-client-runtime = { path = "../../crates/phux-client-runtime" }
+phux-protocol = { path = "../../crates/phux-protocol" }
+# Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
+rune = { git = "https://github.com/anomalyco/rune", rev = "7109facac86f37b8411df84f39571a11c9e859c5" }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+
+[lints.rust]
+unsafe_code = "forbid"

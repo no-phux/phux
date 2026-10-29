@@ -141,8 +141,8 @@ jobs:
           set -euo pipefail
           cargo update --workspace
           (cd clients/phux-web && cargo update --workspace)
-          bun tools/main.ts sync-path-lock-versions Cargo.lock clients/desktop/native/Cargo.lock
-          locks=(Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock)
+          bun tools/main.ts sync-path-lock-versions Cargo.lock clients/desktop/native/Cargo.lock clients/rune/Cargo.lock
+          locks=(Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock clients/rune/Cargo.lock)
           if git diff --quiet -- "${locks[@]}"; then echo "lockfiles already in sync"; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

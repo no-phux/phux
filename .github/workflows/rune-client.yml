@@ -1,0 +1,130 @@
+name: Rune client
+
+# The alpha desktop client on Rune (clients/rune). It has its own Cargo
+# workspace, so the main CI lanes never build it; this lane does, for its
+# own changes and for the client crates it depends on. A `rune-vVERSION`
+# tag also packages it and publishes a GitHub prerelease.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/rune-client.yml
+      - rust-toolchain.toml
+      - .cargo/config.toml
+      - clients/rune/**
+      - crates/phux-client-runtime/**
+      - crates/phux-client-core/**
+      - crates/phux-config-core/**
+      - crates/phux-core/**
+      - crates/phux-dial/**
+      - crates/phux-perf/**
+      - crates/phux-protocol/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/rune-client.yml
+      - rust-toolchain.toml
+      - .cargo/config.toml
+      - clients/rune/**
+      - crates/phux-client-runtime/**
+      - crates/phux-client-core/**
+      - crates/phux-config-core/**
+      - crates/phux-core/**
+      - crates/phux-dial/**
+      - crates/phux-perf/**
+      - crates/phux-protocol/**
+    tags: ["rune-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rune-client-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            name: macos-arm64
+          - os: ubuntu-24.04
+            name: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config mold libxkbcommon-dev libwayland-dev
+      - name: Toolchains
+        run: |
+          bash scripts/setup-rust.sh core
+          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+      - name: Format
+        working-directory: clients/rune
+        run: cargo fmt --check
+      - name: Clippy
+        working-directory: clients/rune
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        working-directory: clients/rune
+        run: cargo test --locked
+      - name: Version matches the tag
+        if: startsWith(github.ref, 'refs/tags/rune-v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
+          [[ "rune-v$version" == "$TAG" ]] || { echo "Cargo.toml is $version, tag is $TAG" >&2; exit 1; }
+      - name: Package
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
+          bash clients/rune/scripts/package.sh "$version" "$RUNNER_TEMP/dist"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rune-${{ matrix.name }}
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: publish prerelease
+    if: startsWith(github.ref, 'refs/tags/rune-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: rune-*
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A prerelease, never "latest": installers and the release tooling
+          # resolve the CLI and the GPUI desktop from their own tags.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+              --prerelease --latest=false --verify-tag \
+              --title "Phux Rune ${TAG#rune-v} (alpha)" \
+              --notes-file clients/rune/RELEASE_NOTES.md
+          fi
