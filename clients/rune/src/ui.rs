@@ -4,7 +4,7 @@ use phux_client_runtime::control::Status;
 use rune::tok;
 use rune::{Color, Cx, El, Family, TextStyle, col, el, row, text};
 
-use crate::desk::Desk;
+use crate::desk::{Desk, Pending};
 
 mod palette;
 mod panes;
@@ -81,7 +81,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .min_w(0.0)
                 .min_h(0.0)
                 .children(top)
-                .children(paste_bar(desk, &p))
+                .children(confirm_bar(desk, &p))
                 .child(panes::view(desk, &p, cx))
                 .child(el().w_full().h(1.0).fill(p.separator))
                 .child(status_line(desk, &p)),
@@ -109,31 +109,43 @@ pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(
 }
 
 /// A held paste: what it would do, and the choice.
-fn paste_bar(desk: &Desk, p: &Ink) -> Option<El> {
-    let held = desk.held_paste.as_ref()?;
-    let lines = held.lines().count().max(1);
-    let message = format!(
-        "This paste has {lines} line{} and would run as typed commands. Paste anyway?",
-        if lines == 1 { "" } else { "s" }
-    );
+/// The action waiting on Return or Escape: what it would do, and the choice.
+fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
+    let (message, verb) = match desk.pending.as_ref()? {
+        Pending::Paste(held) => {
+            let lines = held.lines().count().max(1);
+            let plural = if lines == 1 { "" } else { "s" };
+            (
+                format!(
+                    "This paste has {lines} line{plural} and would run as typed commands. Paste anyway?"
+                ),
+                "Paste (Return)",
+            )
+        }
+        Pending::Close(terminal) => (
+            format!("Close {terminal}? Anything running in it ends."),
+            "Close (Return)",
+        ),
+    };
     Some(
         row()
-            .key("paste-bar")
+            .key("confirm-bar")
             .w_full()
             .px(12.0)
             .py(8.0)
             .gap(8.0)
             .items_center()
             .fill(p.selected)
+            .transition(rune::Transition::opacity())
             .child(text(message).font(LABEL).color(p.text).truncate())
             .child(el().grow(1.0))
             .child(
-                button("Cancel (Esc)", "paste-cancel", p, Desk::cancel_paste)
+                button("Cancel (Esc)", "confirm-cancel", p, Desk::cancel_pending)
                     .grow(0.0)
                     .px(10.0),
             )
             .child(
-                button("Paste (Return)", "paste-confirm", p, Desk::confirm_paste)
+                button(verb, "confirm-ok", p, Desk::confirm_pending)
                     .grow(0.0)
                     .px(10.0),
             ),

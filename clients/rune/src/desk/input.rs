@@ -3,11 +3,12 @@
 
 use phux_client_core::layout::{Direction, SplitDir};
 use phux_client_runtime::ViewId;
+use phux_client_runtime::engine::ReplicaPrompt;
 use phux_client_runtime::engine::{Scroll, SelectionGestureEvent};
 use phux_protocol::ids::ResourceId;
 use rune::{Phase, Tx};
 
-use super::Desk;
+use super::{Desk, Pending};
 use crate::keys::{self, Shortcut, Typed};
 
 /// A paste that would arrive as typed keys with line breaks, each one an
@@ -29,10 +30,10 @@ impl Desk {
             }
             return true;
         }
-        if self.held_paste.is_some() {
+        if self.pending.is_some() {
             match event.key {
-                rune::Key::Enter => self.confirm_paste(),
-                rune::Key::Escape => self.held_paste = None,
+                rune::Key::Enter => self.confirm_pending(),
+                rune::Key::Escape => self.pending = None,
                 _ => {}
             }
             return true;
@@ -115,6 +116,7 @@ impl Desk {
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),
             Shortcut::ZoomPane => self.toggle_zoom(),
+            Shortcut::CloseTerminal => self.close_terminal(),
             Shortcut::FocusLeft => self.focus_toward(Direction::Left),
             Shortcut::FocusRight => self.focus_toward(Direction::Right),
             Shortcut::FocusUp => self.focus_toward(Direction::Up),
@@ -149,20 +151,49 @@ impl Desk {
             .engine()
             .is_some_and(|engine| engine.bracketed_paste(&shown.terminal).unwrap_or(false));
         if paste_needs_confirmation(bracketed, text) {
-            self.held_paste = Some(text.to_owned());
+            self.pending = Some(Pending::Paste(text.to_owned()));
             return;
         }
         self.send_paste(text);
     }
 
-    pub fn confirm_paste(&mut self) {
-        if let Some(text) = self.held_paste.take() {
-            self.send_paste(&text);
+    pub fn confirm_pending(&mut self) {
+        match self.pending.take() {
+            Some(Pending::Paste(text)) => self.send_paste(&text),
+            Some(Pending::Close(terminal)) => self.close_now(&terminal),
+            None => {}
         }
     }
 
-    pub fn cancel_paste(&mut self) {
-        self.held_paste = None;
+    pub fn cancel_pending(&mut self) {
+        self.pending = None;
+    }
+
+    /// Close the focused terminal: at once at a prompt shell integration
+    /// vouches for, after asking otherwise. Closing is not undoable, so
+    /// "unknown" asks too.
+    pub fn close_terminal(&mut self) {
+        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
+            return;
+        };
+        let terminal = shown.terminal.clone();
+        let idle = match client.with_control(|control| control.command_state(&terminal)) {
+            Some(running) => !running,
+            None => client
+                .engine()
+                .is_some_and(|engine| engine.replica_prompt(&terminal) == ReplicaPrompt::AtPrompt),
+        };
+        if idle {
+            self.close_now(&terminal);
+        } else {
+            self.pending = Some(Pending::Close(terminal));
+        }
+    }
+
+    fn close_now(&mut self, terminal: &ResourceId) {
+        if let Some(client) = &self.client {
+            let _ = client.close_terminals(vec![terminal.clone()]);
+        }
     }
 
     fn send_paste(&self, text: &str) {

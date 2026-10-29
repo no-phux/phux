@@ -58,6 +58,15 @@ pub struct Painted {
 /// pixels.
 type Fitted = ((u16, u16), (u16, u16));
 
+/// What waits on the user's Return or Escape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pending {
+    /// A paste that would type line breaks into a program.
+    Paste(String),
+    /// Closing a terminal that is running a command.
+    Close(ResourceId),
+}
+
 /// The terminal on screen.
 pub struct Shown {
     pub terminal: ResourceId,
@@ -78,8 +87,8 @@ pub struct Desk {
     pending_session: Option<String>,
     /// The connection incarnation the shown view belongs to.
     epoch: u64,
-    /// A paste waiting for the user's confirmation.
-    pub held_paste: Option<String>,
+    /// An action waiting for the user's confirmation.
+    pub pending: Option<Pending>,
     /// A command's failure (a spawn), shown until the next terminal opens.
     pub notice: Option<String>,
     /// The command palette, while open, and its field and highlighted row.
@@ -146,7 +155,7 @@ impl Desk {
             wanted: None,
             pending_session: None,
             epoch: 0,
-            held_paste: None,
+            pending: None,
             notice: None,
             palette_open: false,
             palette_query: rune::TextEdit::new(""),

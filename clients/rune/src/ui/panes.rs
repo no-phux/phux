@@ -133,7 +133,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     let metrics = desk.metrics();
     let keyboard = focused && desk.focused;
     let mut grid_layer = el().child(grid::paint(&frame, keyboard, desk.blink_on, &metrics));
-    if keyboard && !desk.palette_open && desk.held_paste.is_none() {
+    if keyboard && !desk.palette_open && desk.pending.is_none() {
         grid_layer = grid_layer.child(grid::ime_layer(
             &frame,
             desk.preedit.as_deref(),
