@@ -1,0 +1,15 @@
+id = "acme.widgets"
+name = "Widgets"
+version = "0.1.0"
+min_phux_version = "0.0.2"
+description = "Pane and action tools."
+
+[[actions]]
+id = "run"
+title = "Run"
+command = ["true"]
+
+[[panes]]
+id = "board"
+title = "Board"
+command = ["true"]

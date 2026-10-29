@@ -1,0 +1,11 @@
+id = "acme.broken"
+name = "Broken"
+version = "0.1.0"
+min_phux_version = "0.0.2"
+description = "Listens for an event that never fires."
+
+[[events]]
+id = "nope"
+title = "Nope"
+on = "on-startup"
+command = ["true"]

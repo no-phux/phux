@@ -1,0 +1,88 @@
+{
+  "total_count": 8,
+  "incomplete_results": false,
+  "items": [
+    {
+      "full_name": "acme/old",
+      "archived": true,
+      "fork": false,
+      "private": false,
+      "default_branch": "main",
+      "stargazers_count": 50,
+      "pushed_at": "2020-01-01T00:00:00Z",
+      "license": { "spdx_id": "MIT" },
+      "html_url": "https://github.com/acme/old"
+    },
+    {
+      "full_name": "acme/forked",
+      "archived": false,
+      "fork": true,
+      "private": false,
+      "default_branch": "main",
+      "stargazers_count": 1,
+      "pushed_at": "2026-01-01T00:00:00Z",
+      "license": { "spdx_id": "MIT" }
+    },
+    {
+      "full_name": "acme/secret",
+      "archived": false,
+      "fork": false,
+      "private": true,
+      "default_branch": "main",
+      "stargazers_count": 0,
+      "pushed_at": "2026-01-01T00:00:00Z",
+      "license": null
+    },
+    {
+      "full_name": "acme/empty",
+      "archived": false,
+      "fork": false,
+      "private": false,
+      "default_branch": "main",
+      "stargazers_count": 0,
+      "pushed_at": "2026-01-01T00:00:00Z",
+      "license": { "spdx_id": "NOASSERTION" }
+    },
+    {
+      "full_name": "acme/baddirs",
+      "archived": false,
+      "fork": false,
+      "private": false,
+      "default_branch": "main",
+      "stargazers_count": 0,
+      "pushed_at": "2026-01-01T00:00:00Z",
+      "license": null
+    },
+    {
+      "full_name": "acme/broken",
+      "archived": false,
+      "fork": false,
+      "private": false,
+      "default_branch": "main",
+      "stargazers_count": 3,
+      "pushed_at": "2026-05-05T00:00:00Z",
+      "license": { "spdx_id": "MIT" }
+    },
+    {
+      "full_name": "acme/widgets",
+      "archived": false,
+      "fork": false,
+      "private": false,
+      "default_branch": "main",
+      "stargazers_count": 12,
+      "pushed_at": "2026-03-03T12:00:00Z",
+      "license": { "spdx_id": "MIT" },
+      "description": "ignored by the index"
+    },
+    {
+      "full_name": "acme/pack",
+      "archived": false,
+      "fork": false,
+      "private": false,
+      "default_branch": "main",
+      "stargazers_count": 1,
+      "pushed_at": "2026-04-04T00:00:00Z",
+      "license": null
+    }
+  ]
+}

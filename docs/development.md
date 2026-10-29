@@ -39,7 +39,8 @@ Nix provides it.
 
 ## libghostty-vt
 
-The terminal engine is Ghostty's C library. Its build script downloads a
+The terminal engine is Ghostty's C library. What it does in a running phux,
+and what it does not, is [libghostty in phux](./libghostty.md). Its build script downloads a
 prebuilt, checksummed `libghostty-vt.a` for the pinned Ghostty commit on
 the three release targets and needs only `curl` and `tar`. Anything else
 (other targets, `LIBGHOSTTY_VT_SYS_FROM_SOURCE=1`, offline, a failed
