@@ -137,8 +137,7 @@ fn wait_for_server(server: &mut Child, socket: &Path) {
     panic!("private server did not bind {}", socket.display());
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn parse_args(args: impl IntoIterator<Item = String>) -> (u16, u16, Vec<String>) {
     let mut cols = 80u16;
     let mut rows = 24u16;
     let mut keys: Vec<String> = Vec::new();
@@ -152,7 +151,11 @@ fn main() {
             keys.push(a);
         }
     }
+    (cols, rows, keys)
+}
 
+fn main() {
+    let (cols, rows, keys) = parse_args(std::env::args().skip(1));
     let repo = std::env::var_os("CARGO_MANIFEST_DIR").expect("run through cargo");
     let phux_bin = std::env::var_os("PHUX").map_or_else(
         || std::path::PathBuf::from(repo).join("../../target/debug/phux"),
@@ -250,4 +253,18 @@ fn main() {
     }
     println!("└{bar}┘");
     println!("{cols}x{rows}  cursor={cursor:?}  (no tmux — raw PTY + libghostty)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_args;
+
+    #[test]
+    fn dimensions_and_keystrokes_keep_their_existing_order() {
+        let input = ["echo hi\\r", "100x30", "\\x01", "-"];
+        let (cols, rows, keys) = parse_args(input.map(str::to_owned));
+        assert_eq!((cols, rows), (100, 30));
+        assert_eq!(keys, ["echo hi\\r", "\\x01", "-"]);
+        assert_eq!(parse_args(Vec::new()), (80, 24, Vec::new()));
+    }
 }
