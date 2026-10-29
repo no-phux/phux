@@ -55,13 +55,6 @@ jobs:
       receipt: ${{ steps.plan.outputs.receipt }}
       receipt_name: ${{ steps.plan.outputs.receipt_name }}
     steps:
-      # TEMP: proof for #1831 release-head exemption; remove after one release-please cycle
-      - name: debug event
-        env:
-          EVT_ACTION: ${{ github.event.action }}
-          PR_DRAFT: ${{ github.event.pull_request.draft }}
-          HEAD_REF: ${{ github.head_ref }}
-        run: echo "action=$EVT_ACTION draft=$PR_DRAFT head_ref=$HEAD_REF"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
