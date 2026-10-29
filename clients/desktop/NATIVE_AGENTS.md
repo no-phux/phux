@@ -46,8 +46,9 @@ consumption; an uncertain reply is shown without automatically sending again.
 Attached TUI conversations keep their existing terminal-backed controls and
 **Open Terminal** handoff for terminal-only approvals.
 
-Native profiles cover OMP, Pi, Claude Code, OpenCode, Codex, Amp, Grok, Gemini
-CLI, Cursor Agent, and Goose; Aider is terminal-only. Operators install and
+Native profiles cover fx, OMP, Pi, Claude Code, OpenCode, Codex, Amp, Grok,
+Gemini CLI, Cursor Agent, and Goose; Aider is terminal-only. fx has a built-in
+`fx acp` profile; authenticate fx on the executing host before starting it. Operators install and
 authenticate the native ACP executable or maintained adapter explicitly.
 The picker explains unavailable prerequisites and never installs or accepts
 terms for you. Remote discovery and launch use the window's existing authenticated

@@ -354,6 +354,31 @@ fn picker_keeps_opencode_start_and_signin_inside_the_native_panel(cx: &mut TestA
 }
 
 #[gpui::test]
+fn picker_explains_fx_setup_without_claiming_to_sign_in(cx: &mut TestAppContext) {
+    let _dial = crate::connection::DeterministicDial::arm();
+    let (handle, desk) = fixture(cx, true);
+    desk.update(cx, |desk, cx| {
+        desk.native_launch.integrations = vec![NativeIntegration {
+            integration: "fx".into(),
+            display_name: Some("fx".into()),
+            native_available: false,
+            native_detail: Some("fx not on PATH".into()),
+            auth_command: None,
+        }];
+        desk.modal = Modal::NativeLaunch;
+        cx.notify();
+    });
+    let cx = &mut gpui::VisualTestContext::from_window(handle, cx);
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    assert!(cx.debug_bounds("native-launch-fx").is_some());
+    assert!(cx.debug_bounds("fx-setup-guide").is_some());
+    assert!(cx.debug_bounds("opencode-sign-in").is_none());
+}
+
+#[gpui::test]
 fn fresh_reconnect_inventory_retires_missing_guardian_without_relaunch(cx: &mut TestAppContext) {
     let _dial = crate::connection::DeterministicDial::arm();
     let (_, desk) = fixture(cx, true);

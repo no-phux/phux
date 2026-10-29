@@ -34,6 +34,14 @@ fn load_templates(config_path: &Path) -> Result<Vec<LoadedTemplate>, LaunchError
     }) {
         out.push(builtin_opencode());
     }
+    // A declared fx integration owns the name even when it is broken: do not
+    // mask a configuration error with the built-in ACP profile.
+    if !out.iter().any(|entry| {
+        template_file_names(&entry.path, "fx")
+            || entry.template.as_ref().is_ok_and(|template| template.id == "fx")
+    }) {
+        out.push(builtin_fx());
+    }
     Ok(out)
 }
 
@@ -75,6 +83,36 @@ fn builtin_opencode() -> LoadedTemplate {
             agent_identity: Some(IntegrationAgentIdentity {
                 name: Some("opencode".into()),
                 kind: Some("opencode".into()),
+            }),
+        }),
+    }
+}
+
+/// fx's official ACP server runs on the host that owns the workspace.
+fn builtin_fx() -> LoadedTemplate {
+    LoadedTemplate {
+        plugin_id: "phux.builtin".into(),
+        plugin_root: PathBuf::new(),
+        path: PathBuf::from("fx.toml"),
+        template: Ok(IntegrationTemplate {
+            id: "fx".into(),
+            display_name: Some("fx".into()),
+            kind: Some("terminal-agent".into()),
+            launch: None,
+            native: Some(integration::IntegrationNativeLaunch {
+                backend: NativeBackend::Acp,
+                provider: "fx".into(),
+                launch: IntegrationLaunch {
+                    command: vec!["fx".into(), "acp".into()],
+                    required_executables: vec!["fx".into()],
+                    working_directory: LaunchWorkingDirectory::Workspace,
+                },
+            }),
+            template_path: PathBuf::new(),
+            session_identity: None,
+            agent_identity: Some(IntegrationAgentIdentity {
+                name: Some("fx".into()),
+                kind: Some("fx".into()),
             }),
         }),
     }
