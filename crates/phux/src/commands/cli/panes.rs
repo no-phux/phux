@@ -24,7 +24,8 @@ pub(crate) struct SpawnArgs {
     #[usage(long, value_name = "TARGET", conflicts("--satellite"))]
     pub(crate) target: Option<String>,
 
-    /// Split axis for explicit placement (requires `--target`).
+    /// Placement axis: `horizontal` puts the new pane to the right;
+    /// `vertical` puts it below (requires `--target`).
     #[usage(long, value_enum, default = "horizontal", requires("--target"))]
     pub(crate) split: SpawnSplit,
 
@@ -198,6 +199,43 @@ pub(crate) struct ResizeArgs {
 
     #[usage(flatten)]
     pub(crate) json: JsonOpt,
+}
+
+/// Create and place terminals; inspect API and receipts
+///
+/// Always returns versioned JSON. Creation commits membership, placement and
+/// launch intent together; a receipt is not process or task completion.
+#[derive(Debug, Args)]
+pub(crate) struct TerminalArgs {
+    #[usage(subcommand)]
+    pub(crate) action: TerminalAction,
+}
+
+/// `phux terminal <action>` — the complete-intention terminal workflow.
+#[derive(Debug, Subcommands)]
+pub(crate) enum TerminalAction {
+    /// Recover a retained creation receipt without executing or retrying anything.
+    /// A missing receipt means unknown, not that the original request was refused.
+    Operation {
+        /// Original full durable destination session key.
+        #[usage(long, value_name = "KEY")]
+        session: String,
+        /// Same key supplied to terminal create.
+        #[usage(long = "idempotency-key", value_name = "HEX32")]
+        idempotency_key: String,
+    },
+    /// Read the connected server's public workflow schemas and retry contracts.
+    Describe,
+    /// Create, place and start a terminal from one strict JSON intention.
+    ///
+    /// Use `terminal describe` for the complete nested request schema.
+    /// Argv runs in a new process, never by typing into an existing shell.
+    /// The resource and failed/completed execution remain until explicit removal.
+    Create {
+        /// JSON intention containing `idempotency_key`, session and optional argv/cwd/env/name/placement.
+        #[usage(long = "request-json", value_name = "JSON")]
+        request_json: String,
+    },
 }
 
 /// Inspect a resource or wait for its process to exit

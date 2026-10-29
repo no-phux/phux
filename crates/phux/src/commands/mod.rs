@@ -105,6 +105,7 @@ pub(crate) mod status;
 pub(crate) mod stdio_bridge;
 pub(crate) mod supervise;
 pub(crate) mod tag;
+pub(crate) mod terminal;
 pub(crate) mod theme;
 pub(crate) mod toml_registry;
 pub(crate) mod update;

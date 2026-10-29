@@ -129,6 +129,10 @@ pub struct Resource {
     pub launch: Option<LaunchSpec>,
     /// What an observed exit does to the record.
     pub on_exit: ExitPolicy,
+    /// Keep the durable result when its engine naturally ends or its screen expires.
+    /// Legacy timed screen retention leaves this false; explicit purge always removes.
+    #[serde(default)]
+    pub durable_result: bool,
     /// The current or most recent execution.
     #[serde(default)]
     pub activation: Option<Activation>,

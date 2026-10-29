@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::activation::{ExecState, ExitPolicy, Outcome, ProcIdentity, SessionLifetime};
 use crate::actor::Verb;
-use crate::arrangement::{ArrangementOwner, Group};
+use crate::arrangement::{ArrangementOwner, Group, SplitDir};
 use crate::keys::{ActivationId, ArrangementKey, OperationId, ResourceKey, Revision, SessionKey};
 use crate::org::{RevisionPin, Transition};
 use crate::resource::{LaunchSpec, ResourceKind};
@@ -60,6 +60,29 @@ pub enum LaunchMode {
     /// Store the launch spec on a dormant record with no activation;
     /// [`Op::ResourceRelaunch`] starts it.
     Deferred,
+}
+
+/// Presentation to commit with a new resource. It never changes local focus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreatePlacement {
+    /// Append a new unnamed group to the destination session's arrangement.
+    NewGroup,
+    /// Split this exact entry, only while it still shows this execution.
+    Beside {
+        /// Stable arrangement entry, not a mutable name or a live handle.
+        entry: [u8; 16],
+        /// The resource the entry must still show.
+        resource: ResourceKey,
+        /// The execution's incarnation.
+        instance: crate::keys::InstanceId,
+        /// The execution the caller observed.
+        activation: ActivationId,
+        /// Split axis.
+        dir: SplitDir,
+        /// Fraction kept by the existing entry, strictly between zero and one.
+        ratio: f32,
+    },
 }
 
 /// A source session and the revision the caller observed, for
@@ -141,6 +164,9 @@ pub enum Op {
         session: Option<SessionKey>,
         /// The resource.
         resource: NewResource,
+        /// Optional presentation committed with membership and launch intent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        placement: Option<CreatePlacement>,
     },
     /// Move one resource between sessions. Membership only.
     ResourceMove {
@@ -396,9 +422,12 @@ pub struct Created {
     /// A new resource.
     #[serde(default)]
     pub resource: Option<ResourceKey>,
-    /// A new arrangement.
+    /// The created or edited arrangement.
     #[serde(default)]
     pub arrangement: Option<ArrangementKey>,
+    /// The stable entry created in that arrangement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<[u8; 16]>,
 }
 
 /// The caller-visible result of an applied command.

@@ -11,7 +11,7 @@ screen-scraping a terminal.
 phux launch opencode --acp --session work --json
 ```
 
-OpenCode is supported today. For agents in ordinary terminal panes, see
+OpenCode and fx are supported today. For agents in ordinary terminal panes, see
 [Coding agents](./agents.md).
 
 ## Before you start
@@ -26,11 +26,21 @@ starts a login shell or changes `PATH`. An enabled plugin that declares its
 own OpenCode profile replaces the built-in one. A profile that is invalid or
 ambiguous is refused rather than skipped.
 
+fx has a built-in profile that runs `fx acp` from the host's `PATH` in the
+selected workspace. Install fx and connect a provider on that host first.
+As with OpenCode, a configured `fx` profile takes precedence, including when
+that profile is invalid. phux does not read or copy fx credentials. See the
+[fx ACP guide](https://fx.sh/docs/using-fx/acp) for its session and permission
+semantics. fx's profile-level MCP servers are not inherited by ACP sessions
+unless the ACP client opts in; the `fx mcp add` command below applies to
+terminal fx, not automatically to this built-in ACP profile.
+
 To see what phux would run without starting anything:
 
 ```sh
 phux launch --list --acp
 phux launch opencode --print --acp
+phux launch fx --print --acp
 ```
 
 A plugin declares an ACP agent as a list of arguments, never a shell string:

@@ -164,6 +164,9 @@ pub(crate) enum Command {
     #[usage(help_heading = "Panes", display_order = 32)]
     Resource(ResourceArgs),
 
+    #[usage(help_heading = "Panes", display_order = 31)]
+    Terminal(TerminalArgs),
+
     #[usage(help_heading = "More", display_order = 60)]
     Rec(RecArgs),
 
@@ -217,7 +220,8 @@ pub(crate) enum Command {
               default_missing = "0")]
         loops: Option<u32>,
 
-        /// Split axis for the new pane.
+        /// Placement axis: `horizontal` puts the new pane to the right;
+        /// `vertical` puts it below.
         #[usage(long, value_enum, default = "horizontal")]
         split: SpawnSplit,
 

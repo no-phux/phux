@@ -9,6 +9,14 @@ use super::Command;
 macro_rules! organization_commands {
     ($next:ident!($($rest:tt)*) $($done:tt)*) => {
         $next!($($rest)* $($done)*
+    /// Read a retained placed-creation receipt without repeating any effect.
+    /// Requires `API_DESCRIPTION` and inventory on the original destination session.
+    GetCreation {
+        /// Retry identity of the original creation.
+        operation: OperationId,
+        /// Original durable destination, not the resource's current session.
+        session: SessionKey,
+    },
     /// Read one bounded page of the organization (`docs/organization.md`):
     /// the records the caller inventories, with revisions, live handles,
     /// totals, and the journal cursor to subscribe after. Answered
@@ -101,6 +109,9 @@ macro_rules! organization_commands {
         /// Whether the first activation starts now or the record stays
         /// dormant until relaunched.
         launch_mode: LaunchMode,
+        /// Optional placement committed with membership and launch intent.
+        /// Requires `features_ext.CREATE_PLACEMENT`; never silently downgrade.
+        placement: Option<Box<super::CreatePlacement>>,
     },
     /// Move one resource between sessions; membership only, no restart.
     ResourceMove {

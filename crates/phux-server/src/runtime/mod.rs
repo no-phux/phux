@@ -16,6 +16,7 @@ use tracing::trace;
 
 #[cfg(test)]
 mod actor_conformance;
+mod api;
 pub mod attach;
 mod checkout;
 pub mod connections;

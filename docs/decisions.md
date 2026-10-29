@@ -58,6 +58,21 @@ records explain history; [look them up deliberately](./architecture.md#historica
   device revokes its OpenCode access and no service credential reaches it
   ([host services](./host-services.md)).
 
+**Public operations**
+
+- [Terminal creation](./public-api.md) expresses a complete intention: destination,
+  direct argv and placement. Membership, arrangement entry and launch intent commit
+  together; OS execution follows, not a fictitious database/process transaction.
+  New API resources retain failed/completed execution records for reconciliation.
+- Keep the binary transport and shared runtime. Public JSON DTOs and nested
+  schemas describe the workflow, not transport tags or metadata carriers. The
+  connected server serves the description; installed-binary discovery remains
+  separate. No generic invocation framework or second listener is introduced.
+- A retry identity has a bounded retained receipt, not an exactly-once promise
+  forever. A read-only creation lookup can recover lost replies without effects.
+  Missing/expired receipts leave the original outcome unknown; never infer that
+  it is safe to start again. Dispatch-time authorization remains authoritative.
+
 **Clients**
 
 - `phux-client-core` is sans-IO and dependency-light so it compiles to wasm.
@@ -87,13 +102,16 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 **Substrate**
 
-- phux is the substrate: principals on phux hosts, one home keeper on the
-  Mac mini, and one-way adapters. Blackbird stays frozen. The coordinator
-  wire, when other hosts become keeper clients, is the accepted
-  `phux-coordinator/1` endpoint with its fencing witness. The terminal QUIC
-  attach stays the terminal stream. Per-agent cross-host grants, that
-  multi-host coordinator, the durable grant ledger, and org-to-org trust
-  are after the 5 November 2026 launch
+- One keeper writes each work store; shared work has one authoritative home
+  store. Adapters are one-way to avoid competing task authorities. Blackbird
+  is retired from phux coordination. Reverse join grants satellite-owner
+  authority and is only for one person's own machines; delegated credentials
+  cannot mint, and cold restart requires human reauthorization.
+- The accepted future coordinator design uses a separate
+  `phux-coordinator/1` endpoint with an external fencing witness, never the
+  terminal stream. That coordinator, durable grant ledger, autonomous Lead,
+  per-agent cross-host grants, and organization-to-organization trust do not
+  ship today
   ([substrate](./substrate.md),
   [#1689](https://github.com/no-phux/phux/pull/1689)).
 

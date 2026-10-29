@@ -356,10 +356,12 @@ there. Open the port, or use a relay.
 The error names the machine and says to run `phux host add NAME` again.
 
 **`incompatible protocol`.** The two machines run releases too far apart. The
-error names both versions. Stop the remote server, then start a fresh one:
-`ssh HOST kill <pid>` when its pid is known, otherwise
-`ssh HOST pkill -f 'phux server'`, then `ssh HOST phux server --ensure`. Stopping it
-closes the panes it is running.
+error names both versions. On the remote machine, run `phux doctor` for the
+affected profile or socket and follow the
+[exact-PID recovery procedure](./troubleshooting.md#versions). Inspect the
+identified process before stopping it; never kill by name or pattern.
+Restart against the same profile or socket with `phux server --ensure`.
+Stopping that server closes its panes, not those on other servers.
 
 **Same protocol major, older remote server.** `ssh HOST phux update` updates
 the remote binary, and `ssh HOST phux upgrade` moves its running server onto

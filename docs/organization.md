@@ -28,6 +28,14 @@ fences are concurrency/authority checks, not optional UI bookkeeping. The
 legacy TUI layout metadata adapter translates into this model; it does not
 supplant it.
 
+## Complete creation intentions
+
+The [public terminal workflow](./public-api.md) commits membership, a stable
+arrangement entry and launch intent together. Invalid or stale placement
+refuses before any process starts; callers do not spawn then publish a layout
+or compensate with a kill. OS launch follows the durable commit and can fail.
+Its receipt distinguishes that failure from refusing the organization edit.
+
 ## Commit before publication
 
 The dataflow is **command + actor → pure apply → durable commit → mirror →
@@ -133,8 +141,8 @@ Delegated grants are
 [ADR-0163](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0163-actors-and-delegated-agent-grants.md).
 Agents coordinate through phux per
 [ADR-0187](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0187-agents-coordinate-through-phux.md).
-The org's one home keeper, and the cross-host work that waits until after
-launch, is the [substrate decision](./substrate.md). A multi-host
+Single-writer work authority and delegation limits are the
+[substrate decision](./substrate.md). A multi-host
 coordinator, an autonomous Lead, and a durable grant ledger are not
 shipping contracts. Do not infer them from historical design names.
 

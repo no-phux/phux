@@ -154,7 +154,7 @@ fn keyed_ceilings_filter_snapshots_and_events_like_their_id_spellings() {
 /// something interns one. A `session:` grant must reach it either way.
 #[test]
 fn session_key_ceiling_reaches_a_session_no_wire_id_names_yet() {
-    use phux_protocol::wire::frame::{ExitPolicy, LaunchMode};
+    use phux_protocol::wire::frame::{CreatePlacement, ExitPolicy, LaunchMode};
 
     let mut world = world();
     let (gamma, gamma_core) = world.state.seed_session("gamma");
@@ -169,6 +169,7 @@ fn session_key_ceiling_reaches_a_session_no_wire_id_names_yet() {
             &world,
             grant,
             Command::ResourceCreate {
+                placement: None,
                 operation: phux_protocol::ids::OperationId::new([6; 16]).unwrap(),
                 session: key,
                 kind: phux_protocol::ids::ResourceKind::Terminal,
@@ -180,6 +181,45 @@ fn session_key_ceiling_reaches_a_session_no_wire_id_names_yet() {
         )
     };
     assert!(create(&scoped(&[&format!("create@session:{key}")])));
+    let placed = Command::ResourceCreate {
+        operation: phux_protocol::ids::OperationId::new([7; 16]).unwrap(),
+        session: key,
+        kind: phux_protocol::ids::ResourceKind::Terminal,
+        launch: None,
+        name: None,
+        on_exit: ExitPolicy::Retain,
+        launch_mode: LaunchMode::Immediate,
+        placement: Some(Box::new(CreatePlacement::NewGroup)),
+    };
+    assert!(!admits_command(
+        &world,
+        &scoped(&[&format!("create@session:{key}")]),
+        placed.clone(),
+    ));
+    assert!(!admits_command(
+        &world,
+        &scoped(&[&format!("organize@session:{key}")]),
+        placed.clone(),
+    ));
+    assert!(admits_command(
+        &world,
+        &scoped(&[&format!("create,organize@session:{key}")]),
+        placed,
+    ));
+    let lookup = Command::GetCreation {
+        operation: phux_protocol::ids::OperationId::new([8; 16]).unwrap(),
+        session: key,
+    };
+    assert!(admits_command(
+        &world,
+        &scoped(&[&format!("inventory@session:{key}")]),
+        lookup.clone(),
+    ));
+    assert!(!admits_command(
+        &world,
+        &scoped(&[&format!("inventory@session:{}", world.org.session)]),
+        lookup,
+    ));
     assert!(!create(&scoped(&[&format!(
         "create@session:{}",
         world.org.session

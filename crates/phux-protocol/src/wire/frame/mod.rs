@@ -291,8 +291,8 @@ pub use kind::FrameKind;
 pub use metadata_keys::*;
 pub use org::{
     ActivationInfo, ArrangementDoc, ArrangementGroup, ArrangementNode, ArrangementOwner,
-    ArrangementValue, Committed, Delegation, EntryRef, EntryTarget, ExecState, ExitPolicy,
-    LaunchMode, LaunchSpec, LiveTarget, MAX_ARRANGEMENT_BYTES, MAX_ARRANGEMENT_DEPTH,
+    ArrangementValue, Committed, CreatePlacement, Delegation, EntryRef, EntryTarget, ExecState,
+    ExitPolicy, LaunchMode, LaunchSpec, LiveTarget, MAX_ARRANGEMENT_BYTES, MAX_ARRANGEMENT_DEPTH,
     MAX_CREDENTIAL_ID_BYTES, MAX_LAUNCH_LIST, MAX_LAUNCH_RESTORE_BYTES, MAX_ORG_ATTRS,
     MAX_ORG_BATCH, MAX_ORG_CURSOR_BYTES, MAX_ORG_NAME_BYTES, MAX_SOCKET_PATH_BYTES, MoveItem,
     OrgFilter, OrganizationPage, Outcome, RecordRevision, Refusal, ResourceRecord, SessionLifetime,

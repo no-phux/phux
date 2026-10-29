@@ -69,10 +69,15 @@ phux spawn --retain=600 -- make test
 | `-- COMMAND` | Runs a command instead of your shell. |
 | `-c DIR` | Sets the working directory. |
 | `--target PANE` | Places the new pane beside an existing one. |
-| `--split horizontal` / `vertical` | Beside the target (the default), or below it. Needs `--target`. |
+| `--split horizontal` / `vertical` | For `spawn` and `launch`, `horizontal` places the new pane to the right (the default); `vertical` stacks it below. Needs `--target`. |
 | `--ratio F` | The fraction of the split the target keeps. Needs `--target`. |
 | `--retain=SECS` | Keeps the exit status and last screen readable after the process exits. |
 | `--idempotency-key HEX32` | Makes a retry return the first pane instead of spawning another. |
+
+Existing-pane edits (`insert-pane` and `mv`) instead name the divider:
+`horizontal` stacks panes and `vertical` places them side by side. These
+existing spellings are retained for compatibility; check the command's help
+rather than transferring a split direction between the two command groups.
 
 A pane normally disappears when its process exits. `--retain` keeps it
 around for `phux resource show` and `phux resource wait` until the time runs
