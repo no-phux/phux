@@ -186,9 +186,11 @@ fn owner_alive(orphan: &Orphan) -> bool {
     if !process_exists(orphan.server_pid) {
         return false;
     }
-    // An unreadable start time fails toward "alive". A live server whose
-    // start time we could not record, or cannot read now, must not have
-    // its sidecars reaped by another server.
+    // An unreadable start time fails toward "alive". An empty recorded
+    // start time is accepted on purpose: the owner pid was alive when the
+    // pidfile was written, but its start time could not be read. While
+    // that pid still exists the reap is skipped. A reused pid whose start
+    // time is readable and different is not the owner.
     match process_start_time(orphan.server_pid) {
         Some(_) if orphan.server_start_time.is_empty() => true,
         Some(current) => current == orphan.server_start_time,
@@ -228,6 +230,12 @@ fn read_pidfiles(state_dir: &Path) -> Vec<Orphan> {
         };
         for file in files.flatten() {
             let name = file.file_name();
+            let label = name.to_string_lossy();
+            // A killed server can leave the temp file from `write_pidfile`.
+            if label.ends_with(".pid.tmp") {
+                let _ = std::fs::remove_file(file.path());
+                continue;
+            }
             if !Path::new(&name)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("pid"))
@@ -370,6 +378,17 @@ pub(super) fn process_exists(pid: i32) -> bool {
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// `true` when `pgid` still has a member. `killpg(pgid, 0)` returns
+/// `ESRCH` once the group is empty. `EPERM` still counts as present.
+pub(super) fn group_exists(pgid: i32) -> bool {
+    if pgid <= 1 {
+        return false;
+    }
+    // SAFETY: signal 0 does not deliver a signal. It only probes the group.
+    let rc = unsafe { libc::killpg(pgid, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
 /// Signal `pgid`, never this process's own group and never `0` or `1`.
 pub(super) fn signal_group(pgid: i32, signal: i32) {
     if pgid <= 1 {
@@ -475,6 +494,10 @@ fn macos_start_time(pid: i32) -> Option<String> {
 }
 
 /// Linux: `/proc/sys/kernel/random/boot_id`. macOS: `kern.boottime`.
+///
+/// `kern.boottime` follows the wall clock, so setting the clock changes
+/// the id. [`boot_is_stale`] then skips the reap instead of signaling.
+/// That is fail-safe: a shifted clock does not kill a live group.
 fn current_boot_id() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
@@ -493,6 +516,8 @@ fn current_boot_id() -> Option<String> {
     }
 }
 
+/// `kern.boottime` moves when the wall clock is set. Callers treat a
+/// mismatch as a different boot and skip the reap.
 #[cfg(target_os = "macos")]
 fn macos_boot_time() -> Option<String> {
     let mut mib = [libc::CTL_KERN, libc::KERN_BOOTTIME];

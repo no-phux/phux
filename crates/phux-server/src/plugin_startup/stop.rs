@@ -9,8 +9,13 @@ use super::spawn::GroupChild;
 /// How long a sidecar has to exit after `SIGTERM` before the group is killed.
 pub(super) const STOP_GRACE: Duration = Duration::from_secs(5);
 
-/// Signal `children` in parallel and wait until they are gone or the grace
-/// plus a short reap has elapsed.
+/// Signal `children` in parallel and wait until every group is empty or
+/// the grace has elapsed.
+///
+/// The deadline stays open after the leader exits. A grandchild that is
+/// still handling `SIGTERM` keeps `killpg(pgid, 0)` from returning
+/// `ESRCH`, so it gets the rest of the shared grace. Survivors are
+/// `SIGKILL`ed only once that deadline has passed.
 pub(super) async fn stop_children(children: &mut [GroupChild]) {
     if children.is_empty() {
         return;
@@ -18,24 +23,25 @@ pub(super) async fn stop_children(children: &mut [GroupChild]) {
     for child in children.iter() {
         child.signal(libc::SIGTERM);
     }
-    wait_until(STOP_GRACE, children).await;
-    // The leader may already have honored `SIGTERM`. A grandchild that
-    // ignores `SIGTERM` is still in the group. `SIGKILL` the group before
-    // dropping the pidfile, or that grandchild is left with nothing for
-    // the next start to reap.
+    wait_until_groups_empty(STOP_GRACE, children).await;
     for child in children.iter() {
-        child.signal(libc::SIGKILL);
+        if child.group_exists() {
+            child.signal(libc::SIGKILL);
+        }
     }
-    wait_until(Duration::from_secs(2), children).await;
+    wait_until_groups_empty(Duration::from_secs(2), children).await;
     for child in children.iter() {
         let _ = std::fs::remove_file(&child.pidfile);
     }
 }
 
-async fn wait_until(limit: Duration, children: &mut [GroupChild]) {
+async fn wait_until_groups_empty(limit: Duration, children: &mut [GroupChild]) {
     let deadline = Instant::now() + limit;
     while Instant::now() < deadline {
-        if all_reaped(children) {
+        // Reap exited leaders so a zombie does not keep the group alive
+        // after every real member has gone.
+        let _ = all_reaped(children);
+        if children.iter().all(|child| !child.group_exists()) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

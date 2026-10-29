@@ -530,4 +530,80 @@ mod tests {
             task.await.unwrap();
         });
     }
+
+    /// A fired exit watch whose first `try_wait` misses the zombie must be
+    /// polled again on the one-second fallback. That only happens because
+    /// the watch stores `fired` before it notifies.
+    #[test]
+    fn fired_watch_is_polled_again_when_the_first_wait_misses() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            tokio::time::pause();
+            let tmp = tempfile::tempdir().unwrap();
+            let root_dir = tmp.path().join("plugin");
+            std::fs::create_dir_all(&root_dir).unwrap();
+            let run_log = tmp.path().join("plugin-runs.jsonl");
+            let root = CancellationToken::new();
+            let (_tx, mut rx) = mpsc::unbounded_channel();
+            let mut supervisor = Supervisor {
+                root: root.clone(),
+                socket: tmp.path().join("phux.sock"),
+                state_dir: tmp.path().join("state"),
+                run_log: run_log.clone(),
+                reload: None,
+                catalog: Vec::new(),
+                slots: Vec::new(),
+                paused: false,
+                logged_skips: BTreeSet::new(),
+                origin: Instant::now(),
+                rotate_at: Instant::now() + CHECK_INTERVAL,
+                blocked: false,
+                notify: Arc::new(Notify::new()),
+            };
+            supervisor.start_fresh(crate::plugin_startup::StartupSpec {
+                plugin_id: "plug".to_owned(),
+                plugin_name: "Plug".to_owned(),
+                plugin_version: "0.1.0".to_owned(),
+                startup_id: "web".to_owned(),
+                command: vec!["/bin/true".to_owned()],
+                plugin_root: root_dir,
+                manifest_hash: 1,
+            });
+            let child = supervisor.slots[0].child.as_ref().unwrap();
+            let pid = child.pid().expect("sidecar pid");
+            assert!(
+                child.has_exit_watch(),
+                "the exit watch must be armed before it fires"
+            );
+            crate::plugin_startup::spawn::DEFER_REAP_PID.store(pid, Ordering::Relaxed);
+            let task = tokio::task::spawn_local(async move {
+                supervisor.serve(&mut rx).await;
+            });
+            for _ in 0..100 {
+                tokio::task::yield_now().await;
+            }
+            let early = std::fs::read_to_string(&run_log).unwrap_or_default();
+            assert!(
+                !early.contains("exited 0"),
+                "the missed wait must not count as reaped yet: {early}"
+            );
+            tokio::time::advance(std::time::Duration::from_millis(1500)).await;
+            for _ in 0..50 {
+                tokio::task::yield_now().await;
+            }
+            let later = std::fs::read_to_string(&run_log).unwrap_or_default();
+            assert!(
+                later.contains("exited 0"),
+                "the 1s fallback should observe the exit after the watch fired: {later}"
+            );
+            tokio::time::resume();
+            root.cancel();
+            task.await.unwrap();
+            crate::plugin_startup::spawn::DEFER_REAP_PID.store(0, Ordering::Relaxed);
+        });
+    }
 }

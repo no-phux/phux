@@ -66,8 +66,18 @@ impl GroupChild {
         if matches!(self.exit, ChildExit::Finished(_)) {
             return true;
         }
+        #[cfg(test)]
+        let raw_pid = self.pid();
         match self.child.try_wait() {
             Ok(Some(status)) => {
+                // One simulated gap: the watch can fire before `try_wait`
+                // observes the exit. The status stays cached, so the next
+                // poll still sees it. The pid is captured before `try_wait`
+                // because `Child::id` is cleared once the exit is reaped.
+                #[cfg(test)]
+                if raw_pid.is_some_and(take_deferred_reap) {
+                    return false;
+                }
                 self.exit = ChildExit::Finished(status.code());
                 true
             }
@@ -92,6 +102,16 @@ impl GroupChild {
         reap::signal_group(self.pgid, signal);
     }
 
+    /// `true` while `killpg(pgid, 0)` does not return `ESRCH`.
+    pub(super) fn group_exists(&self) -> bool {
+        reap::group_exists(self.pgid)
+    }
+
+    #[cfg(test)]
+    pub(super) fn pid(&self) -> Option<i32> {
+        self.child.id().and_then(|pid| i32::try_from(pid).ok())
+    }
+
     /// `false` when exit notification could not be armed, or the watch has
     /// already fired. A fired watch is spent: `try_wait` can still return
     /// `None` in the gap before the process is a zombie, and the one-shot
@@ -100,6 +120,24 @@ impl GroupChild {
     pub(super) fn has_exit_watch(&self) -> bool {
         self.watch.as_ref().is_some_and(|watch| !watch.fired())
     }
+}
+
+/// Test hook: the next `try_wait` that observes `pid` has exited reports
+/// "still running" once. The status stays cached on the `Child`.
+#[cfg(test)]
+pub(super) static DEFER_REAP_PID: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(0);
+
+#[cfg(test)]
+fn take_deferred_reap(pid: i32) -> bool {
+    DEFER_REAP_PID
+        .compare_exchange(
+            pid,
+            0,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok()
 }
 
 impl Drop for GroupChild {
@@ -467,12 +505,24 @@ mod tests {
                 &notify,
             )
             .unwrap();
-            let pid = i32::try_from(child.child.id().unwrap()).unwrap();
-            tokio::task::yield_now().await;
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            assert!(
-                crate::plugin_startup::reap::process_exists(pid),
-                "a child of pid 1 must not be killed by the pdeathsig race check"
+            let pid = child.pid().expect("child pid");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut state = String::new();
+            while std::time::Instant::now() < deadline {
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+                state = stat
+                    .rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next())
+                    .unwrap_or("")
+                    .to_owned();
+                if state == "S" || state == "Z" {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(
+                state, "S",
+                "a child of pid 1 must still be sleeping; stat state {state:?} (Z means the pdeathsig race check killed it)"
             );
             drop(child);
         });

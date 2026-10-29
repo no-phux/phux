@@ -515,6 +515,82 @@ fn stop_kills_a_term_ignoring_grandchild() {
     });
 }
 
+/// The leader exits on `SIGTERM` immediately. One grandchild handles
+/// `SIGTERM` and must be allowed to finish; another ignores it and is
+/// killed only after the shared deadline. The stop stays inside that
+/// deadline.
+#[test]
+fn stop_grace_covers_a_grandchild_after_the_leader_exits() {
+    let _timing = timing_lock();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let honor = tmp.path().join("honor");
+        let ignore = tmp.path().join("ignore");
+        std::fs::create_dir_all(&honor).unwrap();
+        std::fs::create_dir_all(&ignore).unwrap();
+        let honor_cmd = sh(
+            &honor,
+            "trap 'exit 0' TERM\n\
+             (\n\
+             trap 'sleep 1; touch done; exit 0' TERM\n\
+             while :; do :; done\n\
+             ) &\n\
+             echo $! > grand\n\
+             echo $$ > leader\n\
+             wait\n",
+        );
+        let ignore_cmd = sh(
+            &ignore,
+            "trap 'exit 0' TERM\n\
+             (trap '' TERM; sleep 1000) &\n\
+             echo $! > grand\n\
+             echo $$ > leader\n\
+             wait\n",
+        );
+        let server = Running::boot(
+            StartupCatalog {
+                admitted: vec![
+                    spec(&honor, "plug.honor", "web", honor_cmd, 1),
+                    spec(&ignore, "plug.ignore", "web", ignore_cmd, 2),
+                ],
+                skipped_cap: Vec::new(),
+            },
+            None,
+            None,
+        );
+        assert!(
+            wait_until(Duration::from_secs(10), || {
+                honor.join("grand").is_file() && ignore.join("grand").is_file()
+            })
+            .await
+        );
+        let ignore_grand: i32 = std::fs::read_to_string(ignore.join("grand"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let started = Instant::now();
+        server.stop().await;
+        let elapsed = started.elapsed();
+        assert!(
+            honor.join("done").is_file(),
+            "a TERM-honoring grandchild must finish during the shared grace"
+        );
+        assert!(
+            !alive(ignore_grand),
+            "a TERM-ignoring grandchild must be killed after the deadline"
+        );
+        assert!(
+            elapsed > Duration::from_secs(4),
+            "shared grace was shorter than 4s: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "stop took {elapsed:?}; the shared deadline is 5s"
+        );
+    });
+}
+
 #[test]
 fn exit_zero_is_not_restarted() {
     let _timing = timing_lock();

@@ -42,7 +42,7 @@ impl Drop for ExitWatch {
 /// failure is logged; it is not discarded quietly.
 pub(super) fn watch_exit(pid: i32, notify: &Arc<Notify>) -> Option<ExitWatch> {
     let Some(fd) = arm_fd(pid) else {
-        tracing::debug!(pid, "startup: could not arm an exit watch");
+        log_watch_failure(pid, None);
         return None;
     };
     let fired = Arc::new(AtomicBool::new(false));
@@ -54,11 +54,7 @@ pub(super) fn watch_exit(pid: i32, notify: &Arc<Notify>) -> Option<ExitWatch> {
     let async_fd = match unsafe { AsyncFd::register_with_interest(fd, Interest::READABLE) } {
         Ok(async_fd) => async_fd,
         Err(err) => {
-            tracing::warn!(
-                pid,
-                error = %err,
-                "startup: exit watch registration failed"
-            );
+            log_watch_failure(pid, Some(&err));
             return None;
         }
     };
@@ -73,6 +69,20 @@ pub(super) fn watch_exit(pid: i32, notify: &Arc<Notify>) -> Option<ExitWatch> {
         abort: task.abort_handle(),
         fired,
     })
+}
+
+/// One line per process. A sidecar that restarts must not warn on every
+/// attempt when the kqueue or pidfd registration keeps failing.
+fn log_watch_failure(pid: i32, err: Option<&dyn std::fmt::Display>) {
+    static LOGGED: AtomicBool = AtomicBool::new(false);
+    if LOGGED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    if let Some(err) = err {
+        tracing::warn!(pid, error = %err, "startup: exit watch registration failed");
+    } else {
+        tracing::debug!(pid, "startup: could not arm an exit watch");
+    }
 }
 
 fn set_nonblock(fd: i32) -> Option<()> {

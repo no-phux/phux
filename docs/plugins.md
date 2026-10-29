@@ -251,7 +251,9 @@ or after the recorded spawn tick (a grandchild left behind when the
 leader honored `SIGTERM`, including one forked in the same 10ms tick).
 A live pid that started at a different time is left alone. A pidfile
 from a different boot is stale and is not signaled, because start-time
-ticks are not comparable across reboots. The pidfile is named
+ticks are not comparable across reboots. On macOS the boot id is
+`kern.boottime`, which moves when the wall clock is set. A changed id
+skips the reap instead of signaling a group. The pidfile is named
 `<startup-id>.<server-pid>.pid` so two servers sharing a state
 directory do not overwrite each other. Pidfiles for sidecars that have
 already exited are removed.
