@@ -141,8 +141,8 @@ Delegated grants are
 [ADR-0163](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0163-actors-and-delegated-agent-grants.md).
 Agents coordinate through phux per
 [ADR-0187](https://github.com/no-phux/phux/blob/d21db2e345aeaff43a681b3a04dfd43f2cc082ca/docs/adr/0187-agents-coordinate-through-phux.md).
-The org's one home keeper, and the cross-host work that waits until after
-launch, is the [substrate decision](./substrate.md). A multi-host
+Single-writer work authority and delegation limits are the
+[substrate decision](./substrate.md). A multi-host
 coordinator, an autonomous Lead, and a durable grant ledger are not
 shipping contracts. Do not infer them from historical design names.
 

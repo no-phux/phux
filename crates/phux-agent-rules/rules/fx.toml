@@ -1,0 +1,7 @@
+# Identify the fx terminal executable without guessing at its screen state.
+# fx publishes no stable title/screen contract for busy or permission states;
+# an unverified blocked match would falsely solicit human intervention.
+# Explicit agent status and ACP events remain authoritative.
+kind = "fx"
+name = "fx"
+binaries = ["fx"]

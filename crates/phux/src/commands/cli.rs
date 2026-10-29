@@ -220,7 +220,8 @@ pub(crate) enum Command {
               default_missing = "0")]
         loops: Option<u32>,
 
-        /// Split axis for the new pane.
+        /// Placement axis: `horizontal` puts the new pane to the right;
+        /// `vertical` puts it below.
         #[usage(long, value_enum, default = "horizontal")]
         split: SpawnSplit,
 
