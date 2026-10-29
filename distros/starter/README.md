@@ -1,8 +1,8 @@
 # starter
 
 A config layer that enables the example plugins under
-[`examples/plugins`](../../examples/plugins). Everything else the old
-"herdr" starter distro used to set is now the shipped default, so a bare
+[`examples/plugins`](../../examples/plugins). Everything else this layer
+used to set is now the shipped default, so a bare
 `phux` already behaves that way; what remains here is the one thing an
 embedded default cannot express, a `[[plugins-append]]` list with relative
 manifest paths. Install with `phux config init --distro starter`.
@@ -18,7 +18,7 @@ extends = ["/absolute/path/to/distros/starter/starter.toml"]
 ```
 
 followed by the fully-commented shipped defaults. Nothing is copied out
-of herdr: the layer file stays authoritative, so pulling a newer phux
+of the layer file: it stays authoritative, so pulling a newer phux
 checkout updates it for every config that extends it.
 
 Already have a config? Add the `extends` line yourself (top-level, any
@@ -28,10 +28,12 @@ The bundled name `starter` resolves through, in order: `$PHUX_DISTROS_DIR`,
 `$XDG_DATA_HOME/phux/distros` (default `~/.local/share/phux/distros`),
 then the repo checkout's `distros/` directory. A path (`--distro
 ./distros/starter` or `--distro ./distros/starter/starter.toml`) works from
-anywhere. `--distro herdr` still resolves as an alias of `starter`.
-Configs that already `extends` the old `distros/herdr/herdr.toml` path
-keep loading: that file remains as a compatibility stub, and the loader
-rewrites a missing herdr path to starter when the new file is there.
+anywhere. `--distro herdr` still resolves as an alias of `starter`
+for people who know herdr's keys and workflow. It is not herdr; herdr
+is a separate, independent project. Configs that `extends`
+`distros/herdr/herdr.toml` keep loading: that file remains as a
+compatibility stub, and the loader rewrites a missing herdr path to
+starter when the starter file is there.
 
 ## What you get
 

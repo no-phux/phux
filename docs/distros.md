@@ -44,7 +44,7 @@ you start another conversation. Mission state and Crew homes survive switches.
 | --- | --- |
 | `starter` | Workspace autosave/restore, agent launch integrations, usage hooks. |
 | `crew` | Starter plus a lead-agent home, ship/scout/pulse skills, fleet board and Crew palette entries. |
-| `herdr` | Compatibility name for the starter layer. |
+| `herdr` | Alias of `starter` for people who know herdr's keys and workflow. herdr is a separate, independent project. |
 
 [Crew's guide](../distros/crew/README.md) covers launching a lead, choosing a
 harness, personal policy, recovery and the limits of unattended supervision.
