@@ -1,18 +1,8 @@
 # Build on phux
 
 One page for a program that drives a phux server, or reports status into a
-pane. Each entry points at the page that specifies that surface. A promise
-here is quoted from that page.
-
-The builder index checked into this repository is [llms.txt](./llms.txt).
-[https://docs.phux.sh/llms.txt](https://docs.phux.sh/llms.txt) is a different
-file, kept in `no-phux/website` at `public/llms.txt`. Nothing in this
-repository generates that hosted file.
-[https://docs.phux.sh/llms-full.txt](https://docs.phux.sh/llms-full.txt) is
-every hosted page.
-
-<!-- TODO: the page titled "Any program can report status" is not on main.
-     The OSC 7501 entry below links program-protocol.md until that page exists. -->
+pane. Each entry links the page that specifies it; any promise here is
+quoted from there.
 
 ## Entry points
 
@@ -27,11 +17,13 @@ every hosted page.
 - [Wire protocol](./protocol.md). Length-prefixed binary frames.
   [Compatibility](./compatibility.md) is the 1.x rule.
   [`wire-schema.json`](./spec/wire-schema.json) is generated from the codec.
+<!-- TODO: the page titled "Any program can report status" is not on main.
+     The OSC 7501 entry below links program-protocol.md until that page exists. -->
 - [OSC 7501](./program-protocol.md). A program writes one escape sequence.
   It needs no phux library and no socket.
 - [Plugins](./plugins.md). A directory with a `phux-plugin.toml` manifest.
 - [Agent integrations](./agents.md#agent-setup). The table there includes
-  Claude Code, pi, Oh My Pi, OpenCode, and Grok, and any MCP client.
+  Claude Code, pi, Oh My Pi, OpenCode, Grok, and any MCP client.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)
   and [embedding](./embedding.md). Read these for what a library would be,
   and for the SDK status below.
@@ -55,16 +47,9 @@ reads as `idle`, never `blocked`. `phux agent explain` prints the evidence
 for one pane.
 
 [Precedence](./program-sequences.md#precedence) writes that order as a
-numbered list. While a pane has any OSC 7501 record and no live session,
-that page says phux ignores the hook-report level and the foreground
-program and the screen.
-`drain_state` returns before the detector writes when program-status
-metadata is set and no live session holds the pane
-([`connections/agent_state.rs`](../crates/phux-server/src/runtime/connections/agent_state.rs)).
-`EvidenceSource` ranks `Screen` at 0, below `Process`, `Hook`, and `Stream`
-([`agent_state.rs`](../crates/phux-server/src/agent_state.rs)). A
-declaration sits above that enum. `Process` has no producer. OSC 7501 is
-not a member of the enum.
+numbered list. [Precedence](./program-sequences.md#precedence) says that
+while a pane has an OSC 7501 record and no live session, phux ignores
+hooks, the foreground program, and the screen.
 
 It has not been measured on a live Claude Code, Codex, or OpenCode session,
 with or without an integration installed.
@@ -96,7 +81,8 @@ directory, or a tarball ([Managing plugins](./plugins.md#managing-plugins)).
 
 ## Version rules
 
-Two written rules. The product version is a separate fact.
+The wire protocol and `--json` output each have a written compatibility
+rule. The product version follows its own.
 
 [Compatibility](./compatibility.md):
 
@@ -136,11 +122,11 @@ shows a pane (`@7`). The generated help says omitting the target watches
 the most-recently-focused session ([`phux watch`](./reference/cli.md#phux-watch)).
 Neither page documents a fleet-wide subscription.
 
-[Run without a terminal](./agent-quickstart.md#run-without-a-terminal) says
-`send-keys`, `paste`, `detach`, `kill`, and `attach` do not accept `--json`.
-The generated reference lists `--json` on
-[`send-keys`](./reference/cli.md#phux-send-keys),
-[`paste`](./reference/cli.md#phux-paste),
-[`detach`](./reference/cli.md#phux-detach), and
-[`kill`](./reference/cli.md#phux-kill).
-[`attach`](./reference/cli.md#phux-attach) does not list `--json`.
+## llms.txt
+
+The builder index checked into this repository is [llms.txt](./llms.txt).
+[https://docs.phux.sh/llms.txt](https://docs.phux.sh/llms.txt) is a different
+file, kept in `no-phux/website` at `public/llms.txt`. Nothing in this
+repository generates that hosted file.
+[https://docs.phux.sh/llms-full.txt](https://docs.phux.sh/llms-full.txt) is
+every hosted page.

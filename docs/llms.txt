@@ -23,7 +23,7 @@ Start with [Build on phux](./building.md).
 - [OSC 7501](./program-protocol.md). One escape sequence, no phux library.
 - [Plugins](./plugins.md). A `phux-plugin.toml` manifest.
 - [Agent integrations](./agents.md#agent-setup). Includes Claude Code, pi,
-  Oh My Pi, OpenCode, and Grok, and any MCP client.
+  Oh My Pi, OpenCode, Grok, and any MCP client.
 - [Calling phux from a program](./agent-quickstart.md#call-phux-from-a-program)
   and [embedding](./embedding.md).
 

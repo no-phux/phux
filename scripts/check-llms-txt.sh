@@ -188,7 +188,9 @@ check_tree() {
     require_phrase "$hub" 'There is no JSON socket.'
     require_phrase "$hub" 'There is no example application.'
     require_phrase "$hub" 'There is no plugin index.'
-    require_phrase "$hub" 'Any program can report status'
+    # When the "Any program can report status" page lands (B7), require its
+    # link from the hub's Entry points instead of the program-protocol.md
+    # target. The TODO in docs/building.md is not that check.
     require_phrase "$index" 'evidence-ranked; screen is the floor'
     require_phrase "$index" 'There is no public SDK.'
     require_phrase "$index" 'There is no JSON socket.'
