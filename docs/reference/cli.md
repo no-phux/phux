@@ -2530,7 +2530,8 @@ Flags:
                            carries one JSON error object.
       --target <TARGET>    Existing local pane beside which to place the
                            launched pane.
-      --split <SPLIT>      Split axis for explicit placement (requires
+      --split <SPLIT>      Placement axis: `horizontal` puts the new pane to the
+                           right; `vertical` puts it below (requires
                            `--target`).
                            [possible values: horizontal, h, vertical, v]
                            (default: horizontal)
@@ -3764,7 +3765,8 @@ Flags:
                            declares; 0 plays the raw timeline.
       --loop [N]           Repeat the recording. Bare `--loop` repeats until the
                            pane is killed; `--loop N` plays it N times.
-      --split <SPLIT>      Split axis for the new pane.
+      --split <SPLIT>      Placement axis: `horizontal` puts the new pane to the
+                           right; `vertical` puts it below.
                            [possible values: horizontal, h, vertical, v]
                            (default: horizontal)
       --ratio <RATIO>      Fraction of the split retained by TARGET.
@@ -5331,8 +5333,9 @@ Flags:
                                  satellite`, on a server running `--hub`).
       --target <TARGET>          Existing local pane beside which to place the
                                  new pane.
-      --split <SPLIT>            Split axis for explicit placement (requires
-                                 `--target`).
+      --split <SPLIT>            Placement axis: `horizontal` puts the new pane
+                                 to the right; `vertical` puts it below
+                                 (requires `--target`).
                                  [possible values: horizontal, h, vertical, v]
                                  (default: horizontal)
       --ratio <RATIO>            Fraction of the split retained by TARGET

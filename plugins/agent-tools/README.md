@@ -1,10 +1,11 @@
-# phux Agent Tools Demo Plugin
+# Agent tools
 
-A local plugin package for trying the agentic plugin surface without touching
-your real `~/.config/phux/config.toml`. From the repository root:
+Agent launch templates, pane identity wrappers, and integration tools used by
+the starter distro. To inspect the plugin without changing your own config,
+run these commands from the repository root:
 
 ```sh
-export XDG_CONFIG_HOME="$PWD/examples/plugins/agent-tools/config"
+export XDG_CONFIG_HOME="$PWD/plugins/agent-tools/config"
 
 cargo run -q -p phux --bin phux -- config plugins          # com.phux.demo.agent-tools 0.1.0 (enabled)
 cargo run -q -p phux --bin phux -- config run com.phux.demo.agent-tools inspect
@@ -53,7 +54,7 @@ and `phux archive import` resumes it through the template's `resume_args`.
   checked-in template version.
 - `detect-agents` probes nothing unless `PHUX_AGENT_TOOLS_DETECT=1`;
   `PHUX_AGENT_TOOLS_PATH` overrides the search path for tests.
-- `list-integrations` and `validate-integrations` are pure fixture checks.
+- `list-integrations` and `validate-integrations` read the launch templates.
 - `smoke-integrations` exercises validate, list, link, status, fake-CLI
   detection, and unlink in a temporary state directory.
 

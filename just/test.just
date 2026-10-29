@@ -174,6 +174,14 @@ agents-fleet-smoke: worktree-claim
     bash examples/agents/tests/placed-fleet-smoke.sh
 
 
+# Also exercised by automation_e2e from CI's same-checkout test archive.
+[group('test')]
+[doc('Build the checkout CLI and execute every introductory agent example.')]
+examples-smoke: worktree-claim && (worktree-verify "examples-smoke")
+    cargo build --locked -p phux --bin phux
+    PHUX="{{justfile_directory()}}/target/debug/phux" bash scripts/examples-smoke.sh
+
+
 # Real isolated server dogfood for placement/layout/watch/ask with shell panes;
 # no external agent binary is needed. Set PHUX_DOGFOOD_REAL_AGENTS=1 to also
 # spawn installed claude/codex binaries on the private server.
@@ -186,13 +194,13 @@ agents-fleet-live: worktree-claim
 
 
 # Run the checked-in plugin package through the same discover/validate/run
-# sequence documented in examples/plugins/agent-tools/README.md.
+# sequence documented in plugins/agent-tools/README.md.
 [group('test')]
 [doc('Run the checked-in plugin package through discover, validate, and run.')]
 plugin-demo:
     #!/usr/bin/env bash
     set -euo pipefail
-    export XDG_CONFIG_HOME="{{justfile_directory()}}/examples/plugins/agent-tools/config"
+    export XDG_CONFIG_HOME="{{justfile_directory()}}/plugins/agent-tools/config"
     demo() { cargo run -q -p phux --bin phux -- "$@"; }
     demo config plugins
     demo config plugins --json

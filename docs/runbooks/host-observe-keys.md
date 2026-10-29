@@ -1,14 +1,14 @@
 # Host-scoped read keys
 
 Give each CI runner host a certificate that can list sessions on this
-server and cannot read a terminal or type into one. Give jamesponwith's
+server and cannot read a terminal or type into one. Give a collaborator's
 device a certificate that can list the same sessions and can read only
-the sessions Patrick opts in, one session at a time. Neither certificate
+the sessions the owner opts in, one session at a time. Neither certificate
 can type. The certificate is the existing `phux workload add-key`
 enrollment. There is no separate grant type.
 
 Mint these on the serving host, as its owner. One certificate per runner
-host, and one for jamesponwith's device. `ci-runner-1` is a placeholder.
+host, and one for each collaborator's device. `ci-runner-1` is a placeholder.
 
 ## What the scope is
 
@@ -18,7 +18,7 @@ A CI runner lists this host and nothing more:
 --scope inventory@host
 ```
 
-jamesponwith lists this host, and reads each session Patrick chooses to
+The collaborator lists this host, and reads each session the owner chooses to
 share. Each session is opted in explicitly, as its own scope:
 
 ```sh
@@ -52,14 +52,14 @@ terminals (`GET_SCREEN`), and only those. Do not add `input`, `create`,
 | Holder | `--principal` | `--expires-in` |
 | --- | --- | --- |
 | CI runner host `ci-runner-1` | `automation` | `604800` (7 days) |
-| jamesponwith's device | `human` | `2592000` (30 days) |
+| Collaborator's device | `human` | `2592000` (30 days) |
 
 Every `add-key` below passes `--expires-in`. The flag's default is 90
 days (`7776000` seconds), longer than either holder should keep a
 certificate, which is why the lifetime is written out.
 
 Record the printed `sha256:` credential id next to the holder
-(`ci-runner-1`, jamesponwith's device) in the operator's own notes. The
+(`ci-runner-1`, the collaborator's device) in the operator's own notes. The
 registry does not store that label.
 
 `phux pair --expires` is a different knob, on the pairing bearer, and it
@@ -94,8 +94,8 @@ phux workload add-key \
   < /path/to/ci-runner-1.csr
 ```
 
-jamesponwith's device, 30 days, human. `KEY` is one session's full key.
-Repeat the `observe@session:` line for each session Patrick shares:
+Collaborator's device, 30 days, human. `KEY` is one session's full key.
+Repeat the `observe@session:` line for each session the owner shares:
 
 ```sh
 phux workload add-key \
@@ -105,7 +105,7 @@ phux workload add-key \
   --principal human \
   --json \
   --cert-stdout \
-  < /path/to/jamesponwith.csr
+  < /path/to/collaborator.csr
 ```
 
 Stdout is one JSON document. `credential_id` is the `sha256:` id.
@@ -163,7 +163,7 @@ phux workload add-key \
   < /path/to/ci-runner-1-next.csr
 ```
 
-jamesponwith, 30 days, with each session still shared named again:
+Collaborator, 30 days, with each session still shared named again:
 
 ```sh
 phux workload add-key \
@@ -174,7 +174,7 @@ phux workload add-key \
   --replace sha256:PREVIOUS \
   --json \
   --cert-stdout \
-  < /path/to/jamesponwith-next.csr
+  < /path/to/collaborator-next.csr
 ```
 
 Before distributing the new chain, require `replaced: true` in the JSON
