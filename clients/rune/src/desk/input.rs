@@ -108,6 +108,7 @@ impl Desk {
             Shortcut::ScrollBottom => self.scroll(Scroll::Bottom),
             Shortcut::Palette => self.toggle_palette(),
             Shortcut::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
+            Shortcut::JumpToAttention => self.jump_to_attention(),
         }
     }
 

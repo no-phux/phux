@@ -82,6 +82,8 @@ pub struct Desk {
     pub palette_query: rune::TextEdit,
     pub palette_picked: usize,
     pub sidebar_open: bool,
+    /// What every terminal is doing, for the sidebar's marks.
+    pub activities: crate::activity::Activities,
     /// The input method's composition at the terminal cursor.
     pub preedit: Option<String>,
     /// The blink phase a blinking cursor shows now, and when typing last
@@ -127,6 +129,7 @@ impl Desk {
             palette_picked: 0,
             sidebar_open: true,
             preedit: None,
+            activities: crate::activity::Activities::default(),
             blink_on: true,
             blink_since: 0.0,
             clock: 0.0,
@@ -199,6 +202,13 @@ impl Desk {
     }
 
     fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
+        let marked = self
+            .activities
+            .apply(&event, self.shown.as_ref().map(|s| &s.terminal));
+        marked | self.apply_view(client, event, tx)
+    }
+
+    fn apply_view(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
         let shown = |id: &ResourceId| self.shown.as_ref().is_some_and(|s| &s.terminal == id);
         match event {
             Event::TerminalChanged { terminal_id } if shown(&terminal_id) => {
@@ -312,6 +322,7 @@ impl Desk {
             return false;
         };
         self.drop_shown(client);
+        self.activities.seen(&target);
         self.shown = Some(Shown {
             terminal: target,
             view,
@@ -409,6 +420,26 @@ impl Desk {
         let next = (current as isize + step).rem_euclid(panes.len() as isize) as usize;
         let pane = panes[next].clone();
         self.show(pane.terminal_id, &pane.session_name);
+    }
+
+    /// Show the next terminal, after the shown one, that needs a person.
+    pub fn jump_to_attention(&mut self) {
+        let Some(topology) = &self.topology else {
+            return;
+        };
+        let panes = &topology.panes;
+        let start = self
+            .shown
+            .as_ref()
+            .and_then(|s| panes.iter().position(|p| p.terminal_id == s.terminal))
+            .map_or(0, |i| i + 1);
+        let next = (0..panes.len())
+            .map(|k| &panes[(start + k) % panes.len()])
+            .find(|p| self.activities.mark(&p.terminal_id).needs_you())
+            .cloned();
+        if let Some(pane) = next {
+            self.show(pane.terminal_id, &pane.session_name);
+        }
     }
 
     pub fn zoom(&mut self, size: Option<f32>) {

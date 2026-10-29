@@ -34,6 +34,7 @@ pub struct Hit {
 const ACTIONS: &[(Shortcut, &str, &str)] = &[
     (Shortcut::NewTerminal, "New terminal", "⌘T"),
     (Shortcut::NewSession, "New session", "⌘N"),
+    (Shortcut::JumpToAttention, "Jump to what needs you", "⌘J"),
     (Shortcut::NextTerminal, "Next terminal", "⌘]"),
     (Shortcut::PreviousTerminal, "Previous terminal", "⌘["),
     (Shortcut::ToggleSidebar, "Toggle sidebar", "⌘B"),

@@ -7,13 +7,14 @@ use rune::{Color, Cx, El, Family, TextStyle, col, el, row, text};
 use crate::desk::Desk;
 
 mod palette;
+mod sidebar;
 use crate::grid;
 
-const SIDEBAR_W: f32 = 220.0;
+const SIDEBAR_W: f32 = 236.0;
 /// Space between the terminal area's edge and its grid.
 const PAD: f32 = 6.0;
 pub(crate) const LABEL: TextStyle = TextStyle::new(12.0, 400.0);
-const LABEL_STRONG: TextStyle = TextStyle::new(12.0, 600.0);
+pub(crate) const LABEL_STRONG: TextStyle = TextStyle::new(12.0, 600.0);
 pub(crate) const CAPTION: TextStyle = TextStyle::new(11.0, 500.0);
 
 pub(crate) struct Ink {
@@ -69,7 +70,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                     row()
                         .w(SIDEBAR_W + 1.0)
                         .h_full()
-                        .child(sidebar(desk, &p, inset))
+                        .child(sidebar::view(desk, &p, inset))
                         .child(el().w(1.0).h_full().fill(p.separator)),
                 ),
         )
@@ -94,115 +95,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .children(desk.palette_open.then(|| palette::view(desk, &p)))
 }
 
-fn sidebar(desk: &Desk, p: &Ink, inset: f32) -> El {
-    let mut list = col().w_full().gap(2.0).px(8.0);
-    let shown = desk.shown.as_ref().map(|s| &s.terminal);
-    let attached = desk.selected_session_name();
-    if let Some(topology) = &desk.topology {
-        for session in &topology.sessions {
-            let current = attached.as_deref() == Some(session.name.as_str());
-            list = list.child(
-                row()
-                    .key(format!("session-{}", session.id))
-                    .w_full()
-                    .pt(10.0)
-                    .pb(4.0)
-                    .px(6.0)
-                    .gap(6.0)
-                    .items_center()
-                    .child(el().size(6.0, 6.0).radius(3.0).fill(if current {
-                        p.accent
-                    } else {
-                        p.separator
-                    }))
-                    .child(
-                        text(session.name.clone())
-                            .font(CAPTION)
-                            .color(p.dim)
-                            .truncate(),
-                    ),
-            );
-            for pane in topology
-                .panes
-                .iter()
-                .filter(|pane| pane.session_id == session.id)
-            {
-                let selected = shown == Some(&pane.terminal_id);
-                let label = crate::palette::pane_label(pane);
-                let handle = format!("{}", pane.terminal_id);
-                let (id, session_name) = (pane.terminal_id.clone(), pane.session_name.clone());
-                list = list.child(
-                    el().key(format!("pane-{}", pane.terminal_id))
-                        .w_full()
-                        .px(10.0)
-                        .py(6.0)
-                        .radius(6.0)
-                        .fill(if selected {
-                            p.selected
-                        } else {
-                            Color::TRANSPARENT
-                        })
-                        .hover(p.hover)
-                        .cursor(rune::Cursor::Pointer)
-                        .on_press(move |desk: &mut Desk| desk.show(id.clone(), &session_name))
-                        .child(
-                            row()
-                                .w_full()
-                                .gap(6.0)
-                                .items_center()
-                                .child(
-                                    text(label)
-                                        .font(if selected { LABEL_STRONG } else { LABEL })
-                                        .color(p.text)
-                                        .truncate(),
-                                )
-                                .child(el().grow(1.0))
-                                .child(text(handle).font(CAPTION).color(p.dim)),
-                        ),
-                );
-            }
-        }
-    }
-    col()
-        .w(SIDEBAR_W)
-        .h_full()
-        .fill(p.sidebar)
-        .child(el().w_full().h(inset).window_drag())
-        .child(
-            row()
-                .w_full()
-                .px(14.0)
-                .pb(6.0)
-                .items_center()
-                .justify_between()
-                .child(text("phux").font(TextStyle::new(13.0, 700.0)).color(p.text))
-                .child(text("rune alpha").font(CAPTION).color(p.accent)),
-        )
-        .child(
-            col()
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                .scroll(rune::ScrollSpec {
-                    stick_bottom: false,
-                })
-                .child(list),
-        )
-        .child(
-            row()
-                .w_full()
-                .padding(8.0)
-                .gap(6.0)
-                .child(button("New terminal", "new-terminal", p, |d: &mut Desk| {
-                    d.new_terminal()
-                }))
-                .child(button("New session", "new-session", p, |d: &mut Desk| {
-                    d.new_session()
-                })),
-        )
-}
-
-fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {
+pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {
     el().key(key)
         .grow(1.0)
         .py(6.0)

@@ -32,6 +32,7 @@ pub enum Shortcut {
     ScrollBottom,
     Palette,
     ToggleSidebar,
+    JumpToAttention,
 }
 
 pub fn mods(mods: Mods) -> ModSet {
@@ -180,6 +181,7 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
         't' => Shortcut::NewTerminal,
         'k' | 'p' => Shortcut::Palette,
         'b' => Shortcut::ToggleSidebar,
+        'j' => Shortcut::JumpToAttention,
         'n' => Shortcut::NewSession,
         ']' | '}' => Shortcut::NextTerminal,
         '[' | '{' => Shortcut::PreviousTerminal,

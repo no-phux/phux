@@ -3,6 +3,7 @@
 //! One window over the shared client runtime: a sidebar of every session
 //! and terminal the server lists, the selected terminal, and a status line.
 
+mod activity;
 mod desk;
 mod grid;
 mod keys;
