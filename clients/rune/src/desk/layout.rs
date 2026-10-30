@@ -87,8 +87,10 @@ impl Desk {
         };
         let changed = self.layout.as_ref() != Some(&tree);
         // Everything on screen counts as seen, not only the keyboard's pane.
-        for id in leaves(&tree) {
-            self.activities.seen(&id);
+        if self.focused {
+            for id in leaves(&tree) {
+                self.activities.seen(&id);
+            }
         }
         self.layout = Some(tree);
         changed | self.sync_views(client)
@@ -216,7 +218,21 @@ impl Desk {
         new: &ResourceId,
         dir: SplitDir,
     ) {
-        if let Some((session, mut doc)) = self.arrangement(client)
+        let placed = self.arrangement(client).map(|(session, mut doc)| {
+            // Split where the target lives. One no group holds gets its own
+            // tab, so no other tab's tree is overwritten.
+            super::tabs::focus_group(&mut doc, Some(target));
+            let holds = |tree: &LayoutNode| leaves(tree).contains(target);
+            if !doc
+                .active_group()
+                .and_then(|g| g.tree.as_ref())
+                .is_some_and(holds)
+            {
+                doc.add_group(doc.default_group_name(), target.clone());
+            }
+            (session, doc)
+        });
+        if let Some((session, mut doc)) = placed
             && let Some(group) = doc.active_group_mut()
         {
             let tree = group

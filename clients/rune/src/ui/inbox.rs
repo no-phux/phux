@@ -262,10 +262,10 @@ fn empty(ink: &Ink) -> El {
 
 pub fn view(desk: &Desk, ink: &Ink) -> El {
     let items = desk.inbox_items();
-    let picked = desk.inbox.picked.min(items.len().saturating_sub(1));
+    let picked = desk.picked_index(&items);
     let mut list = col().key("inbox-list").w_full().padding(10.0).gap(8.0);
     for (index, item) in items.iter().enumerate() {
-        list = list.child(item_row(desk, item, index, index == picked, ink));
+        list = list.child(item_row(desk, item, index, Some(index) == picked, ink));
     }
     if items.is_empty() {
         list = list.child(empty(ink));

@@ -283,8 +283,12 @@ impl Desk {
         let observation = client.take_activity();
         let mut changed = observation.status != self.status;
         if observation.connection_epoch != self.epoch {
+            // Only the first connection replays news: a reconnect's items
+            // are known by id, and what arrived during the gap is new.
+            if self.epoch == 0 {
+                self.inbox.alerts.connected();
+            }
             self.epoch = observation.connection_epoch;
-            self.inbox.alerts.connected();
             changed |= self.reopen_after_reconnect(&client);
         }
         self.status = observation.status;
@@ -311,7 +315,7 @@ impl Desk {
             changed |= self.refresh_layout(&client);
         }
         self.finish_uploads(&client);
-        self.sync_alerts();
+        changed |= self.sync_alerts();
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();
@@ -319,14 +323,19 @@ impl Desk {
     }
 
     fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
-        let on_screen = self.on_screen();
+        // A background window shows nothing to anyone.
+        let on_screen = if self.focused {
+            self.on_screen()
+        } else {
+            Vec::new()
+        };
         let marked = self.activities.apply(&event, &on_screen);
         let inbox = self.inbox_event(client, &event);
         marked | inbox | self.apply_view(client, event, tx)
     }
 
     /// The terminals in front of the person.
-    fn on_screen(&self) -> Vec<ResourceId> {
+    pub(super) fn on_screen(&self) -> Vec<ResourceId> {
         match &self.layout {
             Some(tree) => phux_client_core::layout::leaves(tree),
             None => self.shown.iter().map(|s| s.terminal.clone()).collect(),
@@ -357,8 +366,11 @@ impl Desk {
                 request_id,
                 terminal_id,
                 error,
-            } if self.pending_spawns.contains(&request_id) => {
+            } if self.pending_spawns.contains(&request_id)
+                || self.pending_splits.contains_key(&request_id) =>
+            {
                 self.pending_spawns.retain(|id| *id != request_id);
+                self.pending_splits.remove(&request_id);
                 match (terminal_id, error) {
                     (Some(id), _) => self.want(id),
                     (None, error) => {
@@ -508,20 +520,6 @@ impl Desk {
         self.notice = None;
         self.generation += 1;
         true
-    }
-
-    pub fn zoom(&mut self, size: Option<f32>) {
-        self.font_size = size.map_or(grid::DEFAULT_FONT_SIZE, |s| {
-            s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
-        });
-        let _ = self.prefs.set("font_size", &self.font_size);
-        self.fitted.clear();
-        self.fit();
-    }
-
-    pub fn toggle_sidebar(&mut self) {
-        self.sidebar_open = !self.sidebar_open;
-        let _ = self.prefs.set("sidebar_open", &self.sidebar_open);
     }
 }
 

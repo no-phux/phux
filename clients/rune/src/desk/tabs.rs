@@ -92,7 +92,12 @@ impl Desk {
         if tab.name.parse::<u32>().is_err() && !tab.name.is_empty() {
             return tab.name.clone();
         }
-        let terminal = self.tabs.focus.get(&tab.id).or(tab.terminals.first());
+        let terminal = self
+            .tabs
+            .focus
+            .get(&tab.id)
+            .filter(|id| tab.terminals.contains(id))
+            .or(tab.terminals.first());
         terminal
             .and_then(|id| self.topology.as_ref()?.pane(id))
             .map_or_else(|| tab.name.clone(), pane_label)

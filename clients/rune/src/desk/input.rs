@@ -29,6 +29,7 @@ impl Desk {
             let physical = tx.physical_key();
             if !self.inbox_key(event, tx)
                 && let Some(action) = keys::shortcut(&event.key, event.mods, physical)
+                    .filter(|a| a.works_over_sheets())
             {
                 self.shortcut(action, tx);
             }
@@ -37,12 +38,16 @@ impl Desk {
         if self.settings_open {
             let physical = tx.physical_key();
             match keys::shortcut(&event.key, event.mods, physical) {
-                Some(action) => self.shortcut(action, tx),
+                Some(action) if action.works_over_sheets() => self.shortcut(action, tx),
+                Some(_) => {}
                 None => self.settings_key(event),
             }
             return true;
         }
         if self.tabs.renaming.is_some() {
+            if event.key == rune::Key::Escape {
+                self.cancel_rename();
+            }
             return true;
         }
         if self.palette_open {

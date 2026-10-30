@@ -43,6 +43,25 @@ pub fn question(pane: &PaneDescriptor, activities: &Activities) -> Option<Ask> {
     })
 }
 
+/// What makes a row the same row: the question, not its position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Key {
+    Approval(String),
+    Terminal(ResourceId, Option<String>),
+}
+
+impl Item {
+    pub fn key(&self) -> Key {
+        match self {
+            Self::Approval(approval) => Key::Approval(approval.id.clone()),
+            Self::Terminal(waiting) => Key::Terminal(
+                waiting.terminal.clone(),
+                waiting.ask.as_ref().map(|ask| ask.id.clone()),
+            ),
+        }
+    }
+}
+
 const fn rank(mark: Mark) -> u8 {
     match mark {
         Mark::Blocked => 0,
@@ -154,6 +173,27 @@ mod tests {
     fn held_actions_come_first_with_nothing_else_waiting() {
         let list = items(None, &Activities::default(), &[approval("X", None, None)]);
         assert!(matches!(list.as_slice(), [Item::Approval(_)]));
+    }
+
+    #[test]
+    fn a_new_question_on_a_pane_is_a_new_row() {
+        let waiting = |ask: Option<&str>| {
+            Item::Terminal(Waiting {
+                terminal: ResourceId::local(1),
+                session: "s".to_owned(),
+                label: "l".to_owned(),
+                agent: None,
+                mark: Mark::Blocked,
+                ask: ask.map(|id| Ask {
+                    id: id.to_owned(),
+                    text: String::new(),
+                    suggestions: Vec::new(),
+                    since: None,
+                }),
+            })
+        };
+        assert_ne!(waiting(Some("q1")).key(), waiting(Some("q2")).key());
+        assert_eq!(waiting(Some("q1")).key(), waiting(Some("q1")).key());
     }
 
     #[test]

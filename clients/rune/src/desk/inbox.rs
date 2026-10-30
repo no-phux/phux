@@ -11,13 +11,15 @@ use rune::{Key, KeyEvent, TextEdit, Tx};
 
 use super::Desk;
 use crate::alerts::{Alerts, Target};
-use crate::inbox::{self, Item};
+use crate::inbox::{self, Item, Key as ItemKey};
 
 #[derive(Default)]
 pub struct Inbox {
     pub open: bool,
     pub reply: TextEdit,
-    pub picked: usize,
+    /// The row the keyboard is on, by identity: rows move as work arrives,
+    /// and a draft or a decision must never slide onto another one.
+    pub picked: Option<ItemKey>,
     pub approvals: Vec<Approval>,
     /// Answers on their way, to report how each ended.
     pub answers: HashMap<u64, ResourceId>,
@@ -33,10 +35,26 @@ impl Desk {
         )
     }
 
+    /// The picked row's place in `items`.
+    pub fn picked_index(&self, items: &[Item]) -> Option<usize> {
+        let picked = self.inbox.picked.as_ref()?;
+        items.iter().position(|item| &item.key() == picked)
+    }
+
     fn picked_item(&self) -> Option<Item> {
         let items = self.inbox_items();
-        let last = items.len().checked_sub(1)?;
-        items.get(self.inbox.picked.min(last)).cloned()
+        items.get(self.picked_index(&items)?).cloned()
+    }
+
+    /// A picked row that left takes its draft with it; the top row is next.
+    fn keep_pick(&mut self, items: &[Item]) {
+        if self.inbox.picked.is_some() && self.picked_index(items).is_none() {
+            self.inbox.picked = None;
+            self.inbox.reply.clear();
+        }
+        if self.inbox.picked.is_none() {
+            self.inbox.picked = items.first().map(Item::key);
+        }
     }
 
     pub fn toggle_inbox(&mut self) {
@@ -44,8 +62,10 @@ impl Desk {
             self.close_inbox();
             return;
         }
+        self.settings_open = false;
         self.inbox.open = true;
-        self.inbox.picked = 0;
+        self.inbox.picked = None;
+        self.keep_pick(&self.inbox_items());
         self.inbox.reply.clear();
         self.inbox.reply.focused = true;
     }
@@ -56,34 +76,51 @@ impl Desk {
         self.inbox.reply.focused = false;
     }
 
-    pub fn pick_item(&mut self, picked: usize, tx: &mut Tx) {
-        if picked != self.inbox.picked {
+    pub fn pick_item(&mut self, index: usize, tx: &mut Tx) {
+        let items = self.inbox_items();
+        let Some(key) = items.get(index).map(Item::key) else {
+            return;
+        };
+        if self.inbox.picked.as_ref() != Some(&key) {
             self.inbox.reply.clear();
         }
-        self.inbox.picked = picked;
+        self.inbox.picked = Some(key);
         self.inbox.reply.focused = true;
-        tx.scroll_into_view(format!("inbox-item-{picked}"));
+        tx.scroll_into_view(format!("inbox-item-{index}"));
     }
 
     /// Keys while the inbox is open. The reply field gets typing; everything
     /// here applies whether or not it holds the focus.
     pub fn inbox_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
-        let count = self.inbox_items().len();
+        let items = self.inbox_items();
+        let (count, at) = (items.len(), self.picked_index(&items).unwrap_or(0));
+        // A decision takes a deliberate press of the exact chord, and only
+        // ⌘ has one: off macOS the buttons decide.
+        let chord = cfg!(target_os = "macos")
+            && event.mods.cmd
+            && !event.mods.shift
+            && !event.mods.alt
+            && !tx.key_repeat();
         match event.key {
             Key::Escape => {
                 self.close_inbox();
                 tx.blur();
             }
-            Key::Down | Key::Tab if count > 0 => {
-                self.pick_item((self.inbox.picked + 1) % count, tx)
-            }
-            Key::Up if count > 0 => self.pick_item((self.inbox.picked + count - 1) % count, tx),
-            Key::Enter if event.mods.cmd => self.decide_picked(Decision::Approve),
-            Key::Backspace if event.mods.cmd => self.decide_picked(Decision::Deny),
+            Key::Down | Key::Tab if count > 0 => self.pick_item((at + 1) % count, tx),
+            Key::Up if count > 0 => self.pick_item((at + count - 1) % count, tx),
+            Key::Enter if chord => self.decide_picked(Decision::Approve),
+            Key::Backspace if chord => self.decide_picked(Decision::Deny),
+            Key::Enter if event.mods.cmd || event.mods.shift => {}
             Key::Enter => self.submit_picked(tx),
-            Key::Command(c @ '1'..='9') => {
-                let index = c as usize - '1' as usize;
-                self.answer_suggestion(index);
+            Key::Command(c) => {
+                let digit = tx
+                    .physical_key()
+                    .and_then(crate::keys::us_char)
+                    .unwrap_or(c);
+                match digit {
+                    '1'..='9' => self.answer_suggestion(digit as usize - '1' as usize),
+                    _ => return false,
+                }
             }
             _ => return false,
         }
@@ -183,8 +220,9 @@ impl Desk {
     }
 
     /// Post, take back, and count; then follow any notification clicked.
-    pub(super) fn sync_alerts(&mut self) {
+    pub(super) fn sync_alerts(&mut self) -> bool {
         let items = self.inbox_items();
+        self.keep_pick(&items);
         let on_screen = self.on_screen();
         let (focused, open) = (self.focused, self.inbox.open);
         let enabled = self.settings.notifications;
@@ -196,7 +234,9 @@ impl Desk {
             },
             enabled,
         );
-        for target in self.inbox.alerts.take_clicks() {
+        let clicks = self.inbox.alerts.take_clicks();
+        let clicked = !clicks.is_empty();
+        for target in clicks {
             rune_mac::notify::bring_to_front();
             match target {
                 Target::Inbox if !self.inbox.open => self.toggle_inbox(),
@@ -204,6 +244,7 @@ impl Desk {
                 Target::Terminal { id, session } => self.show(id, &session),
             }
         }
+        clicked
     }
 }
 

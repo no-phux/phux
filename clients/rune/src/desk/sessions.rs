@@ -148,6 +148,12 @@ impl Desk {
 
     pub fn focus_changed(&mut self, focused: bool) {
         self.focused = focused;
+        // Back at the window: what's on screen has now been seen.
+        if focused {
+            for id in self.on_screen() {
+                self.activities.seen(&id);
+            }
+        }
         self.generation += 1;
     }
 }

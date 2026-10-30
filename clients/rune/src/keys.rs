@@ -54,6 +54,17 @@ pub enum Shortcut {
     CloseSession,
 }
 
+impl Shortcut {
+    /// Over the inbox or settings the terminal behind is out of reach: no
+    /// pasting into it or closing it unseen.
+    pub const fn works_over_sheets(self) -> bool {
+        matches!(
+            self,
+            Self::Inbox | Self::Settings | Self::ZoomIn | Self::ZoomOut | Self::ZoomReset
+        )
+    }
+}
+
 pub fn mods(mods: Mods) -> ModSet {
     let mut set = ModSet::empty();
     set.set(ModSet::SHIFT, mods.shift);

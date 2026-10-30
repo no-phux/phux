@@ -20,7 +20,7 @@ mod tabs;
 pub(crate) const MOD: &str = if cfg!(target_os = "macos") {
     "⌘"
 } else {
-    "Ctrl+"
+    "Ctrl+Shift+"
 };
 const SIDEBAR_W: f32 = 236.0;
 /// The band the macOS traffic lights sit in when they draw over content.

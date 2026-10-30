@@ -5,6 +5,7 @@ use rune::prefs::Prefs;
 use rune::{Key, KeyEvent, Tx};
 
 use super::Desk;
+use crate::grid;
 use crate::theme::{self, Theme};
 
 /// What the person chose, as stored.
@@ -28,7 +29,22 @@ impl Settings {
 }
 
 impl Desk {
+    pub fn zoom(&mut self, size: Option<f32>) {
+        self.font_size = size.map_or(grid::DEFAULT_FONT_SIZE, |s| {
+            s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
+        });
+        let _ = self.prefs.set("font_size", &self.font_size);
+        self.fitted.clear();
+        self.fit();
+    }
+
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_open = !self.sidebar_open;
+        let _ = self.prefs.set("sidebar_open", &self.sidebar_open);
+    }
+
     pub fn toggle_settings(&mut self) {
+        self.close_inbox();
         self.settings_open = !self.settings_open;
     }
 
