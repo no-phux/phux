@@ -173,6 +173,15 @@ pub(crate) fn state_dir() -> PathBuf {
     }
 }
 
+/// The local machine mid-sentence: "on this Mac".
+pub(crate) fn this_machine() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "this Mac"
+    } else {
+        "this computer"
+    }
+}
+
 pub(crate) fn local_machine_label() -> &'static str {
     if cfg!(windows) {
         "WSL"

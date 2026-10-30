@@ -1,0 +1,646 @@
+//! One supervisor task: reap orphans, start the catalog, restart failures,
+//! and stop on shutdown, upgrade, or a config reload.
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use phux_plugin::run_log::{self, RunRecord};
+use phux_plugin::startup_log;
+use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
+
+use super::backoff::{AfterExit, Policy};
+use super::plan::{StartupCatalog, StartupKey, StartupSpec};
+use super::rotate::CHECK_INTERVAL;
+use super::spawn::{self, GroupChild};
+use super::stop::stop_children;
+use super::{PluginStartupConfig, PluginStartupSource};
+
+/// Commands the accept loop and the upgrade path send the supervisor.
+pub(super) enum Cmd {
+    /// Re-read the plugin registry and reconcile.
+    Reload,
+    /// Stop every sidecar and reply once they are gone. Used before upgrade
+    /// `exec`. A later [`Cmd::Resume`] starts them again if exec does not
+    /// happen.
+    Pause(oneshot::Sender<()>),
+    /// Start the current catalog after a [`Cmd::Pause`].
+    Resume,
+}
+
+/// What the supervisor is doing with one spec.
+struct Slot {
+    spec: StartupSpec,
+    child: Option<GroupChild>,
+    phase: Phase,
+    policy: Policy,
+    started: Option<Instant>,
+}
+
+#[derive(Clone, Copy)]
+enum Phase {
+    Live,
+    Backoff { until: Instant },
+    GaveUp,
+    CleanExit,
+}
+
+struct Supervisor {
+    root: CancellationToken,
+    socket: PathBuf,
+    state_dir: PathBuf,
+    run_log: PathBuf,
+    reload: Option<PluginStartupSource>,
+    catalog: Vec<StartupSpec>,
+    slots: Vec<Slot>,
+    paused: bool,
+    logged_skips: BTreeSet<StartupKey>,
+    origin: Instant,
+    rotate_at: Instant,
+    blocked: bool,
+    /// One permit when any watched child exits. `drive` then polls them all.
+    notify: Arc<Notify>,
+}
+
+pub(super) async fn run(
+    mut rx: mpsc::UnboundedReceiver<Cmd>,
+    cfg: PluginStartupConfig,
+    socket: PathBuf,
+    root: CancellationToken,
+) {
+    let blocked = phux_config::production::refuse_dev_on_production_state(&cfg.state_dir).is_err();
+    if blocked {
+        tracing::warn!(
+            "startup: not supervising sidecars; development build refused this state dir"
+        );
+    }
+    // The accept loops are already polling. Yield once so a sidecar that
+    // dials `PHUX_SOCKET` immediately finds accept in progress.
+    tokio::task::yield_now().await;
+    if !blocked {
+        super::reap::reap_orphans(&cfg.state_dir).await;
+    }
+
+    let initial = cfg.catalog;
+    let mut supervisor = Supervisor {
+        root,
+        socket,
+        run_log: cfg.state_dir.join(run_log::RUN_LOG_FILE),
+        state_dir: cfg.state_dir,
+        reload: cfg.reload,
+        catalog: Vec::new(),
+        slots: Vec::new(),
+        paused: false,
+        logged_skips: BTreeSet::new(),
+        origin: Instant::now(),
+        rotate_at: Instant::now() + CHECK_INTERVAL,
+        blocked,
+        notify: Arc::new(Notify::new()),
+    };
+    supervisor.apply(initial).await;
+    supervisor.serve(&mut rx).await;
+}
+
+impl Supervisor {
+    async fn serve(&mut self, rx: &mut mpsc::UnboundedReceiver<Cmd>) {
+        loop {
+            note_iteration();
+            if self.root.is_cancelled() {
+                self.stop_all().await;
+                break;
+            }
+            // No deadline and no child: wait for shutdown or a command.
+            // An empty catalog must not wake the runtime on a timer.
+            let deadline = self.next_deadline();
+            let root = self.root.clone();
+            let notify = Arc::clone(&self.notify);
+            tokio::select! {
+                biased;
+                () = root.cancelled() => {
+                    self.stop_all().await;
+                    break;
+                }
+                cmd = rx.recv() => {
+                    match cmd {
+                        None => {
+                            self.stop_all().await;
+                            break;
+                        }
+                        Some(cmd) => self.command(cmd).await,
+                    }
+                }
+                () = notify.notified() => {}
+                () = wait_until(deadline) => {}
+            }
+            if self.root.is_cancelled() {
+                continue;
+            }
+            self.drive();
+            self.rotate_if_due().await;
+        }
+    }
+
+    /// Soonest backoff, log rotation, or the one-second fallback for a child
+    /// whose exit watch could not be armed. `None` when nothing is running
+    /// and nothing is waiting to restart.
+    fn next_deadline(&self) -> Option<Instant> {
+        let mut deadline: Option<Instant> = None;
+        let mut consider = |at: Instant| {
+            deadline = Some(match deadline {
+                Some(current) if current < at => current,
+                _ => at,
+            });
+        };
+        for slot in &self.slots {
+            if let Phase::Backoff { until } = slot.phase
+                && slot.child.is_none()
+            {
+                consider(until);
+            }
+        }
+        if self.slots.iter().any(|slot| slot.child.is_some()) {
+            consider(self.rotate_at);
+            if self.slots.iter().any(|slot| {
+                slot.child
+                    .as_ref()
+                    .is_some_and(|child| !child.has_exit_watch())
+            }) {
+                consider(Instant::now() + Duration::from_secs(1));
+            }
+        }
+        deadline
+    }
+
+    async fn command(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::Reload => self.reload().await,
+            Cmd::Pause(reply) => {
+                self.pause().await;
+                let _ = reply.send(());
+            }
+            Cmd::Resume => self.resume().await,
+        }
+    }
+
+    async fn reload(&mut self) {
+        let Some(source) = self.reload.clone() else {
+            return;
+        };
+        let catalog = match source.read() {
+            Ok(catalog) => catalog,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "startup: config reload failed; keeping the running sidecars"
+                );
+                return;
+            }
+        };
+        self.apply(catalog).await;
+    }
+
+    async fn pause(&mut self) {
+        self.paused = true;
+        self.stop_all().await;
+        self.slots.clear();
+    }
+
+    async fn resume(&mut self) {
+        if self.root.is_cancelled() {
+            return;
+        }
+        self.paused = false;
+        let catalog = StartupCatalog {
+            admitted: self.catalog.clone(),
+            skipped_cap: Vec::new(),
+        };
+        self.apply(catalog).await;
+    }
+
+    async fn stop_all(&mut self) {
+        let specs: Vec<StartupSpec> = self
+            .slots
+            .iter()
+            .filter(|slot| slot.child.is_some())
+            .map(|slot| slot.spec.clone())
+            .collect();
+        for spec in &specs {
+            self.lifecycle(spec, "stopped");
+        }
+        let mut children = Vec::new();
+        for slot in &mut self.slots {
+            if let Some(child) = slot.child.take() {
+                children.push(child);
+            }
+        }
+        stop_children(&mut children).await;
+    }
+
+    async fn apply(&mut self, catalog: StartupCatalog) {
+        self.note_skips(&catalog.skipped_cap);
+        self.catalog.clone_from(&catalog.admitted);
+        let desired = catalog.admitted;
+        let mut retiring = Vec::new();
+        let mut keep = Vec::new();
+        let mut stopped = Vec::new();
+        for slot in self.slots.drain(..) {
+            if desired.iter().any(|spec| spec.key() == slot.spec.key()) {
+                keep.push(slot);
+            } else if let Some(child) = slot.child {
+                stopped.push(slot.spec);
+                retiring.push(child);
+            } else if !matches!(slot.phase, Phase::GaveUp | Phase::CleanExit) {
+                stopped.push(slot.spec);
+            }
+        }
+        self.slots = keep;
+        for spec in &stopped {
+            self.lifecycle(spec, "stopped");
+        }
+        if !retiring.is_empty() {
+            stop_children(&mut retiring).await;
+        }
+        if self.paused || self.root.is_cancelled() || self.blocked {
+            return;
+        }
+        for spec in desired {
+            if self.slots.iter().any(|slot| slot.spec.key() == spec.key()) {
+                continue;
+            }
+            self.start_fresh(spec);
+        }
+    }
+
+    fn note_skips(&mut self, skipped: &[StartupSpec]) {
+        let keys: BTreeSet<_> = skipped.iter().map(StartupSpec::key).collect();
+        self.logged_skips.retain(|key| keys.contains(key));
+        for spec in skipped {
+            if self.logged_skips.insert(spec.key()) {
+                self.lifecycle(spec, "skipped: cap");
+            }
+        }
+    }
+
+    fn start_fresh(&mut self, spec: StartupSpec) {
+        let slot = Slot {
+            spec,
+            child: None,
+            phase: Phase::Live,
+            policy: Policy::new(),
+            started: None,
+        };
+        self.slots.push(slot);
+        let index = self.slots.len() - 1;
+        self.spawn_slot(index, false);
+    }
+
+    fn drive(&mut self) {
+        if self.blocked {
+            return;
+        }
+        let mut exited = Vec::new();
+        for index in 0..self.slots.len() {
+            let Some(child) = self.slots[index].child.as_mut() else {
+                continue;
+            };
+            if child.poll_reaped() {
+                exited.push((index, child.exit_code()));
+            }
+        }
+        for (index, code) in exited {
+            self.slots[index].child.take();
+            self.on_exit(index, code);
+        }
+        if self.paused || self.root.is_cancelled() {
+            return;
+        }
+        let now = Instant::now();
+        let due: Vec<usize> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| {
+                slot.child.is_none()
+                    && matches!(slot.phase, Phase::Backoff { until } if now >= until)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        for index in due {
+            self.spawn_slot(index, true);
+        }
+    }
+
+    fn on_exit(&mut self, index: usize, code: Option<i32>) {
+        let uptime = self.slots[index]
+            .started
+            .take()
+            .map(|started| started.elapsed())
+            .unwrap_or_default();
+        let spec = self.slots[index].spec.clone();
+        let now = self.origin.elapsed();
+        match self.slots[index].policy.on_exit(code, uptime, now) {
+            AfterExit::Clean => {
+                self.slots[index].phase = Phase::CleanExit;
+                self.lifecycle(&spec, "exited 0 (not restarting)");
+            }
+            AfterExit::Restart { delay } => {
+                self.slots[index].phase = Phase::Backoff {
+                    until: Instant::now() + delay,
+                };
+            }
+            AfterExit::GiveUp => {
+                self.slots[index].phase = Phase::GaveUp;
+                self.lifecycle(&spec, "gave up");
+            }
+        }
+    }
+
+    fn spawn_slot(&mut self, index: usize, restart: bool) {
+        if self.root.is_cancelled() || self.paused || self.blocked {
+            return;
+        }
+        let spec = self.slots[index].spec.clone();
+        match spawn::spawn_child(&spec, &self.socket, &self.state_dir, &self.notify) {
+            Ok(child) => {
+                self.slots[index].child = Some(child);
+                self.slots[index].started = Some(Instant::now());
+                self.slots[index].phase = Phase::Live;
+                self.lifecycle(&spec, if restart { "restarting" } else { "started" });
+            }
+            Err(err) => {
+                tracing::warn!(
+                    plugin = %spec.plugin_id,
+                    startup = %spec.startup_id,
+                    error = %err,
+                    "startup: spawn failed"
+                );
+                self.note_failure(index, Duration::ZERO);
+            }
+        }
+    }
+
+    fn note_failure(&mut self, index: usize, uptime: Duration) {
+        let now = self.origin.elapsed();
+        let spec = self.slots[index].spec.clone();
+        match self.slots[index].policy.on_exit(Some(1), uptime, now) {
+            AfterExit::Restart { delay } => {
+                self.slots[index].phase = Phase::Backoff {
+                    until: Instant::now() + delay,
+                };
+            }
+            AfterExit::GiveUp => {
+                self.slots[index].phase = Phase::GaveUp;
+                self.lifecycle(&spec, "gave up");
+            }
+            AfterExit::Clean => self.slots[index].phase = Phase::CleanExit,
+        }
+    }
+
+    async fn rotate_if_due(&mut self) {
+        if Instant::now() < self.rotate_at {
+            return;
+        }
+        if !self.slots.iter().any(|slot| slot.child.is_some()) {
+            return;
+        }
+        self.rotate_at = Instant::now() + CHECK_INTERVAL;
+        let paths: Vec<PathBuf> = self
+            .slots
+            .iter()
+            .map(|slot| {
+                startup_log::log_path(&self.state_dir, &slot.spec.plugin_id, &slot.spec.startup_id)
+            })
+            .collect();
+        // Copy-then-truncate can be megabytes. Doing it on the `LocalSet`
+        // thread stalls every pane until the copy returns.
+        let rotated = tokio::task::spawn_blocking(move || {
+            for path in &paths {
+                if let Err(err) = super::rotate::rotate_log(
+                    path,
+                    startup_log::LOG_MAX_BYTES,
+                    startup_log::LOG_GENERATIONS,
+                ) {
+                    tracing::debug!(
+                        path = %path.display(),
+                        error = %err,
+                        "startup log rotation failed"
+                    );
+                }
+            }
+        })
+        .await;
+        if let Err(err) = rotated {
+            tracing::debug!(error = %err, "startup log rotation task failed");
+        }
+    }
+
+    fn lifecycle(&self, spec: &StartupSpec, note: &str) {
+        let record = RunRecord::startup(&spec.plugin_id, &spec.startup_id, &spec.command, note);
+        if let Err(err) = run_log::record_at(&self.run_log, &record) {
+            tracing::debug!(error = %err, "startup lifecycle line was not written");
+        }
+    }
+}
+
+async fn wait_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+fn serve_iterations() -> &'static std::sync::atomic::AtomicU64 {
+    static ITERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    &ITERATIONS
+}
+
+#[cfg(test)]
+fn note_iteration() {
+    serve_iterations().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+const fn note_iteration() {}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    use tokio::sync::{Notify, mpsc};
+    use tokio::time::Instant;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{Supervisor, serve_iterations};
+    use crate::plugin_startup::rotate::CHECK_INTERVAL;
+
+    struct ClearDefer;
+    impl Drop for ClearDefer {
+        fn drop(&mut self) {
+            crate::plugin_startup::spawn::DEFER_REAP_PID
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Real-time bound. Tokio time is paused in the caller, so this yields
+    /// instead of sleeping on the runtime clock.
+    async fn until_real(limit: std::time::Duration, mut pred: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            if pred() {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[test]
+    fn empty_catalog_arms_no_timer() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            tokio::time::pause();
+            let root = CancellationToken::new();
+            let (_tx, mut rx) = mpsc::unbounded_channel();
+            let supervisor = Supervisor {
+                root: root.clone(),
+                socket: PathBuf::from("/tmp/phux-empty.sock"),
+                state_dir: PathBuf::from("/tmp"),
+                run_log: PathBuf::from("/tmp/plugin-runs.jsonl"),
+                reload: None,
+                catalog: Vec::new(),
+                slots: Vec::new(),
+                paused: false,
+                logged_skips: BTreeSet::new(),
+                origin: Instant::now(),
+                rotate_at: Instant::now() + CHECK_INTERVAL,
+                blocked: false,
+                notify: Arc::new(Notify::new()),
+            };
+            serve_iterations().store(0, Ordering::Relaxed);
+            let task = tokio::task::spawn_local(async move {
+                let mut supervisor = supervisor;
+                supervisor.serve(&mut rx).await;
+            });
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            let parked = serve_iterations().load(Ordering::Relaxed);
+            assert!(parked >= 1, "the supervisor should enter its loop");
+            tokio::time::advance(std::time::Duration::from_secs(2)).await;
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                serve_iterations().load(Ordering::Relaxed),
+                parked,
+                "an empty catalog must not arm a timer"
+            );
+            root.cancel();
+            task.await.unwrap();
+        });
+    }
+
+    /// A fired exit watch whose first `try_wait` misses the zombie must be
+    /// polled again on the one-second fallback. That only happens because
+    /// the watch stores `fired` before it notifies.
+    ///
+    /// Virtual time stays put until the deferred wait has actually happened.
+    /// Advancing first, before `/bin/true` has exited, jumps the clock with
+    /// no fallback armed yet, and the later one-second sleep is then still
+    /// in the future.
+    #[test]
+    fn fired_watch_is_polled_again_when_the_first_wait_misses() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            tokio::time::pause();
+            let tmp = tempfile::tempdir().unwrap();
+            let root_dir = tmp.path().join("plugin");
+            std::fs::create_dir_all(&root_dir).unwrap();
+            let run_log = tmp.path().join("plugin-runs.jsonl");
+            let root = CancellationToken::new();
+            let (_tx, mut rx) = mpsc::unbounded_channel();
+            let mut supervisor = Supervisor {
+                root: root.clone(),
+                socket: tmp.path().join("phux.sock"),
+                state_dir: tmp.path().join("state"),
+                run_log: run_log.clone(),
+                reload: None,
+                catalog: Vec::new(),
+                slots: Vec::new(),
+                paused: false,
+                logged_skips: BTreeSet::new(),
+                origin: Instant::now(),
+                rotate_at: Instant::now() + CHECK_INTERVAL,
+                blocked: false,
+                notify: Arc::new(Notify::new()),
+            };
+            supervisor.start_fresh(crate::plugin_startup::StartupSpec {
+                plugin_id: "plug".to_owned(),
+                plugin_name: "Plug".to_owned(),
+                plugin_version: "0.1.0".to_owned(),
+                startup_id: "web".to_owned(),
+                command: vec!["/bin/true".to_owned()],
+                plugin_root: root_dir,
+                manifest_hash: 1,
+            });
+            let child = supervisor.slots[0].child.as_ref().unwrap();
+            let pid = child.pid().expect("sidecar pid");
+            assert!(
+                child.has_exit_watch(),
+                "the exit watch must be armed before it fires"
+            );
+            crate::plugin_startup::spawn::DEFER_REAP_PID.store(pid, Ordering::Relaxed);
+            let _clear = ClearDefer;
+            let task = tokio::task::spawn_local(async move {
+                supervisor.serve(&mut rx).await;
+            });
+            let missed = until_real(std::time::Duration::from_secs(5), || {
+                crate::plugin_startup::spawn::DEFER_REAP_PID.load(Ordering::Relaxed) == 0
+            })
+            .await;
+            let early = std::fs::read_to_string(&run_log).unwrap_or_default();
+            assert!(
+                missed,
+                "the first wait never missed the exit within 5s; log={early}"
+            );
+            assert!(
+                !early.contains("exited 0"),
+                "the missed wait must not count as reaped yet: {early}"
+            );
+            // The poll that consumed the defer runs to the next `select`
+            // before this task is scheduled again, so the one-second
+            // fallback is already armed. Jump past that second and stop
+            // short of the three-second rotate deadline.
+            tokio::time::advance(std::time::Duration::from_millis(1500)).await;
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            let later = std::fs::read_to_string(&run_log).unwrap_or_default();
+            assert!(
+                later.contains("exited 0"),
+                "the 1s fallback should observe the exit after the watch fired: {later}"
+            );
+            tokio::time::resume();
+            root.cancel();
+            task.await.unwrap();
+        });
+    }
+}

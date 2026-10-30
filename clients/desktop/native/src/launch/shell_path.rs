@@ -911,6 +911,7 @@ mod tests {
             "#!/bin/sh\nif [ \"$1\" = -lic ]; then /bin/sh -c \"$2\"; fi\nyes A | head -c 81920\n",
         );
         let probe = probe_login_shell(&trailing, Duration::from_secs(3)).unwrap();
-        assert_eq!(probe.command, None);
+        // The probe inherits this host's PATH, which may hold an installed phux.
+        assert!(probe.command.as_deref().is_none_or(Path::is_absolute));
     }
 }
