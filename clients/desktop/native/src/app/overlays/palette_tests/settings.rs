@@ -145,7 +145,6 @@ fn settings_catalog_covers_controls_without_shortcut_or_status_dead_ends(cx: &mu
             "Animations",
             "Laser cursor",
             "Tab placement",
-            "Option sends Alt",
             "Line height",
             "Horizontal padding",
             "Unfocused panes",
@@ -161,6 +160,13 @@ fn settings_catalog_covers_controls_without_shortcut_or_status_dead_ends(cx: &mu
                 "{title} is directly searchable"
             );
         }
+        assert_eq!(
+            entries
+                .iter()
+                .any(|(key, _)| key.title.as_ref() == "Option sends Alt"),
+            cfg!(target_os = "macos"),
+            "Option sends Alt is searchable only where Option composes"
+        );
         for title in ["Status", "Ghostty config", "Remote machines"] {
             assert!(
                 !entries.iter().any(|(key, _)| key.title.as_ref() == title),

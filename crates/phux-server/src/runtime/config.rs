@@ -99,6 +99,11 @@ pub struct ServerConfig {
     /// Direct guardian executable override for isolated fixtures; otherwise
     /// the running server executable, never a PATH-resolved installed phux.
     pub native_host_executable: Option<PathBuf>,
+    /// Plugin `[[startup]]` sidecars. `None` supervises nothing (in-process
+    /// tests and embedders). `phux server` fills it from the config file.
+    /// Boxed so a `ServerConfig` captured by an accept-loop future stays
+    /// under the large-future lint. `None` supervises nothing.
+    pub plugin_startup: Option<Box<crate::plugin_startup::PluginStartupConfig>>,
 }
 
 /// The opt-in flags the running server applied.
@@ -164,6 +169,7 @@ impl ServerConfig {
             org_store: crate::OrgStoreLocation::Memory,
             work_store: None,
             native_host_executable: None,
+            plugin_startup: None,
         }
     }
 }

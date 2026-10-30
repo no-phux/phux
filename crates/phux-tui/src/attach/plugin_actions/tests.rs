@@ -307,6 +307,7 @@ fn entries_flatten_manifest_actions_with_keys() {
         widgets: Vec::new(),
         sidebar: Vec::new(),
         themes: Vec::new(),
+        startup: Vec::new(),
     };
     let entries = entries_from_manifests(&[manifest]);
     assert_eq!(entries.len(), 2);

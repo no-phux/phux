@@ -10,12 +10,98 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+use std::time::{Duration, Instant};
+
 use common::ServerGuard;
+
+/// How long to wait for the shell's live pane fields to agree on both reads.
+const PANE_SETTLE_DEADLINE: Duration = Duration::from_secs(5);
+const PANE_SETTLE_POLL: Duration = Duration::from_millis(50);
+
+/// Fields a shell can still be changing between two level reads. `title` is
+/// the OSC title the prompt paints; `cwd` is the process directory.
+const LIVE_PANE_FIELDS: &[&str] = &["title", "cwd"];
+
+const FILTERED_LIST: &[&str] = &[
+    "list",
+    "--state",
+    "done",
+    "--state",
+    "blocked",
+    "--query",
+    "WORK reviewer",
+    "--json",
+];
 
 fn agent(server: &ServerGuard, args: &[&str]) -> String {
     let mut command = vec!["agent"];
     command.extend_from_slice(args);
     server.success(&command)
+}
+
+fn agent_json(server: &ServerGuard, args: &[&str]) -> serde_json::Value {
+    serde_json::from_str(&agent(server, args)).expect("agent JSON")
+}
+
+/// Drop live shell fields so a mismatch can be classified as those fields alone.
+fn without_live_pane_fields(agents: &serde_json::Value) -> serde_json::Value {
+    let mut copy = agents.clone();
+    if let Some(rows) = copy.as_array_mut() {
+        for row in rows {
+            if let Some(object) = row.as_object_mut() {
+                for field in LIVE_PANE_FIELDS {
+                    object.remove(*field);
+                }
+            }
+        }
+    }
+    copy
+}
+
+fn agents_differ_only_by_live_pane_fields(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> bool {
+    let (Some(left_rows), Some(right_rows)) = (left.as_array(), right.as_array()) else {
+        return false;
+    };
+    left_rows.len() == right_rows.len()
+        && without_live_pane_fields(left) == without_live_pane_fields(right)
+}
+
+/// `agent show` and the filtered `agent list` once their records match in full.
+///
+/// The session shell paints an OSC title when its prompt is drawn, and its
+/// process directory can still be moving at the same time. Those two level
+/// reads can straddle that, so the records differ only in `title` (`null`
+/// against `user@host: ~`) or `cwd`. Poll until one pair agrees, including
+/// both fields. Any other difference fails immediately. A shell that never
+/// paints a title, and whose directory is already still, agrees on the first
+/// pair.
+fn show_and_filtered_list(server: &ServerGuard) -> (serde_json::Value, serde_json::Value) {
+    let deadline = Instant::now() + PANE_SETTLE_DEADLINE;
+    loop {
+        let shown = agent_json(server, &["show", "work", "--json"]);
+        let filtered = agent_json(server, FILTERED_LIST);
+        if filtered["agents"] == shown["agents"] {
+            return (shown, filtered);
+        }
+        let list_agents = &filtered["agents"];
+        let show_agents = &shown["agents"];
+        assert!(
+            agents_differ_only_by_live_pane_fields(list_agents, show_agents),
+            "filtered list and agent show differ beyond live pane fields {LIVE_PANE_FIELDS:?}\n\
+             list: {list_agents}\n\
+             show: {show_agents}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "pane title and cwd did not settle across agent show and agent list within {PANE_SETTLE_DEADLINE:?}\n\
+             list: {list_agents}\n\
+             show: {show_agents}"
+        );
+        std::thread::sleep(PANE_SETTLE_POLL);
+    }
 }
 
 #[test]
@@ -28,23 +114,7 @@ fn agent_list_filters_preserve_record_and_addressability() {
             "set", "work", "--name", "reviewer", "--kind", "claude", "--state", "blocked",
         ],
     );
-    let shown: serde_json::Value =
-        serde_json::from_str(&agent(&server, &["show", "work", "--json"]))
-            .expect("agent show JSON");
-    let filtered = agent(
-        &server,
-        &[
-            "list",
-            "--state",
-            "done",
-            "--state",
-            "blocked",
-            "--query",
-            "WORK reviewer",
-            "--json",
-        ],
-    );
-    let filtered: serde_json::Value = serde_json::from_str(&filtered).expect("filtered list JSON");
+    let (shown, filtered) = show_and_filtered_list(&server);
     assert_eq!(filtered["agents"], shown["agents"]);
     let empty = agent(&server, &["list", "--state", "working", "--json"]);
     let empty: serde_json::Value = serde_json::from_str(&empty).expect("empty list JSON");

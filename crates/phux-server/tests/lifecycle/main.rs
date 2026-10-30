@@ -19,6 +19,7 @@ mod keep_empty;
 mod kill_visibility;
 mod lease_ttl;
 mod overlay_startup;
+mod plugin_startup;
 mod retain_on_exit;
 mod server_lifecycle;
 mod spawn_terminal;
