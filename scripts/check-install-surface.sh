@@ -31,6 +31,7 @@ done
 bash scripts/check-product-skills-export.sh
 bash scripts/test-pack-release.sh
 bash scripts/test-install.sh
+bash scripts/test-gen-formula.sh
 # The macOS Desktop installer test skips itself off macOS 26+ arm64.
 bun test ./tools/src/install/desktop.e2e.ts
 bun test ./tools/src/install/desktop-linux.e2e.ts

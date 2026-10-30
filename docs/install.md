@@ -171,23 +171,33 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 ## Homebrew
 
 ```sh
-brew trust --tap no-phux/tap
 brew install no-phux/tap/phux
 ```
 
-Homebrew 6 and later ask you to trust a third-party tap before installing from it; on older versions, skip the first line. This installs `phux` and `phux-mcp`. Update with `brew upgrade no-phux/tap/phux`.
+One command. Homebrew taps `no-phux/tap` and installs `phux` and `phux-mcp`. On Homebrew 6 and later that fully qualified name trusts only the `phux` formula, so there is no separate `brew trust` step. Update with `brew upgrade no-phux/tap/phux`.
+
+To install by the short name after you have tapped the repository, trust the formula first, then install:
+
+```sh
+brew trust --formula no-phux/tap/phux
+brew install phux
+```
+
+`brew trust no-phux/tap` trusts every current and future formula, cask, and external command in the tap. The one-line install above does not.
 
 ## Desktop app
 
 ### macOS Homebrew
 
 ```sh
-brew trust --tap no-phux/tap # Homebrew 6+
 brew install --cask no-phux/tap/phux-desktop
 ```
 
-This installs the signed, notarized DMG on Apple silicon with macOS 26 or
-newer. The app bundles the CLI/server; no separate formula is required.
+One command. On Homebrew 6 and later the fully qualified cask name trusts
+only `phux-desktop`, so there is no separate `brew trust` step. This
+installs the signed, notarized DMG on Apple silicon with macOS 26 or
+newer. Gatekeeper accepts that app without an `xattr` command. The app
+bundles the CLI/server; no separate formula is required.
 Update with `brew upgrade --cask no-phux/tap/phux-desktop`. The tap follows
 stable desktop releases independently of CLI releases. The retired
 `phux-cockpit` cask migrates to `phux-desktop` on Homebrew upgrade.

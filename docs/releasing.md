@@ -25,7 +25,13 @@ builds remain ad-hoc signed. Only CLI releases are GitHub's
 "Latest". The Homebrew tap discovers stable `vX.Y.Z` CLI and
 `desktop-vX.Y.Z` desktop releases independently every fifteen minutes,
 verifies artifact checksums, and renders the formula and macOS DMG cask.
-Upstream tap credentials or dispatches are not required.
+Upstream tap credentials or dispatches are not required. The CLI formula
+body comes from [`scripts/gen-formula.sh`](../scripts/gen-formula.sh); the
+tap copies that script and re-renders. On macOS the rendered `install`
+drops `com.apple.quarantine` from `phux` and `phux-mcp` when the attribute
+is present, and a missing attribute does not fail the install. The desktop
+cask renderer lives in the tap. It installs the signed, notarized DMG and
+does not clear quarantine. `release.yml` does not push the tap.
 
 ## Stable
 

@@ -25,16 +25,16 @@ curl -fsSL https://phux.sh/install | sh
 The script installs `phux` and `phux-mcp` into `~/.local/bin`. Open a new
 shell when that directory is not on `PATH` yet.
 
-Homebrew, from the `no-phux/tap` tap:
+Homebrew, one command:
 
 ```sh
-brew trust --tap no-phux/tap
 brew install no-phux/tap/phux
 ```
 
-Homebrew before version 6 does not ask you to trust the tap; skip the
-first line. Update with `brew upgrade no-phux/tap/phux`. See
-[Homebrew](./install.md#homebrew).
+Homebrew taps `no-phux/tap` and installs `phux` and `phux-mcp`. On
+Homebrew 6 and later that fully qualified name trusts only the `phux`
+formula, so there is no separate `brew trust` step. Update with
+`brew upgrade no-phux/tap/phux`. See [Homebrew](./install.md#homebrew).
 
 For a source install, first install the [platform packages](./development.md#platform-packages)
 (including `mold`, selected by `.cargo/config.toml` for Linux GNU builds).
