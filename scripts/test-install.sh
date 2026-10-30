@@ -320,4 +320,24 @@ rm "$SERVED/install"
 if PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install-desktop.sh" 2>"$TMP/err"; then fail "shim ran without an installer"; fi
 grep -Fq 'could not download' "$TMP/err" || fail "shim failure message"
 
+# On Darwin the publisher clears com.apple.quarantine. A stub uname forces
+# that path on Linux; a missing attribute must not fail the install.
+cat > "$TMP/bin/uname" <<'EOF'
+#!/bin/sh
+[ "$1" = -s ] && echo Darwin || echo arm64
+EOF
+cat > "$TMP/bin/xattr" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$XATTR_LOG"
+exit 1
+EOF
+chmod 755 "$TMP/bin/uname" "$TMP/bin/xattr"
+export XATTR_LOG="$TMP/xattr.log"
+: > "$XATTR_LOG"
+install_to "$TMP/quarantine" >/dev/null 2>"$TMP/err" || fail "quarantine clear failed the install: $(cat "$TMP/err")"
+grep -Fq "com.apple.quarantine $TMP/quarantine/phux" "$XATTR_LOG" || fail "phux quarantine: $(cat "$XATTR_LOG")"
+grep -Fq "com.apple.quarantine $TMP/quarantine/phux-mcp" "$XATTR_LOG" || fail "phux-mcp quarantine: $(cat "$XATTR_LOG")"
+rm -f "$TMP/bin/uname" "$TMP/bin/xattr"
+unset XATTR_LOG
+
 echo "installer tests passed"
