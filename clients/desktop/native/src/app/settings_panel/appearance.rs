@@ -222,7 +222,11 @@ fn look_group(
                 handle,
                 "Animations",
                 |prefs| &mut prefs.animations,
-                "Pane folds, skin shifts and the laser cursor. macOS Reduce motion also turns them off.",
+                if cfg!(target_os = "macos") {
+                    "Pane folds, skin shifts and the laser cursor. macOS Reduce motion also turns them off."
+                } else {
+                    "Pane folds, skin shifts and the laser cursor."
+                },
             )
             .keywords(["motion", "animation", "reduce"]),
         )

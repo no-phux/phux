@@ -1038,8 +1038,10 @@ fn include_texts(main: &Path, text: &str, home: &Path) -> Vec<GhosttySource> {
         let Some(rest) = rest.trim().strip_prefix('=') else {
             continue;
         };
-        let value = unquote(rest.trim());
-        let value = value.trim_start_matches('?').trim();
+        // Ghostty marks an optional include with `?` outside the quotes, as
+        // Omarchy's `config-file = ?"~/.local/state/omarchy/…/ghostty.conf"`.
+        let value = unquote(rest.trim().trim_start_matches('?').trim());
+        let value = value.trim();
         if value.is_empty() {
             continue;
         }
@@ -1359,5 +1361,26 @@ keybind = f12=set_font_size:15
             ),
             "{body}"
         );
+    }
+
+    #[test]
+    fn an_optional_quoted_home_include_loads_like_omarchy_writes_it() {
+        let root =
+            std::env::temp_dir().join(format!("phux-ghostty-omarchy-{}", std::process::id()));
+        let config_home = root.join("xdg");
+        let theme = root.join(".local/state/omarchy/current/theme");
+        std::fs::create_dir_all(config_home.join("ghostty")).expect("config dir");
+        std::fs::create_dir_all(&theme).expect("theme dir");
+        std::fs::write(theme.join("ghostty.conf"), "background = #1a1b26\n").expect("theme");
+        std::fs::write(
+            config_home.join("ghostty/config"),
+            "config-file = ?\"~/.local/state/omarchy/current/theme/ghostty.conf\"\n",
+        )
+        .expect("config");
+        let config = parse_ghostty_sources(
+            &read_ghostty_sources_in(&root, &config_home).expect("config found"),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(config.background.as_deref(), Some("#1a1b26"));
     }
 }

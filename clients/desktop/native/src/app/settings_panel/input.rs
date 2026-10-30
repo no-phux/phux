@@ -13,26 +13,30 @@ use crate::settings;
 
 use super::super::desk::Desk;
 use super::super::ui::segmented::{Segment, segmented};
-use super::{click_runs, click_sets, look_of, notes, prefs_of, resets, sourced, toggle};
+#[cfg(target_os = "macos")]
+use super::sourced;
+use super::{click_runs, click_sets, look_of, notes, prefs_of, resets, toggle};
 
 pub(super) fn keyboard_page(
     desk: &Desk,
     handle: &WeakEntity<Desk>,
     controls: Option<&super::SettingsControls>,
 ) -> SettingPage {
-    let input = SettingGroup::new()
-        .title("Input")
-        .item(toggle(
-            handle,
-            "Option sends Alt",
-            |prefs| &mut prefs.option_as_alt,
-            sourced(
-                desk,
-                "Off keeps macOS Option characters such as å and ß.",
-                &["macos-option-as-alt"],
-                |prefs| prefs.option_as_alt.to_string(),
-            ),
-        ))
+    let input = SettingGroup::new().title("Input");
+    // Only macOS has an Option key that composes characters.
+    #[cfg(target_os = "macos")]
+    let input = input.item(toggle(
+        handle,
+        "Option sends Alt",
+        |prefs| &mut prefs.option_as_alt,
+        sourced(
+            desk,
+            "Off keeps macOS Option characters such as å and ß.",
+            &["macos-option-as-alt"],
+            |prefs| prefs.option_as_alt.to_string(),
+        ),
+    ));
+    let input = input
         .item(toggle(
             handle,
             "Use Ghostty keybinds",
