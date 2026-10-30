@@ -44,6 +44,7 @@ const ROUTES: Record<string, Surface[]> = {
   "plugins/**": ["phux"],
   "examples/**": ["phux"],
   "scripts/examples-smoke.sh": ["phux"],
+  "scripts/agent-verify/**": ["phux"],
   "scripts/test-agent-examples.py": ["phux"],
   "scripts/{demo-record,record-readme}.sh": ["phux"],
   // Workflow infrastructure is compile-free (guards only), except ci.yml and
