@@ -9,7 +9,7 @@ use crate::desk::Desk;
 use crate::palette::pane_label;
 
 /// A mark's colour: Catppuccin's, as the GPUI desktop uses them.
-fn mark_color(mark: Mark, ink: &Ink) -> Color {
+pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
     let rgb = |r, g, b| crate::grid::color(phux_client_runtime::publication::Rgb { r, g, b });
     match mark {
         Mark::Blocked | Mark::Failed => rgb(0xf3, 0x8b, 0xa8),
@@ -55,6 +55,36 @@ fn search(ink: &Ink) -> El {
             })
             .font(CAPTION)
             .color(ink.dim),
+        )
+}
+
+/// The way into the inbox, loud only when something waits.
+fn inbox_button(desk: &Desk, ink: &Ink) -> El {
+    let waiting = desk.inbox_items().len();
+    let tint = if waiting > 0 {
+        mark_color(Mark::Blocked, ink)
+    } else {
+        ink.dim
+    };
+    row()
+        .key("inbox-button")
+        .px(7.0)
+        .py(2.0)
+        .gap(5.0)
+        .radius(7.0)
+        .items_center()
+        .fill(tint.alpha(if waiting > 0 { 0.2 } else { 0.1 }))
+        .hover(ink.hover)
+        .cursor(rune::Cursor::Pointer)
+        .on_press(|d: &mut Desk| d.toggle_inbox())
+        .child(
+            text(if waiting > 0 {
+                format!("{waiting} waiting")
+            } else {
+                "Inbox".to_owned()
+            })
+            .font(CAPTION)
+            .color(tint),
         )
 }
 
@@ -205,7 +235,7 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
                         .font(TextStyle::new(13.0, 700.0))
                         .color(ink.text),
                 )
-                .child(text("rune alpha").font(CAPTION).color(ink.accent)),
+                .child(inbox_button(desk, ink)),
         )
         .child(el().w_full().px(8.0).pb(4.0).child(search(ink)))
         .child(

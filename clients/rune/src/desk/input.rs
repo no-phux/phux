@@ -25,6 +25,23 @@ impl Desk {
             self.modifiers_changed(event.mods.cmd);
             return false;
         }
+        if self.inbox.open {
+            let physical = tx.physical_key();
+            if !self.inbox_key(event, tx)
+                && let Some(action) = keys::shortcut(&event.key, event.mods, physical)
+            {
+                self.shortcut(action, tx);
+            }
+            return true;
+        }
+        if self.settings_open {
+            let physical = tx.physical_key();
+            match keys::shortcut(&event.key, event.mods, physical) {
+                Some(action) => self.shortcut(action, tx),
+                None => self.settings_key(event),
+            }
+            return true;
+        }
         if self.palette_open {
             // The field has the keys; only the chord that closes it gets here.
             let physical = tx.physical_key();
@@ -59,7 +76,13 @@ impl Desk {
             return true;
         }
         self.restart_blink();
-        let Some(typed) = keys::typed(&event.key, event.mods, tx.key_base(), physical) else {
+        let Some(typed) = keys::typed(
+            &event.key,
+            event.mods,
+            tx.key_base(),
+            physical,
+            self.settings.option_as_meta,
+        ) else {
             return false;
         };
         let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
@@ -125,6 +148,8 @@ impl Desk {
             Shortcut::ScrollBottom => self.scroll(Scroll::Bottom),
             Shortcut::Palette => self.toggle_palette(),
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
+            Shortcut::Inbox => self.toggle_inbox(),
+            Shortcut::Settings => self.toggle_settings(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),
@@ -141,7 +166,7 @@ impl Desk {
         }
     }
 
-    fn copy(&self, tx: &mut Tx) {
+    pub(super) fn copy(&self, tx: &mut Tx) {
         let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
             return;
         };

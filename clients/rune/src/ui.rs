@@ -5,11 +5,14 @@ use rune::tok;
 use rune::{Color, Cx, El, Family, TextStyle, col, el, row, text};
 
 use crate::desk::{Desk, Pending};
+use crate::theme::Theme;
 
+mod inbox;
 mod overlay;
 mod palette;
 mod panes;
 pub(crate) use panes::DIVIDER;
+mod settings;
 mod sidebar;
 
 const SIDEBAR_W: f32 = 236.0;
@@ -34,7 +37,23 @@ pub(crate) struct Ink {
     pub(crate) danger: Color,
 }
 
-fn ink(dark: bool, accent: Color) -> Ink {
+fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
+    if let Some(theme) = theme {
+        let accent = crate::theme::color(theme.accent);
+        let text = crate::theme::color(theme.foreground);
+        return Ink {
+            bg: crate::theme::color(theme.background),
+            raised: theme.surface(0.09),
+            sidebar: theme.surface(0.045),
+            text,
+            dim: text.alpha(0.62),
+            separator: text.alpha(0.13),
+            selected: accent.alpha(0.22),
+            hover: text.alpha(0.07),
+            accent,
+            danger: crate::theme::color(theme.ansi[1]),
+        };
+    }
     let t = tok::theme(dark);
     Ink {
         bg: t.bg,
@@ -51,7 +70,7 @@ fn ink(dark: bool, accent: Color) -> Ink {
 }
 
 pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
-    let p = ink(cx.system_dark(), cx.accent());
+    let p = ink(cx.system_dark(), cx.accent(), desk.settings.theme);
     // `titlebar_inset` is the traffic lights' width; zero when the system
     // draws its own titlebar.
     let lights = cx.titlebar_inset();
@@ -114,6 +133,8 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         // Rune hands the root pastes nothing focused took (Edit ▸ Paste).
         .on_paste(|desk: &mut Desk, text, _| desk.paste(text))
         .child(main)
+        .children(desk.inbox.open.then(|| inbox::view(desk, &p)))
+        .children(desk.settings_open.then(|| settings::view(desk, &p)))
         .children(desk.palette_open.then(|| palette::view(desk, &p)))
 }
 

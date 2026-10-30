@@ -23,12 +23,14 @@ use crate::launch::Resolved;
 
 mod find;
 mod frame;
+mod inbox;
 mod input;
 mod layout;
 mod links;
 mod mouse;
 mod palette;
 mod sessions;
+mod settings;
 
 pub use layout::SplitPath;
 
@@ -106,6 +108,10 @@ pub struct Desk {
     pub find_query: rune::TextEdit,
     /// The link under the pointer while ⌘ is held.
     pub pointer: links::Pointer,
+    /// Everything waiting on you, and the system's view of it.
+    pub inbox: inbox::Inbox,
+    pub settings: settings::Settings,
+    pub settings_open: bool,
     /// Settings that outlive the window: text size, the sidebar.
     prefs: rune::prefs::Prefs,
     /// What every terminal is doing, for the sidebar's marks.
@@ -174,6 +180,7 @@ impl Desk {
                 s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
             });
         let sidebar_open = prefs.get("sidebar_open").unwrap_or(true);
+        let settings = settings::Settings::load(&prefs);
         let mut desk = Self {
             client: None,
             error: None,
@@ -193,6 +200,9 @@ impl Desk {
             find: None,
             find_query: rune::TextEdit::new(""),
             pointer: links::Pointer::default(),
+            inbox: inbox::Inbox::default(),
+            settings,
+            settings_open: false,
             prefs,
             preedit: None,
             activities: crate::activity::Activities::default(),
@@ -231,6 +241,7 @@ impl Desk {
             },
             Err(error) => desk.error = Some(error.clone()),
         }
+        desk.apply_theme();
         desk
     }
 
@@ -240,8 +251,10 @@ impl Desk {
 
     /// Rune's setup hook: route runtime wakes into Rune's loop.
     pub fn listen(&mut self, waker: Waker) {
+        self.inbox.alerts.listen(waker.clone());
         if let Some(client) = &self.client {
             client.set_listener(Arc::new(Wake(waker)));
+            client.watch_approvals();
         }
     }
 
@@ -255,6 +268,7 @@ impl Desk {
         let mut changed = observation.status != self.status;
         if observation.connection_epoch != self.epoch {
             self.epoch = observation.connection_epoch;
+            self.inbox.alerts.connected();
             changed |= self.reopen_after_reconnect(&client);
         }
         self.status = observation.status;
@@ -280,6 +294,7 @@ impl Desk {
         if changed || events {
             changed |= self.refresh_layout(&client);
         }
+        self.sync_alerts();
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();
@@ -287,12 +302,18 @@ impl Desk {
     }
 
     fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
-        let on_screen: Vec<ResourceId> = match &self.layout {
+        let on_screen = self.on_screen();
+        let marked = self.activities.apply(&event, &on_screen);
+        let inbox = self.inbox_event(client, &event);
+        marked | inbox | self.apply_view(client, event, tx)
+    }
+
+    /// The terminals in front of the person.
+    fn on_screen(&self) -> Vec<ResourceId> {
+        match &self.layout {
             Some(tree) => phux_client_core::layout::leaves(tree),
             None => self.shown.iter().map(|s| s.terminal.clone()).collect(),
-        };
-        let marked = self.activities.apply(&event, &on_screen);
-        marked | self.apply_view(client, event, tx)
+        }
     }
 
     fn apply_view(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {

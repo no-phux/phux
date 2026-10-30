@@ -20,10 +20,16 @@ phux-client-runtime = { path = "../../crates/phux-client-runtime" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
 rune = { git = "https://github.com/anomalyco/rune", rev = "7109facac86f37b8411df84f39571a11c9e859c5" }
+rune-mac = { git = "https://github.com/anomalyco/rune", rev = "7109facac86f37b8411df84f39571a11c9e859c5" }
 serde_json = "1"
+
+# The Dock count is the one call Rune doesn't wrap; same objc2 as Rune's.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = ["NSString"] }
 
 [profile.release]
 lto = "thin"
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"

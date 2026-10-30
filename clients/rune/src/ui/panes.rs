@@ -136,7 +136,12 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     let mut grid_layer = el()
         .child(grid::paint(&frame, keyboard, desk.blink_on, &metrics))
         .children(overlay::link_underline(desk, id, &metrics, ink));
-    if keyboard && !desk.palette_open && desk.pending.is_none() {
+    if keyboard
+        && !desk.palette_open
+        && !desk.inbox.open
+        && !desk.settings_open
+        && desk.pending.is_none()
+    {
         grid_layer = grid_layer.child(grid::ime_layer(
             &frame,
             desk.preedit.as_deref(),
@@ -171,11 +176,15 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
             let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
             if !d.press_link(&press, drag.phase, x, y, mods.cmd, tx) {
                 d.pointer(&press, drag.phase, x, y, drag.clicks, mods);
+                if drag.phase == Phase::Up {
+                    d.selection_done(tx);
+                }
             }
         })
         .child(grid_layer)
         .children(overlay::history(desk, id, &frame, area, ink))
         .children(overlay::find_bar(desk, id, area, ink))
+        .children(focused.then(|| super::inbox::ask_card(desk, id, area, ink)).flatten())
         // Panes without the keyboard sit back a little.
         .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(Color::BLACK.alpha(0.18)).inert()))
 }
