@@ -55,6 +55,27 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.53.0](https://github.com/no-phux/phux/compare/desktop-v0.52.0...desktop-v0.53.0) (2026-10-30)
+
+
+### Features
+
+* **agents:** recognize and launch fx as native ACP agent ([83f075a](https://github.com/no-phux/phux/commit/83f075ac8877b366392cb4c0571a5d5066a6ea5f))
+* **agents:** recognize and launch fx via ACP ([#1866](https://github.com/no-phux/phux/issues/1866)) ([83f075a](https://github.com/no-phux/phux/commit/83f075ac8877b366392cb4c0571a5d5066a6ea5f))
+* **api:** atomic terminal intentions and receipt recovery ([#1729](https://github.com/no-phux/phux/issues/1729)) ([0205f60](https://github.com/no-phux/phux/commit/0205f606ef8a8f5b63069d9e92bce7ec5ba5fb29))
+* **desktop:** twenty more built-in themes ([#1854](https://github.com/no-phux/phux/issues/1854)) ([c63ec1a](https://github.com/no-phux/phux/commit/c63ec1ad6457bc11579622435f8db055f57f628a))
+* **fleet:** improve discovery and review safety ([#1847](https://github.com/no-phux/phux/issues/1847)) ([42cecc7](https://github.com/no-phux/phux/commit/42cecc7b8b283637a808dbfd38d748b3ca956820))
+
+
+### Bug Fixes
+
+* make the public repository surface trustworthy ([#1870](https://github.com/no-phux/phux/issues/1870)) ([e0d3966](https://github.com/no-phux/phux/commit/e0d3966a91db6d72069ea9003f97615400ada504))
+
+
+### Documentation
+
+* **install:** document desktop Homebrew DMG cask ([#1867](https://github.com/no-phux/phux/issues/1867)) ([a2f09ac](https://github.com/no-phux/phux/commit/a2f09acfa5f5a0ff950534c3e72d3d0e608d6d1c))
+
 ## [0.52.0](https://github.com/no-phux/phux/compare/desktop-v0.51.0...desktop-v0.52.0) (2026-10-28)
 
 
