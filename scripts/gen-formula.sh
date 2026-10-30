@@ -60,7 +60,7 @@ class Phux < Formula
   homepage "https://github.com/no-phux/phux"
   url "${base}/phux-${tag}-${primary_target}.tar.gz"
   sha256 "${primary_sha}"
-  license any_of: ["MIT", "Apache-2.0"]
+  license "Apache-2.0"
 
   livecheck do
     url :stable
@@ -117,13 +117,6 @@ EOF
   def install
     bin.install "phux"
     bin.install "phux-mcp"
-    # Drop the download quarantine so the first launch needs no xattr command.
-    # quiet_system ignores a missing attribute instead of failing the install.
-    return unless OS.mac?
-
-    [bin/"phux", bin/"phux-mcp"].each do |installed|
-      quiet_system "xattr", "-d", "com.apple.quarantine", installed
-    end
   end
 
   test do

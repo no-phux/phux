@@ -27,11 +27,10 @@ builds remain ad-hoc signed. Only CLI releases are GitHub's
 verifies artifact checksums, and renders the formula and macOS DMG cask.
 Upstream tap credentials or dispatches are not required. The CLI formula
 body comes from [`scripts/gen-formula.sh`](../scripts/gen-formula.sh); the
-tap copies that script and re-renders. On macOS the rendered `install`
-drops `com.apple.quarantine` from `phux` and `phux-mcp` when the attribute
-is present, and a missing attribute does not fail the install. The desktop
-cask renderer lives in the tap. It installs the signed, notarized DMG and
-does not clear quarantine. `release.yml` does not push the tap.
+tap copies that script and re-renders. The formula license is Apache-2.0,
+matching `LICENSE` and the workspace `Cargo.toml`. The desktop cask
+renderer lives in the tap and installs the signed, notarized DMG.
+`release.yml` does not push the tap.
 
 ## Stable
 

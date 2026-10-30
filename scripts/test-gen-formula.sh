@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# scripts/gen-formula.sh renders a formula whose macOS install drops
-# quarantine without failing when the attribute is already absent.
+# scripts/gen-formula.sh renders the CLI formula: bin.install only, Apache-2.0.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
@@ -26,9 +25,12 @@ grep -Fq 'url "https://github.com/no-phux/phux/releases/download/v0.1.0/phux-v0.
 grep -Fq "sha256 \"${arm_mac}\"" <<<"$formula" || fail "primary digest"
 grep -Fq "sha256 \"${x86_linux}\"" <<<"$formula" || fail "linux digest"
 grep -Fq "sha256 \"${arm_linux}\"" <<<"$formula" || fail "arm linux digest"
-grep -Fq 'quiet_system "xattr", "-d", "com.apple.quarantine", installed' <<<"$formula" || fail "quarantine clear"
-grep -Fq 'return unless OS.mac?' <<<"$formula" || fail "macos guard"
-if grep -Eq 'brew trust|postflight' <<<"$formula"; then fail "formula must not add a trust step"; fi
+grep -Fq 'license "Apache-2.0"' <<<"$formula" || fail "license"
+grep -Fq 'bin.install "phux"' <<<"$formula" || fail "install phux"
+grep -Fq 'bin.install "phux-mcp"' <<<"$formula" || fail "install phux-mcp"
+if grep -Eq 'quarantine|xattr|any_of|brew trust|postflight' <<<"$formula"; then
+  fail "formula must match the live install and Apache-2.0 license"
+fi
 if command -v ruby >/dev/null 2>&1; then
   ruby -c "$TMP/phux.rb" >/dev/null || fail "ruby syntax"
 fi

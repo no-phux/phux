@@ -31,9 +31,8 @@ brew install --cask no-phux/tap/phux-desktop
 
 One command. On Homebrew 6 and later the fully qualified cask name trusts
 only `phux-desktop`. The cask installs the signed, notarized DMG on Apple
-silicon, macOS 26+. Gatekeeper accepts that app without an `xattr`
-command. Update with `brew upgrade --cask no-phux/tap/phux-desktop`. No
-separate CLI formula is required; an existing CLI is preserved.
+silicon, macOS 26+. Update with `brew upgrade --cask no-phux/tap/phux-desktop`. No separate CLI
+formula is required; an existing CLI is preserved.
 
 ### macOS download
 

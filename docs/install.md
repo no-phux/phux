@@ -168,6 +168,8 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 
 **Signature checks need `minisign`.** With `minisign` on your `PATH`, the script also verifies the release signature. Set `PHUX_REQUIRE_SIGNATURE=1` to refuse to install without that check.
 
+A tarball saved from a browser can carry `com.apple.quarantine`; clear it with `xattr -d com.apple.quarantine <file>`. `curl` does not set that attribute.
+
 ## Homebrew
 
 ```sh
@@ -196,7 +198,7 @@ brew install --cask no-phux/tap/phux-desktop
 One command. On Homebrew 6 and later the fully qualified cask name trusts
 only `phux-desktop`, so there is no separate `brew trust` step. This
 installs the signed, notarized DMG on Apple silicon with macOS 26 or
-newer. Gatekeeper accepts that app without an `xattr` command. The app
+newer. The app
 bundles the CLI/server; no separate formula is required.
 Update with `brew upgrade --cask no-phux/tap/phux-desktop`. The tap follows
 stable desktop releases independently of CLI releases. The retired

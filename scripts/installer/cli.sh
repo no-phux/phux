@@ -73,18 +73,6 @@ publish_cli() {
   done
   cli_publishing=0
   printf '%s\n' "$channel" > "${install_dir}/.phux-channel"
-  clear_cli_quarantine
-}
-
-# macOS can mark a downloaded binary with com.apple.quarantine. Drop that
-# attribute here so the first launch does not need a separate xattr command.
-# A missing attribute is not a failure. Linux has no xattr.
-clear_cli_quarantine() {
-  [ "$(uname -s)" = Darwin ] || return 0
-  command -v xattr >/dev/null 2>&1 || return 0
-  for binary in phux phux-mcp; do
-    xattr -d com.apple.quarantine "${install_dir}/${binary}" 2>/dev/null || true
-  done
 }
 
 rollback_cli() {

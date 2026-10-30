@@ -1,7 +1,10 @@
-# Prove a clean public install, the first launch, and a stub agent session
-# finish in under 60 seconds. The script owns the clock and the pass/fail
-# line. Linux is the gate. macOS uses the same script on the macos-26
-# runner this repository already uses for desktop CI.
+# Prove install, the first launch, and a stub agent session finish in under
+# 60 seconds. The script owns the clock and the pass/fail line. On a pull
+# request the installer is this checkout's scripts/install.sh (the binary
+# is still the latest release). Pushes and manual runs use
+# https://phux.sh/install. The job summary names which installer ran.
+# Linux is the gate. macOS uses the same script on the macos-26 runner
+# this repository already uses for desktop CI.
 name: first-run timing
 
 on:
@@ -26,7 +29,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Time the public install through a stub agent
+      - name: Time install through a stub agent
+        env:
+          PHUX_INSTALL_URL: ${{ github.event_name == 'pull_request' && format('{0}/scripts/install.sh', github.workspace) || 'https://phux.sh/install' }}
         run: bash scripts/first-run-timing.sh
 
   macos:
@@ -37,5 +42,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Time the public install through a stub agent
+      - name: Time install through a stub agent
+        env:
+          PHUX_INSTALL_URL: ${{ github.event_name == 'pull_request' && format('{0}/scripts/install.sh', github.workspace) || 'https://phux.sh/install' }}
         run: bash scripts/first-run-timing.sh

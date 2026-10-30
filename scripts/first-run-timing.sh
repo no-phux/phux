@@ -40,6 +40,7 @@ print_summary() {
   printf 'fail:  total >= 60.000s, or no agent kind and state\n'
   printf 'poll:  agent list every %ss\n' "$POLL_S"
   printf 'omit:  runner setup and checkout; a new login shell after install\n'
+  printf 'installer: %s\n' "$INSTALL_URL"
   printf '\n'
   printf '%-24s %10s\n' 'phase' 'seconds'
   printf '%-24s %10s\n' 'download and install' "$(seconds "$install_ns")"
@@ -69,6 +70,7 @@ self_test() {
   grep -Fq '1.000' <<<"$summary"
   grep -Fq '6.000' <<<"$summary"
   grep -Fq 'pass' <<<"$summary"
+  grep -Fq 'installer:' <<<"$summary"
   echo "first-run timing self-test passed"
 }
 
@@ -118,9 +120,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
+write_step_summary() {
+  [[ -n ${GITHUB_STEP_SUMMARY:-} ]] || return 0
+  {
+    echo "### First-run timing"
+    echo
+    echo "Installer: \`$INSTALL_URL\`"
+    echo
+    echo '```'
+    print_summary
+    echo '```'
+  } >>"$GITHUB_STEP_SUMMARY"
+}
+
 finish() {
   print_summary
+  write_step_summary
   exit "$1"
+}
+
+run_installer() {
+  case "$INSTALL_URL" in
+    https://* | http://*)
+      curl -fsSL "$INSTALL_URL" | sh
+      ;;
+    /*)
+      [[ -f "$INSTALL_URL" ]] || fail "installer not found: $INSTALL_URL"
+      sh "$INSTALL_URL"
+      ;;
+    *)
+      fail "installer must be an https URL or an absolute path: $INSTALL_URL"
+      ;;
+  esac
 }
 
 fail() {
@@ -152,7 +183,7 @@ export SHELL="${SHELL:-/bin/sh}"
 phase=install
 t0="$(now_ns)"
 phase_mark=$t0
-curl -fsSL "$INSTALL_URL" | sh || fail "public install failed"
+run_installer || fail "install failed: $INSTALL_URL"
 phux_bin="$HOME/.local/bin/phux"
 [[ -x $phux_bin ]] || fail "installer did not write $phux_bin"
 export PATH="$HOME/.local/bin:$PATH"
