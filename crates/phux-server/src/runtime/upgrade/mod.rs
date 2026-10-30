@@ -205,6 +205,20 @@ impl Drop for NativeBrokerSeal {
 /// pane master, and validate the on-disk binary. Returns a [`UpgradePlan`] the
 /// caller execs *after* acking the client.
 pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
+    // Sidecars stop before anything irreversible. A failure below starts
+    // them again; a successful exec replaces the process, and the resumed
+    // image starts them after accept. They are not in the state blob.
+    crate::plugin_startup::pause(state).await;
+    match prepare_upgrade_inner(state).await {
+        Ok(plan) => Ok(plan),
+        Err(err) => {
+            crate::plugin_startup::resume(state);
+            Err(err)
+        }
+    }
+}
+
+async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
     let native_seal = NativeBrokerSeal::new(state)?;
     let UpgradeContext {
         listener_fd,
