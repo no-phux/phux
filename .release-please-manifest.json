@@ -1,8 +1,8 @@
 {
-  ".": "0.114.0",
+  ".": "0.115.0",
   "clients/desktop": "0.52.0",
   "integrations/pi": "0.8.1",
-  "integrations/opencode-v2": "0.7.1",
+  "integrations/opencode-v2": "0.8.0",
   "integrations/claude": "0.7.0",
   "integrations/omp": "0.4.1",
   "integrations/grok": "0.3.0"

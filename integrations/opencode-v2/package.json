@@ -1,6 +1,6 @@
 {
   "name": "@phux/opencode",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "phux integration for OpenCode: terminal tools, agent status, and live panes in OpenCode Desktop.",
   "homepage": "https://docs.phux.sh/",
   "type": "module",
