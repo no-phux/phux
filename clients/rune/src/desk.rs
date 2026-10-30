@@ -15,12 +15,13 @@ use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::control::{Event, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, Listener, ViewId};
-use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId};
+use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
 use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
+mod attach;
 mod find;
 mod frame;
 mod inbox;
@@ -31,8 +32,10 @@ mod mouse;
 mod palette;
 mod sessions;
 mod settings;
+mod tabs;
 
 pub use layout::SplitPath;
+pub use tabs::{Renaming, Tab};
 
 /// Wakes Rune's loop from the runtime's driver thread. Only posts; never
 /// re-enters the client.
@@ -72,7 +75,14 @@ pub enum Pending {
     Paste(String),
     /// Closing a terminal that is running a command.
     Close(ResourceId),
+    /// Closing every terminal of a tab.
+    CloseTab(Vec<ResourceId>),
+    /// Ending a session and everything in it.
+    CloseSession(SessionKey, String),
 }
+
+/// Where a spawned terminal goes in the arrangement.
+type Placement = Option<(ResourceId, SplitDir)>;
 
 /// The terminal on screen.
 pub struct Shown {
@@ -112,6 +122,9 @@ pub struct Desk {
     pub inbox: inbox::Inbox,
     pub settings: settings::Settings,
     pub settings_open: bool,
+    pub tabs: tabs::Tabs,
+    /// Image uploads on their way, and the terminal each is for.
+    uploads: Vec<(u64, ResourceId)>,
     /// Settings that outlive the window: text size, the sidebar.
     prefs: rune::prefs::Prefs,
     /// What every terminal is doing, for the sidebar's marks.
@@ -143,13 +156,14 @@ pub struct Desk {
     pub zoomed: Option<ResourceId>,
     /// A divider drag's split and ratio, previewed until release.
     pub(crate) dragging: Option<(SplitPath, f32)>,
-    /// Spawned splits waiting for the session's arrangement: the pane split,
-    /// the new terminal, the direction, and since when.
-    unplaced_splits: Vec<(ResourceId, ResourceId, SplitDir, Instant)>,
+    /// Spawned splits and tabs waiting for the session's arrangement: the
+    /// new terminal, where it goes, and since when.
+    unplaced_splits: Vec<(ResourceId, Placement, Instant)>,
     /// Arrangement writes this window made, to report a refusal.
     layout_ops: HashSet<OperationId>,
-    /// Spawns that become splits: the pane split and the direction.
-    pending_splits: HashMap<u32, (ResourceId, SplitDir)>,
+    /// Spawns that become splits (the pane split and the direction) or, with
+    /// `None`, tabs.
+    pending_splits: HashMap<u32, Placement>,
     /// The pane the wheel last moved, owning `wheel_rows`.
     wheel_pane: Option<ResourceId>,
     /// The pane whose program took the last press, until its release.
@@ -203,6 +217,8 @@ impl Desk {
             inbox: inbox::Inbox::default(),
             settings,
             settings_open: false,
+            tabs: tabs::Tabs::default(),
+            uploads: Vec::new(),
             prefs,
             preedit: None,
             activities: crate::activity::Activities::default(),
@@ -291,9 +307,10 @@ impl Desk {
         }
         changed |= self.open_wanted(&client);
         self.title(tx);
-        if changed || events {
+        if changed || events || self.layout_is_stale() {
             changed |= self.refresh_layout(&client);
         }
+        self.finish_uploads(&client);
         self.sync_alerts();
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
@@ -331,8 +348,8 @@ impl Desk {
                 terminal_id: Some(new),
                 ..
             } if self.pending_splits.contains_key(&request_id) => {
-                if let Some((target, dir)) = self.pending_splits.remove(&request_id) {
-                    self.place_split(client, &target, &new, dir);
+                if let Some(placement) = self.pending_splits.remove(&request_id) {
+                    self.place_split(client, &new, placement);
                 }
                 true
             }

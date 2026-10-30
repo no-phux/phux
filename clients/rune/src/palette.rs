@@ -35,11 +35,14 @@ pub struct Hit {
 }
 
 const ACTIONS: &[(Shortcut, &str, &str)] = &[
-    (Shortcut::NewTerminal, "New terminal", "⌘T"),
+    (Shortcut::NewTerminal, "New tab", "⌘T"),
     (Shortcut::NewSession, "New session", "⌘N"),
     (Shortcut::JumpToAttention, "Jump to what needs you", "⌘J"),
     (Shortcut::Inbox, "Open inbox", "⌘I"),
     (Shortcut::Settings, "Settings", "⌘,"),
+    (Shortcut::RenameSession, "Rename session", ""),
+    (Shortcut::RenameTab, "Rename tab", ""),
+    (Shortcut::CloseSession, "Close session", ""),
     (Shortcut::SplitRight, "Split right", "⌘D"),
     (Shortcut::SplitDown, "Split down", "⌘⇧D"),
     (Shortcut::ZoomPane, "Zoom pane", "⌘⇧↩"),
@@ -216,7 +219,7 @@ mod tests {
 
     #[test]
     fn ranking_puts_the_best_title_first_and_falls_back_to_details() {
-        let hits = rank(items(None), "new term");
+        let hits = rank(items(None), "new tab");
         assert_eq!(hits[0].item.target, Target::Action(Shortcut::NewTerminal));
     }
 

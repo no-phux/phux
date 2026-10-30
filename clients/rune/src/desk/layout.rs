@@ -13,7 +13,7 @@ use phux_client_runtime::Client;
 use phux_client_runtime::control::SpawnRequest;
 use phux_protocol::ids::{ResourceId, SessionKey};
 
-use super::Desk;
+use super::{Desk, Placement};
 
 /// The steps from the root to a split: `false` left/top, `true` right/bottom.
 pub type SplitPath = Vec<bool>;
@@ -24,7 +24,7 @@ const MIN_RATIO: f32 = 0.1;
 impl Desk {
     /// The selected session's key, and its arrangement when the replica
     /// holds it (fetching it once when it does not).
-    fn arrangement(&mut self, client: &Client) -> Option<(SessionKey, ArrangementDoc)> {
+    pub(super) fn arrangement(&mut self, client: &Client) -> Option<(SessionKey, ArrangementDoc)> {
         let selected = client.selected_session()?;
         let session = self
             .topology
@@ -33,7 +33,9 @@ impl Desk {
             .iter()
             .find(|s| s.id == selected)?;
         let key = session.key?;
-        if let Some((_, _, doc, _)) = client.organization().arrangement_document(&key) {
+        if let Some((_, _, mut doc, _)) = client.organization().arrangement_document(&key) {
+            let shown = self.shown.as_ref().map(|s| &s.terminal);
+            super::tabs::focus_group(&mut doc, shown);
             return Some((key, doc));
         }
         if let Some(arrangement) = session.arrangement
@@ -42,6 +44,14 @@ impl Desk {
             let _ = client.fetch_arrangement(arrangement);
         }
         None
+    }
+
+    /// The keyboard moved to a terminal the layout doesn't hold (another tab).
+    pub(super) fn layout_is_stale(&self) -> bool {
+        match (&self.layout, &self.shown) {
+            (Some(tree), Some(shown)) => !leaves(tree).contains(&shown.terminal),
+            _ => false,
+        }
     }
 
     /// Recompute what the terminal area shows: the arrangement's active
@@ -63,6 +73,7 @@ impl Desk {
             // the stored tree, so it is pruned here, never written.
             .and_then(|tree| prune(tree, &listed, &shown))
             .filter(|tree| leaves(tree).contains(&shown));
+        self.sync_tabs(client, &listed);
         let tree = match (&self.zoomed, tree) {
             (Some(zoomed), Some(tree)) if leaves(&tree).contains(zoomed) => {
                 LayoutNode::Leaf(zoomed.clone())
@@ -165,20 +176,14 @@ impl Desk {
             initial_size: None,
         });
         self.pending_splits
-            .insert(request, (shown.terminal.clone(), dir));
+            .insert(request, Some((shown.terminal.clone(), dir)));
         self.zoomed = None;
     }
 
-    /// Queue a spawned terminal for placement beside its split's target.
-    pub(super) fn place_split(
-        &mut self,
-        client: &Client,
-        target: &ResourceId,
-        new: &ResourceId,
-        dir: SplitDir,
-    ) {
+    /// Queue a spawned terminal for placement.
+    pub(super) fn place_split(&mut self, client: &Client, new: &ResourceId, place: Placement) {
         self.unplaced_splits
-            .push((target.clone(), new.clone(), dir, std::time::Instant::now()));
+            .push((new.clone(), place, std::time::Instant::now()));
         self.place_pending_splits(client);
     }
 
@@ -188,13 +193,17 @@ impl Desk {
     fn place_pending_splits(&mut self, client: &Client) {
         const PATIENCE: std::time::Duration = std::time::Duration::from_secs(3);
         let pending = std::mem::take(&mut self.unplaced_splits);
-        for (target, new, dir, since) in pending {
+        for (new, place, since) in pending {
             if self.arrangement(client).is_some() {
-                self.write_split(client, &target, &new, dir);
+                match &place {
+                    Some((target, dir)) => self.write_split(client, target, &new, *dir),
+                    None => self.write_tab(client, &new),
+                }
             } else if since.elapsed() < PATIENCE {
-                self.unplaced_splits.push((target, new, dir, since));
+                self.unplaced_splits.push((new, place, since));
             } else {
-                self.notice = Some("The split could not be saved; it shows on its own.".to_owned());
+                self.notice =
+                    Some("The layout could not be saved; it shows on its own.".to_owned());
                 self.want(new);
             }
         }
@@ -222,12 +231,7 @@ impl Desk {
             if let Ok(split) = split_at(&base, target, new, dir, 0.5) {
                 group.tree = Some(split);
                 group.focus = Some(new.clone());
-                match client.replace_arrangement(session, &doc) {
-                    Ok(operation) => {
-                        self.layout_ops.insert(operation);
-                    }
-                    Err(error) => self.notice = Some(format!("Split not saved: {error}")),
-                }
+                self.write_arrangement(client, session, &doc, "Split not saved");
             }
         }
         self.want(new.clone());
@@ -266,12 +270,7 @@ impl Desk {
                 .and_then(|t| with_ratio(t, &path, ratio))
         {
             group.tree = Some(tree);
-            match client.replace_arrangement(session, &doc) {
-                Ok(operation) => {
-                    self.layout_ops.insert(operation);
-                }
-                Err(error) => self.notice = Some(format!("Divider not saved: {error}")),
-            }
+            self.write_arrangement(&client, session, &doc, "Divider not saved");
         }
         self.refresh_layout(&client);
         self.fit();

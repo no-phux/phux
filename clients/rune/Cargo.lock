@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "objc2 0.5.3",
  "objc2-foundation 0.2.2",

@@ -47,6 +47,11 @@ pub enum Shortcut {
     FindSelection,
     Inbox,
     Settings,
+    /// The tab at this index.
+    Tab(u8),
+    RenameSession,
+    RenameTab,
+    CloseSession,
 }
 
 pub fn mods(mods: Mods) -> ModSet {
@@ -202,6 +207,7 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
         'j' => Shortcut::JumpToAttention,
         'i' => Shortcut::Inbox,
         ',' | '<' => Shortcut::Settings,
+        c @ '1'..='9' => Shortcut::Tab(c as u8 - b'1'),
         'w' => Shortcut::CloseTerminal,
         'd' if mods.shift && cfg!(target_os = "macos") => Shortcut::SplitDown,
         'd' => Shortcut::SplitRight,

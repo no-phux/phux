@@ -42,6 +42,9 @@ impl Desk {
             }
             return true;
         }
+        if self.tabs.renaming.is_some() {
+            return true;
+        }
         if self.palette_open {
             // The field has the keys; only the chord that closes it gets here.
             let physical = tx.physical_key();
@@ -135,9 +138,13 @@ impl Desk {
         match action {
             Shortcut::Copy => self.copy(tx),
             Shortcut::Paste => tx.read_clipboard(|desk: &mut Desk, content, _| {
-                desk.paste(content.text());
+                desk.paste_content(content);
             }),
-            Shortcut::NewTerminal => self.new_terminal(),
+            Shortcut::NewTerminal => self.new_tab(),
+            Shortcut::Tab(index) => self.select_tab(usize::from(index)),
+            Shortcut::RenameSession => self.rename_selected_session(),
+            Shortcut::RenameTab => self.rename_active_tab(),
+            Shortcut::CloseSession => self.close_session(),
             Shortcut::NewSession => self.new_session(),
             Shortcut::NextTerminal => self.cycle(1),
             Shortcut::PreviousTerminal => self.cycle(-1),
@@ -203,6 +210,18 @@ impl Desk {
         match self.pending.take() {
             Some(Pending::Paste(text)) => self.send_paste(&text),
             Some(Pending::Close(terminal)) => self.close_now(&terminal),
+            Some(Pending::CloseTab(terminals)) => {
+                if let Some(client) = &self.client {
+                    let _ = client.close_terminals(terminals);
+                }
+            }
+            Some(Pending::CloseSession(key, _)) => {
+                if let Some(client) = &self.client
+                    && let Err(error) = client.kill_session(key)
+                {
+                    self.notice = Some(format!("Session not closed: {error}"));
+                }
+            }
             None => {}
         }
     }

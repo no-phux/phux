@@ -50,11 +50,11 @@ fn chip(
         .hover(ink.accent.alpha(0.16))
         .cursor(rune::Cursor::Pointer)
         .child(text(answer.to_owned()).font(CAPTION).color(ink.text))
-        .children(
-            index
-                .filter(|i| *i < 9)
-                .map(|i| text(format!("⌘{}", i + 1)).font(CAPTION).color(ink.dim)),
-        );
+        .children(index.filter(|i| *i < 9).map(|i| {
+            text(format!("{}{}", super::MOD, i + 1))
+                .font(CAPTION)
+                .color(ink.dim)
+        }));
     if busy {
         return chip.opacity(0.5);
     }
@@ -200,8 +200,24 @@ fn approval_card(approval: &Approval, ink: &Ink) -> El {
         row()
             .w_full()
             .gap(6.0)
-            .child(decide(Decision::Deny, "Deny  ⌘⌫", false))
-            .child(decide(Decision::Approve, "Approve  ⌘↩", true)),
+            .child(decide(
+                Decision::Deny,
+                if cfg!(target_os = "macos") {
+                    "Deny  ⌘⌫"
+                } else {
+                    "Deny"
+                },
+                false,
+            ))
+            .child(decide(
+                Decision::Approve,
+                if cfg!(target_os = "macos") {
+                    "Approve  ⌘↩"
+                } else {
+                    "Approve"
+                },
+                true,
+            )),
     )
 }
 
@@ -343,7 +359,7 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
             if busy {
                 "sending…".to_owned()
             } else {
-                "⌘I to reply".to_owned()
+                format!("{}I to reply", super::MOD)
             },
             ink,
         ))

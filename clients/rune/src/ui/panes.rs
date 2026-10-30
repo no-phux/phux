@@ -111,8 +111,14 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .as_ref()
         .zip(view)
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
-    let (laid, wheel, press, moved, left) =
-        (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
+    let (laid, wheel, press, moved, left, dropped) = (
+        id.clone(),
+        id.clone(),
+        id.clone(),
+        id.clone(),
+        id.clone(),
+        id.clone(),
+    );
     let host = el()
         .key(format!("pane-host-{id}"))
         .w_full()
@@ -162,6 +168,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .on_pointer_move_local(move |d: &mut Desk, event, tx| {
             d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods().cmd);
         })
+        .on_drop_files(move |d: &mut Desk, paths, _| d.drop_files(&dropped, paths))
         .on_hover_change(move |d: &mut Desk, inside, _| {
             if !inside {
                 d.pointer_left(&left);

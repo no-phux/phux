@@ -14,7 +14,14 @@ mod panes;
 pub(crate) use panes::DIVIDER;
 mod settings;
 mod sidebar;
+mod tabs;
 
+/// The app chord's modifier as shown beside an action.
+pub(crate) const MOD: &str = if cfg!(target_os = "macos") {
+    "⌘"
+} else {
+    "Ctrl+"
+};
 const SIDEBAR_W: f32 = 236.0;
 /// The band the macOS traffic lights sit in when they draw over content.
 const TITLEBAR_H: f32 = 38.0;
@@ -122,6 +129,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .min_w(0.0)
                 .min_h(0.0)
                 .children(top)
+                .children(tabs::strip(desk, &p))
                 .children(confirm_bar(desk, &p))
                 .child(panes::view(desk, &p, cx))
                 .child(el().w_full().h(1.0).fill(p.separator))
@@ -131,10 +139,11 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .h_full()
         .fill(p.bg)
         // Rune hands the root pastes nothing focused took (Edit ▸ Paste).
-        .on_paste(|desk: &mut Desk, text, _| desk.paste(text))
+        .on_paste_content(|desk: &mut Desk, content, _| desk.paste_content(content))
         .child(main)
         .children(desk.inbox.open.then(|| inbox::view(desk, &p)))
         .children(desk.settings_open.then(|| settings::view(desk, &p)))
+        .children(tabs::rename_sheet(desk, &p))
         .children(desk.palette_open.then(|| palette::view(desk, &p)))
 }
 
@@ -168,6 +177,17 @@ fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
         Pending::Close(terminal) => (
             format!("Close {terminal}? Anything running in it ends."),
             "Close (Return)",
+        ),
+        Pending::CloseTab(terminals) => (
+            format!(
+                "Close this tab's {} terminal(s)? Anything running ends.",
+                terminals.len()
+            ),
+            "Close (Return)",
+        ),
+        Pending::CloseSession(_, name) => (
+            format!("End session {name} and everything running in it?"),
+            "End session (Return)",
         ),
     };
     Some(

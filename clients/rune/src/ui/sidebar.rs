@@ -89,6 +89,13 @@ fn inbox_button(desk: &Desk, ink: &Ink) -> El {
 }
 
 fn session_header(desk: &Desk, id: u32, name: &str, current: bool, ink: &Ink) -> El {
+    let key = desk
+        .topology
+        .iter()
+        .flat_map(|t| t.sessions.iter())
+        .find(|s| s.id == id)
+        .and_then(|s| s.key);
+    let label = name.to_owned();
     let waiting = desk
         .topology
         .iter()
@@ -103,6 +110,11 @@ fn session_header(desk: &Desk, id: u32, name: &str, current: bool, ink: &Ink) ->
         .px(8.0)
         .gap(6.0)
         .items_center()
+        .on_double_press(move |d: &mut Desk| {
+            if let Some(key) = key {
+                d.rename_session(key, &label);
+            }
+        })
         .child(
             text(name.to_uppercase())
                 .font(TextStyle::new(10.5, 650.0).tracking(0.6))
