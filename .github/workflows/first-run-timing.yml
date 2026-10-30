@@ -1,0 +1,41 @@
+# Prove a clean public install, the first launch, and a stub agent session
+# finish in under 60 seconds. The script owns the clock and the pass/fail
+# line. Linux is the gate. macOS uses the same script on the macos-26
+# runner this repository already uses for desktop CI.
+name: first-run timing
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: first-run-timing-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: linux install to first agent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Time the public install through a stub agent
+        run: bash scripts/first-run-timing.sh
+
+  macos:
+    name: macos install to first agent
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Time the public install through a stub agent
+        run: bash scripts/first-run-timing.sh
