@@ -149,6 +149,9 @@ pub(super) fn default_pane(topology: &Topology) -> Option<ResourceId> {
         .map(|p| p.terminal_id.clone())
 }
 
+/// Lines of history each terminal keeps on hand and asks the server for.
+const SCROLLBACK_LINES: u32 = 16_384;
+
 /// Dials on the runtime's thread: a machine that's away shows as connecting.
 pub(super) fn connect(target: Target, session: Option<String>) -> Result<Client, String> {
     let attach = session.map_or(AttachTarget::Last, AttachTarget::ByName);
@@ -160,6 +163,7 @@ pub(super) fn connect(target: Target, session: Option<String>) -> Result<Client,
                 viewport: (0, 0),
                 attach: Some(attach),
                 attach_role: Some(RolePolicy::PRIMARY),
+                scrollback_lines: SCROLLBACK_LINES,
                 ..ControlOptions::default()
             },
             ..ClientOptions::default()
