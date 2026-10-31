@@ -3,7 +3,7 @@ import { required, UsageError, type Command } from "../lib/command.ts";
 import { writeSection } from "./changelog-section.ts";
 import { main as dispatchIntegrations } from "./dispatch-integrations.ts";
 import { main as nextPlan } from "./next-plan.ts";
-import { main as publishPlan } from "./publish-plan.ts";
+import { ciGreen, main as publishPlan } from "./publish-plan.ts";
 import { releaseDrift } from "./release-drift.ts";
 import { releaseManifest } from "./release-manifest.ts";
 
@@ -14,6 +14,15 @@ export const commands: Record<string, Command> = {
     summary:
       "Choose the drafts release.yml ships and delete superseded ones (env in, outputs out).",
     run: () => publishPlan(),
+  },
+  "ci-green": {
+    summary: "Fail unless SHA has a successful push ci.yml run on main.",
+    usage: "SHA",
+    run(args) {
+      const [sha, ...extra] = parseArgs({ args, allowPositionals: true }).positionals;
+      if (sha === undefined || extra.length > 0) throw new UsageError("expected one SHA");
+      return ciGreen(sha);
+    },
   },
   "release-manifest": releaseManifest,
   "next-plan": {

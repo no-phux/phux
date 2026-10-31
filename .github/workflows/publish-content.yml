@@ -1,0 +1,59 @@
+# Republish what no-phux/website reads and no-phux/skills mirrors, after a
+# green main push that touched them (ci.yml's `content` job). GITHUB_TOKEN can
+# write neither repository, and GitHub drops repository_dispatch from it, so
+# both use the release App.
+name: Publish content
+
+on:
+  workflow_call:
+    secrets:
+      RELEASE_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  content:
+    name: publish content
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: no-phux
+          repositories: website,skills
+      - name: rebuild phux.sh
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh api repos/no-phux/website/dispatches \
+            -f event_type=phux-content -f "client_payload[sha]=${GITHUB_SHA}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: no-phux/skills
+          token: ${{ steps.app-token.outputs.token }}
+          path: .skills-mirror
+          persist-credentials: true
+      - name: mirror product skills
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          bash scripts/export-product-skills.sh .skills-mirror
+          shortsha="$(git rev-parse --short HEAD)"
+          cd .skills-mirror
+          git add -A
+          if git diff --cached --quiet; then echo "skills mirror already in sync"; exit 0; fi
+          user_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${user_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git commit -m "sync: product skills from no-phux/phux@${shortsha}"
+          git push

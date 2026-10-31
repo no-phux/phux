@@ -191,6 +191,23 @@ function ciConclusion(repository: string, sha: string): string {
   return validationState(runs, sha, ".github/workflows/ci.yml");
 }
 
+/** Why `sha` must not ship, or undefined when main's ci passed on that exact commit. */
+export function ciRefusal(state: string, sha: string): string | undefined {
+  if (state === "success") return undefined;
+  if (PENDING.has(state)) return `no finished ci.yml push run on main for ${sha}; rerun when green`;
+  return `ci.yml is ${state} on main for ${sha}`;
+}
+
+/** Fail a tag whose commit main hasn't proved: rune-client.yml's preflight. */
+export function ciGreen(sha: string): number {
+  const repository = process.env["GITHUB_REPOSITORY"];
+  if (!repository) throw new Failure("GITHUB_REPOSITORY is unset");
+  const refusal = ciRefusal(ciConclusion(repository, sha), sha);
+  if (refusal === undefined) return 0;
+  console.error(`::error::${refusal}`);
+  return 1;
+}
+
 const tagSha = (tag: string): string =>
   git(["rev-parse", "--verify", `refs/tags/${tag}^{commit}`], process.cwd()).trim();
 

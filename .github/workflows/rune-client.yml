@@ -1,45 +1,11 @@
 name: Rune client
 
-# The alpha desktop client on Rune (clients/rune). It has its own Cargo
-# workspace, so the main CI lanes never build it; this lane does, for its
-# own changes and for the client crates it depends on. A `rune-vVERSION`
-# tag also packages it and publishes a GitHub prerelease.
+# A `rune-vVERSION` tag publishes the Rune client (clients/rune): a tag clients
+# can read, on a commit main already proved, builds in rune-build.yml and
+# becomes a GitHub release. Pull requests and main reach the same build as
+# ci.yml's `rune` lane, so the required check never waits on a path filter.
 on:
-  pull_request:
-    paths:
-      - .github/workflows/rune-client.yml
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - .cargo/config.toml
-      - clients/rune/**
-      - clients/desktop/packaging/AppIcon.png
-      - crates/quictun/**
-      - crates/phux-client-runtime/**
-      - crates/phux-client-core/**
-      - crates/phux-config-core/**
-      - crates/phux-core/**
-      - crates/phux-dial/**
-      - crates/phux-perf/**
-      - crates/phux-protocol/**
   push:
-    branches: [main]
-    paths:
-      - .github/workflows/rune-client.yml
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - .cargo/config.toml
-      - clients/rune/**
-      - clients/desktop/packaging/AppIcon.png
-      - crates/quictun/**
-      - crates/phux-client-runtime/**
-      - crates/phux-client-core/**
-      - crates/phux-config-core/**
-      - crates/phux-core/**
-      - crates/phux-dial/**
-      - crates/phux-perf/**
-      - crates/phux-protocol/**
     tags: ["rune-v*"]
 
 permissions:
@@ -47,100 +13,43 @@ permissions:
 
 concurrency:
   group: rune-client-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: false
 
 jobs:
-  build:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-26
-            name: macos-arm64
-          - os: ubuntu-24.04
-            name: linux-x86_64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+  preflight:
+    name: tag preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config mold libxkbcommon-dev libwayland-dev
-      - name: Toolchains
-        run: |
-          bash scripts/setup-rust.sh core
-          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
-      - name: Format
-        working-directory: clients/rune
-        run: cargo fmt --check
-      - name: Clippy
-        working-directory: clients/rune
-        run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Test
-        working-directory: clients/rune
-        run: cargo test --locked
-      - name: Require Apple signing configuration before building
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
-        env:
-          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
-          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: bash scripts/ci/sign-macos-desktop.sh --check-config
-      - name: Version matches the tag
-        if: startsWith(github.ref, 'refs/tags/rune-v')
+      - uses: ./.github/actions/setup-bun
+      - name: The tag, Cargo.toml and the release notes agree
         env:
           TAG: ${{ github.ref_name }}
-        run: |
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
-          [[ "rune-v$version" == "$TAG" ]] || { echo "Cargo.toml is $version, tag is $TAG" >&2; exit 1; }
-      - name: Package
+        run: python3 clients/rune/scripts/feed.py preflight "$TAG" clients/rune/Cargo.toml clients/rune/RELEASE_NOTES.md
+      # Tag after ci finishes on main; rerun this job if it was still going.
+      - name: The commit is on main with a green ci
         env:
-          REF: ${{ github.ref_name }}
-        run: |
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
-          bash clients/rune/scripts/package.sh "$version" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/app"
-      # Releases ship the app the way the GPUI desktop does: Developer ID
-      # signed with the hardened runtime, notarized and stapled, so it opens
-      # from Finder without a Gatekeeper override.
-      - name: Sign, notarize and staple the macOS app
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/rune-v')
-        env:
-          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
-          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' clients/rune/Cargo.toml | head -1)"
-          archive="phux-rune-$version-macos-arm64.zip"
-          rm "$RUNNER_TEMP/dist/$archive" "$RUNNER_TEMP/dist/$archive.sha256"
-          bash scripts/ci/sign-macos-desktop.sh --zip-only "$RUNNER_TEMP/app/Phux Rune.app" "$RUNNER_TEMP/signed/$archive"
-          mv "$RUNNER_TEMP/signed/$archive" "$RUNNER_TEMP/dist/$archive"
-          cd "$RUNNER_TEMP/dist"
-          shasum -a 256 "$archive" > "$archive.sha256"
-          # What a download gets: the stapled ticket, and Gatekeeper's yes.
-          mkdir "$RUNNER_TEMP/verify"
-          ditto -x -k "$archive" "$RUNNER_TEMP/verify"
-          xcrun stapler validate "$RUNNER_TEMP/verify/Phux Rune.app"
-          spctl --assess --type execute --verbose=2 "$RUNNER_TEMP/verify/Phux Rune.app"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: rune-${{ matrix.name }}
-          path: ${{ runner.temp }}/dist/*
-          if-no-files-found: error
-          retention-days: 14
+          GH_TOKEN: ${{ github.token }}
+        run: bun tools/main.ts ci-green "$GITHUB_SHA"
+
+  build:
+    needs: preflight
+    uses: ./.github/workflows/rune-build.yml
+    secrets:
+      APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+      APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+      APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
 
   release:
-    name: publish prerelease
-    if: startsWith(github.ref, 'refs/tags/rune-v')
+    name: publish
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -165,21 +74,21 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          python3 clients/rune/scripts/feed.py "${TAG#rune-v}" "$GITHUB_SHA" dist \
+          python3 clients/rune/scripts/feed.py build "${TAG#rune-v}" "$GITHUB_SHA" dist \
             crates/phux-protocol/src/lib.rs > "$RUNNER_TEMP/rune.json"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          # A prerelease, never "latest": installers and the release tooling
+          # Never "latest", even at 0.1.0: installers and the release tooling
           # resolve the CLI and the GPUI desktop from their own tags.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
+            mapfile -t flags < <(python3 clients/rune/scripts/feed.py release-flags "${TAG#rune-v}")
             gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
-              --prerelease --latest=false --verify-tag \
-              --title "Phux Rune ${TAG#rune-v} (alpha)" \
+              "${flags[@]}" --latest=false --verify-tag \
               --notes-file clients/rune/RELEASE_NOTES.md
           fi
       # Last, so no client hears of a release before its assets exist.
@@ -188,8 +97,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          # Rerunning an old tag must not move the feed backwards.
-          newest="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
-            --jq '.[].tagName | select(startswith("rune-v"))' | sort -V | tail -1)"
+          set -euo pipefail
+          # Rerunning an old tag must not move the feed backwards. feed.py
+          # orders as clients do, and fails on a tag they couldn't read.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --exclude-drafts \
+            --json tagName --jq '.[].tagName' > "$RUNNER_TEMP/tags"
+          newest="$(python3 clients/rune/scripts/feed.py newest < "$RUNNER_TEMP/tags")"
           [[ "$newest" == "$TAG" ]] || { echo "$newest is newer; feed unchanged"; exit 0; }
           gh release upload channels "$RUNNER_TEMP/rune.json" --clobber --repo "$GITHUB_REPOSITORY"
