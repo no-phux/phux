@@ -339,6 +339,8 @@ impl Desk {
             // are known by id, and what arrived during the gap is new.
             if self.epoch == 0 {
                 self.inbox.alerts.connected();
+            } else {
+                self.inbox.relist = true;
             }
             self.epoch = observation.connection_epoch;
             changed |= self.reopen_after_reconnect(&client);

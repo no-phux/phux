@@ -1,7 +1,8 @@
 //! System notifications for what needs you while you are looking elsewhere,
 //! and the Dock's count.
 //!
-//! An alert is posted once, when its item first appears out of sight, and
+//! Only macOS posts: elsewhere `rune_mac::notify` is empty, and Settings says
+//! so. An alert is posted once, when its item first appears out of sight, and
 //! taken back when it is answered or comes into view. Clicks arrive on a
 //! system thread, so they queue here for the next poll.
 
@@ -82,6 +83,15 @@ pub fn alert(item: &Item) -> Option<Alert> {
                 },
             })
         }
+    }
+}
+
+/// What Settings can truthfully promise.
+pub const fn notifications_detail(available: bool, macos: bool) -> &'static str {
+    match (available, macos) {
+        (true, _) => "When an agent asks, finishes, or an action is held, and you're elsewhere.",
+        (false, true) => "Needs the installed app; this build can't post.",
+        (false, false) => "macOS only so far. The sidebar and inbox show what needs you.",
     }
 }
 
@@ -196,6 +206,15 @@ impl Alerts {
         }
     }
 
+    /// Whether a click is waiting for `take_clicks`.
+    pub fn clicked(&self) -> bool {
+        !self
+            .clicks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+    }
+
     /// Where the clicks since the last call lead.
     pub fn take_clicks(&mut self) -> Vec<Target> {
         let clicks = std::mem::take(&mut *self.clicks.lock().unwrap_or_else(|e| e.into_inner()));
@@ -224,6 +243,13 @@ mod tests {
             body: String::new(),
             target,
         }
+    }
+
+    #[test]
+    fn settings_never_promises_what_cannot_post() {
+        assert!(notifications_detail(false, false).contains("macOS only"));
+        assert!(notifications_detail(false, true).contains("installed app"));
+        assert!(notifications_detail(true, true).contains("elsewhere"));
     }
 
     #[test]
