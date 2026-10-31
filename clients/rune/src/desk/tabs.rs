@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use phux_client_core::layout::{ArrangementDoc, leaves};
 use phux_client_runtime::Client;
 use phux_client_runtime::control::SpawnRequest;
-use phux_protocol::ids::{ResourceId, SessionKey};
+use phux_protocol::ids::{OperationId, ResourceId, SessionKey};
 use rune::{Key, KeyEvent, TextEdit, Tx};
 
 use super::{Desk, NoticeKind, Pending};
@@ -128,7 +128,7 @@ impl Desk {
         }
         let request = client.spawn_terminal(SpawnRequest {
             command: None,
-            cwd: None,
+            cwd: self.focused_cwd(),
             env: None,
             session_id: client.selected_session(),
             initial_size: None,
@@ -137,12 +137,11 @@ impl Desk {
         self.zoomed = None;
     }
 
-    pub(super) fn write_tab(&mut self, client: &Client, new: &ResourceId) {
-        if let Some((session, mut doc)) = self.arrangement(client) {
+    pub(super) fn write_tab(&mut self, client: &Client, new: &ResourceId) -> Option<OperationId> {
+        self.arrangement(client).and_then(|(session, mut doc)| {
             doc.add_group(doc.default_group_name(), new.clone());
-            self.write_arrangement(client, session, &doc, "Tab not saved");
-        }
-        self.want(new.clone());
+            self.submit_arrangement(client, session, &doc).ok()
+        })
     }
 
     pub(super) fn write_arrangement(
@@ -152,12 +151,23 @@ impl Desk {
         doc: &ArrangementDoc,
         failure: &str,
     ) {
-        match client.replace_arrangement(session, doc) {
-            Ok(operation) => {
-                self.layout_ops.insert(operation);
-            }
-            Err(error) => self.say(NoticeKind::Error, format!("{failure}: {error}")),
+        if let Err(error) = self.submit_arrangement(client, session, doc) {
+            self.say(NoticeKind::Error, format!("{failure}: {error}"));
         }
+    }
+
+    /// Send `doc`, remembering the operation to hear how it went.
+    pub(super) fn submit_arrangement(
+        &mut self,
+        client: &Client,
+        session: SessionKey,
+        doc: &ArrangementDoc,
+    ) -> Result<OperationId, String> {
+        let operation = client
+            .replace_arrangement(session, doc)
+            .map_err(|error| error.to_string())?;
+        self.layout_ops.insert(operation);
+        Ok(operation)
     }
 
     /// Close every terminal of a tab, asking first if the setting says to.

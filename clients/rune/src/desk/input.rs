@@ -208,19 +208,20 @@ impl Desk {
         let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
             return;
         };
+        let terminal = shown.terminal.clone();
         let bracketed = client
             .engine()
-            .is_some_and(|engine| engine.bracketed_paste(&shown.terminal).unwrap_or(false));
+            .is_some_and(|engine| engine.bracketed_paste(&terminal).unwrap_or(false));
         if paste_needs_confirmation(bracketed, text) {
-            self.pending = Some(Pending::Paste(text.to_owned()));
+            self.pending = Some(Pending::Paste(terminal, text.to_owned()));
             return;
         }
-        self.send_paste(text);
+        self.send_paste(&terminal, text);
     }
 
     pub fn confirm_pending(&mut self) {
         match self.pending.take() {
-            Some(Pending::Paste(text)) => self.send_paste(&text),
+            Some(Pending::Paste(terminal, text)) => self.send_paste(&terminal, &text),
             Some(Pending::Close(terminal)) => self.close_now(&terminal),
             Some(Pending::CloseTab(terminals)) => {
                 if let Some(client) = &self.client {
@@ -273,13 +274,21 @@ impl Desk {
         }
     }
 
-    fn send_paste(&self, text: &str) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
+    /// To the terminal it was meant for, wherever the keyboard went since.
+    fn send_paste(&mut self, terminal: &ResourceId, text: &str) {
+        let Some(client) = self.client.clone() else {
             return;
         };
+        if !self.lists(terminal) {
+            self.say(
+                NoticeKind::Error,
+                "That terminal closed; nothing was pasted.",
+            );
+            return;
+        }
         // The server brackets it per DEC 2004 and classifies it. A paste too
         // large for acknowledged input goes as one atomic event, unreceipted.
-        client.with_control(|control| control.apply_user_paste(&shown.terminal, text));
+        client.with_control(|control| control.apply_user_paste(terminal, text));
         client.wake();
     }
 
