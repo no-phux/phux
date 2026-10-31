@@ -20,6 +20,21 @@ pub enum Cap {
 }
 
 impl Cap {
+    fn accelerator_name(self) -> String {
+        match self {
+            Self::Char(c) => c.to_string(),
+            Self::Enter => "enter".to_owned(),
+            Self::Left => "left".to_owned(),
+            Self::Right => "right".to_owned(),
+            Self::Up => "up".to_owned(),
+            Self::Down => "down".to_owned(),
+            Self::Home => "home".to_owned(),
+            Self::End => "end".to_owned(),
+            Self::PageUp => "pageup".to_owned(),
+            Self::PageDown => "pagedown".to_owned(),
+        }
+    }
+
     fn mac_name(self) -> String {
         match self {
             Self::Char(c) => c.to_ascii_uppercase().to_string(),
@@ -88,6 +103,19 @@ impl Chord {
 
     const fn alt(self) -> Self {
         Self { alt: true, ..self }
+    }
+
+    /// The accelerator Rune parses for a native menu: `cmd+shift+d`.
+    pub fn accelerator(self) -> String {
+        let mods = [
+            (self.command, "cmd"),
+            (self.ctrl, "ctrl"),
+            (self.alt, "alt"),
+            (self.shift, "shift"),
+        ];
+        let held = mods.iter().filter(|(held, _)| *held).map(|(_, name)| *name);
+        let key = self.cap.accelerator_name();
+        held.chain([key.as_str()]).collect::<Vec<_>>().join("+")
     }
 
     /// As macOS writes it: `⇧⌘D`.
@@ -176,6 +204,15 @@ macro_rules! row {
             listed: true,
         }
     };
+    (mac $action:expr, $title:expr, [$($mac:expr),*]) => {
+        Command {
+            action: $action,
+            title: $title,
+            mac: &[$($mac),*],
+            linux: &[],
+            listed: cfg!(target_os = "macos"),
+        }
+    };
     (hidden $action:expr, $title:expr, [$($mac:expr),*], [$($linux:expr),*]) => {
         Command {
             action: $action,
@@ -195,129 +232,129 @@ macro_rules! tab {
 }
 
 pub const COMMANDS: &[Command] = &[
-    row!(Shortcut::NewTerminal, "New tab", [m('t')], [l('t')]),
-    row!(Shortcut::NewSession, "New session", [m('n')], [l('n')]),
+    row!(Shortcut::NewTerminal, "New Tab", [m('t')], [l('t')]),
+    row!(Shortcut::NewSession, "New Session", [m('n')], [l('n')]),
     row!(
         Shortcut::JumpToAttention,
-        "Jump to what needs you",
+        "Jump to What Needs You",
         [m('j'), m('a').shift()],
         [l('j')]
     ),
-    row!(Shortcut::Inbox, "Open inbox", [m('i')], [l('i')]),
+    row!(Shortcut::Inbox, "Open Inbox", [m('i')], [l('i')]),
     row!(Shortcut::Settings, "Settings", [m(',')], [l(',')]),
-    row!(Shortcut::CheckForUpdates, "Check for updates", [], []),
-    row!(Shortcut::InstallUpdate, "Update now", [], []),
-    row!(Shortcut::Machines, "Switch or add machine", [], []),
-    row!(Shortcut::RenameSession, "Rename session", [], []),
-    row!(Shortcut::RenameTab, "Rename tab", [], []),
-    row!(Shortcut::CloseSession, "Close session", [], []),
-    row!(Shortcut::SplitRight, "Split right", [m('d')], [l('d')]),
+    row!(Shortcut::CheckForUpdates, "Check for Updates", [], []),
+    row!(Shortcut::InstallUpdate, "Update Now", [], []),
+    row!(Shortcut::Machines, "Switch or Add Machine", [], []),
+    row!(Shortcut::RenameSession, "Rename Session", [], []),
+    row!(Shortcut::RenameTab, "Rename Tab", [], []),
+    row!(Shortcut::CloseSession, "Close Session", [], []),
+    row!(Shortcut::SplitRight, "Split Right", [m('d')], [l('d')]),
     row!(
         Shortcut::SplitDown,
-        "Split down",
+        "Split Down",
         [m('d').shift()],
         [l('e')]
     ),
     row!(
         Shortcut::ZoomPane,
-        "Zoom pane",
+        "Zoom Pane",
         [Chord::cmd(Cap::Enter).shift()],
         [Chord::ctrl(Cap::Enter).shift()]
     ),
     row!(
         Shortcut::CloseTerminal,
-        "Close terminal",
+        "Close Terminal",
         [m('w')],
         [l('w')]
     ),
     row!(
         Shortcut::CloseTab,
-        "Close tab",
+        "Close Tab",
         [m('w').shift()],
         [l('w').alt()]
     ),
-    row!(Shortcut::Find, "Find in terminal", [m('f')], [l('f')]),
+    row!(Shortcut::Find, "Find in Terminal", [m('f')], [l('f')]),
     row!(
         Shortcut::FindSelection,
-        "Find selected text",
+        "Find Selected Text",
         [m('e')],
         [l('e').alt()]
     ),
     row!(
         Shortcut::FocusLeft,
-        "Focus pane left",
+        "Focus Pane Left",
         [Chord::cmd(Cap::Left).alt()],
         [Chord::ctrl(Cap::Left).alt()]
     ),
     row!(
         Shortcut::FocusRight,
-        "Focus pane right",
+        "Focus Pane Right",
         [Chord::cmd(Cap::Right).alt()],
         [Chord::ctrl(Cap::Right).alt()]
     ),
     row!(
         Shortcut::FocusUp,
-        "Focus pane up",
+        "Focus Pane Up",
         [Chord::cmd(Cap::Up).alt()],
         [Chord::ctrl(Cap::Up).alt()]
     ),
     row!(
         Shortcut::FocusDown,
-        "Focus pane down",
+        "Focus Pane Down",
         [Chord::cmd(Cap::Down).alt()],
         [Chord::ctrl(Cap::Down).alt()]
     ),
-    row!(Shortcut::NextTerminal, "Next terminal", [m(']')], [l(']')]),
+    row!(Shortcut::NextTerminal, "Next Terminal", [m(']')], [l(']')]),
     row!(
         Shortcut::PreviousTerminal,
-        "Previous terminal",
+        "Previous Terminal",
         [m('[')],
         [l('[')]
     ),
     row!(
         Shortcut::NextTab,
-        "Next tab",
+        "Next Tab",
         [m(']').shift()],
         [Chord::ctrl(Cap::PageDown).shift()]
     ),
     row!(
         Shortcut::PreviousTab,
-        "Previous tab",
+        "Previous Tab",
         [m('[').shift()],
         [Chord::ctrl(Cap::PageUp).shift()]
     ),
     row!(
         Shortcut::ToggleSidebar,
-        "Toggle sidebar",
+        "Toggle Sidebar",
         [m('b')],
         [l('b')]
     ),
-    row!(Shortcut::Copy, "Copy selection", [m('c')], [l('c')]),
+    row!(Shortcut::Copy, "Copy Selection", [m('c')], [l('c')]),
     row!(Shortcut::Paste, "Paste", [m('v')], [l('v')]),
     // ⌘+ is Shift and the = key on most layouts.
     row!(
         Shortcut::ZoomIn,
-        "Bigger text",
+        "Bigger Text",
         [m('='), m('=').shift()],
         [l('=')]
     ),
-    row!(Shortcut::ZoomOut, "Smaller text", [m('-')], [l('-')]),
-    row!(Shortcut::ZoomReset, "Default text size", [m('0')], [l('0')]),
+    row!(Shortcut::ZoomOut, "Smaller Text", [m('-')], [l('-')]),
+    row!(Shortcut::ZoomReset, "Default Text Size", [m('0')], [l('0')]),
     row!(
         Shortcut::ScrollTop,
-        "Scroll to top of history",
+        "Scroll to Top of History",
         [Chord::cmd(Cap::Up), Chord::cmd(Cap::Home)],
         [Chord::ctrl(Cap::Home).shift()]
     ),
     row!(
         Shortcut::ScrollBottom,
-        "Scroll to bottom",
+        "Scroll to Bottom",
         [Chord::cmd(Cap::Down), Chord::cmd(Cap::End)],
         [Chord::ctrl(Cap::End).shift()]
     ),
-    row!(hidden Shortcut::Palette, "Command palette", [m('p'), m('k'), m('p').shift()], [l('p'), l('k')]),
-    row!(hidden Shortcut::FindNext, "Find next", [m('g')], [l('g')]),
-    row!(hidden Shortcut::FindPrevious, "Find previous", [m('g').shift()], [l('g').alt()]),
+    row!(hidden Shortcut::Palette, "Command Palette", [m('p'), m('k'), m('p').shift()], [l('p'), l('k')]),
+    row!(hidden Shortcut::FindNext, "Find Next", [m('g')], [l('g')]),
+    row!(hidden Shortcut::FindPrevious, "Find Previous", [m('g').shift()], [l('g').alt()]),
     tab!(0, '1', "Tab 1"),
     tab!(1, '2', "Tab 2"),
     tab!(2, '3', "Tab 3"),
@@ -328,6 +365,11 @@ pub const COMMANDS: &[Command] = &[
     tab!(7, '8', "Tab 8"),
     tab!(8, '9', "Tab 9"),
 ];
+
+/// The table's row for `action`.
+pub fn command(action: Shortcut) -> Option<&'static Command> {
+    COMMANDS.iter().find(|command| command.action == action)
+}
 
 /// What a chord does here, if anything.
 pub fn action_of(chord: Chord) -> Option<Shortcut> {
@@ -387,6 +429,14 @@ mod tests {
         let all: Vec<_> = COMMANDS.iter().flat_map(Command::chords).collect();
         for (at, chord) in all.iter().enumerate() {
             assert!(!all[at + 1..].contains(chord), "{chord:?}");
+        }
+    }
+
+    #[test]
+    fn every_mac_chord_is_an_accelerator() {
+        for chord in COMMANDS.iter().flat_map(|command| command.mac) {
+            let parsed = chord.accelerator().parse::<rune::Shortcut>();
+            assert!(parsed.is_ok(), "{chord:?}");
         }
     }
 

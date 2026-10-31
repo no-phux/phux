@@ -229,6 +229,7 @@ impl Desk {
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),
             Shortcut::Machines => self.toggle_machines(),
+            Shortcut::ToggleFullScreen => rune_mac::toggle_full_screen(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),

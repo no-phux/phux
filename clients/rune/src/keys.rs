@@ -8,7 +8,7 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use rune::{Key, Mods, PhysicalKeyCode};
 
 mod commands;
-pub use commands::COMMANDS;
+pub use commands::{COMMANDS, command};
 use commands::{Cap, Chord};
 
 /// What a key press should do in the terminal.
@@ -62,6 +62,7 @@ pub enum Shortcut {
     CheckForUpdates,
     InstallUpdate,
     Machines,
+    ToggleFullScreen,
 }
 
 impl Shortcut {
@@ -70,7 +71,13 @@ impl Shortcut {
     pub const fn works_over_sheets(self) -> bool {
         matches!(
             self,
-            Self::Inbox | Self::Settings | Self::ZoomIn | Self::ZoomOut | Self::ZoomReset
+            Self::Inbox
+                | Self::Settings
+                | Self::ZoomIn
+                | Self::ZoomOut
+                | Self::ZoomReset
+                | Self::CheckForUpdates
+                | Self::ToggleFullScreen
         )
     }
 }

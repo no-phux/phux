@@ -46,7 +46,7 @@ fn main() {
         on_key: Some(|desk: &mut Desk, event, tx| desk.key(event, tx)),
         ..AppSpec::new("phux", (1100.0, 720.0), placeholder_init, ui::view)
     };
-    rune::App::new(spec)
+    desk::with_menus(rune::App::new(spec))
         .init(move || Desk::new(&resolved))
         .chrome(Chrome {
             full_size_content: true,

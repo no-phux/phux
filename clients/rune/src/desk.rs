@@ -38,6 +38,7 @@ mod tabs;
 pub mod updates;
 
 pub use layout::SplitPath;
+pub use palette::with_menus;
 pub use tabs::{Renaming, Tab};
 
 /// Wakes Rune's loop from the runtime's driver thread. Only posts; never
