@@ -4,12 +4,14 @@
 //!
 //! [`HOST_CROSSINGS`] is a ratchet of the crossings that remain. A new one
 //! fails here: add it to the app instead. Removing one fails too, until its
-//! row is lowered, so the table can only shrink.
+//! row is lowered, so the table can only shrink. It counts per file, so a
+//! swap of one crossing for another inside a listed file goes unseen; review
+//! catches those.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-const TOKENS: [&str; 7] = [
+const TOKENS: [&str; 12] = [
     "phux_terminal",
     "terminal_actor",
     "resource::terminal",
@@ -17,23 +19,31 @@ const TOKENS: [&str; 7] = [
     ".terminal()",
     "TerminalHandle",
     "TerminalActor",
+    "TerminalInput",
+    "crate::agent_detect",
+    "crate::native_state",
+    "crate::grid",
+    "crate::input",
 ];
 
 /// Host file, relative to `src/`, and its crossings.
 const HOST_CROSSINGS: &[(&str, usize)] = &[
-    ("lib.rs", 12),
+    ("hooks/mod.rs", 1),
+    ("lib.rs", 14),
     ("runtime/checkout.rs", 3),
     ("runtime/commands.rs", 1),
     ("runtime/commands/attach_terminal.rs", 3),
     ("runtime/commands/lifecycle.rs", 9),
     ("runtime/config.rs", 2),
-    ("runtime/connections/agent_state.rs", 1),
-    ("runtime/connections/history.rs", 6),
+    ("runtime/connections/agent_state.rs", 6),
+    ("runtime/connections/frames.rs", 6),
+    ("runtime/connections/hello.rs", 1),
+    ("runtime/connections/history.rs", 9),
     ("runtime/connections/lifecycle.rs", 6),
-    ("runtime/connections/terminal_streams.rs", 4),
+    ("runtime/connections/terminal_streams.rs", 13),
     ("runtime/native_agent/launch.rs", 4),
     ("runtime/organization/effects.rs", 4),
-    ("runtime/program_status.rs", 1),
+    ("runtime/program_status.rs", 2),
     ("runtime/pump.rs", 5),
     ("runtime/startup.rs", 5),
     ("runtime/upgrade/handoff.rs", 1),
@@ -41,6 +51,7 @@ const HOST_CROSSINGS: &[(&str, usize)] = &[
     ("runtime/upload.rs", 3),
     ("state/config.rs", 2),
     ("state/defaults.rs", 1),
+    ("state/mod.rs", 1),
     ("state/upgrade_blob.rs", 6),
     ("state/upgrade_blob/assemble.rs", 1),
     ("state/upgrade_blob/import.rs", 4),
@@ -83,7 +94,7 @@ fn walk(dir: &Path, root: &Path, found: &mut BTreeMap<String, usize>) {
             .to_string_lossy()
             .replace('\\', "/");
         let is_rust = path.extension().is_some_and(|ext| ext == "rs");
-        if !is_rust || relative.starts_with("runtime/apps/") || is_test_source(&relative) {
+        if !is_rust || relative.starts_with("runtime/apps/terminal/") || is_test_source(&relative) {
             continue;
         }
         let crossings = count(&std::fs::read_to_string(&path).expect("read source"));
@@ -95,7 +106,8 @@ fn walk(dir: &Path, root: &Path, found: &mut BTreeMap<String, usize>) {
 
 #[test]
 fn the_host_reaches_the_terminal_engine_only_through_its_app() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by the test runner");
+    let src = Path::new(&manifest).join("src");
     let mut found = BTreeMap::new();
     walk(&src, &src, &mut found);
     let allowed: BTreeMap<String, usize> = HOST_CROSSINGS
