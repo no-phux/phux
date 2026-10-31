@@ -28,8 +28,8 @@ pub struct Machines {
     /// Enrollment running, and its latest step.
     pub adding: Option<String>,
     pub error: Option<String>,
-    /// The machines before an add, to go to the one it made.
-    before: Vec<String>,
+    /// The machines before a finished add, to go to the one it made.
+    before: Option<Vec<String>>,
     done: (Sender<Done>, Receiver<Done>),
     waker: Option<Waker>,
 }
@@ -45,7 +45,7 @@ impl Machines {
             field: TextEdit::new(""),
             adding: None,
             error: None,
-            before: Vec::new(),
+            before: None,
             done: channel(),
             waker: None,
         }
@@ -95,18 +95,19 @@ impl Machines {
         }
         self.adding = Some(format!("Setting up {}…", request.target));
         self.error = None;
-        self.before = self.hosts.clone();
         self.worker(move |send| {
             let result = machines::add(&phux, &request, &|step| send(Done::Step(step)));
             send(Done::Added(result));
         });
     }
 
-    /// The host an add registered: new in the list, whatever it was named.
-    fn added(&self) -> Option<String> {
+    /// The host a finished add registered, whatever it was named. Only that
+    /// refresh moves the window; any other list is just a list.
+    fn take_added(&mut self) -> Option<String> {
+        let before = self.before.take()?;
         self.hosts
             .iter()
-            .find(|host| !self.before.contains(host))
+            .find(|host| !before.contains(host))
             .cloned()
     }
 }
@@ -167,9 +168,11 @@ impl Desk {
             self.close_machines();
             return;
         }
-        let _ = self
-            .prefs
-            .set("machine", &machine.clone().unwrap_or_default());
+        // An aimed run stays out of what the next real launch reopens.
+        if !self.launch.aimed {
+            let saved = machine.clone().unwrap_or_default();
+            let _ = self.prefs.set("machine", &saved);
+        }
         // Notifications from the machine being left would open nothing here.
         self.inbox.alerts.sync(&[], |_| true, false);
         let mut launch = self.launch.clone();
@@ -179,6 +182,7 @@ impl Desk {
         std::mem::swap(&mut next.machines, &mut self.machines);
         next.machines.current = machine;
         next.generation = self.generation + 1;
+        next.focused = self.focused;
         if let Some(waker) = self.waker.clone() {
             next.watch(waker);
         }
@@ -197,13 +201,7 @@ impl Desk {
                         Err(error) => self.machines.error = Some(error),
                     }
                     self.machines.peers = peers;
-                    let went_to = self
-                        .machines
-                        .adding
-                        .is_none()
-                        .then(|| self.machines.added());
-                    if let Some(host) = went_to.flatten() {
-                        self.machines.before = self.machines.hosts.clone();
+                    if let Some(host) = self.machines.take_added() {
                         self.switch_machine(Some(host));
                     }
                 }
@@ -215,11 +213,11 @@ impl Desk {
                 Done::Added(result) => {
                     self.machines.adding = None;
                     match result {
-                        Ok(()) => self.machines.refresh(),
-                        Err(error) => {
-                            self.machines.before = self.machines.hosts.clone();
-                            self.machines.error = Some(error);
+                        Ok(()) => {
+                            self.machines.before = Some(self.machines.hosts.clone());
+                            self.machines.refresh();
                         }
+                        Err(error) => self.machines.error = Some(error),
                     }
                 }
             }
@@ -239,12 +237,12 @@ mod tests {
     }
 
     #[test]
-    fn a_new_host_is_the_one_added() {
+    fn a_listing_moves_the_window_only_after_an_add() {
         let mut list = Machines::new(None, None);
-        list.before = vec!["a".to_owned()];
         list.hosts = vec!["a".to_owned(), "b".to_owned()];
-        assert_eq!(list.added().as_deref(), Some("b"));
-        list.before = list.hosts.clone();
-        assert_eq!(list.added(), None);
+        assert_eq!(list.take_added(), None);
+        list.before = Some(vec!["a".to_owned()]);
+        assert_eq!(list.take_added().as_deref(), Some("b"));
+        assert_eq!(list.take_added(), None);
     }
 }

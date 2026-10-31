@@ -94,7 +94,7 @@ impl Updater {
                 .phux
                 .clone()
                 .zip(socket)
-                .filter(|_| install.is_ok()),
+                .filter(|_| install.is_ok() && !resolved.aimed),
             install,
             work: Work::Idle,
             release: None,
@@ -266,6 +266,16 @@ impl Updater {
         self.dismissed = None;
     }
 
+    /// A staged app stays out while the server still needs moving, so a plain
+    /// quit can't land a new app on an old server.
+    fn sync_hold(&self) {
+        if let (Ok(path), Some(_)) = (&self.install, &self.staged)
+            && let Err(error) = install::hold(path, self.phux_due())
+        {
+            eprintln!("{error}");
+        }
+    }
+
     fn checked(&mut self, release: Result<Release, String>, cli: Option<Result<Cli, String>>) {
         self.work = Work::Idle;
         let mut failures = Vec::new();
@@ -279,6 +289,7 @@ impl Updater {
             None => {}
         }
         self.message = (!failures.is_empty()).then(|| failures.join("\n"));
+        self.sync_hold();
     }
 
     fn server_done(&mut self, result: Result<Handoff, String>) -> bool {
@@ -302,6 +313,7 @@ impl Updater {
                 handoff.detail
             )
         });
+        self.sync_hold();
         handoff.done
     }
 }
@@ -327,7 +339,10 @@ impl Desk {
                 Done::Staged(result) => {
                     updater.work = Work::Idle;
                     match result {
-                        Ok(release) => updater.staged = Some(release.version),
+                        Ok(release) => {
+                            updater.staged = Some(release.version);
+                            updater.sync_hold();
+                        }
                         Err(error) => updater.message = Some(format!("Phux Rune: {error}")),
                     }
                 }
@@ -379,6 +394,7 @@ impl Desk {
         } else {
             self.updater.cli = None;
             self.updater.pending_handoff = false;
+            self.updater.sync_hold();
         }
     }
 }

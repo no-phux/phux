@@ -148,9 +148,8 @@ cancels).
   carry no soft-wrap flag yet); the status line shows the joined target
   before a ⌘-click.
 - No DMG yet; the ZIP is the macOS download.
-- Quitting with a downloaded update installs it even if a server update is
-  still due. Use **Restart & update server** to move both together across a
-  protocol change.
+- While a server update is due, quitting leaves the app as it was and the
+  download is dropped. **Restart & update server** moves both.
 
 ## Develop
 

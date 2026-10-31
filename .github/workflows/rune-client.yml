@@ -186,4 +186,10 @@ jobs:
       - name: Point the update feed at this release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload channels "$RUNNER_TEMP/rune.json" --clobber --repo "$GITHUB_REPOSITORY"
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Rerunning an old tag must not move the feed backwards.
+          newest="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq '.[].tagName | select(startswith("rune-v"))' | sort -V | tail -1)"
+          [[ "$newest" == "$TAG" ]] || { echo "$newest is newer; feed unchanged"; exit 0; }
+          gh release upload channels "$RUNNER_TEMP/rune.json" --clobber --repo "$GITHUB_REPOSITORY"
