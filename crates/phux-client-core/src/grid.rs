@@ -238,6 +238,9 @@ pub struct GridBuffer {
     /// One flag per viewport row: changed since the previous projection,
     /// including speculative text overlays and their removal.
     pub row_dirty: Vec<bool>,
+    /// One flag per viewport row: the row's line continues on the next row
+    /// (a soft wrap), so copying joins the two without a newline.
+    pub row_wrapped: Vec<bool>,
     /// The row just below the viewport, `cols` records sharing `utf8`, when
     /// the projection asked for one; empty otherwise. A consumer that
     /// scrolls by less than a row paints it under the last viewport row.
@@ -252,6 +255,7 @@ impl GridBuffer {
         self.utf8.clear();
         self.metadata.clear();
         self.row_dirty.clear();
+        self.row_wrapped.clear();
         self.fringe.clear();
         self.fringe_metadata.clear();
     }

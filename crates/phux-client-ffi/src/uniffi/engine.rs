@@ -80,6 +80,9 @@ pub struct GridProjection {
     /// Rows changed by this generation; all rows for the first/full frame.
     pub dirty_rows: Vec<u16>,
     pub scrollbar: ScrollbarState,
+    /// Rows whose line continues on the next row (soft wraps), so a copy
+    /// joins them without a newline.
+    pub wrapped_rows: Vec<u16>,
 }
 
 struct EngineInner {
@@ -358,6 +361,7 @@ impl EngineInner {
                 .filter_map(|(row, _)| u16::try_from(row).ok())
                 .collect(),
             scrollbar: scrollbar(&self.terminal)?,
+            wrapped_rows: rows_set(&snapshot.buffer.row_wrapped),
         })
     }
 }
@@ -392,7 +396,18 @@ pub(crate) fn grid_projection(view: &grid::GridView<'_>, dirty_rows: Vec<u16>) -
         generation: view.generation,
         dirty_rows,
         scrollbar: scrollbar_state(view.scrollbar),
+        wrapped_rows: rows_set(view.row_wrapped),
     }
+}
+
+/// The row numbers whose flag is set.
+fn rows_set(flags: &[bool]) -> Vec<u16> {
+    flags
+        .iter()
+        .enumerate()
+        .filter(|(_, set)| **set)
+        .filter_map(|(row, _)| u16::try_from(row).ok())
+        .collect()
 }
 
 /// Copy one scrollbar reading.
@@ -461,6 +476,14 @@ mod tests {
         assert_eq!(text(&grid, 0), "h");
         assert_eq!(text(&grid, 1), "i");
         assert_eq!(grid.generation, 1);
+    }
+
+    #[test]
+    fn soft_wrapped_rows_cross_so_a_copy_can_join_them() {
+        let engine = TerminalEngine::new(6, 3, 0).expect("engine");
+        engine.write(b"abcdefghij\r\nk".to_vec());
+        let grid = engine.render_grid().expect("grid");
+        assert_eq!(grid.wrapped_rows, [0]);
     }
 
     #[test]

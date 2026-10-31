@@ -35,6 +35,8 @@ pub struct GridView<'a> {
     pub cells: &'a [Cell],
     /// The arena every cell's `utf8_offset`/`utf8_len` addresses.
     pub utf8: &'a [u8],
+    /// Per row: the line continues on the next row (a soft wrap).
+    pub row_wrapped: &'a [bool],
     /// Cursor placement and shape.
     pub cursor: &'a Cursor,
     /// The scrollable area behind the viewport.
@@ -59,6 +61,7 @@ pub fn view(frame: &GridFrame) -> GridView<'_> {
         rows: frame.rows,
         cells: &frame.buffer.cells,
         utf8: &frame.buffer.utf8,
+        row_wrapped: &frame.buffer.row_wrapped,
         cursor: &frame.cursor,
         scrollbar: frame.scrollbar,
         default_fg: frame.colors.foreground,
