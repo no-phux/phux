@@ -7,7 +7,7 @@
 //! cleanly and drops its value. The newest must also re-serialize exactly,
 //! so a new field fails here until a fixture freezes it.
 //!
-//! To freeze a change, `PHUX_BLESS_UPGRADE_BLOB=<next number> cargo nextest
+//! To freeze a change, `PHUX_BLESS_UPGRADE_BLOB=0002 cargo nextest
 //! run -p phux-server --lib upgrade::blob::golden` writes the next fixture.
 
 use std::collections::BTreeSet;
@@ -145,6 +145,10 @@ fn golden_newest_freezes_every_field_this_image_writes() {
     let (name, bytes) = fixtures().pop().expect("a fixture");
     let current = reread(&bytes);
     if let Ok(next) = std::env::var("PHUX_BLESS_UPGRADE_BLOB") {
+        assert!(
+            next.len() == 4 && next.bytes().all(|b| b.is_ascii_digit()),
+            "fixtures sort by name, so number them like 0002"
+        );
         let pretty = serde_json::to_vec_pretty(&current).expect("serialize");
         std::fs::write(fixtures_dir().join(format!("{next}.json")), pretty).expect("write");
         return;
@@ -170,6 +174,16 @@ fn golden_newest_exercises_every_field() {
         unexercised.is_empty(),
         "{name} leaves these unexercised: {unexercised:?}"
     );
+}
+
+#[test]
+fn preflight_refuses_records_a_resume_would_die_on() {
+    let (_, bytes) = fixtures().pop().expect("a fixture");
+    let mut blob: Value = serde_json::from_slice(&bytes).expect("json");
+    blob["org"]["resources"][0]["session"] = blob["org"]["authority"]["id"].clone();
+    let broken = serde_json::to_vec(&blob).expect("serialize");
+    let reason = preflight(&broken).expect_err("a resource outside any session");
+    assert!(reason.contains("organization"), "{reason}");
 }
 
 #[test]

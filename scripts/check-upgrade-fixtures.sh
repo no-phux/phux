@@ -18,7 +18,7 @@ if ! merge_base="$(git merge-base "$base" HEAD 2>/dev/null)"; then
     phux_error "upgrade-fixtures: no merge base with $base, so nothing was checked."
     exit 1
 fi
-changed="$(git diff --name-only --no-renames --diff-filter=MD "$merge_base" -- "$fixtures")"
+changed="$(git diff --name-only --no-renames --diff-filter=MDT "$merge_base" -- "$fixtures")"
 if [[ -n "$changed" ]]; then
     printf '%s\n' "$changed" >&2
     phux_error 'upgrade-fixtures: frozen upgrade blobs changed.'
