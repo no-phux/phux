@@ -58,8 +58,9 @@ pub struct Resolved {
     /// development, so it neither updates phux nor reopens a remembered
     /// machine.
     pub aimed: bool,
-    /// A flag or the environment named the socket.
-    pinned: bool,
+    /// The socket a flag or the environment named. `socket` holds the last
+    /// answer, which may be a failure; this never stops being the address.
+    pinned: Option<PathBuf>,
     /// `--phux`, kept for searching again.
     named_phux: Option<PathBuf>,
 }
@@ -68,7 +69,7 @@ impl Resolved {
     /// `--socket` alone means "that server, as it is": only a CLI named
     /// beside it may start one there.
     pub const fn can_ensure(&self) -> bool {
-        !self.pinned || self.named_phux.is_some()
+        self.pinned.is_none() || self.named_phux.is_some()
     }
 
     /// Whether the window has nothing to run `phux server --ensure` with.
@@ -81,8 +82,8 @@ impl Resolved {
         let phux = locate(self.named_phux.as_deref());
         self.phux = phux.as_ref().ok().cloned();
         if self.can_ensure() {
-            let pinned = self.socket.clone().ok().filter(|_| self.pinned);
-            self.socket = phux.and_then(|phux| ensure_server(&phux, pinned.as_deref()));
+            let pinned = self.pinned.as_deref();
+            self.socket = phux.and_then(|phux| ensure_server(&phux, pinned));
         }
         self
     }
@@ -104,7 +105,7 @@ pub fn resolve(options: &Options) -> Resolved {
         || ["PHUX_BIN", "PHUX_PROFILE"]
             .iter()
             .any(|key| std::env::var_os(key).is_some());
-    let pinned = explicit.is_some();
+    let pinned = explicit.clone();
     let socket = match explicit {
         Some(socket) => Ok(socket),
         None => phux
@@ -281,7 +282,7 @@ mod tests {
             session: None,
             phux: phux.map(PathBuf::from),
             aimed: false,
-            pinned: socket.is_some(),
+            pinned: socket.map(PathBuf::from),
             named_phux: phux.filter(|_| socket.is_some()).map(PathBuf::from),
         }
     }
@@ -319,6 +320,32 @@ mod tests {
         let found = ensure_server(&phux, Some(Path::new("/tmp/named"))).expect("ensured");
         assert_eq!(found, PathBuf::from("/tmp/named"));
         assert!(ensure_server(&phux, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_ensure_keeps_aiming_at_the_named_socket() {
+        let dir = std::env::temp_dir().join(format!("phux-rune-pinned-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (phux, log) = (dir.join("phux"), dir.join("log"));
+        std::fs::write(
+            &phux,
+            format!("#!/bin/sh\necho \"$1\" >> {}\nexit 1\n", log.display()),
+        )
+        .unwrap();
+        Command::new("/bin/chmod")
+            .arg("+x")
+            .arg(&phux)
+            .status()
+            .unwrap();
+        let named = launch(Some("/tmp/named"), phux.to_str());
+        let failed = named.ensured();
+        assert!(failed.socket.is_err());
+        // The retry a window makes after that failure.
+        assert!(failed.ensured().socket.is_err());
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(calls, "--socket\n--socket\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
