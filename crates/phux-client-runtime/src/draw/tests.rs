@@ -1,5 +1,6 @@
 use super::*;
 use crate::publication::{Cursor, FrameColors, GridBuffer, GridDamage, Scrollbar};
+use phux_client_core::grid::{CELL_OVERLINE, CELL_STRIKETHROUGH};
 use phux_protocol::ResourceId;
 
 const RED: Rgb = rgb(255, 0, 0);
@@ -199,7 +200,7 @@ fn blocks_are_coverage_and_a_presentation_selector_is_text() {
 }
 
 #[test]
-fn runs_join_single_cells_and_break_at_blanks_style_and_wide_cells() {
+fn runs_span_blanks_and_break_at_style_and_wide_cells() {
     let mut frame = frame(&[&["h", "i", "", "y", "o", "世", "", "x"]], 8);
     cell_mut(&mut frame, 0, 4).0.flags = CELL_BOLD;
     cell_mut(&mut frame, 0, 5).0.wide = 1;
@@ -208,14 +209,32 @@ fn runs_join_single_cells_and_break_at_blanks_style_and_wide_cells() {
     assert_eq!(
         texts(&list),
         vec![
-            (0, 0, 2, "hi"),
-            (0, 3, 1, "y"),
+            (0, 0, 4, "hi y"),
             (0, 4, 1, "o"),
             (0, 5, 2, "世"),
             (0, 7, 1, "x"),
         ]
     );
-    assert!(list.texts[2].face.bold);
+    assert!(list.texts[1].face.bold);
+    assert!(list.texts[2].lone && !list.texts[0].lone);
+}
+
+#[test]
+fn blanks_join_a_run_only_up_to_its_last_glyph() {
+    // Trailing blanks stay out; a block between glyphs and a hidden blank
+    // each end the run; a row never continues the one above.
+    let mut frame = frame(&[&["a", " ", "b", " ", ""], &["c", "▀", "d", "", "e"]], 5);
+    cell_mut(&mut frame, 1, 3).0.flags = CELL_INVISIBLE;
+    let list = DrawList::build(&frame, &theme(), Visibility::default());
+    assert_eq!(
+        texts(&list),
+        vec![
+            (0, 0, 3, "a b"),
+            (1, 0, 1, "c"),
+            (1, 2, 1, "d"),
+            (1, 4, 1, "e"),
+        ]
+    );
 }
 
 #[test]
