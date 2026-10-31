@@ -22,9 +22,9 @@ name = "windows-brand-icons"
 path = "$fixture"
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 serde_json = "1"
-gpui = { package = "gpui-fast", version = "=0.1.9" }
+gpui = { package = "gpui-fast", version = "=0.1.12" }
 gpui-windows = { package = "gpui-fast-windows", path = "windows" }
 [patch.crates-io]
 gpui-fast = { path = "$core" }

@@ -6,7 +6,7 @@
 # action.yml defines `client-id` and demotes `app-id` to a deprecated
 # optional input, but the bundled snapshot still requires `app-id` and does
 # not know `client-id`. Verified against the action.yml at tags v3 and
-# v3.2.0. Drop these ignores once a newer actionlint ships a refreshed
+# v3.3.0. Drop these ignores once a newer actionlint ships a refreshed
 # snapshot (re-run `actionlint .github/workflows/*.yml` without them to
 # check).
 # Only standard GitHub-hosted labels are allowed; no custom paid runner labels.
