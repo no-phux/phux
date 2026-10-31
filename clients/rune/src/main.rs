@@ -4,12 +4,16 @@
 //! and terminal the server lists, the selected terminal, and a status line.
 
 mod activity;
+mod alerts;
 mod desk;
+mod dock;
 mod grid;
+mod inbox;
 mod keys;
 mod launch;
 mod links;
 mod palette;
+mod theme;
 mod ui;
 
 use desk::Desk;

@@ -33,6 +33,20 @@ The app finds `phux` (`--phux`, `PHUX_BIN`, `~/.local/bin`,
 reuses the server with `phux server --ensure`, and attaches the most recent
 session (or `--session NAME`). It never creates a session on its own.
 
+- **Inbox.** ⌘I opens one drawer of everything waiting on you, across every
+  session: what agents are asking, with their suggested answers (click, or
+  ⌘1–⌘9) and a reply field; actions the server is holding for approval
+  (⌘↩ approves, ⌘⌫ denies; plain Return never does); finished agents and
+  failed commands. Answers go through the runtime's stale-question gate, so
+  a reply can't land on whatever the agent moved on to. The focused pane
+  shows its agent's question as a card you can answer with a click.
+- **Notifications.** When something needs you and you can't see it, the
+  installed app posts a macOS notification once; clicking it goes there, and
+  it is withdrawn when answered or seen. The Dock icon counts what's waiting.
+- **Tabs.** The session's arrangement groups, shared with the terminal UI.
+  ⌘T opens a terminal in a new tab, ⌘1–⌘9 switch, double-click renames. The
+  strip appears from two tabs up; a dot marks a tab that needs you, and a
+  jump from anywhere lands on the right tab.
 - **Sidebar.** Every session and terminal on the server, each terminal with
   what it is doing: a declared agent's name and state (working pulses,
   blocked or asking needs you, done waits until you look), a running
@@ -53,12 +67,20 @@ session (or `--session NAME`). It never creates a session on its own.
 - **Find.** ⌘F searches the focused pane's loaded history, newest first:
   ↩ and ⌘G walk back, ⇧↩ and ⌘⇧G forward, Aa toggles case, ⌘E searches
   for the selection. The match is selected and scrolled to.
+- **Images and files.** Paste an image and it uploads to the server and types
+  its path, for agents that read images. Files pasted or dropped on a pane
+  type as quoted paths.
 - **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
   see where it goes in the status line; ⌘-click opens it. URLs wrapped
   across rows count. Only `http`, `https` and `mailto` open.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
-- Text size and the folded sidebar are remembered between launches.
+- **Settings.** ⌘, picks a theme (eight built in, or the OS; arrow keys
+  preview it live on your terminals), text size, notifications, Option as
+  Meta, and copy on select. All of it is remembered between launches. A
+  program's own OSC colours beat the theme.
+- **Sessions.** Double-click a session to rename it; the palette also renames
+  tabs and ends sessions.
 - Closing the window detaches; the server and its programs keep running. The
   window title follows the focused terminal.
 
@@ -66,7 +88,10 @@ session (or `--session NAME`). It never creates a session on its own.
 | --- | --- |
 | ⌘K / ⌘P | Command palette |
 | ⌘J | Jump to the next terminal that needs you |
-| ⌘T / ⌘N | New terminal / new session |
+| ⌘I | Inbox |
+| ⌘, | Settings |
+| ⌘T / ⌘N | New tab / new session |
+| ⌘1–⌘9 | Switch tab (in the inbox: pick a suggested answer) |
 | ⌘D / ⌘⇧D | Split right / down |
 | ⌘⌥ arrows | Move between panes |
 | ⌘⇧↩ | Zoom the focused pane |
@@ -92,11 +117,13 @@ cancels).
 
 ## Known gaps
 
-- One window; arrangement tabs (groups) other than the active one are not
-  shown.
-- No settings window, themes, or Kitty images. Find covers the history the
+- One window. Tabs can't be dragged to reorder yet, and the server has no
+  call to rename a single terminal.
+- No Kitty images, custom themes or font choice. Find covers the history the
   window has loaded, not the server's whole scrollback.
-- Option types layout characters on macOS (no Option-as-Meta).
+- A question raised through a hook before the window connected has no text
+  to show (the server keeps only that one is pending); its card opens the
+  terminal instead. Title-sentinel asks always show.
 - A URL that fills a row is assumed to continue on the next one (frames
   carry no soft-wrap flag yet); the status line shows the joined target
   before a ⌘-click.
@@ -126,6 +153,9 @@ cargo run -- --socket /tmp/phux-test/s --snap out.png --at 3 --size 1100x720
 cargo run -- --socket /tmp/phux-test/s --script typing.json --snap out.png --at 5
 ```
 
+Notifications need the signed bundle (`rune_mac::notify::available`); `cargo
+run` can't post, and Settings says so.
+
 `scripts/package.sh VERSION OUT_DIR` builds the release archive for the
 host (ad-hoc signed; a local build may link the dev shell's libraries, so
 ship only CI builds). Pushing a `rune-vVERSION` tag runs
@@ -137,10 +167,13 @@ credentials), and publishes a prerelease.
 | Module | Owns |
 | --- | --- |
 | `launch` | command line, finding the CLI, `phux server --ensure` |
-| `desk` | the runtime client and what is on screen; `desk/*`: layout and splits, frames and fit, input, mouse, find, links, palette, sessions |
+| `desk` | the runtime client and what is on screen; `desk/*`: layout and splits, tabs, frames and fit, input, mouse, find, links, palette, sessions, inbox, settings, attachments |
 | `links` | OSC 8 hyperlinks and written URLs under a cell |
-| `activity` | per-terminal agent state, commands and bells, and what needs you |
+| `activity` | per-terminal agent state, questions, commands and bells, and what needs you |
+| `inbox` | what is waiting on you, most urgent first |
+| `alerts`, `dock` | system notifications, their clicks, and the Dock count (`dock` is the crate's only `unsafe`) |
+| `theme` | built-in terminal palettes and the chrome drawn from them |
 | `palette` | palette items and fuzzy ranking |
 | `grid` | cell metrics and the draw list as Rune elements |
 | `keys` | Rune keys as phux key atoms and app shortcuts |
-| `ui` | window composition; `ui/*`: sidebar, panes, pane overlays (find, history), palette |
+| `ui` | window composition; `ui/*`: sidebar, tabs, panes, pane overlays (find, history), inbox, settings, palette |

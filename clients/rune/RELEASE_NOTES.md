@@ -1,19 +1,21 @@
-**Phux Rune 0.1.0-alpha.4**: find, links, and history you can find your way back from.
+**Phux Rune 0.1.0-alpha.5**: an agent command center.
 
-- **Find in history** (⌘F): incremental search over the focused pane's
-  loaded history, newest match first. ↩ / ⌘G walk back, ⇧↩ / ⌘⇧G forward,
-  Aa for case, ⌘E searches for the selection. A miss turns the bar red.
-- **Links**: hold ⌘ over a URL or an OSC 8 hyperlink to underline it and see
-  its target in the status line; ⌘-click opens it (Ctrl-click on Linux).
-  URLs soft-wrapped across rows work. Only `http`, `https` and `mailto`
-  open, so output can't launch arbitrary URL handlers.
-- **Back to live**: scrolled into history, a pane shows a position rail and
-  a pill that counts new lines arriving below; click it to return.
-- **Remembers** text size and the folded sidebar between launches.
-- **Folded sidebar** now gets a proper titlebar showing the focused terminal,
-  instead of a tall empty band.
+- **Inbox** (⌘I): everything waiting on you, across every session, answerable
+  in place. Agent questions with one-click answers (⌘1–⌘9) or a typed reply,
+  server-held approvals (⌘↩ / ⌘⌫), finished agents, failed commands.
+- **Ask card**: the focused pane shows its agent's question; click to answer.
+- **Notifications**: macOS notifications when something needs you and you
+  can't see it, withdrawn when handled; clicking jumps there. The Dock counts
+  what's waiting.
+- **Tabs**: the session's groups, shared with the terminal UI. ⌘T, ⌘1–⌘9,
+  double-click to rename.
+- **Themes and settings** (⌘,): eight themes with live preview on your real
+  terminals, text size, Option as Meta, copy on select.
+- **Images and files**: paste an image for an agent to read; drop files on a
+  pane to type their paths.
+- **Sessions**: rename from the sidebar, end from the palette.
 
-Signed, notarized and stapled like alpha.3. Alpha: one window, no settings
-window or images yet. It needs the phux CLI and never installs or upgrades
-it. Verify an archive with its `.sha256` file. See
+Signed, notarized and stapled. Alpha: one window, no Kitty images yet. It
+needs the phux CLI and never installs or upgrades it. Verify an archive with
+its `.sha256` file. See
 [clients/rune/README.md](https://github.com/no-phux/phux/blob/main/clients/rune/README.md).

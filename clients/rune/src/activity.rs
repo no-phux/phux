@@ -23,6 +23,9 @@ pub struct Activity {
     pub agent: Option<Agent>,
     /// The agent is waiting on a question.
     pub asked: bool,
+    /// The question, when the stream announced it; a gap can leave `asked`
+    /// set with nothing to show.
+    pub ask: Option<Ask>,
     /// When the shell command now running started (OSC 133).
     pub command_since: Option<Instant>,
     /// A long command finished off screen with this exit code; cleared once seen.
@@ -31,6 +34,16 @@ pub struct Activity {
     pub bell: bool,
     /// An agent finished off screen; cleared once seen.
     pub done_unseen: bool,
+}
+
+/// A question an agent is waiting on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ask {
+    pub id: String,
+    pub text: String,
+    pub suggestions: Vec<String>,
+    /// When it started waiting, when known.
+    pub since: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,11 +136,30 @@ impl Activities {
                 true
             }
             Event::AgentAskedState { terminal_id, asked } => {
-                self.0.entry(terminal_id.clone()).or_default().asked = *asked;
+                let entry = self.0.entry(terminal_id.clone()).or_default();
+                entry.asked = *asked;
+                if !*asked {
+                    entry.ask = None;
+                }
                 true
             }
-            Event::AgentAsked { terminal_id, .. } => {
-                self.0.entry(terminal_id.clone()).or_default().asked = true;
+            Event::AgentAsked {
+                terminal_id,
+                question_id,
+                text,
+                suggestions,
+                waiting_seconds,
+            } => {
+                let waited = Duration::from_secs(waiting_seconds.unwrap_or(0));
+                let now = Instant::now();
+                let entry = self.0.entry(terminal_id.clone()).or_default();
+                entry.asked = true;
+                entry.ask = Some(Ask {
+                    id: question_id.clone(),
+                    text: text.clone(),
+                    suggestions: suggestions.clone(),
+                    since: Some(now.checked_sub(waited).unwrap_or(now)),
+                });
                 true
             }
             Event::CommandStarted { terminal_id } => {
@@ -197,6 +229,11 @@ impl Activities {
         }
     }
 
+    /// The question `id` is waiting on, when one is known.
+    pub fn ask(&self, id: &ResourceId) -> Option<&Ask> {
+        self.0.get(id)?.ask.as_ref()
+    }
+
     pub fn agent_name(&self, id: &ResourceId) -> Option<&str> {
         self.0.get(id)?.agent.as_ref().map(|a| a.name.as_str())
     }
@@ -215,6 +252,30 @@ mod tests {
             terminal_id: id(1),
             value: Some(format!(r#"{{"name":"claude","state":"{state}"}}"#).into_bytes()),
         }
+    }
+
+    #[test]
+    fn a_question_is_kept_until_the_level_retracts_it() {
+        let mut a = Activities::default();
+        let asked = Event::AgentAsked {
+            terminal_id: id(1),
+            question_id: "q1".to_owned(),
+            text: "Ship it?".to_owned(),
+            suggestions: vec!["yes".to_owned(), "no".to_owned()],
+            waiting_seconds: Some(3),
+        };
+        a.apply(&asked, &[]);
+        assert_eq!(a.ask(&id(1)).map(|ask| ask.id.as_str()), Some("q1"));
+        assert!(a.mark(&id(1)).needs_you());
+        a.apply(
+            &Event::AgentAskedState {
+                terminal_id: id(1),
+                asked: false,
+            },
+            &[],
+        );
+        assert!(a.ask(&id(1)).is_none());
+        assert!(!a.mark(&id(1)).needs_you());
     }
 
     #[test]

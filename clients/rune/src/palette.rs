@@ -35,9 +35,14 @@ pub struct Hit {
 }
 
 const ACTIONS: &[(Shortcut, &str, &str)] = &[
-    (Shortcut::NewTerminal, "New terminal", "⌘T"),
+    (Shortcut::NewTerminal, "New tab", "⌘T"),
     (Shortcut::NewSession, "New session", "⌘N"),
     (Shortcut::JumpToAttention, "Jump to what needs you", "⌘J"),
+    (Shortcut::Inbox, "Open inbox", "⌘I"),
+    (Shortcut::Settings, "Settings", "⌘,"),
+    (Shortcut::RenameSession, "Rename session", ""),
+    (Shortcut::RenameTab, "Rename tab", ""),
+    (Shortcut::CloseSession, "Close session", ""),
     (Shortcut::SplitRight, "Split right", "⌘D"),
     (Shortcut::SplitDown, "Split down", "⌘⇧D"),
     (Shortcut::ZoomPane, "Zoom pane", "⌘⇧↩"),
@@ -104,7 +109,10 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
 pub fn pane_label(pane: &PaneDescriptor) -> String {
     let nonempty = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
     nonempty(&pane.name)
-        .or_else(|| nonempty(&pane.title))
+        // An ask borrows the title to reach the server; it isn't a name.
+        .or_else(|| {
+            nonempty(&pane.title).filter(|t| phux_client_core::ask::parse_ask_title(t).is_none())
+        })
         .or_else(|| {
             nonempty(&pane.cwd).map(|cwd| {
                 let trimmed = cwd.trim_end_matches('/');
@@ -211,7 +219,7 @@ mod tests {
 
     #[test]
     fn ranking_puts_the_best_title_first_and_falls_back_to_details() {
-        let hits = rank(items(None), "new term");
+        let hits = rank(items(None), "new tab");
         assert_eq!(hits[0].item.target, Target::Action(Shortcut::NewTerminal));
     }
 

@@ -25,6 +25,31 @@ impl Desk {
             self.modifiers_changed(event.mods.cmd);
             return false;
         }
+        if self.inbox.open {
+            let physical = tx.physical_key();
+            if !self.inbox_key(event, tx)
+                && let Some(action) = keys::shortcut(&event.key, event.mods, physical)
+                    .filter(|a| a.works_over_sheets())
+            {
+                self.shortcut(action, tx);
+            }
+            return true;
+        }
+        if self.settings_open {
+            let physical = tx.physical_key();
+            match keys::shortcut(&event.key, event.mods, physical) {
+                Some(action) if action.works_over_sheets() => self.shortcut(action, tx),
+                Some(_) => {}
+                None => self.settings_key(event),
+            }
+            return true;
+        }
+        if self.tabs.renaming.is_some() {
+            if event.key == rune::Key::Escape {
+                self.cancel_rename();
+            }
+            return true;
+        }
         if self.palette_open {
             // The field has the keys; only the chord that closes it gets here.
             let physical = tx.physical_key();
@@ -59,7 +84,13 @@ impl Desk {
             return true;
         }
         self.restart_blink();
-        let Some(typed) = keys::typed(&event.key, event.mods, tx.key_base(), physical) else {
+        let Some(typed) = keys::typed(
+            &event.key,
+            event.mods,
+            tx.key_base(),
+            physical,
+            self.settings.option_as_meta,
+        ) else {
             return false;
         };
         let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
@@ -112,9 +143,13 @@ impl Desk {
         match action {
             Shortcut::Copy => self.copy(tx),
             Shortcut::Paste => tx.read_clipboard(|desk: &mut Desk, content, _| {
-                desk.paste(content.text());
+                desk.paste_content(content);
             }),
-            Shortcut::NewTerminal => self.new_terminal(),
+            Shortcut::NewTerminal => self.new_tab(),
+            Shortcut::Tab(index) => self.select_tab(usize::from(index)),
+            Shortcut::RenameSession => self.rename_selected_session(),
+            Shortcut::RenameTab => self.rename_active_tab(),
+            Shortcut::CloseSession => self.close_session(),
             Shortcut::NewSession => self.new_session(),
             Shortcut::NextTerminal => self.cycle(1),
             Shortcut::PreviousTerminal => self.cycle(-1),
@@ -125,6 +160,8 @@ impl Desk {
             Shortcut::ScrollBottom => self.scroll(Scroll::Bottom),
             Shortcut::Palette => self.toggle_palette(),
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
+            Shortcut::Inbox => self.toggle_inbox(),
+            Shortcut::Settings => self.toggle_settings(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),
@@ -141,7 +178,7 @@ impl Desk {
         }
     }
 
-    fn copy(&self, tx: &mut Tx) {
+    pub(super) fn copy(&self, tx: &mut Tx) {
         let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
             return;
         };
@@ -178,6 +215,18 @@ impl Desk {
         match self.pending.take() {
             Some(Pending::Paste(text)) => self.send_paste(&text),
             Some(Pending::Close(terminal)) => self.close_now(&terminal),
+            Some(Pending::CloseTab(terminals)) => {
+                if let Some(client) = &self.client {
+                    let _ = client.close_terminals(terminals);
+                }
+            }
+            Some(Pending::CloseSession(key, _)) => {
+                if let Some(client) = &self.client
+                    && let Err(error) = client.kill_session(key)
+                {
+                    self.notice = Some(format!("Session not closed: {error}"));
+                }
+            }
             None => {}
         }
     }

@@ -45,6 +45,24 @@ pub enum Shortcut {
     FindNext,
     FindPrevious,
     FindSelection,
+    Inbox,
+    Settings,
+    /// The tab at this index.
+    Tab(u8),
+    RenameSession,
+    RenameTab,
+    CloseSession,
+}
+
+impl Shortcut {
+    /// Over the inbox or settings the terminal behind is out of reach: no
+    /// pasting into it or closing it unseen.
+    pub const fn works_over_sheets(self) -> bool {
+        matches!(
+            self,
+            Self::Inbox | Self::Settings | Self::ZoomIn | Self::ZoomOut | Self::ZoomReset
+        )
+    }
 }
 
 pub fn mods(mods: Mods) -> ModSet {
@@ -198,6 +216,9 @@ pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Opt
         'k' | 'p' => Shortcut::Palette,
         'b' => Shortcut::ToggleSidebar,
         'j' => Shortcut::JumpToAttention,
+        'i' => Shortcut::Inbox,
+        ',' | '<' => Shortcut::Settings,
+        c @ '1'..='9' => Shortcut::Tab(c as u8 - b'1'),
         'w' => Shortcut::CloseTerminal,
         'd' if mods.shift && cfg!(target_os = "macos") => Shortcut::SplitDown,
         'd' => Shortcut::SplitRight,
@@ -266,13 +287,14 @@ pub fn typed(
     key_mods: Mods,
     base: Option<char>,
     physical: Option<PhysicalKeyCode>,
+    option_as_meta: bool,
 ) -> Option<Typed> {
     let set = mods(key_mods);
     if let Some(physical) = named(key) {
         return Some(Typed::Key(atom(physical, set, None)));
     }
     match key {
-        Key::Text(text) if !key_mods.ctrl && !alt_is_meta(key_mods) => {
+        Key::Text(text) if !key_mods.ctrl && !alt_is_meta(key_mods, option_as_meta) => {
             Some(Typed::Text(text.clone()))
         }
         Key::Text(text) => {
@@ -289,10 +311,10 @@ pub fn typed(
     }
 }
 
-/// macOS Option types layout characters (å, ∑), as Ghostty's default does;
-/// elsewhere Alt is Meta.
-const fn alt_is_meta(mods: Mods) -> bool {
-    mods.alt && !cfg!(target_os = "macos")
+/// macOS Option types layout characters (å, ∑), as Ghostty's default does,
+/// unless the person turned on Option as Meta; elsewhere Alt is Meta.
+const fn alt_is_meta(mods: Mods, option_as_meta: bool) -> bool {
+    mods.alt && (option_as_meta || !cfg!(target_os = "macos"))
 }
 
 #[cfg(test)]
@@ -308,7 +330,13 @@ mod tests {
     #[test]
     fn plain_text_types() {
         assert_eq!(
-            typed(&Key::Text("a".into()), Mods::default(), Some('a'), None),
+            typed(
+                &Key::Text("a".into()),
+                Mods::default(),
+                Some('a'),
+                None,
+                false
+            ),
             Some(Typed::Text("a".into()))
         );
     }
@@ -320,6 +348,7 @@ mod tests {
             m(|m| m.ctrl = true),
             Some('c'),
             None,
+            false,
         ) else {
             panic!("ctrl-c is a key atom");
         };
@@ -335,6 +364,7 @@ mod tests {
             m(|m| m.ctrl = true),
             Some(' '),
             None,
+            false,
         ) else {
             panic!("ctrl-space is a key atom");
         };
@@ -343,7 +373,8 @@ mod tests {
 
     #[test]
     fn named_keys_carry_shift() {
-        let Some(Typed::Key(event)) = typed(&Key::Tab, m(|m| m.shift = true), None, None) else {
+        let Some(Typed::Key(event)) = typed(&Key::Tab, m(|m| m.shift = true), None, None, false)
+        else {
             panic!("tab is a key atom");
         };
         assert_eq!(event.key, PhysicalKey::Tab);
@@ -370,14 +401,35 @@ mod tests {
             shortcut(&Key::Command('t'), cmd, None),
             Some(Shortcut::NewTerminal)
         );
-        assert_eq!(typed(&Key::Command('q'), cmd, Some('q'), None), None);
+        assert_eq!(typed(&Key::Command('q'), cmd, Some('q'), None, false), None);
+    }
+
+    #[test]
+    fn option_as_meta_sends_the_chord() {
+        let Some(Typed::Key(event)) = typed(
+            &Key::Text("å".into()),
+            m(|m| m.alt = true),
+            Some('a'),
+            None,
+            true,
+        ) else {
+            panic!("option is meta");
+        };
+        assert_eq!(event.key, physical_key_for_char('a'));
+        assert!(event.mods.contains(ModSet::ALT));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn option_types_layout_text_on_macos() {
         assert_eq!(
-            typed(&Key::Text("å".into()), m(|m| m.alt = true), Some('a'), None),
+            typed(
+                &Key::Text("å".into()),
+                m(|m| m.alt = true),
+                Some('a'),
+                None,
+                false
+            ),
             Some(Typed::Text("å".into()))
         );
     }
@@ -390,6 +442,7 @@ mod tests {
             m(|m| m.ctrl = true),
             Some('с'),
             Some(PhysicalKeyCode::KeyC),
+            false,
         ) else {
             panic!("ctrl-c is a key atom");
         };

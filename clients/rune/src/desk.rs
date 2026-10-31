@@ -15,22 +15,27 @@ use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::control::{Event, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, Listener, ViewId};
-use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId};
+use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
 use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
+mod attach;
 mod find;
 mod frame;
+mod inbox;
 mod input;
 mod layout;
 mod links;
 mod mouse;
 mod palette;
 mod sessions;
+mod settings;
+mod tabs;
 
 pub use layout::SplitPath;
+pub use tabs::{Renaming, Tab};
 
 /// Wakes Rune's loop from the runtime's driver thread. Only posts; never
 /// re-enters the client.
@@ -70,7 +75,14 @@ pub enum Pending {
     Paste(String),
     /// Closing a terminal that is running a command.
     Close(ResourceId),
+    /// Closing every terminal of a tab.
+    CloseTab(Vec<ResourceId>),
+    /// Ending a session and everything in it.
+    CloseSession(SessionKey, String),
 }
+
+/// Where a spawned terminal goes in the arrangement.
+type Placement = Option<(ResourceId, SplitDir)>;
 
 /// The terminal on screen.
 pub struct Shown {
@@ -106,6 +118,13 @@ pub struct Desk {
     pub find_query: rune::TextEdit,
     /// The link under the pointer while ⌘ is held.
     pub pointer: links::Pointer,
+    /// Everything waiting on you, and the system's view of it.
+    pub inbox: inbox::Inbox,
+    pub settings: settings::Settings,
+    pub settings_open: bool,
+    pub tabs: tabs::Tabs,
+    /// Image uploads on their way, and the terminal each is for.
+    uploads: Vec<(u64, ResourceId)>,
     /// Settings that outlive the window: text size, the sidebar.
     prefs: rune::prefs::Prefs,
     /// What every terminal is doing, for the sidebar's marks.
@@ -137,13 +156,14 @@ pub struct Desk {
     pub zoomed: Option<ResourceId>,
     /// A divider drag's split and ratio, previewed until release.
     pub(crate) dragging: Option<(SplitPath, f32)>,
-    /// Spawned splits waiting for the session's arrangement: the pane split,
-    /// the new terminal, the direction, and since when.
-    unplaced_splits: Vec<(ResourceId, ResourceId, SplitDir, Instant)>,
+    /// Spawned splits and tabs waiting for the session's arrangement: the
+    /// new terminal, where it goes, and since when.
+    unplaced_splits: Vec<(ResourceId, Placement, Instant)>,
     /// Arrangement writes this window made, to report a refusal.
     layout_ops: HashSet<OperationId>,
-    /// Spawns that become splits: the pane split and the direction.
-    pending_splits: HashMap<u32, (ResourceId, SplitDir)>,
+    /// Spawns that become splits (the pane split and the direction) or, with
+    /// `None`, tabs.
+    pending_splits: HashMap<u32, Placement>,
     /// The pane the wheel last moved, owning `wheel_rows`.
     wheel_pane: Option<ResourceId>,
     /// The pane whose program took the last press, until its release.
@@ -174,6 +194,7 @@ impl Desk {
                 s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
             });
         let sidebar_open = prefs.get("sidebar_open").unwrap_or(true);
+        let settings = settings::Settings::load(&prefs);
         let mut desk = Self {
             client: None,
             error: None,
@@ -193,6 +214,11 @@ impl Desk {
             find: None,
             find_query: rune::TextEdit::new(""),
             pointer: links::Pointer::default(),
+            inbox: inbox::Inbox::default(),
+            settings,
+            settings_open: false,
+            tabs: tabs::Tabs::default(),
+            uploads: Vec::new(),
             prefs,
             preedit: None,
             activities: crate::activity::Activities::default(),
@@ -231,6 +257,7 @@ impl Desk {
             },
             Err(error) => desk.error = Some(error.clone()),
         }
+        desk.apply_theme();
         desk
     }
 
@@ -240,8 +267,10 @@ impl Desk {
 
     /// Rune's setup hook: route runtime wakes into Rune's loop.
     pub fn listen(&mut self, waker: Waker) {
+        self.inbox.alerts.listen(waker.clone());
         if let Some(client) = &self.client {
             client.set_listener(Arc::new(Wake(waker)));
+            client.watch_approvals();
         }
     }
 
@@ -254,6 +283,11 @@ impl Desk {
         let observation = client.take_activity();
         let mut changed = observation.status != self.status;
         if observation.connection_epoch != self.epoch {
+            // Only the first connection replays news: a reconnect's items
+            // are known by id, and what arrived during the gap is new.
+            if self.epoch == 0 {
+                self.inbox.alerts.connected();
+            }
             self.epoch = observation.connection_epoch;
             changed |= self.reopen_after_reconnect(&client);
         }
@@ -277,9 +311,11 @@ impl Desk {
         }
         changed |= self.open_wanted(&client);
         self.title(tx);
-        if changed || events {
+        if changed || events || self.layout_is_stale() {
             changed |= self.refresh_layout(&client);
         }
+        self.finish_uploads(&client);
+        changed |= self.sync_alerts();
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();
@@ -287,12 +323,23 @@ impl Desk {
     }
 
     fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
-        let on_screen: Vec<ResourceId> = match &self.layout {
-            Some(tree) => phux_client_core::layout::leaves(tree),
-            None => self.shown.iter().map(|s| s.terminal.clone()).collect(),
+        // A background window shows nothing to anyone.
+        let on_screen = if self.focused {
+            self.on_screen()
+        } else {
+            Vec::new()
         };
         let marked = self.activities.apply(&event, &on_screen);
-        marked | self.apply_view(client, event, tx)
+        let inbox = self.inbox_event(client, &event);
+        marked | inbox | self.apply_view(client, event, tx)
+    }
+
+    /// The terminals in front of the person.
+    pub(super) fn on_screen(&self) -> Vec<ResourceId> {
+        match &self.layout {
+            Some(tree) => phux_client_core::layout::leaves(tree),
+            None => self.shown.iter().map(|s| s.terminal.clone()).collect(),
+        }
     }
 
     fn apply_view(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
@@ -310,8 +357,8 @@ impl Desk {
                 terminal_id: Some(new),
                 ..
             } if self.pending_splits.contains_key(&request_id) => {
-                if let Some((target, dir)) = self.pending_splits.remove(&request_id) {
-                    self.place_split(client, &target, &new, dir);
+                if let Some(placement) = self.pending_splits.remove(&request_id) {
+                    self.place_split(client, &new, placement);
                 }
                 true
             }
@@ -319,8 +366,11 @@ impl Desk {
                 request_id,
                 terminal_id,
                 error,
-            } if self.pending_spawns.contains(&request_id) => {
+            } if self.pending_spawns.contains(&request_id)
+                || self.pending_splits.contains_key(&request_id) =>
+            {
                 self.pending_spawns.retain(|id| *id != request_id);
+                self.pending_splits.remove(&request_id);
                 match (terminal_id, error) {
                     (Some(id), _) => self.want(id),
                     (None, error) => {
@@ -470,20 +520,6 @@ impl Desk {
         self.notice = None;
         self.generation += 1;
         true
-    }
-
-    pub fn zoom(&mut self, size: Option<f32>) {
-        self.font_size = size.map_or(grid::DEFAULT_FONT_SIZE, |s| {
-            s.clamp(grid::MIN_FONT_SIZE, grid::MAX_FONT_SIZE)
-        });
-        let _ = self.prefs.set("font_size", &self.font_size);
-        self.fitted.clear();
-        self.fit();
-    }
-
-    pub fn toggle_sidebar(&mut self) {
-        self.sidebar_open = !self.sidebar_open;
-        let _ = self.prefs.set("sidebar_open", &self.sidebar_open);
     }
 }
 

@@ -2262,12 +2262,15 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
+ "objc2 0.5.3",
+ "objc2-foundation 0.2.2",
  "phux-client-core",
  "phux-client-runtime",
  "phux-protocol",
  "rune",
+ "rune-mac",
  "serde_json",
 ]
 
@@ -2778,6 +2781,15 @@ dependencies = [
  "xkbcommon",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "rune-mac"
+version = "0.0.1"
+source = "git+https://github.com/anomalyco/rune?rev=7109facac86f37b8411df84f39571a11c9e859c5#7109facac86f37b8411df84f39571a11c9e859c5"
+dependencies = [
+ "block2 0.5.1",
+ "objc2 0.5.3",
 ]
 
 [[package]]
