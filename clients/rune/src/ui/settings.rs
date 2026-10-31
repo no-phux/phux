@@ -134,11 +134,10 @@ fn stepper(desk: &Desk, ink: &Ink) -> El {
 }
 
 pub fn view(desk: &Desk, ink: &Ink) -> El {
-    let notify_detail = if rune_mac::notify::available() {
-        "When an agent asks, finishes, or an action is held, and you're elsewhere."
-    } else {
-        "Needs the installed app; this build can't post."
-    };
+    let notify_detail = crate::alerts::notifications_detail(
+        rune_mac::notify::available(),
+        cfg!(target_os = "macos"),
+    );
     let body = col()
         .w_full()
         .padding(18.0)
