@@ -198,6 +198,9 @@ pub(super) fn default_pane(topology: &Topology, session: u32) -> Option<Resource
         .map(|p| p.terminal_id.clone())
 }
 
+/// Lines of history each terminal keeps on hand and asks the server for.
+const SCROLLBACK_LINES: u32 = 16_384;
+
 /// Dials on the runtime's thread: a machine that's away shows as connecting.
 /// With no attach the connection only reads the inventory, on this one and
 /// on every reconnect, until `settle_home` selects a session.
@@ -211,6 +214,7 @@ pub(super) fn connect(target: Target) -> Result<Client, String> {
                 attach: None,
                 session_recovery: SessionRecovery::CallerValidated,
                 attach_role: Some(RolePolicy::PRIMARY),
+                scrollback_lines: SCROLLBACK_LINES,
                 ..ControlOptions::default()
             },
             ..ClientOptions::default()

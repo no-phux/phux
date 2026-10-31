@@ -1,13 +1,17 @@
 //! A terminal frame as Rune elements.
 //!
 //! The runtime's `DrawList` already resolved the theme, palette, inverse
-//! video, selection, and blink, so this module only places cells. Each row is
-//! one memoized subtree keyed by its content, so a line of output rebuilds
-//! one row, not the screen. Text runs are set in the system monospace face
-//! with tracking that lands every glyph on a device-pixel cell, which keeps
-//! long runs aligned with the backgrounds and the cursor beneath them.
+//! video, selection, and blink, so this module only places cells. A pane
+//! whose frame didn't move reuses its whole subtree without walking a cell.
+//! Otherwise each row is one memoized subtree named by its content, so a line
+//! of output rebuilds one row wherever the others scrolled to. Text runs are
+//! set in the system monospace face with tracking that lands every glyph on a
+//! device-pixel cell, which keeps long runs aligned with the backgrounds and
+//! the cursor beneath them; `glyphs` keeps the rest on the grid.
 
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::time::Instant;
 
 use phux_client_runtime::draw::{
     BackgroundRun, BlockCell, CursorPaint, Decoration, DecorationKind, DrawList, TextRun, Theme,
@@ -16,6 +20,22 @@ use phux_client_runtime::draw::{
 use phux_client_runtime::publication::{CursorStyle, GridFrame, Rgb};
 use rune::text::advance;
 use rune::{Color, El, Family, TextStyle, el, memo, text};
+
+use crate::perf;
+
+mod glyphs;
+
+/// Inter, which replacing Rune's built-in fonts has to name again, and the
+/// Nerd Font GPUI bundles, for the private-use icons no system face has.
+pub const FONTS: &[&[u8]] = &[
+    include_bytes!("../../desktop/native/assets/fonts/Inter.ttf"),
+    include_bytes!(
+        "../../desktop/native/phux-gpui/assets/fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf"
+    ),
+];
+/// The sans and mono slots. `Family::SystemMono` stacks the system's faces
+/// over the mono slot, so the Nerd Font only ever fills in missing glyphs.
+pub const FAMILIES: (&str, &str) = ("Inter", "ui-monospace, JetBrainsMonoNL Nerd Font Mono");
 
 pub const DEFAULT_FONT_SIZE: f32 = 13.0;
 pub const MIN_FONT_SIZE: f32 = 8.0;
@@ -296,6 +316,7 @@ fn block(m: &Metrics, cell: &BlockCell<Color>) -> El {
 }
 
 fn row_el(list: &DrawList<Color>, row: &Row<'_>, m: &Metrics) -> El {
+    perf::ROWS_BUILT.incr();
     let mut out = el().w_full().h(m.cell_h);
     for run in &row.backgrounds {
         out = out.child(rect(m, run.start, run.end.saturating_sub(run.start)).fill(run.color));
@@ -304,16 +325,11 @@ fn row_el(list: &DrawList<Color>, row: &Row<'_>, m: &Metrics) -> El {
     if let Some(cursor) = row.cursor.filter(|c| c.solid) {
         out = out.child(cursor_shape(m, cursor));
     }
+    let mut marks = glyphs::Marks::new(m);
     for run in &row.texts {
-        let content = &list.text[run.text.clone()];
-        out = out.child(
-            text(content)
-                .absolute(f32::from(run.col) * m.cell_w, 0.0)
-                .font(m.style(run.face.bold, run.face.italic))
-                .color(faint(run.color, run.faint))
-                .single_line(),
-        );
+        marks.run(&list.text[run.text.clone()], run);
     }
+    out = out.children(marks.into_els());
     for cell in &row.blocks {
         out = out.child(block(m, cell));
     }
@@ -328,6 +344,31 @@ fn row_el(list: &DrawList<Color>, row: &Row<'_>, m: &Metrics) -> El {
 
 /// The whole grid, sized to its cells, over the frame's default background.
 pub fn paint(frame: &GridFrame, focused: bool, blink_on: bool, metrics: &Metrics) -> El {
+    let preparing = Instant::now();
+    // A generation restarts with its presentation, and an allocation can
+    // come back: together with the replica's sequence they name one frame.
+    let version = (
+        std::ptr::from_ref(frame) as usize,
+        (frame.generation, frame.stream_id, frame.bootstrap_id),
+        frame.last_seq,
+        (focused, blink_on),
+        (metrics.font_size.to_bits(), metrics.cell_w.to_bits()),
+    );
+    let mut built = false;
+    let grid = memo(format!("grid-{}", frame.terminal_id), version, || {
+        built = true;
+        build(frame, focused, blink_on, metrics)
+    });
+    if built {
+        perf::PREPARE_PATCHED.incr();
+    } else {
+        perf::PREPARE_REUSED.incr();
+    }
+    perf::PREPARE.record_elapsed(preparing);
+    grid
+}
+
+fn build(frame: &GridFrame, focused: bool, blink_on: bool, metrics: &Metrics) -> El {
     let visibility = phux_client_runtime::draw::Visibility {
         focused,
         cursor_visible: true,
@@ -339,10 +380,17 @@ pub fn paint(frame: &GridFrame, focused: bool, blink_on: bool, metrics: &Metrics
             f32::from(list.cols) * metrics.cell_w,
             f32::from(list.rows) * metrics.cell_h,
         )
-        .fill(list.background);
-    for (index, row) in split(&list).iter().enumerate() {
+        .fill(list.background)
+        // A row that moves lands at once: output never slides or fades.
+        .instant_changes();
+    // Rows are named by what they show, so a scrolled row keeps its subtree;
+    // equal rows are told apart by their order.
+    let mut seen: HashMap<u64, u16> = HashMap::new();
+    for row in &split(&list) {
         let version = row.version(&list, metrics);
-        let id = format!("row{index}");
+        let twin = seen.entry(version).or_default();
+        let id = format!("r{version:x}-{twin}");
+        *twin += 1;
         grid = grid.child(memo(id, version, || row_el(&list, row, metrics)));
     }
     grid
@@ -403,6 +451,9 @@ pub fn background(frame: &GridFrame) -> Color {
     let (_, background) = phux_client_runtime::draw::default_colors(frame, &theme());
     background
 }
+
+#[cfg(test)]
+mod budget;
 
 #[cfg(test)]
 mod tests {

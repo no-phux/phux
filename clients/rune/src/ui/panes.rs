@@ -1,6 +1,8 @@
 //! The terminal area: the split tree, one terminal per leaf, with the
 //! keyboard's pane marked and draggable dividers between them.
 
+use std::time::Instant;
+
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
 use rune::{Color, Cx, El, Phase, col, el, row};
@@ -8,7 +10,7 @@ use rune::{Color, Cx, El, Phase, col, el, row};
 use super::status::placeholder;
 use super::{Ink, PAD, overlay};
 use crate::desk::{Desk, SplitPath};
-use crate::grid;
+use crate::{grid, perf};
 
 /// The hit area a divider gives the pointer, around its one-point line.
 pub(crate) const DIVIDER: f32 = 7.0;
@@ -28,6 +30,7 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
     let several = matches!(tree, LayoutNode::Split { .. });
     area.fill(ink.bg)
         .child(node(desk, &tree, &mut Vec::new(), several, ink))
+        .children(perf::hud(ink.dim))
 }
 
 fn node(desk: &Desk, tree: &LayoutNode, path: &mut SplitPath, several: bool, ink: &Ink) -> El {
@@ -107,11 +110,14 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     } else {
         desk.others.get(id).copied()
     };
+    perf::RENDERS.incr();
+    let acquiring = Instant::now();
     let frame = desk
         .client
         .as_ref()
         .zip(view)
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
+    perf::ACQUIRE.record_elapsed(acquiring);
     let (laid, wheel, press, moved, left, dropped) = (
         id.clone(),
         id.clone(),
@@ -129,6 +135,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
             d.laid_out(laid.clone(), [rect[2] - 2.0 * PAD, rect[3] - 2.0 * PAD])
         });
     let Some((frame, view)) = frame else {
+        perf::ACQUIRE_REJECTED.incr();
         return host
             .fill(ink.bg)
             .center()
