@@ -5,15 +5,17 @@ use std::time::{Duration, Instant};
 use phux_client_runtime::Client;
 use phux_client_runtime::control::Status;
 
-use super::{Desk, RETRY_CEILING, Standing, backoff, incompatible, plainly, sessions};
+use super::{Banner, Desk, RETRY_CEILING, Standing, backoff, incompatible, plainly, sessions};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use phux_client_core::layout::wire::HandleMap;
 use phux_client_runtime::Runtime;
 use phux_client_runtime::control::{ControlOptions, PaneDescriptor, Topology};
 use phux_protocol::ids::ResourceId;
 
+use crate::desk::{Notice, NoticeKind, Pending, Shown};
 use crate::launch::{self, Options};
 
 fn desk() -> Desk {
@@ -161,6 +163,129 @@ fn the_runtime_renders_a_protocol_refusal_as_this_reads_it() {
         incompatible(&refused.to_string()).as_deref(),
         Some("server speaks 12")
     );
+}
+
+/// A desk with a terminal on screen whose connection dropped a while ago.
+fn stale(client: Arc<Client>) -> Desk {
+    let mut desk = desk();
+    desk.shown = Some(Shown {
+        terminal: ResourceId::local(1),
+        view: phux_client_runtime::ViewId::from_raw(1).expect("nonzero"),
+    });
+    desk.client = Some(client);
+    desk.status = Status::Connecting;
+    desk.link.down_since = Some(Instant::now() - Duration::from_secs(5));
+    desk
+}
+
+#[test]
+fn a_stale_window_says_when_it_has_stopped_trying() {
+    let mut desk = stale(embedded());
+    assert!(matches!(desk.banner(), Some(Banner::Reconnecting(_))));
+    desk.status = Status::Failed;
+    desk.failed_with("server error VersionIncompatible: server speaks 12");
+    assert_eq!(
+        desk.banner(),
+        Some(Banner::Stuck(Standing::Incompatible(
+            "server speaks 12".to_owned()
+        )))
+    );
+    desk.link.incompatible = None;
+    desk.status = Status::Closed;
+    desk.link.ended = Some("replaced".to_owned());
+    assert_eq!(
+        desk.banner(),
+        Some(Banner::Stuck(Standing::Closed("replaced".to_owned())))
+    );
+    desk.link.ended = None;
+    desk.status = Status::Failed;
+    desk.error = Some("websocket: 401".to_owned());
+    assert!(matches!(
+        desk.banner(),
+        Some(Banner::Stuck(Standing::Unreachable(_)))
+    ));
+}
+
+/// Counts the wakes a client delivers.
+#[derive(Default)]
+struct Wakes(AtomicU32);
+
+impl phux_client_runtime::Listener for Wakes {
+    fn on_activity(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_terminal_that_cant_take_focus_doesnt_wake_the_window() {
+    let client = embedded();
+    let wakes = Arc::new(Wakes::default());
+    client.set_listener(wakes.clone());
+    let _ = client.take_activity();
+    let before = wakes.0.load(Ordering::SeqCst);
+    let mut desk = stale(client.clone());
+    // Down: the connection coming back is the wake.
+    assert!(!desk.sync_focus(&client));
+    // Up but not ready: a timer looks again, not a loop.
+    desk.status = Status::Attached;
+    assert!(desk.sync_focus(&client));
+    assert_eq!(wakes.0.load(Ordering::SeqCst), before);
+    desk.focused = false;
+    assert!(!desk.sync_focus(&client));
+}
+
+#[test]
+fn only_the_first_connection_is_a_replay() {
+    use phux_client_runtime::control::ControlPlane;
+    let client = embedded();
+    let mut desk = stale(client.clone());
+    assert!(!desk.link.heard);
+    client.with_control(ControlPlane::connection_opened);
+    let mut observation = client.take_activity();
+    desk.follow_connection(&client, &mut observation);
+    assert!(desk.link.heard);
+    // A replaced client is the same server, whatever its epoch.
+    desk.renew();
+    assert_eq!(desk.epoch, 0);
+    assert!(desk.link.heard);
+}
+
+#[test]
+fn a_replaced_client_keeps_whats_waiting_on_you() {
+    let mut desk = stale(embedded());
+    let held = Pending::Paste(ResourceId::local(1), "a\nb".to_owned());
+    desk.pending = Some(held.clone());
+    desk.say(NoticeKind::Error, "spawn failed");
+    desk.renew();
+    assert_eq!(desk.pending, Some(held));
+    assert_eq!(
+        desk.notice,
+        Some(Notice {
+            kind: NoticeKind::Error,
+            text: "spawn failed".to_owned()
+        })
+    );
+}
+
+#[test]
+fn another_server_drops_what_was_held_for_this_one() {
+    let mut desk = stale(embedded());
+    desk.link.heard = true;
+    desk.pending = Some(Pending::Close(ResourceId::local(1)));
+    desk.reach(PathBuf::from("/nowhere/other.sock"), true);
+    assert_eq!(desk.pending, None);
+    assert!(!desk.link.heard);
+}
+
+#[test]
+fn a_failed_search_keeps_the_last_known_server() {
+    let mut desk = desk();
+    let aimed = desk.launch.socket.clone();
+    let mut failed = desk.launch.clone();
+    failed.socket = Err("timed out".to_owned());
+    desk.adopt(failed);
+    assert_eq!(desk.launch.socket, aimed);
+    assert_eq!(desk.error.as_deref(), Some("timed out"));
 }
 
 #[test]

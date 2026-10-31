@@ -1,7 +1,9 @@
 //! Choosing what is on screen across sessions: show a terminal, make a
 //! terminal or session, step through them.
 
-use phux_client_runtime::control::{ControlOptions, SessionRecovery, SpawnRequest, Topology};
+use phux_client_runtime::control::{
+    ControlOptions, SessionRecovery, SpawnRequest, Status, Topology,
+};
 use phux_client_runtime::{Client, ClientOptions, Runtime, Target};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::focus::FocusEvent;
@@ -105,22 +107,24 @@ impl Desk {
 
     /// The focus a terminal hears about (DEC 1004) is also what admits its
     /// OSC 52 writes, so it follows the keyboard and is said again on a new
-    /// connection. Retried until the terminal can take input.
-    pub(super) fn sync_focus(&mut self, client: &Client) {
+    /// connection. True when this should be tried again shortly: an attached
+    /// terminal can come ready without news, while a connection that is down
+    /// wakes the window itself when it returns.
+    pub(super) fn sync_focus(&mut self, client: &Client) -> bool {
         let now = self.shown.as_ref().filter(|_| self.focused);
         let now = now.map(|shown| shown.terminal.clone());
         if self.focus_told == now {
-            return;
+            return false;
         }
         if let Some(old) = self.focus_told.take() {
             let _ = client.send_focus(&old, FocusEvent::Lost);
         }
-        if let Some(new) = now
-            && client.send_focus(&new, FocusEvent::Gained)
-        {
+        let Some(new) = now else { return false };
+        if client.send_focus(&new, FocusEvent::Gained) {
             self.focus_told = Some(new);
+            return false;
         }
-        client.wake();
+        self.status == Status::Attached
     }
 
     /// Step through every terminal the server lists.

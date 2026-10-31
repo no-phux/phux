@@ -5,7 +5,7 @@ use phux_client_runtime::control::Status;
 use rune::{El, Family, TextStyle, col, el, row, text};
 
 use super::{CAPTION, Ink, LABEL, LABEL_STRONG, button, pressable};
-use crate::desk::link::Standing;
+use crate::desk::link::{Banner, Standing};
 use crate::desk::{Desk, Notice, NoticeKind, Pending};
 use crate::launch::INSTALL;
 
@@ -191,7 +191,16 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
 /// Over panes that have stopped updating: what happened, and a way to act.
 /// It floats, so it never resizes a terminal.
 pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
-    let (lost, why) = desk.banner()?;
+    let banner = desk.banner()?;
+    let machine = desk.machines.label();
+    let (lost, why) = match &banner {
+        Banner::Reconnecting(why) => (format!("Lost {machine}. Reconnecting…"), why.clone()),
+        Banner::Stuck(standing) => {
+            let (title, why) = words(standing, machine);
+            (title.to_owned(), why)
+        }
+    };
+    let update = matches!(banner, Banner::Stuck(Standing::Incompatible(_)));
     Some(
         col()
             .absolute(0.0, 44.0)
@@ -201,7 +210,7 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
             .child(
                 row()
                     .key("reconnect-banner")
-                    .w(420.0)
+                    .w(if update { 560.0 } else { 420.0 })
                     .px(14.0)
                     .py(8.0)
                     .gap(12.0)
@@ -215,8 +224,13 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
                             .grow(1.0)
                             .min_w(0.0)
                             .child(text(lost).font(LABEL_STRONG).color(p.text).truncate())
-                            .child(text(why).font(CAPTION).color(p.dim).truncate()),
+                            .child(text(why).font(CAPTION).color(p.dim).wrap()),
                     )
+                    .children(update.then(|| {
+                        action("Check for updates", "banner-update", p, |d| {
+                            d.updater.check_now();
+                        })
+                    }))
                     .child(action("Retry", "banner-retry", p, Desk::reconnect)),
             ),
     )

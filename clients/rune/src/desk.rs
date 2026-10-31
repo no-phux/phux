@@ -354,13 +354,13 @@ impl Desk {
         }
         let opened = self.settle_home(&client) | self.open_wanted(&client);
         changed |= opened;
-        self.sync_focus(&client);
+        let unfocused = self.sync_focus(&client);
         self.title(tx);
         if rearrange || opened || self.layout_is_stale() {
             changed |= self.refresh_layout(&client);
         }
         // The replica's news may never come, and a split only waits so long.
-        if self.splits_waiting() {
+        if unfocused || self.splits_waiting() {
             tx.wake_after(Duration::from_millis(250));
         }
         self.finish_uploads(&client);
@@ -376,11 +376,7 @@ impl Desk {
     fn follow_connection(&mut self, client: &Client, observation: &mut Observation) -> bool {
         let mut changed = observation.status != self.status;
         if observation.connection_epoch != self.epoch {
-            // Only the first connection replays news: a reconnect's items
-            // are known by id, and what arrived during the gap is new.
-            if self.epoch == 0 {
-                self.inbox.alerts.connected();
-            }
+            self.first_contact();
             self.epoch = observation.connection_epoch;
             self.focus_told = None;
             changed |= self.reopen_after_reconnect(client);

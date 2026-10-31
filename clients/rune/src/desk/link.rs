@@ -52,6 +52,9 @@ pub struct Link {
     updater_started: bool,
     /// What the server said when it ended the attach.
     pub ended: Option<String>,
+    /// This server's replay has been heard, so what it says next is news.
+    /// Outlives a replaced client, which comes back to the same inbox.
+    pub(super) heard: bool,
     /// The server refused this client's protocol, in its own words.
     pub incompatible: Option<String>,
     /// The session to return to, across a reconnect.
@@ -79,6 +82,7 @@ impl Default for Link {
             last_ensure: None,
             updater_started: false,
             ended: None,
+            heard: false,
             incompatible: None,
             home: None,
             org_unavailable: None,
@@ -152,6 +156,15 @@ pub enum Standing {
     Opening,
 }
 
+/// What goes over panes that have stopped updating.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Banner {
+    /// Still trying, with the last thing heard.
+    Reconnecting(String),
+    /// Trying stopped: someone has to act.
+    Stuck(Standing),
+}
+
 impl Desk {
     /// Route a new attempt: a remote dials at once, a named socket too, and
     /// this computer's server is found on a worker first.
@@ -180,6 +193,7 @@ impl Desk {
             let _ = self.prefs.set("machine", &String::new());
         }
         self.machines.current = None;
+        self.link.heard = false;
         self.link.moved = Some(format!("{machine} isn't available, so this is {LOCAL}."));
         self.dial_local();
     }
@@ -238,7 +252,7 @@ impl Desk {
 
     /// The worker answered. A window on a remote only learns what to update.
     fn adopt(&mut self, found: Resolved) {
-        let moved = found.socket != self.launch.socket;
+        let moved = found.socket.is_ok() && found.socket != self.launch.socket;
         self.machines.phux = found.phux.clone();
         let server = found.socket.clone().ok();
         self.updater.target = found.phux.clone().zip(server);
@@ -247,11 +261,14 @@ impl Desk {
             .take_if(|_| self.updater.install.is_err() || found.aimed);
         self.start_updater();
         self.launch.phux = found.phux;
-        self.launch.socket = found.socket;
+        // A failed search says nothing about where the server is.
+        if found.socket.is_ok() {
+            self.launch.socket = found.socket.clone();
+        }
         if self.machines.current.is_some() {
             return;
         }
-        match self.launch.socket.clone() {
+        match found.socket {
             Err(why) => self.error = Some(why),
             Ok(socket) => {
                 self.error = None;
@@ -267,6 +284,11 @@ impl Desk {
             Some(client) if !moved && !client.status().is_terminal() => client.nudge(),
             Some(_) => {
                 self.renew();
+                // Another server's terminals and news aren't these.
+                if moved {
+                    self.link.heard = false;
+                    self.pending = None;
+                }
                 self.connect(Target::uds(socket));
             }
             None => self.connect(Target::uds(socket)),
@@ -305,6 +327,8 @@ impl Desk {
         std::mem::swap(&mut next.inbox, &mut self.inbox);
         std::mem::swap(&mut next.activities, &mut self.activities);
         std::mem::swap(&mut next.palette_query, &mut self.palette_query);
+        next.pending = self.pending.take();
+        next.notice = self.notice.take();
         next.palette_open = self.palette_open;
         next.palette_picked = self.palette_picked;
         next.settings_open = self.settings_open;
@@ -336,6 +360,14 @@ impl Desk {
         self.link.incompatible.is_some()
             || self.status == Status::Closed
             || self.error.as_deref().is_some_and(is_fatal_refusal_detail)
+    }
+
+    /// A connection opened. Only a server's first replays news: after that
+    /// its items are known by id, and what arrived during a gap is new.
+    pub(super) fn first_contact(&mut self) {
+        if !std::mem::replace(&mut self.link.heard, true) {
+            self.inbox.alerts.connected();
+        }
     }
 
     /// Note a terminal failure the runtime reported.
@@ -455,19 +487,20 @@ impl Desk {
         }
     }
 
-    /// `(what happened, what it means)` over panes that have stopped
-    /// updating. Silent for the first moment of any drop.
-    pub fn banner(&self) -> Option<(String, String)> {
+    /// What to say over panes that have stopped updating. Silent for the
+    /// first moment of any drop.
+    pub fn banner(&self) -> Option<Banner> {
         if self.shown.is_none() || self.link_is_up() || !self.link.is_down_for(BANNER_AFTER) {
             return None;
         }
-        let name = self.machines.label();
+        if self.stuck() {
+            return Some(Banner::Stuck(self.standing()));
+        }
         let last = self.client.as_ref().and_then(|client| client.last_error());
         let why = self.link.ended.clone().or(last).map(|why| plainly(&why));
-        Some((
-            format!("Lost {name}. Reconnecting…"),
-            why.unwrap_or_else(|| "Your sessions keep running on the server.".to_owned()),
-        ))
+        Some(Banner::Reconnecting(why.unwrap_or_else(|| {
+            "Your sessions keep running on the server.".to_owned()
+        })))
     }
 
     /// A word for the current machine's row.

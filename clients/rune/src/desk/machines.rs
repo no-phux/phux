@@ -226,6 +226,7 @@ impl Desk {
         let mut next = Desk::open(&launch, machine.clone());
         self.carry_into(&mut next);
         next.link.home = None;
+        next.link.heard = false;
         next.machines.current = machine;
         next.close_machines();
         *self = next;
