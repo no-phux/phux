@@ -16,7 +16,9 @@
 //!
 //! The blob is a compatibility boundary (old writer, newer reader):
 //! [`StateBlob::version`] gates incompatible changes, additive fields use
-//! `#[serde(default)]`, and unknown fields are ignored.
+//! `#[serde(default)]`, and unknown fields are ignored. Field names here and
+//! in every nested type are the format: renaming one needs
+//! `#[serde(alias)]`, and `golden_tests` holds the released shapes to that.
 //!
 //! The organization records ride in [`StateBlob::org`], and each carried
 //! session and resource names its record by key. Windows are synthesized:
@@ -404,5 +406,22 @@ pub enum SplitDirBlob {
     Vertical,
 }
 
+/// Printed by a binary that ran [`preflight`]. Without it the candidate
+/// predates the check and ignored the request.
+pub const PREFLIGHT_PASSED: &str = "upgrade-blob-readable";
+
+/// Whether this image could resume from `bytes`. A candidate binary answers
+/// this before the running image commits to the re-exec, the last moment a
+/// refusal costs nothing.
+///
+/// # Errors
+/// Why the blob would not resume, for the operator.
+pub fn preflight(bytes: &[u8]) -> Result<(), String> {
+    let blob = StateBlob::from_bytes(bytes).map_err(|error| error.to_string())?;
+    crate::state::upgrade_blob::validate_upgrade_blob(&blob).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod golden_tests;
 #[cfg(test)]
 mod tests;

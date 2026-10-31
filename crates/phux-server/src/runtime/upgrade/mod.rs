@@ -32,7 +32,9 @@ pub(super) mod validate;
 
 use handoff::{AgentSessionSeal, collect_agent_session_cuts, collect_pane_handoffs};
 pub(super) use validate::{InheritedUpgradeEnv, cleanup_executable_snapshot};
-use validate::{PinnedExecutable, clear_inherited_cloexec, pin_validated_executable};
+use validate::{
+    PinnedExecutable, clear_inherited_cloexec, pin_validated_executable, preflight_blob,
+};
 
 const PANE_HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
 const AGENT_ROLLBACK_TIMEOUT: Duration = Duration::from_secs(2);
@@ -262,9 +264,10 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
         )?;
         let (blob, delegated_listeners) = super::delegation::carry_delegations(state, blob)?;
 
-        let blob_file = stage_blob_file(&blob)?;
+        let mut blob_file = stage_blob_file(&blob)?;
         let blob_fd = blob_file.as_raw_fd();
         let executable = pin_validated_executable(flags.upgrade_source_exe.as_deref())?;
+        preflight_blob(&executable.path, &mut blob_file)?;
         let fd_flags = clear_inherited_cloexec(blob_fd, listener_fd, &blob)?;
         Ok((
             handoffs,

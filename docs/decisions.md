@@ -12,6 +12,10 @@ records explain history; [look them up deliberately](./architecture.md#historica
   `LocalSet` task that owns its `!Send` libghostty terminal.
 - Hot upgrades re-exec and re-adopt live PTYs; cold restarts, crashes and
   reboots do not preserve PTYs. Records are not process recovery.
+- The upgrade blob's field names are a format. A candidate binary must read
+  the staged blob before the running image execs into it, and every shape a
+  release wrote stays frozen in an append-only fixture, because a resume
+  failure kills every pane.
 - Exit is a facet, close is a purge. Remove policy removes on exit; Retain
   keeps an inspectable result until purge/expiry. [Organization](./organization.md)
   owns commit and reconciliation rules.

@@ -27,6 +27,27 @@ const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Version of the `phux server --ensure --json` availability document.
 pub(crate) const ENSURE_SCHEMA_VERSION: u8 = 1;
 
+/// Answer a running server that is about to re-exec into this binary: could
+/// this image resume from the blob on stdin? The server refuses the upgrade
+/// on a failure here, while every pane is still alive.
+pub(crate) fn answer_upgrade_preflight() -> ExitCode {
+    let mut blob = Vec::new();
+    let verdict = std::io::Read::read_to_end(&mut std::io::stdin(), &mut blob)
+        .map_err(|error| format!("read upgrade blob: {error}"))
+        .and_then(|_| phux_server::upgrade::blob::preflight(&blob));
+    match verdict {
+        Ok(()) => {
+            let passed = phux_server::upgrade::blob::PREFLIGHT_PASSED;
+            crate::output::bytes(format!("{passed}\n").as_bytes());
+            ExitCode::SUCCESS
+        }
+        Err(reason) => {
+            crate::output::error_block(reason.lines());
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Which owner made the selected socket available. `--ensure` proves only
 /// that the socket accepts; HELLO still negotiates protocol and features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

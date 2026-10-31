@@ -435,4 +435,4 @@ use rebuild::*;
     clippy::wildcard_imports,
     reason = "re-export for siblings"
 )]
-use validate::*;
+pub(crate) use validate::validate_upgrade_blob;
