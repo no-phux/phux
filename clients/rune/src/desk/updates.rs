@@ -75,6 +75,8 @@ pub struct Updater {
     pub staged: Option<String>,
     pub pending_handoff: bool,
     pub message: Option<String>,
+    /// Someone asked: the card answers even when the answer is "up to date".
+    asked: bool,
     /// The version whose card was closed; a newer one reopens it.
     dismissed: Option<String>,
     done: (Sender<Done>, Receiver<Done>),
@@ -102,6 +104,7 @@ impl Updater {
             staged: None,
             pending_handoff: false,
             message: None,
+            asked: false,
             dismissed: None,
             done: channel(),
             waker: None,
@@ -140,6 +143,13 @@ impl Updater {
 
     pub fn busy(&self) -> bool {
         self.work != Work::Idle
+    }
+
+    /// A check someone asked for, from Settings or the palette.
+    pub fn check_now(&mut self) {
+        self.asked = true;
+        self.dismissed = None;
+        self.check();
     }
 
     pub fn check(&mut self) {
@@ -247,7 +257,8 @@ impl Updater {
 
     pub fn card_open(&self) -> bool {
         let closed = self.dismissed.is_some() && self.dismissed == self.card_version();
-        (self.action().is_some() || !matches!(self.work, Work::Idle | Work::Checking)) && !closed
+        let live = self.action().is_some() || !matches!(self.work, Work::Idle | Work::Checking);
+        (live || self.asked) && !closed
     }
 
     fn card_version(&self) -> Option<String> {
@@ -259,6 +270,7 @@ impl Updater {
     }
 
     pub fn dismiss(&mut self) {
+        self.asked = false;
         self.dismissed = self.card_version();
     }
 
@@ -378,6 +390,16 @@ impl Desk {
         }
     }
 
+    /// The palette's one verb: do what's due, or go and look.
+    pub fn install_update(&mut self, tx: &mut Tx) {
+        if self.updater.action().is_some() {
+            self.updater.reopen();
+            self.update_act(tx);
+        } else {
+            self.updater.check_now();
+        }
+    }
+
     pub fn toggle_update_automatic(&mut self) {
         self.updater.automatic = !self.updater.automatic;
         let _ = self.prefs.set("update_automatic", &self.updater.automatic);
@@ -415,6 +437,7 @@ mod tests {
             staged: None,
             pending_handoff: false,
             message: None,
+            asked: false,
             dismissed: None,
             done: channel(),
             waker: None,
@@ -544,6 +567,37 @@ mod tests {
             ..release("1.0")
         });
         assert!(updater.card_open());
+    }
+
+    #[test]
+    fn asking_always_answers_and_closing_ends_it() {
+        let mut updater = updater();
+        updater.check_now();
+        assert!(updater.card_open());
+        updater.checked(
+            Ok(Release {
+                version: "0.0.1".to_owned(),
+                ..release("1.0")
+            }),
+            None,
+        );
+        assert_eq!(updater.action(), None);
+        assert!(updater.card_open());
+        updater.dismiss();
+        assert!(!updater.card_open());
+    }
+
+    #[test]
+    fn a_background_check_stays_quiet_when_current() {
+        let mut updater = updater();
+        updater.checked(
+            Ok(Release {
+                version: "0.0.1".to_owned(),
+                ..release("1.0")
+            }),
+            None,
+        );
+        assert!(!updater.card_open());
     }
 
     #[test]
