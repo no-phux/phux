@@ -67,7 +67,7 @@ pub struct Updater {
     /// The installed app, or why this copy can't replace itself.
     pub install: Result<PathBuf, &'static str>,
     /// The CLI and socket this window may update; absent when aimed by hand.
-    target: Option<(PathBuf, PathBuf)>,
+    pub(super) target: Option<(PathBuf, PathBuf)>,
     pub work: Work,
     pub release: Option<Release>,
     pub cli: Option<Cli>,

@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use phux_client_runtime::Client;
 use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::AttachTarget;
 
 use super::{Desk, Shown, WANTED_GRACE, sessions};
 
@@ -73,7 +74,13 @@ impl Desk {
         if self.shown.is_some() {
             return None;
         }
-        sessions::default_pane(topology)
+        sessions::default_pane(topology, client.selected_session()?)
+    }
+
+    /// Whether `terminal` is in a session this client doesn't stream yet.
+    fn foreign(&self, client: &Client, terminal: &ResourceId) -> Option<String> {
+        let pane = self.topology.as_ref()?.pane(terminal)?;
+        (client.selected_session() != Some(pane.session_id)).then(|| pane.session_name.clone())
     }
 
     /// Open the target terminal once its replica is ready. Retried on every
@@ -93,7 +100,13 @@ impl Desk {
             return true;
         }
         let Ok(view) = client.create_view(&target) else {
-            self.want(target);
+            // Keep the first asking's clock, or the grace never runs out.
+            if self.wanted.is_none() {
+                self.want(target.clone());
+            }
+            if let Some(session) = self.foreign(client, &target) {
+                client.attach_session(AttachTarget::ByName(session));
+            }
             return false;
         };
         // The old focus stays on screen if the layout still shows it.
@@ -107,7 +120,7 @@ impl Desk {
             view,
         });
         self.wanted = None;
-        self.notice = None;
+        self.notice = self.link_notice();
         self.generation += 1;
         true
     }
