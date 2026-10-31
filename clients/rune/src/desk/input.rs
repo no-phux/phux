@@ -32,13 +32,18 @@ pub enum Modal {
     Confirm,
 }
 
-/// Whether a view's frame shows a highlight.
-fn has_selection(frame: &GridFrame) -> bool {
-    frame
-        .buffer
-        .cells
-        .iter()
-        .any(|cell| cell.flags & phux_client_core::grid::CELL_SELECTED != 0)
+impl Modal {
+    /// Whether a command, by chord or menu pick, may run while this has the
+    /// keyboard. The find field leaves the shown terminal in view; a sheet
+    /// hides what a command would touch.
+    const fn allows(self, action: Shortcut) -> bool {
+        match self {
+            Self::FindField => true,
+            Self::Palette => matches!(action, Shortcut::Palette),
+            Self::Inbox | Self::Settings => action.works_over_sheets(),
+            Self::ContextMenu | Self::Machines | Self::Rename | Self::Confirm => false,
+        }
+    }
 }
 
 /// A paste that would arrive as typed keys with line breaks, each one an
@@ -96,40 +101,31 @@ impl Desk {
         match modal {
             Modal::ContextMenu if escape => self.close_menu(),
             Modal::Rename if escape => self.cancel_rename(),
-            Modal::ContextMenu | Modal::Rename => {}
-            Modal::Inbox => self.inbox_keys(event, action, tx),
+            Modal::Inbox if self.inbox_key(event, tx) => {}
             Modal::Machines => {
                 self.machines_key(event, tx);
             }
-            Modal::Settings if action.is_some() => self.sheet_shortcut(action, tx),
-            Modal::Settings => self.settings_key(event),
-            Modal::Palette => self.palette_chord(action, tx),
-            Modal::FindField => self.find_chord(action, tx),
+            Modal::Settings if action.is_none() => self.settings_key(event),
             Modal::Confirm => self.confirm_key(event),
+            _ => {
+                if let Some(action) = action {
+                    self.modal_command(modal, action, tx);
+                }
+            }
         }
     }
 
-    fn inbox_keys(&mut self, event: &rune::KeyEvent, action: Option<Shortcut>, tx: &mut Tx) {
-        if !self.inbox_key(event, tx) {
-            self.sheet_shortcut(action, tx);
+    /// A command while `modal` has the keyboard, from a chord or a menu pick.
+    /// Whatever the field or sheet doesn't take is a command or nothing, never
+    /// terminal input (Ctrl-C must not reach the job from the find field).
+    pub(super) fn modal_command(&mut self, modal: Modal, action: Shortcut, tx: &mut Tx) {
+        if !modal.allows(action) {
+            return;
         }
-    }
-
-    /// The palette's field has the keys; only the chord that closes it gets
-    /// here.
-    fn palette_chord(&mut self, action: Option<Shortcut>, tx: &mut Tx) {
-        if action == Some(Shortcut::Palette) {
-            self.close_palette();
+        if modal == Modal::Palette {
             tx.blur();
         }
-    }
-
-    /// The find field has the keys; what it leaves is a shortcut or nothing,
-    /// never terminal input (Ctrl-C must not reach the job).
-    fn find_chord(&mut self, action: Option<Shortcut>, tx: &mut Tx) {
-        if let Some(action) = action {
-            self.shortcut(action, tx);
-        }
+        self.shortcut(action, tx);
     }
 
     fn confirm_key(&mut self, event: &rune::KeyEvent) {
@@ -137,13 +133,6 @@ impl Desk {
             rune::Key::Enter => self.confirm_pending(),
             rune::Key::Escape => self.pending = None,
             _ => {}
-        }
-    }
-
-    /// Run `action` if it may run over a sheet.
-    fn sheet_shortcut(&mut self, action: Option<Shortcut>, tx: &mut Tx) {
-        if let Some(action) = action.filter(|a| a.works_over_sheets()) {
-            self.shortcut(action, tx);
         }
     }
 
@@ -438,7 +427,22 @@ impl Desk {
 
 #[cfg(test)]
 mod tests {
-    use super::paste_needs_confirmation;
+    use super::{Modal, Shortcut, paste_needs_confirmation};
+
+    #[test]
+    fn the_find_field_leaves_commands_running() {
+        assert!(Modal::FindField.allows(Shortcut::FindNext));
+        assert!(Modal::FindField.allows(Shortcut::FindPrevious));
+    }
+
+    #[test]
+    fn sheets_stop_what_they_hide() {
+        assert!(!Modal::Inbox.allows(Shortcut::CloseTerminal));
+        assert!(Modal::Settings.allows(Shortcut::ZoomIn));
+        assert!(!Modal::Confirm.allows(Shortcut::ZoomIn));
+        assert!(!Modal::Palette.allows(Shortcut::FindNext));
+        assert!(Modal::Palette.allows(Shortcut::Palette));
+    }
 
     #[test]
     fn line_breaks_ask_only_without_bracketed_paste() {

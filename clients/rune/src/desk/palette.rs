@@ -106,11 +106,11 @@ impl Desk {
         self.shortcut(action, tx);
     }
 
-    /// A menu pick: the same rule as the chord, since a sheet hides what a
-    /// command would touch.
+    /// A menu pick: the same rule as the chord.
     fn menu_command(&mut self, action: Shortcut, tx: &mut Tx) {
-        if self.modal().is_none() || action.works_over_sheets() {
-            self.shortcut(action, tx);
+        match self.modal() {
+            Some(modal) => self.modal_command(modal, action, tx),
+            None => self.shortcut(action, tx),
         }
     }
 
