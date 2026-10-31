@@ -116,9 +116,7 @@ fn project(
     active: &Record,
     projection: &mut Option<Projection>,
 ) {
-    if s.agent_records().is_declared(terminal)
-        || crate::agent_detect::live_session::server_has_live_session(s, terminal)
-    {
+    if s.agent_records().is_declared(terminal) || s.resource_has_live_session(terminal) {
         return;
     }
     let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);

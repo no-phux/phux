@@ -13,6 +13,7 @@
 //! files are never deleted (ADR-0059): a full quota refuses new uploads with
 //! the remedy instead.
 
+use phux_terminal::actor::TerminalResource as _;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

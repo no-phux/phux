@@ -35,7 +35,7 @@ struct NativeSpawnTarget {
 }
 
 struct PreparedNativeHost {
-    command: portable_pty::CommandBuilder,
+    command: phux_terminal::pty::CommandBuilder,
     launch: phux_core::TerminalLaunch,
     recipe: SpawnNativeAgent,
     public_spec: String,
@@ -235,7 +235,7 @@ fn prepare_native_host(
     let executable = state
         .with(crate::state::ServerState::native_host_executable)
         .map_err(|error| refusal(error.to_string()))?;
-    let mut command = portable_pty::CommandBuilder::new(&executable);
+    let mut command = phux_terminal::pty::CommandBuilder::new(&executable);
     command.args(["agent", "host"]);
     if let Some(cwd) = &spec.cwd {
         command.cwd(cwd);
@@ -304,7 +304,7 @@ fn create_native_resources(
     spec: &SpawnNativeAgent,
     target: &NativeSpawnTarget,
     launch: phux_core::TerminalLaunch,
-    command: &mut portable_pty::CommandBuilder,
+    command: &mut phux_terminal::pty::CommandBuilder,
     public_spec: &str,
     operation: Option<phux_protocol::ids::OperationId>,
 ) -> Result<NativeSpawnResources, CommandResult> {
@@ -457,7 +457,7 @@ fn install_native_session(
 fn launch_native_guardian(
     ctx: &CommandContext,
     resources: &NativeSpawnResources,
-    command: portable_pty::CommandBuilder,
+    command: phux_terminal::pty::CommandBuilder,
     operation: Option<phux_protocol::ids::OperationId>,
     reused: bool,
     credential: &str,

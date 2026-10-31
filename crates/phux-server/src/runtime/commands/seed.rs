@@ -11,7 +11,7 @@ use super::*;
 pub(super) fn seed_session(
     state: &SharedState,
     name: &str,
-    mut cmd: Option<portable_pty::CommandBuilder>,
+    mut cmd: Option<phux_terminal::pty::CommandBuilder>,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
@@ -100,7 +100,7 @@ pub(crate) fn seed_session_with_actor_as(
 pub fn seed_session_with_pty(
     state: &SharedState,
     name: &str,
-    cmd: portable_pty::CommandBuilder,
+    cmd: phux_terminal::pty::CommandBuilder,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
 ) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
@@ -120,7 +120,7 @@ pub fn seed_session_with_pty(
 pub fn seed_session_with_pty_and_colors(
     state: &SharedState,
     name: &str,
-    cmd: portable_pty::CommandBuilder,
+    cmd: phux_terminal::pty::CommandBuilder,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
@@ -160,7 +160,7 @@ pub(crate) enum SpawnOwnership {
 pub(crate) fn spawn_pane_with_pty_and_colors(
     state: &SharedState,
     ownership: &SpawnOwnership,
-    mut cmd: portable_pty::CommandBuilder,
+    mut cmd: phux_terminal::pty::CommandBuilder,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
@@ -222,7 +222,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
 
 /// The directory a PTY child spawned from `cmd` starts in: the builder's cwd,
 /// else the server's own (which the child inherits).
-pub(super) fn spawn_cwd_of(cmd: &portable_pty::CommandBuilder) -> Option<std::path::PathBuf> {
+pub(super) fn spawn_cwd_of(cmd: &phux_terminal::pty::CommandBuilder) -> Option<std::path::PathBuf> {
     cmd.get_cwd()
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())

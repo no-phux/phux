@@ -23,7 +23,7 @@ pub(super) struct LaneEncoderSet {
 }
 
 impl LaneEncoderSet {
-    fn new(handle: &TerminalHandle) -> Result<Self, libghostty_vt::Error> {
+    fn new(handle: &TerminalHandle) -> Result<Self, phux_terminal::VtError> {
         Ok(Self {
             key: PerTerminalKeyEncoder::new()?,
             mouse: PerTerminalMouseEncoder::new()?,
@@ -33,7 +33,7 @@ impl LaneEncoderSet {
         })
     }
 
-    fn encode(&mut self, input: &TerminalInput) -> Result<Option<Vec<u8>>, libghostty_vt::Error> {
+    fn encode(&mut self, input: &TerminalInput) -> Result<Option<Vec<u8>>, phux_terminal::VtError> {
         let snapshot = *self.snapshot.borrow();
         self.encode_with_snapshot(input, snapshot)
     }
@@ -42,7 +42,7 @@ impl LaneEncoderSet {
         &mut self,
         input: &TerminalInput,
         snapshot: InputEncoderSnapshot,
-    ) -> Result<Option<Vec<u8>>, libghostty_vt::Error> {
+    ) -> Result<Option<Vec<u8>>, phux_terminal::VtError> {
         match input {
             TerminalInput::Key(event) => Ok(Some(
                 self.key.encode_with_options(event, snapshot.key)?.to_vec(),
@@ -83,7 +83,7 @@ pub(super) fn encoder_for<'a>(
     encoders: &'a mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
     pane: phux_core::ids::ResourceId,
     handle: &TerminalHandle,
-) -> Result<&'a mut LaneEncoderSet, libghostty_vt::Error> {
+) -> Result<&'a mut LaneEncoderSet, phux_terminal::VtError> {
     let replace = encoders
         .get(&pane)
         .is_some_and(|encoder| !encoder.snapshot.same_channel(&handle.input_snapshot));

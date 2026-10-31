@@ -1,0 +1,67 @@
+[package]
+name = "phux-terminal"
+description = "The Terminal app: a PTY child behind a libghostty terminal, its grid, input encoding, and agent detection."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["native-engine"]
+# Incremental native checkpoint capture/advertisement.
+native-engine = []
+# Fixtures for the host's own tests. A dependency's `cfg(test)` is invisible
+# to its dependents, so these are opt-in and enabled only as a dev-dependency.
+test-support = []
+
+[dependencies]
+phux-protocol = { workspace = true, features = ["server"] }
+phux-core.workspace = true
+phux-resource.workspace = true
+phux-agent-rules.workspace = true
+phux-config.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+memchr.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+nix = { version = "0.31", default-features = false, features = [
+    "signal",
+    "term",
+    "fs",
+    "feature",
+    "process",
+    "user",
+    "hostname",
+    # epoll on Linux, kqueue on macOS: one poller for quiet PTY masters.
+    "event",
+] }
+libc = "0.2"
+bytes.workspace = true
+phux-perf.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+portable-pty.workspace = true
+portable-pty-adopt.workspace = true
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
+tempfile.workspace = true
+phux-client-core.workspace = true
+libghostty-vt.workspace = true
+sha2 = "0.11"
+hex = "0.4"
+
+[dev-dependencies]
+# `test-util`: paused time for tick and deadline tests.
+tokio = { workspace = true, features = ["test-util"] }
+# Manifests under test are inline TOML.
+toml.workspace = true
+# Tests drive the native engine the client kernel uses.
+phux-client-core = { workspace = true, features = ["native-engine"] }

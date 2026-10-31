@@ -66,7 +66,10 @@ fn launch(
 
 /// The command a Terminal launch spec runs: its argv, else the default
 /// shell, in its cwd, with its environment and the server's `TERM`.
-fn build_command(s: &ServerState, spec: &phux_core::LaunchSpec) -> portable_pty::CommandBuilder {
+fn build_command(
+    s: &ServerState,
+    spec: &phux_core::LaunchSpec,
+) -> phux_terminal::pty::CommandBuilder {
     let launch = match spec {
         phux_core::LaunchSpec::Terminal(t) => t.clone(),
         _ => phux_core::TerminalLaunch::default(),

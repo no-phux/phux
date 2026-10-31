@@ -1,4 +1,4 @@
-use portable_pty::CommandBuilder;
+use phux_terminal::pty::CommandBuilder;
 
 use super::ServerState;
 

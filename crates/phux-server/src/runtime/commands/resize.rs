@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// Handle a client's `RESIZE_TERMINAL` (L1 §3.1): set one Terminal's exact
 /// size (and, when carried, its cell pixel size), bypassing the window-size

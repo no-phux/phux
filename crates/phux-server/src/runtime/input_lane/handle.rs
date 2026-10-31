@@ -7,6 +7,7 @@
 use phux_protocol::ids::InputOperationId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+use phux_terminal::actor::TerminalResource as _;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 

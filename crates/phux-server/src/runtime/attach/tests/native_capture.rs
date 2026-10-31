@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// A native capture the actor invalidates mid-flight (the last shell's
 /// in-place respawn, a reflow) is superseded, not refused: the pump asks

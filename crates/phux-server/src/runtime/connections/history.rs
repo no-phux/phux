@@ -3,6 +3,7 @@ use crate::state::{ClientId, Outbound, SharedState};
 use phux_protocol::caps::BootstrapProfile;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::FrameKind;
+use phux_terminal::actor::TerminalResource as _;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 

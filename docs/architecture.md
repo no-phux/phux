@@ -12,12 +12,15 @@ Brand artwork and cross-repository release delivery are documented in
 
 ## One server, many clients
 
-Each user runs one `phux-server` process per profile. It owns the
-pseudo-terminals, the processes in them, and a libghostty `Terminal` per
-pane holding the canonical screen state. What that library does in phux, and
-what it does not, is [libghostty in phux](./libghostty.md). Everything else is a client: the
-TUI, the desktop app, every `phux` subcommand, the MCP adapter, a remote
-`phux attach`.
+Each user runs one `phux-server` process per profile. The server hosts
+resources: identified things with a kind, a lifecycle, and an ordered output
+stream. It has no direct dependency on a VT library or a PTY. The Terminal
+kind lives in `phux-terminal`, which owns the pseudo-terminals, the processes
+in them, and a libghostty `Terminal` per pane holding the canonical screen
+state. What that library does in phux, and what it does not, is
+[libghostty in phux](./libghostty.md). Everything else is a client: the TUI,
+the desktop app, every `phux` subcommand, the MCP adapter, a remote `phux
+attach`.
 
 Inside the server, one tokio current-thread runtime drives a `LocalSet`.
 Each pane is a task on it that owns its PTY master, its libghostty
@@ -59,35 +62,37 @@ All under `crates/`. Every crate is `publish = false` except
 `phux-protocol`. Rows describe responsibilities, not a dependency ordering;
 Cargo manifests define the actual edges.
 
-| Crate                 | Role                                                                                                                                                  |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `phux-protocol`       | wire format, message catalog, codec, capabilities, the kind catalog that doubles as the authorization classifier; pure Rust, no libghostty by default |
-| `phux-core`           | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O                                                 |
-| `phux-config-core`    | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths                                                        |
-| `phux-perf`           | lock-free histograms and counters behind `GET_PERF` and `phux perf`                                                                                   |
-| `phux-git`            | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and GitHub pull request review; shared by the desktop Changes panel, desktop Reviews and `CHECKOUT` |
-| `phux-agent-rules`    | agent detection manifests: regions, rules, `phux agent explain`                                                                                       |
-| `phux-crash`          | fatal-signal handler that restores the terminal before re-raising                                                                                     |
-| `portable-pty-adopt`  | rebuild portable-pty handles from inherited fds after `execve`                                                                                        |
-| `quictun`             | blind QUIC relay; knows nothing about phux                                                                                                            |
-| `phux-work`           | SQLite work store with a single-writer keeper process                                                                                                 |
-| `phux-config`         | the TUI `config.toml` schema, loader, widget contract                                                                                                 |
-| `phux-dial`           | outbound QUIC and WebSocket dialing: TLS pinning, bearer token                                                                                        |
-| `phux-client-core`    | sans-IO session kernel, engine adapter, layout, multi-pane, predictive echo; no tokio, no ratatui, compiles to wasm                                   |
-| `phux-record`         | asciicast codec, VT replay, GIF/APNG export                                                                                                           |
-| `phux-mission`        | mission documents over the work store                                                                                                                 |
-| `phux-plugin`         | plugin action runtime contracts                                                                                                                       |
-| `phux-usage`          | plan-usage collector behind `phux agent usage`: vendor limit sources and the `phux.usage/v1` document; no wire                                        |
-| `phux-relay`          | quictun bound to phux's ALPNs and state directory                                                                                                     |
-| `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication                      |
-| `phux-client`         | headless client: the connection facade and the verbs behind the CLI and MCP                                                                           |
-| `phux-client-ffi`     | the one binding crate: a projection with a C ABI encoder and a UniFFI encoder                                                                         |
-| `phux-server`         | the daemon                                                                                                                                            |
-| `phux-agent-host`     | guardian process for native agent sessions over ACP                                                                                                   |
-| `phux-tui`            | the terminal UI: attach driver, ratatui chrome, overlays; the only crate that links ratatui                                                           |
-| `phux-mcp`            | the `phux-mcp` binary: MCP over stdio                                                                                                                 |
-| `phux-server-testkit` | fixtures for server wire tests; dev-only                                                                                                              |
-| `phux`                | the `phux` binary: argument parsing and dispatch                                                                                                      |
+| Crate | Role |
+| --- | --- |
+| `phux-protocol` | wire format, message catalog, codec, capabilities, the kind catalog that doubles as the authorization classifier; pure Rust, no libghostty by default |
+| `phux-core` | domain records: sessions, resources, arrangements, and the pure `apply()` that organizes them; no I/O |
+| `phux-config-core` | config file location, `extends` layering, `[[remote]]`, `[organize]`, profile and socket paths |
+| `phux-perf` | lock-free histograms and counters behind `GET_PERF` and `phux perf` |
+| `phux-git` | the user's own `git` (and `gh`) for a checkout: status, diffs, history, branches, files, staging, and GitHub pull request review; shared by the desktop Changes panel, desktop Reviews and `CHECKOUT` |
+| `phux-agent-rules` | agent detection manifests: regions, rules, `phux agent explain` |
+| `phux-crash` | fatal-signal handler that restores the terminal before re-raising |
+| `portable-pty-adopt` | rebuild portable-pty handles from inherited fds after `execve` |
+| `quictun` | blind QUIC relay; knows nothing about phux |
+| `phux-work` | SQLite work store with a single-writer keeper process |
+| `phux-config` | the TUI `config.toml` schema, loader, widget contract |
+| `phux-dial` | outbound QUIC and WebSocket dialing: TLS pinning, bearer token |
+| `phux-client-core` | sans-IO session kernel, engine adapter, layout, multi-pane, predictive echo; no tokio, no ratatui, compiles to wasm |
+| `phux-record` | asciicast codec, VT replay, GIF/APNG export |
+| `phux-mission` | mission documents over the work store |
+| `phux-plugin` | plugin action runtime contracts |
+| `phux-usage` | plan-usage collector behind `phux agent usage`: vendor limit sources and the `phux.usage/v1` document; no wire |
+| `phux-relay` | quictun bound to phux's ALPNs and state directory |
+| `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication |
+| `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
+| `phux-client-ffi` | the one binding crate: a projection with a C ABI encoder and a UniFFI encoder |
+| `phux-resource` | the kind-neutral substrate: output stream, lifecycle, control, opaque facets, and the agent-session record stream; no VT, no PTY |
+| `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
+| `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
+| `phux-agent-host` | guardian process for native agent sessions over ACP |
+| `phux-tui` | the terminal UI: attach driver, ratatui chrome, overlays; the only crate that links ratatui |
+| `phux-mcp` | the `phux-mcp` binary: MCP over stdio |
+| `phux-server-testkit` | fixtures for server wire tests; dev-only |
+| `phux` | the `phux` binary: argument parsing and dispatch |
 
 `phux-core` and `phux-protocol` do not depend on each other; the server
 bridges their id spaces through [IdBridge](../crates/phux-server/src/id_bridge.rs):
@@ -209,18 +214,18 @@ ownership recommendation. No keeper bootload service exists today.
 
 ## Where to look
 
-| To change       | Start at                                                                                                                                                                                                     |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `resource/terminal/`                                                         |
+| To change | Start at |
+| --- | --- |
+| server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `resource/terminal/` |
 | organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
-| input handling  | `phux-server/src/runtime/input_lane/`                                                                                                                                                                        |
-| TUI rendering   | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay`                                                                                                                        |
-| the wire        | `phux-protocol/src/wire/frame/mod.rs` (type bytes), `wire/frame/{tags,command_tags}.rs` (sub-tags), `wire/field/` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
-| a CLI verb      | `crates/phux/src/commands/cli.rs` (`enum Command`) and `commands/cli/` (each verb's `Args`), `src/dispatch.rs` (dispatch), `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
-| config          | `phux-config/src/schema.rs`, `default/*.toml`; then `just docs-gen`                                                                                                                                         |
-| agent detection | `phux-agent-rules/rules/*.toml`, `phux-server/src/agent_detect/`                                                                                                                                             |
-| authorization   | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs`                                                                                                                                     |
-| remote access   | `crates/phux/src/commands/enroll.rs`, `remote_target.rs`, `phux-client-runtime/src/dial.rs`, `phux-server/src/transport/`                                                                                    |
+| input handling | `phux-server/src/runtime/input_lane/` |
+| TUI rendering | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay` |
+| the wire | `phux-protocol/src/wire/frame/mod.rs` (type bytes), `wire/frame/{tags,command_tags}.rs` (sub-tags), `wire/field/` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
+| a CLI verb | `crates/phux/src/commands/cli.rs` (`enum Command`) and `commands/cli/` (each verb's `Args`), `src/dispatch.rs` (dispatch), `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
+| config | `phux-config/src/schema.rs`, `default/*.toml`; then `just docs-gen` |
+| agent detection | `phux-agent-rules/rules/*.toml`, `phux-terminal/src/agent_detect/` |
+| authorization | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs` |
+| remote access | `crates/phux/src/commands/enroll.rs`, `remote_target.rs`, `phux-client-runtime/src/dial.rs`, `phux-server/src/transport/` |
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration

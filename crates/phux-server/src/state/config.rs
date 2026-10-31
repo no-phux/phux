@@ -2,7 +2,7 @@
 //! [`crate::runtime::ServerConfig`]: written by the defaults and once by a
 //! `set_*` call before the accept loops start, then never changed.
 
-use portable_pty::CommandBuilder;
+use phux_terminal::pty::CommandBuilder;
 
 /// Write-once boot configuration owned by [`super::ServerState`]
 /// (`pub(super)`, so no second public `ServerConfig` is exported).

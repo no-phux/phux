@@ -1,4 +1,5 @@
 use phux_core::ids::ResourceId;
+use phux_terminal::actor::TerminalResource as _;
 
 use super::{ClientId, HEADLESS_TERMINAL_DIMS, ServerState};
 use crate::terminal_actor::ResizeRequest;

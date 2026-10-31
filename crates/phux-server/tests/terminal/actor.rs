@@ -3,6 +3,7 @@
 //! child teardown. Field-level ack and tick-emit semantics are unit-tested in
 //! `resource/terminal/tests_state_sync.rs`; these pin the channel plumbing.
 
+use phux_terminal::actor::TerminalResource as _;
 use std::time::Duration;
 
 use phux_protocol::input::key::PhysicalKey;
@@ -36,6 +37,8 @@ async fn attach(handle: &phux_server::ResourceHandle, id: u32) -> mpsc::Receiver
     let (outbound, rx) = mpsc::channel(32);
     let (reply, reply_rx) = oneshot::channel();
     handle
+        .terminal()
+        .unwrap()
         .consumer_attach
         .send(ConsumerAttachRequest {
             image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
@@ -66,7 +69,13 @@ async fn ack(handle: &phux_server::ResourceHandle, id: u32, seq: u64) {
         bootstrap_id: BootstrapId::new(1).unwrap(),
         seq,
     };
-    handle.consumer_ack.send(request).await.unwrap();
+    handle
+        .terminal()
+        .unwrap()
+        .consumer_ack
+        .send(request)
+        .await
+        .unwrap();
 }
 
 async fn advance_ticks(n: u32) {
@@ -123,7 +132,13 @@ fn tick_and_ack_routing_survive_every_consumer_lifecycle_edge() {
             client_id: ClientId(2),
             reply,
         };
-        handle.consumer_detach.send(detach).await.unwrap();
+        handle
+            .terminal()
+            .unwrap()
+            .consumer_detach
+            .send(detach)
+            .await
+            .unwrap();
         reply_rx.await.unwrap();
         ack(&handle, 2, 5).await;
         advance_ticks(3).await;

@@ -7,6 +7,7 @@
 
 use bytes::Bytes;
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
+use phux_resource::agent_session::AgentSessionResource as _;
 use tokio::sync::oneshot;
 use tracing::debug;
 

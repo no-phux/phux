@@ -254,7 +254,7 @@ pub(in crate::runtime) fn seed_initial_session(
     state: &SharedState,
     name: &str,
     seed_with_pty: bool,
-    seed_command: Option<portable_pty::CommandBuilder>,
+    seed_command: Option<phux_terminal::pty::CommandBuilder>,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
 ) {
@@ -288,8 +288,8 @@ pub(in crate::runtime) fn seed_initial_session(
 /// the server-wide `TERM` applied.
 pub(in crate::runtime) fn seed_pane_command(
     state: &SharedState,
-    configured: Option<portable_pty::CommandBuilder>,
-) -> portable_pty::CommandBuilder {
+    configured: Option<phux_terminal::pty::CommandBuilder>,
+) -> phux_terminal::pty::CommandBuilder {
     let mut cmd = configured.unwrap_or_else(|| {
         let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
         crate::terminal_actor::default_shell_command(&shell, login_shell)

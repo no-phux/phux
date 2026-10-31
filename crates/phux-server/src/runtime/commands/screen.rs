@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// Highest `GET_SCREEN.format` selector (low 7 bits) this build renders:
 /// `1` HTML, `2` VT.

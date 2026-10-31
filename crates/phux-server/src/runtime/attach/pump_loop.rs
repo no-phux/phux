@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// Why a pump gave up on its generation and asked for a resync.
 #[derive(Debug, Clone, Copy)]
@@ -222,11 +223,14 @@ pub(super) async fn fail_aggregate_attach_prepublication(
             )
             .await;
         }
+        let Ok(terminal) = handle.terminal() else {
+            continue;
+        };
         let (reply, done) = oneshot::channel();
         if matches!(
             tokio::time::timeout(
                 producer_deadline,
-                handle.consumer_detach.send(ConsumerDetachRequest {
+                terminal.consumer_detach.send(ConsumerDetachRequest {
                     client_id: wire_client_id,
                     reply,
                 }),
