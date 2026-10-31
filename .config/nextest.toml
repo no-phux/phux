@@ -56,7 +56,7 @@ test-group = 'pty-serial'
 # own timeouts does nothing — no timeout is what fires; the final assertion
 # is, with an empty marker.
 [[profile.default.overrides]]
-filter = 'package(phux-server) & test(pane_kill_lets_foreground_process_flush_before_death)'
+filter = 'package(phux-terminal) & test(pane_kill_lets_foreground_process_flush_before_death)'
 threads-required = 'num-cpus'
 
 # kip_roundtrip drives real host TUIs (vim/nvim) under a PTY. Under host
@@ -74,7 +74,7 @@ threads-required = 'num-cpus'
 # it twice over — once for the fixture shells to be scheduled, once for the
 # bytes to actually move.
 [[profile.default.overrides]]
-filter = 'package(phux-server) & test(pane_kill_lets_a_terminal_flush_finish_inside_the_grace)'
+filter = 'package(phux-terminal) & test(pane_kill_lets_a_terminal_flush_finish_inside_the_grace)'
 threads-required = 'num-cpus'
 
 # A 16 MiB PTY flood is a CPU hog for a few seconds and shares the server
@@ -90,14 +90,14 @@ threads-required = 'num-cpus'
 # which is exactly the kind of load that makes every other test in this file
 # miss its own 500ms product budget.
 [[profile.default.overrides]]
-filter = 'package(phux-server) & test(pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews)'
+filter = 'package(phux-terminal) & test(pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews)'
 threads-required = 'num-cpus'
 
 # Its quiet twin: same teardown bound, a silent detached holder of the slave
 # instead of a noisy one. It spends a second waiting for a shell to fork, so
 # it is here to stop it soaking up a runner slot rather than to protect it.
 [[profile.default.overrides]]
-filter = 'package(phux-server) & test(pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open)'
+filter = 'package(phux-terminal) & test(pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open)'
 threads-required = 'num-cpus'
 
 # `agent_detect` needs the same treatment, for the same reason, and the

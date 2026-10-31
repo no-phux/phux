@@ -9,6 +9,7 @@ use phux_protocol::caps::{BootstrapLimits, ClientCapabilities};
 use phux_protocol::ids::BootstrapId;
 use phux_protocol::ids::StreamId;
 use phux_protocol::wire::frame::CommandResult;
+use phux_terminal::actor::TerminalResource as _;
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::Poll;

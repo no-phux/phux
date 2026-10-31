@@ -8,6 +8,7 @@
 //! image keeps serving and no child is stranded) and [`UpgradePlan::exec`]
 //! (the irreversible re-exec). The caller acks the client between the two.
 
+use phux_terminal::actor::TerminalResource as _;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{Seek, SeekFrom, Write};
@@ -318,7 +319,9 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                     pane_senders: s
                         .upgrade_handles()
                         .into_iter()
-                        .map(|(pane, handle)| (pane, handle.upgrade))
+                        .filter_map(|(pane, handle)| {
+                            Some((pane, handle.terminal().ok()?.upgrade.clone()))
+                        })
                         .collect(),
                     agent_session_senders: s.upgrade_agent_sessions(),
                 })

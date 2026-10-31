@@ -1,0 +1,47 @@
+[package]
+name = "phux-resource"
+description = "The kind-neutral resource substrate: output streams, lifecycle, control, and opaque facets."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Fixtures for dependents' tests; a dependency's `cfg(test)` is invisible.
+test-support = []
+
+[dependencies]
+phux-protocol.workspace = true
+phux-core.workspace = true
+phux-perf.workspace = true
+phux-agent-rules.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+libc = "0.2"
+nix = { version = "0.31", default-features = false, features = [
+    "signal",
+    "term",
+    "fs",
+    "feature",
+    "process",
+    "user",
+    "hostname",
+    # epoll on Linux, kqueue on macOS: one poller for quiet PTY masters.
+    "event",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+toml.workspace = true
+tempfile.workspace = true

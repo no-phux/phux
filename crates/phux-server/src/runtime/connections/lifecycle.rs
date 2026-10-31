@@ -7,6 +7,7 @@ use crate::terminal_actor::ConsumerDetachRequest;
 use crate::transport::{AcceptErrorDisposition, Incoming, WS_REJECTION_WARN_INTERVAL};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::ids::ResourceId as WireResourceId;
+use phux_terminal::actor::TerminalResource as _;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -85,14 +86,15 @@ fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<Detache
 fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
     let wire_client_id = crate::runtime::wire_client(client_id);
     for handle in s.subscribed_resource_handles(client_id) {
+        let Ok(terminal) = handle.terminal() else {
+            continue;
+        };
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        if let Ok(terminal) = handle.terminal() {
-            let _ = terminal
-                .native_release
-                .try_send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 });
-        }
+        let _ = terminal
+            .native_release
+            .try_send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 });
         let (reply_tx, _reply_rx) = oneshot::channel();
-        match handle.consumer_detach.try_send(ConsumerDetachRequest {
+        match terminal.consumer_detach.try_send(ConsumerDetachRequest {
             client_id: wire_client_id,
             reply: reply_tx,
         }) {

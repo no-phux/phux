@@ -2,6 +2,7 @@
 //! prompt machine, signal-aware exit, and `cwd_changed` events. Children block
 //! on `read` until the test presses Enter, so nothing races the spawn reply.
 
+use phux_terminal::actor::TerminalResource as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

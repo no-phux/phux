@@ -11,6 +11,7 @@
 //! child has its own deadline and output cap (`phux_git::checkout`), and
 //! the answer is bounded again before it is encoded.
 
+use phux_terminal::actor::TerminalResource as _;
 use std::path::PathBuf;
 use std::time::Duration;
 

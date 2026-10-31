@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// A resolved, lease-checked local input destination.
 #[derive(Debug)]

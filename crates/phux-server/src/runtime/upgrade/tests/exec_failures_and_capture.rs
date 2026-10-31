@@ -4,6 +4,7 @@ use super::super::handoff::*;
 use super::super::*;
 use super::support::*;
 use crate::state::request_agent_session_cut;
+use phux_resource::agent_session::AgentSessionResource as _;
 
 #[tokio::test(flavor = "current_thread")]
 async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {

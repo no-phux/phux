@@ -9,6 +9,7 @@
 use bytes::Bytes;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile};
 use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind};
+use phux_resource::agent_session::AgentSessionResource as _;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};

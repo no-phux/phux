@@ -107,7 +107,7 @@ pub(in crate::runtime) fn set_agent_session(
 pub(in crate::runtime) fn register_pty_command(
     s: &mut crate::state::ServerState,
     terminal: phux_core::ids::ResourceId,
-    cmd: &mut portable_pty::CommandBuilder,
+    cmd: &mut phux_terminal::pty::CommandBuilder,
 ) -> phux_protocol::ids::ResourceId {
     stamp_spawn_cwd(s, terminal, spawn_cwd_of(cmd));
     let wire = s.intern_terminal_wire(terminal);
@@ -126,7 +126,7 @@ pub(in crate::runtime) fn register_pty_command(
 pub(in crate::runtime) fn launch_pane_actor(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
-    cmd: Option<portable_pty::CommandBuilder>,
+    cmd: Option<phux_terminal::pty::CommandBuilder>,
     (cols, rows): (u16, u16),
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
@@ -153,7 +153,7 @@ pub(in crate::runtime) fn launch_pane_actor(
 pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
-    cmd: Option<portable_pty::CommandBuilder>,
+    cmd: Option<phux_terminal::pty::CommandBuilder>,
     (cols, rows): (u16, u16),
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
@@ -280,7 +280,9 @@ impl PaneWiring {
 /// The launch spec a relaunch of a pane spawned from `cmd` would use: its
 /// argv and cwd. The server-applied environment (`TERM`, the pane and
 /// socket variables) is reapplied at every launch, so it is not recorded.
-pub(crate) fn launch_of(cmd: Option<&portable_pty::CommandBuilder>) -> phux_core::TerminalLaunch {
+pub(crate) fn launch_of(
+    cmd: Option<&phux_terminal::pty::CommandBuilder>,
+) -> phux_core::TerminalLaunch {
     let Some(cmd) = cmd else {
         return phux_core::TerminalLaunch::default();
     };

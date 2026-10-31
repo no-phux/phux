@@ -213,9 +213,7 @@ fn drain_state(
         scope,
         phux_protocol::wire::frame::RESOURCE_PROGRAM_STATUS_KEY,
     );
-    if program_status
-        && !crate::agent_detect::live_session::server_has_live_session(s, wire_terminal_id)
-    {
+    if program_status && !s.resource_has_live_session(wire_terminal_id) {
         return None;
     }
     if s.agent_records().is_declared(wire_terminal_id) {

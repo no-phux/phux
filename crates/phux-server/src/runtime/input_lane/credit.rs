@@ -22,6 +22,7 @@
     reason = "the connection read loop and command handlers use these through the lane's re-export"
 )]
 
+use phux_terminal::actor::TerminalResource as _;
 use std::collections::HashSet;
 use std::time::Duration;
 

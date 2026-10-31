@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) fn native_profile() -> BootstrapProfile {

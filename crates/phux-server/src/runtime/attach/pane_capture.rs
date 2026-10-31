@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// The negotiated shape shared by every pane capture in one ATTACH.
 pub(super) struct PaneCaptureContext<'a> {
@@ -51,8 +52,11 @@ impl PaneCaptureContext<'_> {
         let Some(wire_id) = wire_terminal_id.local_id() else {
             return ConsumerRegistration::default();
         };
+        let Ok(terminal) = handle.terminal() else {
+            return ConsumerRegistration::default();
+        };
         let (attach_reply_tx, attach_reply_rx) = oneshot::channel();
-        if handle
+        if terminal
             .consumer_attach
             .send(ConsumerAttachRequest {
                 client_id: self.wire_client_id,

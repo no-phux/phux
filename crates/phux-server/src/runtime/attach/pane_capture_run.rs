@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 impl PaneCaptureContext<'_> {
     /// Capture one pane's native checkpoint against the remaining aggregate

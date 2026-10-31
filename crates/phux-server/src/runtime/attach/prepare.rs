@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// Is this ATTACH a replacement for the same client's existing attachment to
 /// the same session?
@@ -114,9 +115,11 @@ pub(super) async fn detach_prior_state_sync_consumers(
         return;
     }
     for pane in panes {
+        let Ok(terminal) = pane.handle.terminal() else {
+            continue;
+        };
         let (reply, done) = oneshot::channel();
-        if pane
-            .handle
+        if terminal
             .consumer_detach
             .send(ConsumerDetachRequest {
                 client_id: wire_client_id,

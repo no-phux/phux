@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// Handle `ATTACH_RESOURCE` (SPEC §5.1): subscribe the caller to one
 /// Terminal's content stream, snapshot first, without a session `ATTACH`.

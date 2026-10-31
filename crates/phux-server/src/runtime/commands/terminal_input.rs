@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// A `SessionSnapshot` describing a server with no sessions: empty lists,
 /// sentinel focus ids. Used by `GET_STATE` when the registry is empty.
@@ -47,7 +48,9 @@ pub(crate) fn handle_viewport_resize(
                 continue;
             };
             let cell_px = s.resolve_terminal_cell_px(terminal_id);
-            let Some(Ok(terminal)) = s.resource_handle(terminal_id).map(ResourceHandle::terminal)
+            let Some(Ok(terminal)) = s
+                .resource_handle(terminal_id)
+                .map(|handle| handle.terminal())
             else {
                 continue;
             };
@@ -349,7 +352,10 @@ pub(crate) fn handle_frame_ack(
         if !frame_ack_subscribed(s, client_id, wire_terminal_id, local.id, seq) {
             return;
         }
-        let dispatched = local.handle.consumer_ack.try_send(ConsumerAckRequest {
+        let Ok(terminal) = local.handle.terminal() else {
+            return;
+        };
+        let dispatched = terminal.consumer_ack.try_send(ConsumerAckRequest {
             client_id: super::super::wire_client(client_id),
             stream_id,
             bootstrap_id,

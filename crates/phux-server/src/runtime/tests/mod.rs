@@ -180,6 +180,10 @@ fn stub_terminal() -> (crate::resource::ResourceHandle, StubRx) {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let (native_publication, native_publication_rx) = channel(8);
     let facet = crate::terminal_actor::TerminalHandle {
+        consumer_attach,
+        consumer_detach,
+        consumer_ack,
+        upgrade: channel(8).0,
         input,
         encoded_input,
         snapshot,
@@ -193,17 +197,12 @@ fn stub_terminal() -> (crate::resource::ResourceHandle, StubRx) {
         resize,
         ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
     };
-    let handle = crate::resource::ResourceHandle {
-        kind: crate::resource::ResourceKind::Terminal,
-        parent: None,
-        output: tokio::sync::broadcast::channel(8).0,
-        consumer_attach,
-        consumer_detach,
-        consumer_ack,
-        upgrade: channel(8).0,
-        control: channel(8).0,
-        facet: crate::resource::ResourceFacetHandle::Terminal(facet),
-    };
+    let handle = crate::resource::ResourceHandle::new(
+        None,
+        tokio::sync::broadcast::channel(8).0,
+        channel(8).0,
+        facet,
+    );
     let rx = StubRx {
         snapshot: snapshot_rx,
         resize: resize_rx,

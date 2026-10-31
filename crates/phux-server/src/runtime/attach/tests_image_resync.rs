@@ -1,4 +1,5 @@
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 #[tokio::test(flavor = "current_thread")]
 async fn image_resync_recaptures_resident_payload_and_its_own_geometry_and_cut() {

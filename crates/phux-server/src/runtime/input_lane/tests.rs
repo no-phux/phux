@@ -1,3 +1,4 @@
+use phux_terminal::actor::TerminalResource as _;
 use std::time::Duration;
 
 use futures_util::FutureExt as _;

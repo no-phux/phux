@@ -95,10 +95,13 @@ impl AttachResourceSession<'_> {
                     owner: self.client_id.0,
                 });
         let (reply, _ack) = oneshot::channel();
-        let _ = self.handle.consumer_detach.try_send(ConsumerDetachRequest {
-            client_id: super::super::wire_client(self.client_id),
-            reply,
-        });
+        let _ = self
+            .terminal
+            .consumer_detach
+            .try_send(ConsumerDetachRequest {
+                client_id: super::super::wire_client(self.client_id),
+                reply,
+            });
         failure
     }
 
@@ -114,7 +117,7 @@ impl AttachResourceSession<'_> {
 
         let wire_terminal_id = self.terminal_id.local_id()?;
         let (reply, reply_rx) = oneshot::channel();
-        self.handle
+        self.terminal
             .consumer_attach
             .send(ConsumerAttachRequest {
                 client_id: super::super::wire_client(self.client_id),

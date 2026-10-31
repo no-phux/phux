@@ -1,3 +1,4 @@
+use phux_resource::agent_session::AgentSessionResource as _;
 fn refusal(message: impl Into<String>) -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::InvalidCommand,
