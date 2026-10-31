@@ -2268,9 +2268,11 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "phux-client-core",
  "phux-client-runtime",
+ "phux-perf",
  "phux-protocol",
  "rune",
  "rune-mac",
+ "rune-perf",
  "serde_json",
  "sha2",
 ]
@@ -2430,6 +2432,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "procwatch"
+version = "0.1.0"
+source = "git+https://github.com/anomalyco/rune?rev=3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1#3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -2797,6 +2807,15 @@ dependencies = [
 name = "rune-motion"
 version = "0.1.0"
 source = "git+https://github.com/anomalyco/rune?rev=3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1#3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1"
+
+[[package]]
+name = "rune-perf"
+version = "0.1.0"
+source = "git+https://github.com/anomalyco/rune?rev=3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1#3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1"
+dependencies = [
+ "procwatch",
+ "serde_json",
+]
 
 [[package]]
 name = "rune-staging"
