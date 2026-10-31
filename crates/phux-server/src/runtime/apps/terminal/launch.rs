@@ -50,8 +50,8 @@ pub(crate) fn bind_native_host(
     command.env("PHUX_NATIVE_BINDING", binding);
 }
 
-/// A named session's seed command: the request argv, else the shell. An invalid cwd is dropped with a warn, never
-/// failing the create.
+/// A named session's seed command: the request argv, else the shell. An
+/// invalid cwd is dropped with a warn, never failing the create.
 pub(crate) fn named_session_command(
     state: &SharedState,
     name: &str,

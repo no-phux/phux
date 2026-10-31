@@ -14,8 +14,8 @@ impl ServerState {
         self.config.pre_seeded_session.as_deref()
     }
 
-    /// Configure the attach-time `CreateIfMissing` seed: a PTY pane
-    /// (`cmd`, or the default shell when `None`) or, without `with_pty`, a
+    /// Configure the attach-time `CreateIfMissing` seed: a PTY pane running
+    /// the request's command or the default shell, or, without `with_pty`, a
     /// PTY-less actor.
     pub const fn set_attach_create_pty(&mut self, with_pty: bool) {
         self.config.attach_create_seeds_pty = with_pty;
