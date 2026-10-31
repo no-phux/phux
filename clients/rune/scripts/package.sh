@@ -62,6 +62,8 @@ Linux)
     dir="$stage/phux-rune-$version-linux-$arch"
     mkdir -p "$dir"
     cp "$binary" "$here/README.md" "$dir/"
+    # Marks a packaged install: only those update themselves.
+    printf '%s\n' "$version" > "$dir/phux-rune.release"
     archive="phux-rune-$version-linux-$arch.tar.gz"
     tar -C "$stage" -czf "$out/$archive" "$(basename "$dir")"
     ;;

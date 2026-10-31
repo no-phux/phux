@@ -1,6 +1,6 @@
 [package]
 name = "phux-rune"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 description = "An alpha phux desktop client built on the Rune UI framework."
 edition = "2024"
 publish = false
@@ -19,9 +19,11 @@ phux-client-core = { path = "../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../crates/phux-client-runtime" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
-rune = { git = "https://github.com/anomalyco/rune", rev = "7109facac86f37b8411df84f39571a11c9e859c5" }
-rune-mac = { git = "https://github.com/anomalyco/rune", rev = "7109facac86f37b8411df84f39571a11c9e859c5" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1" }
+rune-mac = { git = "https://github.com/anomalyco/rune", rev = "3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1" }
 serde_json = "1"
+# The same digest the runtime uses, for a downloaded update.
+sha2 = "0.11"
 
 # The Dock count is the one call Rune doesn't wrap; same objc2 as Rune's.
 [target.'cfg(target_os = "macos")'.dependencies]

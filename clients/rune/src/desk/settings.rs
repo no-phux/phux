@@ -15,6 +15,8 @@ pub struct Settings {
     pub notifications: bool,
     pub option_as_meta: bool,
     pub copy_on_select: bool,
+    /// Ask before ⌘W ends what's running, or a tab closes.
+    pub confirm_close: bool,
 }
 
 impl Settings {
@@ -24,6 +26,7 @@ impl Settings {
             notifications: prefs.get("notifications").unwrap_or(true),
             option_as_meta: prefs.get("option_as_meta").unwrap_or(false),
             copy_on_select: prefs.get("copy_on_select").unwrap_or(false),
+            confirm_close: prefs.get("confirm_close").unwrap_or(false),
         }
     }
 }
@@ -87,6 +90,13 @@ impl Desk {
         let _ = self
             .prefs
             .set("copy_on_select", &self.settings.copy_on_select);
+    }
+
+    pub fn toggle_confirm_close(&mut self) {
+        self.settings.confirm_close = !self.settings.confirm_close;
+        let _ = self
+            .prefs
+            .set("confirm_close", &self.settings.confirm_close);
     }
 
     /// Keys while settings is open: arrows walk the themes, previewing live.

@@ -52,6 +52,8 @@ pub enum Shortcut {
     RenameSession,
     RenameTab,
     CloseSession,
+    CheckForUpdates,
+    Machines,
 }
 
 impl Shortcut {

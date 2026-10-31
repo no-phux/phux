@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "objc2 0.5.3",
  "objc2-foundation 0.2.2",
@@ -2272,6 +2272,7 @@ dependencies = [
  "rune",
  "rune-mac",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -2721,7 +2722,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 [[package]]
 name = "rune"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=7109facac86f37b8411df84f39571a11c9e859c5#7109facac86f37b8411df84f39571a11c9e859c5"
+source = "git+https://github.com/anomalyco/rune?rev=3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1#3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1"
 dependencies = [
  "arboard",
  "blake3",
@@ -2786,7 +2787,7 @@ dependencies = [
 [[package]]
 name = "rune-mac"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=7109facac86f37b8411df84f39571a11c9e859c5#7109facac86f37b8411df84f39571a11c9e859c5"
+source = "git+https://github.com/anomalyco/rune?rev=3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1#3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
@@ -2795,12 +2796,12 @@ dependencies = [
 [[package]]
 name = "rune-motion"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=7109facac86f37b8411df84f39571a11c9e859c5#7109facac86f37b8411df84f39571a11c9e859c5"
+source = "git+https://github.com/anomalyco/rune?rev=3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1#3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1"
 
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=7109facac86f37b8411df84f39571a11c9e859c5#7109facac86f37b8411df84f39571a11c9e859c5"
+source = "git+https://github.com/anomalyco/rune?rev=3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1#3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1"
 dependencies = [
  "wgpu",
 ]
