@@ -1,18 +1,24 @@
 //! Links in terminal output: OSC 8 hyperlinks a program attached to cells,
 //! and URLs written as plain text, including ones soft-wrapped across rows.
 //!
-//! Only schemes a browser or mail client opens are offered, so a program
-//! can't turn a ⌘-click into launching an arbitrary handler.
+//! The schemes are GPUI's, so a program can't turn a ⌘-click into launching
+//! an arbitrary handler; `file://` links face `open`'s further checks.
 
 use phux_client_core::grid::CELL_HYPERLINK;
 use phux_client_runtime::publication::GridFrame;
+
+mod open;
 
 /// libghostty's `CellWide::SpacerTail`: the right half of a wide glyph.
 const WIDE_SPACER_TAIL: u8 = 2;
 /// Rows a wrapped URL may span on either side of the pointer.
 const WRAP_ROWS: u16 = 8;
-/// What `Tx::open_url` hands to the system.
-const SCHEMES: [&str; 3] = ["https://", "http://", "mailto:"];
+/// Characters of `https://`, the longest of `SCHEMES`.
+const LONGEST_SCHEME: usize = 8;
+/// What a ⌘-click may open.
+const SCHEMES: [&str; 6] = [
+    "https://", "http://", "file://", "mailto:", "ssh://", "ftp://",
+];
 
 /// A link under the pointer: its target and the cells it covers, as
 /// `(row, first column, end column)` per row.
@@ -70,10 +76,15 @@ fn hyperlink(frame: &GridFrame, col: u16, row: u16) -> Option<Link> {
     })
 }
 
-/// A row whose last cell holds text likely runs on into the next row.
+/// Whether `row`'s line soft-wraps into the next. Only the terminal knows:
+/// a hard line that happens to fill the row ends there.
 fn runs_on(frame: &GridFrame, row: u16) -> bool {
-    let text = frame.cell_text(row, frame.cols.saturating_sub(1));
-    !text.is_empty() && text != b" "
+    frame
+        .buffer
+        .row_wrapped
+        .get(usize::from(row))
+        .copied()
+        .unwrap_or(false)
 }
 
 /// A URL typed into the output, found in the logical line around the cell.
@@ -148,7 +159,7 @@ pub fn find(cells: &[(char, u16, u16)], row: u16, col: u16) -> Option<Link> {
         // A row's first cell starts a word even when the row above ends
         // in a letter.
         let boundary = i == 0 || !chars[i - 1].is_alphanumeric() || cells[i - 1].1 != cells[i].1;
-        let rest: String = chars[i..].iter().take(8).collect();
+        let rest: String = chars[i..].iter().take(LONGEST_SCHEME).collect();
         let Some(scheme) = SCHEMES
             .iter()
             .find(|s| boundary && openable_prefix(&rest, s))
@@ -184,6 +195,42 @@ fn spans(cells: &[(char, u16, u16)]) -> Vec<(u16, u16, u16)> {
         }
     }
     out
+}
+
+/// Why a link can't be opened from this window, for `file://` links.
+pub fn refusal(url: &str, remote: bool) -> Option<String> {
+    let scheme = url.get(.."file://".len())?;
+    if !scheme.eq_ignore_ascii_case("file://") {
+        return None;
+    }
+    if remote {
+        return Some("That file is on the other machine, so it wasn't opened here.".to_owned());
+    }
+    open::check_file(url)
+}
+
+/// Hand `url` to the system. Rune's `Tx::open_url` takes only web and mail
+/// links, so the rest go to the platform's opener directly.
+pub fn open_other(url: &str) -> std::io::Result<()> {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        let reason = "a link can't hold spaces";
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            reason,
+        ));
+    }
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(drop)
 }
 
 #[cfg(test)]
@@ -238,6 +285,8 @@ mod tests {
             (0u32, uri.len() as u32)
         });
         for (r, text) in rows.iter().enumerate() {
+            let last = text.chars().count() >= usize::from(cols);
+            buffer.row_wrapped.push(last && r + 1 < rows.len());
             let chars: Vec<char> = text.chars().collect();
             for c in 0..cols {
                 let mut cell = Cell::default();
@@ -299,6 +348,16 @@ mod tests {
     }
 
     #[test]
+    fn a_hard_line_at_the_margin_does_not_join_the_next_row() {
+        let mut f = frame(&["see https://phux.sh/do", "cs is unrelated"], 22, None);
+        f.buffer.row_wrapped = vec![false, false];
+        assert_eq!(at(&f, 6, 0).expect("a link").url, "https://phux.sh/do");
+        assert_eq!(at(&f, 1, 1), None);
+        f.buffer.row_wrapped = vec![true, false];
+        assert_eq!(at(&f, 1, 1).expect("a link").url, "https://phux.sh/docs");
+    }
+
+    #[test]
     fn a_row_start_is_a_word_boundary() {
         let cells = line(&["full width text ending in letters", "https://phux.sh next"]);
         assert_eq!(find(&cells, 1, 3).expect("a link").url, "https://phux.sh");
@@ -308,6 +367,8 @@ mod tests {
     fn only_known_schemes_open() {
         assert!(openable("https://phux.sh"));
         assert!(openable("MAILTO:a@b.c"));
+        assert!(openable("ssh://box") && openable("ftp://box/x"));
+        assert!(openable("file:///tmp/notes.txt"));
         assert!(!openable("https://"));
         assert!(!openable("javascript:alert(1)"));
         assert!(!openable("x-man-page://ls"));

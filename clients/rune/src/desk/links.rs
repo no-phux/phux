@@ -91,6 +91,22 @@ impl Desk {
         self.set_hover(link);
     }
 
+    fn open_link(&mut self, url: &str, tx: &mut Tx) {
+        if let Some(why) = links::refusal(url, self.machines.current.is_some()) {
+            self.say(NoticeKind::Error, why);
+            return;
+        }
+        let opened = match tx.open_url(url) {
+            Err(rune::OpenUrlError::UnsupportedScheme(_)) => {
+                links::open_other(url).map_err(|error| error.to_string())
+            }
+            other => other.map_err(|error| error.to_string()),
+        };
+        if let Err(error) = opened {
+            self.say(NoticeKind::Error, format!("Couldn't open {url}: {error}"));
+        }
+    }
+
     /// A ⌘-press on a link opens it. True: this gesture is the link's.
     pub fn press_link(
         &mut self,
@@ -113,12 +129,7 @@ impl Desk {
         let Some(link) = cmd.then(|| self.link_at(terminal, x, y)).flatten() else {
             return false;
         };
-        if let Err(error) = tx.open_url(&link.url) {
-            self.say(
-                NoticeKind::Error,
-                format!("Couldn't open {}: {error:?}", link.url),
-            );
-        }
+        self.open_link(&link.url, tx);
         self.pointer.opened = true;
         true
     }
