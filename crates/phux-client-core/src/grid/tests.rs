@@ -144,6 +144,16 @@ fn projects_a_dense_viewport_over_one_utf8_arena() {
 }
 
 #[test]
+fn a_line_longer_than_the_viewport_marks_its_soft_wrap() {
+    // Twelve characters in an eight-column viewport wrap onto row 1; the
+    // newline then starts a fresh line on row 2.
+    let terminal = seeded_terminal(8, 4, b"0123456789ab\r\nnext");
+    let mut projector = GridProjector::new().expect("projector");
+    let snapshot = projector.project(&terminal, 0).expect("project");
+    assert_eq!(snapshot.buffer.row_wrapped, [true, false, false, false]);
+}
+
+#[test]
 fn cursor_reports_the_wide_glyph_under_it() {
     // Write the glyph, then step back onto its head cell.
     let terminal = seeded_terminal(4, 1, "\u{6f22}\x1b[2D".as_bytes());
