@@ -159,9 +159,9 @@ test("Windows icon fixture tracks shipping GPUI without unrelated default featur
     join(shipping.toolchain, "patches/0027-windows-test-json.patch"),
     "utf8",
   );
-  expect(testPatch.match(/\+\[dev-dependencies\.serde_json\]\n\+version = "1\.0"/g)).toHaveLength(
-    2,
-  );
+  // Cargo rejects dependency libtests with their own dev-dependencies.
+  expect(testPatch.match(/\+\[dependencies\.serde_json\]\n\+version = "1\.0"/g)).toHaveLength(2);
+  expect(testPatch).not.toContain("+[dev-dependencies.");
 });
 
 test("downloads are verified before caching; a tampered cache is preserved", async () => {

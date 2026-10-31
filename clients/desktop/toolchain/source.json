@@ -53,6 +53,6 @@
     "patches/0024-windows-input-message-order.patch": "6d82e44674a5d9f76937281f65e258106ad9652a75d39b0584f7f11759cc6515",
     "patches/0025-objc2-snapshot-compat.patch": "84f37e83c3e39643ecab2f7a7911a2b4e99e9d2cdb4e9d10dda63af96bb98a05",
     "patches/0026-windows-capture-compat.patch": "938533527211b37b94edd621e21bcbcebd202ec0d2e256f7f246a84dc7e238b1",
-    "patches/0027-windows-test-json.patch": "ad9ac6da8a64ab88b71e760fea43fc229dd9080e9cef628a5fd748664ada0c68"
+    "patches/0027-windows-test-json.patch": "42cfcd907175035dc80c875881812d0ac7ac8647df91fe8246c44244894deaca"
   }
 }

@@ -2595,6 +2595,7 @@ dependencies = [
  "parking_lot",
  "rand 0.9.5",
  "raw-window-handle",
+ "serde_json",
  "smallvec",
  "uuid",
  "windows 0.62.2",
