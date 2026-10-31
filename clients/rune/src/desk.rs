@@ -328,7 +328,7 @@ impl Desk {
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
-        let updated = self.pump_updates(tx) | self.pump_machines();
+        let updated = self.pump_updates(tx) | self.pump_machines() | self.pump_links();
         let Some(client) = self.client.clone() else {
             return updated;
         };

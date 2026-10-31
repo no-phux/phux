@@ -210,8 +210,9 @@ pub fn refusal(url: &str, remote: bool) -> Option<String> {
 }
 
 /// Hand `url` to the system. Rune's `Tx::open_url` takes only web and mail
-/// links, so the rest go to the platform's opener directly.
-pub fn open_other(url: &str) -> std::io::Result<()> {
+/// links, so the rest go to the platform's opener directly. `failed` hears
+/// why if the opener starts but gives up.
+pub fn open_other(url: &str, failed: impl FnOnce(String) + Send + 'static) -> std::io::Result<()> {
     if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         let reason = "a link can't hold spaces";
         return Err(std::io::Error::new(
@@ -224,13 +225,30 @@ pub fn open_other(url: &str) -> std::io::Result<()> {
     } else {
         "xdg-open"
     };
-    std::process::Command::new(opener)
+    open_with(opener, url, failed)
+}
+
+fn open_with(
+    opener: &str,
+    url: &str,
+    failed: impl FnOnce(String) + Send + 'static,
+) -> std::io::Result<()> {
+    let mut child = std::process::Command::new(opener)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(drop)
+        .spawn()?;
+    let url = url.to_owned();
+    // The wait is also what reaps it; an opener can outlive the click.
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) if status.success() => {}
+        Ok(status) => failed(format!(
+            "Couldn't open {url}: the opener ended with {status}."
+        )),
+        Err(error) => failed(format!("Couldn't open {url}: {error}")),
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -374,5 +392,25 @@ mod tests {
         assert!(!openable("x-man-page://ls"));
         let cells = line(&["notahttps://x.y"]);
         assert_eq!(find(&cells, 0, 8), None);
+    }
+
+    #[cfg(unix)]
+    fn outcome(opener: &str) -> Result<String, std::sync::mpsc::RecvTimeoutError> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        open_with(opener, "ssh://box", move |why| {
+            let _ = sender.send(why);
+        })
+        .expect("the opener starts");
+        receiver.recv_timeout(std::time::Duration::from_secs(5))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_opener_that_fails_is_reported_and_one_that_works_is_not() {
+        use std::sync::mpsc::RecvTimeoutError::Disconnected;
+        let why = outcome("false").expect("a failure");
+        assert!(why.starts_with("Couldn't open ssh://box: "), "{why}");
+        // Success drops the sender unused, once the child has been waited on.
+        assert_eq!(outcome("true"), Err(Disconnected));
     }
 }
