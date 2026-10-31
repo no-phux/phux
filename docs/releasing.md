@@ -60,13 +60,17 @@ Rune releases are cut by hand and never go through Release Please. Versions
 run `alpha.N`, then `0.1.0`. There is no beta tag: clients read only those two
 forms, so a beta in the feed would strand every one of them on a failed check.
 
-1. On a branch, set `version` in `clients/rune/Cargo.toml` and rewrite
+1. On a branch, set `version` in `clients/rune/Cargo.toml`, run
+   `cargo update --workspace` in `clients/rune` so `Cargo.lock` records it
+   (every Rune build is `--locked`), and rewrite
    `clients/rune/RELEASE_NOTES.md`, whose first words must be
    `**Phux Rune VERSION**`. Merge it.
 2. Wait for `ci` on that exact `main` commit, then push `rune-vVERSION`.
 3. `rune-client.yml` refuses the tag unless clients can read it, it matches
    `Cargo.toml` and the notes, and that commit has a green push `ci` on `main`.
-   If `ci` was still running, rerun the failed job.
+   If `ci` was still running, rerun the failed job. Tags can't be deleted or
+   moved, so a tag refused for its version or notes costs that number: fix the
+   tree and take the next one.
 4. `rune-build.yml` tests, packages, signs and notarizes, then launches the
    final archive against a same-source server on a temp socket
    (`clients/rune/scripts/qualify.sh`). That checks the licenses in the
