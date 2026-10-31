@@ -202,7 +202,7 @@ pub struct Counters {
     /// Next session wire id (`IdBridge`'s allocator).
     pub next_session_wire_id: u32,
     /// Next terminal/pane wire id.
-    pub next_resource_wire_id: u32,
+    pub next_terminal_wire_id: u32,
     /// Next window wire id.
     pub next_window_wire_id: u32,
     /// Next session-touch timestamp (resolves `AttachTarget::Last`).

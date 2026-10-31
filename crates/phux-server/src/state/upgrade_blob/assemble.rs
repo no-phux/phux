@@ -105,7 +105,7 @@ impl ServerState {
             listener_fd,
             counters: Counters {
                 next_session_wire_id: self.idspace.next_session_wire(),
-                next_resource_wire_id: self.idspace.next_terminal_wire(),
+                next_terminal_wire_id: self.idspace.next_terminal_wire(),
                 next_window_wire_id: self.idspace.next_window_wire(),
                 next_touch_timestamp: self.sessions.next_touch_timestamp(),
                 server_instance: Some(*self.idspace.instance().as_bytes()),

@@ -324,7 +324,7 @@ impl ServerState {
         self.idspace
             .set_next_session_wire(blob.counters.next_session_wire_id);
         self.idspace
-            .set_next_terminal_wire(blob.counters.next_resource_wire_id);
+            .set_next_terminal_wire(blob.counters.next_terminal_wire_id);
         self.idspace
             .set_next_window_wire(blob.counters.next_window_wire_id);
         self.sessions

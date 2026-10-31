@@ -12,6 +12,11 @@
 //! An app owns its facet type, so this crate names no kind's internals.
 //! Engines follow ADR-0014: `!Send` state stays in one `spawn_local` task.
 
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "items shared inside the crate; pub would widen the app's API"
+)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;

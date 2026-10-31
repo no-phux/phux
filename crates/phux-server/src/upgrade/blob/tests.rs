@@ -6,7 +6,7 @@ fn sample() -> StateBlob {
         listener_fd: 7,
         counters: Counters {
             next_session_wire_id: 3,
-            next_resource_wire_id: 5,
+            next_terminal_wire_id: 5,
             next_window_wire_id: 4,
             next_touch_timestamp: 42,
             server_instance: Some([7; 16]),
@@ -129,7 +129,7 @@ fn deserialize_tolerates_missing_additive_fields() {
         "listener_fd": 3,
         "counters": {
             "next_session_wire_id": 1,
-            "next_resource_wire_id": 1,
+            "next_terminal_wire_id": 1,
             "next_window_wire_id": 1,
             "next_touch_timestamp": 1
         },
@@ -180,7 +180,7 @@ fn deserialize_ignores_unknown_future_fields() {
         "listener_fd": 3,
         "counters": {
             "next_session_wire_id": 1,
-            "next_resource_wire_id": 1,
+            "next_terminal_wire_id": 1,
             "next_window_wire_id": 1,
             "next_touch_timestamp": 1
         },

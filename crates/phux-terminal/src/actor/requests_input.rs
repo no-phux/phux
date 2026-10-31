@@ -145,7 +145,8 @@ impl WriteCompletionSink {
 
     /// A sink backed by a plain channel (tests).
     #[cfg(test)]
-    pub(crate) fn channel() -> (Self, std::sync::mpsc::Receiver<WriteCompletion>) {
+    #[must_use]
+    pub fn channel() -> (Self, std::sync::mpsc::Receiver<WriteCompletion>) {
         let (tx, rx) = std::sync::mpsc::channel();
         (
             Self::new(move |outcome| {

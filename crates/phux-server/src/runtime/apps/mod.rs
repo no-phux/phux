@@ -66,9 +66,7 @@ pub(crate) trait ResourceApp: Sync {
     fn resumes_from_cursor(&self) -> bool;
 
     /// May a client take over this kind's input? `Err` names why not.
-    fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind> {
-        Ok(())
-    }
+    fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind>;
 
     /// Drop `client`'s engine-side consumer state now, best effort. Safe under
     /// the state lock.

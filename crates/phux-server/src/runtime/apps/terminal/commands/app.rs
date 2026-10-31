@@ -30,6 +30,10 @@ impl ResourceApp for TerminalApp {
         false
     }
 
+    fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind> {
+        Ok(())
+    }
+
     fn resize(
         &self,
         handle: &ResourceHandle,

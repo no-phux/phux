@@ -10,7 +10,7 @@ use super::*;
 pub(super) fn empty_counters() -> Counters {
     Counters {
         next_session_wire_id: 10,
-        next_resource_wire_id: 10,
+        next_terminal_wire_id: 10,
         next_window_wire_id: 10,
         next_touch_timestamp: 1,
         server_instance: None,

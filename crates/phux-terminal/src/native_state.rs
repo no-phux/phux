@@ -202,7 +202,7 @@ pub(crate) struct NativeManagerInitFailure {
 )]
 pub(crate) struct NativeGenerationBounds {
     pub(crate) max_record_bytes: usize,
-    pub(crate) max_rows: usize,
+    pub max_rows: usize,
     pub(crate) max_records: usize,
     pub(crate) max_total_bytes: usize,
 }
@@ -238,7 +238,7 @@ impl NativeGenerationSeed {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CachedNativeHistoryRecord {
     pub bytes: Bytes,
-    pub(crate) rows: usize,
+    pub rows: usize,
     pub(crate) finish: bool,
 }
 

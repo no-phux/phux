@@ -2,7 +2,7 @@
 //! a human, and what subscribers see.
 //!
 //! Every source funnels through one [`AskedDetector`], which ranks sources
-//! ([`AskedSource::priority`]), coalesces repeats, and returns the
+//! (`AskedSource::priority`), coalesces repeats, and returns the
 //! [`AskedTransition`] to broadcast. Retraction is per-source: a source
 //! takes back only what it asserted.
 
@@ -44,7 +44,7 @@ impl AskedSource {
     /// Rank within the ladder: higher wins. A report from a lower-ranked
     /// source is ignored while a higher-ranked one holds the pane.
     #[must_use]
-    pub const fn priority(self) -> u8 {
+    pub(crate) const fn priority(self) -> u8 {
         match self {
             Self::Scrape => 0,
             Self::Sentinel => 1,

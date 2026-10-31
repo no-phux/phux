@@ -14,7 +14,7 @@ than trying to repair retained corrupt bytes. Completed artifacts belong to
 the user and are not silently TTL-deleted; quotas refuse with a remedy.
 Keep payloads and completed paths out of routine telemetry. Transfer files
 through this lane, not fragmented PTY input. The [upload implementation and
-tests](../crates/phux-server/src/runtime/upload.rs) own continuation and
+tests](../crates/phux-server/src/runtime/apps/terminal/upload.rs) own continuation and
 quota behavior; [CLI](./reference/cli.md#phux-upload) and
 [environment](./reference/environment.md) own syntax and limits.
 
@@ -70,6 +70,6 @@ dispatcher under a deadline and an output cap, with
 A hub relays a satellite Terminal's checkout only to a satellite that
 advertises `CHECKOUT`; otherwise it refuses `UNSUPPORTED_SATELLITE_ROUTE`.
 The [request and answer types](../crates/phux-protocol/src/checkout.rs), the
-[server handler](../crates/phux-server/src/runtime/checkout.rs), and the
+[server handler](../crates/phux-server/src/runtime/apps/terminal/checkout.rs), and the
 shared [`phux-git`](../crates/phux-git/src/checkout.rs) module own the
 details.
