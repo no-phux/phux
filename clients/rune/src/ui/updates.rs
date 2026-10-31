@@ -171,7 +171,7 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
         buttons = buttons.child(quiet_button(
             "Check now",
             "update-check",
-            |d| d.updater.check(),
+            |d| d.updater.check_now(),
             ink,
         ));
     }

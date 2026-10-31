@@ -53,6 +53,7 @@ pub enum Shortcut {
     RenameTab,
     CloseSession,
     CheckForUpdates,
+    InstallUpdate,
     Machines,
 }
 

@@ -41,6 +41,7 @@ const ACTIONS: &[(Shortcut, &str, &str)] = &[
     (Shortcut::Inbox, "Open inbox", "⌘I"),
     (Shortcut::Settings, "Settings", "⌘,"),
     (Shortcut::CheckForUpdates, "Check for updates", ""),
+    (Shortcut::InstallUpdate, "Update now", ""),
     (Shortcut::Machines, "Switch or add machine", ""),
     (Shortcut::RenameSession, "Rename session", ""),
     (Shortcut::RenameTab, "Rename tab", ""),
