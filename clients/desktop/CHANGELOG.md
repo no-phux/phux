@@ -55,6 +55,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.53.1](https://github.com/no-phux/phux/compare/desktop-v0.53.0...desktop-v0.53.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* **desktop:** load Omarchy's Ghostty theme include and drop Mac wording on Linux ([#1864](https://github.com/no-phux/phux/issues/1864)) ([62af4ae](https://github.com/no-phux/phux/commit/62af4ae03ec590b15477c0069d84d8f7a6aec985))
+
 ## [0.53.0](https://github.com/no-phux/phux/compare/desktop-v0.52.0...desktop-v0.53.0) (2026-10-30)
 
 
