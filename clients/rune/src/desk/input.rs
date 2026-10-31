@@ -254,6 +254,11 @@ impl Desk {
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),
             Shortcut::Machines => self.toggle_machines(),
+            Shortcut::RetryConnection => self.reconnect(),
+            Shortcut::CopyDiagnostics => {
+                self.copy_diagnostics(tx);
+                self.say(NoticeKind::Info, "Diagnostics copied.");
+            }
             Shortcut::ToggleFullScreen => rune_mac::toggle_full_screen(),
             Shortcut::KeyboardShortcuts => self.show_shortcuts(),
             Shortcut::JumpToAttention => self.jump_to_attention(),

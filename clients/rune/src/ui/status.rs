@@ -224,15 +224,18 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
         }
     };
     let update = matches!(banner, Banner::Stuck(Standing::Incompatible(_)));
+    // A held confirmation keeps the top of the stage.
+    let top = if desk.pending.is_some() { 96.0 } else { 44.0 };
     Some(
         col()
-            .absolute(0.0, 44.0)
+            .absolute(0.0, top)
             .w_full()
             .items_center()
             .transition(rune::Transition::opacity())
             .child(
                 row()
                     .key("reconnect-banner")
+                    .on_drag(keep_from_pane)
                     .w(if update { 560.0 } else { 420.0 })
                     .px(14.0)
                     .py(8.0)

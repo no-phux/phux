@@ -62,6 +62,8 @@ pub enum Shortcut {
     CheckForUpdates,
     InstallUpdate,
     Machines,
+    RetryConnection,
+    CopyDiagnostics,
     ToggleFullScreen,
     KeyboardShortcuts,
     SelectAll,

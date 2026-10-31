@@ -1,9 +1,10 @@
 //! The machines sheet, and the sidebar control that opens it.
 
-use rune::{Color, El, TextStyle, Transition, col, el, row, text, text_input};
+use rune::{El, TextStyle, col, el, row, text, text_input};
 
+use super::overlay::key_hint;
 use super::settings::section;
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
+use super::{CAPTION, Ink, LABEL, Sheet, pressable};
 use crate::desk::Desk;
 use crate::machines::{Host, LOCAL, Peer};
 
@@ -198,7 +199,6 @@ pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
         .w_full()
         .padding(16.0)
         .gap(6.0)
-        .child(text("Machines").font(LABEL_STRONG).color(ink.text))
         .child(local_machine(desk, ink));
     for host in &list.hosts {
         body = body.child(machine(host, desk, ink));
@@ -236,28 +236,14 @@ pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
         }
         None => {}
     }
-    let panel = col()
-        .key("machines")
-        .w(420.0)
-        .max_h(560.0)
-        .radius(12.0)
-        .clip_rounded(12.0)
-        .fill(ink.raised)
-        .border(1.0, ink.separator)
-        .shadow(18.0, 56.0, Color::BLACK.alpha(0.5))
-        .transition(Transition::scale(0.97).combined(Transition::opacity()))
-        .scroll(rune::ScrollSpec {
-            stick_bottom: false,
-        })
-        .child(body);
-    Some(
-        el().key("machines-scrim")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .fill(Color::BLACK.alpha(0.3))
-            .transition(Transition::opacity())
-            .modal(true, |d: &mut Desk| d.close_machines())
-            .child(col().w_full().pt(96.0).items_center().child(panel)),
-    )
+    let foot = row().w_full().child(key_hint("esc", "close", ink));
+    let sheet = Sheet {
+        key: "machines",
+        title: "Machines",
+        width: 420.0,
+        top: 96.0,
+        scrim: 0.3,
+        close: Desk::close_machines,
+    };
+    Some(sheet.build(None, body, foot, ink))
 }

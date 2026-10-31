@@ -263,6 +263,16 @@ fn a_replaced_client_keeps_whats_waiting_on_you() {
 }
 
 #[test]
+fn a_replaced_client_keeps_the_notice_clock() {
+    let mut desk = stale(embedded());
+    desk.clock = 100.0;
+    desk.renew();
+    desk.say(NoticeKind::Error, "after the retry");
+    let expires = desk.notice.as_ref().map_or(0.0, |notice| notice.expires);
+    assert!(expires > 100.0);
+}
+
+#[test]
 fn another_server_drops_what_was_held_for_this_one() {
     let mut desk = stale(embedded());
     desk.link.heard = true;
