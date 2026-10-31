@@ -4,7 +4,7 @@
 use phux_client_runtime::control::Status;
 use rune::{Color, El, Family, TextStyle, col, el, row, text};
 
-use super::{CAPTION, Ink, LABEL, button};
+use super::{CAPTION, Ink, LABEL, button, keep_from_pane};
 use crate::desk::{Desk, Notice, NoticeKind, Pending};
 
 /// A notice's words, wrapping; with none it draws nothing.
@@ -66,6 +66,7 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
     Some(
         row()
             .key("confirm-bar")
+            .on_drag(keep_from_pane)
             .pin(Some(0.0), Some(0.0), Some(0.0), None)
             .px(12.0)
             .py(8.0)

@@ -270,6 +270,11 @@ pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(
         .child(text(label).font(CAPTION).color(p.text))
 }
 
+/// `on_drag` for a surface floating over panes. Taking the press stops it,
+/// and the wheel with it, reaching the pane underneath, without calling the
+/// surface a button as `on_press` would.
+pub(crate) fn keep_from_pane(_: &mut Desk, _: &mut rune::Drag, _: &mut rune::Tx) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,7 +7,7 @@ use phux_protocol::ids::ResourceId;
 use rune::{Color, El, Family, TextStyle, Transition, el, row, text, text_input};
 
 use super::status::notice_line;
-use super::{CAPTION, Ink, PAD, pressable};
+use super::{CAPTION, Ink, PAD, keep_from_pane, pressable};
 use crate::desk::{Desk, NoticeKind};
 use crate::grid::Metrics;
 
@@ -67,6 +67,7 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
     };
     let toast = row()
         .key("toast")
+        .on_drag(keep_from_pane)
         .shrink()
         .max_w(TOAST_W)
         .pl(12.0)
@@ -126,6 +127,7 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
             .key("find-bar")
             .absolute(left, PAD + 4.0)
             .w(width)
+            .on_drag(keep_from_pane)
             .h(36.0)
             .pl(12.0)
             .pr(4.0)
