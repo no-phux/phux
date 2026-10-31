@@ -22,6 +22,7 @@ const INPUT_PAUSED: &str = "Not connected; input isn't reaching the terminal.";
 /// What has the keyboard instead of the terminal, in the order they claim it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modal {
+    ContextMenu,
     Inbox,
     Machines,
     Settings,
@@ -52,6 +53,7 @@ impl Desk {
     /// rule for keys, the input method and the IME's anchor in the grid.
     pub fn modal(&self) -> Option<Modal> {
         [
+            (self.pointer.menu.is_some(), Modal::ContextMenu),
             (self.inbox.open, Modal::Inbox),
             (self.machines.open, Modal::Machines),
             (self.settings_open, Modal::Settings),
@@ -90,37 +92,51 @@ impl Desk {
         action: Option<Shortcut>,
         tx: &mut Tx,
     ) {
+        let escape = event.key == rune::Key::Escape;
         match modal {
-            Modal::Inbox => {
-                if !self.inbox_key(event, tx) {
-                    self.sheet_shortcut(action, tx);
-                }
-            }
+            Modal::ContextMenu if escape => self.close_menu(),
+            Modal::Rename if escape => self.cancel_rename(),
+            Modal::ContextMenu | Modal::Rename => {}
+            Modal::Inbox => self.inbox_keys(event, action, tx),
             Modal::Machines => {
                 self.machines_key(event, tx);
             }
             Modal::Settings if action.is_some() => self.sheet_shortcut(action, tx),
             Modal::Settings => self.settings_key(event),
-            Modal::Rename if event.key == rune::Key::Escape => self.cancel_rename(),
-            Modal::Rename => {}
-            // The field has the keys; only the chord that closes it gets here.
-            Modal::Palette if action == Some(Shortcut::Palette) => {
-                self.close_palette();
-                tx.blur();
-            }
-            Modal::Palette => {}
-            // The field has the keys; what it leaves is a shortcut or
-            // nothing, never terminal input (Ctrl-C must not reach the job).
-            Modal::FindField => {
-                if let Some(action) = action {
-                    self.shortcut(action, tx);
-                }
-            }
-            Modal::Confirm => match event.key {
-                rune::Key::Enter => self.confirm_pending(),
-                rune::Key::Escape => self.pending = None,
-                _ => {}
-            },
+            Modal::Palette => self.palette_chord(action, tx),
+            Modal::FindField => self.find_chord(action, tx),
+            Modal::Confirm => self.confirm_key(event),
+        }
+    }
+
+    fn inbox_keys(&mut self, event: &rune::KeyEvent, action: Option<Shortcut>, tx: &mut Tx) {
+        if !self.inbox_key(event, tx) {
+            self.sheet_shortcut(action, tx);
+        }
+    }
+
+    /// The palette's field has the keys; only the chord that closes it gets
+    /// here.
+    fn palette_chord(&mut self, action: Option<Shortcut>, tx: &mut Tx) {
+        if action == Some(Shortcut::Palette) {
+            self.close_palette();
+            tx.blur();
+        }
+    }
+
+    /// The find field has the keys; what it leaves is a shortcut or nothing,
+    /// never terminal input (Ctrl-C must not reach the job).
+    fn find_chord(&mut self, action: Option<Shortcut>, tx: &mut Tx) {
+        if let Some(action) = action {
+            self.shortcut(action, tx);
+        }
+    }
+
+    fn confirm_key(&mut self, event: &rune::KeyEvent) {
+        match event.key {
+            rune::Key::Enter => self.confirm_pending(),
+            rune::Key::Escape => self.pending = None,
+            _ => {}
         }
     }
 

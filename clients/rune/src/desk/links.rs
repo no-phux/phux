@@ -2,7 +2,7 @@
 //! underlines it and shows where it goes.
 
 use phux_protocol::ids::ResourceId;
-use rune::{Phase, Tx};
+use rune::{Mods, Phase, PointerPress, Tx};
 
 use super::input::selection::Held;
 use super::{Desk, NoticeKind};
@@ -21,6 +21,10 @@ pub struct Pointer {
     cmd: bool,
     /// A selection drag autoscrolling past the grid.
     pub(super) held: Option<Held>,
+    /// The context menu, while open, at its window point.
+    pub menu: Option<PointerPress>,
+    /// The window's size in points, as the open menu last measured it.
+    pub window: [f32; 2],
 }
 
 impl Desk {
@@ -50,15 +54,18 @@ impl Desk {
     }
 
     /// The pointer moved over a pane, `x, y` in its grid's points.
-    pub fn hover(&mut self, terminal: &ResourceId, x: f32, y: f32, cmd: bool) {
+    pub fn hover(&mut self, terminal: &ResourceId, x: f32, y: f32, mods: Mods) {
+        let cmd = mods.cmd;
         self.pointer.last = Some((terminal.clone(), x, y));
         self.pointer.cmd = cmd;
+        self.report_motion(terminal, x, y, mods);
         let link = cmd.then(|| self.link_at(terminal, x, y)).flatten();
         self.set_hover(link.map(|link| (terminal.clone(), link)));
     }
 
     /// The pointer left a pane: nothing there is under it any more.
     pub fn pointer_left(&mut self, terminal: &ResourceId) {
+        self.forget_mouse_cell();
         if self
             .pointer
             .last

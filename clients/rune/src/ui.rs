@@ -157,6 +157,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .children(machines::sheet(desk, &p))
         .children(tabs::rename_sheet(desk, &p))
         .children(desk.palette_open.then(|| palette::view(desk, &p)))
+        .children(desk.pointer.menu.map(|at| palette::context_menu(desk, at, &p)))
 }
 
 /// Something to press: the hover wash and the pointer. Key errors name the

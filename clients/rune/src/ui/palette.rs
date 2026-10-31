@@ -1,12 +1,18 @@
 //! The command palette overlay: a scrim, a field, and ranked rows.
 
-use rune::{Color, El, Span, TextStyle, Transition, col, el, rich, row, text, text_input};
+use rune::{
+    Color, El, PointerPress, Span, TextStyle, Transition, col, el, rich, row, text, text_input,
+};
 
-use super::{CAPTION, Ink, pressable};
-use crate::desk::Desk;
+use super::{CAPTION, Ink, LABEL, pressable};
+use crate::desk::{CONTEXT_MENU, Desk};
+use crate::keys::{self, Shortcut};
 use crate::palette::Hit;
 
 const WIDTH: f32 = 600.0;
+const MENU_W: f32 = 240.0;
+const MENU_ROW: f32 = 28.0;
+const MENU_PAD: f32 = 4.0;
 
 pub fn view(desk: &Desk, ink: &Ink) -> El {
     let hits = desk.palette_hits();
@@ -92,6 +98,57 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_palette())
         .child(col().w_full().pt(96.0).items_center().child(panel))
+}
+
+/// `at` moved back so `size` fits in `window`. A window not measured yet
+/// (zero) leaves it where the press was.
+fn fit(at: f32, size: f32, window: f32) -> f32 {
+    if window <= 0.0 {
+        return at;
+    }
+    at.min(window - size - 4.0).max(0.0)
+}
+
+/// The right-click menu over a pane, kept inside the window.
+pub fn context_menu(desk: &Desk, at: PointerPress, ink: &Ink) -> El {
+    let height = MENU_ROW * CONTEXT_MENU.len() as f32 + 2.0 * MENU_PAD;
+    let [window_w, window_h] = desk.pointer.window;
+    let mut rows = col()
+        .key("context-menu")
+        .absolute(fit(at.x, MENU_W, window_w), fit(at.y, height, window_h))
+        .w(MENU_W)
+        .padding(MENU_PAD);
+    rows = rows
+        .radius(8.0)
+        .fill(ink.raised)
+        .border(1.0, ink.separator)
+        .shadow(8.0, 24.0, Color::BLACK.alpha(0.4));
+    for action in CONTEXT_MENU {
+        rows = rows.children(context_row(action, ink));
+    }
+    el().key("context-scrim")
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .on_layout(|d: &mut Desk, rect| d.pointer.window = [rect[2], rect[3]])
+        .modal(true, |d: &mut Desk| d.close_menu())
+        .child(rows)
+}
+
+fn context_row(action: Shortcut, ink: &Ink) -> Option<El> {
+    let command = keys::command(action)?;
+    Some(
+        pressable(format!("context-{action:?}"), ink)
+            .w_full()
+            .h(MENU_ROW)
+            .px(8.0)
+            .radius(5.0)
+            .items_center()
+            .on_press_tx(move |d: &mut Desk, tx| d.context_pick(action, tx))
+            .child(text(command.title).font(LABEL).color(ink.text))
+            .child(el().grow(1.0))
+            .child(text(command.hint()).font(CAPTION).color(ink.dim)),
+    )
 }
 
 fn hint(keys: &'static str, what: &'static str, ink: &Ink) -> El {

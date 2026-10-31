@@ -3,7 +3,7 @@
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
-use rune::{Color, Cx, El, Phase, col, el, row};
+use rune::{Color, Cx, El, Phase, PointerButton, col, el, row};
 
 use super::status::placeholder;
 use super::{Ink, PAD, overlay};
@@ -113,7 +113,8 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .as_ref()
         .zip(view)
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
-    let (laid, wheel, press, moved, left, dropped) = (
+    let (laid, wheel, press, moved, left, dropped, menu) = (
+        id.clone(),
         id.clone(),
         id.clone(),
         id.clone(),
@@ -163,9 +164,21 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .border(1.0, edge)
         .cursor(if linked { rune::Cursor::Pointer } else { rune::Cursor::Text })
         .on_pointer_move_local(move |d: &mut Desk, event, tx| {
-            d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods().cmd);
+            d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods());
         })
         .on_drop_files(move |d: &mut Desk, paths, _| d.drop_files(&dropped, paths))
+        .pointer_buttons([PointerButton::Middle, PointerButton::Back, PointerButton::Forward])
+        .on_secondary_press_local(move |d: &mut Desk, event, tx| {
+            let at = Press {
+                phase: Phase::Down,
+                x: event.x - PAD,
+                y: event.y - PAD,
+                clicks: 1,
+                mods: tx.mods(),
+                button: PointerButton::Secondary,
+            };
+            d.secondary_press(&menu, at, event.window());
+        })
         .on_hover_change(move |d: &mut Desk, inside, _| {
             if !inside {
                 d.pointer_left(&left);
@@ -185,6 +198,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
                     y,
                     clicks: drag.clicks,
                     mods,
+                    button: tx.button(),
                 };
                 d.pointer(&press, &step, tx);
                 if drag.phase == Phase::Up {

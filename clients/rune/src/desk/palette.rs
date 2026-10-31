@@ -6,6 +6,17 @@ use super::Desk;
 use crate::keys::{self, Shortcut};
 use crate::palette::{self, Hit, Target};
 
+/// What right-clicking a pane offers, in order.
+pub const CONTEXT_MENU: [Shortcut; 7] = [
+    Shortcut::Copy,
+    Shortcut::Paste,
+    Shortcut::SelectAll,
+    Shortcut::Find,
+    Shortcut::SplitRight,
+    Shortcut::SplitDown,
+    Shortcut::CloseTerminal,
+];
+
 /// A menu item running `action`. Menu items take a plain `fn`, so each row
 /// names its action twice over here rather than capturing it.
 macro_rules! item {
@@ -85,6 +96,16 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
 }
 
 impl Desk {
+    pub fn close_menu(&mut self) {
+        self.pointer.menu = None;
+    }
+
+    /// A row of the context menu.
+    pub fn context_pick(&mut self, action: Shortcut, tx: &mut Tx) {
+        self.close_menu();
+        self.shortcut(action, tx);
+    }
+
     /// A menu pick: the same rule as the chord, since a sheet hides what a
     /// command would touch.
     fn menu_command(&mut self, action: Shortcut, tx: &mut Tx) {

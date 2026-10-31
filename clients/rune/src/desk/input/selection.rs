@@ -200,7 +200,9 @@ impl Desk {
             self.pointer.held = None;
             return false;
         }
+        // Early by a frame's rounding: the wake that got here was the only one.
         if held.next > self.clock {
+            tx.wake_after(Duration::from_secs_f64(held.next - self.clock));
             return false;
         }
         tx.wake_after(AUTOSCROLL_TICK);
