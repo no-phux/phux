@@ -269,7 +269,11 @@ impl PaneWiring {
         if let Some(agent_rx) = self.agent_state {
             spawn_agent_state_drain(state.clone(), wire.clone(), agent_rx);
         }
-        super::super::program_status::spawn_drain(state.clone(), wire.clone(), self.program_status);
+        crate::runtime::program_status::spawn_drain(
+            state.clone(),
+            wire.clone(),
+            self.program_status,
+        );
         PaneEvents {
             wire: wire.clone(),
             source: self.events,
@@ -300,7 +304,7 @@ pub(crate) fn launch_of(
 
 /// The exit policy of a pane spawned with `attribution`: `Retain` when it
 /// is retained after exit (ADR-0124), `Remove` otherwise.
-pub(super) fn exit_policy_for(
+pub(in crate::runtime) fn exit_policy_for(
     s: &crate::state::ServerState,
     has_pty: bool,
     attribution: SpawnAttribution,
@@ -319,7 +323,7 @@ pub(super) fn exit_policy_for(
 
 /// The actor a spawn is attributed to: the asking connection, or the
 /// server for a seed.
-pub(super) fn spawn_actor(
+pub(in crate::runtime) fn spawn_actor(
     s: &crate::state::ServerState,
     attribution: SpawnAttribution,
 ) -> phux_core::Actor {

@@ -87,7 +87,7 @@ pub(crate) fn handle_terminal_resize(
 
 /// Refuse a reply-less frame aimed at the wrong resource kind with an
 /// uncorrelated `ERROR` to its sender.
-pub(super) fn send_wrong_kind_error(
+pub(in crate::runtime) fn send_wrong_kind_error(
     s: &crate::state::ServerState,
     client_id: ClientId,
     error: WrongResourceKind,
@@ -103,7 +103,7 @@ pub(super) fn send_wrong_kind_error(
 
 /// Admit a live resize into the actor's latest-geometry slot. A closed
 /// actor refuses it; mailbox pressure coalesces rather than losing it.
-pub(super) fn try_resize(
+pub(in crate::runtime) fn try_resize(
     terminal: &TerminalHandle,
     (cols, rows): (u16, u16),
     cell_px: Option<(u16, u16)>,
@@ -191,7 +191,7 @@ pub(crate) fn prepare_attach(
             })
             .map(|pane| pane.id.clone())
             .collect();
-        let initial_client_id = super::super::wire_client(client_id);
+        let initial_client_id = crate::runtime::wire_client(client_id);
         Ok((
             snapshot,
             initial_client_id,

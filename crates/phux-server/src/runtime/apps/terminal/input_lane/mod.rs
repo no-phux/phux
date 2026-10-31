@@ -58,11 +58,11 @@ use self::process::{
 };
 pub(crate) use self::receipt::InputReceipt;
 use self::receipt::{ReceiptFailure, ready_receipt, waiting_receipt};
-use super::{
-    terminal_input_from_event, with_attached_input_destination, with_route_input_destination,
-};
 #[cfg(doc)]
 use crate::input::InputEncoderSnapshot;
+use crate::runtime::{
+    terminal_input_from_event, with_attached_input_destination, with_route_input_destination,
+};
 use crate::state::{ClientId, SharedState, TerminalInput};
 use crate::terminal_actor::{InputCredit, LaneAhead};
 

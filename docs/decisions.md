@@ -38,7 +38,7 @@ records explain history; [look them up deliberately](./architecture.md#historica
   an execution surface; `GET_FILE` reads any file the serving user can read
   because an `INPUT` holder on that server can already `cat` it, so the read
   is classified `INPUT` on the server rather than fenced by a path allow-list
-  ([protocol](./protocol.md#file-transfer),
+  ([protocol](./protocol-files.md#file-transfer),
   [#1657](https://github.com/no-phux/phux/pull/1657)).
 - Checkout methods are typed requests keyed by a Terminal, not a generic
   exec or a string-named invoke. The server resolves the checkout from the
@@ -49,7 +49,7 @@ records explain history; [look them up deliberately](./architecture.md#historica
   there. A Terminal whose working directory is inside a large checkout (say,
   dotfiles tracked at `$HOME`) therefore exposes every file in that
   checkout outside `.git` to that Terminal's `INPUT` holders
-  ([protocol](./protocol.md#checkout-methods)).
+  ([protocol](./protocol-files.md#checkout-methods)).
 - A host service (OpenCode) is reached through the phux connection, not its
   own port, tunnel, or pairing broker: the server names the service, owns
   its loopback origin and mints its own credential, and relays one HTTP

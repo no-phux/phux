@@ -96,6 +96,22 @@ pub fn method_named(name: &str) -> Option<&'static MethodSpec> {
     methods().find(|method| method.name == name)
 }
 
+/// The kind whose facet carries `command`, or `None` for a server or
+/// substrate command. Read from the rows authorization uses, so routing and
+/// classification cannot disagree.
+#[must_use]
+pub fn command_kind(command: &Command) -> Option<ResourceKind> {
+    let rule = command_rule(command);
+    KINDS
+        .iter()
+        .find(|kind| {
+            kind.methods
+                .iter()
+                .any(|method| method.rules.iter().any(|row| core::ptr::eq(*row, rule)))
+        })
+        .map(|kind| kind.kind)
+}
+
 /// Whether some dangerous method lists `rule` among its rows.
 fn rule_is_dangerous(rule: &Rule) -> bool {
     methods()

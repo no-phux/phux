@@ -159,7 +159,7 @@ pub(crate) async fn handle_spawn_terminal(
         .as_ref()
         .map_or(phux_protocol::ids::ResourceKind::Terminal, |r| r.kind);
     let bind_instance = resource.as_ref().is_some_and(|r| r.bind_instance);
-    let attribution = super::super::commands::SpawnAttribution {
+    let attribution = crate::runtime::commands::SpawnAttribution {
         actor: Some(client_id),
         operation_id: resource.as_ref().and_then(|r| r.idempotency_key),
         retain_secs: state.with(|s| {
@@ -288,7 +288,7 @@ pub(crate) async fn handle_spawn_terminal(
     // ADR-0126: bind the key to the registered pane before anything awaits,
     // so a repeat never observes the pane without its binding.
     state.with(|s| {
-        super::super::idempotent_create::bind_spawned(
+        crate::runtime::idempotent_create::bind_spawned(
             s,
             attribution.operation_id,
             &wire_terminal_id,

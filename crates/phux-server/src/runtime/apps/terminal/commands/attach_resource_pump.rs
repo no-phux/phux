@@ -9,7 +9,7 @@ use super::*;
 impl AttachResourceSession<'_> {
     /// Start the raw broadcast pump for one generation. An unrecoverable
     /// fault releases only this client's consumer state: the pane is shared.
-    pub(super) fn spawn_output_pump(
+    pub(in crate::runtime) fn spawn_output_pump(
         &self,
         channels: AttachResourcePumpChannels,
         bootstrap_id: phux_protocol::ids::BootstrapId,
@@ -65,7 +65,7 @@ impl AttachResourceSession<'_> {
 
     /// Publish the atomic state-sync bootstrap the actor captured with
     /// registration, then open the live gate.
-    pub(super) async fn finish_state_sync(
+    pub(in crate::runtime) async fn finish_state_sync(
         &self,
         generation: &AttachResourceGeneration,
         state_sync: crate::terminal_actor::StateSyncBootstrap,
@@ -80,7 +80,7 @@ impl AttachResourceSession<'_> {
     }
 
     /// Publish the negotiated bootstrap: a native checkpoint or a snapshot.
-    pub(super) async fn finish_bootstrap(
+    pub(in crate::runtime) async fn finish_bootstrap(
         &self,
         generation: &mut AttachResourceGeneration,
     ) -> Result<(), AttachResourceFailure> {

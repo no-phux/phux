@@ -207,9 +207,9 @@ pub(super) async fn fail_aggregate_attach_prepublication(
 ) {
     staged_pumps.abort_all();
     while staged_pumps.join_next().await.is_some() {}
-    super::super::client::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
+    crate::runtime::client::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
 
-    let wire_client_id = super::super::wire_client(client_id);
+    let wire_client_id = crate::runtime::wire_client(client_id);
     let producer_deadline = std::time::Duration::from_secs(1);
     for handle in staged_handles {
         // Native history cuts are a Terminal facet lease.

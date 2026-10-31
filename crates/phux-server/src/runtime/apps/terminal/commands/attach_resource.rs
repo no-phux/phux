@@ -18,7 +18,7 @@ pub(crate) struct AttachResourceFailure {
 
 impl AttachResourceFailure {
     /// An internal fault with a fixed explanation — the dominant shape.
-    pub(super) fn internal(message: &str) -> Self {
+    pub(in crate::runtime) fn internal(message: &str) -> Self {
         Self {
             code: ErrorCode::InternalError,
             message: message.to_owned(),
@@ -28,45 +28,45 @@ impl AttachResourceFailure {
 
 /// The pump generation an attach established, plus the handshake artifacts
 /// its bootstrap publication still has to consume.
-pub(super) struct AttachResourceGeneration {
+pub(in crate::runtime) struct AttachResourceGeneration {
     /// Replica generation stamped on every frame this attach publishes.
-    pub(super) bootstrap_id: phux_protocol::ids::BootstrapId,
+    pub(in crate::runtime) bootstrap_id: phux_protocol::ids::BootstrapId,
     /// Shared cursor the pump keeps current so a replacement generation can
     /// resume from where this one stopped.
-    pub(super) generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub(in crate::runtime) generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Releases the actor's live state-sync emission once the bootstrap is on
     /// the wire.
-    pub(super) live_gate_tx: tokio::sync::watch::Sender<bool>,
+    pub(in crate::runtime) live_gate_tx: tokio::sync::watch::Sender<bool>,
     /// Releases the raw pump's first delta at the published cut. `None` when
     /// the actor's tick owns emission and no raw pump was spawned.
-    pub(super) snapshot_gate: Option<oneshot::Sender<u64>>,
+    pub(in crate::runtime) snapshot_gate: Option<oneshot::Sender<u64>>,
     /// Atomic synthesized bootstrap captured with state-sync registration.
-    pub(super) state_sync_bootstrap: Option<crate::terminal_actor::StateSyncBootstrap>,
+    pub(in crate::runtime) state_sync_bootstrap: Option<crate::terminal_actor::StateSyncBootstrap>,
     /// Hands the pump its post-replay live receiver at the native publication
     /// fence.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    pub(super) native_publication_gate:
+    pub(in crate::runtime) native_publication_gate:
         Option<oneshot::Sender<crate::terminal_actor::NativePublicationReply>>,
 }
 
 /// One in-flight `ATTACH_RESOURCE`: the resolved terminal plus the negotiated
 /// connection context every stage needs. Every failure funnels through
 /// [`Self::failed`].
-pub(super) struct AttachResourceSession<'a> {
-    pub(super) state: &'a SharedState,
-    pub(super) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    pub(super) connection_token: &'a CancellationToken,
-    pub(super) terminal_id: &'a phux_protocol::ids::ResourceId,
-    pub(super) core: phux_core::ids::ResourceId,
+pub(in crate::runtime) struct AttachResourceSession<'a> {
+    pub(in crate::runtime) state: &'a SharedState,
+    pub(in crate::runtime) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
+    pub(in crate::runtime) connection_token: &'a CancellationToken,
+    pub(in crate::runtime) terminal_id: &'a phux_protocol::ids::ResourceId,
+    pub(in crate::runtime) core: phux_core::ids::ResourceId,
     /// The resource's generic channels (output, consumers, control).
-    pub(super) handle: ResourceHandle,
+    pub(in crate::runtime) handle: ResourceHandle,
     /// The Terminal facet of `handle`, resolved once at entry.
-    pub(super) terminal: TerminalHandle,
-    pub(super) client_id: ClientId,
-    pub(super) stream_id: phux_protocol::ids::StreamId,
-    pub(super) client_caps: ClientCapabilities,
-    pub(super) stream_profile: phux_protocol::caps::BootstrapStreamProfile,
-    pub(super) bootstrap_limits: BootstrapLimits,
+    pub(in crate::runtime) terminal: TerminalHandle,
+    pub(in crate::runtime) client_id: ClientId,
+    pub(in crate::runtime) stream_id: phux_protocol::ids::StreamId,
+    pub(in crate::runtime) client_caps: ClientCapabilities,
+    pub(in crate::runtime) stream_profile: phux_protocol::caps::BootstrapStreamProfile,
+    pub(in crate::runtime) bootstrap_limits: BootstrapLimits,
 }
 
 impl AttachResourceSession<'_> {
@@ -81,7 +81,10 @@ impl AttachResourceSession<'_> {
 
     /// Undo a partial generation: cancel it, release any native lease, and
     /// detach the per-consumer state entry. The subscription is the caller's.
-    pub(super) fn failed(&self, failure: AttachResourceFailure) -> AttachResourceFailure {
+    pub(in crate::runtime) fn failed(
+        &self,
+        failure: AttachResourceFailure,
+    ) -> AttachResourceFailure {
         use crate::terminal_actor::ConsumerDetachRequest;
 
         self.state.with_mut(|s| {
@@ -99,7 +102,7 @@ impl AttachResourceSession<'_> {
             .terminal
             .consumer_detach
             .try_send(ConsumerDetachRequest {
-                client_id: super::super::wire_client(self.client_id),
+                client_id: crate::runtime::wire_client(self.client_id),
                 reply,
             });
         failure
@@ -120,7 +123,7 @@ impl AttachResourceSession<'_> {
         self.terminal
             .consumer_attach
             .send(ConsumerAttachRequest {
-                client_id: super::super::wire_client(self.client_id),
+                client_id: crate::runtime::wire_client(self.client_id),
                 outbound: self.out_tx.clone(),
                 wire_terminal_id,
                 stream_id: self.stream_id,
@@ -153,7 +156,7 @@ impl AttachResourceSession<'_> {
     /// Allocate the pump generation for this attach: register the consumer,
     /// tombstone whatever generation it replaces, and start the raw output
     /// pump unless the actor's tick owns emission.
-    pub(super) async fn establish_generation(
+    pub(in crate::runtime) async fn establish_generation(
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> Result<AttachResourceGeneration, AttachResourceFailure> {
@@ -238,16 +241,16 @@ impl AttachResourceSession<'_> {
 
 /// The one-shot gates one `ATTACH_RESOURCE` pump generation waits on before
 /// it reaches steady state.
-pub(super) struct AttachResourcePumpChannels {
+pub(in crate::runtime) struct AttachResourcePumpChannels {
     /// Cancels this generation when a replacement attach supersedes it.
-    pub(super) token: CancellationToken,
+    pub(in crate::runtime) token: CancellationToken,
     /// The pane's broadcast output, subscribed before the prior pump stopped.
     output_rx: tokio::sync::broadcast::Receiver<crate::terminal_actor::PaneOutput>,
     /// Delivers the published cut, releasing the first forwarded delta.
-    pub(super) snapshot_gate: oneshot::Receiver<u64>,
+    pub(in crate::runtime) snapshot_gate: oneshot::Receiver<u64>,
     /// Delivers the post-replay live receiver at the native publication fence.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    pub(super) native_publication_gate:
+    pub(in crate::runtime) native_publication_gate:
         oneshot::Receiver<crate::terminal_actor::NativePublicationReply>,
 }
 
@@ -255,7 +258,7 @@ impl AttachResourcePumpChannels {
     /// Wait for this generation's publication: the published cut, then (for
     /// a native profile) the post-replay live receiver. `None` when the
     /// generation was cancelled or abandoned first.
-    pub(super) async fn published(
+    pub(in crate::runtime) async fn published(
         self,
         #[cfg_attr(
             not(all(feature = "native-engine", not(target_arch = "wasm32"))),

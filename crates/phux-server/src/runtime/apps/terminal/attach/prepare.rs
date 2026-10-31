@@ -49,7 +49,7 @@ pub(super) async fn apply_session_role(
     });
     for (pane, (effects, holder)) in panes.iter().zip(changes) {
         if !effects.is_empty() {
-            super::super::commands::announce_role_effects_on(
+            crate::runtime::commands::announce_role_effects_on(
                 &pane.handle,
                 client_id,
                 effects,
