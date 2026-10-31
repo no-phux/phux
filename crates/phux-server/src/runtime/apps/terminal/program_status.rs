@@ -25,7 +25,7 @@ pub(in crate::runtime) fn spawn_drain(
             let hook = {
                 let records = rx.borrow_and_update();
                 state.with_mut(|s| {
-                    s.terminal_from_wire(&terminal)?;
+                    s.resource_from_wire(&terminal)?;
                     publish(s, &terminal, &records, &mut published, &mut projection)
                 })
             };
@@ -189,7 +189,7 @@ fn clear_projection(
     } else {
         s.metadata_delete(scope, RESOURCE_AGENT_KEY);
     }
-    if let Some(pane) = s.terminal_from_wire(terminal)
+    if let Some(pane) = s.resource_from_wire(terminal)
         && let Some(handle) = s.resource_handle(pane)
     {
         let _ = handle
@@ -240,7 +240,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         state.with_mut(|s| s.set_hook_dispatcher(HookDispatcher::from_sender(tx)));
         let (_session, pane) = state.with_mut(|s| s.seed_session("osc-hook"));
-        let terminal = state.with_mut(|s| s.intern_terminal_wire(pane));
+        let terminal = state.with_mut(|s| s.intern_resource_wire(pane));
         let mut published = HashMap::new();
         let mut projection = None;
         let mut step = |records: &[Record]| {

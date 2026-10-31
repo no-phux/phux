@@ -288,7 +288,7 @@ impl ClientTable {
 
     /// Drop `client`'s per-terminal event scope for `wire`; an empty
     /// subscription is dropped.
-    pub(super) fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireResourceId) {
+    pub(super) fn unsubscribe_resource_events(&mut self, client: ClientId, wire: &WireResourceId) {
         if let Some(sub) = self.event_subscriptions.get_mut(&client) {
             sub.scopes.remove(&EventScope::Terminal(wire.clone()));
             // A subscription still owed a gap stays until its pump delivers it.

@@ -73,7 +73,7 @@ impl Fixture {
                 .unwrap();
         }
         self.state
-            .with_mut(|s| s.subscribe_terminal(client, self.pane, Some(tx.clone())));
+            .with_mut(|s| s.subscribe_resource(client, self.pane, Some(tx.clone())));
         let ctx = OutputPumpContext {
             out_tx: tx,
             resize: self.terminal.resize.clone(),
@@ -372,7 +372,7 @@ async fn detaching_a_reaped_wire_aborts_final_publication_before_ack() {
             assert!(
                 fixture
                     .state
-                    .with(|s| s.terminal_from_wire(&fixture.wire).is_none())
+                    .with(|s| s.resource_from_wire(&fixture.wire).is_none())
             );
             let close = announce_close(&fixture.state, reap, false);
             tokio::pin!(close);

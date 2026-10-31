@@ -223,7 +223,7 @@ fn push_error(out_tx: &mpsc::Sender<Outbound>, code: ErrorCode, message: impl In
 /// `false` for unknown or satellite ids, which other handlers answer.
 pub(super) fn is_agent_session(state: &SharedState, terminal_id: &WireResourceId) -> bool {
     state.with(|s| {
-        s.terminal_from_wire(terminal_id)
+        s.resource_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
             .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::AgentSession)
     })

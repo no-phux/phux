@@ -138,7 +138,7 @@ async fn dispatch_attach_resource(
     // A deferring kind's content subscription waits for STREAM_BIND. Kind
     // resolution precedes routing.
     let defers = ctx.state.with(|s| {
-        s.terminal_from_wire(terminal_id)
+        s.resource_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
             .and_then(|handle| crate::runtime::apps::app_for(handle.kind))
             .is_some_and(ResourceApp::defers_stream_bootstrap)

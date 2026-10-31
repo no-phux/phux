@@ -244,7 +244,7 @@ fn update_native_inventory(s: &mut crate::state::ServerState, agent: &ResourceId
     let native_id = binding.launch.native_id.clone();
     let parent = binding.parent.clone();
     let recipe = serde_json::to_vec(&binding.launch).ok();
-    if let Some(core) = s.terminal_from_wire(agent)
+    if let Some(core) = s.resource_from_wire(agent)
         && let Some(facet) = s
             .registry_mut()
             .resource_mut(core)
@@ -288,7 +288,7 @@ fn sync_ask_inventory(state: &SharedState, agent: &ResourceId) {
         let binding = s.native_agents().bindings.get(agent)?;
         let parent = binding.parent.clone();
         let question = binding.view.questions.last().cloned();
-        let core = s.terminal_from_wire(&parent)?;
+        let core = s.resource_from_wire(&parent)?;
         let payload = if let Some(question) = question {
             let text = if question.message.is_empty() {
                 question.title

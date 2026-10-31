@@ -71,7 +71,7 @@ async fn build_upgrade_blob_captures_tree_and_snapshot() {
             // Counters sit above every minted id.
             assert!(blob.counters.next_session_wire_id > session_wire);
             assert!(blob.counters.next_window_wire_id > window_wire);
-            assert!(blob.counters.next_terminal_wire_id > pane_wire);
+            assert!(blob.counters.next_resource_wire_id > pane_wire);
         })
         .await;
 }

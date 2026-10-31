@@ -195,7 +195,7 @@ impl ServerState {
             } = build_pane(core, p, scrollback)?;
             // Pre-bind so the spawn's intern returns the blob's id.
             self.idspace
-                .bind_terminal(core, WireResourceId::local(p.wire_id));
+                .bind_resource(core, WireResourceId::local(p.wire_id));
             panes.wired.push((core, wired));
             self.spawn_resource_actor(core, handle, token, engine);
             // ADR-0124: what the old image knew about this pane's retention.
@@ -275,7 +275,7 @@ impl ServerState {
             }
             // Pre-bind so the registration's intern returns the blob's id.
             self.idspace
-                .bind_terminal(core, WireResourceId::local(carried.wire_id));
+                .bind_resource(core, WireResourceId::local(carried.wire_id));
             self.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
             panes.exit_watchers.push((core, bundle.exit_notify));
         }
@@ -311,7 +311,7 @@ impl ServerState {
             .panes
             .iter()
             .filter(|pane| pane.retained_exit.is_some())
-            .filter_map(|pane| self.terminal_from_wire(&WireResourceId::local(pane.wire_id)))
+            .filter_map(|pane| self.resource_from_wire(&WireResourceId::local(pane.wire_id)))
             .collect();
         self.close_resources(
             &retained,
@@ -324,7 +324,7 @@ impl ServerState {
         self.idspace
             .set_next_session_wire(blob.counters.next_session_wire_id);
         self.idspace
-            .set_next_terminal_wire(blob.counters.next_terminal_wire_id);
+            .set_next_terminal_wire(blob.counters.next_resource_wire_id);
         self.idspace
             .set_next_window_wire(blob.counters.next_window_wire_id);
         self.sessions

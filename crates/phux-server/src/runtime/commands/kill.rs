@@ -26,7 +26,7 @@ pub(super) fn handle_kill_terminal(
     attribution: crate::state::CloseAttribution,
 ) -> CommandResult {
     state
-        .with(|s| s.terminal_from_wire(terminal_id))
+        .with(|s| s.resource_from_wire(terminal_id))
         .map_or_else(
             || terminal_not_found(terminal_id),
             |core_id| {
@@ -182,7 +182,7 @@ fn kill_local_batch(
         let mut targets = Vec::with_capacity(ids.len());
         let (mut killed, mut not_found) = (Vec::new(), Vec::new());
         for wire_id in ids.iter().filter(|id| id.local_id().is_some()) {
-            if let Some(core_id) = s.terminal_from_wire(wire_id) {
+            if let Some(core_id) = s.resource_from_wire(wire_id) {
                 targets.push(core_id);
                 killed.push(wire_id.clone());
             } else {

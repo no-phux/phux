@@ -232,7 +232,7 @@ pub(super) fn resolve_spawn_ownership(
 ) -> Result<SpawnOwnership, SpawnError> {
     if let Some(owner) = owner_terminal {
         if !matches!(owner, phux_protocol::ids::ResourceId::Local { .. })
-            || state.with(|s| s.terminal_from_wire(&owner).is_none())
+            || state.with(|s| s.resource_from_wire(&owner).is_none())
         {
             return Err(SpawnError::SpawnFailed(
                 "owner terminal was not found on this server".to_owned(),
@@ -274,7 +274,7 @@ pub(super) fn subscribe_spawning_client(
     ClientCapabilities,
 )> {
     state.with_mut(|s| {
-        let wire_terminal_id = s.intern_terminal_wire(core_terminal_id);
+        let wire_terminal_id = s.intern_resource_wire(core_terminal_id);
         // ADR-0109: provenance before any subscription.
         s.record_spawn(core_terminal_id, client_id);
         let client_caps = s
@@ -282,7 +282,7 @@ pub(super) fn subscribe_spawning_client(
             .get(&client_id)
             .map(|c| c.client_caps)
             .unwrap_or_default();
-        s.subscribe_terminal(client_id, core_terminal_id, Some(out_tx.clone()));
+        s.subscribe_resource(client_id, core_terminal_id, Some(out_tx.clone()));
         s.mark_if_viewer_session(client_id, &wire_terminal_id);
         s.resource_handle(core_terminal_id)
             .cloned()

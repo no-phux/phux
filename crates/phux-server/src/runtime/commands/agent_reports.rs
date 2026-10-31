@@ -15,7 +15,7 @@ pub(crate) async fn handle_report_agent_state(
     reported: phux_protocol::wire::frame::ReportedAgentState,
 ) -> CommandResult {
     if state.with(|s| {
-        s.terminal_from_wire(terminal_id)
+        s.resource_from_wire(terminal_id)
             .is_some_and(|core| s.native_owned_terminal(core))
     }) {
         return CommandResult::Error {
@@ -72,7 +72,7 @@ pub(crate) fn handle_subscribe_terminal_events(
 ) -> CommandResult {
     let filter = crate::state::EventFilter::of(event_types);
     let registered = state.with_mut(|s| {
-        s.terminal_from_wire(terminal_id)?;
+        s.resource_from_wire(terminal_id)?;
         s.subscribe_resource_events(client_id, terminal_id.clone(), filter, out_tx.clone());
         Some(())
     });

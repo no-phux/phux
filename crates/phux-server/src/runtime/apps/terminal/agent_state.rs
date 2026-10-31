@@ -9,7 +9,7 @@ use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 /// Whether the pane `wire_terminal_id` names is retained after its process
 /// exited (ADR-0124).
 fn pane_exited(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
-    s.terminal_from_wire(wire_terminal_id)
+    s.resource_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.retained_exit(pane).is_some())
 }
 
@@ -87,7 +87,7 @@ fn drain_ask_sentinel(
 ) -> Option<phux_resource::agent_asked::AskedPayload> {
     use phux_resource::agent_asked::AskedSource;
 
-    let terminal = s.terminal_from_wire(wire_terminal_id)?;
+    let terminal = s.resource_from_wire(wire_terminal_id)?;
     let emitted = if let Some(payload) = ask {
         s.report_agent_asked(terminal, AskedSource::Sentinel, payload)
             .emit_payload()
@@ -313,7 +313,7 @@ pub(in crate::runtime) fn invalidate_agent_detector(state: &SharedState, scope: 
         return;
     };
     let handle = state.with(|s| {
-        s.terminal_from_wire(wire)
+        s.resource_from_wire(wire)
             .and_then(|pane| s.resource_handle(pane).cloned())
     });
     if let Some(handle) = handle {

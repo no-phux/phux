@@ -117,7 +117,7 @@ fn attach_records_client_and_subscribes_to_active_pane() {
     let returned_sid = s.attach_default_caps(cid, "default", mk_tx()).unwrap();
     assert_eq!(returned_sid, sid);
     assert!(s.attached().contains_key(&cid));
-    assert_eq!(s.subscribers_for_terminal(pid), &[cid]);
+    assert_eq!(s.subscribers_for_resource(pid), &[cid]);
 }
 
 #[test]
@@ -133,11 +133,11 @@ fn attach_subscribes_to_every_pane_not_just_the_active_one() {
     let cid = s.new_client_id();
     s.attach_default_caps(cid, "default", mk_tx()).unwrap();
     assert!(
-        s.subscribers_for_terminal(pid1).contains(&cid),
+        s.subscribers_for_resource(pid1).contains(&cid),
         "client not subscribed to first pane"
     );
     assert!(
-        s.subscribers_for_terminal(pid2).contains(&cid),
+        s.subscribers_for_resource(pid2).contains(&cid),
         "client not subscribed to second pane (the regression)"
     );
 }
@@ -156,7 +156,7 @@ fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
 
     let watcher = s.new_client_id();
     let (watcher_tx, _watcher_rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
-    s.subscribe_terminal(watcher, pid, Some(watcher_tx));
+    s.subscribe_resource(watcher, pid, Some(watcher_tx));
 
     assert_eq!(
         s.terminal_fanout_targets(pid).len(),
@@ -168,7 +168,7 @@ fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
     // A session-attached client re-attaching a pane per-Terminal still
     // resolves to one mailbox.
     let (upgrade_tx, _upgrade_rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
-    s.subscribe_terminal(attached, pid, Some(upgrade_tx));
+    s.subscribe_resource(attached, pid, Some(upgrade_tx));
     assert_eq!(
         s.terminal_fanout_targets(pid).len(),
         2,
@@ -281,12 +281,12 @@ fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
         "same-connection recovery reuses the live session identity"
     );
     assert_eq!(
-        s.subscribers_for_terminal(original),
+        s.subscribers_for_resource(original),
         &[cid],
         "reattach must not duplicate an existing subscription",
     );
     assert_eq!(
-        s.subscribers_for_terminal(added),
+        s.subscribers_for_resource(added),
         &[cid],
         "reattach must subscribe panes created after the first attach",
     );
@@ -323,7 +323,7 @@ fn two_clients_attach_same_session_see_same_active_pane() {
     let b = s.new_client_id();
     s.attach_default_caps(a, "default", mk_tx()).unwrap();
     s.attach_default_caps(b, "default", mk_tx()).unwrap();
-    let subs = s.subscribers_for_terminal(pid);
+    let subs = s.subscribers_for_resource(pid);
     assert!(subs.contains(&a) && subs.contains(&b));
     assert_eq!(subs.len(), 2);
 }
@@ -377,7 +377,7 @@ fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
     assert!(!ids.contains(&pid_b));
     for pane in panes {
         assert_eq!(
-            s.terminal_from_wire(&pane.wire_terminal_id),
+            s.resource_from_wire(&pane.wire_terminal_id),
             Some(pane.terminal_id),
             "wire id should resolve back to the same pane",
         );
@@ -412,7 +412,7 @@ fn most_recently_touched_session_starts_none_and_tracks_touch_order() {
 fn shared_state_with_and_with_mut_round_trip() {
     let shared = SharedState::new();
     let (_sid, pid) = shared.with_mut(|s| s.seed_session("default"));
-    let count = shared.with(|s| s.subscribers_for_terminal(pid).len());
+    let count = shared.with(|s| s.subscribers_for_resource(pid).len());
     assert_eq!(count, 0);
 }
 

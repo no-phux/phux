@@ -299,7 +299,7 @@ pub(super) async fn resolve_hub_detach_terminal(
     let Some(id) = terminal_id.local_id() else {
         return CommandResult::Ok;
     };
-    let result = relay.unsubscribe_terminal(client_id, id).await;
+    let result = relay.unsubscribe_resource(client_id, id).await;
     if result == CommandResult::Ok {
         state.with_mut(|s| {
             s.unregister_satellite_proxy_attach(client_id, host, id);
@@ -307,7 +307,7 @@ pub(super) async fn resolve_hub_detach_terminal(
                 host: host.clone(),
                 id,
             };
-            s.unsubscribe_terminal_events(client_id, &scope);
+            s.unsubscribe_resource_events(client_id, &scope);
         });
     }
     result

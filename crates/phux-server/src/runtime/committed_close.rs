@@ -88,10 +88,10 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
     // ADR-0124: a retained pane's close reports the exit it was kept with.
     let exit = s.retained_outcome(resource).unwrap_or(ExitOutcome::UNKNOWN);
     // Interned before the reap, which retires the wire id.
-    let wire_terminal_id = s.intern_terminal_wire(resource);
+    let wire_terminal_id = s.intern_resource_wire(resource);
     let parent = s
         .resource_parent(resource)
-        .map(|parent| s.intern_terminal_wire(parent));
+        .map(|parent| s.intern_resource_wire(parent));
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets = s.terminal_fanout_targets(resource);
     let attribution = s.take_close_attribution(resource);
@@ -104,7 +104,7 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
     );
     s.note_closed_before_exit(resource, wire_terminal_id.clone());
     s.cancel_terminal_pumps(resource);
-    let _ = s.reap_terminal(resource);
+    let _ = s.reap_resource(resource);
     Some(ClosedResource {
         wire_terminal_id,
         targets,
@@ -129,7 +129,7 @@ pub(super) fn announce(state: &SharedState, committed: CommittedClose) {
     let state = state.clone();
     tokio::task::spawn_local(async move {
         for closed in &closes {
-            super::client::broadcast_terminal_closed(
+            super::client::broadcast_resource_closed(
                 &closed.wire_terminal_id,
                 &closed.targets,
                 closed.exit,

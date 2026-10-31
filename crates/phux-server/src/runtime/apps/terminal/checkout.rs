@@ -45,7 +45,7 @@ pub(in crate::runtime) async fn handle(
     request: CheckoutRequest,
 ) -> CommandResult {
     let handle = state.with(|s| {
-        s.terminal_from_wire(terminal_id)
+        s.resource_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core).cloned())
     });
     let Some(handle) = handle else {

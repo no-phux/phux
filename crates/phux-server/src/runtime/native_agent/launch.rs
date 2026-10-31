@@ -180,7 +180,7 @@ fn selected_guardian(
             return Err(refusal("native insertion requires a local guardian"));
         }
         return s
-            .terminal_from_wire(wire)
+            .resource_from_wire(wire)
             .map(Some)
             .ok_or_else(|| refusal("guardian does not exist"));
     }
@@ -341,13 +341,13 @@ fn create_native_resources(
                 if target.existing.is_some() {
                     s.activation_ended(parent, phux_core::ExitOutcome::UNKNOWN, true);
                 } else {
-                    s.reap_terminal(parent);
+                    s.reap_resource(parent);
                 }
                 return Err(CommandResult::Refused(crate::org_wire::refusal(&error)));
             }
         };
         let parent_wire = super::commands::register_pty_command(s, parent, command);
-        let agent_wire = s.intern_terminal_wire(agent);
+        let agent_wire = s.intern_resource_wire(agent);
         s.metadata_set(
             &phux_protocol::wire::frame::Scope::Resource(parent_wire.clone()),
             "phux.native-launch/v1",
@@ -445,7 +445,7 @@ fn install_native_session(
         .with_operation_id(operation);
         s.record_and_fanout(announcement);
     });
-    super::client::spawn_terminal_exit_watcher(
+    super::client::spawn_resource_exit_watcher(
         state.clone(),
         resources.agent,
         Some(bundle.exit_notify),
@@ -482,9 +482,9 @@ fn launch_native_guardian(
     if let Err(error) = launched {
         super::delegation::revoke_delegated_agent(state, credential);
         state.with_mut(|s| {
-            s.reap_terminal(resources.agent);
+            s.reap_resource(resources.agent);
             if !reused {
-                s.reap_terminal(resources.parent);
+                s.reap_resource(resources.parent);
             }
             s.native_agents_mut().bindings.remove(&resources.agent_wire);
             if let Some(wake) = s.native_agents_mut().wakes.remove(&resources.agent_wire) {

@@ -36,7 +36,7 @@ fn launch(
         let with_pty = s.attach_create_seeds_pty();
         let cmd = with_pty.then(|| crate::runtime::apps::terminal::launch::spec_command(s, spec));
         if let phux_core::LaunchSpec::Terminal(t) = spec {
-            let wire = s.intern_terminal_wire(id);
+            let wire = s.intern_resource_wire(id);
             super::super::commands::set_agent_session(s, wire, t.restore.clone());
         }
         Some((id, with_pty, s.scrollback_limits(), cmd))

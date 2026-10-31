@@ -226,7 +226,7 @@ async fn bind_terminal_stream(
                 return false;
             }
         };
-        s.subscribers_for_terminal(local.id).contains(&client_id)
+        s.subscribers_for_resource(local.id).contains(&client_id)
     });
     if !subscribed {
         refuse_terminal_stream(send, recv);

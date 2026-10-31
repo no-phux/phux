@@ -34,7 +34,7 @@ pub(crate) async fn handle_signal_terminal(
     };
     // ADR-0124: a retained pane's child is already reaped.
     if state.with(|s| {
-        s.terminal_from_wire(terminal_id)
+        s.resource_from_wire(terminal_id)
             .is_some_and(|pane| s.retained_exit(pane).is_some())
     }) {
         return CommandResult::Error {

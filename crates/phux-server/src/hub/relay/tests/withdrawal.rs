@@ -166,7 +166,7 @@ async fn unsubscribe_survives_a_full_relay_mailbox() {
         handle.forward(FrameKind::Detach);
     }
     handle.unsubscribe_client(ClientId(1));
-    let detach = handle.unsubscribe_terminal(ClientId(2), 7);
+    let detach = handle.unsubscribe_resource(ClientId(2), 7);
     tokio::pin!(detach);
     assert!(futures_util::poll!(&mut detach).is_pending());
     assert!(matches!(
@@ -221,7 +221,7 @@ async fn withdrawal_receipt_fences_retained_replay_and_live_fanout() {
 #[tokio::test(start_paused = true)]
 async fn withdrawal_timeout_cancels_unapplied_teardown() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let detach = handle.unsubscribe_terminal(ClientId(1), 9);
+    let detach = handle.unsubscribe_resource(ClientId(1), 9);
     tokio::pin!(detach);
     assert!(futures_util::poll!(&mut detach).is_pending());
     tokio::time::advance(RELAY_COMMAND_TIMEOUT).await;
@@ -246,7 +246,7 @@ async fn withdrawal_timeout_cancels_unapplied_teardown() {
 #[tokio::test(start_paused = true)]
 async fn applied_withdrawal_wins_even_when_waiter_resumes_past_deadline() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let detach = handle.unsubscribe_terminal(ClientId(1), 9);
+    let detach = handle.unsubscribe_resource(ClientId(1), 9);
     tokio::pin!(detach);
     assert!(futures_util::poll!(&mut detach).is_pending());
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
@@ -270,7 +270,7 @@ async fn applied_withdrawal_wins_even_when_waiter_resumes_past_deadline() {
 #[tokio::test]
 async fn abandoned_withdrawal_still_cleans_up_without_a_timeout_refusal() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let mut detach = Box::pin(handle.unsubscribe_terminal(ClientId(1), 9));
+    let mut detach = Box::pin(handle.unsubscribe_resource(ClientId(1), 9));
     assert!(futures_util::poll!(&mut detach).is_pending());
     drop(detach);
     let mut session = RelaySession::new(host(), BootstrapLimits::default());
@@ -291,7 +291,7 @@ async fn abandoned_withdrawal_still_cleans_up_without_a_timeout_refusal() {
 #[tokio::test]
 async fn withdrawal_without_a_live_session_is_idempotent() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let detach = handle.unsubscribe_terminal(ClientId(1), 9);
+    let detach = handle.unsubscribe_resource(ClientId(1), 9);
     tokio::pin!(detach);
     assert!(futures_util::poll!(&mut detach).is_pending());
     // No session: dropping the receipt certifies no proxy can emit.
@@ -299,7 +299,7 @@ async fn withdrawal_without_a_live_session_is_idempotent() {
     assert_eq!(detach.await, CommandResult::Ok);
     drop(mailbox);
     assert_eq!(
-        handle.unsubscribe_terminal(ClientId(1), 9).await,
+        handle.unsubscribe_resource(ClientId(1), 9).await,
         CommandResult::Ok
     );
 }
@@ -307,7 +307,7 @@ async fn withdrawal_without_a_live_session_is_idempotent() {
 #[tokio::test]
 async fn stale_withdrawal_is_refused_while_the_newer_proxy_stays_live() {
     let (handle, mut mailbox) = RelayHandle::new(host());
-    let detach = handle.unsubscribe_terminal(ClientId(1), 9);
+    let detach = handle.unsubscribe_resource(ClientId(1), 9);
     tokio::pin!(detach);
     assert!(futures_util::poll!(&mut detach).is_pending());
     let mut session = RelaySession::new(host(), BootstrapLimits::default());

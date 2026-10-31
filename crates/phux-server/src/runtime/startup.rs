@@ -2,7 +2,7 @@
 
 use crate::runtime::config::{ServerConfig, ServerError, validate_socket_path_len};
 use crate::runtime::connections::{
-    handle_existing_socket, prepare_socket_dir, secure_socket_file, spawn_terminal_exit_watcher,
+    handle_existing_socket, prepare_socket_dir, secure_socket_file, spawn_resource_exit_watcher,
 };
 use crate::runtime::{ServerEnv, resume, seed_session_with_actor, seed_session_with_pty, upgrade};
 use crate::state::SharedState;
@@ -215,12 +215,12 @@ pub(in crate::runtime) fn resume_session_tree(
         .wired_panes
         .into_iter()
         .map(|(pane, wiring)| {
-            let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
+            let wire = state.with_mut(|s| s.intern_resource_wire(pane));
             (pane, wiring.start(state, &wire))
         })
         .collect();
     for (resource, exit_notify) in rebuilt.exit_watchers {
-        spawn_terminal_exit_watcher(
+        spawn_resource_exit_watcher(
             state.clone(),
             resource,
             Some(exit_notify),
@@ -230,7 +230,7 @@ pub(in crate::runtime) fn resume_session_tree(
     }
     // A pane with no exit to watch (no PTY) still drains its events.
     for (pane, events) in pane_events {
-        spawn_terminal_exit_watcher(state.clone(), pane, None, root_token.clone(), Some(events));
+        spawn_resource_exit_watcher(state.clone(), pane, None, root_token.clone(), Some(events));
     }
     // ADR-0124 §6: retained exited panes close with `SERVER_SHUTDOWN`.
     state.with_mut(|s| s.close_upgrade_retained(blob));

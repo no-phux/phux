@@ -35,7 +35,7 @@ use crate::runtime::commands::satellite_lease::relay_satellite_frame;
 use crate::runtime::commands::*;
 use crate::runtime::input_lane::InputLaneHandle;
 use crate::runtime::pump;
-use crate::runtime::{AttachPrepared, spawn_agent_state_drain, spawn_terminal_exit_watcher};
+use crate::runtime::{AttachPrepared, spawn_agent_state_drain, spawn_resource_exit_watcher};
 use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,

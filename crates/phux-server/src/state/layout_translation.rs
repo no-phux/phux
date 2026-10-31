@@ -106,7 +106,7 @@ impl ServerState {
             LayoutNode::Leaf(id) => {
                 let target = match id {
                     WireResourceId::Local { .. } => {
-                        let core = self.terminal_from_wire(id)?;
+                        let core = self.resource_from_wire(id)?;
                         let key = self.registry().resource_key(core)?;
                         members.contains(&key).then_some(EntryTarget::Member(key))?
                     }
@@ -192,7 +192,7 @@ impl ServerState {
                 EntryTarget::Member(key) => {
                     let id = self.registry().resource_id(key)?;
                     self.resource_handle(id)?;
-                    self.intern_terminal_wire(id)
+                    self.intern_resource_wire(id)
                 }
                 EntryTarget::Satellite { host, id } => {
                     WireResourceId::satellite(host.as_str(), *id)
@@ -244,7 +244,7 @@ mod tests {
         let b = state.add_pane_to_session(session).unwrap();
         handle_for(&mut state, a);
         handle_for(&mut state, b);
-        let (wa, wb) = (state.intern_terminal_wire(a), state.intern_terminal_wire(b));
+        let (wa, wb) = (state.intern_resource_wire(a), state.intern_resource_wire(b));
         let stranger = WireResourceId::local(999);
         let doc = ArrangementDoc {
             groups: vec![Group::with_id(

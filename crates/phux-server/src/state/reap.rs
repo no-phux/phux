@@ -50,7 +50,7 @@ impl ServerState {
     /// record (an ephemeral session it empties goes in the same commit), and
     /// free its server-side bookkeeping, descendants included. Returns
     /// whether the server now executes nothing (R13). Idempotent.
-    pub fn reap_terminal(&mut self, pane: ResourceId) -> bool {
+    pub fn reap_resource(&mut self, pane: ResourceId) -> bool {
         let (idle, token) = self.reap_terminal_inner(pane, ExitOutcome::UNKNOWN, false);
         if let Some(token) = token {
             token.cancel();
@@ -85,7 +85,7 @@ impl ServerState {
         // its own watcher will find it gone and reap nothing.
         let descendants = self.resource_descendants(pane);
         for child in descendants.into_iter().rev() {
-            if let Some(child_token) = self.forget_terminal_bookkeeping(child) {
+            if let Some(child_token) = self.forget_resource_bookkeeping(child) {
                 child_token.cancel();
             }
             self.retire_record(child, ExitOutcome::UNKNOWN);
@@ -93,7 +93,7 @@ impl ServerState {
         if preserve_record {
             self.activation_ended(pane, outcome, false);
         }
-        let token = self.forget_terminal_bookkeeping(pane);
+        let token = self.forget_resource_bookkeeping(pane);
         if !preserve_record {
             self.retire_record(pane, outcome);
         }
@@ -133,7 +133,7 @@ impl ServerState {
 
     /// Drop every map entry keyed on a removed pane and retire its wire id
     /// (never reused).
-    pub(super) fn forget_terminal_bookkeeping(
+    pub(super) fn forget_resource_bookkeeping(
         &mut self,
         pane: ResourceId,
     ) -> Option<tokio_util::sync::CancellationToken> {
@@ -146,7 +146,7 @@ impl ServerState {
         // Asked state is keyed by core id; the arbiter by wire id (below).
         self.agent.clear_asked(pane);
         // No lease change can follow a removed pane.
-        self.leases.forget_terminal(pane);
+        self.leases.forget_resource(pane);
         // The retired wire id keys the metadata scope and the arbiter.
         if let Some(wire) = self.idspace.retire_terminal(pane) {
             if self.native_agents.bindings.remove(&wire).is_some()
@@ -154,7 +154,7 @@ impl ServerState {
             {
                 wake.notify_waiters();
             }
-            self.metadata.forget_terminal(&wire);
+            self.metadata.forget_resource(&wire);
             // A viewer mark (ADR-0127) must not outlive the Terminal it names.
             self.clients.forget_viewed_terminal(&wire);
             // A recycled wire id must not inherit a stale declaration.

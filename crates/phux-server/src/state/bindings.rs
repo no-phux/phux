@@ -79,7 +79,7 @@ impl ServerState {
     /// `false` for unknown or satellite ids.
     #[must_use]
     pub(crate) fn resource_has_live_session(&self, wire: &phux_protocol::ids::ResourceId) -> bool {
-        self.terminal_from_wire(wire)
+        self.resource_from_wire(wire)
             .is_some_and(|core| self.has_live_agent_session_child(core))
     }
 
@@ -318,7 +318,7 @@ mod tests {
             tokens.push(token);
         }
 
-        let _ = state.reap_terminal(grandparent);
+        let _ = state.reap_resource(grandparent);
 
         for resource in [grandparent, child, grandchild] {
             assert!(

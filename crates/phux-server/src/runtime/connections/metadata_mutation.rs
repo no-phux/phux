@@ -19,7 +19,7 @@ fn reject_unknown_local_terminal_scope(
     let Scope::Resource(terminal @ WireResourceId::Local { .. }) = scope else {
         return false;
     };
-    if state.with(|s| s.terminal_from_wire(terminal)).is_some() {
+    if state.with(|s| s.resource_from_wire(terminal)).is_some() {
         return false;
     }
     warn!(

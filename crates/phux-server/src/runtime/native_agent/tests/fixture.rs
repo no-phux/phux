@@ -368,7 +368,7 @@ impl Fixture {
     }
     async fn cut(&self) -> crate::resource::agent_session::AgentSessionBootstrap {
         let bootstrap = self.state.with(|s| {
-            s.terminal_from_wire(&self.agent)
+            s.resource_from_wire(&self.agent)
                 .and_then(|core| s.resource_handle(core))
                 .unwrap()
                 .agent_session()

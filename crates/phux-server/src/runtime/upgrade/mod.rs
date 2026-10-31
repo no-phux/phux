@@ -246,7 +246,7 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
                 .values()
                 .filter(|binding| !binding.closed)
                 .find(|binding| {
-                    s.terminal_from_wire(&binding.agent)
+                    s.resource_from_wire(&binding.agent)
                         .is_none_or(|id| !handoffs.agent_sessions.contains_key(&id))
                 })
                 .map(|binding| binding.agent.clone())

@@ -172,7 +172,7 @@ impl ServerState {
         }
         for id in self.resource_ids() {
             if self.sessions.registry.resource(id).is_some() {
-                let _ = self.intern_terminal_wire(id);
+                let _ = self.intern_resource_wire(id);
             }
         }
     }
@@ -234,7 +234,7 @@ impl ServerState {
                     .map(|_| (id, session.bootstrap.clone()))
             })
             .collect();
-        carried.sort_by_key(|(id, _)| self.terminal_wire(*id));
+        carried.sort_by_key(|(id, _)| self.resource_wire(*id));
         carried
     }
 
@@ -252,10 +252,13 @@ impl ServerState {
             .into_iter()
             .filter(|sid| self.session_wire(*sid).is_some())
             .flat_map(|sid| self.legacy_panes_of(sid))
-            .filter(|tid| self.terminal_wire(*tid).is_some() && self.retained_exit(*tid).is_none())
+            .filter(|tid| self.resource_wire(*tid).is_some() && self.retained_exit(*tid).is_none())
             .filter_map(|tid| {
                 self.resource_handle(tid)
-                    .filter(|handle| handle.kind == phux_core::resource::ResourceKind::Terminal)
+                    .filter(|handle| {
+                        crate::runtime::apps::app_for(handle.kind)
+                            .is_some_and(|app| app.upgrade_sender(handle).is_some())
+                    })
                     .map(|handle| (tid, handle.clone()))
             })
             .collect()

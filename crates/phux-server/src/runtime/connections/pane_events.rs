@@ -123,16 +123,16 @@ async fn pump_owed_frames(
 /// generation was lost): journal its `pane_closed` in the same lock, once
 /// (ADR-0123). The pane's exit watcher then finds it gone and journals
 /// nothing more, so every `pane_spawned` is followed by exactly one
-/// `pane_closed`. Returns what [`ServerState::reap_terminal`]
+/// `pane_closed`. Returns what [`ServerState::reap_resource`]
 /// returns; `false` without journaling when the pane is already gone.
 pub(crate) fn reap_pane_journaling_close(s: &mut ServerState, pane: CoreResourceId) -> bool {
     if s.registry().resource(pane).is_none() {
         return false;
     }
-    let wire = s.intern_terminal_wire(pane);
+    let wire = s.intern_resource_wire(pane);
     let parent = s
         .resource_parent(pane)
-        .map(|parent| s.intern_terminal_wire(parent));
+        .map(|parent| s.intern_resource_wire(parent));
     journal_pane_closed(
         s,
         &wire,
@@ -140,7 +140,7 @@ pub(crate) fn reap_pane_journaling_close(s: &mut ServerState, pane: CoreResource
         None,
         crate::state::CloseAttribution::default(),
     );
-    s.reap_terminal(pane)
+    s.reap_resource(pane)
 }
 
 /// Journal every event a closing pane already queued, and any loss its
@@ -172,7 +172,7 @@ pub(super) fn journal_drained_event(
     // The registry's cwd is what GET_STATE reports; a client that joins or
     // refreshes after this event must see the move, not the ATTACH-time dir.
     if let AgentEvent::CwdChanged { cwd } = &event
-        && let Some(pane) = s.terminal_from_wire(wire_terminal_id)
+        && let Some(pane) = s.resource_from_wire(wire_terminal_id)
         && let Some(desc) = s.registry_mut().terminal_mut(pane)
     {
         desc.cwd = std::path::PathBuf::from(cwd);
@@ -204,7 +204,7 @@ pub(super) fn journal_source_gap(
 /// Whether the pane `wire_terminal_id` names is still registered. A reap
 /// retires the wire id, so a reaped pane no longer resolves.
 fn pane_is_live(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
-    s.terminal_from_wire(wire_terminal_id)
+    s.resource_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.registry().resource(pane).is_some())
 }
 

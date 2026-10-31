@@ -159,7 +159,7 @@ pub(in crate::runtime) async fn handle_put_file(
     // upload lands beside a PTY's working directory, which an
     // `AgentSession` does not have.
     match state.with(|server| {
-        server.terminal_from_wire(&chunk.terminal_id).map(|core| {
+        server.resource_from_wire(&chunk.terminal_id).map(|core| {
             server
                 .resource_handle(core)
                 .is_some_and(|h| h.terminal().is_ok())

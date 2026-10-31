@@ -35,7 +35,7 @@ pub(in crate::runtime) fn seed_session(
             })?;
         let wire = match cmd.as_mut() {
             Some(cmd) => register_pty_command(s, terminal, cmd),
-            None => s.intern_terminal_wire(terminal),
+            None => s.intern_resource_wire(terminal),
         };
         set_agent_session(s, wire, origin.agent_session);
         Ok::<_, phux_terminal::actor::TerminalActorError>(terminal)

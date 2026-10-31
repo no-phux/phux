@@ -173,10 +173,10 @@ fn detach_removes_client_and_drops_empty_subscriber_lists() {
     let (_sid, pid) = s.seed_session("default");
     let cid = s.new_client_id();
     s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-    assert!(!s.subscribers_for_terminal(pid).is_empty());
+    assert!(!s.subscribers_for_resource(pid).is_empty());
     s.detach(cid);
     assert!(!s.attached().contains_key(&cid));
-    assert!(s.subscribers_for_terminal(pid).is_empty());
+    assert!(s.subscribers_for_resource(pid).is_empty());
     assert!(
         s.resources.subscriber_map_is_empty(),
         "empty lists should be GC'd"

@@ -38,7 +38,7 @@ impl ServerState {
             let members: Vec<(ResourceId, u32)> = self
                 .legacy_panes_of(sid)
                 .into_iter()
-                .filter_map(|tid| Some((tid, self.terminal_wire(tid)?)))
+                .filter_map(|tid| Some((tid, self.resource_wire(tid)?)))
                 .collect();
             let window_wire = (!members.is_empty())
                 .then(|| self.window_wire(sid))
@@ -60,7 +60,7 @@ impl ServerState {
             let active = self
                 .sessions
                 .default_pane_of(sid)
-                .and_then(|t| self.terminal_wire(t))
+                .and_then(|t| self.resource_wire(t))
                 .filter(|w| members.iter().any(|(_, m)| m == w))
                 .or_else(|| members.first().map(|(_, w)| *w));
             windows.push(WindowBlob {
@@ -105,7 +105,7 @@ impl ServerState {
             listener_fd,
             counters: Counters {
                 next_session_wire_id: self.idspace.next_session_wire(),
-                next_terminal_wire_id: self.idspace.next_terminal_wire(),
+                next_resource_wire_id: self.idspace.next_terminal_wire(),
                 next_window_wire_id: self.idspace.next_window_wire(),
                 next_touch_timestamp: self.sessions.next_touch_timestamp(),
                 server_instance: Some(*self.idspace.instance().as_bytes()),
@@ -150,12 +150,12 @@ impl ServerState {
             .filter_map(|(&id, cut)| {
                 let desc = self.sessions.registry.resource(id)?;
                 let facet = desc.agent.as_ref()?;
-                let parent_wire_id = self.terminal_wire(desc.parent?)?;
+                let parent_wire_id = self.resource_wire(desc.parent?)?;
                 if !live_panes.contains(&parent_wire_id) {
                     return None;
                 }
                 Some(AgentSessionBlob {
-                    wire_id: self.terminal_wire(id)?,
+                    wire_id: self.resource_wire(id)?,
                     parent_wire_id,
                     provider: facet.provider.clone(),
                     native_id: facet.native_id.clone(),
@@ -208,9 +208,9 @@ impl ServerState {
             .map(phux_protocol::WindowId::get)
     }
 
-    pub(in crate::state) fn terminal_wire(&self, tid: ResourceId) -> Option<u32> {
+    pub(in crate::state) fn resource_wire(&self, tid: ResourceId) -> Option<u32> {
         self.idspace
-            .terminal_wire(tid)
+            .resource_wire(tid)
             .and_then(phux_protocol::ResourceId::local_id)
     }
 }

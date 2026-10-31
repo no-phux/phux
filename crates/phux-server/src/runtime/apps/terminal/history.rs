@@ -27,7 +27,7 @@ fn history_terminal(
 ) -> Option<phux_terminal::actor::TerminalHandle> {
     let handle = state.with(|server| {
         server
-            .terminal_from_wire(terminal_id)
+            .resource_from_wire(terminal_id)
             .and_then(|pane| server.resource_handle(pane).cloned())
     });
     let Some(handle) = handle else {

@@ -104,7 +104,7 @@ fn resume_handoff_blob(
         listener_fd,
         counters: crate::upgrade::blob::Counters {
             next_session_wire_id: 10,
-            next_terminal_wire_id: 10,
+            next_resource_wire_id: 10,
             next_window_wire_id: 10,
             next_touch_timestamp: 1,
             server_instance: None,

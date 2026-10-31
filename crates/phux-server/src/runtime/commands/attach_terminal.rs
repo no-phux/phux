@@ -64,7 +64,7 @@ pub(super) async fn handle_attach_terminal(
             // any lease seizure or role widening it made (ADR-0127).
             let restore = was_viewer && !role.is_viewer();
             let (released, holder) = state.with_mut(|s| {
-                s.unsubscribe_terminal(client_id, core);
+                s.unsubscribe_resource(client_id, core);
                 if restore {
                     s.set_viewer_mark(client_id, terminal_id, true);
                 }
@@ -163,7 +163,7 @@ pub(crate) fn subscribe_attach_terminal(
 ) -> Result<AttachSubscription, CommandResult> {
     let not_found = || terminal_not_found(terminal_id);
     state.with_mut(|s| {
-        let core = s.terminal_from_wire(terminal_id).ok_or_else(not_found)?;
+        let core = s.resource_from_wire(terminal_id).ok_or_else(not_found)?;
         let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
         // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
         // any other kind is refused the way `ACQUIRE_INPUT` refuses it.
@@ -173,9 +173,9 @@ pub(crate) fn subscribe_attach_terminal(
         {
             return Err(wrong_resource_kind(error));
         }
-        let was_subscribed = s.subscribers_for_terminal(core).contains(&client_id);
+        let was_subscribed = s.subscribers_for_resource(core).contains(&client_id);
         let was_viewer = s.is_viewer(client_id, terminal_id);
-        s.subscribe_terminal(client_id, core, Some(out_tx.clone()));
+        s.subscribe_resource(client_id, core, Some(out_tx.clone()));
         let effects = role.map_or_else(RoleEffects::default, |policy| {
             s.apply_attach_role(client_id, terminal_id, Some(core), policy, was_subscribed)
         });

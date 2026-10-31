@@ -110,7 +110,7 @@ pub(in crate::runtime) fn register_pty_command(
     cmd: &mut phux_terminal::pty::CommandBuilder,
 ) -> phux_protocol::ids::ResourceId {
     stamp_spawn_cwd(s, terminal, spawn_cwd_of(cmd));
-    let wire = s.intern_terminal_wire(terminal);
+    let wire = s.intern_resource_wire(terminal);
     phux_terminal::actor::apply_terminal_id(cmd, &wire);
     phux_terminal::actor::apply_server_socket(cmd, s.server_socket_path());
     wire
@@ -177,7 +177,7 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
                 if honor_exit_policy_on_failure {
                     s.activation_ended(terminal, phux_core::ExitOutcome::UNKNOWN, true);
                 } else {
-                    s.reap_terminal(terminal);
+                    s.reap_resource(terminal);
                 }
             });
             return Err(err);
@@ -205,12 +205,12 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
                 s.note_retain_request(terminal, secs);
             }
         }
-        let wire = s.intern_terminal_wire(terminal);
+        let wire = s.intern_resource_wire(terminal);
         journal_pane_spawned(s, &wire, attribution);
         wire
     });
     let events = wiring.start(state, &wire_terminal_id);
-    spawn_terminal_exit_watcher(
+    spawn_resource_exit_watcher(
         state.clone(),
         terminal,
         exit_notify,

@@ -30,7 +30,7 @@ impl ServerState {
         };
         self.session_terminals(attached.session)
             .into_iter()
-            .filter(|terminal| self.subscribers_for_terminal(*terminal).contains(&client))
+            .filter(|terminal| self.subscribers_for_resource(*terminal).contains(&client))
             .collect()
     }
 
@@ -68,7 +68,7 @@ impl ServerState {
                 .map(|v| (v.cols, v.rows)),
             WindowSize::Smallest | WindowSize::Largest => {
                 let viewports = self
-                    .subscribers_for_terminal(terminal)
+                    .subscribers_for_resource(terminal)
                     .iter()
                     .filter_map(|cid| self.clients.attached.get(cid).and_then(|c| c.viewport))
                     .filter(|v| v.cols > 0 && v.rows > 0);
@@ -91,7 +91,7 @@ impl ServerState {
     /// `ws_xpixel / ws_col` exact. `None` until some report has metrics.
     #[must_use]
     pub fn resolve_terminal_cell_px(&self, terminal: ResourceId) -> Option<(u16, u16)> {
-        self.subscribers_for_terminal(terminal)
+        self.subscribers_for_resource(terminal)
             .iter()
             .filter_map(|cid| self.clients.attached.get(cid))
             .filter_map(|c| Some((c.viewport_seq, viewport_cell_px(c.viewport.as_ref()?)?)))
@@ -142,7 +142,7 @@ impl ServerState {
     /// [`MIN_USABLE_TERMINAL_DIMS`] on either axis.
     fn is_stranded_below_usable(&self, terminal: ResourceId) -> bool {
         let (min_cols, min_rows) = MIN_USABLE_TERMINAL_DIMS;
-        self.subscribers_for_terminal(terminal).is_empty()
+        self.subscribers_for_resource(terminal).is_empty()
             && self
                 .registry()
                 .terminal(terminal)
@@ -153,7 +153,7 @@ impl ServerState {
         &self,
         terminal: ResourceId,
     ) -> Option<phux_protocol::wire::frame::ViewportInfo> {
-        self.subscribers_for_terminal(terminal)
+        self.subscribers_for_resource(terminal)
             .iter()
             .filter_map(|client| self.clients.attached.get(client))
             .filter_map(|client| Some((client.viewport_seq, client.viewport?)))

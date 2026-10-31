@@ -10,7 +10,7 @@ use super::*;
 pub(super) fn empty_counters() -> Counters {
     Counters {
         next_session_wire_id: 10,
-        next_terminal_wire_id: 10,
+        next_resource_wire_id: 10,
         next_window_wire_id: 10,
         next_touch_timestamp: 1,
         server_instance: None,
@@ -129,7 +129,7 @@ async fn rebuild_from_a_complete_blob_is_transactional() {
             assert_eq!(main.lifetime, phux_core::SessionLifetime::Ephemeral);
             assert_eq!(main.members.len(), 1);
             let pane = state
-                .terminal_from_wire(&WireResourceId::local(3))
+                .resource_from_wire(&WireResourceId::local(3))
                 .expect("pane under its wire id");
             let record = state.registry().record(pane).expect("record");
             let activation = record.activation.as_ref().expect("activation 1");
@@ -319,11 +319,11 @@ async fn an_agent_session_without_its_parent_pane_is_dropped() {
                 .expect("rebuild")
                 .exit_watchers;
             assert_eq!(watchers.len(), 2, "the pane and its one session");
-            let kept = state.terminal_from_wire(&WireResourceId::local(4));
+            let kept = state.resource_from_wire(&WireResourceId::local(4));
             assert!(kept.is_some(), "the bound session resumes under its id");
             assert!(
                 state
-                    .terminal_from_wire(&WireResourceId::local(5))
+                    .resource_from_wire(&WireResourceId::local(5))
                     .is_none(),
                 "the orphaned session is dropped"
             );

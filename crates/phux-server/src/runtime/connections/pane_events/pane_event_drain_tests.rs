@@ -6,7 +6,7 @@ use super::*;
 fn a_reaped_pane_journals_nothing_after_its_close() {
     let mut s = crate::state::ServerState::new();
     let (_session, pane) = s.seed_session("drain");
-    let wire = s.intern_terminal_wire(pane);
+    let wire = s.intern_resource_wire(pane);
     // The seed's organization events are journaled too.
     let seeded = s.journal_head();
     journal_drained_event(&mut s, &wire, AgentEvent::Bell.into(), 0);

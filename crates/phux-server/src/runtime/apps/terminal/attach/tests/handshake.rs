@@ -169,7 +169,7 @@ pub(super) async fn answer_native_attach(
 async fn a_terminal_stream_reset_keeps_the_viewer_tombstone() {
     let state = crate::state::SharedState::new();
     let (_session, pane) = state.with_mut(|s| s.seed_session("roles"));
-    let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
+    let wire = state.with_mut(|s| s.intern_resource_wire(pane));
     let client_id = state.with_mut(crate::state::ServerState::new_client_id);
     state.with_mut(|s| {
         let _ = s.apply_attach_role(
@@ -201,7 +201,7 @@ async fn deferred_session_attach_applies_the_declared_role() {
             ));
             let wire = state.with_mut(|s| {
                 let _ = s.register_resource_handle(pane, handle, CancellationToken::new());
-                s.intern_terminal_wire(pane)
+                s.intern_resource_wire(pane)
             });
             let (out_tx, _out_rx) = tokio::sync::mpsc::channel::<crate::state::Outbound>(
                 crate::state::DEFAULT_CLIENT_MAILBOX,
@@ -258,7 +258,7 @@ async fn a_pane_closed_mid_capture_is_published_closed_not_a_failed_attach() {
                     phux_terminal::actor::TerminalHandle::detached_for_test(80, 24),
                 );
                 let _ = s.register_resource_handle(closed, ended, CancellationToken::new());
-                (s.intern_terminal_wire(live), s.intern_terminal_wire(closed))
+                (s.intern_resource_wire(live), s.intern_resource_wire(closed))
             });
             tokio::task::spawn_local(bundle.actor.run());
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);

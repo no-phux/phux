@@ -15,12 +15,12 @@ pub(crate) async fn handle_detach_terminal(
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
     let handle = state.with_mut(|s| {
-        s.unsubscribe_terminal_events(client_id, terminal_id);
+        s.unsubscribe_resource_events(client_id, terminal_id);
         // A declared `VIEWER` outlives the subscription (ADR-0127).
         let core = s
-            .terminal_from_wire(terminal_id)
-            .or_else(|| s.draining_terminal_from_wire(terminal_id))?;
-        s.unsubscribe_terminal(client_id, core);
+            .resource_from_wire(terminal_id)
+            .or_else(|| s.draining_resource_from_wire(terminal_id))?;
+        s.unsubscribe_resource(client_id, core);
         Some((core, s.resource_handle(core).cloned()))
     });
     let Some((core, handle)) = handle else {
@@ -179,7 +179,7 @@ pub(crate) fn create_named_session(
             // A headless create arms the last-session self-exit like an attach.
             let wire = state.with_mut(|s| {
                 s.arm_self_exit();
-                s.intern_terminal_wire(core_terminal)
+                s.intern_resource_wire(core_terminal)
             });
             Ok(wire)
         }

@@ -27,7 +27,7 @@ fn pane_lifecycle_hooks_fire() {
 
         let (_sid, pane) = state.with_mut(|s| s.seed_session("dying"));
         let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
-        spawn_terminal_exit_watcher(state.clone(), pane, Some(exit_rx), token, None);
+        spawn_resource_exit_watcher(state.clone(), pane, Some(exit_rx), token, None);
         exit_tx
             .send(phux_core::process::ExitOutcome::exited(3))
             .expect("exit notify");
@@ -59,7 +59,7 @@ fn a_pane_killed_before_its_exit_still_fires_pane_exit_and_holds_self_exit() {
         let (_sid, pane) = state.with_mut(|s| s.seed_session("doomed"));
         state.with_mut(crate::state::ServerState::arm_self_exit);
         let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
-        spawn_terminal_exit_watcher(state.clone(), pane, Some(exit_rx), root.clone(), None);
+        spawn_resource_exit_watcher(state.clone(), pane, Some(exit_rx), root.clone(), None);
 
         let committed = state.with_mut(|s| {
             committed_close::commit_close(
@@ -108,7 +108,7 @@ fn terminal_replies_are_discarded_and_focus_hooks_fire() {
         let mut hooks = capture_hooks(&state);
         let (_sid, pane) = state.with_mut(|s| s.seed_session("focus"));
         let mut rx = register_stub(&state, pane);
-        let wire_terminal_id = state.with_mut(|s| s.intern_terminal_wire(pane));
+        let wire_terminal_id = state.with_mut(|s| s.intern_resource_wire(pane));
         let client_id = attach_client(&state, "focus");
 
         let reply = bytes::Bytes::from_static(b"\x1b[5;1R");

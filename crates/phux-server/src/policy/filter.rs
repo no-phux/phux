@@ -111,12 +111,12 @@ impl EventSubject {
             .flatten()
             .filter(|wire| wire.is_local())
             .find_map(|wire| {
-                s.terminal_from_wire(wire)
+                s.resource_from_wire(wire)
                     .and_then(|core| group_of(s, core))
             });
         let key = |wire: Option<&WireResourceId>| {
             wire.filter(|wire| wire.is_local())
-                .and_then(|wire| s.terminal_from_wire(wire))
+                .and_then(|wire| s.resource_from_wire(wire))
                 .and_then(|core| resource_key_of(s, core))
         };
         Self {
