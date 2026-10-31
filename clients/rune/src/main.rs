@@ -6,6 +6,7 @@
 mod activity;
 mod alerts;
 mod desk;
+mod diag;
 mod dock;
 mod grid;
 mod inbox;
@@ -28,6 +29,7 @@ fn main() {
         println!("phux-rune {}", updates::VERSION);
         return;
     }
+    diag::install();
     rune::prewarm_gpu();
     // Rune keeps its own flags (`--snap`, `--script`, ...); the rest are ours.
     let options = match launch::Options::parse(rune::extra_args().iter().cloned()) {

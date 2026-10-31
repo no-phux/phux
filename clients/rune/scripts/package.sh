@@ -7,7 +7,8 @@
 # phux-rune-VERSION-macos-arm64.zip. With APP_DIR the app is also left there
 # for scripts/ci/sign-macos-desktop.sh --zip-only, which releases replace the
 # ad-hoc zip with (Developer ID, notarized, stapled). Linux: phux-rune-VERSION-linux-ARCH.tar.gz
-# with the binary and README. Each archive gets a `.sha256` beside it.
+# with the binary, README, licenses, and the menu entry and icon the installer
+# registers. Each archive gets a `.sha256` beside it.
 set -euo pipefail
 
 version="${1:?usage: package.sh VERSION OUT_DIR}"
@@ -23,6 +24,11 @@ binary="$here/target/release/phux-rune"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 
+notices() {
+    cp "$repo/LICENSE" "$repo/NOTICE" "$2/"
+    bun "$here/scripts/notices.ts" "$1" > "$2/THIRD-PARTY-NOTICES.txt"
+}
+
 checksum() {
     (cd "$out" && shasum -a 256 "$1" > "$1.sha256")
 }
@@ -33,6 +39,7 @@ Darwin)
     app="$stage/Phux Rune.app"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     cp "$binary" "$app/Contents/MacOS/phux-rune"
+    notices aarch64-apple-darwin "$app/Contents/Resources"
     # CFBundleVersion takes only dot-separated integers: drop a prerelease.
     sed -e "s/@VERSION@/$version/g" -e "s/@BUILD@/${version%%-*}/g" \
         "$here/packaging/Info.plist" > "$app/Contents/Info.plist"
@@ -61,7 +68,9 @@ Linux)
     arch="$(uname -m)"
     dir="$stage/phux-rune-$version-linux-$arch"
     mkdir -p "$dir"
-    cp "$binary" "$here/README.md" "$dir/"
+    cp "$binary" "$here/README.md" "$here/packaging/sh.phux.rune.desktop" "$dir/"
+    cp "$repo/clients/desktop/packaging/AppIcon.png" "$dir/sh.phux.rune.png"
+    notices "$arch-unknown-linux-gnu" "$dir"
     # Marks a packaged install: only those update themselves.
     printf '%s\n' "$version" > "$dir/phux-rune.release"
     archive="phux-rune-$version-linux-$arch.tar.gz"

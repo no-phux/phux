@@ -46,6 +46,7 @@ jobs:
       web: ${{ steps.plan.outputs.web }}
       desktop: ${{ steps.plan.outputs.desktop }}
       native: ${{ steps.plan.outputs.native }}
+      rune: ${{ steps.plan.outputs.rune }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
       web_engine: ${{ steps.plan.outputs.web_engine }}
       content: ${{ steps.plan.outputs.content }}
@@ -414,10 +415,16 @@ jobs:
       # `just native-smoke`, without installing just.
       - run: bash scripts/native-smoke.sh
 
+  # Rune has its own workspace; its workflow also builds the tagged release.
+  rune:
+    needs: plan
+    if: needs.plan.outputs.rune == 'true'
+    uses: ./.github/workflows/rune-build.yml
+
   # The required check. The ruleset matches this display name.
   ci:
     name: ci
-    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, desktop, native]
+    needs: [plan, guards, lint, test-build, tests, e2e, ffi, icount, integrations, web, desktop, native, rune]
     # Same draft exception as plan: release-please heads always reach this gate.
     if: always() && github.event.action != 'closed' && (startsWith(github.head_ref, 'release-please--') || github.event.pull_request.draft != true)
     runs-on: ubuntu-24.04
@@ -449,54 +456,15 @@ jobs:
 
   # A green main push that touched docs, installers, or product skills
   # republishes them: no-phux/website rebuilds phux.sh, and no-phux/skills
-  # mirrors the product skills. GITHUB_TOKEN can write neither, and GitHub
-  # drops repository_dispatch from it, so both use the release App.
+  # mirrors the product skills.
   content:
     name: publish content
     needs: [plan, ci]
     # always(): an implicit success() also requires the skipped desktop lane.
     if: always() && github.event_name == 'push' && needs.plan.outputs.content == 'true' && needs.ci.result == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
-        with:
-          client-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: no-phux
-          repositories: website,skills
-      - name: rebuild phux.sh
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          gh api repos/no-phux/website/dispatches \
-            -f event_type=phux-content -f "client_payload[sha]=${GITHUB_SHA}"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: no-phux/skills
-          token: ${{ steps.app-token.outputs.token }}
-          path: .skills-mirror
-          persist-credentials: true
-      - name: mirror product skills
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-        run: |
-          set -euo pipefail
-          bash scripts/export-product-skills.sh .skills-mirror
-          shortsha="$(git rev-parse --short HEAD)"
-          cd .skills-mirror
-          git add -A
-          if git diff --cached --quiet; then echo "skills mirror already in sync"; exit 0; fi
-          user_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
-          git config user.name "${APP_SLUG}[bot]"
-          git config user.email "${user_id}+${APP_SLUG}[bot]@users.noreply.github.com"
-          git commit -m "sync: product skills from no-phux/phux@${shortsha}"
-          git push
+    uses: ./.github/workflows/publish-content.yml
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
   # mbx saves when its key changes (UTC day, Cargo.lock, flake.lock); restores
   # take only the newest entry, so keep one per lane and per release cache.

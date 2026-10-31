@@ -175,6 +175,18 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
             ink,
         ));
     }
+    let copy_label = if updater.copied {
+        "Copied"
+    } else {
+        "Copy diagnostics"
+    };
+    let diagnostics = pressable("copy-diagnostics", ink)
+        .px(12.0)
+        .py(6.0)
+        .radius(6.0)
+        .border(1.0, ink.separator)
+        .on_press_tx(|d: &mut Desk, tx| d.copy_diagnostics(tx))
+        .child(text(copy_label).font(CAPTION).color(ink.text));
     let installed = updater
         .cli
         .as_ref()
@@ -199,9 +211,11 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
         section = section.child(progress(percent, 524.0, ink));
     }
     if let Err(reason) = updater.install {
-        return section.child(text(reason).font(CAPTION).color(ink.dim));
+        return section
+            .child(text(reason).font(CAPTION).color(ink.dim))
+            .child(row().child(diagnostics));
     }
-    section = section.child(buttons).child(toggle(
+    section = section.child(buttons.child(diagnostics)).child(toggle(
         "set-update-auto",
         "Check automatically",
         "At launch and every six hours. Nothing installs without a click.",

@@ -1,5 +1,5 @@
 /**
- * The third-party notice Phux.app ships: every crate the desktop executable
+ * The third-party notice a desktop app ships: every crate its executable
  * is built from (`cargo metadata` for the shipping target, dev-dependencies
  * excluded), its declared license, and the license and notice files its
  * source carries, with identical texts printed once. A crate that ships no
@@ -152,6 +152,7 @@ export interface CanonicalLicenses {
   "Apache-2.0": string;
   MIT: string;
   "CC0-1.0": string;
+  "MPL-2.0": string;
 }
 
 export function canonicalLicenses(
@@ -161,7 +162,12 @@ export function canonicalLicenses(
     readFileSync(join(dir, `${id}.txt`), "utf8")
       .replace(/^\n+/, "")
       .trimEnd();
-  return { "Apache-2.0": read("Apache-2.0"), MIT: read("MIT"), "CC0-1.0": read("CC0-1.0") };
+  return {
+    "Apache-2.0": read("Apache-2.0"),
+    MIT: read("MIT"),
+    "CC0-1.0": read("CC0-1.0"),
+    "MPL-2.0": read("MPL-2.0"),
+  };
 }
 
 /** One SPDX alternative per entry; `/` is the legacy crates.io spelling of OR. */
@@ -170,7 +176,7 @@ const ALTERNATIVE = /\s+OR\s+|\s*\/\s*/;
 /**
  * The license with a canonical text that `expression` lets the app be
  * distributed under: Apache-2.0 when offered (its text names no copyright
- * holder), else MIT or CC0. Compound terms (AND, WITH, parentheses) elect nothing.
+ * holder), else MIT, CC0 or MPL. Compound terms (AND, WITH, parentheses) elect nothing.
  */
 export function electedLicense(expression: string): keyof CanonicalLicenses | undefined {
   const options = expression.trim().split(ALTERNATIVE);
@@ -178,7 +184,7 @@ export function electedLicense(expression: string): keyof CanonicalLicenses | un
   return ELECTABLE.find((id) => options.includes(id));
 }
 
-const ELECTABLE: (keyof CanonicalLicenses)[] = ["Apache-2.0", "MIT", "CC0-1.0"];
+const ELECTABLE: (keyof CanonicalLicenses)[] = ["Apache-2.0", "MIT", "CC0-1.0", "MPL-2.0"];
 
 function copyrightHolders(crate: Crate): string {
   const names = crate.authors.map((author) => author.replace(/\s*<[^>]*>/g, "").trim());
@@ -211,6 +217,7 @@ function listing(crate: Crate): string {
 export function renderNotices(
   crates: Crate[],
   read: (crate: Crate) => Map<string, string> = (crate) => noticeTexts(crate, canonicalLicenses()),
+  product = "Phux Desktop",
 ): string {
   const thirdParty = crates.filter((crate) => !crate.firstParty);
   const users = new Map<string, string[]>();
@@ -230,9 +237,9 @@ export function renderNotices(
     );
   }
   const lines = [
-    "Phux Desktop third-party notices",
+    `${product} third-party notices`,
     "",
-    "Phux Desktop is licensed under the Apache License, Version 2.0; see LICENSE",
+    `${product} is licensed under the Apache License, Version 2.0; see LICENSE`,
     "and NOTICE beside this file. Its executable links the crates in the first",
     "list. The second list holds build-time tools (build scripts and procedural",
     "macros) that run while the app is compiled and are not part of the",
@@ -242,7 +249,7 @@ export function renderNotices(
     "canonical text of a license it offers is printed, naming its manifest",
     "authors as the copyright holders where that license requires one.",
     "",
-    "Linked into Phux Desktop:",
+    `Linked into ${product}:`,
     "",
     ...thirdParty.filter((crate) => !crate.buildOnly).map(listing),
     "",
