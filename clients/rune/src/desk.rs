@@ -148,6 +148,8 @@ pub struct Desk {
     waker: Option<Waker>,
     /// Image uploads on their way, and the terminal each is for.
     uploads: Vec<(u64, ResourceId)>,
+    /// User pastes the server hasn't answered yet.
+    pastes: HashSet<u64>,
     /// Settings that outlive the window: text size, the sidebar.
     prefs: rune::prefs::Prefs,
     /// What every terminal is doing, for the sidebar's marks.
@@ -261,6 +263,7 @@ impl Desk {
             launch: resolved.clone(),
             waker: None,
             uploads: Vec::new(),
+            pastes: HashSet::new(),
             prefs,
             preedit: None,
             activities: crate::activity::Activities::default(),
@@ -467,6 +470,11 @@ impl Desk {
                 tx.copy(text.0);
                 false
             }
+            Event::InputDelivery {
+                delivery_id,
+                outcome,
+                ..
+            } => self.paste_delivered(delivery_id, outcome),
             Event::StatusChanged(_)
             | Event::TopologyChanged
             | Event::OrganizationChanged
