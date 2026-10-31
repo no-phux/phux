@@ -7,6 +7,9 @@
 //! perf_budget -- --nocapture` prints one JSON line per phase, in the shape
 //! `clients/desktop/scripts/perf-budget.ts` reads.
 //!
+//! The counters are process-wide and other tests bump them, so `perf_budget`
+//! runs itself alone in a child process of this test binary.
+//!
 //! `window_stream` draws the real window (sidebar, tabs, status line, one
 //! pane), so chrome that starts rebuilding a pane shows up there too.
 
@@ -381,10 +384,34 @@ fn window_phase() {
     assert!(!runtime.animating, "output doesn't keep the window drawing");
 }
 
+/// Set in the child that does the measuring.
+const ALONE: &str = "RUNE_BUDGET_ALONE";
+
 #[test]
 fn perf_budget() {
-    terminal_phases();
-    wide_phases();
-    split_phase();
-    window_phase();
+    if std::env::var_os(ALONE).is_some() {
+        terminal_phases();
+        wide_phases();
+        split_phase();
+        window_phase();
+        return;
+    }
+    let module = module_path!().split_once("::").map_or("", |(_, rest)| rest);
+    let binary = std::env::current_exe().expect("the test binary");
+    let output = std::process::Command::new(binary)
+        .args(["--exact", &format!("{module}::perf_budget"), "--nocapture"])
+        .env(ALONE, "1")
+        .output()
+        .expect("the budget runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // A renamed module would match no test and pass with nothing measured.
+    assert!(stdout.contains("window_stream"), "no budget ran: {stdout}");
+    for line in stdout.lines().filter(|line| line.starts_with('{')) {
+        println!("{line}");
+    }
 }
