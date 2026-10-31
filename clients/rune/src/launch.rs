@@ -1,8 +1,8 @@
 //! Command line, the installed CLI, and the server socket.
 //!
-//! The client never installs, replaces, or upgrades the CLI. It starts or
-//! reuses the server through `phux server --ensure`, then asks the CLI which
-//! socket that server listens on, the same way the GPUI desktop does.
+//! The client starts or reuses the server through `phux server --ensure`,
+//! then asks the CLI which socket that server listens on, the same way the
+//! GPUI desktop does.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -47,6 +47,12 @@ impl Options {
 pub struct Resolved {
     pub socket: Result<PathBuf, String>,
     pub session: Option<String>,
+    /// The CLI, for its registry and its updater.
+    pub phux: Option<PathBuf>,
+    /// A flag or the environment chose the server: this run belongs to
+    /// development, so it neither updates phux nor reopens a remembered
+    /// machine.
+    pub aimed: bool,
 }
 
 pub fn resolve(options: &Options) -> Resolved {
@@ -58,14 +64,22 @@ pub fn resolve(options: &Options) -> Resolved {
         .socket
         .clone()
         .or_else(|| std::env::var_os("PHUX_SOCKET").map(PathBuf::from));
-    if let Some(socket) = explicit {
-        return Resolved {
-            socket: Ok(socket),
-            session,
-        };
+    let phux = locate(options.phux.as_deref());
+    let aimed = explicit.is_some()
+        || options.phux.is_some()
+        || ["PHUX_BIN", "PHUX_PROFILE"]
+            .iter()
+            .any(|key| std::env::var_os(key).is_some());
+    let socket = match explicit {
+        Some(socket) => Ok(socket),
+        None => phux.clone().and_then(|phux| ensure_server(&phux)),
+    };
+    Resolved {
+        socket,
+        session,
+        phux: phux.ok(),
+        aimed,
     }
-    let socket = locate(options.phux.as_deref()).and_then(|phux| ensure_server(&phux));
-    Resolved { socket, session }
 }
 
 /// `--phux`, else `PHUX_BIN`, else the usual install locations, else `PATH`.
@@ -103,6 +117,10 @@ fn locate(explicit: Option<&Path>) -> Result<PathBuf, String> {
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn run(phux: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    run_for(phux, args, CLI_TIMEOUT)
+}
+
+pub fn run_for(phux: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, String> {
     let mut child = Command::new(phux)
         .args(args)
         .stdin(Stdio::null())
@@ -133,7 +151,7 @@ fn run(phux: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
     );
-    let deadline = Instant::now() + CLI_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -144,7 +162,7 @@ fn run(phux: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
                 return Err(format!(
                     "`phux {}` did not finish in {} s; your sessions were not changed.",
                     args.join(" "),
-                    CLI_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 ));
             }
             Err(error) => return Err(format!("waiting for {}: {error}", phux.display())),

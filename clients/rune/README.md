@@ -23,8 +23,8 @@ Download the newest `rune-v*` prerelease from
 
 Check an archive against its `.sha256` before opening it.
 
-The app needs the phux CLI (`curl -fsSL https://phux.sh/install | sh`). It
-never installs, replaces, or upgrades the CLI or its server.
+The app needs the phux CLI (`curl -fsSL https://phux.sh/install | sh`).
+From 0.1.0-alpha.6 it updates itself; earlier alphas need this one download.
 
 ## What it does
 
@@ -33,6 +33,26 @@ The app finds `phux` (`--phux`, `PHUX_BIN`, `~/.local/bin`,
 reuses the server with `phux server --ensure`, and attaches the most recent
 session (or `--session NAME`). It never creates a session on its own.
 
+- **Machines.** The switcher under the sidebar's title moves the window to
+  any machine in the CLI's registry; the choice is remembered, and sessions
+  keep running wherever they are. **Add a machine** takes `me@host` or a
+  machine from your tailnet and runs `phux host add --install` over the ssh
+  access you already have. A window shows one machine at a time. On a new
+  computer the local server is empty, so sessions living elsewhere appear
+  only once that machine is added.
+- **Updates.** Works like the GPUI desktop's
+  ([UPDATES.md](../desktop/UPDATES.md)). The app checks at launch and every six
+  hours, and a corner card that never takes the keyboard offers the update.
+  **Download update** fetches the archive and refuses it unless a release key
+  signed its checksum; the app then installs when you quit, or now with
+  **Restart now**, which reopens your session. **Update server** updates the
+  phux CLI through its own updater and hands the live server off without
+  closing sessions; a refused handoff offers a retry, and package-managed
+  installs show their own command. Settings has **Check automatically** and
+  **Update phux with Phux Rune**. Updates need a copy in a writable place such
+  as Applications; development builds, and windows started with `--socket`,
+  `--phux`, `PHUX_BIN` or `PHUX_PROFILE`, never touch phux. The helper logs to
+  `~/Library/Logs/Phux/rune-update.log`.
 - **Inbox.** ⌘I opens one drawer of everything waiting on you, across every
   session: what agents are asking, with their suggested answers (click, or
   ⌘1–⌘9) and a reply field; actions the server is holding for approval
@@ -95,7 +115,7 @@ session (or `--session NAME`). It never creates a session on its own.
 | ⌘D / ⌘⇧D | Split right / down |
 | ⌘⌥ arrows | Move between panes |
 | ⌘⇧↩ | Zoom the focused pane |
-| ⌘W | Close the terminal (asks unless its prompt is idle) |
+| ⌘W | Close the terminal (**Confirm before closing** asks if something is running) |
 | ⌘] / ⌘[ | Next / previous terminal |
 | ⌘B | Fold the sidebar |
 | ⌘F / ⌘G / ⌘⇧G | Find / older match / newer match |
@@ -127,7 +147,9 @@ cancels).
 - A URL that fills a row is assumed to continue on the next one (frames
   carry no soft-wrap flag yet); the status line shows the joined target
   before a ⌘-click.
-- No DMG or auto-update yet; the ZIP is the macOS download.
+- No DMG yet; the ZIP is the macOS download.
+- While a server update is due, quitting leaves the app as it was and the
+  download is dropped. **Restart & update server** moves both.
 
 ## Develop
 

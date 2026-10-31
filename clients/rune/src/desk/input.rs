@@ -35,6 +35,10 @@ impl Desk {
             }
             return true;
         }
+        if self.machines.open {
+            self.machines_key(event, tx);
+            return true;
+        }
         if self.settings_open {
             let physical = tx.physical_key();
             match keys::shortcut(&event.key, event.mods, physical) {
@@ -162,6 +166,8 @@ impl Desk {
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::Inbox => self.toggle_inbox(),
             Shortcut::Settings => self.toggle_settings(),
+            Shortcut::CheckForUpdates => self.updater.check(),
+            Shortcut::Machines => self.toggle_machines(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),
@@ -243,6 +249,10 @@ impl Desk {
             return;
         };
         let terminal = shown.terminal.clone();
+        if !self.settings.confirm_close {
+            self.close_now(&terminal);
+            return;
+        }
         let idle = match client.with_control(|control| control.command_state(&terminal)) {
             Some(running) => !running,
             None => client

@@ -155,6 +155,18 @@ jobs:
           pattern: rune-*
           path: dist
           merge-multiple: true
+      # Minisign stays off the build hosts, as in desktop-release.yml. The
+      # updater refuses a checksum no release key signed.
+      - name: Sign the checksums
+        env:
+          PHUX_MINISIGN_SECRET_KEY: ${{ secrets.PHUX_MINISIGN_SECRET_KEY }}
+        run: bash scripts/ci/sign-release.sh dist/*.sha256
+      - name: Build the update feed
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 clients/rune/scripts/feed.py "${TAG#rune-v}" "$GITHUB_SHA" dist \
+            crates/phux-protocol/src/lib.rs > "$RUNNER_TEMP/rune.json"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -170,3 +182,14 @@ jobs:
               --title "Phux Rune ${TAG#rune-v} (alpha)" \
               --notes-file clients/rune/RELEASE_NOTES.md
           fi
+      # Last, so no client hears of a release before its assets exist.
+      - name: Point the update feed at this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Rerunning an old tag must not move the feed backwards.
+          newest="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
+            --jq '.[].tagName | select(startswith("rune-v"))' | sort -V | tail -1)"
+          [[ "$newest" == "$TAG" ]] || { echo "$newest is newer; feed unchanged"; exit 0; }
+          gh release upload channels "$RUNNER_TEMP/rune.json" --clobber --repo "$GITHUB_REPOSITORY"

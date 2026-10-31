@@ -12,14 +12,21 @@ mod inbox;
 mod keys;
 mod launch;
 mod links;
+mod machines;
 mod palette;
 mod theme;
 mod ui;
+mod updates;
 
 use desk::Desk;
 use rune::{AppSpec, Chrome};
 
 fn main() {
+    // The updater asks a new binary this before trusting it can run here.
+    if rune::extra_args().iter().any(|arg| arg == "--version") {
+        println!("phux-rune {}", updates::VERSION);
+        return;
+    }
     rune::prewarm_gpu();
     // Rune keeps its own flags (`--snap`, `--script`, ...); the rest are ours.
     let options = match launch::Options::parse(rune::extra_args().iter().cloned()) {
@@ -60,5 +67,7 @@ fn placeholder_init() -> Desk {
     Desk::new(&launch::Resolved {
         socket: Err("not launched".to_owned()),
         session: None,
+        phux: None,
+        aimed: true,
     })
 }

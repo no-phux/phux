@@ -249,6 +249,7 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
                 )
                 .child(inbox_button(desk, ink)),
         )
+        .child(super::machines::switch(desk, ink))
         .child(el().w_full().px(8.0).pb(4.0).child(search(ink)))
         .child(
             col()
