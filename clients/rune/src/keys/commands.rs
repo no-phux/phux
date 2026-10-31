@@ -1,6 +1,6 @@
 //! The one table of what the app can do: each command's title and the chords
-//! that reach it on macOS and elsewhere. The palette reads it; a test holds
-//! the key handling to it.
+//! that reach it on macOS and elsewhere. Key handling and the palette read
+//! it, so a chord and what it says beside a command can't disagree.
 
 use super::Shortcut;
 
@@ -15,6 +15,36 @@ pub enum Cap {
     Down,
     Home,
     End,
+    PageUp,
+    PageDown,
+}
+
+impl Cap {
+    fn mac_name(self) -> String {
+        match self {
+            Self::Char(c) => c.to_ascii_uppercase().to_string(),
+            Self::Enter => "↩".to_owned(),
+            Self::Left => "←".to_owned(),
+            Self::Right => "→".to_owned(),
+            Self::Up => "↑".to_owned(),
+            Self::Down => "↓".to_owned(),
+            Self::Home => "↖".to_owned(),
+            Self::End => "↘".to_owned(),
+            Self::PageUp => "⇞".to_owned(),
+            Self::PageDown => "⇟".to_owned(),
+        }
+    }
+
+    fn linux_name(self) -> String {
+        match self {
+            Self::Enter => "Enter".to_owned(),
+            Self::Home => "Home".to_owned(),
+            Self::End => "End".to_owned(),
+            Self::PageUp => "PgUp".to_owned(),
+            Self::PageDown => "PgDn".to_owned(),
+            other => other.mac_name(),
+        }
+    }
 }
 
 /// A key and exactly the modifiers held with it.
@@ -39,13 +69,13 @@ impl Chord {
         }
     }
 
-    const fn ctrl_shift(c: char) -> Self {
+    const fn ctrl(cap: Cap) -> Self {
         Self {
-            cap: Cap::Char(c),
+            cap,
             command: false,
             ctrl: true,
             alt: false,
-            shift: true,
+            shift: false,
         }
     }
 
@@ -60,30 +90,35 @@ impl Chord {
         Self { alt: true, ..self }
     }
 
-    /// The macOS label: `⌘⇧D`.
-    pub fn mac_label(self) -> String {
-        let mut label = String::new();
-        for (held, mark) in [
-            (self.ctrl, '⌃'),
-            (self.command, '⌘'),
-            (self.alt, '⌥'),
-            (self.shift, '⇧'),
-        ] {
-            if held {
-                label.push(mark);
-            }
-        }
-        label.push(match self.cap {
-            Cap::Char(c) => c.to_ascii_uppercase(),
-            Cap::Enter => '↩',
-            Cap::Left => '←',
-            Cap::Right => '→',
-            Cap::Up => '↑',
-            Cap::Down => '↓',
-            Cap::Home => '↖',
-            Cap::End => '↘',
-        });
-        label
+    /// As macOS writes it: `⇧⌘D`.
+    fn mac_label(self) -> String {
+        let marks = [
+            (self.ctrl, "⌃"),
+            (self.alt, "⌥"),
+            (self.shift, "⇧"),
+            (self.command, "⌘"),
+        ];
+        let held = marks
+            .iter()
+            .filter(|(held, _)| *held)
+            .map(|(_, mark)| *mark);
+        held.chain([self.cap.mac_name().as_str()]).collect()
+    }
+
+    /// As Linux desktops write it: `Ctrl+Shift+D`.
+    fn linux_label(self) -> String {
+        let marks = [
+            (self.ctrl, "Ctrl"),
+            (self.alt, "Alt"),
+            (self.shift, "Shift"),
+            (self.command, "Super"),
+        ];
+        let held = marks
+            .iter()
+            .filter(|(held, _)| *held)
+            .map(|(_, mark)| *mark);
+        let name = self.cap.linux_name();
+        held.chain([name.as_str()]).collect::<Vec<_>>().join("+")
     }
 }
 
@@ -94,10 +129,31 @@ pub struct Command {
     pub title: &'static str,
     /// Its chords, the first shown beside it; aliases follow.
     pub mac: &'static [Chord],
-    #[cfg_attr(not(test), allow(dead_code, reason = "keys dispatch through it next"))]
     pub linux: &'static [Chord],
     /// Whether the palette offers it.
     pub listed: bool,
+}
+
+impl Command {
+    /// This platform's chords.
+    pub const fn chords(&self) -> &'static [Chord] {
+        if cfg!(target_os = "macos") {
+            self.mac
+        } else {
+            self.linux
+        }
+    }
+
+    /// The chord shown beside it, or nothing.
+    pub fn hint(&self) -> String {
+        self.chords().first().map_or_else(String::new, |chord| {
+            if cfg!(target_os = "macos") {
+                chord.mac_label()
+            } else {
+                chord.linux_label()
+            }
+        })
+    }
 }
 
 const fn m(c: char) -> Chord {
@@ -105,7 +161,7 @@ const fn m(c: char) -> Chord {
 }
 
 const fn l(c: char) -> Chord {
-    Chord::ctrl_shift(c)
+    Chord::ctrl(Cap::Char(c)).shift()
 }
 
 /// A row: action, title, macOS chords, other chords. A struct literal, so
@@ -133,8 +189,8 @@ macro_rules! row {
 
 /// A tab chord's row.
 macro_rules! tab {
-    ($index:expr, $digit:expr) => {
-        row!(hidden Shortcut::Tab($index), "", [m($digit)], [l($digit)])
+    ($index:expr, $digit:expr, $title:expr) => {
+        row!(hidden Shortcut::Tab($index), $title, [m($digit)], [l($digit)])
     };
 }
 
@@ -144,7 +200,7 @@ pub const COMMANDS: &[Command] = &[
     row!(
         Shortcut::JumpToAttention,
         "Jump to what needs you",
-        [m('j')],
+        [m('j'), m('a').shift()],
         [l('j')]
     ),
     row!(Shortcut::Inbox, "Open inbox", [m('i')], [l('i')]),
@@ -166,7 +222,7 @@ pub const COMMANDS: &[Command] = &[
         Shortcut::ZoomPane,
         "Zoom pane",
         [Chord::cmd(Cap::Enter).shift()],
-        []
+        [Chord::ctrl(Cap::Enter).shift()]
     ),
     row!(
         Shortcut::CloseTerminal,
@@ -174,31 +230,42 @@ pub const COMMANDS: &[Command] = &[
         [m('w')],
         [l('w')]
     ),
+    row!(
+        Shortcut::CloseTab,
+        "Close tab",
+        [m('w').shift()],
+        [l('w').alt()]
+    ),
     row!(Shortcut::Find, "Find in terminal", [m('f')], [l('f')]),
-    row!(Shortcut::FindSelection, "Find selected text", [m('e')], []),
+    row!(
+        Shortcut::FindSelection,
+        "Find selected text",
+        [m('e')],
+        [l('e').alt()]
+    ),
     row!(
         Shortcut::FocusLeft,
         "Focus pane left",
         [Chord::cmd(Cap::Left).alt()],
-        []
+        [Chord::ctrl(Cap::Left).alt()]
     ),
     row!(
         Shortcut::FocusRight,
         "Focus pane right",
         [Chord::cmd(Cap::Right).alt()],
-        []
+        [Chord::ctrl(Cap::Right).alt()]
     ),
     row!(
         Shortcut::FocusUp,
         "Focus pane up",
         [Chord::cmd(Cap::Up).alt()],
-        []
+        [Chord::ctrl(Cap::Up).alt()]
     ),
     row!(
         Shortcut::FocusDown,
         "Focus pane down",
         [Chord::cmd(Cap::Down).alt()],
-        []
+        [Chord::ctrl(Cap::Down).alt()]
     ),
     row!(Shortcut::NextTerminal, "Next terminal", [m(']')], [l(']')]),
     row!(
@@ -208,6 +275,18 @@ pub const COMMANDS: &[Command] = &[
         [l('[')]
     ),
     row!(
+        Shortcut::NextTab,
+        "Next tab",
+        [m(']').shift()],
+        [Chord::ctrl(Cap::PageDown).shift()]
+    ),
+    row!(
+        Shortcut::PreviousTab,
+        "Previous tab",
+        [m('[').shift()],
+        [Chord::ctrl(Cap::PageUp).shift()]
+    ),
+    row!(
         Shortcut::ToggleSidebar,
         "Toggle sidebar",
         [m('b')],
@@ -215,50 +294,55 @@ pub const COMMANDS: &[Command] = &[
     ),
     row!(Shortcut::Copy, "Copy selection", [m('c')], [l('c')]),
     row!(Shortcut::Paste, "Paste", [m('v')], [l('v')]),
-    row!(Shortcut::ZoomIn, "Bigger text", [m('=')], [l('=')]),
+    // ⌘+ is Shift and the = key on most layouts.
+    row!(
+        Shortcut::ZoomIn,
+        "Bigger text",
+        [m('='), m('=').shift()],
+        [l('=')]
+    ),
     row!(Shortcut::ZoomOut, "Smaller text", [m('-')], [l('-')]),
     row!(Shortcut::ZoomReset, "Default text size", [m('0')], [l('0')]),
     row!(
         Shortcut::ScrollTop,
         "Scroll to top of history",
         [Chord::cmd(Cap::Up), Chord::cmd(Cap::Home)],
-        []
+        [Chord::ctrl(Cap::Home).shift()]
     ),
     row!(
         Shortcut::ScrollBottom,
         "Scroll to bottom",
         [Chord::cmd(Cap::Down), Chord::cmd(Cap::End)],
-        []
+        [Chord::ctrl(Cap::End).shift()]
     ),
-    row!(hidden Shortcut::Palette, "Command palette", [m('p'), m('k')], [l('p'), l('k')]),
+    row!(hidden Shortcut::Palette, "Command palette", [m('p'), m('k'), m('p').shift()], [l('p'), l('k')]),
     row!(hidden Shortcut::FindNext, "Find next", [m('g')], [l('g')]),
-    row!(hidden Shortcut::FindPrevious, "Find previous", [m('g').shift()], []),
-    tab!(0, '1'),
-    tab!(1, '2'),
-    tab!(2, '3'),
-    tab!(3, '4'),
-    tab!(4, '5'),
-    tab!(5, '6'),
-    tab!(6, '7'),
-    tab!(7, '8'),
-    tab!(8, '9'),
+    row!(hidden Shortcut::FindPrevious, "Find previous", [m('g').shift()], [l('g').alt()]),
+    tab!(0, '1', "Tab 1"),
+    tab!(1, '2', "Tab 2"),
+    tab!(2, '3', "Tab 3"),
+    tab!(3, '4', "Tab 4"),
+    tab!(4, '5', "Tab 5"),
+    tab!(5, '6', "Tab 6"),
+    tab!(6, '7', "Tab 7"),
+    tab!(7, '8', "Tab 8"),
+    tab!(8, '9', "Tab 9"),
 ];
+
+/// What a chord does here, if anything.
+pub fn action_of(chord: Chord) -> Option<Shortcut> {
+    COMMANDS
+        .iter()
+        .find(|command| command.chords().contains(&chord))
+        .map(|command| command.action)
+}
 
 #[cfg(test)]
 mod tests {
     use rune::{Key, Mods};
 
     use super::*;
-    use crate::keys::{scroll_shortcut, shortcut};
-
-    /// This platform's chords of a command.
-    const fn chords(command: &Command) -> &'static [Chord] {
-        if cfg!(target_os = "macos") {
-            command.mac
-        } else {
-            command.linux
-        }
-    }
+    use crate::keys::shortcut;
 
     /// The press a chord describes, as Rune reports it here.
     fn press(chord: Chord) -> (Key, Mods) {
@@ -278,6 +362,8 @@ mod tests {
             Cap::Down => Key::Down,
             Cap::Home => Key::Home,
             Cap::End => Key::End,
+            Cap::PageUp => Key::PageUp,
+            Cap::PageDown => Key::PageDown,
         };
         (key, mods)
     }
@@ -285,19 +371,43 @@ mod tests {
     #[test]
     fn every_listed_chord_reaches_its_action() {
         for command in COMMANDS {
-            for chord in chords(command) {
+            for chord in command.chords() {
                 let (key, mods) = press(*chord);
-                let got = shortcut(&key, mods, None).or_else(|| scroll_shortcut(&key, mods));
-                assert_eq!(got, Some(command.action), "{chord:?}");
+                assert_eq!(
+                    shortcut(&key, mods, None),
+                    Some(command.action),
+                    "{chord:?}"
+                );
             }
         }
     }
 
     #[test]
     fn no_chord_means_two_things() {
-        let all: Vec<_> = COMMANDS.iter().flat_map(chords).collect();
+        let all: Vec<_> = COMMANDS.iter().flat_map(Command::chords).collect();
         for (at, chord) in all.iter().enumerate() {
             assert!(!all[at + 1..].contains(chord), "{chord:?}");
+        }
+    }
+
+    #[test]
+    fn labels_read_as_each_platform_writes_them() {
+        assert_eq!(m('w').shift().mac_label(), "⇧⌘W");
+        assert_eq!(l('w').alt().linux_label(), "Ctrl+Alt+Shift+W");
+        assert_eq!(
+            Chord::ctrl(Cap::PageDown).shift().linux_label(),
+            "Ctrl+Shift+PgDn"
+        );
+    }
+
+    #[test]
+    fn linux_chords_never_touch_plain_ctrl_letters() {
+        // Ctrl-C and its kin belong to the shell.
+        for chord in COMMANDS.iter().flat_map(|command| command.linux) {
+            assert!(
+                chord.shift || chord.alt || !matches!(chord.cap, Cap::Char(_)),
+                "{chord:?}"
+            );
         }
     }
 }

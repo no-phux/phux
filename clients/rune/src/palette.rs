@@ -64,10 +64,9 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
         }
     }
     for command in COMMANDS.iter().filter(|command| command.listed) {
-        let keys = command.mac.first().map(|c| c.mac_label());
         out.push(Item {
             title: command.title.to_owned(),
-            detail: keys_for_platform(&keys.unwrap_or_default()),
+            detail: command.hint(),
             kind: "action",
             target: Target::Action(command.action),
         });
@@ -95,14 +94,6 @@ pub fn pane_label(pane: &PaneDescriptor) -> String {
             })
         })
         .unwrap_or_else(|| "terminal".to_owned())
-}
-
-fn keys_for_platform(keys: &str) -> String {
-    if cfg!(target_os = "macos") {
-        keys.to_owned()
-    } else {
-        keys.replace('⌘', "Ctrl+Shift+")
-    }
 }
 
 /// Fuzzy subsequence match of `query` in `text`, case-insensitive. Rewards

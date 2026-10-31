@@ -81,9 +81,7 @@ impl Desk {
             return true;
         }
         let physical = tx.physical_key();
-        if let Some(action) = keys::shortcut(&event.key, event.mods, physical)
-            .or_else(|| keys::scroll_shortcut(&event.key, event.mods))
-        {
+        if let Some(action) = keys::shortcut(&event.key, event.mods, physical) {
             self.shortcut(action, tx);
             return true;
         }
@@ -174,6 +172,9 @@ impl Desk {
             Shortcut::SplitDown => self.split(SplitDir::Vertical),
             Shortcut::ZoomPane => self.toggle_zoom(),
             Shortcut::CloseTerminal => self.close_terminal(),
+            Shortcut::CloseTab => self.close_active_tab(),
+            Shortcut::NextTab => self.step_tab(1),
+            Shortcut::PreviousTab => self.step_tab(-1),
             Shortcut::FocusLeft => self.focus_toward(Direction::Left),
             Shortcut::FocusRight => self.focus_toward(Direction::Right),
             Shortcut::FocusUp => self.focus_toward(Direction::Up),
@@ -240,6 +241,25 @@ impl Desk {
 
     pub fn cancel_pending(&mut self) {
         self.pending = None;
+    }
+
+    fn active_tab(&self) -> Option<usize> {
+        self.tabs.list.iter().position(|tab| tab.active)
+    }
+
+    fn close_active_tab(&mut self) {
+        if let Some(index) = self.active_tab() {
+            self.close_tab(index);
+        }
+    }
+
+    /// The tab `step` along from the active one, wrapping.
+    fn step_tab(&mut self, step: isize) {
+        let count = self.tabs.list.len() as isize;
+        if let Some(index) = self.active_tab() {
+            let next = (index as isize + step).rem_euclid(count) as usize;
+            self.select_tab(next);
+        }
     }
 
     /// Close the focused terminal: at once at a prompt shell integration
