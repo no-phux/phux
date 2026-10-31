@@ -7,6 +7,9 @@ use phux_client_runtime::control::keys::physical_key_for_char;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use rune::{Key, Mods, PhysicalKeyCode};
 
+mod commands;
+pub use commands::COMMANDS;
+
 /// What a key press should do in the terminal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Typed {

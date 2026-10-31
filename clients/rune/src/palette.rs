@@ -4,7 +4,7 @@
 use phux_client_runtime::control::{PaneDescriptor, Topology};
 use phux_protocol::ids::ResourceId;
 
-use crate::keys::Shortcut;
+use crate::keys::{COMMANDS, Shortcut};
 
 /// One thing the palette can do.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,40 +33,6 @@ pub struct Hit {
     pub score: i32,
     pub matched: Vec<usize>,
 }
-
-const ACTIONS: &[(Shortcut, &str, &str)] = &[
-    (Shortcut::NewTerminal, "New tab", "⌘T"),
-    (Shortcut::NewSession, "New session", "⌘N"),
-    (Shortcut::JumpToAttention, "Jump to what needs you", "⌘J"),
-    (Shortcut::Inbox, "Open inbox", "⌘I"),
-    (Shortcut::Settings, "Settings", "⌘,"),
-    (Shortcut::CheckForUpdates, "Check for updates", ""),
-    (Shortcut::InstallUpdate, "Update now", ""),
-    (Shortcut::Machines, "Switch or add machine", ""),
-    (Shortcut::RenameSession, "Rename session", ""),
-    (Shortcut::RenameTab, "Rename tab", ""),
-    (Shortcut::CloseSession, "Close session", ""),
-    (Shortcut::SplitRight, "Split right", "⌘D"),
-    (Shortcut::SplitDown, "Split down", "⌘⇧D"),
-    (Shortcut::ZoomPane, "Zoom pane", "⌘⇧↩"),
-    (Shortcut::CloseTerminal, "Close terminal", "⌘W"),
-    (Shortcut::Find, "Find in terminal", "⌘F"),
-    (Shortcut::FindSelection, "Find selected text", "⌘E"),
-    (Shortcut::FocusLeft, "Focus pane left", "⌘⌥←"),
-    (Shortcut::FocusRight, "Focus pane right", "⌘⌥→"),
-    (Shortcut::FocusUp, "Focus pane up", "⌘⌥↑"),
-    (Shortcut::FocusDown, "Focus pane down", "⌘⌥↓"),
-    (Shortcut::NextTerminal, "Next terminal", "⌘]"),
-    (Shortcut::PreviousTerminal, "Previous terminal", "⌘["),
-    (Shortcut::ToggleSidebar, "Toggle sidebar", "⌘B"),
-    (Shortcut::Copy, "Copy selection", "⌘C"),
-    (Shortcut::Paste, "Paste", "⌘V"),
-    (Shortcut::ZoomIn, "Bigger text", "⌘="),
-    (Shortcut::ZoomOut, "Smaller text", "⌘-"),
-    (Shortcut::ZoomReset, "Default text size", "⌘0"),
-    (Shortcut::ScrollTop, "Scroll to top of history", "⌘↑"),
-    (Shortcut::ScrollBottom, "Scroll to bottom", "⌘↓"),
-];
 
 /// Everything the palette lists, in its empty-query order: terminals, then
 /// sessions, then actions.
@@ -97,12 +63,13 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
             });
         }
     }
-    for (action, title, keys) in ACTIONS {
+    for command in COMMANDS.iter().filter(|command| command.listed) {
+        let keys = command.mac.first().map(|c| c.mac_label());
         out.push(Item {
-            title: (*title).to_owned(),
-            detail: keys_for_platform(keys),
+            title: command.title.to_owned(),
+            detail: keys_for_platform(&keys.unwrap_or_default()),
             kind: "action",
-            target: Target::Action(*action),
+            target: Target::Action(command.action),
         });
     }
     out
