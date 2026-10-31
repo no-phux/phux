@@ -229,6 +229,11 @@ impl Desk {
             text,
             expires,
         });
+        // This may come after the frame's `expire_notice`, in a handler or
+        // later in `poll`: another poll sets its timer.
+        if let Some(waker) = &self.waker {
+            waker();
+        }
     }
 
     pub fn dismiss_notice(&mut self) {
@@ -405,7 +410,7 @@ impl Desk {
         if changed || events || self.layout_is_stale() {
             changed |= self.refresh_layout(&client);
         }
-        self.finish_uploads(&client);
+        changed |= self.finish_uploads(&client);
         changed |= self.sync_alerts();
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
