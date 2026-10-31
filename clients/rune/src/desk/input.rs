@@ -44,7 +44,7 @@ impl Desk {
             match keys::shortcut(&event.key, event.mods, physical) {
                 Some(action) if action.works_over_sheets() => self.shortcut(action, tx),
                 Some(_) => {}
-                None => self.settings_key(event),
+                None => self.settings_key(event, tx),
             }
             return true;
         }
@@ -246,24 +246,26 @@ impl Desk {
     /// vouches for, after asking otherwise. Closing is not undoable, so
     /// "unknown" asks too.
     pub fn close_terminal(&mut self) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
+        let Some(terminal) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
             return;
         };
-        let terminal = shown.terminal.clone();
-        if !self.settings.confirm_close {
-            self.close_now(&terminal);
-            return;
-        }
-        let idle = match client.with_control(|control| control.command_state(&terminal)) {
-            Some(running) => !running,
-            None => client
-                .engine()
-                .is_some_and(|engine| engine.replica_prompt(&terminal) == ReplicaPrompt::AtPrompt),
-        };
-        if idle {
+        if !self.settings.confirm_close || self.vouched_idle(&terminal) {
             self.close_now(&terminal);
         } else {
             self.pending = Some(Pending::Close(terminal));
+        }
+    }
+
+    /// Whether shell integration vouches this terminal is at a prompt.
+    pub(super) fn vouched_idle(&self, terminal: &ResourceId) -> bool {
+        let Some(client) = &self.client else {
+            return false;
+        };
+        match client.with_control(|control| control.command_state(terminal)) {
+            Some(running) => !running,
+            None => client
+                .engine()
+                .is_some_and(|engine| engine.replica_prompt(terminal) == ReplicaPrompt::AtPrompt),
         }
     }
 
