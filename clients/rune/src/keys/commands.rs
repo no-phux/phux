@@ -105,6 +105,10 @@ impl Chord {
         Self { alt: true, ..self }
     }
 
+    const fn and_ctrl(self) -> Self {
+        Self { ctrl: true, ..self }
+    }
+
     /// The accelerator Rune parses for a native menu: `cmd+shift+d`.
     pub fn accelerator(self) -> String {
         let mods = [
@@ -344,6 +348,7 @@ pub const COMMANDS: &[Command] = &[
         [m('b')],
         [l('b')]
     ),
+    row!(mac Shortcut::ToggleFullScreen, "Toggle Full Screen", [m('f').and_ctrl()]),
     row!(Shortcut::Copy, "Copy Selection", [m('c')], [l('c')]),
     row!(Shortcut::Paste, "Paste", [m('v')], [l('v')]),
     row!(Shortcut::SelectAll, "Select All", [m('a')], [l('a')]),
@@ -450,6 +455,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Names every variant twice: as a list to walk, and as a match that stops
+    /// compiling when a new variant is missing from it.
+    macro_rules! every_shortcut {
+        ($($variant:ident),* $(,)?) => {
+            const EVERY_SHORTCUT: &[Shortcut] = &[$(Shortcut::$variant),*];
+
+            const fn _is_listed(action: Shortcut) {
+                match action {
+                    $(Shortcut::$variant)|* | Shortcut::Tab(_) => {}
+                }
+            }
+        };
+    }
+
+    every_shortcut!(
+        Copy,
+        Paste,
+        NewTerminal,
+        NewSession,
+        NextTerminal,
+        PreviousTerminal,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset,
+        ScrollTop,
+        ScrollBottom,
+        Palette,
+        ToggleSidebar,
+        JumpToAttention,
+        SplitRight,
+        SplitDown,
+        ZoomPane,
+        CloseTerminal,
+        CloseTab,
+        NextTab,
+        PreviousTab,
+        FocusLeft,
+        FocusRight,
+        FocusUp,
+        FocusDown,
+        Find,
+        FindNext,
+        FindPrevious,
+        FindSelection,
+        Inbox,
+        Settings,
+        RenameSession,
+        RenameTab,
+        CloseSession,
+        CheckForUpdates,
+        InstallUpdate,
+        Machines,
+        ToggleFullScreen,
+        KeyboardShortcuts,
+        SelectAll,
+        PromptUp,
+        PromptDown,
+    );
+
+    #[test]
+    fn every_shortcut_has_a_row() {
+        let tabs = (0..9).map(Shortcut::Tab);
+        for action in EVERY_SHORTCUT.iter().copied().chain(tabs) {
+            assert!(command(action).is_some(), "{action:?}");
+        }
+    }
+
+    #[test]
+    fn full_screen_is_a_macos_chord() {
+        let row = command(Shortcut::ToggleFullScreen).expect("a row");
+        assert_eq!(row.mac[0].mac_label(), "⌃⌘F");
+        assert_eq!(row.mac[0].accelerator(), "cmd+ctrl+f");
+        assert!(row.linux.is_empty());
     }
 
     #[test]
