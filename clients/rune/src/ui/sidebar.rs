@@ -3,7 +3,7 @@
 
 use rune::{Color, El, LoopSpec, TextStyle, col, el, row, text};
 
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, SIDEBAR_W, button};
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, SIDEBAR_W, button, pressable};
 use crate::activity::Mark;
 use crate::desk::Desk;
 use crate::palette::pane_label;
@@ -33,8 +33,7 @@ fn dot(mark: Mark, ink: &Ink) -> El {
 }
 
 fn search(ink: &Ink) -> El {
-    row()
-        .key("sidebar-search")
+    pressable("sidebar-search", ink)
         .w_full()
         .h(28.0)
         .px(10.0)
@@ -42,8 +41,6 @@ fn search(ink: &Ink) -> El {
         .radius(7.0)
         .items_center()
         .fill(ink.separator)
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press(|d: &mut Desk| d.toggle_palette())
         .child(text("Jump to…").font(LABEL).color(ink.dim))
         .child(el().grow(1.0))
@@ -66,16 +63,13 @@ fn inbox_button(desk: &Desk, ink: &Ink) -> El {
     } else {
         ink.dim
     };
-    row()
-        .key("inbox-button")
+    pressable("inbox-button", ink)
         .px(7.0)
         .py(2.0)
         .gap(5.0)
         .radius(7.0)
         .items_center()
         .fill(tint.alpha(if waiting > 0 { 0.2 } else { 0.1 }))
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press(|d: &mut Desk| d.toggle_inbox())
         .child(
             text(if waiting > 0 {

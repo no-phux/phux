@@ -3,7 +3,7 @@
 use rune::{Color, El, TextStyle, Transition, col, el, row, text, text_input};
 
 use super::settings::section;
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG};
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
 use crate::desk::Desk;
 use crate::machines::{LOCAL, Peer};
 
@@ -28,16 +28,13 @@ pub fn switch(desk: &Desk, ink: &Ink) -> El {
 
 fn machine(name: Option<String>, current: bool, ink: &Ink) -> El {
     let label = name.clone().unwrap_or_else(|| LOCAL.to_owned());
-    row()
-        .key(format!("machine-{label}"))
+    pressable(format!("machine-{label}"), ink)
         .w_full()
         .px(10.0)
         .py(7.0)
         .gap(8.0)
         .radius(7.0)
         .items_center()
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press(move |d: &mut Desk| d.switch_machine(name.clone()))
         .child(text(label).font(LABEL).color(ink.text).truncate())
         .child(el().grow(1.0))
@@ -46,16 +43,13 @@ fn machine(name: Option<String>, current: bool, ink: &Ink) -> El {
 
 fn peer(peer: &Peer, ink: &Ink) -> El {
     let held = peer.clone();
-    row()
-        .key(format!("peer-{}", peer.name))
+    pressable(format!("peer-{}", peer.name), ink)
         .w_full()
         .px(10.0)
         .py(7.0)
         .gap(8.0)
         .radius(7.0)
         .items_center()
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press(move |d: &mut Desk| d.add_peer(&held))
         .child(
             text(peer.name.clone())
@@ -104,7 +98,7 @@ fn field(desk: &Desk, ink: &Ink) -> El {
                 .fill(ink.accent)
                 .cursor(rune::Cursor::Pointer)
                 .on_press(|d: &mut Desk| d.add_typed_machine())
-                .child(text("Set up").font(CAPTION).color(Color::WHITE)),
+                .child(text("Set up").font(CAPTION).color(ink.on_accent)),
         )
 }
 

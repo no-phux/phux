@@ -1,10 +1,9 @@
 //! The window: a session sidebar, the terminal, and a status line.
 
-use phux_client_runtime::control::Status;
 use rune::tok;
-use rune::{Color, Cx, El, Family, TextStyle, col, el, row, text};
+use rune::{Color, Cx, El, TextStyle, col, el, row, text};
 
-use crate::desk::{Desk, Pending};
+use crate::desk::Desk;
 use crate::theme::Theme;
 
 mod inbox;
@@ -15,6 +14,7 @@ mod panes;
 pub(crate) use panes::DIVIDER;
 mod settings;
 mod sidebar;
+mod status;
 mod tabs;
 mod updates;
 
@@ -43,7 +43,11 @@ pub(crate) struct Ink {
     pub(crate) selected: Color,
     pub(crate) hover: Color,
     pub(crate) accent: Color,
+    /// Text and marks on an accent fill.
+    pub(crate) on_accent: Color,
     pub(crate) danger: Color,
+    /// The rule between the window's regions.
+    pub(crate) edge: Color,
 }
 
 fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
@@ -60,7 +64,9 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
             selected: accent.alpha(0.22),
             hover: text.alpha(0.07),
             accent,
+            on_accent: Color::WHITE,
             danger: crate::theme::color(theme.ansi[1]),
+            edge: text.alpha(0.13),
         };
     }
     let t = tok::theme(dark);
@@ -74,7 +80,9 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
         selected: accent.alpha(0.22),
         hover: t.hover,
         accent,
+        on_accent: Color::WHITE,
         danger: rune::oklch(0.68, 0.17, 25.0),
+        edge: t.separator,
     }
 }
 
@@ -121,7 +129,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                         .w(SIDEBAR_W + 1.0)
                         .h_full()
                         .child(sidebar::view(desk, &p, band))
-                        .child(el().w(1.0).h_full().fill(p.separator)),
+                        .child(el().w(1.0).h_full().fill(p.edge)),
                 ),
         )
         .child(
@@ -132,10 +140,10 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .min_h(0.0)
                 .children(top)
                 .children(tabs::strip(desk, &p))
-                .children(confirm_bar(desk, &p))
+                .children(status::confirm_bar(desk, &p))
                 .child(panes::view(desk, &p, cx))
-                .child(el().w_full().h(1.0).fill(p.separator))
-                .child(status_line(desk, &p)),
+                .child(el().w_full().h(1.0).fill(p.edge))
+                .child(status::status_line(desk, &p)),
         );
     el().w_full()
         .h_full()
@@ -151,153 +159,20 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .children(desk.palette_open.then(|| palette::view(desk, &p)))
 }
 
+/// Something to press: the hover wash and the pointer. Key errors name the
+/// caller, not this.
+#[track_caller]
+pub(crate) fn pressable(key: impl Into<String>, p: &Ink) -> El {
+    el().key(key).hover(p.hover).cursor(rune::Cursor::Pointer)
+}
+
 pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {
-    el().key(key)
+    pressable(key, p)
         .grow(1.0)
         .py(6.0)
         .radius(6.0)
         .center()
         .border(1.0, p.separator)
-        .hover(p.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press(press)
         .child(text(label).font(CAPTION).color(p.text))
-}
-
-/// A held paste: what it would do, and the choice.
-/// The action waiting on Return or Escape: what it would do, and the choice.
-fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
-    let (message, verb) = match desk.pending.as_ref()? {
-        Pending::Paste(held) => {
-            let lines = held.lines().count().max(1);
-            let plural = if lines == 1 { "" } else { "s" };
-            (
-                format!(
-                    "This paste has {lines} line{plural} and would run as typed commands. Paste anyway?"
-                ),
-                "Paste (Return)",
-            )
-        }
-        Pending::Close(terminal) => (
-            format!("Close {terminal}? Anything running in it ends."),
-            "Close (Return)",
-        ),
-        Pending::CloseTab(terminals) => (
-            format!(
-                "Close this tab's {} terminal(s)? Anything running ends.",
-                terminals.len()
-            ),
-            "Close (Return)",
-        ),
-        Pending::CloseSession(_, name) => (
-            format!("End session {name} and everything running in it?"),
-            "End session (Return)",
-        ),
-    };
-    Some(
-        row()
-            .key("confirm-bar")
-            .w_full()
-            .px(12.0)
-            .py(8.0)
-            .gap(8.0)
-            .items_center()
-            .fill(p.selected)
-            .transition(rune::Transition::opacity())
-            .child(text(message).font(LABEL).color(p.text).truncate())
-            .child(el().grow(1.0))
-            .child(
-                button("Cancel (Esc)", "confirm-cancel", p, Desk::cancel_pending)
-                    .grow(0.0)
-                    .px(10.0),
-            )
-            .child(
-                button(verb, "confirm-ok", p, Desk::confirm_pending)
-                    .grow(0.0)
-                    .px(10.0),
-            ),
-    )
-}
-
-pub(crate) fn placeholder(desk: &Desk, p: &Ink) -> El {
-    let (title, detail, color) = match (&desk.error, desk.status) {
-        (Some(error), _) => ("Can't reach phux", error.clone(), p.danger),
-        (None, Status::Idle | Status::Connecting) => {
-            // A machine that's away keeps retrying; say what it answered.
-            let why = desk.client.as_ref().and_then(|client| client.last_error());
-            ("Connecting…", why.unwrap_or_default(), p.dim)
-        }
-        (None, _) if desk.topology.as_ref().is_some_and(|t| t.panes.is_empty()) => (
-            "No terminals",
-            "Create a session or terminal from the sidebar.".to_owned(),
-            p.dim,
-        ),
-        (None, _) => ("Opening terminal…", String::new(), p.dim),
-    };
-    col()
-        .gap(6.0)
-        .items_center()
-        .max_w(520.0)
-        .child(text(title).font(TextStyle::new(15.0, 600.0)).color(color))
-        .child(text(detail).font(LABEL).color(p.dim).wrap())
-        .child(el().h(6.0))
-        .child(
-            button(
-                "Other machines…",
-                "placeholder-machines",
-                p,
-                Desk::toggle_machines,
-            )
-            .grow(0.0)
-            .px(12.0),
-        )
-}
-
-fn status_line(desk: &Desk, p: &Ink) -> El {
-    let (word, color) = match desk.status {
-        Status::Attached => ("attached", p.accent),
-        Status::Idle | Status::Connecting => ("connecting", p.dim),
-        Status::Negotiated => ("negotiated", p.dim),
-        Status::Closed => ("closed", p.dim),
-        Status::Failed => ("failed", p.danger),
-    };
-    let geometry = desk
-        .client
-        .as_ref()
-        .zip(desk.shown.as_ref())
-        .and_then(|(client, shown)| client.acquire_view(shown.view))
-        .map(|frame| format!("{}×{}", frame.cols, frame.rows))
-        .unwrap_or_default();
-    let session = desk.selected_session_name().unwrap_or_default();
-    row()
-        .w_full()
-        .h(24.0)
-        .px(10.0)
-        .gap(14.0)
-        .items_center()
-        .child(text(word).font(CAPTION).color(color))
-        .child(text(session).font(CAPTION).color(p.dim).truncate())
-        .child(el().grow(1.0))
-        .child(match &desk.pointer.hover {
-            // Where a ⌘-click goes, as a browser shows it.
-            Some((_, link)) => text(link.url.clone())
-                .font(CAPTION)
-                .color(p.accent)
-                .truncate(),
-            None => text(desk.notice.clone().unwrap_or_default())
-                .font(CAPTION)
-                .color(p.danger)
-                .truncate(),
-        })
-        .children(updates::pill(desk, p))
-        .child(
-            text(geometry)
-                .font(CAPTION.family(Family::SystemMono))
-                .color(p.dim),
-        )
-        .child(
-            text(format!("{:.0} pt", desk.font_size))
-                .font(CAPTION)
-                .color(p.dim),
-        )
 }

@@ -5,7 +5,8 @@ use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
 use rune::{Color, Cx, El, Phase, col, el, row};
 
-use super::{Ink, PAD, overlay, placeholder};
+use super::status::placeholder;
+use super::{Ink, PAD, overlay};
 use crate::desk::{Desk, SplitPath};
 use crate::grid;
 

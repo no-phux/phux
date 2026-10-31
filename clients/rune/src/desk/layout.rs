@@ -13,7 +13,7 @@ use phux_client_runtime::Client;
 use phux_client_runtime::control::SpawnRequest;
 use phux_protocol::ids::{ResourceId, SessionKey};
 
-use super::{Desk, Placement};
+use super::{Desk, NoticeKind, Placement};
 
 /// The steps from the root to a split: `false` left/top, `true` right/bottom.
 pub type SplitPath = Vec<bool>;
@@ -204,8 +204,10 @@ impl Desk {
             } else if since.elapsed() < PATIENCE {
                 self.unplaced_splits.push((new, place, since));
             } else {
-                self.notice =
-                    Some("The layout could not be saved; it shows on its own.".to_owned());
+                self.say(
+                    NoticeKind::Error,
+                    "The layout could not be saved; it shows on its own.",
+                );
                 self.want(new);
             }
         }

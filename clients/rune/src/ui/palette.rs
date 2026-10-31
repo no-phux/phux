@@ -2,7 +2,7 @@
 
 use rune::{Color, El, Span, TextStyle, Transition, col, el, rich, row, text, text_input};
 
-use super::{CAPTION, Ink};
+use super::{CAPTION, Ink, pressable};
 use crate::desk::Desk;
 use crate::palette::Hit;
 
@@ -123,8 +123,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
                 .weight(650.0)
         })
         .collect();
-    row()
-        .key(format!("palette-row-{index}"))
+    pressable(format!("palette-row-{index}"), ink)
         .w_full()
         .h(36.0)
         .px(12.0)
@@ -136,8 +135,6 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
         } else {
             Color::TRANSPARENT
         })
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press_tx(move |d: &mut Desk, tx| d.palette_run(Some(index), tx))
         .child(
             el().w(22.0)

@@ -2,7 +2,7 @@
 
 use rune::{Color, El, TextStyle, Transition, col, el, row, text};
 
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, updates};
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable, updates};
 use crate::desk::Desk;
 use crate::theme::{THEMES, Theme, color};
 
@@ -103,13 +103,11 @@ pub(super) fn toggle(
 
 fn stepper(desk: &Desk, ink: &Ink) -> El {
     let step = |label: &'static str, key: &'static str, press: fn(&mut Desk)| {
-        el().key(key)
+        pressable(key, ink)
             .size(26.0, 24.0)
             .radius(6.0)
             .center()
             .border(1.0, ink.separator)
-            .hover(ink.hover)
-            .cursor(rune::Cursor::Pointer)
             .on_press(press)
             .child(text(label).font(LABEL).color(ink.text))
     };

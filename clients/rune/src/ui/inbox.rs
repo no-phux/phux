@@ -8,7 +8,8 @@ use phux_protocol::ids::ResourceId;
 use rune::{Color, El, Family, TextStyle, Transition, col, el, row, text, text_input};
 
 use super::sidebar::mark_color;
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG};
+use super::status::notice_line;
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
 use crate::activity::{Ask, Mark};
 use crate::desk::Desk;
 use crate::inbox::{self, Item, Waiting};
@@ -180,14 +181,11 @@ fn approval_card(approval: &Approval, ink: &Ink) -> El {
     }
     let decide = |decision, label: &'static str, primary: bool| {
         let id = approval.id.clone();
-        let button = el()
-            .key(format!("decide-{label}-{id}"))
+        let button = pressable(format!("decide-{label}-{id}"), ink)
             .grow(1.0)
             .py(6.0)
             .radius(6.0)
             .center()
-            .hover(ink.hover)
-            .cursor(rune::Cursor::Pointer)
             .on_press(move |d: &mut Desk| d.decide(&id, decision))
             .child(text(label).font(CAPTION).color(ink.text));
         if primary {
@@ -226,7 +224,7 @@ fn item_row(desk: &Desk, item: &Item, index: usize, picked: bool, ink: &Ink) -> 
         Item::Approval(approval) => approval_card(approval, ink),
         Item::Terminal(waiting) => waiting_card(desk, waiting, picked, ink),
     };
-    el().key(format!("inbox-item-{index}"))
+    pressable(format!("inbox-item-{index}"), ink)
         .w_full()
         .padding(12.0)
         .radius(10.0)
@@ -235,8 +233,6 @@ fn item_row(desk: &Desk, item: &Item, index: usize, picked: bool, ink: &Ink) -> 
         } else {
             ink.text.alpha(0.025)
         })
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press_tx(move |d: &mut Desk, tx| d.pick_item(index, tx))
         .child(body)
 }
@@ -272,12 +268,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
     }
     let mut foot = row().w_full().px(14.0).py(8.0).gap(12.0).items_center();
     foot = match &desk.notice {
-        Some(notice) => foot.child(
-            text(notice.clone())
-                .font(CAPTION)
-                .color(ink.danger)
-                .truncate(),
-        ),
+        Some(notice) => foot.child(notice_line(Some(notice), ink)),
         None => foot
             .child(pick_hint("↑↓", "move", ink))
             .child(pick_hint("↩", "send or open", ink))

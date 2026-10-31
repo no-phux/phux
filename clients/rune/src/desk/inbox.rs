@@ -1,5 +1,6 @@
 //! The inbox: answering what agents ask and deciding what the server holds,
-//! from anywhere, and keeping notifications in step with it.
+//! from anywhere, jumping to what needs you, and keeping notifications in
+//! step with it.
 
 use std::collections::HashMap;
 
@@ -9,7 +10,7 @@ use phux_client_runtime::control::{DeliveryOutcome, Event};
 use phux_protocol::ids::{ApprovalId, ResourceId};
 use rune::{Key, KeyEvent, TextEdit, Tx};
 
-use super::Desk;
+use super::{Desk, NoticeKind};
 use crate::alerts::{Alerts, Target};
 use crate::inbox::{self, Item, Key as ItemKey};
 
@@ -175,6 +176,26 @@ impl Desk {
         }
     }
 
+    /// Show the next terminal, after the shown one, that needs a person.
+    pub fn jump_to_attention(&mut self) {
+        let Some(topology) = &self.topology else {
+            return;
+        };
+        let panes = &topology.panes;
+        let start = self
+            .shown
+            .as_ref()
+            .and_then(|s| panes.iter().position(|p| p.terminal_id == s.terminal))
+            .map_or(0, |i| i + 1);
+        let next = (0..panes.len())
+            .map(|k| &panes[(start + k) % panes.len()])
+            .find(|p| self.activities.mark(&p.terminal_id).needs_you())
+            .cloned();
+        if let Some(pane) = next {
+            self.show(pane.terminal_id, &pane.session_name);
+        }
+    }
+
     /// Send one decision. Never retried: the event reports how it ended.
     pub fn decide(&mut self, id: &str, decision: Decision) {
         let Some(client) = &self.client else { return };
@@ -182,7 +203,7 @@ impl Desk {
             return;
         };
         if !client.decide_approval(id, decision) {
-            self.notice = Some("That decision is already on its way.".to_owned());
+            self.say(NoticeKind::Error, "That decision is already on its way.");
         }
     }
 
@@ -194,7 +215,10 @@ impl Desk {
                 true
             }
             Event::ApprovalDecision { outcome, .. } => {
-                self.notice = decision_notice(outcome);
+                match decision_notice(outcome) {
+                    Some(text) => self.say(NoticeKind::Error, text),
+                    None => self.notice = None,
+                }
                 true
             }
             Event::InputDelivery {
@@ -203,16 +227,19 @@ impl Desk {
                 message,
                 ..
             } if self.inbox.answers.remove(delivery_id).is_some() => {
-                self.notice = match outcome {
+                match outcome {
                     DeliveryOutcome::Delivered => {
                         self.inbox.reply.clear();
-                        None
+                        self.notice = None;
                     }
-                    DeliveryOutcome::Refused => Some(format!("Answer not sent: {message}")),
-                    DeliveryOutcome::Unknown => {
-                        Some("The answer may not have landed; read the pane first.".to_owned())
+                    DeliveryOutcome::Refused => {
+                        self.say(NoticeKind::Error, format!("Answer not sent: {message}"));
                     }
-                };
+                    DeliveryOutcome::Unknown => self.say(
+                        NoticeKind::Error,
+                        "The answer may not have landed; read the pane first.",
+                    ),
+                }
                 true
             }
             _ => false,

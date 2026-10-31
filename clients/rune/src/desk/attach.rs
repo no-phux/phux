@@ -9,7 +9,7 @@ use phux_client_runtime::control::FileUploadOutcome;
 use phux_protocol::ids::ResourceId;
 use rune::ClipboardContent;
 
-use super::Desk;
+use super::{Desk, NoticeKind};
 
 /// `path` as one shell word.
 pub fn quoted(path: &Path) -> String {
@@ -45,7 +45,7 @@ impl Desk {
         let terminal = shown.terminal.clone();
         let transfer = client.put_file(terminal.clone(), "png".to_owned(), png);
         self.uploads.push((transfer, terminal));
-        self.notice = Some("Uploading image…".to_owned());
+        self.say(NoticeKind::Error, "Uploading image…");
     }
 
     /// Files dropped on a pane land in that pane.
@@ -72,7 +72,10 @@ impl Desk {
                     client.with_control(|control| control.apply_user_paste(&terminal, &line));
                     client.wake();
                 }
-                _ => self.notice = Some(format!("Image not sent: {}", receipt.message)),
+                _ => self.say(
+                    NoticeKind::Error,
+                    format!("Image not sent: {}", receipt.message),
+                ),
             }
         }
     }
