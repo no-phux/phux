@@ -1,9 +1,11 @@
 //! The apps this server hosts, one per resource kind.
 //!
 //! An app owns everything its kind needs from the host: its facet commands
-//! and how a client's stream bootstraps. Host modules reach a kind only
+//! and how a client's stream bootstraps. The runtime reaches a kind only
 //! through [`app_for`] and [`app_owning`], so what a kind *is* stays in its
-//! app, and a new kind is one [`ResourceApp`] plus one [`APPS`] row.
+//! app, and a new kind is one [`ResourceApp`] plus one [`APPS`] row. `state`
+//! sits below this module: what it needs from any resource is
+//! [`crate::resource::ResourceHandle::ops`].
 
 #![allow(
     clippy::redundant_pub_crate,
