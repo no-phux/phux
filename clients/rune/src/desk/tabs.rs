@@ -12,7 +12,7 @@ use phux_client_runtime::control::SpawnRequest;
 use phux_protocol::ids::{ResourceId, SessionKey};
 use rune::{Key, KeyEvent, TextEdit, Tx};
 
-use super::{Desk, Pending};
+use super::{Desk, NoticeKind, Pending};
 use crate::palette::pane_label;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,7 +156,7 @@ impl Desk {
             Ok(operation) => {
                 self.layout_ops.insert(operation);
             }
-            Err(error) => self.notice = Some(format!("{failure}: {error}")),
+            Err(error) => self.say(NoticeKind::Error, format!("{failure}: {error}")),
         }
     }
 
@@ -252,7 +252,7 @@ impl Desk {
         match target {
             Renaming::Session(key) => {
                 if let Err(error) = client.rename_session(key, &name) {
-                    self.notice = Some(format!("Rename failed: {error}"));
+                    self.say(NoticeKind::Error, format!("Rename failed: {error}"));
                 }
             }
             Renaming::Tab(id) => {

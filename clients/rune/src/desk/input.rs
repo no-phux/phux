@@ -8,7 +8,7 @@ use phux_client_runtime::engine::{Scroll, SelectionGestureEvent};
 use phux_protocol::ids::ResourceId;
 use rune::{Phase, Tx};
 
-use super::{Desk, Pending};
+use super::{Desk, NoticeKind, Pending};
 use crate::keys::{self, Shortcut, Typed};
 
 /// A paste that would arrive as typed keys with line breaks, each one an
@@ -231,7 +231,7 @@ impl Desk {
                 if let Some(client) = &self.client
                     && let Err(error) = client.kill_session(key)
                 {
-                    self.notice = Some(format!("Session not closed: {error}"));
+                    self.say(NoticeKind::Error, format!("Session not closed: {error}"));
                 }
             }
             None => {}

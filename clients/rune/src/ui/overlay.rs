@@ -5,7 +5,7 @@ use phux_client_runtime::publication::GridFrame;
 use phux_protocol::ids::ResourceId;
 use rune::{Color, El, Family, TextStyle, Transition, el, row, text, text_input};
 
-use super::{CAPTION, Ink, PAD};
+use super::{CAPTION, Ink, PAD, pressable};
 use crate::desk::Desk;
 use crate::grid::Metrics;
 
@@ -33,12 +33,10 @@ pub fn link_underline(desk: &Desk, id: &ResourceId, m: &Metrics, ink: &Ink) -> V
 }
 
 fn icon_button(label: &'static str, key: &'static str, ink: &Ink, press: fn(&mut Desk)) -> El {
-    el().key(key)
+    pressable(key, ink)
         .size(24.0, 24.0)
         .radius(5.0)
         .center()
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press(press)
         .child(text(label).font(CAPTION).color(ink.dim))
 }
@@ -58,8 +56,7 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         .on_edit(|d: &mut Desk| &mut d.find_query)
         .on_input_key(|d: &mut Desk, event, tx| d.find_key(event, tx))
         .on_input_change(|d: &mut Desk, _| d.run_search());
-    let case = el()
-        .key("find-case")
+    let case = pressable("find-case", ink)
         .size(26.0, 22.0)
         .radius(5.0)
         .center()
@@ -68,8 +65,6 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         } else {
             Color::TRANSPARENT
         })
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press(Desk::toggle_find_case)
         .child(text("Aa").font(CAPTION).color(if find.case_sensitive {
             ink.text

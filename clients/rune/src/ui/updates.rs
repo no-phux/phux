@@ -4,7 +4,7 @@
 use rune::{Color, El, Transition, col, el, row, text};
 
 use super::settings::{section, toggle};
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG};
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
 use crate::desk::Desk;
 use crate::desk::updates::{Action, Updater, Work};
 use crate::updates::VERSION;
@@ -19,17 +19,15 @@ fn act_button(action: Action, key: &'static str, ink: &Ink) -> El {
         .fill(ink.accent)
         .cursor(rune::Cursor::Pointer)
         .on_press_tx(|d: &mut Desk, tx| d.update_act(tx))
-        .child(text(action.label()).font(CAPTION).color(Color::WHITE))
+        .child(text(action.label()).font(CAPTION).color(ink.on_accent))
 }
 
 fn quiet_button(label: &'static str, key: &'static str, press: fn(&mut Desk), ink: &Ink) -> El {
-    el().key(key)
+    pressable(key, ink)
         .px(12.0)
         .py(6.0)
         .radius(6.0)
         .border(1.0, ink.separator)
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press(press)
         .child(text(label).font(CAPTION).color(ink.text))
 }

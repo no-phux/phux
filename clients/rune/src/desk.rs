@@ -72,6 +72,21 @@ pub struct Painted {
 type Fitted = ((u16, u16), (u16, u16));
 
 /// What waits on the user's Return or Escape.
+/// What kind of thing a notice says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    #[expect(dead_code, reason = "every notice so far reports a failure")]
+    Info,
+    Error,
+}
+
+/// One line for the user, in the status line and the inbox's footer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub kind: NoticeKind,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
     /// A paste that would type line breaks into a program.
@@ -110,7 +125,7 @@ pub struct Desk {
     /// An action waiting for the user's confirmation.
     pub pending: Option<Pending>,
     /// A command's failure (a spawn), shown until the next terminal opens.
-    pub notice: Option<String>,
+    pub notice: Option<Notice>,
     /// The command palette, while open, and its field and highlighted row.
     pub palette_open: bool,
     pub palette_query: rune::TextEdit,
@@ -193,6 +208,12 @@ pub struct Desk {
 }
 
 impl Desk {
+    /// Put a line in front of the user.
+    pub fn say(&mut self, kind: NoticeKind, text: impl Into<String>) {
+        let text = text.into();
+        self.notice = Some(Notice { kind, text });
+    }
+
     pub fn new(resolved: &Resolved) -> Self {
         let remembered = (!resolved.aimed)
             .then(|| rune::prefs::Prefs::open(PREFS_ID).get::<String>("machine"))
@@ -404,9 +425,10 @@ impl Desk {
                 self.pending_splits.remove(&request_id);
                 match (terminal_id, error) {
                     (Some(id), _) => self.want(id),
-                    (None, error) => {
-                        self.notice = error.or_else(|| Some("spawn failed".to_owned()))
-                    }
+                    (None, error) => self.say(
+                        NoticeKind::Error,
+                        error.unwrap_or_else(|| "spawn failed".to_owned()),
+                    ),
                 }
                 true
             }
@@ -426,7 +448,10 @@ impl Desk {
                 if self.layout_ops.remove(&operation) =>
             {
                 if matches!(outcome, OrgOutcome::Refused(_) | OrgOutcome::Error { .. }) {
-                    self.notice = Some("The layout changed elsewhere first; try again.".to_owned());
+                    self.say(
+                        NoticeKind::Error,
+                        "The layout changed elsewhere first; try again.",
+                    );
                 }
                 true
             }

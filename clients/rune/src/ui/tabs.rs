@@ -3,7 +3,7 @@
 
 use rune::{Color, El, TextStyle, Transition, col, el, row, text, text_input};
 
-use super::{CAPTION, Ink, LABEL_STRONG};
+use super::{CAPTION, Ink, LABEL_STRONG, pressable};
 use crate::activity::Mark;
 use crate::desk::{Desk, Renaming, Tab};
 
@@ -20,12 +20,10 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
             .fill(super::sidebar::mark_color(Mark::Blocked, ink))
     });
     let close = tab.active.then(|| {
-        el().key(format!("tab-close-{index}"))
+        pressable(format!("tab-close-{index}"), ink)
             .size(16.0, 16.0)
             .radius(4.0)
             .center()
-            .hover(ink.hover)
-            .cursor(rune::Cursor::Pointer)
             .on_press(move |d: &mut Desk| d.close_tab(index))
             .child(text("✕").font(CAPTION).color(ink.dim))
     });
@@ -34,8 +32,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
             .font(CAPTION)
             .color(ink.dim.alpha(0.7))
     });
-    row()
-        .key(format!("tab-{index}"))
+    pressable(format!("tab-{index}"), ink)
         .h(24.0)
         .max_w(200.0)
         .min_w(0.0)
@@ -48,8 +45,6 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
         } else {
             Color::TRANSPARENT
         })
-        .hover(ink.hover)
-        .cursor(rune::Cursor::Pointer)
         .on_press(move |d: &mut Desk| d.select_tab(index))
         .on_double_press(move |d: &mut Desk| d.rename_tab(index))
         .children(dot)
@@ -85,12 +80,10 @@ pub fn strip(desk: &Desk, ink: &Ink) -> Option<El> {
     }
     Some(
         line.child(
-            el().key("tab-new")
+            pressable("tab-new", ink)
                 .size(24.0, 24.0)
                 .radius(6.0)
                 .center()
-                .hover(ink.hover)
-                .cursor(rune::Cursor::Pointer)
                 .on_press(|d: &mut Desk| d.new_tab())
                 .child(text("+").font(LABEL_STRONG).color(ink.dim)),
         ),

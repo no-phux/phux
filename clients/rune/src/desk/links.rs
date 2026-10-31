@@ -4,7 +4,7 @@
 use phux_protocol::ids::ResourceId;
 use rune::{Phase, Tx};
 
-use super::Desk;
+use super::{Desk, NoticeKind};
 use crate::links::{self, Link};
 
 #[derive(Default)]
@@ -114,7 +114,10 @@ impl Desk {
             return false;
         };
         if let Err(error) = tx.open_url(&link.url) {
-            self.notice = Some(format!("Couldn't open {}: {error:?}", link.url));
+            self.say(
+                NoticeKind::Error,
+                format!("Couldn't open {}: {error:?}", link.url),
+            );
         }
         self.pointer.opened = true;
         true
