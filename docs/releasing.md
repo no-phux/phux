@@ -81,7 +81,8 @@ Publishing and moving the feed are one job; there is no manual promotion step.
 **Floors.** Linux archives need glibc 2.39, what the `ubuntu-24.04` build host
 links; this is a higher floor than the CLI's 2.35. macOS 14.0 is
 `LSMinimumSystemVersion`, and qualification fails if the binary's Mach-O floor
-rises above it.
+rises above it. No deployment target is set, so that floor is rustc's arm64
+default, 11.0: the plist key is what holds macOS at 14.0.
 
 ### A bad Rune release
 
@@ -89,9 +90,10 @@ Clients refuse older versions, so nothing published can pull a bad build back
 off a machine that took it. **The way out is forward.** Two checks stand in
 front of that: qualification before upload, and from alpha.8 a launch check in
 the updater, which has the new binary draw one headless frame on the user's GPU
-before anything is swapped. Clients on alpha.7 and earlier only run `--version`,
-which exits before any GPU work. Neither check opens a real window on the
-user's machine, so a crash there still ships.
+before anything is swapped. Clients on alpha.7 and earlier have no such check:
+Linux runs `--version`, which exits before any GPU work, and macOS runs nothing
+from the new build. Neither check opens a real window on the user's machine, so
+a crash there still ships.
 
 1. **Stop it spreading.** Put the last good feed back, so clients that haven't
    taken the bad version stop being offered it. Do this first.

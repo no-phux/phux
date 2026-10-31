@@ -15,9 +15,13 @@ terminal UI for daily work.
 curl -fsSL https://phux.sh/install | sh -s -- --rune
 ```
 
-This verifies the release, installs the phux CLI if you have none, and puts
-**Phux Rune.app** in Applications, or on Linux the app in
-`~/.local/share/phux-rune` with a menu entry and a `phux-rune` command.
+This checks the archive's SHA-256, installs the phux CLI if you have none, and
+puts **Phux Rune.app** in Applications, or on Linux the app in
+`~/.local/share/phux-rune` with a menu entry and a `phux-rune` command. The
+release signature is verified only with `minisign` on your `PATH`; without it
+the digest comes from the unsigned feed, and `PHUX_REQUIRE_SIGNATURE=1` refuses
+to go on ([Install](../../docs/install.md)). The app's own updates always
+require the signature.
 
 Or download the newest `rune-v*` release from
 [Releases](https://github.com/no-phux/phux/releases?q=rune-v&expanded=true):
@@ -177,8 +181,9 @@ cancels).
 - Wayland is not qualified; see [Install](#install).
 - The update check draws off-screen, so a build that only fails when opening a
   real window can still install.
-- While a server update is due, quitting leaves the app as it was and the
-  download is dropped. **Restart & update server** moves both.
+- On macOS, while a server update is due, quitting leaves the app as it was
+  and the download is dropped. **Restart & update server** moves both. Linux
+  has already replaced the files by then.
 
 ## Develop
 

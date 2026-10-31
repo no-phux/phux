@@ -7,8 +7,9 @@
     feed.py release-flags VERSION
 
 `build` writes the update feed. Digests come from the sidecars the release
-signs, sizes from the archives. The feed is unsigned: clients believe a digest
-only once it matches the minisigned sidecar, and name assets themselves.
+signs, sizes from the archives. The feed is unsigned: the app believes a digest
+only once it matches the minisigned sidecar, and names assets itself. install.sh
+does the same with minisign on PATH, and otherwise trusts this digest.
 
 `newest` prints the highest of the tags on stdin, in the order clients use
 (src/updates.rs): 0.1.0 sorts after its alphas, which `sort -V` gets backwards.
