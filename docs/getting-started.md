@@ -1,18 +1,43 @@
 # Getting started
 
-This page walks through a first session: start phux, split and move between panes, open tabs and sessions, detach, and come back. It assumes `phux` is [installed](./install.md).
+This page walks through a first session: install phux, run a first agent, then split and move between panes, open tabs and sessions, detach, and come back.
+
+## First agent
+
+Install phux, start it, run an agent you already have, and read its state. phux does not install Claude Code, Codex, OpenCode, or pi.
+
+```sh
+curl -fsSL https://phux.sh/install | sh
+phux
+```
+
+The install script puts `phux` and `phux-mcp` in `~/.local/bin`. When that directory is not on `PATH`, it adds the directory to your shell profile. Open a new shell if the next command is not found.
+
+`phux` starts a background server and attaches to a session. In the shell pane, run `claude`, `codex`, `opencode`, or `pi`, whichever is on that shell's `PATH`. Detach with <kbd>C-a</kbd> <kbd>d</kbd>. From another shell:
+
+```sh
+phux agent list
+```
+
+Once phux has identified the program in the foreground, that command prints the pane, the agent kind, and its state: `working`, `blocked`, `idle`, `done`, or `unknown`. The sidebar (<kbd>C-a</kbd> <kbd>b</kbd>) lists the same agents. [Coding agents](./agents.md) is the rest of the setup. [Using phux as an agent](./agent-quickstart.md) drives a session without attaching.
+
+Homebrew is one command, and it does not ask for a separate `brew trust`:
+
+```sh
+brew install no-phux/tap/phux
+```
+
+See [Homebrew](./install.md#homebrew).
+
+## Start phux
+
+The rest of this page assumes `phux` is [installed](./install.md).
 
 ```sh
 phux
 ```
 
 Press <kbd>C-a</kbd> <kbd>d</kbd> (<kbd>Ctrl</kbd>+<kbd>a</kbd>, then <kbd>d</kbd>) to detach. Run `phux` again to come back to exactly where you were.
-
-## Start phux
-
-```sh
-phux
-```
 
 The first run starts a server in the background and attaches you to a new session named after the current directory. Your shell runs in a pane inside it. Later runs attach to the session you used last.
 

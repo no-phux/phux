@@ -26,7 +26,12 @@ builds remain ad-hoc signed. Only CLI releases are GitHub's
 "Latest". The Homebrew tap discovers stable `vX.Y.Z` CLI and
 `desktop-vX.Y.Z` desktop releases independently every fifteen minutes,
 verifies artifact checksums, and renders the formula and macOS DMG cask.
-Upstream tap credentials or dispatches are not required.
+Upstream tap credentials or dispatches are not required. The CLI formula
+body comes from [`scripts/gen-formula.sh`](../scripts/gen-formula.sh); the
+tap copies that script and re-renders. The formula license is Apache-2.0,
+matching `LICENSE` and the workspace `Cargo.toml`. The desktop cask
+renderer lives in the tap and installs the signed, notarized DMG.
+`release.yml` does not push the tap.
 
 ## Stable
 

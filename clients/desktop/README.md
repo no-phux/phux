@@ -26,12 +26,12 @@ release signature.
 ### macOS Homebrew
 
 ```sh
-brew trust --tap no-phux/tap # Homebrew 6+
 brew install --cask no-phux/tap/phux-desktop
 ```
 
-The cask installs the signed, notarized DMG on Apple silicon, macOS 26+.
-Update with `brew upgrade --cask no-phux/tap/phux-desktop`. No separate CLI
+One command. On Homebrew 6 and later the fully qualified cask name trusts
+only `phux-desktop`. The cask installs the signed, notarized DMG on Apple
+silicon, macOS 26+. Update with `brew upgrade --cask no-phux/tap/phux-desktop`. No separate CLI
 formula is required; an existing CLI is preserved.
 
 ### macOS download
