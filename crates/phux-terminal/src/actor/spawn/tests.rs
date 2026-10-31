@@ -22,18 +22,6 @@ fn a_missing_command_is_one_line_without_the_path() {
     );
 }
 
-#[test]
-fn resolve_shell_precedence() {
-    let zsh = || Some("/bin/zsh".to_owned());
-    assert_eq!(
-        resolve_shell_from(Some("/opt/fancy/fish"), zsh()),
-        "/opt/fancy/fish"
-    );
-    assert_eq!(resolve_shell_from(None, zsh()), "/bin/zsh");
-    assert_eq!(resolve_shell_from(Some("  "), zsh()), "/bin/zsh");
-    assert_eq!(resolve_shell_from(None, None), "/bin/sh");
-}
-
 fn argv_strings(cmd: &CommandBuilder) -> Vec<String> {
     cmd.get_argv()
         .iter()

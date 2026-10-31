@@ -190,7 +190,7 @@ impl ServerState {
         tid: ResourceId,
     ) -> Option<PaneUpgradeHandle> {
         let handle = self.resource_handle(tid)?;
-        let upgrade = crate::runtime::apps::app_for(handle.kind)?.upgrade_sender(handle)?;
+        let upgrade = handle.ops().upgrade_sender()?;
         let (reply, rx) = oneshot::channel();
         upgrade.send(UpgradeHandleRequest { reply }).await.ok()?;
         rx.await.ok()

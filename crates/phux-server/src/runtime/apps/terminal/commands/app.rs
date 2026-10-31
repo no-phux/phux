@@ -34,34 +34,6 @@ impl ResourceApp for TerminalApp {
         Ok(())
     }
 
-    fn resize(
-        &self,
-        handle: &ResourceHandle,
-        (cols, rows): (u16, u16),
-        cell_px: Option<(u16, u16)>,
-    ) -> bool {
-        handle.terminal().is_ok_and(|terminal| {
-            terminal
-                .resize
-                .try_send(ResizeRequest {
-                    cols,
-                    rows,
-                    cell_px,
-                    resync_clients: true,
-                    resync_only: false,
-                    resync_for: None,
-                })
-                .is_ok()
-        })
-    }
-
-    fn upgrade_sender(
-        &self,
-        handle: &ResourceHandle,
-    ) -> Option<tokio::sync::mpsc::Sender<crate::resource::handoff::UpgradeHandleRequest>> {
-        Some(handle.terminal().ok()?.upgrade.clone())
-    }
-
     fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
         release_terminal_consumer(handle, client);
     }

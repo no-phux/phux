@@ -82,25 +82,6 @@ pub(crate) trait ResourceApp: Sync {
         Box::pin(std::future::ready(()))
     }
 
-    /// Ask this resource to adopt `cols` by `rows`; whether it took the
-    /// request. A kind without geometry never does.
-    fn resize(
-        &self,
-        _handle: &ResourceHandle,
-        _size: (u16, u16),
-        _cell_px: Option<(u16, u16)>,
-    ) -> bool {
-        false
-    }
-
-    /// Where this resource answers a graceful-upgrade handoff request.
-    fn upgrade_sender(
-        &self,
-        _handle: &ResourceHandle,
-    ) -> Option<tokio::sync::mpsc::Sender<crate::resource::handoff::UpgradeHandleRequest>> {
-        None
-    }
-
     /// Serve a facet command this kind owns in the catalog.
     fn command<'a>(
         &'a self,

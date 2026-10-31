@@ -156,22 +156,12 @@ pub(crate) fn create_named_session(
         return Err(format!("session {name:?} already exists"));
     }
 
-    let (with_pty, override_cmd, scrollback) = state.with(|s| {
-        (
-            s.attach_create_seeds_pty(),
-            s.attach_create_seed_command(),
-            s.scrollback_limits(),
-        )
-    });
+    let (with_pty, scrollback) =
+        state.with(|s| (s.attach_create_seeds_pty(), s.scrollback_limits()));
 
     let seed_cmd = with_pty.then(|| {
         crate::runtime::apps::terminal::launch::named_session_command(
-            state,
-            name,
-            override_cmd,
-            command,
-            cwd,
-            env,
+            state, name, command, cwd, env,
         )
     });
     match seed_session(state, name, seed_cmd, scrollback, root_token, None, origin) {

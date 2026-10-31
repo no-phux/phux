@@ -153,7 +153,7 @@ impl ServerConfig {
             retain: crate::state::RetainPolicy::default(),
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
-            shell: crate::runtime::apps::terminal::launch::default_shell(),
+            shell: phux_config::shell::resolve_shell(None),
             login_shell: false,
             window_size: phux_config::WindowSize::default(),
             voice: phux_config::VoiceCfg::default(),

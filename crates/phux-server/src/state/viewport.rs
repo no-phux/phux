@@ -128,10 +128,9 @@ impl ServerState {
             if self.retained_exit(terminal).is_some() {
                 continue;
             }
-            let resized = self.resource_handle(terminal).is_some_and(|handle| {
-                crate::runtime::apps::app_for(handle.kind)
-                    .is_some_and(|app| app.resize(handle, (cols, rows), cell_px))
-            });
+            let resized = self
+                .resource_handle(terminal)
+                .is_some_and(|handle| handle.ops().resize((cols, rows), cell_px));
             if resized && let Some(pane) = self.registry_mut().terminal_mut(terminal) {
                 pane.dims = (cols, rows);
             }

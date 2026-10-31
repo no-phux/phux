@@ -66,6 +66,30 @@ fn walk(dir: &Path, root: &Path, found: &mut BTreeMap<String, usize>) {
     }
 }
 
+/// `state` sits below the runtime: an app may name it, never the reverse.
+#[test]
+fn state_never_reaches_up_into_the_apps() {
+    fn scan(dir: &Path, hits: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                scan(&path, hits);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !is_test_source(&path.to_string_lossy())
+                && std::fs::read_to_string(&path)
+                    .expect("read source")
+                    .contains("runtime::apps")
+            {
+                hits.push(path.display().to_string());
+            }
+        }
+    }
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo and nextest");
+    let mut hits = Vec::new();
+    scan(&Path::new(&manifest).join("src/state"), &mut hits);
+    assert!(hits.is_empty(), "state depends on the apps: {hits:?}");
+}
+
 #[test]
 fn the_host_reaches_the_terminal_engine_only_through_its_app() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by the test runner");
