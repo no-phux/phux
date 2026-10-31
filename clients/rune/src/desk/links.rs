@@ -4,6 +4,7 @@
 use phux_protocol::ids::ResourceId;
 use rune::{Phase, Tx};
 
+use super::input::selection::Held;
 use super::{Desk, NoticeKind};
 use crate::links::{self, Link};
 
@@ -18,6 +19,8 @@ pub struct Pointer {
     opened: bool,
     /// ⌘ as the last pointer or modifier event left it.
     cmd: bool,
+    /// A selection drag autoscrolling past the grid.
+    pub(super) held: Option<Held>,
 }
 
 impl Desk {

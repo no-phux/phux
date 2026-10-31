@@ -346,6 +346,7 @@ pub const COMMANDS: &[Command] = &[
     ),
     row!(Shortcut::Copy, "Copy Selection", [m('c')], [l('c')]),
     row!(Shortcut::Paste, "Paste", [m('v')], [l('v')]),
+    row!(Shortcut::SelectAll, "Select All", [m('a')], [l('a')]),
     // ⌘+ is Shift and the = key on most layouts.
     row!(
         Shortcut::ZoomIn,

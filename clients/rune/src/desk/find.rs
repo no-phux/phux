@@ -9,6 +9,7 @@ use phux_protocol::ids::ResourceId;
 use rune::{Key, KeyEvent, TextEdit, Tx};
 
 use super::Desk;
+use super::input::selection::Selected;
 
 pub struct Find {
     pub terminal: ResourceId,
@@ -64,14 +65,10 @@ impl Desk {
 
     /// Search for the selected text, as macOS's ⌘E does.
     pub fn find_selection(&mut self) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
-            return;
+        let selected = match self.selected() {
+            Selected::Text(text) => text,
+            Selected::Nothing | Selected::TooLarge => String::new(),
         };
-        let selected = client
-            .engine()
-            .and_then(|e| e.view_selection_text(shown.view).ok())
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_default();
         let Some(line) = selected.lines().find(|l| !l.trim().is_empty()) else {
             return self.open_find();
         };

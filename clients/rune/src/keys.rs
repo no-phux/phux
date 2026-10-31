@@ -64,6 +64,7 @@ pub enum Shortcut {
     Machines,
     ToggleFullScreen,
     KeyboardShortcuts,
+    SelectAll,
 }
 
 impl Shortcut {

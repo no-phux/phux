@@ -5,13 +5,15 @@ use phux_client_core::layout::{Direction, SplitDir};
 use phux_client_runtime::ViewId;
 use phux_client_runtime::control::{ControlPlane, DeliveryOutcome};
 use phux_client_runtime::engine::ReplicaPrompt;
-use phux_client_runtime::engine::{Scroll, SelectionGestureEvent};
+use phux_client_runtime::engine::Scroll;
 use phux_client_runtime::publication::GridFrame;
 use phux_protocol::ids::ResourceId;
-use rune::{Phase, Tx};
+use rune::Tx;
 
 use super::{Desk, NoticeKind, Pending};
 use crate::keys::{self, Shortcut, Typed};
+
+pub(super) mod selection;
 
 /// What the window says while keys can't reach the terminal; the next key
 /// that does takes it back.
@@ -206,6 +208,7 @@ impl Desk {
     pub fn shortcut(&mut self, action: Shortcut, tx: &mut Tx) {
         match action {
             Shortcut::Copy => self.copy(tx),
+            Shortcut::SelectAll => self.select_all(),
             Shortcut::Paste => tx.read_clipboard(|desk: &mut Desk, content, _| {
                 desk.paste_content(content);
             }),
@@ -247,20 +250,6 @@ impl Desk {
             Shortcut::FindNext => self.step_find(-1),
             Shortcut::FindPrevious => self.step_find(1),
             Shortcut::FindSelection => self.find_selection(),
-        }
-    }
-
-    pub(super) fn copy(&self, tx: &mut Tx) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
-            return;
-        };
-        let Some(engine) = client.engine() else {
-            return;
-        };
-        if let Ok(bytes) = engine.view_selection_text(shown.view)
-            && !bytes.is_empty()
-        {
-            tx.copy(String::from_utf8_lossy(&bytes).into_owned());
         }
     }
 
@@ -426,48 +415,6 @@ impl Desk {
             Some(shown) if &shown.terminal == terminal => Some(shown.view),
             _ => self.others.get(terminal).copied(),
         }
-    }
-
-    /// A press, drag, or release over the grid selects through the engine.
-    pub fn select(&mut self, terminal: &ResourceId, phase: Phase, x: f32, y: f32, clicks: u32) {
-        let Some(view) = self.view_of(terminal) else {
-            return;
-        };
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let Some(frame) = client.acquire_view(view) else {
-            return;
-        };
-        let Some(engine) = client.engine() else {
-            return;
-        };
-        let metrics = self.metrics();
-        let (col, row) = metrics.cell_at(x, y, frame.cols, frame.rows);
-        let (cell_w, cell_h) = metrics.cell_px();
-        let phase = match phase {
-            Phase::Down => 0,
-            Phase::Move => 1,
-            Phase::Up => 2,
-        };
-        let event = SelectionGestureEvent {
-            phase,
-            clicks: clicks.clamp(1, 3),
-            handle: self.gesture,
-            column: col,
-            rectangle: false,
-            row: u32::from(row),
-            x: f64::from(x * metrics.scale),
-            y: f64::from(y * metrics.scale),
-            columns: u32::from(frame.cols),
-            cell_width: u32::from(cell_w),
-            screen_height: (u32::from(frame.rows) * u32::from(cell_h)).max(1),
-            padding_left: 0,
-        };
-        if let Ok(result) = engine.view_selection_gesture(view, event) {
-            self.gesture = if phase == 2 { 0 } else { result.handle };
-        }
-        self.generation += 1;
     }
 }
 

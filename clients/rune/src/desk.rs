@@ -29,7 +29,7 @@ mod input;
 mod layout;
 mod links;
 pub mod machines;
-mod mouse;
+pub mod mouse;
 mod palette;
 mod sessions;
 mod settings;
@@ -375,6 +375,7 @@ impl Desk {
         }
         self.finish_uploads(&client);
         changed |= self.sync_alerts();
+        changed |= self.autoscroll(tx);
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();

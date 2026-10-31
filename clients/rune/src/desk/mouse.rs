@@ -11,10 +11,20 @@ use phux_client_runtime::engine::{MouseMode, Scroll};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
-use rune::{Mods, Phase};
+use rune::{Mods, Phase, Tx};
 
 use super::Desk;
 use crate::keys;
+
+/// One step of a button's gesture over a pane, at `x, y` in its grid's points.
+#[derive(Debug, Clone, Copy)]
+pub struct Press {
+    pub phase: Phase,
+    pub x: f32,
+    pub y: f32,
+    pub clicks: u32,
+    pub mods: Mods,
+}
 
 /// The most wheel steps one event sends, so a fling can't flood a program.
 const MAX_WHEEL_STEPS: i64 = 100;
@@ -28,29 +38,23 @@ impl Desk {
             .unwrap_or(MouseMode::None)
     }
 
-    /// A press, drag or release over a pane, at `x, y` in its grid's points.
-    pub fn pointer(
-        &mut self,
-        terminal: &ResourceId,
-        phase: Phase,
-        x: f32,
-        y: f32,
-        clicks: u32,
-        mods: Mods,
-    ) {
-        if phase == Phase::Down {
+    /// A press, drag or release over a pane.
+    pub fn pointer(&mut self, terminal: &ResourceId, press: &Press, tx: &mut Tx) {
+        if press.phase == Phase::Down {
             self.focus_pane(terminal);
         }
         let captured = self.mouse_capture.as_ref() == Some(terminal);
-        let tracking = self.mouse_mode(terminal) != MouseMode::None && !mods.shift;
-        if captured || (phase == Phase::Down && tracking) {
-            self.report(terminal, phase, x, y, mods);
+        let tracking = self.mouse_mode(terminal) != MouseMode::None && !press.mods.shift;
+        if captured || (press.phase == Phase::Down && tracking) {
+            self.report(terminal, press);
             return;
         }
-        self.select(terminal, phase, x, y, clicks);
+        self.track_drag(terminal, press, tx);
+        self.select(terminal, press.phase, press.x, press.y, press.clicks);
     }
 
-    fn report(&mut self, terminal: &ResourceId, phase: Phase, x: f32, y: f32, mods: Mods) {
+    fn report(&mut self, terminal: &ResourceId, press: &Press) {
+        let Press { phase, x, y, .. } = *press;
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -90,7 +94,7 @@ impl Desk {
         let event = MouseEvent {
             action,
             button: MouseButton::Left,
-            mods: keys::mods(mods),
+            mods: keys::mods(press.mods),
             x,
             y,
         };

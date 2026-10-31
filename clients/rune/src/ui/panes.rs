@@ -7,6 +7,7 @@ use rune::{Color, Cx, El, Phase, col, el, row};
 
 use super::status::placeholder;
 use super::{Ink, PAD, overlay};
+use crate::desk::mouse::Press;
 use crate::desk::{Desk, SplitPath};
 use crate::grid;
 
@@ -178,7 +179,14 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
             // Drag points include the padding; the grid starts inside it.
             let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
             if !d.press_link(&press, drag.phase, x, y, mods.cmd, tx) {
-                d.pointer(&press, drag.phase, x, y, drag.clicks, mods);
+                let step = Press {
+                    phase: drag.phase,
+                    x,
+                    y,
+                    clicks: drag.clicks,
+                    mods,
+                };
+                d.pointer(&press, &step, tx);
                 if drag.phase == Phase::Up {
                     d.selection_done(tx);
                 }
