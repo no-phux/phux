@@ -85,7 +85,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
         hover: t.hover,
         accent,
         on_accent: on_fill(accent),
-        danger: rune::oklch(0.68, 0.17, 25.0),
+        danger: Theme::system_danger(dark),
         edge: t.separator,
         marks: Theme::system_marks(dark),
         selection: Selection::system(),
@@ -284,9 +284,22 @@ mod tests {
     fn the_system_appearance_clears_the_bars_too() {
         for dark in [true, false] {
             let p = ink(dark, rune::oklch(0.6, 0.15, 250.0), None);
-            for ground in [p.bg, p.sidebar] {
-                assert!(contrast(p.text, ground) >= TEXT_BAR, "text, dark {dark}");
+            let marks = p.marks;
+            let readable = [
+                ("text", p.text),
+                ("danger", p.danger),
+                ("alert", marks.alert),
+                ("done", marks.done),
+                ("bell", marks.bell),
+                ("working", marks.working),
+                ("good", marks.good),
+            ];
+            for ground in [p.bg, p.sidebar, p.raised] {
                 assert!(contrast(p.dim, ground) >= DIM_BAR, "dim, dark {dark}");
+                for (role, ink) in readable {
+                    let got = contrast(ink, ground);
+                    assert!(got >= TEXT_BAR, "{role}, dark {dark}: {got}");
+                }
             }
         }
     }

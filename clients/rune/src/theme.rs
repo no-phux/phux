@@ -135,6 +135,11 @@ impl Theme {
         THEMES[if dark { MOCHA } else { LATTE }].roles().marks
     }
 
+    /// The system appearance's failure colour, from the same palettes.
+    pub fn system_danger(dark: bool) -> Color {
+        THEMES[if dark { MOCHA } else { LATTE }].roles().danger
+    }
+
     fn raised_hex(&self) -> u32 {
         mix(self.background, self.foreground, RAISED)
     }
