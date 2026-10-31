@@ -27,8 +27,12 @@ const MAX_LOG: u64 = 1 << 20;
 const REPORT_TAIL: usize = 16 * 1024;
 
 /// The directory every log lives in: what macOS's Console shows, or the XDG
-/// state directory.
+/// state directory. None in tests, which must not write to the developer's
+/// logs: Copy diagnostics would carry their lines.
 pub fn dir() -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
     let home = std::env::var_os("HOME")?;
     Some(dir_under(
         Path::new(&home),

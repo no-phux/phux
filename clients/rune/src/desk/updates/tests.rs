@@ -186,9 +186,10 @@ fn a_failed_recheck_keeps_what_is_known() {
 }
 
 #[test]
-fn a_new_check_clears_the_copied_mark() {
+fn the_copied_mark_ends_on_its_own() {
     let mut updater = updater();
-    updater.copied = true;
-    updater.check_now();
-    assert!(!updater.copied);
+    updater.show_copied(Duration::ZERO);
+    assert!(updater.copied);
+    let done = updater.done.1.recv_timeout(Duration::from_secs(5));
+    assert!(matches!(done, Ok(Done::CopiedShown)));
 }

@@ -16,6 +16,7 @@ use crate::updates::phux::{self, Cli, Handoff};
 use crate::updates::{self, Release};
 
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+const COPIED_FOR: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Work {
@@ -60,6 +61,7 @@ enum Done {
     Progress(Progress),
     Staged(Result<Release, String>),
     Server(Result<Handoff, String>, bool),
+    CopiedShown,
 }
 
 pub struct Updater {
@@ -80,7 +82,7 @@ pub struct Updater {
     asked: bool,
     /// The version whose card was closed; a newer one reopens it.
     dismissed: Option<String>,
-    /// Diagnostics went to the clipboard; the button says so.
+    /// Diagnostics just went to the clipboard; the button says so for a moment.
     pub copied: bool,
     done: (Sender<Done>, Receiver<Done>),
     waker: Option<Waker>,
@@ -145,6 +147,14 @@ impl Updater {
         });
     }
 
+    fn show_copied(&mut self, shown_for: Duration) {
+        self.copied = true;
+        self.worker(move |send| {
+            std::thread::sleep(shown_for);
+            send(Done::CopiedShown);
+        });
+    }
+
     pub fn busy(&self) -> bool {
         self.work != Work::Idle
     }
@@ -152,7 +162,6 @@ impl Updater {
     /// A check someone asked for, from Settings or the palette.
     pub fn check_now(&mut self) {
         self.asked = true;
-        self.copied = false;
         self.dismissed = None;
         self.check();
     }
@@ -371,6 +380,7 @@ impl Desk {
                         Err(error) => updater.message = Some(format!("Phux Rune: {error}")),
                     }
                 }
+                Done::CopiedShown => updater.copied = false,
                 Done::Server(result, restart_after) => {
                     if updater.server_done(result) && restart_after {
                         self.restart(tx);
@@ -434,7 +444,7 @@ impl Desk {
             ),
         ];
         tx.copy(diag::report(&facts));
-        self.updater.copied = true;
+        self.updater.show_copied(COPIED_FOR);
     }
 
     pub fn toggle_update_automatic(&mut self) {
