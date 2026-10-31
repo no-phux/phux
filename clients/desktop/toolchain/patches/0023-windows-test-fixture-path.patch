@@ -1,7 +1,8 @@
 diff --git a/gpui-fast-windows/src/fast/layers/tests.rs b/gpui-fast-windows/src/fast/layers/tests.rs
+index af824c2..6a8e578 100644
 --- a/gpui-fast-windows/src/fast/layers/tests.rs
 +++ b/gpui-fast-windows/src/fast/layers/tests.rs
-@@ -51,7 +51,7 @@
+@@ -51,7 +51,7 @@ use crate::fast::layers::tile_cache::create_globals;
  const TILE: u32 = 512;
  
  #[cfg(feature = "test-support")]

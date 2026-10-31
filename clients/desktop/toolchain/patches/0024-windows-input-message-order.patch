@@ -267,21 +267,22 @@ index 0000000..9a749c5
 +    });
 +}
 diff --git a/gpui-fast-windows/src/fast/mod.rs b/gpui-fast-windows/src/fast/mod.rs
-index 07dd9c7..03e8658 100644
+index b8f5879..8a0d460 100644
 --- a/gpui-fast-windows/src/fast/mod.rs
 +++ b/gpui-fast-windows/src/fast/mod.rs
-@@ -13,5 +13,6 @@ pub(crate) mod composition;
- pub(crate) mod draw_state;
+@@ -15,6 +15,7 @@ pub(crate) mod draw_state;
  pub(crate) mod frame;
+ pub(crate) mod frame_schedule;
  pub(crate) mod globals;
 +pub(crate) mod input_order;
  pub(crate) mod layers;
- pub(crate) mod rounded_clip;
+ #[cfg(test)]
+ pub(crate) mod native_tests;
 diff --git a/gpui-fast-windows/src/platform.rs b/gpui-fast-windows/src/platform.rs
-index fa5195f..3235af7 100644
+index 0281a64..0925579 100644
 --- a/gpui-fast-windows/src/platform.rs
 +++ b/gpui-fast-windows/src/platform.rs
-@@ -1347,9 +1347,7 @@ impl WindowsPlatformInner {
+@@ -1370,9 +1370,7 @@ impl WindowsPlatformInner {
                      if peek_msg(&mut msg, PM_QS_PAINT) {
                          process_message(&msg);
                      }

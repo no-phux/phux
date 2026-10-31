@@ -98,10 +98,34 @@ test("the shipping source pins the Windows backend and verifies the complete pat
   const shipping = layout();
   const pin = readPin(shipping);
   expect(pin.crates["gpui-fast-windows"]).toEqual({
-    version: "0.1.9",
-    sha256: "6c4cf30e5269146dc29dafcaeaa3cc78ff2371811873057833e8fab9e1891102",
+    version: "0.1.12",
+    sha256: "6a1a193343ef7faaa18eb9ccc0aadf8ec9571f2791c4419c2ca23aa17198f970",
   });
   expect(pinnedPatches(pin, shipping.toolchain)).toHaveLength(Object.keys(pin.patches).length);
+});
+
+test("renderer test dependencies track the shipping GPUI and shader parser", () => {
+  const shipping = layout();
+  const pin = readPin(shipping);
+  const patch = readFileSync(
+    join(shipping.toolchain, "patches/0008-linux-submission-and-capture.patch"),
+    "utf8",
+  );
+  const native = readFileSync(join(shipping.toolchain, "../native/Cargo.toml"), "utf8");
+  const naga = native.match(/^naga = \{ version = "([^"]+)"/m)?.[1];
+  expect(naga).toBeDefined();
+  const gpui = `=${pin.crates["gpui-fast"]?.version}`;
+  // Both the normalized and original manifests are exported in this patch.
+  expect(
+    [...patch.matchAll(/\+\[dev-dependencies\.gpui\]\n\+version = "([^"]+)"/g)].map(
+      (match) => match[1],
+    ),
+  ).toEqual([gpui, gpui]);
+  expect(
+    [...patch.matchAll(/\+\[dev-dependencies\.naga\]\n\+version = "([^"]+)"/g)].map(
+      (match) => match[1],
+    ),
+  ).toEqual([naga, naga]);
 });
 
 test("downloads are verified before caching; a tampered cache is preserved", async () => {

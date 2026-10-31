@@ -2,54 +2,55 @@
   "registry": "https://static.crates.io/crates",
   "crates": {
     "gpui-fast": {
-      "version": "0.1.9",
-      "sha256": "bf786ecd21b484371f34f3ef398f83a7d3362a1f87f624f3d2ba923e92e468ed"
+      "version": "0.1.12",
+      "sha256": "87b6d2f355531132e8f1ec357cb23901aba1d1b3e522260822ae199f02ec32da"
     },
     "gpui-fast-apple": {
-      "version": "0.1.9",
-      "sha256": "f0f7e8b94df58e003dbad2a5b21cf6000a928b7a49020b0b68573e514a5a9888"
+      "version": "0.1.12",
+      "sha256": "c5f0aff0a75a63953782a609bf023c68cdb71c3dbd74478223db9bbd1b744795"
     },
     "gpui-fast-macos": {
-      "version": "0.1.9",
-      "sha256": "c733dfacfc499748568f8fc0e2e268077259fcd4a2c306257c9dfda7c1a8a5fe"
+      "version": "0.1.12",
+      "sha256": "d8e8b377d6dcbc0007e68098cb3f40bc2591a1d29526301e9572a70bb674f171"
     },
     "gpui-fast-linux": {
-      "version": "0.1.9",
-      "sha256": "908b5fc7b6225e9b5cb0ce0aec500a4ae643a5ecdaa838b224d4c8f5690546c9"
+      "version": "0.1.12",
+      "sha256": "8d5a4351392d339049584e06a58460a4907a060e3f46e49b7c130d80ffe36871"
     },
     "gpui-fast-windows": {
-      "version": "0.1.9",
-      "sha256": "6c4cf30e5269146dc29dafcaeaa3cc78ff2371811873057833e8fab9e1891102"
+      "version": "0.1.12",
+      "sha256": "6a1a193343ef7faaa18eb9ccc0aadf8ec9571f2791c4419c2ca23aa17198f970"
     },
     "gpui-fast-wgpu": {
-      "version": "0.1.9",
-      "sha256": "43832ede90bd5e924ad12774cf18f51ae288cc4a6f4f0c6888f8b14899590c39"
+      "version": "0.1.12",
+      "sha256": "ebf72d3c1fee16dde347707ef306940d39656f80e35d3aaace01075996f12199"
     }
   },
   "patches": {
-    "patches/0001-drawable-presented.patch": "5250384a18d3a88a961c7aca8e7f53f7c0defba5116f959b0c8e2e9fbc5206bf",
-    "patches/0002-window-capture.patch": "e18fdf4688f56f80ee8bc119193d55e11b77450d154c5f41f9a9f0915e11230d",
+    "patches/0001-drawable-presented.patch": "a27bf8b55362fc35340cb1758377a2da62d32415ddff04c25e2deb856bcfdbb9",
+    "patches/0002-window-capture.patch": "67b743267e3b1e2687248758fd601036bb765fb8f85d68fd47df4db40a223b14",
     "patches/0003-memory-font-fallback.patch": "def1fa32ac4f26eedaf7913abdc5a834dbb9d5ee94871870b2dde32d892e0d0c",
-    "patches/0004-native-glass-surfaces.patch": "d3a290e43ce908ff746005506237dc670a4011551d289b722b3ebbf8c69841d8",
-    "patches/0005-element-input-key-repeat.patch": "288447b305952cfa6d4e29883ce7f7cac400d91535c145b839cd5de0fcd84ca8",
-    "patches/0006-bulk-glyph-sprites.patch": "36de5fcbfadab989731de6a58f1e330d0bc38f34fac6e4bd3d92b2cc5c113558",
-    "patches/0007-clearable-native-glass.patch": "6598b70cbb608f8aebaf1e07bf281e3be5507bce5f5ac1c92a401033ba9bf3c9",
-    "patches/0008-linux-submission-and-capture.patch": "2b1e51622cebe8df400e1f9dcc841a6c296f02472ccc7ec4cd6000519a1b48c0",
-    "patches/0009-straight-alpha-capture.patch": "8ce7d93db5f0675f85b0a4ddf5864a179641f9d321def284fa9573343b0f3885",
-    "patches/0010-path-source-over-alpha.patch": "405cb870623b8d40dc2dd7a7a736e73708b8ebc07e000b84e8937feae293e2dd",
-    "patches/0011-native-fullscreen-presentation.patch": "71576f89b0c9aca7ca6c94ea1e2160e3aa77705ebec173ef2aa4b703b8ce1c1b",
-    "patches/0012-rounded-glass-sheds-frame-shadow.patch": "7a52355e20b1857ee3e83a875abe94a004b50bc06e2f95eff0048806344dc4ec",
+    "patches/0004-native-glass-surfaces.patch": "135b105c940500e6030a6f4f9687b624090598d87b54ebf8bab47b055fe1f6dd",
+    "patches/0005-element-input-key-repeat.patch": "573652bdefde0ce92fd6c921e3d78663571bc1109aedddc508c891dde069d8db",
+    "patches/0006-bulk-glyph-sprites.patch": "2e6779c300577bfbda4eead33bdb19e0da5d23267ec379f5596ae0558f393c64",
+    "patches/0007-clearable-native-glass.patch": "141450b025fb23091e566d941a741e36f8e443e56a215a81b1b40720e9214533",
+    "patches/0008-linux-submission-and-capture.patch": "0392be1c7a0ff0b4a76955f6c5f94b3bfb3f3051f77e3e18f0614bcd1cd278e8",
+    "patches/0009-straight-alpha-capture.patch": "b2786bc66c9ad936e7b37b0f36579b102d3e6c4f06efbbd871094104a62724e4",
+    "patches/0010-path-source-over-alpha.patch": "4f8d9556b099e846e230e3d0e41ae980999b388fbd5fb2b3c7446bddb1e52c3b",
+    "patches/0011-native-fullscreen-presentation.patch": "fb2d2c6b303387c53165e95d8e0b25c18d7305aa9acdc01e181afb835f171eb6",
+    "patches/0012-rounded-glass-sheds-frame-shadow.patch": "d624145d5e1d16749b9f35d43b5076930069618f37862f4dd9d39efe46772171",
     "patches/0013-arena-memory-retention.patch": "8e159ae7004eb957a5105838f537e1732c2669716cc83c281c0febd55d0810dd",
-    "patches/0014-image-source-sampling.patch": "c67b39b922a8784abcbf7265da1d8d39502460b4d0e353c2b20f11b0e08d737b",
-    "patches/0015-metal-image-source-sampling.patch": "2b0f0a53fdb15c4d58c87ac0185b792220890dc3c4642c511afe5ea3a7d5b34d",
-    "patches/0016-wgpu-image-source-sampling.patch": "b881e78c72d588061e9c6006d7d5d0172480a87fb6dbceb84fa368d8668f90d9",
-    "patches/0017-windows-submission-and-capture.patch": "bfc74c95a895b7434966071a06a6e0f5fdea870c229506248f1fc6dc967acb87",
+    "patches/0014-image-source-sampling.patch": "d7d30dffdb0b7438c5fda1f9eaa8b935a45062e98cdff815408f1a66cdf0f357",
+    "patches/0015-metal-image-source-sampling.patch": "5aa782dce7837fedffca671243c571b8487d2ba3f405ce80790b844948145d49",
+    "patches/0016-wgpu-image-source-sampling.patch": "c31d7548d542deb75e5e1bd9be6ab34a5ec7dc7fca1f728ab585cb04be99b121",
+    "patches/0017-windows-submission-and-capture.patch": "5d07bca56a9ef98fa1a719274e759c5aa8537fbb4077dffa05312e239fc58cc6",
     "patches/0018-windows-hardware-first-warp.patch": "407efaa66d1b653ccb2dd79f573a76b58cd5a6b6705f677d714694b12614a93f",
-    "patches/0019-windows-image-source-sampling.patch": "b0d2204c0652ca8c092506866e76781b709685d4d6a1cd857e89da9076cc2011",
-    "patches/0020-runtime-application-icon.patch": "9b570139c8a11c8140a000de2ef4a655016591ed6fbbe78a05566092cda8b155",
-    "patches/0021-windows-confirmed-presentation.patch": "7356011c163a20866da5ce2d6964e4e1c2692f5aa992b4be5e5ba2a973461d5c",
+    "patches/0019-windows-image-source-sampling.patch": "9d96ffd72dae1452d5ebf20ae14819244ae587fc0bb6017f2eaee64f7de52083",
+    "patches/0020-runtime-application-icon.patch": "0ab6ec60713218dbc07d9b2e933ec0375e1e6825c25c2954b72bdc6bfc5ef47f",
+    "patches/0021-windows-confirmed-presentation.patch": "d3f0f07b82ed40aa6711a1ca26d69f7d82b7770408feaed16c9e421e79efabc5",
     "patches/0022-windows-adapter-error-fallback.patch": "1b5f64e010b010e72f06364d88cfb178d49373161643bc6304c989238a1c88bf",
-    "patches/0023-windows-test-fixture-path.patch": "ad2bb99f90806c26d09bbbfceb4ca16ed2e07faa2f9bddf2e431850f4b4a2dbc",
-    "patches/0024-windows-input-message-order.patch": "60960299386c07b73297bc55a0381db968f015788b10c2effa1bf7c74c4d8d8f"
+    "patches/0023-windows-test-fixture-path.patch": "85ba6087431f2752478881526834d33323f036543dee683bed1aec737016c291",
+    "patches/0024-windows-input-message-order.patch": "6d82e44674a5d9f76937281f65e258106ad9652a75d39b0584f7f11759cc6515",
+    "patches/0025-objc2-snapshot-compat.patch": "84f37e83c3e39643ecab2f7a7911a2b4e99e9d2cdb4e9d10dda63af96bb98a05"
   }
 }

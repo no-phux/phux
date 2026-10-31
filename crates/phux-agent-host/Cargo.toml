@@ -14,9 +14,8 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
 tokio.workspace = true
-parking_lot = "0.12"
-agent-client-protocol = { version = "=0.10.4", features = ["unstable_session_usage"] }
-async-trait = "0.1"
+parking_lot = "0.13"
+agent-client-protocol = "=3.6.0"
 tokio-util = { version = "0.7", features = ["compat"] }
 
 [lints]

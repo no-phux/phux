@@ -80,6 +80,7 @@ impl Gpu {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .map_err(|error| format!("no GPU adapter: {error}"))?;
         let info = adapter.get_info();
@@ -418,7 +419,9 @@ impl Renderer {
         let row = width as usize * 4;
         let mut bgra = Vec::with_capacity(row * height as usize);
         {
-            let mapped = slice.get_mapped_range();
+            let mapped = slice
+                .get_mapped_range()
+                .map_err(|error| format!("shader frame mapping unavailable: {error}"))?;
             for line in mapped
                 .chunks_exact(target.padded_row as usize)
                 .take(height as usize)

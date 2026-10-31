@@ -68,7 +68,7 @@ fn top_previews_and_tabs_share_wheel_and_keyboard_scrolling(cx: &mut TestAppCont
     let preview = cx.debug_bounds("tab-peek-scroll").unwrap();
     let strip = cx.debug_bounds("top-tabs").unwrap();
     for position in [point(strip.center().x, preview.center().y), strip.center()] {
-        cx.simulate_event(gpui::ScrollWheelEvent {
+        cx.simulate_event(gpui::ScrollEvent {
             position,
             delta: gpui::ScrollDelta::Pixels(point(px(-220.), px(0.))),
             ..Default::default()

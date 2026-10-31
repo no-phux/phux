@@ -17,6 +17,9 @@
     reason = "internal submodules expose items to the crate root via pub(crate) rather than plain `pub`; the crate's only real public API is `run`, everything else stays crate-private on purpose"
 )]
 
+// usage 7's derive output names the package, even when Cargo calls it `usage`.
+extern crate usage as usage_rs;
+
 use std::ffi::OsStr;
 use std::process::ExitCode;
 

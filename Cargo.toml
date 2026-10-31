@@ -85,7 +85,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 # File logging must not block the render/PTY thread or write into the TUI.
 tracing-appender = "0.2"
 # One CLI spec supplies parsing, help, completions, and generated docs.
-usage = { package = "usage-rs", version = "6.12", features = ["completions", "validation", "test"] }
+usage = { package = "usage-rs", version = "7.1", features = ["completions", "validation", "test"] }
 bytes = "1"
 slotmap = "1"
 smallvec = "1.16"
@@ -93,7 +93,7 @@ proptest = "1"
 insta = { version = "1", features = ["yaml"] }
 tempfile = "3"
 # Bundle SQLite rather than depending on the host's version and features.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # Predictive echo needs both cell widths and grapheme boundaries.
 unicode-width = "0.2"
 unicode-segmentation = "1"

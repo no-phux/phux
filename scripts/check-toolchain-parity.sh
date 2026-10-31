@@ -13,7 +13,7 @@
 # passes for you and fails for someone else. Skips (exit 0) when either
 # environment is unavailable, so it is safe to run anywhere.
 #
-# Node compares on MAJOR only: mise.toml pins the major (`node = "24"`) while
+# Node compares on MAJOR only: mise.toml pins the major (`node = "26"`) while
 # nixpkgs resolves a specific patch, and that is the intended contract, not
 # drift. Every other tool must match exactly.
 set -uo pipefail

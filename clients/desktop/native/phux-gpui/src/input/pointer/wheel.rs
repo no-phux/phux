@@ -16,7 +16,7 @@ impl TerminalInput {
     /// presses instead, accumulated across events.
     pub fn scroll(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Result<bool, InputError> {
@@ -109,7 +109,7 @@ impl TerminalInput {
         &self,
         control: &mut ControlPlane,
         lines: i64,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
     ) -> Result<(), InputError> {
         if !input_ready(control, &self.terminal) {
             return Err(InputError::NotReady);

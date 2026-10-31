@@ -58,9 +58,9 @@
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^1.1.0",
-    "@earendil-works/pi-coding-agent": "^1.1.0",
-    "@earendil-works/pi-tui": "^1.1.0"
+    "@earendil-works/pi-ai": "^1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0"
   },
   "dependencies": {
     "@phux/integration-runtime": "file:../runtime"
@@ -69,10 +69,10 @@
     "@phux/integration-runtime"
   ],
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-coding-agent": "1.1.0",
-    "@earendil-works/pi-tui": "1.1.0",
-    "@types/node": "26.6.4",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
+    "@types/node": "26.6.6",
     "typescript": "7.0.2"
   },
   "engines": {

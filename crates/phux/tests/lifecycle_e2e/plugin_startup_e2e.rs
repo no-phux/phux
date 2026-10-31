@@ -265,17 +265,22 @@ fn sigkill_reaps_a_grandchild_when_the_leader_honors_term() {
     let reap_leader = Reap(leader);
     let reap_grand = Reap(grand);
     server.sigkill();
-    assert!(
-        poll_until(Duration::from_secs(20), || !alive(leader)),
-        "PDEATHSIG should terminate a leader that honors SIGTERM"
-    );
-    assert!(
-        alive(grand),
-        "the grandchild should survive the leader's SIGTERM"
-    );
+    // Only Linux delivers PDEATHSIG. On macOS both processes remain for
+    // the next start's orphan reaper, which is the cross-platform contract.
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            poll_until(Duration::from_secs(20), || !alive(leader)),
+            "PDEATHSIG should terminate a leader that honors SIGTERM"
+        );
+        assert!(
+            alive(grand),
+            "the grandchild should survive the leader's SIGTERM"
+        );
+    }
     let next = start_server(&xdg, "sgrand2");
     assert!(
-        poll_until(Duration::from_secs(20), || !alive(grand)),
+        poll_until(Duration::from_secs(20), || !alive(leader) && !alive(grand)),
         "the next server start should reap the leftover grandchild"
     );
     drop(next);
@@ -314,17 +319,20 @@ fn sigkill_reaps_a_grandchild_forked_in_the_leaders_start_tick() {
     let reap_leader = Reap(leader);
     let reap_grand = Reap(grand);
     server.sigkill();
-    assert!(
-        poll_until(Duration::from_secs(20), || !alive(leader)),
-        "PDEATHSIG should terminate a leader that honors SIGTERM"
-    );
-    assert!(
-        alive(grand),
-        "an immediately forked grandchild should survive the leader"
-    );
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            poll_until(Duration::from_secs(20), || !alive(leader)),
+            "PDEATHSIG should terminate a leader that honors SIGTERM"
+        );
+        assert!(
+            alive(grand),
+            "an immediately forked grandchild should survive the leader"
+        );
+    }
     let next = start_server(&xdg, "stick2");
     assert!(
-        poll_until(Duration::from_secs(20), || !alive(grand)),
+        poll_until(Duration::from_secs(20), || !alive(leader) && !alive(grand)),
         "the next start should reap a same-tick grandchild"
     );
     drop(next);

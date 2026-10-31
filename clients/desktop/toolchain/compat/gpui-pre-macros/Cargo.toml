@@ -2,7 +2,7 @@
 # version GPUI Kit pins, re-exporting the published gpui-fast crate.
 [package]
 name = "gpui-pre-macros"
-version = "0.3.9"
+version = "0.3.10"
 description = "gpui-fast's `gpui_macros` under the gpui-pre name GPUI Kit pins."
 license = "Apache-2.0"
 edition = "2024"
@@ -17,4 +17,4 @@ doctest = false
 inspector = ["gpui_fast/inspector"]
 
 [dependencies]
-gpui_fast = { package = "gpui-fast-macros", version = "=0.1.9", default-features = false }
+gpui_fast = { package = "gpui-fast-macros", version = "=0.1.12", default-features = false }

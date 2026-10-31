@@ -29,10 +29,8 @@ gpui-windows = { package = "gpui-fast-windows", path = "windows" }
 [patch.crates-io]
 gpui-fast = { path = "$core" }
 "@ | Set-Content (Join-Path $scratch 'Cargo.toml')
-    # The managed Windows capture patch pins 1.4.2; the Unix-resolved lock can
-    # retain 1.5.0 through optional zed-scap. Resolve this disposable Windows copy.
-    cargo update --manifest-path (Join-Path $scratch 'Cargo.toml') -p windows-capture --precise 1.4.2
-    if ($LASTEXITCODE -ne 0) { throw "Windows fixture resolution failed: $LASTEXITCODE" }
+    # Resolve only the disposable fixture; reuse the managed lock's latest
+    # windows-capture instead of imposing the obsolete 1.4.2 downgrade.
     cargo run --manifest-path (Join-Path $scratch 'Cargo.toml') --bin windows-brand-icons
     if ($LASTEXITCODE -ne 0) { throw "Windows icon fixture failed: $LASTEXITCODE" }
 } finally {

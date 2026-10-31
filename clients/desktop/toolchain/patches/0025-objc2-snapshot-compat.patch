@@ -1,0 +1,183 @@
+diff --git a/gpui-fast-macos/src/platform.rs b/gpui-fast-macos/src/platform.rs
+index e261e44..283f6d6 100644
+--- a/gpui-fast-macos/src/platform.rs
++++ b/gpui-fast-macos/src/platform.rs
+@@ -1117,12 +1117,11 @@ impl Platform for MacPlatform {
+         // SAFETY: App calls this on its UI thread. NSData copies the bytes;
+         // NSImage is owned until AppKit retains it as applicationIconImage.
+         unsafe {
+-            use cocoa::foundation::NSData;
+-            let data = NSData::dataWithBytes_length_(nil, png.as_ptr().cast(), png.len() as u64);
+-            let image: id = msg_send![class!(NSImage), alloc];
+-            let image: id = msg_send![image, initWithData: data];
+-            anyhow::ensure!(image != nil, "Invalid application icon PNG");
+-            let app: id = msg_send![APP_CLASS, sharedApplication];
++            let data: *mut AnyObject = msg_send![class!(NSData), dataWithBytes: png.as_ptr().cast::<std::ffi::c_void>(), length: png.len()];
++            let image: *mut AnyObject = msg_send![class!(NSImage), alloc];
++            let image: *mut AnyObject = msg_send![image, initWithData: data];
++            anyhow::ensure!(!image.is_null(), "Invalid application icon PNG");
++            let app: *mut AnyObject = msg_send![APP_CLASS, sharedApplication];
+             let _: () = msg_send![app, setApplicationIconImage: image];
+             let _: () = msg_send![image, release];
+         }
+diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
+index 5d491e0..f81e30e 100644
+--- a/gpui-fast-macos/src/window.rs
++++ b/gpui-fast-macos/src/window.rs
+@@ -435,7 +435,7 @@ unsafe fn build_window_class(name: &CStr, superclass: &AnyClass) -> *const AnyCl
+         decl.add_method(
+             sel!(window:willUseFullScreenPresentationOptions:),
+             window_fullscreen_presentation_options
+-                as extern "C" fn(&Object, Sel, id, usize) -> usize,
++                as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, usize) -> usize,
+         );
+         decl.add_method(
+             sel!(windowWillEnterFullScreen:),
+@@ -1415,17 +1415,16 @@ fn if_window_not_closed(closed: Arc<AtomicBool>, f: impl FnOnce()) {
+     }
+ }
+ 
+-fn native_window_visibility(window: id) -> gpui::NativeVisibility {
++fn native_window_visibility(window: *mut AnyObject) -> gpui::NativeVisibility {
+     if window.is_null() {
+         return gpui::NativeVisibility::Unavailable;
+     }
+     unsafe {
+-        let visible: BOOL = msg_send![window, isVisible];
+-        let miniaturized: BOOL = msg_send![window, isMiniaturized];
+-        let occlusion_visible = window
+-            .occlusionState()
+-            .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible);
+-        if visible == YES && miniaturized == NO && occlusion_visible {
++        let visible: Bool = msg_send![window, isVisible];
++        let miniaturized: Bool = msg_send![window, isMiniaturized];
++        let occlusion: NSWindowOcclusionState = msg_send![window, occlusionState];
++        let occlusion_visible = occlusion.contains(NSWindowOcclusionState::Visible);
++        if visible == Bool::YES && miniaturized == Bool::NO && occlusion_visible {
+             gpui::NativeVisibility::Visible
+         } else {
+             gpui::NativeVisibility::Obscured
+@@ -1917,7 +1916,7 @@ impl PlatformWindow for MacWindow {
+     }
+ 
+     fn set_glass_effect(&self, corner_radius: Pixels, appearance: WindowAppearance) -> bool {
+-        let Some(class) = Class::get("NSGlassEffectView") else {
++        let Some(class) = AnyClass::get(c"NSGlassEffectView") else {
+             return false;
+         };
+         // The material replaces any blur, and the window must be clear behind it.
+@@ -1943,37 +1942,39 @@ impl PlatformWindow for MacWindow {
+                     "NSAppearanceNameDarkAqua"
+                 }
+             };
+-            let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: ns_string(name)];
++            let appearance: *mut AnyObject = msg_send![class!(NSAppearance), appearanceNamed: ns_string(name)];
+             let _: () = msg_send![native_window, setAppearance: appearance];
+             // A rounded material is the window's silhouette. The frame's shadow
+             // and outline follow the window's own corners and size, so they
+             // would show as a second, mismatched surface behind it.
+             let framed = corner_radius <= px(0.);
+-            let _: () = msg_send![native_window, setHasShadow: framed as BOOL];
++            let _: () = msg_send![native_window, setHasShadow: Bool::new(framed)];
+             // Calling again restyles the installed material instead of stacking another.
+             if let Some(glass) = existing {
+                 let _: () = msg_send![glass, setCornerRadius: corner_radius.as_f32() as f64];
+                 return true;
+             }
+-            let root = native_window.contentView();
+-            let glass: id = msg_send![class, alloc];
+-            let glass = NSView::initWithFrame_(glass, NSView::bounds(root));
+-            glass.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
++            let root: *mut AnyObject = msg_send![native_window, contentView];
++            let frame: NSRect = msg_send![root, bounds];
++            let glass: *mut AnyObject = msg_send![class, alloc];
++            let glass: *mut AnyObject = msg_send![glass, initWithFrame: frame];
++            let _: () = msg_send![glass, setAutoresizingMask: NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable];
+             let _: () = msg_send![glass, setStyle: 0isize];
+             let _: () = msg_send![glass, setCornerRadius: corner_radius.as_f32() as f64];
+-            let interactive: BOOL =
++            let interactive: Bool =
+                 msg_send![glass, respondsToSelector: sel!(setEffectIsInteractive:)];
+-            if interactive == YES {
+-                let _: () = msg_send![glass, setEffectIsInteractive: YES];
++            if interactive == Bool::YES {
++                let _: () = msg_send![glass, setEffectIsInteractive: Bool::YES];
+             }
+             // Keep GPUI's view alive while contentView moves it between owners.
+-            let _: id = msg_send![native, retain];
++            let _: *mut AnyObject = msg_send![native, retain];
+             let _: () = msg_send![glass, setContentView: native];
+-            root.addSubview_(glass);
++            let _: () = msg_send![root, addSubview: glass];
+             // Moving through a detached contentView can clear first responder.
+-            native_window.makeFirstResponder_(native);
++            let _: Bool = msg_send![native_window, makeFirstResponder: native];
+             let _: () = msg_send![native, release];
+-            self.0.lock().glass_view = Some(glass.autorelease());
++            let glass: *mut AnyObject = msg_send![glass, autorelease];
++            self.0.lock().glass_view = Some(glass);
+         }
+         true
+     }
+@@ -1985,18 +1986,17 @@ impl PlatformWindow for MacWindow {
+         // SAFETY: main thread; the glass view is alive while the window's
+         // content view holds it, and the selector is checked before sending.
+         unsafe {
+-            let tintable: BOOL = msg_send![glass, respondsToSelector: sel!(setTintColor:)];
+-            if tintable != YES {
++            let tintable: Bool = msg_send![glass, respondsToSelector: sel!(setTintColor:)];
++            if tintable != Bool::YES {
+                 return false;
+             }
+             let color = match tint {
+                 Some(tint) => {
+                     let Rgba { r, g, b, a } = tint.to_rgb();
+-                    NSColor::colorWithSRGBRed_green_blue_alpha_(
+-                        nil, r as f64, g as f64, b as f64, a as f64,
+-                    )
++                    let color: *mut AnyObject = msg_send![class!(NSColor), colorWithSRGBRed: r as f64, green: g as f64, blue: b as f64, alpha: a as f64];
++                    color
+                 }
+-                None => nil,
++                None => ptr::null_mut::<AnyObject>(),
+             };
+             let _: () = msg_send![glass, setTintColor: color];
+         }
+@@ -2016,17 +2016,18 @@ impl PlatformWindow for MacWindow {
+         // `set_glass_effect`, the state mutex is released first because
+         // reparenting can reenter GPUIView callbacks.
+         unsafe {
+-            let root = native_window.contentView();
+-            let _: id = msg_send![native, retain];
+-            let _: () = msg_send![glass, setContentView: nil];
+-            let _: () = msg_send![native, setFrame: NSView::bounds(root)];
+-            native.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
+-            root.addSubview_(native);
+-            native_window.makeFirstResponder_(native);
++            let root: *mut AnyObject = msg_send![native_window, contentView];
++            let _: *mut AnyObject = msg_send![native, retain];
++            let _: () = msg_send![glass, setContentView: ptr::null_mut::<AnyObject>()];
++            let frame: NSRect = msg_send![root, bounds];
++            let _: () = msg_send![native, setFrame: frame];
++            let _: () = msg_send![native, setAutoresizingMask: NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable];
++            let _: () = msg_send![root, addSubview: native];
++            let _: Bool = msg_send![native_window, makeFirstResponder: native];
+             let _: () = msg_send![native, release];
+-            NSView::removeFromSuperview(glass);
+-            let _: () = msg_send![native_window, setAppearance: nil];
+-            let _: () = msg_send![native_window, setHasShadow: YES];
++            let _: () = msg_send![glass, removeFromSuperview];
++            let _: () = msg_send![native_window, setAppearance: ptr::null_mut::<AnyObject>()];
++            let _: () = msg_send![native_window, setHasShadow: Bool::YES];
+         }
+         // Restore what the recorded background appearance implies, blur included.
+         self.set_background_appearance(self.background_appearance());
+@@ -3212,7 +3213,7 @@ extern "C" fn window_did_resize(this: &AnyObject, _: Sel, _: *mut AnyObject) {
+ }
+ 
+ extern "C" fn window_fullscreen_presentation_options(
+-    _: &AnyObject,
++    _: *mut AnyObject,
+     _: Sel,
+     _: *mut AnyObject,
+     options: usize,
