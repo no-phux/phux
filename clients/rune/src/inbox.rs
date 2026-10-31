@@ -4,6 +4,7 @@
 //! The same list drives the inbox, its count, and system notifications.
 
 use std::cmp::Reverse;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use phux_client_core::ask::parse_ask_title;
 use phux_client_runtime::approvals::Approval;
@@ -61,6 +62,14 @@ impl Item {
                 waiting.terminal.clone(),
                 waiting.ask.as_ref().map(|ask| ask.id.clone()),
             ),
+        }
+    }
+
+    /// The time its card shows, which moves with nothing else changing.
+    pub fn clock(&self) -> Option<String> {
+        match self {
+            Self::Approval(approval) => Some(expiry(approval)),
+            Self::Terminal(waiting) => waiting.ask.as_ref()?.since.map(waited),
         }
     }
 }
@@ -163,6 +172,20 @@ pub fn age(seconds: u64) -> String {
         60..=3599 => format!("{}m", seconds / 60),
         _ => format!("{}h", seconds / 3600),
     }
+}
+
+/// How long something has waited.
+pub fn waited(since: Instant) -> String {
+    age(since.elapsed().as_secs())
+}
+
+/// How long a held action has left.
+pub fn expiry(approval: &Approval) -> String {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |t| t.as_millis() as u64);
+    let left = approval.expires_at_ms.saturating_sub(now_ms) / 1000;
+    format!("expires in {}", age(left))
 }
 
 #[cfg(test)]

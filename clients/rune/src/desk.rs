@@ -370,6 +370,7 @@ impl Desk {
         }
         self.finish_uploads(&client);
         changed |= self.sync_alerts();
+        changed |= self.tick_inbox(tx);
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();

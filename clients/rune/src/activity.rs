@@ -28,6 +28,8 @@ pub struct Activity {
     pub ask: Option<Ask>,
     /// When the shell command now running started (OSC 133).
     pub command_since: Option<Instant>,
+    /// A reconnect left that command in doubt: it may have ended in the gap.
+    pub unproven: bool,
     /// A long command finished off screen with this exit code; cleared once seen.
     pub finished: Option<Option<i32>>,
     /// Rang its bell off screen; cleared once seen.
@@ -172,6 +174,7 @@ impl Activity {
     }
 
     fn command_ended(&mut self, exit_code: Option<i32>, on_screen: bool) {
+        self.unproven = false;
         let long = self
             .command_since
             .take()
@@ -210,6 +213,7 @@ impl Activity {
             }
             Event::CommandStarted { .. } => {
                 self.command_since = Some(Instant::now());
+                self.unproven = false;
                 self.finished = None;
             }
             Event::CommandFinished { exit_code, .. } => self.command_ended(*exit_code, on_screen),
@@ -300,27 +304,49 @@ impl Activities {
         true
     }
 
-    /// A new connection is up. What it missed can't be replayed: a command
-    /// that ended in the gap never reports it, so only the live replica says
-    /// one still runs, and a terminal the server no longer lists is gone.
-    /// Declarations and questions come back on their own, as the runtime
-    /// re-reads them. True when a row changed.
-    pub fn reconnected(
-        &mut self,
-        listed: &[ResourceId],
-        running: impl Fn(&ResourceId) -> bool,
-    ) -> bool {
+    /// A new connection is up, and a terminal the server no longer lists is
+    /// gone. A command that ended in the gap never reports it, but one still
+    /// running will, and clearing that would lose its finish: each stays
+    /// until [`Self::prove`] hears otherwise. Declarations and questions come
+    /// back on their own, as the runtime re-reads them. True when a row changed.
+    pub fn reconnected(&mut self, listed: &[ResourceId]) -> bool {
         let count = self.terminals.len();
         self.terminals.retain(|id, _| listed.contains(id));
-        let mut changed = self.terminals.len() != count;
-        for (id, entry) in &mut self.terminals {
-            if entry.command_since.is_some() && !running(id) {
-                let mark = entry.mark();
-                entry.command_since = None;
-                changed |= entry.mark() != mark;
-            }
+        for entry in self.terminals.values_mut() {
+            entry.unproven = entry.command_since.is_some();
         }
+        let changed = self.terminals.len() != count;
         self.revision += u64::from(changed);
+        changed
+    }
+
+    /// Whether a reconnect left any command in doubt.
+    pub fn unproven(&self) -> bool {
+        self.terminals.values().any(|a| a.unproven)
+    }
+
+    /// Settle what `running` can answer for among `ids`. `None` is no answer,
+    /// as with no replica yet or on the alternate screen. True when a row changed.
+    pub fn prove(
+        &mut self,
+        ids: &[ResourceId],
+        running: impl Fn(&ResourceId) -> Option<bool>,
+    ) -> bool {
+        let mut changed = false;
+        for id in ids {
+            let Some(entry) = self.terminals.get_mut(id).filter(|a| a.unproven) else {
+                continue;
+            };
+            let Some(running) = running(id) else {
+                continue;
+            };
+            let before = entry.face();
+            entry.unproven = false;
+            if !running {
+                entry.command_since = None;
+            }
+            changed |= self.settled(id, Some(before));
+        }
         changed
     }
 
@@ -369,199 +395,4 @@ impl Activities {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn id(n: u32) -> ResourceId {
-        ResourceId::local(n)
-    }
-
-    fn record(state: &str) -> Event {
-        Event::AgentMetadata {
-            terminal_id: id(1),
-            value: Some(format!(r#"{{"name":"claude","state":"{state}"}}"#).into_bytes()),
-        }
-    }
-
-    #[test]
-    fn a_question_is_kept_until_the_level_retracts_it() {
-        let mut a = Activities::default();
-        let asked = Event::AgentAsked {
-            terminal_id: id(1),
-            question_id: "q1".to_owned(),
-            text: "Ship it?".to_owned(),
-            suggestions: vec!["yes".to_owned(), "no".to_owned()],
-            waiting_seconds: Some(3),
-        };
-        a.apply(&asked, &[]);
-        assert_eq!(a.ask(&id(1)).map(|ask| ask.id.as_str()), Some("q1"));
-        assert!(a.mark(&id(1)).needs_you());
-        a.apply(
-            &Event::AgentAskedState {
-                terminal_id: id(1),
-                asked: false,
-            },
-            &[],
-        );
-        assert!(a.ask(&id(1)).is_none());
-        assert!(!a.mark(&id(1)).needs_you());
-    }
-
-    #[test]
-    fn a_blocked_agent_needs_you_until_it_moves_on() {
-        let mut a = Activities::default();
-        a.apply(&record("blocked"), &[]);
-        assert_eq!(a.mark(&id(1)), Mark::Blocked);
-        assert!(a.mark(&id(1)).needs_you());
-        a.apply(&record("working"), &[]);
-        assert_eq!(a.mark(&id(1)), Mark::Working);
-        assert!(a.mark(&id(1)).live());
-        assert_eq!(a.agent_name(&id(1)), Some("claude"));
-    }
-
-    #[test]
-    fn finishing_off_screen_is_held_until_seen() {
-        let mut a = Activities::default();
-        a.apply(&record("working"), &[]);
-        a.apply(&record("done"), &[]);
-        assert_eq!(a.mark(&id(1)), Mark::Done);
-        a.seen(&id(1));
-        assert_eq!(a.mark(&id(1)), Mark::Idle);
-    }
-
-    #[test]
-    fn the_shown_terminal_collects_no_marks() {
-        let mut a = Activities::default();
-        a.apply(&record("working"), &[id(1)]);
-        a.apply(&record("done"), &[id(1)]);
-        a.apply(&Event::Bell { terminal_id: id(1) }, &[id(1)]);
-        assert_eq!(a.mark(&id(1)), Mark::Idle);
-    }
-
-    #[test]
-    fn a_bell_and_a_question_mark_the_row() {
-        let mut a = Activities::default();
-        a.apply(&Event::Bell { terminal_id: id(1) }, &[]);
-        assert_eq!(a.mark(&id(1)), Mark::Bell);
-        a.apply(
-            &Event::AgentAskedState {
-                terminal_id: id(1),
-                asked: true,
-            },
-            &[],
-        );
-        assert_eq!(a.mark(&id(1)), Mark::Blocked);
-    }
-
-    #[test]
-    fn a_restated_record_changes_nothing() {
-        let mut a = Activities::default();
-        assert!(a.apply(&record("working"), &[]));
-        let revision = a.revision();
-        assert!(!a.apply(&record("working"), &[]));
-        // A working agent's commands sit under its own mark.
-        assert!(!a.apply(&Event::CommandStarted { terminal_id: id(1) }, &[]));
-        let finished = Event::CommandFinished {
-            terminal_id: id(1),
-            exit_code: Some(0),
-        };
-        assert!(!a.apply(&finished, &[]));
-        assert_eq!(a.revision(), revision);
-    }
-
-    #[test]
-    fn a_question_announced_again_keeps_its_wait() {
-        let asked = |seconds| Event::AgentAsked {
-            terminal_id: id(1),
-            question_id: "q1".to_owned(),
-            text: "Ship it?".to_owned(),
-            suggestions: Vec::new(),
-            waiting_seconds: Some(seconds),
-        };
-        let mut a = Activities::default();
-        assert!(a.apply(&asked(1), &[]));
-        assert!(!a.apply(&asked(900), &[]));
-    }
-
-    #[test]
-    fn a_mark_is_dated_when_it_changes() {
-        let mut a = Activities::default();
-        a.apply(&record("blocked"), &[]);
-        let first = a.changed_at(&id(1));
-        assert!(first.is_some());
-        a.apply(&record("blocked"), &[]);
-        assert_eq!(a.changed_at(&id(1)), first);
-    }
-
-    #[test]
-    fn kind_is_kept() {
-        let mut a = Activities::default();
-        a.apply(
-            &Event::AgentMetadata {
-                terminal_id: id(1),
-                value: Some(br#"{"name":"c","kind":"claude","state":"working"}"#.to_vec()),
-            },
-            &[],
-        );
-        assert_eq!(a.agent_kind(&id(1)), Some("claude"));
-    }
-
-    #[test]
-    fn a_reconnect_clears_what_it_cannot_prove() {
-        let mut a = Activities::default();
-        a.apply(&Event::CommandStarted { terminal_id: id(1) }, &[]);
-        a.apply(&Event::CommandStarted { terminal_id: id(2) }, &[]);
-        a.apply(&Event::CommandStarted { terminal_id: id(3) }, &[]);
-        assert!(a.reconnected(&[id(1), id(2)], |t| *t == id(2)));
-        // Ended in the gap, still running, and no longer listed.
-        assert_eq!(a.mark(&id(1)), Mark::None);
-        assert_eq!(a.mark(&id(2)), Mark::Running);
-        assert_eq!(a.mark(&id(3)), Mark::None);
-        assert!(!a.reconnected(&[id(1), id(2)], |t| *t == id(2)));
-    }
-
-    #[test]
-    fn a_reconnect_keeps_unseen_marks() {
-        let mut a = Activities::default();
-        a.apply(&Event::Bell { terminal_id: id(1) }, &[]);
-        assert!(!a.reconnected(&[id(1)], |_| false));
-        assert_eq!(a.mark(&id(1)), Mark::Bell);
-    }
-
-    #[test]
-    fn only_acp_questions_refuse_typing() {
-        let ask = |id: &str| Ask {
-            id: id.to_owned(),
-            text: String::new(),
-            suggestions: Vec::new(),
-            since: None,
-        };
-        assert!(ask("q1").typed());
-        assert!(!ask("acp-question:1").typed());
-    }
-
-    #[test]
-    fn a_running_command_shows_and_a_retracted_record_clears() {
-        let mut a = Activities::default();
-        a.apply(&Event::CommandStarted { terminal_id: id(1) }, &[]);
-        assert_eq!(a.mark(&id(1)), Mark::Running);
-        a.apply(
-            &Event::CommandFinished {
-                terminal_id: id(1),
-                exit_code: Some(1),
-            },
-            &[],
-        );
-        // Short commands leave no mark behind.
-        assert_eq!(a.mark(&id(1)), Mark::None);
-        a.apply(&record("working"), &[]);
-        a.apply(
-            &Event::AgentMetadata {
-                terminal_id: id(1),
-                value: None,
-            },
-            &[],
-        );
-        assert_eq!(a.mark(&id(1)), Mark::None);
-    }
-}
+mod tests;

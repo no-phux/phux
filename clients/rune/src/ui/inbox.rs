@@ -1,8 +1,6 @@
 //! The inbox: a drawer of everything waiting on you, answerable in place,
 //! and the card a focused pane shows when its agent is asking.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use phux_client_runtime::approvals::{Approval, Decision};
 use phux_protocol::ids::ResourceId;
 use rune::{Color, El, Family, TextStyle, Transition, col, el, row, text, text_input};
@@ -110,7 +108,7 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
         .ask
         .as_ref()
         .and_then(|ask| ask.since)
-        .map(|since| format!(" · {}", inbox::age(since.elapsed().as_secs())))
+        .map(|since| format!(" · {}", inbox::waited(since)))
         .unwrap_or_default();
     let busy = desk.answering(&waiting.terminal);
     let word = if busy {
@@ -171,15 +169,11 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
 }
 
 fn approval_card(approval: &Approval, ink: &Ink) -> El {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |t| t.as_millis() as u64);
-    let left = approval.expires_at_ms.saturating_sub(now_ms) / 1000;
     let requester = inbox::approval_requester(approval);
     let mut card = col().w_full().gap(8.0).child(header(
         ink.danger,
         inbox::approval_title(approval),
-        format!("expires in {}", inbox::age(left)),
+        inbox::expiry(approval),
         ink,
     ));
     card = card.child(

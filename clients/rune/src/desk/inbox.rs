@@ -4,10 +4,12 @@
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::Duration;
 
 use phux_client_runtime::Client;
 use phux_client_runtime::approvals::{Approval, Decision, DecisionOutcome};
 use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
+use phux_client_runtime::engine::ReplicaPrompt;
 use phux_protocol::ids::{ApprovalId, ResourceId};
 use rune::{Key, KeyEvent, Mods, TextEdit, Tx};
 
@@ -43,6 +45,8 @@ pub struct Inbox {
     pub synced: Option<AlertInputs>,
     /// A new connection hasn't yet told marks from its old one's leftovers.
     pub relist: bool,
+    /// The times the open cards show, to redraw when one moves.
+    pub clocks: Vec<String>,
 }
 
 impl Desk {
@@ -274,20 +278,57 @@ impl Desk {
         }
     }
 
-    /// Once a reconnect has attached, its list and replica are the truth.
+    /// Once a reconnect has attached, its list is the truth. Commands it left
+    /// in doubt wait for a replica, and only what's on screen has one.
     fn relist(&mut self) -> bool {
-        let ready = self.inbox.relist && self.status == Status::Attached;
-        let (Some(client), Some(topology), true) = (&self.client, &self.topology, ready) else {
+        if self.status != Status::Attached {
+            return false;
+        }
+        let mut changed = false;
+        if let (true, Some(topology)) = (self.inbox.relist, &self.topology) {
+            let listed: Vec<ResourceId> = topology
+                .panes
+                .iter()
+                .map(|pane| pane.terminal_id.clone())
+                .collect();
+            self.inbox.relist = false;
+            changed = self.activities.reconnected(&listed);
+        }
+        if !self.inbox.relist && self.activities.unproven() {
+            changed |= self.prove_commands();
+        }
+        changed
+    }
+
+    fn prove_commands(&mut self) -> bool {
+        let Some(engine) = self.client.as_ref().and_then(|c| c.engine()) else {
             return false;
         };
-        let listed: Vec<ResourceId> = topology
-            .panes
-            .iter()
-            .map(|pane| pane.terminal_id.clone())
-            .collect();
-        self.inbox.relist = false;
+        let on_screen = self.on_screen();
         self.activities
-            .reconnected(&listed, |id| client.command_running(id))
+            .prove(&on_screen, |id| match engine.replica_prompt(id) {
+                ReplicaPrompt::Running => Some(true),
+                ReplicaPrompt::AtPrompt => Some(false),
+                ReplicaPrompt::Unknown => None,
+            })
+    }
+
+    /// An open inbox's times count on with nothing else to redraw them. True
+    /// when one the cards show has moved. Wakes on the clock's whole second,
+    /// so however many polls ask, they ask for the one wake.
+    pub(super) fn tick_inbox(&mut self, tx: &mut Tx) -> bool {
+        let clocks: Vec<String> = if self.inbox.open {
+            self.inbox_items().iter().filter_map(Item::clock).collect()
+        } else {
+            Vec::new()
+        };
+        if !clocks.is_empty() {
+            let next = self.clock.floor() + 1.0 - self.clock;
+            tx.wake_after(Duration::from_secs_f64(next.max(0.01)));
+        }
+        let moved = clocks != self.inbox.clocks;
+        self.inbox.clocks = clocks;
+        moved
     }
 
     /// Post, take back, and count when what they read from moved; then
@@ -311,6 +352,10 @@ impl Desk {
             enabled,
         );
         self.inbox.synced = Some(inputs);
+        relisted | self.follow_clicks()
+    }
+
+    fn follow_clicks(&mut self) -> bool {
         let clicks = self.inbox.alerts.take_clicks();
         let clicked = !clicks.is_empty();
         for target in clicks {
@@ -321,7 +366,7 @@ impl Desk {
                 Target::Terminal { id, session } => self.show(id, &session),
             }
         }
-        relisted | clicked
+        clicked
     }
 }
 
