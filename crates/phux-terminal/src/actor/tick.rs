@@ -80,7 +80,4 @@ pub fn retransmit_timeout(srtt: Option<std::time::Duration>) -> std::time::Durat
     })
 }
 
-/// Debounce for the post-resize resync: a window drag fires many resizes,
-/// and one snapshot at the settled size replaces per-step snapshots that
-/// would land on mismatched mirrors.
-pub const RESIZE_RESYNC_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(50);
+pub use phux_resource::RESIZE_RESYNC_DEBOUNCE;

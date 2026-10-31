@@ -1,7 +1,7 @@
 //! The pane exit lifecycle: the exit watcher, retention and reaping, cascading
 //! closes to children, and the `RESOURCE_CLOSED` broadcast.
 
-use super::agent_state::drain_retract;
+use crate::runtime::apps::terminal::agent_state::drain_retract;
 
 use super::detach_clients_of_killed_session;
 use crate::hooks::HookEvent;

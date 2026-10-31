@@ -186,9 +186,9 @@ pub(super) fn spawn_argv_builder(
     state: &SharedState,
     command: Option<Vec<String>>,
 ) -> phux_terminal::pty::CommandBuilder {
-    crate::runtime::commands::argv_command(command).unwrap_or_else(|| {
+    crate::runtime::apps::terminal::launch::argv_command(command).unwrap_or_else(|| {
         let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
-        crate::terminal_actor::default_shell_command(&shell, login_shell)
+        phux_terminal::actor::default_shell_command(&shell, login_shell)
     })
 }
 
@@ -205,9 +205,9 @@ pub(super) async fn build_spawn_command(
 ) -> phux_terminal::pty::CommandBuilder {
     let mut builder = spawn_argv_builder(state, command);
     let default_term = state.with(|s| s.term().to_owned());
-    crate::terminal_actor::apply_term(&mut builder, &default_term);
+    phux_terminal::actor::apply_term(&mut builder, &default_term);
     if let Some(t) = term {
-        crate::terminal_actor::apply_term(&mut builder, t);
+        phux_terminal::actor::apply_term(&mut builder, t);
     }
     if let Some(path) = cwd {
         builder.cwd(path);

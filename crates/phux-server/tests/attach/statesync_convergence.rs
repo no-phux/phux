@@ -6,7 +6,7 @@
 use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::screen::CellWide;
-use phux_server::grid::{ConsumerReference, SnapshotSynthesizer};
+use phux_terminal::grid::{ConsumerReference, SnapshotSynthesizer};
 
 fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
     let mut terminal = GhosttyTerminal::new(cols, rows).unwrap();

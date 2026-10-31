@@ -3,15 +3,13 @@ use crate::hooks::HookEvent;
 use crate::runtime::ServerError;
 use crate::runtime::input_lane::InputLaneHandle;
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
-use crate::terminal_actor::ConsumerDetachRequest;
 use crate::transport::{AcceptErrorDisposition, Incoming, WS_REJECTION_WARN_INTERVAL};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_terminal::actor::TerminalResource as _;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 /// Attachment teardown: free the per-consumer state every subscribed pane
 /// holds for this client (ADR-0018), release its leases and relay state,
@@ -84,33 +82,9 @@ fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<Detache
 /// subscribes to allocated for it. `try_send` is non-blocking and
 /// best-effort, so this is safe under the state lock.
 fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
-    let wire_client_id = crate::runtime::wire_client(client_id);
     for handle in s.subscribed_resource_handles(client_id) {
-        let Ok(terminal) = handle.terminal() else {
-            continue;
-        };
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        let _ = terminal
-            .native_release
-            .try_send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 });
-        let (reply_tx, _reply_rx) = oneshot::channel();
-        match terminal.consumer_detach.try_send(ConsumerDetachRequest {
-            client_id: wire_client_id,
-            reply: reply_tx,
-        }) {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                trace!(
-                    ?client_id,
-                    "consumer_detach mailbox full; entry reaped by tick_emit when its mailbox closes",
-                );
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                trace!(
-                    ?client_id,
-                    "consumer_detach: pane actor gone; nothing to free"
-                );
-            }
+        if let Some(app) = crate::runtime::apps::app_for(handle.kind) {
+            app.release_consumer(&handle, client_id);
         }
     }
 }
@@ -129,7 +103,7 @@ fn announce_lease_releases(
         };
         let _ = handle
             .control
-            .try_send(crate::terminal_actor::ControlRequest::LeaseChanged {
+            .try_send(crate::resource::ControlRequest::LeaseChanged {
                 input_holder: None,
                 action: phux_protocol::wire::frame::ControlAction::Released,
                 actor,

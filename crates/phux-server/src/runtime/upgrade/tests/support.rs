@@ -190,13 +190,13 @@ pub(super) fn old_image_with_agent_sessions(
     mpsc::Sender<crate::resource::agent_session::AppendRequest>,
 ) {
     let (sid, live_pane) = s.seed_session("main");
-    let live = crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"live").unwrap();
+    let live = phux_terminal::actor::TerminalActor::new_with_seed(20, 5, b"live").unwrap();
     let live_token = live.token.clone();
     let pane_wire = s.spawn_resource_actor(live_pane, live.handle, live_token, live.actor.run());
     let (agent_wire, append) = spawn_agent_session(s, live_pane, "claude", Some("native-1"));
 
     let exited = s.add_pane_to_session(sid).unwrap();
-    let dead = crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"").unwrap();
+    let dead = phux_terminal::actor::TerminalActor::new_with_seed(20, 5, b"").unwrap();
     let dead_token = dead.token.clone();
     let _ = s.spawn_resource_actor(exited, dead.handle, dead_token, dead.actor.run());
     let _ = spawn_agent_session(s, exited, "pi", None);

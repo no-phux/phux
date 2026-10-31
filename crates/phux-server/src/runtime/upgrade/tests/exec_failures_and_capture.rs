@@ -96,7 +96,9 @@ async fn upgrade_carries_agent_sessions_with_their_id_and_log_tail() {
             let blob = StateBlob::from_bytes(&blob.to_bytes().unwrap()).unwrap();
             let resumed = SharedState::new();
             let watchers = resumed
-                .with_mut(|s| s.rebuild_from_blob(&blob, |_, _| ()))
+                .with_mut(|s| {
+                    s.rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
+                })
                 .expect("rebuild")
                 .exit_watchers;
             assert_eq!(

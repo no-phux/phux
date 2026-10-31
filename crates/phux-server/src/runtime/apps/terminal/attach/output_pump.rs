@@ -51,21 +51,20 @@ pub(super) struct PaneResync {
     /// Synthesized grid replay for the replacement bootstrap.
     pub(super) bytes: bytes::Bytes,
     /// Why the prior generation cannot continue.
-    pub(super) reason: crate::terminal_actor::ResyncReason,
+    pub(super) reason: crate::resource::ResyncReason,
     /// Actor-global raw sequence included by the replacement cut.
     pub(super) base_seq: u64,
 }
 
 /// Map the actor's resync cause onto its wire tombstone reason.
 pub(super) const fn tombstone_reason_for(
-    reason: crate::terminal_actor::ResyncReason,
+    reason: crate::resource::ResyncReason,
 ) -> phux_protocol::wire::frame::TombstoneReason {
     match reason {
-        crate::terminal_actor::ResyncReason::Resize => {
+        crate::resource::ResyncReason::Resize => {
             phux_protocol::wire::frame::TombstoneReason::Resize
         }
-        crate::terminal_actor::ResyncReason::OutboundGap
-        | crate::terminal_actor::ResyncReason::Exit => {
+        crate::resource::ResyncReason::OutboundGap | crate::resource::ResyncReason::Exit => {
             phux_protocol::wire::frame::TombstoneReason::OutboundGap
         }
     }
@@ -109,7 +108,7 @@ pub(crate) struct OutputPumpContext {
     pub(crate) last_seq: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     /// Terminal facet used for native checkpoint capture and publication.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    pub(crate) terminal: crate::terminal_actor::TerminalHandle,
+    pub(crate) terminal: phux_terminal::actor::TerminalHandle,
 }
 
 impl OutputPumpContext {
@@ -279,9 +278,9 @@ impl OutputPumpContext {
     pub(super) async fn capture_native_checkpoint(
         &self,
         bootstrap_id: BootstrapId,
-    ) -> Result<Option<crate::terminal_actor::NativeBootstrapReply>, PumpFault> {
+    ) -> Result<Option<phux_terminal::actor::NativeBootstrapReply>, PumpFault> {
         let captured = request_native_checkpoint(&self.terminal, |reply| {
-            crate::terminal_actor::NativeBootstrapRequest::full_budget(
+            phux_terminal::actor::NativeBootstrapRequest::full_budget(
                 self.client_id.0,
                 self.wire_terminal_id.clone(),
                 self.stream_id,
@@ -296,7 +295,9 @@ impl OutputPumpContext {
             Err(NativeRequestFailure::Unsent | NativeRequestFailure::Dropped) => {
                 return Err(PumpFault::PaneGone);
             }
-            Err(NativeRequestFailure::Refused(crate::native_state::NativeStateError::Resize)) => {
+            Err(NativeRequestFailure::Refused(
+                phux_terminal::native_state::NativeStateError::Resize,
+            )) => {
                 debug!(
                     terminal_id = ?self.wire_terminal_id,
                     "native checkpoint invalidated mid-capture; awaiting the resync"

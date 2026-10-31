@@ -1,4 +1,4 @@
-use phux_terminal::pty::CommandBuilder;
+use crate::runtime::apps::terminal::launch::LaunchCommand;
 
 use super::ServerState;
 
@@ -19,7 +19,7 @@ impl ServerState {
     /// Configure the attach-time `CreateIfMissing` seed: a PTY pane
     /// (`cmd`, or the default shell when `None`) or, without `with_pty`, a
     /// PTY-less actor.
-    pub fn set_attach_create_pty(&mut self, with_pty: bool, cmd: Option<CommandBuilder>) {
+    pub fn set_attach_create_pty(&mut self, with_pty: bool, cmd: Option<LaunchCommand>) {
         self.config.attach_create_seeds_pty = with_pty;
         self.config.attach_create_seed_command = cmd;
     }
@@ -32,7 +32,7 @@ impl ServerState {
 
     /// A fresh clone of the seed command for one create.
     #[must_use]
-    pub fn attach_create_seed_command(&self) -> Option<CommandBuilder> {
+    pub fn attach_create_seed_command(&self) -> Option<LaunchCommand> {
         self.config.attach_create_seed_command.clone()
     }
 

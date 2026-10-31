@@ -14,7 +14,6 @@
 //! pane becomes a resource bound to its running process as activation 1.
 
 use phux_resource::agent_session::AgentSessionResource as _;
-use phux_terminal::actor::TerminalResource as _;
 use std::collections::{HashMap, HashSet};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
@@ -36,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 use super::ServerState;
 use crate::resource::ResourceHandle;
 use crate::resource::agent_session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
-use crate::terminal_actor::{PaneUpgradeHandle, TerminalActor, UpgradeHandleRequest};
+use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
 use crate::upgrade::blob::{
     AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, MetadataBlob, OrgBlob, PaneBlob,
     RetainedExitBlob, SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
@@ -53,6 +52,20 @@ pub(crate) struct UpgradeHandoffs {
     pub(crate) agent_sessions: HashMap<ResourceId, AgentSessionBootstrap>,
 }
 
+/// One pane an app rebuilt around its inherited state, ready to register.
+pub(crate) struct RebuiltPane<W> {
+    /// The engine's handle.
+    pub(crate) handle: ResourceHandle,
+    /// The engine's cancellation token.
+    pub(crate) token: tokio_util::sync::CancellationToken,
+    /// The engine, not yet running.
+    pub(crate) engine: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+    /// Fires when the engine's child exits.
+    pub(crate) exit_notify: Option<tokio::sync::oneshot::Receiver<phux_core::ExitOutcome>>,
+    /// What the caller's wiring returned.
+    pub(crate) wired: W,
+}
+
 /// Errors rebuilding a [`ServerState`] from a [`StateBlob`].
 #[derive(Debug, thiserror::Error)]
 pub enum RebuildError {
@@ -64,7 +77,7 @@ pub enum RebuildError {
     Store(#[from] crate::org_store::StoreError),
     /// A pane's actor could not be rebuilt around its adopted PTY.
     #[error("actor rebuild: {0}")]
-    Actor(#[from] crate::terminal_actor::TerminalActorError),
+    Actor(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// The blob references a wire id that no earlier entity defined (e.g. a
     /// window naming a session not in the blob), or a key no record has.
     #[error("blob references unknown {kind} wire id {id}")]
@@ -367,7 +380,7 @@ type PaneExitWatchers = Vec<(
 /// applies them, so seeding a fresh `Terminal` reproduces the same grid —
 /// then the program's OSC title as an `OSC 2`, so the rebuilt engine reports
 /// the title the program set rather than none.
-fn pane_seed(p: &PaneBlob) -> Vec<u8> {
+pub(crate) fn pane_seed(p: &PaneBlob) -> Vec<u8> {
     let mut seed = Vec::with_capacity(p.scrollback_bytes.len() + p.vt_replay_bytes.len());
     seed.extend_from_slice(&p.scrollback_bytes);
     seed.extend_from_slice(&p.vt_replay_bytes);

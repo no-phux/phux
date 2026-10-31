@@ -43,7 +43,7 @@ async fn gap_resync_waits_for_the_entire_replacement_batch() {
     let count = frames.len();
     let mut queued = Box::pin(queue_resync_bootstrap(
         &tx,
-        crate::terminal_actor::ResyncReason::OutboundGap,
+        crate::resource::ResyncReason::OutboundGap,
         frames.clone(),
         true,
     ));
@@ -78,7 +78,7 @@ async fn a_gap_timeout_publishes_no_partial_generation() {
     let frames = final_screen_frames(&phux_protocol::ids::ResourceId::local(1));
     let mut queued = Box::pin(queue_resync_bootstrap(
         &tx,
-        crate::terminal_actor::ResyncReason::OutboundGap,
+        crate::resource::ResyncReason::OutboundGap,
         frames,
         true,
     ));
@@ -106,7 +106,7 @@ async fn cancelling_a_gap_wait_returns_its_partial_reservation() {
     let frames = final_screen_frames(&phux_protocol::ids::ResourceId::local(1));
     let mut queued = Box::pin(queue_resync_bootstrap(
         &tx,
-        crate::terminal_actor::ResyncReason::OutboundGap,
+        crate::resource::ResyncReason::OutboundGap,
         frames,
         true,
     ));
@@ -145,7 +145,7 @@ async fn exit_resync_on_a_full_mailbox_precedes_close() {
 
     let deferred = queue_resync_bootstrap(
         &tx,
-        crate::terminal_actor::ResyncReason::OutboundGap,
+        crate::resource::ResyncReason::OutboundGap,
         frames.clone(),
         true,
     )
@@ -155,7 +155,7 @@ async fn exit_resync_on_a_full_mailbox_precedes_close() {
     // Park the exit reservation on this task before close asks for a
     // slot. `yield_now` does not order two spawned waiters, and the
     // first one in the semaphore queue takes every freed slot.
-    let exit = queue_resync_bootstrap(&tx, crate::terminal_actor::ResyncReason::Exit, frames, true);
+    let exit = queue_resync_bootstrap(&tx, crate::resource::ResyncReason::Exit, frames, true);
     tokio::pin!(exit);
     std::future::poll_fn(|cx| match std::future::Future::poll(exit.as_mut(), cx) {
         std::task::Poll::Pending => std::task::Poll::Ready(()),

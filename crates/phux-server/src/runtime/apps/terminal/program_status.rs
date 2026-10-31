@@ -8,12 +8,12 @@ use phux_protocol::wire::frame::{
 };
 use tokio::sync::watch;
 
-use crate::agent_detect::record::AgentRecordJson;
 use crate::hooks::HookEvent;
-use crate::resource::terminal::program_status::Record;
 use crate::state::{ServerState, SharedState};
+use phux_resource::agent_record::AgentRecordJson;
+use phux_terminal::actor::program_status::Record;
 
-pub(super) fn spawn_drain(
+pub(in crate::runtime) fn spawn_drain(
     state: SharedState,
     terminal: ResourceId,
     mut rx: watch::Receiver<Vec<Record>>,

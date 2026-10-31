@@ -121,8 +121,8 @@ pub(crate) async fn resolve_create_if_missing(
 
     let seed_result = if with_pty {
         let mut seed_cmd = override_cmd.unwrap_or_else(|| spawn_argv_builder(state, command));
-        crate::terminal_actor::apply_spawn_cwd(&mut seed_cmd, cwd.as_deref(), &name);
-        crate::terminal_actor::apply_term(&mut seed_cmd, &term);
+        phux_terminal::actor::apply_spawn_cwd(&mut seed_cmd, cwd.as_deref(), &name);
+        phux_terminal::actor::apply_term(&mut seed_cmd, &term);
         seed_session_with_pty_and_colors(
             state,
             &name,

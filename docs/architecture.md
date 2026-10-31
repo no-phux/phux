@@ -231,8 +231,9 @@ A resource kind is an app. The host reaches one through `ResourceApp` in
 `phux-server/src/runtime/apps/`: `app_owning` routes a facet command by the
 same catalog rows authorization uses, and `app_for` answers per-kind questions
 such as how a stream bootstraps. A new kind is one `ResourceApp` and one `APPS`
-row. Only `runtime/apps/terminal` may name the Terminal engine; `seam_tests.rs`
-holds a ratchet of the host crossings that remain, and it can only shrink.
+row. Only `runtime/apps/terminal` may name the Terminal engine, and
+`seam_tests.rs` fails if any host module does. The host holds a launch command
+as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration

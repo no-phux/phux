@@ -5,7 +5,6 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
 
 /// Handle `DETACH_RESOURCE` (SPEC §5.1): drop every output task and the
 /// event subscription the caller holds on the terminal. Idempotent, so a
@@ -15,8 +14,6 @@ pub(crate) async fn handle_detach_terminal(
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
-    use crate::terminal_actor::ConsumerDetachRequest;
-
     let handle = state.with_mut(|s| {
         s.unsubscribe_terminal_events(client_id, terminal_id);
         // A declared `VIEWER` outlives the subscription (ADR-0127).
@@ -31,17 +28,11 @@ pub(crate) async fn handle_detach_terminal(
     };
     pump::stop_output(state, client_id, core).await;
     state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
-    if let Some(Ok(terminal)) = handle.as_ref().map(|handle| handle.terminal()) {
-        // Fence actor-emitted StateSync output before COMMAND_RESULT is queued.
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = terminal
-            .consumer_detach
-            .send(ConsumerDetachRequest {
-                client_id: super::super::wire_client(client_id),
-                reply: reply_tx,
-            })
-            .await;
-        let _ = reply_rx.await;
+    // Fence engine-emitted output before COMMAND_RESULT is queued.
+    if let Some(handle) = &handle
+        && let Some(app) = crate::runtime::apps::app_for(handle.kind)
+    {
+        app.fence_consumer(handle, client_id).await;
     }
     debug!(?client_id, ?terminal_id, "DETACH_RESOURCE unsubscribed");
     CommandResult::Ok
@@ -146,18 +137,6 @@ pub(crate) fn handle_detach_clients(state: &SharedState, session: Option<&str>) 
     CommandResult::OkWith(CommandValue::Json(count.to_string()))
 }
 
-/// A PTY command from a non-empty request argv.
-pub(crate) fn argv_command(
-    argv: Option<Vec<String>>,
-) -> Option<phux_terminal::pty::CommandBuilder> {
-    let mut argv = argv?.into_iter();
-    let mut builder = phux_terminal::pty::CommandBuilder::new(argv.next()?);
-    for arg in argv {
-        builder.arg(arg);
-    }
-    Some(builder)
-}
-
 /// Create a named session and seed its pane without attaching: the
 /// `SESSION_CREATE_KEY` metadata write (ADR-0019 / ADR-0027).
 ///
@@ -177,31 +156,23 @@ pub(crate) fn create_named_session(
         return Err(format!("session {name:?} already exists"));
     }
 
-    let (with_pty, override_cmd, scrollback, term, shell, login_shell) = state.with(|s| {
+    let (with_pty, override_cmd, scrollback) = state.with(|s| {
         (
             s.attach_create_seeds_pty(),
             s.attach_create_seed_command(),
             s.scrollback_limits(),
-            s.term().to_owned(),
-            s.shell().to_owned(),
-            s.login_shell(),
         )
     });
 
     let seed_cmd = with_pty.then(|| {
-        // A server-wide override wins, then the request argv, then the shell.
-        let mut seed_cmd = override_cmd.unwrap_or_else(|| {
-            argv_command(command).unwrap_or_else(|| {
-                crate::terminal_actor::default_shell_command(&shell, login_shell)
-            })
-        });
-        // An invalid cwd is dropped with a warn, never failing the create.
-        crate::terminal_actor::apply_spawn_cwd(&mut seed_cmd, cwd, name);
-        for (key, value) in env {
-            seed_cmd.env(key, value);
-        }
-        crate::terminal_actor::apply_term(&mut seed_cmd, &term);
-        seed_cmd
+        crate::runtime::apps::terminal::launch::named_session_command(
+            state,
+            name,
+            override_cmd,
+            command,
+            cwd,
+            env,
+        )
     });
     match seed_session(state, name, seed_cmd, scrollback, root_token, None, origin) {
         Ok(core_terminal) => {

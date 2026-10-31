@@ -6,7 +6,7 @@ use phux_core::Effect;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::state::{ServerState, SharedState};
+use crate::state::SharedState;
 
 use super::ORPHAN_GRACE;
 
@@ -34,7 +34,7 @@ fn launch(
     let Some((terminal, with_pty, scrollback, cmd)) = state.with_mut(|s| {
         let id = s.registry().resource_id(&resource)?;
         let with_pty = s.attach_create_seeds_pty();
-        let cmd = with_pty.then(|| build_command(s, spec));
+        let cmd = with_pty.then(|| crate::runtime::apps::terminal::launch::spec_command(s, spec));
         if let phux_core::LaunchSpec::Terminal(t) = spec {
             let wire = s.intern_terminal_wire(id);
             super::super::commands::set_agent_session(s, wire, t.restore.clone());
@@ -62,33 +62,6 @@ fn launch(
     ) {
         warn!(?terminal, with_pty, %error, "launch effect failed");
     }
-}
-
-/// The command a Terminal launch spec runs: its argv, else the default
-/// shell, in its cwd, with its environment and the server's `TERM`.
-fn build_command(
-    s: &ServerState,
-    spec: &phux_core::LaunchSpec,
-) -> phux_terminal::pty::CommandBuilder {
-    let launch = match spec {
-        phux_core::LaunchSpec::Terminal(t) => t.clone(),
-        _ => phux_core::TerminalLaunch::default(),
-    };
-    let mut cmd =
-        super::super::commands::argv_command((!launch.argv.is_empty()).then_some(launch.argv))
-            .unwrap_or_else(|| {
-                crate::terminal_actor::default_shell_command(s.shell(), s.login_shell())
-            });
-    // A recorded launch directory is intent, not a hint. If it disappears
-    // after validation, fail the activation rather than execute elsewhere.
-    if let Some(cwd) = &launch.cwd {
-        crate::terminal_actor::apply_strict_spawn_cwd(&mut cmd, cwd);
-    }
-    for (key, value) in launch.env {
-        cmd.env(key, value);
-    }
-    crate::terminal_actor::apply_term(&mut cmd, s.term());
-    cmd
 }
 
 /// End an activation. A live engine closes through the legacy kill's

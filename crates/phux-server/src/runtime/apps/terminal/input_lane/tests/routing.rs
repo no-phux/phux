@@ -94,7 +94,7 @@ fn encoder_cache_tracks_actor_generations() {
     let state = SharedState::new();
     let pane = state.with_mut(|s| s.seed_session("s").1);
     let mut encoders = std::collections::HashMap::new();
-    let facet = |bundle: &crate::terminal_actor::TerminalActorBundle| {
+    let facet = |bundle: &phux_terminal::actor::TerminalActorBundle| {
         bundle.handle.terminal().expect("facet").clone()
     };
     encoder_for(&mut encoders, pane, &facet(&first)).expect("first encoder");

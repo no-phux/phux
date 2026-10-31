@@ -15,7 +15,7 @@ use phux_protocol::wire::frame::{AttachTarget, DetachReason, ErrorCode, FrameKin
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::terminal_actor::{ConsumerAttachOutcome, PaneOutput};
+use phux_terminal::actor::{ConsumerAttachOutcome, PaneOutput};
 
 struct DuplexWriter(tokio::io::WriteHalf<tokio::io::DuplexStream>);
 
@@ -53,8 +53,8 @@ async fn next_frame(
 
 fn native_failure_handle() -> (
     crate::resource::ResourceHandle,
-    mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
-    mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
+    mpsc::Receiver<phux_terminal::actor::ConsumerAttachRequest>,
+    mpsc::Receiver<phux_terminal::actor::NativeBootstrapRequest>,
 ) {
     let (output, _output_seed) = broadcast::channel::<PaneOutput>(8);
     let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
@@ -64,13 +64,13 @@ fn native_failure_handle() -> (
             None,
             output,
             mpsc::channel(8).0,
-            crate::terminal_actor::TerminalHandle {
+            phux_terminal::actor::TerminalHandle {
                 consumer_attach,
                 consumer_detach: mpsc::channel(8).0,
                 consumer_ack: mpsc::channel(8).0,
                 upgrade: mpsc::channel(8).0,
                 native_bootstrap,
-                ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
+                ..phux_terminal::actor::TerminalHandle::detached_for_test(80, 24)
             },
         ),
         consumer_attach_rx,
@@ -153,7 +153,9 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
                     .await
                     .expect("native preflight")
                     .reply
-                    .send(Err(crate::native_state::NativeStateError::OutOfMemory))
+                    .send(Err(
+                        phux_terminal::native_state::NativeStateError::OutOfMemory,
+                    ))
                     .expect("native failure reply");
             });
 

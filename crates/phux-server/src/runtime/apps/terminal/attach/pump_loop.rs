@@ -219,7 +219,7 @@ pub(super) async fn fail_aggregate_attach_prepublication(
                 producer_deadline,
                 terminal
                     .native_release
-                    .send(crate::terminal_actor::NativeReleaseRequest { owner: client_id.0 }),
+                    .send(phux_terminal::actor::NativeReleaseRequest { owner: client_id.0 }),
             )
             .await;
         }

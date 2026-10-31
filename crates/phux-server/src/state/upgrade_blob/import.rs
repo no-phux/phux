@@ -359,27 +359,3 @@ pub(in crate::state) fn chain(
     }
     tree
 }
-
-/// Build a pane actor around its inherited PTY, or a PTY-less actor that
-/// replays its snapshot. Only one of the two PTY ids is corruption.
-pub(in crate::state) fn pane_actor_bundle(
-    p: &PaneBlob,
-    scrollback: phux_config::ScrollbackLimits,
-) -> Result<crate::terminal_actor::TerminalActorBundle, RebuildError> {
-    let seed = pane_seed(p);
-    Ok(match (p.master_fd, p.child_pid) {
-        (Some(master_fd), Some(child_pid)) => TerminalActor::new_with_adopted_pty(
-            master_fd,
-            child_pid,
-            p.cols,
-            p.rows,
-            scrollback,
-            CancellationToken::new(),
-            &seed,
-        )?,
-        (None, None) => TerminalActor::new_with_seed(p.cols, p.rows, &seed)?,
-        _ => {
-            return Err(RebuildError::InvalidPtyPair { wire_id: p.wire_id });
-        }
-    })
-}

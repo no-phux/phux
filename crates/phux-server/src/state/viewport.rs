@@ -1,8 +1,6 @@
 use phux_core::ids::ResourceId;
-use phux_terminal::actor::TerminalResource as _;
 
 use super::{ClientId, HEADLESS_TERMINAL_DIMS, ServerState};
-use crate::terminal_actor::ResizeRequest;
 
 /// Cell pixel size implied by one viewport report (`pixel / cells`); `None`
 /// without metrics or for degenerate ones (sub-pixel cells).
@@ -130,22 +128,11 @@ impl ServerState {
             if self.retained_exit(terminal).is_some() {
                 continue;
             }
-            let Some(Ok(handle)) = self.resource_handle(terminal).map(|h| h.terminal()) else {
-                continue;
-            };
-            if handle
-                .resize
-                .try_send(ResizeRequest {
-                    cols,
-                    rows,
-                    cell_px,
-                    resync_clients: true,
-                    resync_only: false,
-                    resync_for: None,
-                })
-                .is_ok()
-                && let Some(pane) = self.registry_mut().terminal_mut(terminal)
-            {
+            let resized = self.resource_handle(terminal).is_some_and(|handle| {
+                crate::runtime::apps::app_for(handle.kind)
+                    .is_some_and(|app| app.resize(handle, (cols, rows), cell_px))
+            });
+            if resized && let Some(pane) = self.registry_mut().terminal_mut(terminal) {
                 pane.dims = (cols, rows);
             }
         }

@@ -5,7 +5,6 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
 
 /// Handle `ATTACH_RESOURCE` (SPEC §5.1): subscribe the caller to one
 /// Terminal's content stream, snapshot first, without a session `ATTACH`.
@@ -169,7 +168,8 @@ pub(crate) fn subscribe_attach_terminal(
         // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
         // any other kind is refused the way `ACQUIRE_INPUT` refuses it.
         if role.is_some_and(RolePolicy::takes_over)
-            && let Err(error) = handle.terminal()
+            && let Some(Err(error)) = crate::runtime::apps::app_for(handle.kind)
+                .map(crate::runtime::apps::ResourceApp::check_takeover)
         {
             return Err(wrong_resource_kind(error));
         }

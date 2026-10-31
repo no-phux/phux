@@ -19,15 +19,15 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
 use tracing::{debug, warn};
 
-use super::commands::handle_route_input;
-use super::input_lane::InputLaneHandle;
+use crate::runtime::commands::handle_route_input;
+use crate::runtime::input_lane::InputLaneHandle;
 use crate::state::{ClientId, ServerState, SharedState};
 
 /// Largest transcript the server will paste, in bytes. A transcriber that
 /// prints a whole log file by mistake must not become a pane's input.
 const MAX_TRANSCRIPT_BYTES: usize = 64 * 1024;
 
-pub(super) async fn handle_transcribe(
+pub(in crate::runtime) async fn handle_transcribe(
     state: &SharedState,
     client_id: ClientId,
     upload_id: FileUploadId,
@@ -42,7 +42,7 @@ pub(super) async fn handle_transcribe(
     }
     let voice = state.with(ServerState::voice);
     let env = state.with(ServerState::server_env);
-    let principal = state.with(|s| super::upload::upload_principal(s, client_id));
+    let principal = state.with(|s| crate::runtime::upload::upload_principal(s, client_id));
     let started = std::time::Instant::now();
     let clip = ClipRequest {
         upload_id,
@@ -75,7 +75,7 @@ pub(super) async fn handle_transcribe(
 )]
 async fn run_transcriber(
     voice: &phux_config::VoiceCfg,
-    env: &super::ServerEnv,
+    env: &crate::runtime::ServerEnv,
     request: &ClipRequest<'_>,
     client_id: ClientId,
 ) -> Result<(String, u64), CommandResult> {
@@ -157,17 +157,20 @@ struct ClipRequest<'a> {
 /// reaches the transcriber: ffmpeg-based tools dereference `m3u8`, `concat`,
 /// and similar formats, which would let an uploader make the server read or
 /// fetch other files.
-pub(super) const TRANSCRIBE_EXTENSIONS: &[&str] = &[
+pub(in crate::runtime) const TRANSCRIBE_EXTENSIONS: &[&str] = &[
     "wav", "m4a", "aac", "caf", "mp3", "ogg", "oga", "opus", "webm", "flac",
 ];
 
 /// The completed, audio-typed clip `request` names, or the refusal.
 fn resolve_clip(
-    env: &super::ServerEnv,
+    env: &crate::runtime::ServerEnv,
     request: &ClipRequest<'_>,
 ) -> Result<std::path::PathBuf, CommandResult> {
-    let clip = match super::upload::completed_upload_path(env, request.upload_id, request.principal)
-    {
+    let clip = match crate::runtime::upload::completed_upload_path(
+        env,
+        request.upload_id,
+        request.principal,
+    ) {
         Ok(Some(path)) => path,
         Ok(None) => {
             return Err(refuse(

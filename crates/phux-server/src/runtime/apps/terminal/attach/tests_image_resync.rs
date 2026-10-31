@@ -9,7 +9,8 @@ async fn image_resync_recaptures_resident_payload_and_its_own_geometry_and_cut()
                 "visible\x1b_Ga=t,f=32,s=16,v=12,i=9,q=2;{}\x1b\\",
                 "AAAA".repeat(256)
             );
-            let bundle = crate::TerminalActor::new_with_seed(10, 5, seed.as_bytes()).unwrap();
+            let bundle =
+                phux_terminal::TerminalActor::new_with_seed(10, 5, seed.as_bytes()).unwrap();
             let terminal = bundle.handle.terminal().unwrap().clone();
             let token = bundle.token.clone();
             let mut output = bundle.handle.output.subscribe();
@@ -41,7 +42,7 @@ async fn image_resync_recaptures_resident_payload_and_its_own_geometry_and_cut()
                 rows: 1,
                 bytes: bytes::Bytes::from_static(b"old cut without images"),
                 base_seq: 999,
-                reason: crate::terminal_actor::ResyncReason::Resize,
+                reason: crate::resource::ResyncReason::Resize,
             };
             assert!(
                 ctx.republish_generation(&mut generation, &mut output, &old)

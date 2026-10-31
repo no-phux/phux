@@ -9,12 +9,13 @@ use std::time::Duration;
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::{BootstrapId, ClientId, StreamId};
-use phux_server::grid::SnapshotBytes;
-use phux_server::state::{Outbound, TerminalInput};
-use phux_server::terminal_actor::{
+use phux_server::state::Outbound;
+use phux_terminal::TerminalInput;
+use phux_terminal::actor::{
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_TICK_INTERVAL,
     PaneOutput, ResizeRequest, SnapshotRequest, TerminalActor,
 };
+use phux_terminal::grid::SnapshotBytes;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::timeout;
 

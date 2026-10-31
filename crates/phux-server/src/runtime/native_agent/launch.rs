@@ -35,7 +35,7 @@ struct NativeSpawnTarget {
 }
 
 struct PreparedNativeHost {
-    command: phux_terminal::pty::CommandBuilder,
+    command: crate::runtime::apps::terminal::launch::LaunchCommand,
     launch: phux_core::TerminalLaunch,
     recipe: SpawnNativeAgent,
     public_spec: String,
@@ -82,10 +82,13 @@ fn spawn_transaction(
             return Err(error);
         }
     };
-    command.env("PHUX_SOCKET", &delegation.socket_path);
-    command.env("PHUX_NATIVE_AGENT_ID", resources.agent_wire.to_string());
-    command.env("PHUX_NATIVE_ACTIVATION", &activation);
-    command.env("PHUX_NATIVE_BINDING", &proof);
+    crate::runtime::apps::terminal::launch::bind_native_host(
+        &mut command,
+        &delegation.socket_path,
+        &resources.agent_wire.to_string(),
+        &activation,
+        &proof,
+    );
     let binding = reserved_binding(
         spec,
         recipe,
@@ -235,18 +238,15 @@ fn prepare_native_host(
     let executable = state
         .with(crate::state::ServerState::native_host_executable)
         .map_err(|error| refusal(error.to_string()))?;
-    let mut command = phux_terminal::pty::CommandBuilder::new(&executable);
-    command.args(["agent", "host"]);
-    if let Some(cwd) = &spec.cwd {
-        command.cwd(cwd);
-    }
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
     // Host-only startup carries the real local runtime configuration. The
     // portable saved recipe carries no bootstrap destination or SDK credentials.
     let startup = serde_json::to_string(spec).map_err(|error| refusal(error.to_string()))?;
-    command.env(NATIVE_HOST_SPEC_ENV, startup);
+    let command = crate::runtime::apps::terminal::launch::native_host_command(
+        &executable,
+        spec.cwd.as_deref(),
+        &spec.env,
+        (NATIVE_HOST_SPEC_ENV, &startup),
+    );
     let mut recipe = spec.clone();
     recipe.guardian = None;
     recipe.guardian_key = None;
@@ -304,7 +304,7 @@ fn create_native_resources(
     spec: &SpawnNativeAgent,
     target: &NativeSpawnTarget,
     launch: phux_core::TerminalLaunch,
-    command: &mut phux_terminal::pty::CommandBuilder,
+    command: &mut crate::runtime::apps::terminal::launch::LaunchCommand,
     public_spec: &str,
     operation: Option<phux_protocol::ids::OperationId>,
 ) -> Result<NativeSpawnResources, CommandResult> {
@@ -457,7 +457,7 @@ fn install_native_session(
 fn launch_native_guardian(
     ctx: &CommandContext,
     resources: &NativeSpawnResources,
-    command: phux_terminal::pty::CommandBuilder,
+    command: crate::runtime::apps::terminal::launch::LaunchCommand,
     operation: Option<phux_protocol::ids::OperationId>,
     reused: bool,
     credential: &str,

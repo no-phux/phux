@@ -16,10 +16,10 @@ impl PaneCaptureContext<'_> {
         staging: &mut AttachStaging,
         terminal_id: ResourceId,
         wire_terminal_id: &phux_protocol::ids::ResourceId,
-        terminal: &crate::terminal_actor::TerminalHandle,
+        terminal: &phux_terminal::actor::TerminalHandle,
     ) -> Result<(), CaptureFailure> {
         let captured = request_native_checkpoint(terminal, |reply| {
-            crate::terminal_actor::NativeBootstrapRequest {
+            phux_terminal::actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
                 terminal_id: wire_terminal_id.clone(),
                 stream_id: self.stream_id,
@@ -82,11 +82,11 @@ impl PaneCaptureContext<'_> {
     /// cut it was taken at.
     async fn request_pane_snapshot(
         &self,
-        terminal: &crate::terminal_actor::TerminalHandle,
+        terminal: &phux_terminal::actor::TerminalHandle,
         terminal_id: ResourceId,
         max_bytes: usize,
         max_frames: usize,
-    ) -> Result<(crate::grid::SnapshotBytes, u64), CaptureFailure> {
+    ) -> Result<(phux_terminal::grid::SnapshotBytes, u64), CaptureFailure> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if terminal
             .snapshot

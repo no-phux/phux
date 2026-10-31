@@ -297,7 +297,7 @@ fn sync_ask_inventory(state: &SharedState, agent: &ResourceId) {
             };
             s.report_stream_ask(
                 core,
-                crate::agent_asked::AskedPayload {
+                phux_resource::agent_asked::AskedPayload {
                     id: question.id,
                     question: text,
                     suggestions: question
@@ -310,7 +310,7 @@ fn sync_ask_inventory(state: &SharedState, agent: &ResourceId) {
             )
             .emit_payload()
         } else {
-            s.retract_agent_asked(core, crate::agent_asked::AskedSource::Stream);
+            s.retract_agent_asked(core, phux_resource::agent_asked::AskedSource::Stream);
             None
         };
         crate::hub::metadata_mirror::publish_asked_flag(s, &parent, s.agent_is_asked(core));

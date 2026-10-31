@@ -3,12 +3,12 @@
 use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 use tokio::sync::mpsc;
 
-use crate::input::{
+use phux_terminal::TerminalInput;
+use phux_terminal::actor::{EncodedInputRequest, InputCredit, LaneAhead, TerminalHandle};
+use phux_terminal::input::{
     InputEncoderSnapshot, PasteOutcome, PerTerminalFocusEncoder, PerTerminalKeyEncoder,
     PerTerminalMouseEncoder, PerTerminalPasteEncoder,
 };
-use crate::state::TerminalInput;
-use crate::terminal_actor::{EncodedInputRequest, InputCredit, LaneAhead, TerminalHandle};
 
 use super::credit;
 

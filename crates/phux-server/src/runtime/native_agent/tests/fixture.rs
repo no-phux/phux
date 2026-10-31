@@ -137,7 +137,7 @@ impl Fixture {
                 .unwrap();
             (owner, session, parent)
         });
-        let terminal = crate::terminal_actor::TerminalActor::build_with_token_and_colors(
+        let terminal = phux_terminal::actor::TerminalActor::build_with_token_and_colors(
             80,
             24,
             None,

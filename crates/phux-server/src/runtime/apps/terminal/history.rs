@@ -1,4 +1,4 @@
-use super::hello::NegotiatedConnection;
+use crate::runtime::connections::hello::NegotiatedConnection;
 use crate::state::{ClientId, Outbound, SharedState};
 use phux_protocol::caps::BootstrapProfile;
 use phux_protocol::ids::ResourceId as WireResourceId;
@@ -9,13 +9,13 @@ use tracing::warn;
 
 /// The `HISTORY_REQUEST` frame's payload.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-pub(super) struct HistoryPageRequest {
-    pub(super) terminal_id: WireResourceId,
-    pub(super) stream_id: phux_protocol::ids::StreamId,
-    pub(super) bootstrap_id: phux_protocol::ids::BootstrapId,
-    pub(super) cursor: bytes::Bytes,
-    pub(super) max_bytes: u32,
-    pub(super) max_rows: u32,
+pub(in crate::runtime) struct HistoryPageRequest {
+    pub(in crate::runtime) terminal_id: WireResourceId,
+    pub(in crate::runtime) stream_id: phux_protocol::ids::StreamId,
+    pub(in crate::runtime) bootstrap_id: phux_protocol::ids::BootstrapId,
+    pub(in crate::runtime) cursor: bytes::Bytes,
+    pub(in crate::runtime) max_bytes: u32,
+    pub(in crate::runtime) max_rows: u32,
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -24,7 +24,7 @@ pub(super) struct HistoryPageRequest {
 fn history_terminal(
     state: &SharedState,
     terminal_id: &WireResourceId,
-) -> Option<crate::terminal_actor::TerminalHandle> {
+) -> Option<phux_terminal::actor::TerminalHandle> {
     let handle = state.with(|server| {
         server
             .terminal_from_wire(terminal_id)
@@ -46,7 +46,7 @@ fn history_terminal(
 /// Answer one `HISTORY_REQUEST` from the pane's replica. SPEC L1 §4.5: every
 /// failure tombstones the cursor rather than sending an uncorrelated `ERROR`.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-pub(super) async fn serve_history_request(
+pub(in crate::runtime) async fn serve_history_request(
     state: &SharedState,
     client_id: ClientId,
     out_tx: &mpsc::Sender<Outbound>,
@@ -100,7 +100,7 @@ pub(super) async fn serve_history_request(
     let (reply_tx, reply_rx) = oneshot::channel();
     if terminal
         .native_history
-        .send(crate::terminal_actor::NativeHistoryRequest {
+        .send(phux_terminal::actor::NativeHistoryRequest {
             permit,
             owner: client_id.0,
             terminal_id: terminal_id.clone(),
@@ -127,9 +127,9 @@ pub(super) async fn serve_history_request(
         Err(error) => {
             // Mirrors the actor's own in-band mapping.
             let reason = match error {
-                crate::native_state::NativeStateError::OutOfMemory
-                | crate::native_state::NativeStateError::OutOfSpace { .. }
-                | crate::native_state::NativeStateError::LimitExceeded => {
+                phux_terminal::native_state::NativeStateError::OutOfMemory
+                | phux_terminal::native_state::NativeStateError::OutOfSpace { .. }
+                | phux_terminal::native_state::NativeStateError::LimitExceeded => {
                     HistoryTombstoneReason::Limit
                 }
                 _ => HistoryTombstoneReason::CodecFailure,

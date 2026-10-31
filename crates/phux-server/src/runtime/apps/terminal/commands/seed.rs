@@ -16,7 +16,7 @@ pub(in crate::runtime) fn seed_session(
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     origin: SeedOrigin,
-) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
     let terminal = state.with_mut(|s| {
         let on_exit = exit_policy_for(s, cmd.is_some(), origin.attribution);
         let actor = spawn_actor(s, origin.attribution);
@@ -31,14 +31,14 @@ pub(in crate::runtime) fn seed_session(
                 &actor,
             )
             .map_err(|refusal| {
-                crate::terminal_actor::TerminalActorError::Refused(refusal.to_string())
+                phux_terminal::actor::TerminalActorError::Refused(refusal.to_string())
             })?;
         let wire = match cmd.as_mut() {
             Some(cmd) => register_pty_command(s, terminal, cmd),
             None => s.intern_terminal_wire(terminal),
         };
         set_agent_session(s, wire, origin.agent_session);
-        Ok::<_, crate::terminal_actor::TerminalActorError>(terminal)
+        Ok::<_, phux_terminal::actor::TerminalActorError>(terminal)
     })?;
     let wire_terminal_id = launch_pane_actor(
         state,
@@ -64,7 +64,7 @@ pub(crate) fn seed_session_with_actor(
     name: &str,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
-) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
     seed_session_with_actor_as(
         state,
         name,
@@ -81,7 +81,7 @@ pub(crate) fn seed_session_with_actor_as(
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     lifetime: phux_core::SessionLifetime,
-) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
     seed_session(
         state,
         name,
@@ -103,7 +103,7 @@ pub fn seed_session_with_pty(
     cmd: phux_terminal::pty::CommandBuilder,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
-) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
     seed_session_with_pty_and_colors(
         state,
         name,
@@ -125,7 +125,7 @@ pub fn seed_session_with_pty_and_colors(
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     lifetime: phux_core::SessionLifetime,
-) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_core::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
     seed_session(
         state,
         name,
@@ -167,7 +167,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     agent_session: Option<Vec<u8>>,
     initial_size: Option<(u16, u16)>,
     attribution: SpawnAttribution,
-) -> Result<Option<phux_core::ids::ResourceId>, crate::terminal_actor::TerminalActorError> {
+) -> Result<Option<phux_core::ids::ResourceId>, phux_terminal::actor::TerminalActorError> {
     // libghostty has no zero-dimension grid.
     let dims = initial_size.map_or(DEFAULT_SPAWN_DIMS, |(cols, rows)| {
         (cols.max(1), rows.max(1))

@@ -272,7 +272,7 @@ fn publish_stream_ask(
         let payload = if let Some(ask) = ask {
             s.report_stream_ask(
                 parent,
-                crate::agent_asked::AskedPayload {
+                phux_resource::agent_asked::AskedPayload {
                     id: ask.id,
                     question: ask.question,
                     suggestions: ask.suggestions,
@@ -284,7 +284,7 @@ fn publish_stream_ask(
             if matches!(evidence, Some(StreamEvidence::Retract))
                 || (!native_publication && matches!(evidence, Some(StreamEvidence::Done)))
             {
-                s.retract_agent_asked(parent, crate::agent_asked::AskedSource::Stream);
+                s.retract_agent_asked(parent, phux_resource::agent_asked::AskedSource::Stream);
             }
             None
         };

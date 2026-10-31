@@ -23,7 +23,6 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::agent_asked::{AskedPayload, AskedSource};
 use crate::resource::{ResourceHandle, WrongResourceKind};
 use crate::runtime::client::PaneEvents;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -40,9 +39,10 @@ use crate::runtime::{AttachPrepared, spawn_agent_state_drain, spawn_terminal_exi
 use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
-    TerminalInput,
 };
-use crate::terminal_actor::{
+use phux_resource::agent_asked::{AskedPayload, AskedSource};
+use phux_terminal::TerminalInput;
+use phux_terminal::actor::{
     ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalActor,
     TerminalHandle,
 };

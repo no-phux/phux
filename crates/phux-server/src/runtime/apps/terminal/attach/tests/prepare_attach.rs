@@ -23,7 +23,7 @@ fn prepare_attach_reports_snapshot_seed_without_an_actor_as_closed() {
     let mut actors = Vec::new();
     for terminal in <[_; 2]>::from((horizontal, vertical)) {
         let token = CancellationToken::new();
-        let bundle = crate::terminal_actor::TerminalActor::build_with_token(
+        let bundle = phux_terminal::actor::TerminalActor::build_with_token(
             80,
             24,
             None,

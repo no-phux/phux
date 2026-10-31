@@ -53,20 +53,20 @@ pub(super) async fn send_result(
 
 /// One connection's negotiated dispatch context: everything a command needs
 /// to run as that connection's, now or later (a held command, ADR-0128).
-pub(in crate::runtime) struct CommandContext {
-    pub(in crate::runtime) state: SharedState,
-    pub(in crate::runtime) client_id: ClientId,
-    pub(in crate::runtime) out_tx: tokio::sync::mpsc::Sender<Outbound>,
-    pub(in crate::runtime) client_caps: ClientCapabilities,
-    pub(in crate::runtime) profile: BootstrapProfile,
-    pub(in crate::runtime) limits: BootstrapLimits,
-    pub(in crate::runtime) input_lane: Option<InputLaneHandle>,
+pub(crate) struct CommandContext {
+    pub(crate) state: SharedState,
+    pub(crate) client_id: ClientId,
+    pub(crate) out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    pub(crate) client_caps: ClientCapabilities,
+    pub(crate) profile: BootstrapProfile,
+    pub(crate) limits: BootstrapLimits,
+    pub(crate) input_lane: Option<InputLaneHandle>,
     /// This connection's cancellation.
-    pub(in crate::runtime) token: CancellationToken,
-    pub(in crate::runtime) root_token: CancellationToken,
+    pub(crate) token: CancellationToken,
+    pub(crate) root_token: CancellationToken,
     /// QUIC multi-stream (docs/protocol.md#quic-stream-routing): subscribe now, bootstrap when the
     /// client binds a stream (`STREAM_BIND`).
-    pub(in crate::runtime) defer_subscription: bool,
+    pub(crate) defer_subscription: bool,
 }
 
 #[cfg(test)]

@@ -30,6 +30,46 @@ impl ResourceApp for TerminalApp {
         false
     }
 
+    fn resize(
+        &self,
+        handle: &ResourceHandle,
+        (cols, rows): (u16, u16),
+        cell_px: Option<(u16, u16)>,
+    ) -> bool {
+        handle.terminal().is_ok_and(|terminal| {
+            terminal
+                .resize
+                .try_send(ResizeRequest {
+                    cols,
+                    rows,
+                    cell_px,
+                    resync_clients: true,
+                    resync_only: false,
+                    resync_for: None,
+                })
+                .is_ok()
+        })
+    }
+
+    fn upgrade_sender(
+        &self,
+        handle: &ResourceHandle,
+    ) -> Option<tokio::sync::mpsc::Sender<crate::resource::handoff::UpgradeHandleRequest>> {
+        Some(handle.terminal().ok()?.upgrade.clone())
+    }
+
+    fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
+        release_terminal_consumer(handle, client);
+    }
+
+    fn fence_consumer<'a>(
+        &'a self,
+        handle: &'a ResourceHandle,
+        client: ClientId,
+    ) -> LocalBoxFuture<'a, ()> {
+        fence_terminal_consumer(handle, client).boxed_local()
+    }
+
     fn command<'a>(
         &'a self,
         ctx: &'a CommandContext,
@@ -45,6 +85,56 @@ impl ResourceApp for TerminalApp {
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         bootstrap_stream(stream).boxed_local()
     }
+}
+
+/// Free a client's native cut and consumer entry without blocking: a full
+/// mailbox is reaped by `tick_emit` when the client's mailbox closes.
+fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
+    let Ok(terminal) = handle.terminal() else {
+        return;
+    };
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    let _ = terminal
+        .native_release
+        .try_send(phux_terminal::actor::NativeReleaseRequest { owner: client_id.0 });
+    let (reply_tx, _reply_rx) = oneshot::channel();
+    match terminal
+        .consumer_detach
+        .try_send(phux_terminal::actor::ConsumerDetachRequest {
+            client_id: crate::runtime::wire_client(client_id),
+            reply: reply_tx,
+        }) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            trace!(
+                ?client_id,
+                "consumer_detach mailbox full; entry reaped by tick_emit when its mailbox closes",
+            );
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            trace!(
+                ?client_id,
+                "consumer_detach: pane actor gone; nothing to free"
+            );
+        }
+    }
+}
+
+/// Drop a consumer and wait for the actor's reply, so nothing it emitted can
+/// follow what the caller queues next.
+async fn fence_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
+    let Ok(terminal) = handle.terminal() else {
+        return;
+    };
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = terminal
+        .consumer_detach
+        .send(phux_terminal::actor::ConsumerDetachRequest {
+            client_id: crate::runtime::wire_client(client_id),
+            reply: reply_tx,
+        })
+        .await;
+    let _ = reply_rx.await;
 }
 
 /// One flat arm per Terminal facet command keeps the catalog auditable.

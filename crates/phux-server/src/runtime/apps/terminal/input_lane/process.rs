@@ -6,8 +6,9 @@ use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 use phux_protocol::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::state::{ClientId, SharedState, TerminalInput};
-use crate::terminal_actor::{EncodedInputRequest, InputCredit, LaneAhead, TerminalHandle};
+use crate::state::{ClientId, SharedState};
+use phux_terminal::TerminalInput;
+use phux_terminal::actor::{EncodedInputRequest, InputCredit, LaneAhead, TerminalHandle};
 
 use super::{
     AcknowledgedReservation, CompletionTicket, CompletionWaiterHandle, LaneEncoderSet,
@@ -37,7 +38,7 @@ fn redeliver(
         current.pane,
         &current.handle,
         bytes,
-        crate::terminal_actor::echo_probe_for(input),
+        phux_terminal::actor::echo_probe_for(input),
         credit,
         lane_ahead,
     )
@@ -218,7 +219,7 @@ fn prepare_acknowledged_batch(
         }
     };
     if inputs.iter().any(
-        |input| matches!(input, TerminalInput::Paste(event) if crate::input::paste::PerTerminalPasteEncoder::would_reject(event)),
+        |input| matches!(input, TerminalInput::Paste(event) if phux_terminal::input::paste::PerTerminalPasteEncoder::would_reject(event)),
     ) {
         return Err(CommandResult::Error {
             code: ErrorCode::UnsafePaste,

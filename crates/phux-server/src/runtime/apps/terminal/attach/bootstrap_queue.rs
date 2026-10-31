@@ -106,7 +106,7 @@ pub(crate) async fn send_synthesized_bootstrap(
 /// once publication begins.
 pub(crate) async fn queue_resync_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    reason: crate::terminal_actor::ResyncReason,
+    reason: crate::resource::ResyncReason,
     frames: Vec<FrameKind>,
     defer_if_full: bool,
 ) -> SnapshotQueue {
@@ -115,12 +115,12 @@ pub(crate) async fn queue_resync_bootstrap(
     }
     let fits = frames.len() <= out_tx.max_capacity();
     let must_deliver =
-        !fits || matches!(reason, crate::terminal_actor::ResyncReason::Exit) || !defer_if_full;
+        !fits || matches!(reason, crate::resource::ResyncReason::Exit) || !defer_if_full;
     if !must_deliver {
         return match try_queue_frames(out_tx, &frames) {
             Ok(()) => SnapshotQueue::Queued,
             Err(QueueFramesError::Full)
-                if matches!(reason, crate::terminal_actor::ResyncReason::OutboundGap) =>
+                if matches!(reason, crate::resource::ResyncReason::OutboundGap) =>
             {
                 wait_for_queue_room(out_tx, &frames).await
             }

@@ -7,9 +7,7 @@
 use super::*;
 
 /// A Terminal handle with every channel closed (no actor behind it).
-fn detached_handle(
-    facet: crate::terminal_actor::TerminalHandle,
-) -> crate::resource::ResourceHandle {
+fn detached_handle(facet: phux_terminal::actor::TerminalHandle) -> crate::resource::ResourceHandle {
     crate::resource::ResourceHandle::new(
         None,
         tokio::sync::broadcast::channel(8).0,
@@ -59,18 +57,18 @@ pub(super) async fn attach(
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) fn native_attach_handle() -> (
     ResourceHandle,
-    tokio::sync::mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
-    tokio::sync::mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
-    tokio::sync::mpsc::Receiver<crate::terminal_actor::NativePublicationRequest>,
+    tokio::sync::mpsc::Receiver<phux_terminal::actor::ConsumerAttachRequest>,
+    tokio::sync::mpsc::Receiver<phux_terminal::actor::NativeBootstrapRequest>,
+    tokio::sync::mpsc::Receiver<phux_terminal::actor::NativePublicationRequest>,
 ) {
     let (consumer_attach, consumer_attach_rx) = tokio::sync::mpsc::channel(8);
     let (native_bootstrap, native_bootstrap_rx) = tokio::sync::mpsc::channel(8);
     let (native_publication, native_publication_rx) = tokio::sync::mpsc::channel(8);
-    let handle = detached_handle(crate::terminal_actor::TerminalHandle {
+    let handle = detached_handle(phux_terminal::actor::TerminalHandle {
         consumer_attach,
         native_bootstrap,
         native_publication,
-        ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
+        ..phux_terminal::actor::TerminalHandle::detached_for_test(80, 24)
     });
     (
         handle,
@@ -83,13 +81,13 @@ pub(super) fn native_attach_handle() -> (
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) async fn answer_native_attach(
     consumer_attach_rx: &mut tokio::sync::mpsc::Receiver<
-        crate::terminal_actor::ConsumerAttachRequest,
+        phux_terminal::actor::ConsumerAttachRequest,
     >,
     native_bootstrap_rx: &mut tokio::sync::mpsc::Receiver<
-        crate::terminal_actor::NativeBootstrapRequest,
+        phux_terminal::actor::NativeBootstrapRequest,
     >,
     native_publication_rx: &mut tokio::sync::mpsc::Receiver<
-        crate::terminal_actor::NativePublicationRequest,
+        phux_terminal::actor::NativePublicationRequest,
     >,
     succeed: bool,
 ) {
@@ -99,7 +97,7 @@ pub(super) async fn answer_native_attach(
         .expect("consumer registration");
     registration
         .reply
-        .send(Ok(crate::terminal_actor::ConsumerAttachOutcome {
+        .send(Ok(phux_terminal::actor::ConsumerAttachOutcome {
             tick_managed: false,
             state_sync_bootstrap: None,
         }))
@@ -108,14 +106,16 @@ pub(super) async fn answer_native_attach(
     if !succeed {
         native
             .reply
-            .send(Err(crate::native_state::NativeStateError::LimitExceeded))
+            .send(Err(
+                phux_terminal::native_state::NativeStateError::LimitExceeded,
+            ))
             .expect("continuation-cap failure reply");
         return;
     }
     let terminal_id = native.terminal_id.clone();
     native
         .reply
-        .send(Ok(crate::terminal_actor::NativeBootstrapReply {
+        .send(Ok(phux_terminal::actor::NativeBootstrapReply {
             frames: vec![
                 FrameKind::BootstrapBegin {
                     terminal_id: terminal_id.clone(),
@@ -154,7 +154,7 @@ pub(super) async fn answer_native_attach(
     assert_eq!(publication.cursor, [7; 32]);
     publication
         .reply
-        .send(Ok(crate::terminal_actor::NativePublicationReply {
+        .send(Ok(phux_terminal::actor::NativePublicationReply {
             replay: Vec::new(),
             live: tokio::sync::broadcast::channel(1).1,
         }))
@@ -196,7 +196,7 @@ async fn deferred_session_attach_applies_the_declared_role() {
         .run_until(async {
             let state = crate::state::SharedState::new();
             let (_session, pane) = state.with_mut(|s| s.seed_session("roles"));
-            let handle = detached_handle(crate::terminal_actor::TerminalHandle::detached_for_test(
+            let handle = detached_handle(phux_terminal::actor::TerminalHandle::detached_for_test(
                 80, 24,
             ));
             let wire = state.with_mut(|s| {
@@ -241,7 +241,7 @@ async fn a_pane_closed_mid_capture_is_published_closed_not_a_failed_attach() {
             let state = crate::state::SharedState::new();
             let (window, live) = state.with_mut(|s| s.seed_session("closing"));
             let token = CancellationToken::new();
-            let bundle = crate::terminal_actor::TerminalActor::build_with_token(
+            let bundle = phux_terminal::actor::TerminalActor::build_with_token(
                 80,
                 24,
                 None,
@@ -255,7 +255,7 @@ async fn a_pane_closed_mid_capture_is_published_closed_not_a_failed_attach() {
                     .add_pane_to_session(window)
                     .expect("second pane");
                 let ended = detached_handle(
-                    crate::terminal_actor::TerminalHandle::detached_for_test(80, 24),
+                    phux_terminal::actor::TerminalHandle::detached_for_test(80, 24),
                 );
                 let _ = s.register_resource_handle(closed, ended, CancellationToken::new());
                 (s.intern_terminal_wire(live), s.intern_terminal_wire(closed))

@@ -26,6 +26,7 @@ pub mod agent_session;
 pub mod agent_state;
 pub mod cwd_query;
 pub mod event_sink;
+pub mod handoff;
 pub mod handoff_env;
 pub mod mailbox;
 pub mod perf;
@@ -68,6 +69,11 @@ pub fn now_unix_ms() -> u64 {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
 }
+
+/// Debounce for the post-resize resync: a window drag fires many resizes,
+/// and one snapshot at the settled size replaces per-step snapshots that
+/// would land on mismatched mirrors.
+pub const RESIZE_RESYNC_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Default capacity of the per-resource output broadcast.
 pub const DEFAULT_OUTPUT_BROADCAST: usize = 256;

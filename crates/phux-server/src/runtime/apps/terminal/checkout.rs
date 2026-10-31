@@ -39,7 +39,7 @@ const CWD_DEADLINE: Duration = Duration::from_secs(2);
 const WORK_DEADLINE: Duration = Duration::from_secs(90);
 
 /// Answer one checkout request for a local Terminal.
-pub(super) async fn handle(
+pub(in crate::runtime) async fn handle(
     state: &SharedState,
     terminal_id: &WireResourceId,
     request: CheckoutRequest,
@@ -49,12 +49,12 @@ pub(super) async fn handle(
             .and_then(|core| s.resource_handle(core).cloned())
     });
     let Some(handle) = handle else {
-        return super::commands::terminal_not_found(terminal_id);
+        return crate::runtime::commands::terminal_not_found(terminal_id);
     };
     if let Err(error) = handle.terminal() {
-        return super::commands::wrong_resource_kind(error);
+        return crate::runtime::commands::wrong_resource_kind(error);
     }
-    let cwd = tokio::time::timeout(CWD_DEADLINE, super::attach::query_pane_cwd(handle))
+    let cwd = tokio::time::timeout(CWD_DEADLINE, crate::runtime::attach::query_pane_cwd(handle))
         .await
         .ok()
         .flatten();

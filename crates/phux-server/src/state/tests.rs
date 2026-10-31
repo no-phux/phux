@@ -2,11 +2,11 @@ use std::collections::HashSet;
 
 use super::*;
 use crate::resource::ResourceHandle;
-use crate::terminal_actor::TerminalHandle;
 use phux_core::ids::ResourceId;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
 };
+use phux_terminal::actor::TerminalHandle;
 
 use phux_protocol::wire::frame::{FrameKind, Scope};
 

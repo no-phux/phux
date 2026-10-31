@@ -13,11 +13,11 @@ use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ErrorCode, FrameKind,
     SpawnResult, StateScope, ViewportInfo,
 };
-use phux_server::terminal_actor::{ProcessFacetRequest, TerminalActor};
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, ServerHandles, Spawn, command, recv_until, recv_until_deadline,
     run_local, send_frame, spawn_resource, spawn_server, wait_for_socket,
 };
+use phux_terminal::actor::{ProcessFacetRequest, TerminalActor};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;

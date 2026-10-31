@@ -21,7 +21,7 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
             let (live_pane, orphan, agent) = state.with_mut(|s| {
                 let (sid, live_pane) = s.seed_session("main");
                 let live =
-                    crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"live").unwrap();
+                    phux_terminal::actor::TerminalActor::new_with_seed(20, 5, b"live").unwrap();
                 let live_token = live.token.clone();
                 let _ =
                     s.spawn_resource_actor(live_pane, live.handle, live_token, live.actor.run());
@@ -30,7 +30,7 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
                 // removed before the handle was registered.
                 let orphan = s.add_pane_to_session(sid).unwrap();
                 s.retire_record(orphan, phux_core::process::ExitOutcome::UNKNOWN);
-                let dead = crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"").unwrap();
+                let dead = phux_terminal::actor::TerminalActor::new_with_seed(20, 5, b"").unwrap();
                 let _ = s.register_resource_handle(orphan, dead.handle, dead.token);
                 drop(dead.actor);
 

@@ -9,19 +9,19 @@ use phux_terminal::actor::TerminalResource as _;
 
 /// The negotiated shape shared by every pane capture in one ATTACH.
 pub(super) struct PaneCaptureContext<'a> {
-    pub(super) state: &'a SharedState,
-    pub(super) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
+    pub(in crate::runtime) state: &'a SharedState,
+    pub(in crate::runtime) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
     /// Cancelled by a pump whose generation became unrecoverable.
     pub(super) connection_token: &'a CancellationToken,
     /// Released once the aggregate publication is on the wire.
     pub(super) live_gate_rx: tokio::sync::watch::Receiver<bool>,
-    pub(super) client_id: ClientId,
+    pub(in crate::runtime) client_id: ClientId,
     pub(super) wire_client_id: phux_protocol::ids::ClientId,
-    pub(super) client_caps: ClientCapabilities,
+    pub(in crate::runtime) client_caps: ClientCapabilities,
     pub(super) stream_id: StreamId,
     pub(super) bootstrap_id: BootstrapId,
-    pub(super) profile: BootstrapStreamProfile,
-    pub(super) limits: BootstrapLimits,
+    pub(in crate::runtime) profile: BootstrapStreamProfile,
+    pub(in crate::runtime) limits: BootstrapLimits,
     /// The ATTACH's scrollback request, capped in lines.
     pub(super) scrollback: Option<u32>,
     pub(super) chunk_bytes: usize,
@@ -132,7 +132,7 @@ impl PaneCaptureContext<'_> {
         terminal_id: ResourceId,
         wire_terminal_id: &phux_protocol::ids::ResourceId,
         handle: &ResourceHandle,
-        terminal: &crate::terminal_actor::TerminalHandle,
+        terminal: &phux_terminal::actor::TerminalHandle,
     ) {
         let output_rx = handle.output.subscribe();
         let ctx = OutputPumpContext {
@@ -191,7 +191,7 @@ impl PaneCaptureContext<'_> {
         &self,
         staging: &mut AttachStaging,
         wire_terminal_id: phux_protocol::ids::ResourceId,
-        snapshot: crate::grid::SnapshotBytes,
+        snapshot: phux_terminal::grid::SnapshotBytes,
         base_seq: u64,
         label: &str,
     ) -> Result<(), String> {

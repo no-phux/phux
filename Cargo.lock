@@ -2604,6 +2604,7 @@ dependencies = [
  "phux-record",
  "phux-relay",
  "phux-server",
+ "phux-terminal",
  "phux-tui",
  "phux-usage",
  "phux-work",

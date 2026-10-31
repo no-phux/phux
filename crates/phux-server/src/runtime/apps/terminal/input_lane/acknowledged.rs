@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 use crate::runtime::operation_dedupe::{
     CachedOutcome, Claim, OperationDedupe, OperationDomain, OperationKey, Waiter,
 };
-use crate::terminal_actor::{WriteCompletion, WriteCompletionSink};
+use phux_terminal::actor::{WriteCompletion, WriteCompletionSink};
 
 pub(super) const ACKNOWLEDGED_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 

@@ -32,7 +32,7 @@ mod quota;
 
 use chunk::write_chunk;
 use quota::read_metadata;
-pub(super) use quota::sweep_stale_partials_at_startup;
+pub(in crate::runtime) use quota::sweep_stale_partials_at_startup;
 
 /// The server is single-threaded, but per-client async tasks may interleave.
 /// File operations contain no await, so one process-wide lock makes offset
@@ -46,18 +46,18 @@ static UPLOAD_BUDGET: UploadBudget = UploadBudget::new(16, 32 * 1024 * 1024);
 
 /// Default total bytes the upload directory may hold
 /// (`PHUX_UPLOAD_MAX_BYTES`).
-pub(super) const DEFAULT_UPLOAD_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub(in crate::runtime) const DEFAULT_UPLOAD_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Default number of uploads, finished or partial, the upload directory may
 /// hold (`PHUX_UPLOAD_MAX_FILES`).
-pub(super) const DEFAULT_UPLOAD_MAX_FILES: u64 = 10_000;
+pub(in crate::runtime) const DEFAULT_UPLOAD_MAX_FILES: u64 = 10_000;
 /// How long a partial upload may sit untouched before it is swept. A client
 /// resumes within seconds of a reconnect; a day covers a phone left offline
 /// overnight.
-pub(super) const PARTIAL_UPLOAD_TTL: Duration = Duration::from_hours(24);
+pub(in crate::runtime) const PARTIAL_UPLOAD_TTL: Duration = Duration::from_hours(24);
 
 /// The upload directory's quota. `0` disables a limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UploadLimits {
+pub(in crate::runtime) struct UploadLimits {
     /// Total bytes of finished and partial uploads.
     pub max_bytes: u64,
     /// Finished plus partial uploads.
@@ -68,7 +68,7 @@ pub(super) struct UploadLimits {
 
 impl UploadLimits {
     /// The limits `env` configures, else the defaults.
-    pub(super) fn from_env(env: &super::ServerEnv) -> Self {
+    pub(in crate::runtime) fn from_env(env: &crate::runtime::ServerEnv) -> Self {
         Self {
             max_bytes: env.upload_max_bytes.unwrap_or(DEFAULT_UPLOAD_MAX_BYTES),
             max_files: env.upload_max_files.unwrap_or(DEFAULT_UPLOAD_MAX_FILES),
@@ -82,7 +82,7 @@ impl UploadLimits {
 /// `anonymous` (an uncredentialed network listener). Hashed so the sidecar
 /// names no credential. Every hub consumer reaches a satellite as the link's
 /// one credential, so they share one principal there.
-pub(super) fn upload_principal(server: &ServerState, client_id: ClientId) -> String {
+pub(in crate::runtime) fn upload_principal(server: &ServerState, client_id: ClientId) -> String {
     use phux_protocol::policy::TransportType;
     let socket_peer = || match server.peer_identity(client_id) {
         Some(peer) if peer.transport == TransportType::UnixSocket => format!("uid:{}", peer.uid),
@@ -139,7 +139,7 @@ fn upload_busy() -> CommandResult {
     )
 }
 
-pub(super) struct PutFileChunk {
+pub(in crate::runtime) struct PutFileChunk {
     pub upload_id: FileUploadId,
     pub terminal_id: ResourceId,
     pub extension: String,
@@ -151,7 +151,10 @@ pub(super) struct PutFileChunk {
     pub principal: String,
 }
 
-pub(super) async fn handle_put_file(state: &SharedState, chunk: PutFileChunk) -> CommandResult {
+pub(in crate::runtime) async fn handle_put_file(
+    state: &SharedState,
+    chunk: PutFileChunk,
+) -> CommandResult {
     // docs/protocol.md#commands-events-resources: PUT_FILE is a Terminal-facet command — the
     // upload lands beside a PTY's working directory, which an
     // `AgentSession` does not have.
@@ -245,8 +248,8 @@ fn error(code: ErrorCode, message: impl Into<String>) -> CommandResult {
 /// and matched against `phux-upload-<hex>.<ext>` in the upload root. An
 /// upload another principal created reads as absent, so its existence is not
 /// disclosed.
-pub(super) fn completed_upload_path(
-    env: &super::ServerEnv,
+pub(in crate::runtime) fn completed_upload_path(
+    env: &crate::runtime::ServerEnv,
     upload_id: FileUploadId,
     principal: &str,
 ) -> Result<Option<PathBuf>, String> {
@@ -274,15 +277,15 @@ pub(super) fn completed_upload_path(
 
 /// The upload directory, refused to a development build when it is the
 /// production one (it is not profile-scoped).
-fn upload_dir(env: &super::ServerEnv) -> Result<PathBuf, String> {
+fn upload_dir(env: &crate::runtime::ServerEnv) -> Result<PathBuf, String> {
     let dir = unguarded_upload_dir(env)?;
     phux_config::production::refuse_dev_on_production_state(&dir)?;
     Ok(dir)
 }
 
-/// `PHUX_UPLOAD_DIR` ([`super::ServerEnv::upload_dir`]), else the data
+/// `PHUX_UPLOAD_DIR` ([`crate::runtime::ServerEnv::upload_dir`]), else the data
 /// directory's `phux/uploads`.
-fn unguarded_upload_dir(env: &super::ServerEnv) -> Result<PathBuf, String> {
+fn unguarded_upload_dir(env: &crate::runtime::ServerEnv) -> Result<PathBuf, String> {
     if let Some(path) = &env.upload_dir {
         return Ok(path.clone());
     }
@@ -303,7 +306,7 @@ fn unguarded_upload_dir(env: &super::ServerEnv) -> Result<PathBuf, String> {
         })
 }
 
-pub(super) fn digest_reader(
+pub(in crate::runtime) fn digest_reader(
     reader: &mut impl Read,
 ) -> Result<sha2::digest::Output<Sha256>, (ErrorCode, String)> {
     let mut digest = Sha256::new();

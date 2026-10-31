@@ -21,7 +21,7 @@ pub struct ServerConfig {
     pub seed_with_pty: bool,
     /// Program for the pre-seeded PTY pane instead of [`Self::shell`].
     /// Ignored unless [`Self::seed_with_pty`].
-    pub seed_command: Option<phux_terminal::pty::CommandBuilder>,
+    pub seed_command: Option<crate::runtime::apps::terminal::launch::LaunchCommand>,
     /// Per-pane scrollback bounds (`defaults.history-limit` /
     /// `defaults.history-bytes`, ADR-0094).
     pub scrollback: phux_config::ScrollbackLimits,
@@ -43,7 +43,7 @@ pub struct ServerConfig {
     /// per-spawn `env` entry overrides it.
     pub term: String,
     /// Default shell for command-less spawns: `defaults.shell`, else
-    /// `$SHELL`, else `/bin/sh` ([`crate::terminal_actor::resolve_shell`]).
+    /// `$SHELL`, else `/bin/sh` ([`phux_terminal::actor::resolve_shell`]).
     pub shell: String,
     /// Run [`Self::shell`] in login mode for command-less spawns. Set only
     /// when a service manager started the server, whose minimal environment
@@ -153,7 +153,7 @@ impl ServerConfig {
             retain: crate::state::RetainPolicy::default(),
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
-            shell: crate::terminal_actor::resolve_shell(None),
+            shell: crate::runtime::apps::terminal::launch::default_shell(),
             login_shell: false,
             window_size: phux_config::WindowSize::default(),
             voice: phux_config::VoiceCfg::default(),
