@@ -1,14 +1,17 @@
 //! The terminal area: the split tree, one terminal per leaf, with the
 //! keyboard's pane marked and draggable dividers between them.
 
+use std::time::Instant;
+
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
-use rune::{Color, Cx, El, Phase, col, el, row};
+use rune::{Color, Cx, El, Phase, PointerButton, col, el, row};
 
 use super::status::placeholder;
 use super::{Ink, PAD, overlay};
+use crate::desk::mouse::Press;
 use crate::desk::{Desk, SplitPath};
-use crate::grid;
+use crate::{grid, perf};
 
 /// The hit area a divider gives the pointer, around its one-point line.
 pub(crate) const DIVIDER: f32 = 7.0;
@@ -28,6 +31,7 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
     let several = matches!(tree, LayoutNode::Split { .. });
     area.fill(ink.bg)
         .child(node(desk, &tree, &mut Vec::new(), several, ink))
+        .children(perf::hud(ink.dim))
 }
 
 fn node(desk: &Desk, tree: &LayoutNode, path: &mut SplitPath, several: bool, ink: &Ink) -> El {
@@ -107,12 +111,16 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     } else {
         desk.others.get(id).copied()
     };
+    perf::RENDERS.incr();
+    let acquiring = Instant::now();
     let frame = desk
         .client
         .as_ref()
         .zip(view)
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
-    let (laid, wheel, press, moved, left, dropped) = (
+    perf::ACQUIRE.record_elapsed(acquiring);
+    let (laid, wheel, press, moved, left, dropped, menu) = (
+        id.clone(),
         id.clone(),
         id.clone(),
         id.clone(),
@@ -129,6 +137,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
             d.laid_out(laid.clone(), [rect[2] - 2.0 * PAD, rect[3] - 2.0 * PAD])
         });
     let Some((frame, view)) = frame else {
+        perf::ACQUIRE_REJECTED.incr();
         return host
             .fill(ink.bg)
             .center()
@@ -141,14 +150,15 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     let metrics = desk.metrics();
     let keyboard = focused && desk.focused;
     let mut grid_layer = el()
-        .child(grid::paint(&frame, keyboard, desk.blink_on, &metrics))
+        .child(grid::paint(
+            &frame,
+            keyboard,
+            desk.blink_on,
+            &metrics,
+            ink.selection,
+        ))
         .children(overlay::link_underline(desk, id, &metrics, ink));
-    if keyboard
-        && !desk.palette_open
-        && !desk.inbox.open
-        && !desk.settings_open
-        && desk.pending.is_none()
-    {
+    if keyboard && desk.modal().is_none() {
         grid_layer = grid_layer.child(grid::ime_layer(
             &frame,
             desk.preedit.as_deref(),
@@ -167,9 +177,21 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .border(1.0, edge)
         .cursor(if linked { rune::Cursor::Pointer } else { rune::Cursor::Text })
         .on_pointer_move_local(move |d: &mut Desk, event, tx| {
-            d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods().cmd);
+            d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods());
         })
         .on_drop_files(move |d: &mut Desk, paths, _| d.drop_files(&dropped, paths))
+        .pointer_buttons([PointerButton::Middle, PointerButton::Back, PointerButton::Forward])
+        .on_secondary_press_local(move |d: &mut Desk, event, tx| {
+            let at = Press {
+                phase: Phase::Down,
+                x: event.x - PAD,
+                y: event.y - PAD,
+                clicks: 1,
+                mods: tx.mods(),
+                button: PointerButton::Secondary,
+            };
+            d.secondary_press(&menu, at, event.window());
+        })
         .on_hover_change(move |d: &mut Desk, inside, _| {
             if !inside {
                 d.pointer_left(&left);
@@ -182,8 +204,18 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .on_drag(move |d: &mut Desk, drag, tx| {
             // Drag points include the padding; the grid starts inside it.
             let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
-            if !d.press_link(&press, drag.phase, x, y, mods.cmd, tx) {
-                d.pointer(&press, drag.phase, x, y, drag.clicks, mods);
+            // Only the primary button opens links; the rest are the program's.
+            let cmd = mods.cmd && tx.button() == PointerButton::Primary;
+            if !d.press_link(&press, drag.phase, x, y, cmd, tx) {
+                let step = Press {
+                    phase: drag.phase,
+                    x,
+                    y,
+                    clicks: drag.clicks,
+                    mods,
+                    button: tx.button(),
+                };
+                d.pointer(&press, &step, tx);
                 if drag.phase == Phase::Up {
                     d.selection_done(tx);
                 }

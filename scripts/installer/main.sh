@@ -9,6 +9,7 @@ install_dir="${PHUX_INSTALL_DIR:-${HOME:-}/.local/bin}"
 applications_dir="${PHUX_DESKTOP_APPLICATIONS_DIR:-}"
 stage_dir=""
 desktop=0
+rune=0
 dry_run=0
 os=""
 arch=""
@@ -36,14 +37,19 @@ while [ "$#" -gt 0 ]; do
     --os) os="$2" ;;
     --arch) arch="$2" ;;
     --desktop) desktop=1 ;;
+    --rune) rune=1 ;;
     --dry-run) dry_run=1 ;;
     --no-modify-path) modify_path=0 ;;
     --help | -h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
-  case "$1" in --desktop | --dry-run | --no-modify-path) shift ;; *) shift 2 ;; esac
+  case "$1" in --desktop | --rune | --dry-run | --no-modify-path) shift ;; *) shift 2 ;; esac
 done
 
+if [ "$rune" -eq 1 ]; then
+  [ "$desktop" -eq 0 ] && [ "$channel" != next ] && [ -z "$pin" ] \
+    || die "--desktop, --channel next and pins do not combine with --rune"
+fi
 case "$channel" in
   latest) channel=stable ;;
   stable | next) ;;
@@ -101,7 +107,9 @@ cleanup() {
 trap cleanup EXIT
 trap_signals
 
-if [ "$desktop" -eq 1 ]; then
+if [ "$rune" -eq 1 ]; then
+  install_rune
+elif [ "$desktop" -eq 1 ]; then
   install_desktop
 else
   install_cli "$pin" "$pin_sha256"

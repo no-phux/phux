@@ -1,6 +1,7 @@
 // Publish decisions stay deterministic: no network, no clock.
 import { describe, expect, test } from "bun:test";
 import {
+  ciRefusal,
   decide,
   parseTag,
   splitLanes,
@@ -144,4 +145,11 @@ test("lanes split root, desktop and integrations", () => {
     desktop: "desktop-v0.28.0",
     integration: ["pi-extension-v0.3.0"],
   });
+});
+
+test("a tag needs a finished green ci on main", () => {
+  expect(ciRefusal("success", "abc")).toBeUndefined();
+  expect(ciRefusal("pending", "abc")).toContain("rerun when green");
+  expect(ciRefusal("failure", "abc")).toContain("failure");
+  expect(ciRefusal("cancelled", "abc")).toContain("cancelled");
 });

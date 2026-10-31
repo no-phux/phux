@@ -6,6 +6,7 @@
 mod activity;
 mod alerts;
 mod desk;
+mod diag;
 mod dock;
 mod grid;
 mod inbox;
@@ -14,6 +15,7 @@ mod launch;
 mod links;
 mod machines;
 mod palette;
+mod perf;
 mod theme;
 mod ui;
 mod updates;
@@ -27,6 +29,7 @@ fn main() {
         println!("phux-rune {}", updates::VERSION);
         return;
     }
+    diag::install();
     rune::prewarm_gpu();
     // Rune keeps its own flags (`--snap`, `--script`, ...); the rest are ours.
     let options = match launch::Options::parse(rune::extra_args().iter().cloned()) {
@@ -36,17 +39,19 @@ fn main() {
             std::process::exit(2);
         }
     };
-    // `phux server --ensure` is quick when a server is already up, and the
-    // window opens with the failure shown when it is not.
+    // The window opens first; `Desk::listen` finds the server on a worker.
     let resolved = launch::resolve(&options);
     let spec = AppSpec {
         min_size: Some((640.0, 360.0)),
+        fonts: grid::FONTS,
+        families: grid::FAMILIES,
         setup: Some(|desk: &mut Desk, waker| desk.listen(waker)),
         poll: Some(|desk: &mut Desk, clock, tx| desk.poll(clock, tx)),
         on_key: Some(|desk: &mut Desk, event, tx| desk.key(event, tx)),
         ..AppSpec::new("phux", (1100.0, 720.0), placeholder_init, ui::view)
     };
-    rune::App::new(spec)
+    perf::report_to_file();
+    let app = desk::with_menus(rune::App::new(spec))
         .init(move || Desk::new(&resolved))
         .chrome(Chrome {
             full_size_content: true,
@@ -58,16 +63,14 @@ fn main() {
         .modifier_keys()
         .on_ime(|desk: &mut Desk, event, _| desk.ime(event))
         .on_focus(|desk: &mut Desk, focused, _| desk.focus_changed(focused))
-        .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn())
-        .run();
+        .on_frame_drawn(|rt: &rune::Runtime<Desk>| rt.state.drawn());
+    match perf::frame_recorder() {
+        Some(record) => app.on_frame_encoded(record).run(),
+        None => app.run(),
+    }
 }
 
 /// `AppSpec` needs a plain `fn`; `App::init` supplies the real state.
 fn placeholder_init() -> Desk {
-    Desk::new(&launch::Resolved {
-        socket: Err("not launched".to_owned()),
-        session: None,
-        phux: None,
-        aimed: true,
-    })
+    Desk::new(&launch::resolve(&launch::Options::default()))
 }

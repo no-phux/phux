@@ -9,6 +9,7 @@
 #   just/build.just     developer builds
 #   just/ffi.just       shared C ABI builds and checks
 #   just/desktop.just   the GPUI desktop host
+#   just/rune.just      the Rune client, a workspace of its own
 #   just/perf.just      local observability
 #   just/release.just   packaging
 #   just/mutation.just  optional scans
@@ -20,6 +21,7 @@ import 'just/build.just'
 import 'just/gates.just'
 import 'just/ffi.just'
 import 'just/desktop.just'
+import 'just/rune.just'
 import 'just/web.just'
 import 'just/perf.just'
 import 'just/release.just'

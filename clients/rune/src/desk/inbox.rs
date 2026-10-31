@@ -3,16 +3,32 @@
 //! step with it.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::Duration;
 
 use phux_client_runtime::Client;
 use phux_client_runtime::approvals::{Approval, Decision, DecisionOutcome};
-use phux_client_runtime::control::{DeliveryOutcome, Event};
+use phux_client_runtime::control::{DeliveryOutcome, Event, Status};
+use phux_client_runtime::engine::ReplicaPrompt;
 use phux_protocol::ids::{ApprovalId, ResourceId};
-use rune::{Key, KeyEvent, TextEdit, Tx};
+use rune::{Key, KeyEvent, Mods, TextEdit, Tx};
 
 use super::{Desk, NoticeKind};
 use crate::alerts::{Alerts, Target};
 use crate::inbox::{self, Item, Key as ItemKey};
+
+/// Everything the alerts and the Dock are derived from. While it holds still
+/// there is nothing to post, take back or count, however busy the terminals.
+#[derive(Debug, PartialEq)]
+pub struct AlertInputs {
+    marks: u64,
+    /// Panes' identities and labels, and the held actions.
+    listed: u64,
+    on_screen: Vec<ResourceId>,
+    focused: bool,
+    open: bool,
+    enabled: bool,
+}
 
 #[derive(Default)]
 pub struct Inbox {
@@ -25,6 +41,12 @@ pub struct Inbox {
     /// Answers on their way, to report how each ended.
     pub answers: HashMap<u64, ResourceId>,
     pub alerts: Alerts,
+    /// What the alerts last synced from.
+    pub synced: Option<AlertInputs>,
+    /// A new connection hasn't yet told marks from its old one's leftovers.
+    pub relist: bool,
+    /// The times the open cards show, to redraw when one moves.
+    pub clocks: Vec<String>,
 }
 
 impl Desk {
@@ -95,13 +117,7 @@ impl Desk {
     pub fn inbox_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
         let items = self.inbox_items();
         let (count, at) = (items.len(), self.picked_index(&items).unwrap_or(0));
-        // A decision takes a deliberate press of the exact chord, and only
-        // ⌘ has one: off macOS the buttons decide.
-        let chord = cfg!(target_os = "macos")
-            && event.mods.cmd
-            && !event.mods.shift
-            && !event.mods.alt
-            && !tx.key_repeat();
+        let chord = decision_chord(&event.mods, cfg!(target_os = "macos")) && !tx.key_repeat();
         match event.key {
             Key::Escape => {
                 self.close_inbox();
@@ -136,7 +152,9 @@ impl Desk {
         };
         let draft = self.inbox.reply.text.trim().to_owned();
         match waiting.ask {
-            Some(ask) if !draft.is_empty() => self.answer(&waiting.terminal, &ask.id, &draft),
+            Some(ask) if ask.typed() && !draft.is_empty() => {
+                self.answer(&waiting.terminal, &ask.id, &draft)
+            }
             _ => {
                 self.close_inbox();
                 tx.blur();
@@ -149,7 +167,9 @@ impl Desk {
         let Some(Item::Terminal(waiting)) = self.picked_item() else {
             return;
         };
-        let Some(ask) = waiting.ask else { return };
+        let Some(ask) = waiting.ask.filter(|ask| ask.typed()) else {
+            return;
+        };
         if let Some(text) = ask.suggestions.get(index) {
             self.answer(&waiting.terminal, &ask.id, text);
         }
@@ -176,23 +196,16 @@ impl Desk {
         }
     }
 
-    /// Show the next terminal, after the shown one, that needs a person.
+    /// Show what needs a person most, or the next after the shown one.
     pub fn jump_to_attention(&mut self) {
         let Some(topology) = &self.topology else {
             return;
         };
-        let panes = &topology.panes;
-        let start = self
-            .shown
-            .as_ref()
-            .and_then(|s| panes.iter().position(|p| p.terminal_id == s.terminal))
-            .map_or(0, |i| i + 1);
-        let next = (0..panes.len())
-            .map(|k| &panes[(start + k) % panes.len()])
-            .find(|p| self.activities.mark(&p.terminal_id).needs_you())
-            .cloned();
-        if let Some(pane) = next {
-            self.show(pane.terminal_id, &pane.session_name);
+        let shown = self.shown.as_ref().map(|s| &s.terminal);
+        let next = inbox::next_jump(&topology.panes, &self.activities, shown)
+            .map(|p| (p.terminal_id.clone(), p.session_name.clone()));
+        if let Some((terminal, session)) = next {
+            self.show(terminal, &session);
         }
     }
 
@@ -246,13 +259,90 @@ impl Desk {
         }
     }
 
-    /// Post, take back, and count; then follow any notification clicked.
+    fn alert_inputs(&self) -> AlertInputs {
+        let mut listed = DefaultHasher::new();
+        for pane in self.topology.iter().flat_map(|t| t.panes.iter()) {
+            (&pane.terminal_id, &pane.session_name, &pane.title).hash(&mut listed);
+            (&pane.name, &pane.cwd).hash(&mut listed);
+        }
+        for approval in &self.inbox.approvals {
+            approval.id.hash(&mut listed);
+        }
+        AlertInputs {
+            marks: self.activities.revision(),
+            listed: listed.finish(),
+            on_screen: self.on_screen(),
+            focused: self.focused,
+            open: self.inbox.open,
+            enabled: self.settings.notifications,
+        }
+    }
+
+    /// Once a reconnect has attached, its list is the truth. Commands it left
+    /// in doubt wait for a replica, and only what's on screen has one.
+    fn relist(&mut self) -> bool {
+        if self.status != Status::Attached {
+            return false;
+        }
+        let mut changed = false;
+        if let (true, Some(topology)) = (self.inbox.relist, &self.topology) {
+            let listed: Vec<ResourceId> = topology
+                .panes
+                .iter()
+                .map(|pane| pane.terminal_id.clone())
+                .collect();
+            self.inbox.relist = false;
+            changed = self.activities.reconnected(&listed);
+        }
+        if !self.inbox.relist && self.activities.unproven() {
+            changed |= self.prove_commands();
+        }
+        changed
+    }
+
+    fn prove_commands(&mut self) -> bool {
+        let Some(engine) = self.client.as_ref().and_then(|c| c.engine()) else {
+            return false;
+        };
+        let on_screen = self.on_screen();
+        self.activities
+            .prove(&on_screen, |id| match engine.replica_prompt(id) {
+                ReplicaPrompt::Running => Some(true),
+                ReplicaPrompt::AtPrompt => Some(false),
+                ReplicaPrompt::Unknown => None,
+            })
+    }
+
+    /// An open inbox's times count on with nothing else to redraw them. True
+    /// when one the cards show has moved. Wakes on the clock's whole second,
+    /// so however many polls ask, they ask for the one wake.
+    pub(super) fn tick_inbox(&mut self, tx: &mut Tx) -> bool {
+        let clocks: Vec<String> = if self.inbox.open {
+            self.inbox_items().iter().filter_map(Item::clock).collect()
+        } else {
+            Vec::new()
+        };
+        if !clocks.is_empty() {
+            let next = self.clock.floor() + 1.0 - self.clock;
+            tx.wake_after(Duration::from_secs_f64(next.max(0.01)));
+        }
+        let moved = clocks != self.inbox.clocks;
+        self.inbox.clocks = clocks;
+        moved
+    }
+
+    /// Post, take back, and count when what they read from moved; then
+    /// follow any notification clicked.
     pub(super) fn sync_alerts(&mut self) -> bool {
+        let relisted = self.relist();
+        let inputs = self.alert_inputs();
+        if self.inbox.synced.as_ref() == Some(&inputs) && !self.inbox.alerts.clicked() {
+            return relisted;
+        }
         let items = self.inbox_items();
         self.keep_pick(&items);
-        let on_screen = self.on_screen();
-        let (focused, open) = (self.focused, self.inbox.open);
-        let enabled = self.settings.notifications;
+        let (focused, open) = (inputs.focused, inputs.open);
+        let (on_screen, enabled) = (&inputs.on_screen, inputs.enabled);
         self.inbox.alerts.sync(
             &items,
             |target| match target {
@@ -261,6 +351,11 @@ impl Desk {
             },
             enabled,
         );
+        self.inbox.synced = Some(inputs);
+        relisted | self.follow_clicks()
+    }
+
+    fn follow_clicks(&mut self) -> bool {
         let clicks = self.inbox.alerts.take_clicks();
         let clicked = !clicks.is_empty();
         for target in clicks {
@@ -275,11 +370,43 @@ impl Desk {
     }
 }
 
+/// The exact chord a decision takes: ⌘ on macOS, Ctrl+Shift elsewhere, where
+/// Ctrl alone belongs to the reply field. Plain Return never qualifies.
+const fn decision_chord(mods: &Mods, macos: bool) -> bool {
+    mods.cmd && mods.shift != macos && !mods.alt
+}
+
 fn decision_notice(outcome: &DecisionOutcome) -> Option<String> {
     match outcome {
         DecisionOutcome::Decided => None,
         DecisionOutcome::Stale => Some("That action was already settled.".to_owned()),
         DecisionOutcome::Refused { message, .. } => Some(format!("Refused: {message}")),
         _ => Some("The server never confirmed that decision; check before retrying.".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_decision_takes_the_platforms_exact_chord() {
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::default()
+        };
+        let cmd_shift = Mods { shift: true, ..cmd };
+        let alt = Mods {
+            alt: true,
+            ..cmd_shift
+        };
+        assert!(decision_chord(&cmd, true));
+        assert!(!decision_chord(&cmd_shift, true));
+        assert!(decision_chord(&cmd_shift, false));
+        assert!(!decision_chord(&cmd, false));
+        for macos in [true, false] {
+            assert!(!decision_chord(&Mods::default(), macos));
+            assert!(!decision_chord(&alt, macos));
+        }
     }
 }

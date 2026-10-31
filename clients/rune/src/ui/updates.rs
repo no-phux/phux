@@ -65,9 +65,15 @@ fn headline(updater: &Updater) -> String {
     }
 }
 
-/// What the update means for the sessions and the server.
-fn detail(updater: &Updater) -> Vec<String> {
+/// What the update means for the sessions and the server. The window's own
+/// machine may be `remote`, and phux here is always this computer's.
+fn detail(updater: &Updater, remote: Option<&str>) -> Vec<String> {
     let mut lines = Vec::new();
+    if let Some(machine) = remote.filter(|_| updater.phux_due()) {
+        lines.push(format!(
+            "This updates phux on this computer, not on {machine}."
+        ));
+    }
     if let Some(cli) = updater.cli.as_ref().filter(|cli| cli.available) {
         lines.push(match &cli.native_command {
             Some(command) if !cli.mutable => {
@@ -85,9 +91,10 @@ fn detail(updater: &Updater) -> Vec<String> {
     lines
 }
 
-fn lines(updater: &Updater, ink: &Ink) -> El {
+fn lines(desk: &Desk, ink: &Ink) -> El {
+    let remote = desk.machines.current.as_deref();
     let mut list = col().w_full().gap(2.0);
-    for line in detail(updater) {
+    for line in detail(&desk.updater, remote) {
         list = list.child(text(line).font(CAPTION).color(ink.dim).wrap());
     }
     list
@@ -131,7 +138,7 @@ pub fn card(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
                         .child(text("✕").font(CAPTION).color(ink.dim)),
                 ),
         )
-        .child(lines(updater, ink))
+        .child(lines(desk, ink))
         .children(percent.map(|percent| progress(percent, inner, ink)))
         .children(
             updater
@@ -175,6 +182,18 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
             ink,
         ));
     }
+    let copy_label = if updater.copied {
+        "Copied"
+    } else {
+        "Copy diagnostics"
+    };
+    let diagnostics = pressable("copy-diagnostics", ink)
+        .px(12.0)
+        .py(6.0)
+        .radius(6.0)
+        .border(1.0, ink.separator)
+        .on_press_tx(|d: &mut Desk, tx| d.copy_diagnostics(tx))
+        .child(text(copy_label).font(CAPTION).color(ink.text));
     let installed = updater
         .cli
         .as_ref()
@@ -194,14 +213,16 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
                         .color(ink.dim),
                 ),
         )
-        .child(lines(updater, ink));
+        .child(lines(desk, ink));
     if let Work::Downloading(percent) = updater.work {
         section = section.child(progress(percent, 524.0, ink));
     }
     if let Err(reason) = updater.install {
-        return section.child(text(reason).font(CAPTION).color(ink.dim));
+        return section
+            .child(text(reason).font(CAPTION).color(ink.dim))
+            .child(row().child(diagnostics));
     }
-    section = section.child(buttons).child(toggle(
+    section = section.child(buttons.child(diagnostics)).child(toggle(
         "set-update-auto",
         "Check automatically",
         "At launch and every six hours. Nothing installs without a click.",
@@ -220,4 +241,16 @@ pub fn settings(desk: &Desk, ink: &Ink) -> El {
         ));
     }
     section
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::launch::Resolved;
+
+    #[test]
+    fn nothing_extra_is_said_with_no_server_update_due() {
+        let desk = Desk::new(&Resolved::offline("not launched"));
+        assert!(detail(&desk.updater, Some("mini")).is_empty());
+    }
 }

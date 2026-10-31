@@ -11,7 +11,19 @@ terminal UI for daily work.
 
 ## Install
 
-Download the newest `rune-v*` prerelease from
+```sh
+curl -fsSL https://phux.sh/install | sh -s -- --rune
+```
+
+This checks the archive's SHA-256, installs the phux CLI if you have none, and
+puts **Phux Rune.app** in Applications, or on Linux the app in
+`~/.local/share/phux-rune` with a menu entry and a `phux-rune` command. The
+release signature is verified only with `minisign` on your `PATH`; without it
+the digest comes from the unsigned feed, and `PHUX_REQUIRE_SIGNATURE=1` refuses
+to go on ([Install](../../docs/install.md)). The app's own updates always
+require the signature.
+
+Or download the newest `rune-v*` release from
 [Releases](https://github.com/no-phux/phux/releases?q=rune-v&expanded=true):
 
 - **macOS (Apple silicon)**: `phux-rune-VERSION-macos-arm64.zip`. Unzip and
@@ -19,9 +31,18 @@ Download the newest `rune-v*` prerelease from
   the app is Developer ID signed, Apple-notarized and stapled, like the GPUI
   desktop; earlier alphas were ad-hoc signed and Gatekeeper refuses them.
 - **Linux (x86_64)**: `phux-rune-VERSION-linux-x86_64.tar.gz`, then run
-  `phux-rune`. Needs Vulkan and `libxkbcommon-x11`.
+  `phux-rune`.
 
 Check an archive against its `.sha256` before opening it.
+
+It needs macOS 14 on Apple silicon, or x86_64 Linux with glibc 2.39 (Ubuntu
+24.04 or newer), Vulkan and `libxkbcommon-x11`.
+
+**Wayland is not qualified.** The binary includes Wayland support and uses it
+when a compositor offers it, but every automated check runs headless or on X11
+under Xvfb. Nobody has tested window decorations, the clipboard or input methods
+on Wayland; on a compositor with XWayland, unsetting `WAYLAND_DISPLAY` for the
+app runs it on X11.
 
 The app needs the phux CLI (`curl -fsSL https://phux.sh/install | sh`).
 From 0.1.0-alpha.6 it updates itself; earlier alphas need this one download.
@@ -44,15 +65,24 @@ session (or `--session NAME`). It never creates a session on its own.
   ([UPDATES.md](../desktop/UPDATES.md)). The app checks at launch and every six
   hours, and a corner card that never takes the keyboard offers the update.
   **Download update** fetches the archive and refuses it unless a release key
-  signed its checksum; the app then installs when you quit, or now with
-  **Restart now**, which reopens your session. **Update server** updates the
+  signed its checksum and the new build can draw a frame on this computer; the
+  app then installs when you quit, or now with **Restart now**, which reopens
+  your session. On Linux the files are replaced as soon as the download is
+  verified, so the next launch is the new version however you quit, even if a
+  server update is still due. **Update server** updates the
   phux CLI through its own updater and hands the live server off without
   closing sessions; a refused handoff offers a retry, and package-managed
   installs show their own command. Settings has **Check automatically** and
   **Update phux with Phux Rune**. Updates need a copy in a writable place such
   as Applications; development builds, and windows started with `--socket`,
-  `--phux`, `PHUX_BIN` or `PHUX_PROFILE`, never touch phux. The helper logs to
-  `~/Library/Logs/Phux/rune-update.log`.
+  `--phux`, `PHUX_BIN` or `PHUX_PROFILE`, never touch phux. Update outcomes
+  go to `rune-update.log` (see **Diagnostics**).
+- **Diagnostics.** Panics, startup and update outcomes are logged on this
+  computer, with credentials and your home directory removed: `rune-panic.log`,
+  `rune.log` and `rune-update.log` in `~/Library/Logs/Phux`, or
+  `$XDG_STATE_HOME/phux-rune` (`~/.local/state/phux-rune`) on Linux. **Copy
+  diagnostics** in Settings puts them on the clipboard with the app's state.
+  Nothing is ever sent anywhere.
 - **Inbox.** ⌘I opens one drawer of everything waiting on you, across every
   session: what agents are asking, with their suggested answers (click, or
   ⌘1–⌘9) and a reply field; actions the server is holding for approval
@@ -148,8 +178,12 @@ cancels).
   carry no soft-wrap flag yet); the status line shows the joined target
   before a ⌘-click.
 - No DMG yet; the ZIP is the macOS download.
-- While a server update is due, quitting leaves the app as it was and the
-  download is dropped. **Restart & update server** moves both.
+- Wayland is not qualified; see [Install](#install).
+- The update check draws off-screen, so a build that only fails when opening a
+  real window can still install.
+- On macOS, while a server update is due, quitting leaves the app as it was
+  and the download is dropped. **Restart & update server** moves both. Linux
+  has already replaced the files by then.
 
 ## Develop
 
@@ -180,15 +214,19 @@ run` can't post, and Settings says so.
 
 `scripts/package.sh VERSION OUT_DIR` builds the release archive for the
 host (ad-hoc signed; a local build may link the dev shell's libraries, so
-ship only CI builds). Pushing a `rune-vVERSION` tag runs
-[`rune-client.yml`](../../.github/workflows/rune-client.yml), which tests,
-packages macOS and Linux, signs and notarizes the macOS app with
-`scripts/ci/sign-macos-desktop.sh --zip-only` (the GPUI desktop's Apple
-credentials), and publishes a prerelease.
+ship only CI builds), and needs `bun` for its notices.
+`just rune-check` is the gate, `just rune-deny` checks the lockfile, and both
+run as the `rune` lane of `ci`, which also packages and launches the archive
+with `scripts/qualify.sh ARCHIVE target/debug/phux`. On a dev machine that
+check can fail on what a Nix shell linked; CI's rustup builds are the real
+answer. [Releasing](../../docs/releasing.md#phux-rune) covers tags and what to
+do about a bad release.
 
 | Module | Owns |
 | --- | --- |
 | `launch` | command line, finding the CLI, `phux server --ensure` |
+| `updates` | the feed, staging and swapping a verified build, the phux CLI |
+| `diag` | local logs, the panic hook, and the report Copy diagnostics makes |
 | `desk` | the runtime client and what is on screen; `desk/*`: layout and splits, tabs, frames and fit, input, mouse, find, links, palette, sessions, inbox, settings, attachments |
 | `links` | OSC 8 hyperlinks and written URLs under a cell |
 | `activity` | per-terminal agent state, questions, commands and bells, and what needs you |

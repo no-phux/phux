@@ -4,17 +4,44 @@
 //! - Shift keeps local selection even while a program tracks the mouse.
 //! - A press the program took always gets its release, wherever it lands.
 //! - Motion is sent once per cell, and only to programs that asked for it.
+//! - Rune reports the secondary button once, at its release, so a tracking
+//!   program hears its press and release together; elsewhere it opens a menu.
 //! - The wheel is buttons 4 and 5 to a tracking program, arrow keys in the
 //!   alternate screen (less, man), and history everywhere else.
 
+use phux_client_runtime::Client;
 use phux_client_runtime::engine::{MouseMode, Scroll};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
-use rune::{Mods, Phase};
+use rune::{Mods, Phase, PointerButton, PointerPress, Tx};
 
 use super::Desk;
 use crate::keys;
+
+/// One step of a button's gesture over a pane, at `x, y` in its grid's points.
+#[derive(Debug, Clone, Copy)]
+pub struct Press {
+    pub phase: Phase,
+    pub x: f32,
+    pub y: f32,
+    pub clicks: u32,
+    pub mods: Mods,
+    pub button: PointerButton,
+}
+
+/// The wire's name for a button, in xterm's numbering. A wheel never comes
+/// through here, so Four to Seven stay the wheel's.
+const fn wire_button(button: PointerButton) -> MouseButton {
+    match button {
+        PointerButton::Primary => MouseButton::Left,
+        PointerButton::Secondary => MouseButton::Right,
+        PointerButton::Middle => MouseButton::Middle,
+        PointerButton::Back => MouseButton::Eight,
+        PointerButton::Forward => MouseButton::Nine,
+        _ => MouseButton::Unknown,
+    }
+}
 
 /// The most wheel steps one event sends, so a fling can't flood a program.
 const MAX_WHEEL_STEPS: i64 = 100;
@@ -28,29 +55,32 @@ impl Desk {
             .unwrap_or(MouseMode::None)
     }
 
-    /// A press, drag or release over a pane, at `x, y` in its grid's points.
-    pub fn pointer(
-        &mut self,
-        terminal: &ResourceId,
-        phase: Phase,
-        x: f32,
-        y: f32,
-        clicks: u32,
-        mods: Mods,
-    ) {
-        if phase == Phase::Down {
+    /// A press, drag or release over a pane.
+    pub fn pointer(&mut self, terminal: &ResourceId, press: &Press, tx: &mut Tx) {
+        if press.phase == Phase::Down {
             self.focus_pane(terminal);
         }
-        let captured = self.mouse_capture.as_ref() == Some(terminal);
-        let tracking = self.mouse_mode(terminal) != MouseMode::None && !mods.shift;
-        if captured || (phase == Phase::Down && tracking) {
-            self.report(terminal, phase, x, y, mods);
+        let captured = self.capture_terminal() == Some(terminal);
+        let tracking = self.mouse_mode(terminal) != MouseMode::None && !press.mods.shift;
+        if captured || (press.phase == Phase::Down && tracking) {
+            self.report(terminal, press);
             return;
         }
-        self.select(terminal, phase, x, y, clicks);
+        // Selection is the primary button's; with no program to tell, the
+        // others do nothing here.
+        if press.button != PointerButton::Primary {
+            return;
+        }
+        // The rest of a drag that already ended.
+        if press.phase != Phase::Down && self.gesture == 0 {
+            return;
+        }
+        self.track_drag(terminal, press, tx);
+        self.select(terminal, press.phase, press.x, press.y, press.clicks);
     }
 
-    fn report(&mut self, terminal: &ResourceId, phase: Phase, x: f32, y: f32, mods: Mods) {
+    fn report(&mut self, terminal: &ResourceId, press: &Press) {
+        let Press { phase, x, y, .. } = *press;
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -64,11 +94,12 @@ impl Desk {
         let (col, row) = metrics.cell_at(x, y, frame.cols, frame.rows);
         let action = match phase {
             Phase::Down => {
-                self.mouse_capture = Some(terminal.clone());
+                self.mouse_capture = Some((terminal.clone(), *press));
                 self.mouse_cell = Some((col, row));
                 MouseAction::Press
             }
             Phase::Move => {
+                self.mouse_capture = Some((terminal.clone(), *press));
                 // Only motion-tracking programs hear drags, once per cell.
                 let mode = self.mouse_mode(terminal);
                 if !matches!(mode, MouseMode::Button | MouseMode::Any)
@@ -89,12 +120,87 @@ impl Desk {
         let (x, y) = cell_center(&metrics, col, row);
         let event = MouseEvent {
             action,
-            button: MouseButton::Left,
+            button: wire_button(press.button),
+            mods: keys::mods(press.mods),
+            x,
+            y,
+        };
+        send_mouse(&client, terminal, event);
+    }
+
+    /// The pane whose program holds a press.
+    pub(super) fn capture_terminal(&self) -> Option<&ResourceId> {
+        self.mouse_capture.as_ref().map(|(terminal, _)| terminal)
+    }
+
+    /// Give the program the release Rune won't deliver, where the press last
+    /// was. A pane that is gone just forgets it.
+    pub(super) fn release_capture(&mut self) {
+        if let Some((terminal, press)) = self.mouse_capture.take() {
+            let phase = Phase::Up;
+            self.report(&terminal, &Press { phase, ..press });
+            self.mouse_cell = None;
+        }
+    }
+
+    /// The secondary button's click at `at`, in a pane: the program's if it
+    /// tracks the mouse, else the context menu. The click holds nothing, so a
+    /// press the program already has keeps its capture and gets its release.
+    pub fn secondary_press(&mut self, terminal: &ResourceId, at: Press, window: PointerPress) {
+        self.focus_pane(terminal);
+        if self.mouse_mode(terminal) != MouseMode::None && !at.mods.shift {
+            let held = (self.mouse_capture.clone(), self.mouse_cell);
+            let phase = Phase::Down;
+            self.report(terminal, &Press { phase, ..at });
+            let phase = Phase::Up;
+            self.report(terminal, &Press { phase, ..at });
+            (self.mouse_capture, self.mouse_cell) = held;
+            return;
+        }
+        self.pointer.menu = Some(window);
+    }
+
+    /// The pointer moved with nothing pressed: `MouseMode::Any` programs hear
+    /// it, once per cell, while the grid is under it.
+    pub(super) fn report_motion(&mut self, terminal: &ResourceId, x: f32, y: f32, mods: Mods) {
+        if mods.shift || self.mouse_capture.is_some() || self.gesture != 0 {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let Some(frame) = self.view_of(terminal).and_then(|v| client.acquire_view(v)) else {
+            return;
+        };
+        let metrics = self.metrics();
+        let cell = metrics.cell_at(x, y, frame.cols, frame.rows);
+        if self.mouse_cell == Some(cell) {
+            return;
+        }
+        self.mouse_cell = Some(cell);
+        let inside = x >= 0.0
+            && y >= 0.0
+            && x < f32::from(frame.cols) * metrics.cell_w
+            && y < f32::from(frame.rows) * metrics.cell_h;
+        if !inside || self.mouse_mode(terminal) != MouseMode::Any {
+            return;
+        }
+        let (x, y) = cell_center(&metrics, cell.0, cell.1);
+        let event = MouseEvent {
+            action: MouseAction::Motion,
+            button: MouseButton::Unknown,
             mods: keys::mods(mods),
             x,
             y,
         };
-        client.with_control(|control| control.send_mouse(terminal, event));
+        send_mouse(&client, terminal, event);
+    }
+
+    /// Nothing is under the pointer any more.
+    pub(super) fn forget_mouse_cell(&mut self) {
+        if self.mouse_capture.is_none() {
+            self.mouse_cell = None;
+        }
     }
 
     /// The surface pixels of the cell under a point in a pane's grid.
@@ -143,7 +249,7 @@ impl Desk {
                     x,
                     y,
                 };
-                client.with_control(|control| control.send_mouse(terminal, event));
+                send_mouse(&client, terminal, event);
             }
             return;
         }
@@ -175,6 +281,14 @@ impl Desk {
     }
 }
 
+/// Send a mouse event if the terminal can take input now. A mouse event is
+/// momentary: one that can't arrive is not worth holding or reporting.
+fn send_mouse(client: &Client, terminal: &ResourceId, event: MouseEvent) {
+    client.with_control(|control| {
+        control.input_ready(terminal) && control.send_mouse(terminal, event)
+    });
+}
+
 /// Surface pixels at the middle of a cell, as the server divides by the
 /// reported cell size.
 fn cell_center(metrics: &crate::grid::Metrics, col: u16, row: u16) -> (f64, f64) {
@@ -183,4 +297,19 @@ fn cell_center(metrics: &crate::grid::Metrics, col: u16, row: u16) -> (f64, f64)
         f64::from(col) * f64::from(cell_w) + f64::from(cell_w) / 2.0,
         f64::from(row) * f64::from(cell_h) + f64::from(cell_h) / 2.0,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buttons_keep_their_xterm_numbers() {
+        assert_eq!(wire_button(PointerButton::Primary), MouseButton::Left);
+        assert_eq!(wire_button(PointerButton::Secondary), MouseButton::Right);
+        assert_eq!(wire_button(PointerButton::Middle), MouseButton::Middle);
+        assert_eq!(wire_button(PointerButton::Back), MouseButton::Eight);
+        assert_eq!(wire_button(PointerButton::Forward), MouseButton::Nine);
+        assert_eq!(wire_button(PointerButton::Other(30)), MouseButton::Unknown);
+    }
 }

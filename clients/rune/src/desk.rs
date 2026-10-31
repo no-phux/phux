@@ -11,10 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
-use phux_client_core::org_ops::OrgOutcome;
-use phux_client_runtime::control::{Event, ProjectionFence, Status, Topology};
+use phux_client_runtime::control::{Observation, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
-use phux_client_runtime::{Client, Listener, Target, ViewId};
+use phux_client_runtime::{Client, Listener, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
@@ -22,22 +21,27 @@ use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
 mod attach;
+mod events;
 mod find;
 mod frame;
+mod home;
 mod inbox;
 mod input;
 mod layout;
+pub mod link;
 mod links;
 pub mod machines;
-mod mouse;
+pub mod mouse;
 mod palette;
 mod sessions;
 mod settings;
 mod shown;
+mod splits;
 mod tabs;
 pub mod updates;
 
 pub use layout::SplitPath;
+pub use palette::{CONTEXT_MENU, with_menus};
 pub use tabs::{Renaming, Tab};
 
 /// Wakes Rune's loop from the runtime's driver thread. Only posts; never
@@ -71,26 +75,37 @@ pub struct Painted {
 /// pixels.
 type Fitted = ((u16, u16), (u16, u16));
 
-/// What waits on the user's Return or Escape.
 /// What kind of thing a notice says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
-    #[expect(dead_code, reason = "every notice so far reports a failure")]
     Info,
     Error,
 }
 
-/// One line for the user, in the status line and the inbox's footer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl NoticeKind {
+    /// Seconds on screen; a failure stays long enough to be read twice.
+    const fn lasts(self) -> f64 {
+        match self {
+            Self::Info => 6.0,
+            Self::Error => 12.0,
+        }
+    }
+}
+
+/// Words for the user, in a toast and the inbox's footer.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
     pub kind: NoticeKind,
     pub text: String,
+    /// When it goes, on the app clock.
+    expires: f64,
 }
 
+/// What waits on the user's Return or Escape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
-    /// A paste that would type line breaks into a program.
-    Paste(String),
+    /// A line-breaking paste, and the terminal it was meant for.
+    Paste(ResourceId, String),
     /// Closing a terminal that is running a command.
     Close(ResourceId),
     /// Closing every terminal of a tab.
@@ -124,12 +139,15 @@ pub struct Desk {
     epoch: u64,
     /// An action waiting for the user's confirmation.
     pub pending: Option<Pending>,
-    /// A command's failure (a spawn), shown until the next terminal opens.
+    /// What the user was last told, until it expires or they dismiss it. A
+    /// terminal opening takes down only what was in passing.
     pub notice: Option<Notice>,
     /// The command palette, while open, and its field and highlighted row.
     pub palette_open: bool,
     pub palette_query: rune::TextEdit,
     pub palette_picked: usize,
+    /// The palette shows the keyboard shortcuts instead of everything.
+    pub palette_shortcuts: bool,
     pub sidebar_open: bool,
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
@@ -143,11 +161,14 @@ pub struct Desk {
     pub tabs: tabs::Tabs,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
+    pub link: link::Link,
     /// How this run started, for moving between machines.
     launch: Resolved,
     waker: Option<Waker>,
     /// Image uploads on their way, and the terminal each is for.
     uploads: Vec<(u64, ResourceId)>,
+    /// User pastes the server hasn't answered yet.
+    pastes: HashSet<u64>,
     /// Settings that outlive the window: text size, the sidebar.
     prefs: rune::prefs::Prefs,
     /// What every terminal is doing, for the sidebar's marks.
@@ -189,8 +210,9 @@ pub struct Desk {
     pending_splits: HashMap<u32, Placement>,
     /// The pane the wheel last moved, owning `wheel_rows`.
     wheel_pane: Option<ResourceId>,
-    /// The pane whose program took the last press, until its release.
-    mouse_capture: Option<ResourceId>,
+    /// The pane whose program took the last press, and that press as it last
+    /// moved, until its release.
+    mouse_capture: Option<(ResourceId, mouse::Press)>,
     /// The cell the last reported pointer event was in.
     mouse_cell: Option<(u16, u16)>,
     /// The window title last set.
@@ -205,13 +227,50 @@ pub struct Desk {
     sessions_seq: u32,
     /// The fenced frame the last view build painted, for the drawn receipt.
     pub painted: RefCell<Option<Painted>>,
+    /// The terminal last told it has the window's focus.
+    focus_told: Option<ResourceId>,
+    /// The arrangement write in flight for a split or tab. One at a time:
+    /// each write's base is the document the last one made.
+    split_write: Option<splits::SplitWrite>,
 }
 
 impl Desk {
     /// Put a line in front of the user.
     pub fn say(&mut self, kind: NoticeKind, text: impl Into<String>) {
         let text = text.into();
-        self.notice = Some(Notice { kind, text });
+        let expires = self.clock + kind.lasts();
+        self.notice = Some(Notice {
+            kind,
+            text,
+            expires,
+        });
+        // This may come after the frame's `expire_notice`, in a handler or
+        // later in `poll`: another poll sets its timer.
+        if let Some(waker) = &self.waker {
+            waker();
+        }
+    }
+
+    pub fn dismiss_notice(&mut self) {
+        self.notice = None;
+    }
+
+    /// Take down a notice whose time is up, and wake for the one still
+    /// showing. "Uploading" stays for as long as that's true.
+    fn expire_notice(&mut self, tx: &mut Tx) -> bool {
+        let Some(notice) = &self.notice else {
+            return false;
+        };
+        if notice.kind == NoticeKind::Info && !self.uploads.is_empty() {
+            return false;
+        }
+        let left = notice.expires - self.clock;
+        if left > 0.0 {
+            tx.wake_after(Duration::from_secs_f64(left));
+            return false;
+        }
+        self.notice = None;
+        true
     }
 
     pub fn new(resolved: &Resolved) -> Self {
@@ -222,7 +281,8 @@ impl Desk {
         Self::open(resolved, remembered)
     }
 
-    /// `machine` is a registered remote; `None` is this computer's server.
+    /// A window with no connection yet; `dial` makes one. `machine` is a
+    /// registered remote; `None` is this computer's server.
     fn open(resolved: &Resolved, machine: Option<String>) -> Self {
         // `RUNE_PREFS_DIR` keeps headless runs off the real settings.
         let prefs = rune::prefs::Prefs::open(PREFS_ID);
@@ -233,7 +293,7 @@ impl Desk {
             });
         let sidebar_open = prefs.get("sidebar_open").unwrap_or(true);
         let settings = settings::Settings::load(&prefs);
-        let mut desk = Self {
+        Self {
             client: None,
             error: None,
             status: Status::Idle,
@@ -248,6 +308,7 @@ impl Desk {
             palette_open: false,
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
+            palette_shortcuts: false,
             sidebar_open,
             find: None,
             find_query: rune::TextEdit::new(""),
@@ -257,10 +318,12 @@ impl Desk {
             settings_open: false,
             tabs: tabs::Tabs::default(),
             updater: updates::Updater::new(&prefs, resolved),
-            machines: machines::Machines::new(machine.clone(), resolved.phux.clone()),
+            machines: machines::Machines::new(machine, resolved.phux.clone()),
+            link: link::Link::default(),
             launch: resolved.clone(),
             waker: None,
             uploads: Vec::new(),
+            pastes: HashSet::new(),
             prefs,
             preedit: None,
             activities: crate::activity::Activities::default(),
@@ -291,28 +354,28 @@ impl Desk {
             wheel_rows: 0.0,
             sessions_seq: 0,
             painted: RefCell::new(None),
-        };
-        let target = match &machine {
-            Some(machine) => Target::resolve(machine, None),
-            None => resolved.socket.clone().map(Target::uds),
-        };
-        match target.and_then(|target| sessions::connect(target, resolved.session.clone())) {
-            Ok(client) => desk.client = Some(Arc::new(client)),
-            Err(error) => desk.error = Some(error),
+            focus_told: None,
+            split_write: None,
         }
-        desk.apply_theme();
-        desk
     }
 
     pub fn metrics(&self) -> Metrics {
         Metrics::new(self.font_size, self.scale.get())
     }
 
-    /// Rune's setup hook: route runtime wakes into Rune's loop.
+    /// Rune's setup hook: the window is about to open, so everything slow
+    /// starts here, on workers. Even on a remote the local server is found,
+    /// because the updater manages it; a run that can't reach one starts
+    /// the updater without it.
     pub fn listen(&mut self, waker: Waker) {
-        self.updater.start(waker.clone());
         self.machines.listen(waker.clone());
         self.watch(waker);
+        self.dial();
+        if !self.launch.can_ensure() {
+            self.start_updater();
+        } else if self.machines.current.is_some() {
+            self.find_server();
+        }
     }
 
     /// Route this connection's wakes and alerts into Rune's loop.
@@ -328,27 +391,61 @@ impl Desk {
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
-        let updated = self.pump_updates(tx) | self.pump_machines();
+        let updated = self.pump_updates(tx)
+            | self.pump_machines()
+            | self.pump_link()
+            | self.pump_links()
+            | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {
-            return updated;
+            return updated | self.tend_link(tx);
         };
-        let observation = client.take_activity();
-        let mut changed = updated | (observation.status != self.status);
+        let mut observation = client.take_activity();
+        let mut changed = updated | self.follow_connection(&client, &mut observation);
+        // Output alone can't move anything: no layout pass per keystroke.
+        let rearrange = changed || observation.events.iter().any(events::moves_layout);
+        for event in std::mem::take(&mut observation.events) {
+            changed |= self.apply(&client, event, tx);
+        }
+        let opened = self.settle_home(&client) | self.open_wanted(&client);
+        changed |= opened;
+        let unfocused = self.sync_focus(&client);
+        self.title(tx);
+        if rearrange || opened || self.layout_is_stale() {
+            changed |= self.refresh_layout(&client);
+        }
+        // The replica's news may never come, and a split only waits so long.
+        if unfocused || self.splits_waiting() {
+            tx.wake_after(Duration::from_millis(250));
+        }
+        changed |= self.finish_uploads(&client);
+        changed |= self.sync_alerts();
+        changed |= self.tick_inbox(tx);
+        self.settle_pointer();
+        changed |= self.autoscroll(tx);
+        self.keep_find();
+        // Also catches a display-scale change, which re-snaps the cells.
+        self.fit();
+        changed | self.blink(&client, tx) | self.tend_link(tx)
+    }
+
+    /// What an observation says about the connection itself. The topology
+    /// is only sampled when the batch can have changed it.
+    fn follow_connection(&mut self, client: &Client, observation: &mut Observation) -> bool {
+        let mut changed = observation.status != self.status;
         if observation.connection_epoch != self.epoch {
-            // Only the first connection replays news: a reconnect's items
-            // are known by id, and what arrived during the gap is new.
-            if self.epoch == 0 {
-                self.inbox.alerts.connected();
-            }
+            self.first_contact();
             self.epoch = observation.connection_epoch;
-            changed |= self.reopen_after_reconnect(&client);
+            self.focus_told = None;
+            changed |= self.reopen_after_reconnect(client);
         }
         self.status = observation.status;
-        if let Some(error) = observation.last_error.filter(|_| self.status.is_terminal()) {
+        let failure = observation.last_error.take();
+        if let Some(error) = failure.filter(|_| self.status.is_terminal()) {
             changed |= self.error.as_ref() != Some(&error);
+            self.failed_with(&error);
             self.error = Some(error);
         }
-        if let Some(topology) = client.topology()
+        if let Some(topology) = observation.topology.take()
             && self.topology.as_ref() != Some(&topology)
         {
             self.topology = Some(topology);
@@ -357,122 +454,7 @@ impl Desk {
         if self.server.is_none() {
             self.server = client.server().map(|info| format!("{info:?}"));
         }
-        let events = !observation.events.is_empty();
-        for event in observation.events {
-            changed |= self.apply(&client, event, tx);
-        }
-        changed |= self.open_wanted(&client);
-        self.title(tx);
-        if changed || events || self.layout_is_stale() {
-            changed |= self.refresh_layout(&client);
-        }
-        self.finish_uploads(&client);
-        changed |= self.sync_alerts();
-        self.keep_find();
-        // Also catches a display-scale change, which re-snaps the cells.
-        self.fit();
-        changed | self.blink(&client, tx)
-    }
-
-    fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
-        // A background window shows nothing to anyone.
-        let on_screen = if self.focused {
-            self.on_screen()
-        } else {
-            Vec::new()
-        };
-        let marked = self.activities.apply(&event, &on_screen);
-        let inbox = self.inbox_event(client, &event);
-        marked | inbox | self.apply_view(client, event, tx)
-    }
-
-    /// The terminals in front of the person.
-    pub(super) fn on_screen(&self) -> Vec<ResourceId> {
-        match &self.layout {
-            Some(tree) => phux_client_core::layout::leaves(tree),
-            None => self.shown.iter().map(|s| s.terminal.clone()).collect(),
-        }
-    }
-
-    fn apply_view(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
-        let shown = |id: &ResourceId| self.shown.as_ref().is_some_and(|s| &s.terminal == id);
-        match event {
-            Event::TerminalChanged { terminal_id }
-                if shown(&terminal_id) || self.others.contains_key(&terminal_id) =>
-            {
-                self.relink(&terminal_id);
-                self.generation += 1;
-                true
-            }
-            Event::TerminalSpawned {
-                request_id,
-                terminal_id: Some(new),
-                ..
-            } if self.pending_splits.contains_key(&request_id) => {
-                if let Some(placement) = self.pending_splits.remove(&request_id) {
-                    self.place_split(client, &new, placement);
-                }
-                true
-            }
-            Event::TerminalSpawned {
-                request_id,
-                terminal_id,
-                error,
-            } if self.pending_spawns.contains(&request_id)
-                || self.pending_splits.contains_key(&request_id) =>
-            {
-                self.pending_spawns.retain(|id| *id != request_id);
-                self.pending_splits.remove(&request_id);
-                match (terminal_id, error) {
-                    (Some(id), _) => self.want(id),
-                    (None, error) => self.say(
-                        NoticeKind::Error,
-                        error.unwrap_or_else(|| "spawn failed".to_owned()),
-                    ),
-                }
-                true
-            }
-            Event::TerminalClosed { terminal_id, .. } if shown(&terminal_id) => {
-                // Keep the keyboard in the split: the neighbour takes focus.
-                let next = self
-                    .layout
-                    .as_ref()
-                    .and_then(|t| layout::neighbour(t, &terminal_id));
-                self.close_shown(client);
-                if let Some(next) = next {
-                    self.focus_pane(&next);
-                }
-                true
-            }
-            Event::OrganizationOperation { operation, outcome }
-                if self.layout_ops.remove(&operation) =>
-            {
-                if matches!(outcome, OrgOutcome::Refused(_) | OrgOutcome::Error { .. }) {
-                    self.say(
-                        NoticeKind::Error,
-                        "The layout changed elsewhere first; try again.",
-                    );
-                }
-                true
-            }
-            Event::TerminalClosed { terminal_id, .. } if self.others.contains_key(&terminal_id) => {
-                if let Some(view) = self.others.remove(&terminal_id) {
-                    let _ = client.destroy_view(view);
-                }
-                true
-            }
-            // OSC 52 only from the terminal on screen, while the window has
-            // focus; never retained for later.
-            Event::ClipboardWrite { terminal_id, text } if shown(&terminal_id) && self.focused => {
-                tx.copy(text.0);
-                false
-            }
-            Event::StatusChanged(_)
-            | Event::TopologyChanged
-            | Event::OrganizationChanged
-            | Event::Attached { .. } => true,
-            _ => false,
-        }
+        changed
     }
 }
 

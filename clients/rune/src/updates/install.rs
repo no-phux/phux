@@ -1,19 +1,25 @@
 //! Staging a verified update beside the app. A helper started at staging
 //! waits for this process to exit, however it exits, and only then swaps the
 //! bundle in, so quitting installs and a restart is a quit plus a flag.
-//! Linux replaces the binary in place: the running one keeps its inode.
+//! Linux replaces the files in place when staging ends, not at exit: the
+//! running binary keeps its inode, and the next launch is the new version.
+//!
+//! Clients refuse older versions, so a build that dies at launch can't be
+//! rolled back from the feed. Before anything is swapped the new binary has to
+//! draw one headless frame on this computer's GPU.
 
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use phux_client_runtime::release::signature::{RELEASE_KEYS, signed_digest};
 use sha2::{Digest, Sha256};
 
 use super::{APP, CURL, EXECUTABLE, Release, fetch};
+use crate::diag;
 
 const STAGING: &str = ".phux-rune-update";
 const LOCK: &str = ".phux-rune-update.lock";
@@ -24,6 +30,8 @@ const HOLD: &str = "hold";
 const IDENTIFIER: &str = "sh.phux.rune";
 /// Far above any real archive, so a hostile feed can't fill the disk.
 const MAX_ARCHIVE: &str = "1073741824";
+/// Far above a real launch check, which takes a second or two.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress {
@@ -148,6 +156,42 @@ fn run(command: &mut Command, what: &str) -> Result<String, String> {
     }
 }
 
+/// Have `binary` draw a frame, away from any server and this user's settings.
+fn launch_check(binary: &Path, dir: &Path, timeout: Duration) -> Result<(), String> {
+    let frame = dir.join("launch-check.png");
+    let mut child = Command::new(binary)
+        .arg("--socket")
+        .arg(dir.join("no-server"))
+        .arg("--snap")
+        .arg(&frame)
+        .args(["--at", "0.2", "--size", "640x360"])
+        .env("RUNE_PREFS_DIR", dir.join("launch-check-prefs"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| failed("The update does not run on this computer", error))?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("The update never finished starting; nothing was installed.".to_owned());
+            }
+            Err(error) => return Err(failed("Waiting for the update to start", error)),
+        }
+    };
+    let drew = fs::metadata(&frame).is_ok_and(|meta| meta.len() > 0);
+    if status.success() && drew {
+        Ok(())
+    } else {
+        Err("The update does not start on this computer; nothing was installed.".to_owned())
+    }
+}
+
 fn plist(app: &Path, key: &str) -> Result<String, String> {
     run(
         Command::new("/usr/libexec/PlistBuddy")
@@ -179,12 +223,30 @@ fn stage_macos(archive: &Path, dir: &Path, release: &Release) -> Result<(), Stri
     if !names_itself || plist(&app, "CFBundleShortVersionString")? != release.version {
         return Err("The archive is not the release that was checked.".to_owned());
     }
+    launch_check(
+        &app.join("Contents/MacOS").join(EXECUTABLE),
+        dir,
+        LAUNCH_TIMEOUT,
+    )?;
     fs::rename(&app, dir.join(APP)).map_err(|error| failed("Could not stage the update", error))?;
     fs::remove_dir_all(&unpacked).map_err(|error| failed("Could not stage the update", error))?;
     fs::remove_file(archive).map_err(|error| failed("Could not stage the update", error))
 }
 
-/// Swap the binary now: one rename on the same volume.
+/// Everything in the archive beside the binary, so notices and the menu entry
+/// keep up with it.
+fn adopt_files(member: &Path, install: &Path) -> Result<(), String> {
+    let adopted = |error| failed("Could not install the update", error);
+    for file in fs::read_dir(member).map_err(adopted)? {
+        let file = file.map_err(adopted)?;
+        if file.file_name() != EXECUTABLE {
+            fs::rename(file.path(), install.join(file.file_name())).map_err(adopted)?;
+        }
+    }
+    Ok(())
+}
+
+/// Swap the files now, the binary last: one rename each, on the same volume.
 fn install_linux(
     archive: &Path,
     dir: &Path,
@@ -204,7 +266,8 @@ fn install_linux(
         .and_then(|name| name.to_str())
         .and_then(|name| name.strip_suffix(".tar.gz"))
         .ok_or("The archive has an unexpected name.")?;
-    let binary = dir.join(member).join(EXECUTABLE);
+    let member = dir.join(member);
+    let binary = member.join(EXECUTABLE);
     let reported = run(
         Command::new(&binary).arg("--version"),
         "The update does not run on this computer",
@@ -212,6 +275,8 @@ fn install_linux(
     if !reported.ends_with(&release.version) {
         return Err("The archive is not the release that was checked.".to_owned());
     }
+    launch_check(&binary, dir, LAUNCH_TIMEOUT)?;
+    adopt_files(&member, install)?;
     fs::rename(&binary, install.join(EXECUTABLE))
         .map_err(|error| failed("Could not install the update", error))?;
     let _ = fs::remove_dir_all(dir);
@@ -221,6 +286,26 @@ fn install_linux(
 /// Download, verify, and make ready. Nothing outside the staging directory
 /// changes before every check has passed.
 pub fn stage(install: &Path, release: &Release, report: &dyn Fn(Progress)) -> Result<(), String> {
+    let result = stage_verified(install, release, report);
+    diag::note(diag::UPDATES, &outcome(install, &release.version, &result));
+    result
+}
+
+fn outcome(install: &Path, version: &str, result: &Result<(), String>) -> String {
+    match result {
+        Err(error) => format!("update to {version} failed: {error}"),
+        Ok(()) if cfg!(target_os = "macos") => {
+            format!("staged {version} for {}", install.display())
+        }
+        Ok(()) => format!("installed {version} at {}", install.display()),
+    }
+}
+
+fn stage_verified(
+    install: &Path,
+    release: &Release,
+    report: &dyn Fn(Progress),
+) -> Result<(), String> {
     check_signed(release, RELEASE_KEYS, fetch)?;
     let dir = staging(install)?;
     let _ = fs::remove_dir_all(&dir);
@@ -306,15 +391,14 @@ fi
 exec "$opener" "$installed""#;
 
 fn log() -> Stdio {
-    let Some(home) = std::env::var_os("HOME") else {
+    let Some(dir) = diag::dir() else {
         return Stdio::null();
     };
-    let dir = PathBuf::from(home).join("Library/Logs/Phux");
     let _ = fs::create_dir_all(&dir);
     fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join("rune-update.log"))
+        .open(dir.join(diag::UPDATES))
         .map_or_else(|_| Stdio::null(), Stdio::from)
 }
 

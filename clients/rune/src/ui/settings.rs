@@ -1,9 +1,15 @@
 //! The settings sheet: theme, text, and how the app behaves.
 
-use rune::{Color, El, TextStyle, Transition, col, el, row, text};
+//!
+//! Every control here takes the keyboard. Keep `focusable` to sheets: a modal
+//! traps focus, while one on the main window would take Tab from the terminal.
 
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable, updates};
+use rune::{El, TextStyle, col, el, row, text};
+
+use super::overlay::key_hint;
+use super::{CAPTION, Ink, LABEL, Sheet, pressable, updates};
 use crate::desk::Desk;
+use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 use crate::theme::{THEMES, Theme, color};
 
 const WIDTH: f32 = 560.0;
@@ -34,6 +40,10 @@ fn tile(theme: Option<&'static Theme>, chosen: bool, ink: &Ink) -> El {
         .key(format!("theme-{name}"))
         .w(TILE_W)
         .gap(6.0)
+        .focusable(true)
+        .role("radio")
+        .label(name)
+        .focus_selected(chosen)
         .cursor(rune::Cursor::Pointer)
         .on_press(move |d: &mut Desk| d.choose_theme(theme))
         .child(
@@ -53,7 +63,15 @@ fn tile(theme: Option<&'static Theme>, chosen: bool, ink: &Ink) -> El {
 }
 
 fn themes(desk: &Desk, ink: &Ink) -> El {
-    let mut grid = row().w_full().gap(10.0).flex_wrap();
+    // One Tab stop: arrows rove it, choosing as they go.
+    let mut grid = row()
+        .key("theme-grid")
+        .w_full()
+        .gap(10.0)
+        .flex_wrap()
+        .role("radiogroup")
+        .label("Theme")
+        .focus_group();
     grid = grid.child(tile(None, desk.settings.theme.is_none(), ink));
     for theme in THEMES {
         grid = grid.child(tile(Some(theme), desk.settings.theme == Some(theme), ink));
@@ -62,7 +80,10 @@ fn themes(desk: &Desk, ink: &Ink) -> El {
 }
 
 fn switch(on: bool, ink: &Ink) -> El {
-    let thumb = el().size(14.0, 14.0).radius(7.0).fill(Color::WHITE);
+    let thumb = el()
+        .size(14.0, 14.0)
+        .radius(7.0)
+        .fill(if on { ink.on_accent } else { ink.dim });
     row()
         .w(30.0)
         .h(18.0)
@@ -88,6 +109,9 @@ pub(super) fn toggle(
         .py(6.0)
         .gap(12.0)
         .items_center()
+        .focusable(true)
+        .role("switch")
+        .label(title)
         .cursor(rune::Cursor::Pointer)
         .on_press(press)
         .child(
@@ -112,10 +136,16 @@ fn stepper(desk: &Desk, ink: &Ink) -> El {
             .child(text(label).font(LABEL).color(ink.text))
     };
     row()
+        .key("text-size")
         .w_full()
         .py(6.0)
         .gap(8.0)
         .items_center()
+        .label("Text size")
+        .on_step(|d: &mut Desk, steps, _| d.zoom(Some(d.font_size + steps as f32)))
+        .on_step_limit(|d: &mut Desk, max, _| {
+            d.zoom(Some(if max { MAX_FONT_SIZE } else { MIN_FONT_SIZE }))
+        })
         .child(text("Text size").font(LABEL).color(ink.text))
         .child(el().grow(1.0))
         .child(step("−", "text-smaller", |d| {
@@ -133,20 +163,24 @@ fn stepper(desk: &Desk, ink: &Ink) -> El {
         }))
 }
 
-pub fn view(desk: &Desk, ink: &Ink) -> El {
-    let notify_detail = if rune_mac::notify::available() {
-        "When an agent asks, finishes, or an action is held, and you're elsewhere."
-    } else {
-        "Needs the installed app; this build can't post."
-    };
-    let body = col()
+fn behaviour(desk: &Desk, ink: &Ink) -> El {
+    let notify_detail = crate::alerts::notifications_detail(
+        rune_mac::notify::available(),
+        cfg!(target_os = "macos"),
+    );
+    let option_as_meta = cfg!(target_os = "macos").then(|| {
+        toggle(
+            "set-option-meta",
+            "Option as Meta",
+            "Option sends Esc-prefixed keys instead of typing å and ∑.",
+            desk.settings.option_as_meta,
+            Desk::toggle_option_as_meta,
+            ink,
+        )
+    });
+    col()
         .w_full()
-        .padding(18.0)
         .gap(12.0)
-        .child(section("Theme", ink))
-        .child(themes(desk, ink))
-        .child(section("Text", ink))
-        .child(stepper(desk, ink))
         .child(section("Behaviour", ink))
         .child(toggle(
             "set-notifications",
@@ -156,14 +190,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
             Desk::toggle_notifications,
             ink,
         ))
-        .child(toggle(
-            "set-option-meta",
-            "Option as Meta",
-            "Option sends Esc-prefixed keys instead of typing å and ∑.",
-            desk.settings.option_as_meta,
-            Desk::toggle_option_as_meta,
-            ink,
-        ))
+        .children(option_as_meta)
         .child(toggle(
             "set-copy-select",
             "Copy on select",
@@ -175,54 +202,43 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .child(toggle(
             "set-confirm-close",
             "Confirm before closing",
-            "Ask before ⌘W ends something running, or a tab closes.",
+            "Ask before closing a terminal or tab that's still running something.",
             desk.settings.confirm_close,
             Desk::toggle_confirm_close,
             ink,
         ))
-        .child(updates::settings(desk, ink));
-    let panel = col()
-        .key("settings")
-        .w(WIDTH)
-        .max_w(WIDTH)
-        .radius(14.0)
-        .clip_rounded(14.0)
-        .fill(ink.raised)
-        .border(1.0, ink.separator)
-        .shadow(18.0, 56.0, Color::BLACK.alpha(0.5))
-        .transition(Transition::scale(0.97).combined(Transition::opacity()))
-        .child(
-            row()
-                .w_full()
-                .h(48.0)
-                .px(18.0)
-                .items_center()
-                .justify_between()
-                .child(text("Settings").font(LABEL_STRONG).color(ink.text))
-                .child(
-                    text(concat!("phux rune ", env!("CARGO_PKG_VERSION")))
-                        .font(CAPTION)
-                        .color(ink.dim),
-                ),
-        )
-        .child(el().w_full().h(1.0).fill(ink.separator))
-        .child(
-            col()
-                .w_full()
-                .max_h(560.0)
-                .min_h(0.0)
-                .scroll(rune::ScrollSpec {
-                    stick_bottom: false,
-                })
-                .child(body),
-        );
-    el().key("settings-scrim")
-        .absolute(0.0, 0.0)
+}
+
+pub fn view(desk: &Desk, ink: &Ink) -> El {
+    let body = col()
         .w_full()
-        .h_full()
+        .padding(18.0)
+        .gap(12.0)
+        .child(section("Theme", ink))
+        .child(themes(desk, ink))
+        .child(section("Text", ink))
+        .child(stepper(desk, ink))
+        .child(behaviour(desk, ink))
+        .child(updates::settings(desk, ink));
+    let version = text(concat!("Phux Rune ", env!("CARGO_PKG_VERSION")))
+        .font(CAPTION)
+        .color(ink.dim);
+    let foot = row()
+        .w_full()
+        .gap(12.0)
+        .items_center()
+        .child(key_hint("tab", "next", ink))
+        .child(key_hint("←→", "change", ink))
+        .child(key_hint("space", "toggle", ink))
+        .child(key_hint("esc", "close", ink));
+    Sheet {
+        key: "settings",
+        title: "Settings",
+        width: WIDTH,
+        top: 72.0,
         // Light enough to judge a theme against the terminals behind it.
-        .fill(Color::BLACK.alpha(0.12))
-        .transition(Transition::opacity())
-        .modal(true, |d: &mut Desk| d.close_settings())
-        .child(col().w_full().pt(72.0).items_center().child(panel))
+        scrim: 0.12,
+        close: Desk::close_settings,
+    }
+    .build(Some(version), body, foot, ink)
 }

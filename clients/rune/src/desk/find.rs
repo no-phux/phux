@@ -9,6 +9,7 @@ use phux_protocol::ids::ResourceId;
 use rune::{Key, KeyEvent, TextEdit, Tx};
 
 use super::Desk;
+use super::input::selection::Selected;
 
 pub struct Find {
     pub terminal: ResourceId,
@@ -64,14 +65,10 @@ impl Desk {
 
     /// Search for the selected text, as macOS's ⌘E does.
     pub fn find_selection(&mut self) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
-            return;
+        let selected = match self.selected() {
+            Selected::Text(text) => text,
+            Selected::Nothing | Selected::TooLarge => String::new(),
         };
-        let selected = client
-            .engine()
-            .and_then(|e| e.view_selection_text(shown.view).ok())
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_default();
         let Some(line) = selected.lines().find(|l| !l.trim().is_empty()) else {
             return self.open_find();
         };
@@ -162,6 +159,10 @@ impl Desk {
 
     /// Keys inside the find field.
     pub fn find_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
+        // This field holds the keyboard, so the confirm bar answers here.
+        if self.pending.is_some() {
+            return self.confirm_key(event);
+        }
         match event.key {
             Key::Enter if event.mods.shift => self.step_find(1),
             Key::Enter => self.step_find(-1),
@@ -188,5 +189,29 @@ impl Desk {
         if !alive {
             self.close_find();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_confirm_bars_keys_win_over_the_find_field() {
+        use crate::desk::Pending;
+        use crate::desk::input::Modal;
+        use rune::Mods;
+        let mut desk = Desk::new(&crate::launch::Resolved::offline("not launched"));
+        desk.find_query.focused = true;
+        assert_eq!(desk.modal(), Some(Modal::FindField));
+        desk.pending = Some(Pending::Close(phux_protocol::ids::ResourceId::local(1)));
+        assert_eq!(desk.modal(), Some(Modal::Confirm));
+        let key = |key| KeyEvent {
+            key,
+            mods: Mods::default(),
+        };
+        assert!(!desk.confirm_key(&key(Key::Text("x".into()))));
+        assert!(desk.confirm_key(&key(Key::Escape)));
+        assert_eq!(desk.pending, None);
     }
 }

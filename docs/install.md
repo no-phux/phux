@@ -164,6 +164,7 @@ curl -fsSL https://phux.sh/install | sh -s -- --dry-run
 | `--version <X.Y.Z>`             | install a specific release instead of the latest             |
 | `--channel <stable\|next>`      | follow tagged releases (the default), or every `main` build that passes CI |
 | `--desktop`                     | also install the desktop app                                  |
+| `--rune`                        | install [Phux Rune](./clients.md#phux-rune) instead of the CLI, adding the CLI if missing |
 | `--dry-run`                     | print what would be downloaded and where, and install nothing |
 
 **Signature checks need `minisign`.** With `minisign` on your `PATH`, the script also verifies the release signature. Set `PHUX_REQUIRE_SIGNATURE=1` to refuse to install without that check.
