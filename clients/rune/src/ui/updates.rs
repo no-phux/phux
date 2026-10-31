@@ -56,6 +56,8 @@ fn headline(updater: &Updater) -> String {
         (Work::Server, ..) => "Updating phux and handing the server off…".to_owned(),
         (Work::Checking, ..) => "Checking…".to_owned(),
         (_, Some(Action::UpdateServer { .. }), _) => "A phux update is ready".to_owned(),
+        // Never "up to date" over an error: the lines below say what failed.
+        (_, None, _) if updater.message.is_some() => "Couldn't check for updates".to_owned(),
         (_, _, Some(version)) if updater.staged.is_some() => {
             format!("Phux Rune {version} installs on restart")
         }
