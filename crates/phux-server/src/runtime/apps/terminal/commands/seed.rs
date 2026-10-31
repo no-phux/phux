@@ -8,7 +8,7 @@ use super::*;
 
 /// Seed a session named `name` with one pane in the same commit; the pane
 /// runs `cmd` in a PTY, or is a no-PTY actor when `cmd` is `None`.
-pub(super) fn seed_session(
+pub(in crate::runtime) fn seed_session(
     state: &SharedState,
     name: &str,
     mut cmd: Option<phux_terminal::pty::CommandBuilder>,
@@ -222,7 +222,9 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
 
 /// The directory a PTY child spawned from `cmd` starts in: the builder's cwd,
 /// else the server's own (which the child inherits).
-pub(super) fn spawn_cwd_of(cmd: &phux_terminal::pty::CommandBuilder) -> Option<std::path::PathBuf> {
+pub(in crate::runtime) fn spawn_cwd_of(
+    cmd: &phux_terminal::pty::CommandBuilder,
+) -> Option<std::path::PathBuf> {
     cmd.get_cwd()
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -230,7 +232,7 @@ pub(super) fn spawn_cwd_of(cmd: &phux_terminal::pty::CommandBuilder) -> Option<s
 
 /// Stamp a new pane's spawn cwd onto its registry descriptor; without it the
 /// ATTACHED snapshot reports no cwd until attach refreshes it from the child.
-pub(super) fn stamp_spawn_cwd(
+pub(in crate::runtime) fn stamp_spawn_cwd(
     s: &mut crate::state::ServerState,
     terminal: phux_core::ids::ResourceId,
     cwd: Option<std::path::PathBuf>,

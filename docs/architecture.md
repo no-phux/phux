@@ -218,7 +218,7 @@ ownership recommendation. No keeper bootload service exists today.
 | --- | --- |
 | server behavior | `phux-server/src/runtime/mod.rs` (accept, lifecycle), `runtime/connections/mod.rs` (`handle_client`, `dispatch`, HELLO), `state/mod.rs`, `resource/terminal/` |
 | organization | `phux-core/src/apply.rs`, `phux-server/src/state/org.rs`, `org_store.rs`; [durability and execution](./organization.md) |
-| input handling | `phux-server/src/runtime/input_lane/` |
+| input handling | `phux-server/src/runtime/apps/terminal/input_lane/` |
 | TUI rendering | `phux-tui/src/attach/render.rs`, `attach/paint.rs`, `render/chrome`, `render/overlay` |
 | the wire | `phux-protocol/src/wire/frame/mod.rs` (type bytes), `wire/frame/{tags,command_tags}.rs` (sub-tags), `wire/field/` (field ids), `caps/server_features.rs` (feature bits), `kinds.rs` (classification); then regenerate `docs/spec/wire-schema.json` and `just docs-gen` |
 | a CLI verb | `crates/phux/src/commands/cli.rs` (`enum Command`) and `commands/cli/` (each verb's `Args`), `src/dispatch.rs` (dispatch), `commands/<verb>.rs`, wire logic in `phux-client/src/<verb>.rs`; then `just docs-gen` |
@@ -226,6 +226,13 @@ ownership recommendation. No keeper bootload service exists today.
 | agent detection | `phux-agent-rules/rules/*.toml`, `phux-terminal/src/agent_detect/` |
 | authorization | `phux-server/src/policy.rs`, `workload.rs`, `phux-protocol/src/kinds.rs` |
 | remote access | `crates/phux/src/commands/enroll.rs`, `remote_target.rs`, `phux-client-runtime/src/dial.rs`, `phux-server/src/transport/` |
+
+A resource kind is an app. The host reaches one through `ResourceApp` in
+`phux-server/src/runtime/apps/`: `app_owning` routes a facet command by the
+same catalog rows authorization uses, and `app_for` answers per-kind questions
+such as how a stream bootstraps. A new kind is one `ResourceApp` and one `APPS`
+row. Only `runtime/apps/terminal` may name the Terminal engine; `seam_tests.rs`
+holds a ratchet of the host crossings that remain, and it can only shrink.
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration

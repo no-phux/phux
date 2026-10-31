@@ -132,7 +132,7 @@ pub(crate) fn handle_route_input(
 
 /// The local Terminal behind `terminal_id` as `(pane, handle)`, or the
 /// not-found / wrong-kind refusal.
-pub(super) fn terminal_handle(
+pub(in crate::runtime) fn terminal_handle(
     s: &crate::state::ServerState,
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> Result<(phux_core::ids::ResourceId, ResourceHandle), CommandResult> {
@@ -144,11 +144,11 @@ pub(super) fn terminal_handle(
 }
 
 /// A granted input lease (ADR-0033), to broadcast through the pane's actor.
-pub(super) struct LeaseGrant {
-    pub(super) handle: ResourceHandle,
+pub(in crate::runtime) struct LeaseGrant {
+    pub(in crate::runtime) handle: ResourceHandle,
     /// `Acquired` (was free / self) or `Seized` (preempted another).
-    pub(super) action: ControlAction,
-    pub(super) core: phux_core::ids::ResourceId,
+    pub(in crate::runtime) action: ControlAction,
+    pub(in crate::runtime) core: phux_core::ids::ResourceId,
     /// `(ttl_ms, expiry generation)`; `None` for no TTL.
-    pub(super) expiry: Option<(u32, u64)>,
+    pub(in crate::runtime) expiry: Option<(u32, u64)>,
 }

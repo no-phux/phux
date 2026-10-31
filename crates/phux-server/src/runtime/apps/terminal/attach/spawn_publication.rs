@@ -31,8 +31,8 @@ impl SpawnPublication<'_> {
     /// generation for it.
     fn reap(&self) {
         self.state.with_mut(|s| {
-            let _ = super::super::client::reap_pane_journaling_close(s, self.core_terminal_id);
-            super::super::idempotent_create::unbind_spawned(
+            let _ = crate::runtime::client::reap_pane_journaling_close(s, self.core_terminal_id);
+            crate::runtime::idempotent_create::unbind_spawned(
                 s,
                 self.idempotency_key,
                 &self.wire_terminal_id,

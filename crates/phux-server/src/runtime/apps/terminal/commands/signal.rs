@@ -15,14 +15,14 @@ pub(crate) async fn handle_signal_terminal(
     terminal_id: &phux_protocol::ids::ResourceId,
     signal: TerminalSignal,
     operation_id: Option<phux_protocol::ids::IdempotencyKey>,
-    commit: Option<&super::super::operation_dedupe::OperationClaim>,
+    commit: Option<&crate::runtime::operation_dedupe::OperationClaim>,
 ) -> CommandResult {
     let resolved = state.with(|s| {
         let resolved = s.resolve_resource(terminal_id).into_owned();
         let holder = match &resolved {
             ResolvedOwned::Local(local) => s
                 .input_lease_holder(local.id)
-                .map(super::super::wire_client),
+                .map(crate::runtime::wire_client),
             ResolvedOwned::Remote(_) | ResolvedOwned::Unknown => None,
         };
         (resolved, holder)
@@ -46,7 +46,7 @@ pub(crate) async fn handle_signal_terminal(
     let request = ControlRequest::Signal {
         signal,
         input_holder,
-        by: super::super::wire_client(client_id),
+        by: crate::runtime::wire_client(client_id),
         operation_id,
         reply: reply_tx,
     };
@@ -63,7 +63,7 @@ pub(crate) async fn handle_signal_terminal(
 
 /// A command's local Terminal target as `(pane, handle)`, or the refusal for
 /// a satellite route, an unknown id, or another resource kind (L1 §1.1).
-pub(super) fn local_terminal(
+pub(in crate::runtime) fn local_terminal(
     resolved: ResolvedOwned,
     terminal_id: &phux_protocol::ids::ResourceId,
     verb: &str,
@@ -83,7 +83,7 @@ pub(super) fn local_terminal(
 
 /// The command result of a pane actor's `Result<(), String>` reply; a
 /// refusal carries `refusal_code`.
-pub(super) fn actor_reply(
+pub(in crate::runtime) fn actor_reply(
     reply: Result<Result<(), String>, oneshot::error::RecvError>,
     refusal_code: ErrorCode,
     verb: &str,
@@ -103,12 +103,12 @@ pub(super) fn actor_reply(
 
 /// A queued signal that failed replaces the success its key was committed
 /// with, so a retry answers the failure (L1 §5.1.1).
-pub(super) fn record_signal_failure(
-    commit: Option<&super::super::operation_dedupe::OperationClaim>,
+pub(in crate::runtime) fn record_signal_failure(
+    commit: Option<&crate::runtime::operation_dedupe::OperationClaim>,
     result: &CommandResult,
 ) {
     if let (Some(claim), CommandResult::Error { .. }) = (commit, result) {
-        claim.bind(&super::super::operation_dedupe::CachedOutcome::Signal(
+        claim.bind(&crate::runtime::operation_dedupe::CachedOutcome::Signal(
             result.clone(),
         ));
     }
@@ -117,16 +117,16 @@ pub(super) fn record_signal_failure(
 /// Queue a signal and commit its key at once (L1 §5.1.1): the actor delivers
 /// it even if this handler is cancelled before the reply. `false` when the
 /// actor is gone.
-pub(super) async fn commit_signal(
+pub(in crate::runtime) async fn commit_signal(
     control: &tokio::sync::mpsc::Sender<ControlRequest>,
     request: ControlRequest,
-    commit: Option<&super::super::operation_dedupe::OperationClaim>,
+    commit: Option<&crate::runtime::operation_dedupe::OperationClaim>,
 ) -> bool {
     if control.send(request).await.is_err() {
         return false;
     }
     if let Some(claim) = commit {
-        claim.bind(&super::super::operation_dedupe::CachedOutcome::Signal(
+        claim.bind(&crate::runtime::operation_dedupe::CachedOutcome::Signal(
             CommandResult::Ok,
         ));
     }

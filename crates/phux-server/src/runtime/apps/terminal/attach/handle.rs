@@ -100,7 +100,7 @@ pub(crate) async fn handle_attach(
     else {
         return;
     };
-    let wire_client_id = super::super::wire_client(client_id);
+    let wire_client_id = crate::runtime::wire_client(client_id);
     // For publication only: routing already followed the id.
     let session_name = state
         .with(|s| {
@@ -204,7 +204,7 @@ pub(crate) async fn handle_attach(
 
     // Only now, with every bootstrap staged, retire the prior generation.
     if same_session_reattach {
-        super::super::client::abort_output_pumps(output_pumps, client_id, "replacement ATTACH")
+        crate::runtime::client::abort_output_pumps(output_pumps, client_id, "replacement ATTACH")
             .await;
     }
     let mut committed_output_pumps = staging.pumps;
