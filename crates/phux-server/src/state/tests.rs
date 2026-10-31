@@ -35,19 +35,12 @@ pub(super) fn mk_handle() -> ResourceHandle {
         8,
     );
     drop(core);
-    ResourceHandle {
-        kind: crate::resource::ResourceKind::Terminal,
-        parent: None,
-        output: channels.output,
-        consumer_attach: mpsc::channel(8).0,
-        consumer_detach: mpsc::channel(8).0,
-        consumer_ack: mpsc::channel(8).0,
-        upgrade: mpsc::channel(8).0,
-        control: channels.control,
-        facet: crate::resource::ResourceFacetHandle::Terminal(TerminalHandle::detached_for_test(
-            80, 24,
-        )),
-    }
+    ResourceHandle::new(
+        None,
+        channels.output,
+        channels.control,
+        TerminalHandle::detached_for_test(80, 24),
+    )
 }
 
 #[test]

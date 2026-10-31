@@ -10,17 +10,12 @@ use super::*;
 fn detached_handle(
     facet: crate::terminal_actor::TerminalHandle,
 ) -> crate::resource::ResourceHandle {
-    crate::resource::ResourceHandle {
-        kind: crate::resource::ResourceKind::Terminal,
-        parent: None,
-        output: tokio::sync::broadcast::channel(8).0,
-        consumer_attach: tokio::sync::mpsc::channel(1).0,
-        consumer_detach: tokio::sync::mpsc::channel(1).0,
-        consumer_ack: tokio::sync::mpsc::channel(1).0,
-        upgrade: tokio::sync::mpsc::channel(1).0,
-        control: tokio::sync::mpsc::channel(1).0,
-        facet: crate::resource::ResourceFacetHandle::Terminal(facet),
-    }
+    crate::resource::ResourceHandle::new(
+        None,
+        tokio::sync::broadcast::channel(8).0,
+        tokio::sync::mpsc::channel(1).0,
+        facet,
+    )
 }
 
 /// Drive `handle_attach` for session `name` with fixed defaults.
@@ -71,14 +66,12 @@ pub(super) fn native_attach_handle() -> (
     let (consumer_attach, consumer_attach_rx) = tokio::sync::mpsc::channel(8);
     let (native_bootstrap, native_bootstrap_rx) = tokio::sync::mpsc::channel(8);
     let (native_publication, native_publication_rx) = tokio::sync::mpsc::channel(8);
-    let handle = ResourceHandle {
+    let handle = detached_handle(crate::terminal_actor::TerminalHandle {
         consumer_attach,
-        ..detached_handle(crate::terminal_actor::TerminalHandle {
-            native_bootstrap,
-            native_publication,
-            ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
-        })
-    };
+        native_bootstrap,
+        native_publication,
+        ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
+    });
     (
         handle,
         consumer_attach_rx,

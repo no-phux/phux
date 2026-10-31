@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// Handle `DETACH_RESOURCE` (SPEC §5.1): drop every output task and the
 /// event subscription the caller holds on the terminal. Idempotent, so a
@@ -30,10 +31,10 @@ pub(crate) async fn handle_detach_terminal(
     };
     pump::stop_output(state, client_id, core).await;
     state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
-    if let Some(handle) = handle {
+    if let Some(Ok(terminal)) = handle.as_ref().map(|handle| handle.terminal()) {
         // Fence actor-emitted StateSync output before COMMAND_RESULT is queued.
         let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = handle
+        let _ = terminal
             .consumer_detach
             .send(ConsumerDetachRequest {
                 client_id: super::super::wire_client(client_id),
@@ -146,9 +147,11 @@ pub(crate) fn handle_detach_clients(state: &SharedState, session: Option<&str>) 
 }
 
 /// A PTY command from a non-empty request argv.
-pub(crate) fn argv_command(argv: Option<Vec<String>>) -> Option<portable_pty::CommandBuilder> {
+pub(crate) fn argv_command(
+    argv: Option<Vec<String>>,
+) -> Option<phux_terminal::pty::CommandBuilder> {
     let mut argv = argv?.into_iter();
-    let mut builder = portable_pty::CommandBuilder::new(argv.next()?);
+    let mut builder = phux_terminal::pty::CommandBuilder::new(argv.next()?);
     for arg in argv {
         builder.arg(arg);
     }

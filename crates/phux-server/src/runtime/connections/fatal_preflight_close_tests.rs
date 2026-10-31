@@ -60,22 +60,19 @@ fn native_failure_handle() -> (
     let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
     let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
     (
-        crate::resource::ResourceHandle {
-            kind: crate::resource::ResourceKind::Terminal,
-            parent: None,
+        crate::resource::ResourceHandle::new(
+            None,
             output,
-            consumer_attach,
-            consumer_detach: mpsc::channel(8).0,
-            consumer_ack: mpsc::channel(8).0,
-            upgrade: mpsc::channel(8).0,
-            control: mpsc::channel(8).0,
-            facet: crate::resource::ResourceFacetHandle::Terminal(
-                crate::terminal_actor::TerminalHandle {
-                    native_bootstrap,
-                    ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
-                },
-            ),
-        },
+            mpsc::channel(8).0,
+            crate::terminal_actor::TerminalHandle {
+                consumer_attach,
+                consumer_detach: mpsc::channel(8).0,
+                consumer_ack: mpsc::channel(8).0,
+                upgrade: mpsc::channel(8).0,
+                native_bootstrap,
+                ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
+            },
+        ),
         consumer_attach_rx,
         native_bootstrap_rx,
     )

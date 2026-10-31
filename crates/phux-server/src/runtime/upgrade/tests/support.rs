@@ -1,6 +1,7 @@
 //! Shared test helpers for the upgrade-orchestration test suite.
 #![allow(clippy::unwrap_used, reason = "tests")]
 
+use phux_resource::agent_session::AgentSessionResource as _;
 use std::os::fd::AsRawFd;
 
 use super::super::handoff::*;

@@ -2943,6 +2943,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-resource"
+version = "0.115.0"
+dependencies = [
+ "bytes",
+ "libc",
+ "nix 0.31.3",
+ "phux-agent-rules",
+ "phux-core",
+ "phux-perf",
+ "phux-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "phux-server"
 version = "0.115.0"
 dependencies = [
@@ -2965,7 +2986,6 @@ dependencies = [
  "libghostty-vt",
  "memchr",
  "nix 0.31.3",
- "phux-agent-rules",
  "phux-client-core",
  "phux-client-ffi",
  "phux-config",
@@ -2976,10 +2996,11 @@ dependencies = [
  "phux-plugin",
  "phux-protocol",
  "phux-relay",
+ "phux-resource",
  "phux-server-testkit",
+ "phux-terminal",
  "phux-work",
  "portable-pty",
- "portable-pty-adopt",
  "quinn",
  "rcgen",
  "rusqlite",
@@ -3020,6 +3041,39 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "phux-terminal"
+version = "0.115.0"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "futures-util",
+ "hex",
+ "libc",
+ "libghostty-vt",
+ "memchr",
+ "nix 0.31.3",
+ "phux-agent-rules",
+ "phux-client-core",
+ "phux-config",
+ "phux-core",
+ "phux-perf",
+ "phux-protocol",
+ "phux-resource",
+ "portable-pty",
+ "portable-pty-adopt",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// The decoded `SPAWN_RESOURCE` payload, minus `request_id`.
 #[derive(Debug)]

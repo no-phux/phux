@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// The stream every pump in the two-pump tests publishes on.
 pub(super) fn two_pump_stream() -> StreamId {

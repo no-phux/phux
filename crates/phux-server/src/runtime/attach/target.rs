@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// What `handle_attach` needs after leaving the state lock: the snapshot, the
 /// initial client id, the panes to bootstrap, and snapshot participants with

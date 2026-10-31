@@ -21,7 +21,7 @@ pub struct ServerConfig {
     pub seed_with_pty: bool,
     /// Program for the pre-seeded PTY pane instead of [`Self::shell`].
     /// Ignored unless [`Self::seed_with_pty`].
-    pub seed_command: Option<portable_pty::CommandBuilder>,
+    pub seed_command: Option<phux_terminal::pty::CommandBuilder>,
     /// Per-pane scrollback bounds (`defaults.history-limit` /
     /// `defaults.history-bytes`, ADR-0094).
     pub scrollback: phux_config::ScrollbackLimits,

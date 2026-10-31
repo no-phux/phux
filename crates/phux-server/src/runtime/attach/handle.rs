@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use phux_terminal::actor::TerminalResource as _;
 
 /// Handle `ATTACH`: resolve the target, prepare the snapshot, capture every
 /// pane's bounded bootstrap, and publish `ATTACHED`, the bootstraps, and

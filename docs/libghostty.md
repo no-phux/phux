@@ -11,9 +11,9 @@ client, which isn't shipped yet, is described in the
 
 ## What it does
 
-The [pane actor](../crates/phux-server/src/resource/terminal/mod.rs)
+The [pane actor](../crates/phux-terminal/src/actor/mod.rs)
 owns a `libghostty_vt::Terminal`, the pane's pseudo-terminal, and the
-input encoders. [Building the actor](../crates/phux-server/src/resource/terminal/construct.rs)
+input encoders. [Building the actor](../crates/phux-terminal/src/actor/construct.rs)
 creates that terminal at the pane's size. `Terminal` is `!Send`, so the
 actor runs on the server's current-thread `LocalSet`.
 
@@ -21,7 +21,7 @@ That terminal is the canonical screen. It parses the PTY byte stream.
 OSC 7501 arrives through libghostty's `on_program_status` callback, and
 phux stores the records
 ([program protocol](./program-protocol.md),
-[effects](../crates/phux-server/src/resource/terminal/effects.rs)).
+[effects](../crates/phux-terminal/src/actor/effects.rs)).
 
 A rendering client feeds those VT bytes to its own libghostty terminal.
 The [phux-protocol README](../crates/phux-protocol/README.md) says a

@@ -9,6 +9,7 @@
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::ids::ResourceKind;
 use phux_protocol::wire::frame::{AgentEvent, FrameKind, SpawnError, SpawnResource};
+use phux_resource::agent_session::AgentSessionResource as _;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 

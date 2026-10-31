@@ -27,7 +27,7 @@ pub(crate) async fn handle_report_agent_state(
     let (resolved, live_session) = state.with(|server| {
         let resolved = server.resolve_resource(terminal_id).into_owned();
         let live_session = matches!(resolved, ResolvedOwned::Local(_))
-            && crate::agent_detect::live_session::server_has_live_session(server, terminal_id);
+            && server.resource_has_live_session(terminal_id);
         (resolved, live_session)
     });
     // The report addresses the instrumented Terminal, never the child stream.

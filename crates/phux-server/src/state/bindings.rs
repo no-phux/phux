@@ -16,6 +16,7 @@ use phux_core::ids::ResourceId;
 use phux_core::resource::ResourceKind;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::CloseReason;
+use phux_resource::agent_session::AgentSessionResource as _;
 
 use super::ServerState;
 
@@ -72,6 +73,14 @@ impl ServerState {
             .registry
             .resource(child)
             .and_then(|resource| resource.parent)
+    }
+
+    /// Whether the resource `wire` names has a live `AgentSession` child;
+    /// `false` for unknown or satellite ids.
+    #[must_use]
+    pub(crate) fn resource_has_live_session(&self, wire: &phux_protocol::ids::ResourceId) -> bool {
+        self.terminal_from_wire(wire)
+            .is_some_and(|core| self.has_live_agent_session_child(core))
     }
 
     /// Whether `parent` has a live `AgentSession` child (the detector's
