@@ -31,7 +31,8 @@ chmod 755 "$TMP/bin/curl"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 installer() {
-  PATH="$TMP/bin:/usr/bin:/bin" "$SH" "$ROOT/scripts/install.sh" --os linux --arch x86_64 --rune "$@"
+  PATH="${TEST_PATH:-$TMP/bin:/usr/bin:/bin}" "$SH" "${TEST_SCRIPT:-$ROOT/scripts/install.sh}" \
+    --os linux --arch x86_64 --rune "$@"
 }
 refused() {
   local message="$1"
@@ -100,6 +101,7 @@ grep -q first "$bundle/phux-rune" || fail "binary not installed"
 for file in phux-rune.release LICENSE NOTICE; do
   [[ -f "$bundle/$file" ]] || fail "$file not installed"
 done
+grep -Fq 'without its release signature' "$TMP/err" || fail "an unsigned install must say so"
 [[ -L "$HOME/.local/bin/phux-rune" ]] || fail "no launcher"
 [[ "$("$HOME/.local/bin/phux-rune")" == "phux-rune $VERSION" ]] || fail "launcher does not run"
 entry="$XDG_DATA_HOME/applications/sh.phux.rune.desktop"
@@ -133,7 +135,62 @@ refused 'not links'
 pack third
 serve 0.1.0-beta.1
 refused 'invalid Phux Rune version'
+
+# --- signatures ---------------------------------------------------------------
+
+# With minisign on PATH the signed sidecar outranks the unsigned feed. A fake
+# drives the installer's side; the real one proves the invocation below.
+pack signed
+serve
+digest="$(sha "$SERVED/$ARCHIVE")"
+printf '%s  %s\n' "$digest" "$ARCHIVE" > "$SERVED/$ARCHIVE.sha256"
+printf 'signature\n' > "$SERVED/$ARCHIVE.sha256.minisig"
+mkdir -p "$TMP/sig-bin"
+export CALLS="$TMP/minisign-calls"
+cat > "$TMP/sig-bin/minisign" <<'EOF'
+#!/bin/sh
+printf 'minisign %s\n' "$*" >> "$CALLS"
+exit "${MINISIGN_STATUS:-0}"
+EOF
+chmod 755 "$TMP/sig-bin/minisign"
+SIG_PATH="$TMP/bin:$TMP/sig-bin:/usr/bin:/bin"
+MINISIGN_STATUS=1 TEST_PATH="$SIG_PATH" refused 'is not signed by a phux release key'
+feed "$(printf 'c%.0s' {1..64})" "$VERSION"
+TEST_PATH="$SIG_PATH" refused "the signed checksum for $ARCHIVE is $digest"
+feed "$digest" "$VERSION"
+rm "$SERVED/$ARCHIVE.sha256.minisig"
+TEST_PATH="$SIG_PATH" refused 'an unsigned release is never installed'
+PHUX_REQUIRE_SIGNATURE=1 refused 'PHUX_REQUIRE_SIGNATURE=1 but minisign is not on PATH'
 grep -q second "$bundle/phux-rune" || fail "a refused update changed the install"
+
+printf 'signature\n' > "$SERVED/$ARCHIVE.sha256.minisig"
+TEST_PATH="$SIG_PATH" installer >/dev/null 2>"$TMP/err" || fail "signed install: $(cat "$TMP/err")"
+grep -q signed "$bundle/phux-rune" || fail "not installed from the signed release"
+grep -Fq 'minisign -V -H -q -P RWTJVmT0UFkQn2Zw' "$CALLS" || fail "the signature must be checked, prehashed, against the release key"
+
+# CI sets PHUX_TEST_REAL_MINISIGN=1 and provides minisign, so this never
+# silently skips there.
+real="$(command -v minisign || true)"
+if [[ -z $real && ${PHUX_TEST_REAL_MINISIGN:-0} == 1 ]]; then
+  fail "PHUX_TEST_REAL_MINISIGN=1 but minisign is not on PATH"
+fi
+if [[ -n $real ]]; then
+  mkdir -p "$TMP/real-sig-bin" "$TMP/keys"
+  ln -s "$real" "$TMP/real-sig-bin/minisign"
+  REAL_PATH="$TMP/bin:$TMP/real-sig-bin:/usr/bin:/bin"
+  minisign -G -W -p "$TMP/keys/test.pub" -s "$TMP/keys/test.key" >/dev/null
+  minisign -S -s "$TMP/keys/test.key" -m "$SERVED/$ARCHIVE.sha256" \
+    -x "$SERVED/$ARCHIVE.sha256.minisig" </dev/null >/dev/null
+  # A host that rewrites the assets can sign, but not with a release key.
+  TEST_PATH="$REAL_PATH" refused 'is not signed by a phux release key'
+  # The same installer trusting that key accepts it, and refuses a tampered sidecar.
+  key="$(sed -n 2p "$TMP/keys/test.pub")"
+  sed "s|^RELEASE_KEYS=.*|RELEASE_KEYS='$key'|" "$ROOT/scripts/install.sh" > "$TMP/install-testkey.sh"
+  TEST_SCRIPT="$TMP/install-testkey.sh" TEST_PATH="$REAL_PATH" installer >/dev/null 2>"$TMP/err" \
+    || fail "a real signature: $(cat "$TMP/err")"
+  printf '%s  %s\n' "$(printf 'd%.0s' {1..64})" "$ARCHIVE" > "$SERVED/$ARCHIVE.sha256"
+  TEST_SCRIPT="$TMP/install-testkey.sh" TEST_PATH="$REAL_PATH" refused 'is not signed by a phux release key'
+fi
 
 mkdir -p "$TMP/other/phux-rune"
 pack third
