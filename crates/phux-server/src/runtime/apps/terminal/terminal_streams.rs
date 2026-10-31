@@ -1,24 +1,25 @@
-use super::dispatch::{ConnectionEnding, FrameFlow};
-use super::hello::NegotiatedConnection;
-use super::plumbing::{ClientPlumbing, ConnectionClose};
+use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow};
+use crate::runtime::connections::hello::NegotiatedConnection;
+use crate::runtime::connections::plumbing::{ClientPlumbing, ConnectionClose};
 use crate::runtime::input_lane::{InputLaneHandle, RoutedInput};
 use crate::runtime::{
     bootstrap_attach_terminal, handle_detach_terminal, handle_terminal_input,
     subscribe_attach_terminal,
 };
-use crate::state::{ClientId, SharedState, TerminalInput};
+use crate::state::{ClientId, SharedState};
 use crate::transport::quic::{
     QuicStreamEvent, QuicStreamFailure, QuicWriter, pump_terminal_stream, refuse_terminal_stream,
 };
 use phux_dial::window::SendWindow;
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
 use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind};
+use phux_terminal::TerminalInput;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 /// A frame kind a client may not send in the negotiated phase: close.
-pub(super) fn direction_invalid(client_id: ClientId, other: &FrameKind) -> FrameFlow {
+pub(in crate::runtime) fn direction_invalid(client_id: ClientId, other: &FrameKind) -> FrameFlow {
     warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
     FrameFlow::Break(ConnectionEnding::Violation(ConnectionClose {
         attached_reason: Some("direction-invalid frame"),
@@ -29,17 +30,17 @@ pub(super) fn direction_invalid(client_id: ClientId, other: &FrameKind) -> Frame
 }
 
 /// The fields of one `ATTACH` frame.
-pub(super) struct AttachFrame {
-    pub(super) attach_id: u32,
-    pub(super) target: phux_protocol::wire::frame::AttachTarget,
-    pub(super) viewport: phux_protocol::wire::frame::ViewportInfo,
-    pub(super) request_scrollback: bool,
-    pub(super) scrollback_limit_lines: u32,
-    pub(super) role_policy: Option<phux_protocol::wire::frame::RolePolicy>,
+pub(in crate::runtime) struct AttachFrame {
+    pub(in crate::runtime) attach_id: u32,
+    pub(in crate::runtime) target: phux_protocol::wire::frame::AttachTarget,
+    pub(in crate::runtime) viewport: phux_protocol::wire::frame::ViewportInfo,
+    pub(in crate::runtime) request_scrollback: bool,
+    pub(in crate::runtime) scrollback_limit_lines: u32,
+    pub(in crate::runtime) role_policy: Option<phux_protocol::wire::frame::RolePolicy>,
 }
 
 /// `INPUT_*` frames: routed to the Terminal's input path.
-pub(super) const fn is_input_frame(frame: &FrameKind) -> bool {
+pub(in crate::runtime) const fn is_input_frame(frame: &FrameKind) -> bool {
     matches!(
         frame,
         FrameKind::InputKey { .. }
@@ -51,7 +52,7 @@ pub(super) const fn is_input_frame(frame: &FrameKind) -> bool {
 }
 
 /// Frames about an attached Terminal's size or content stream.
-pub(super) const fn is_stream_frame(frame: &FrameKind) -> bool {
+pub(in crate::runtime) const fn is_stream_frame(frame: &FrameKind) -> bool {
     matches!(
         frame,
         FrameKind::ViewportResize { .. }
@@ -62,7 +63,7 @@ pub(super) const fn is_stream_frame(frame: &FrameKind) -> bool {
 }
 
 /// L3 metadata and event-subscription frames.
-pub(super) const fn is_metadata_frame(frame: &FrameKind) -> bool {
+pub(in crate::runtime) const fn is_metadata_frame(frame: &FrameKind) -> bool {
     matches!(
         frame,
         FrameKind::GetMetadata { .. }
@@ -77,7 +78,7 @@ pub(super) const fn is_metadata_frame(frame: &FrameKind) -> bool {
 /// Handle one QUIC Terminal-stream event (docs/protocol.md#quic-stream-routing). `Bound` binds and
 /// bootstraps the stream; `Ended` detaches as `DETACH_RESOURCE` would,
 /// ignoring a stale generation.
-pub(super) async fn handle_stream_event(
+pub(in crate::runtime) async fn handle_stream_event(
     state: &SharedState,
     client_id: ClientId,
     event: QuicStreamEvent,
@@ -225,7 +226,7 @@ async fn bind_terminal_stream(
                 return false;
             }
         };
-        s.subscribers_for_terminal(local.id).contains(&client_id)
+        s.subscribers_for_resource(local.id).contains(&client_id)
     });
     if !subscribed {
         refuse_terminal_stream(send, recv);
@@ -331,7 +332,7 @@ fn try_inline_key(
         "INPUT_KEY",
         |destination| {
             let options = destination.handle.input_snapshot.borrow().key;
-            let text = crate::input::key::legacy_printable(event, options)?;
+            let text = phux_terminal::input::key::legacy_printable(event, options)?;
             let fast = destination.handle.fast_pty.as_ref()?.upgrade()?;
             Some((fast, text.as_bytes().to_vec()))
         },
@@ -342,10 +343,10 @@ fn try_inline_key(
         return false;
     };
     match fast.try_direct(&bytes) {
-        crate::terminal_actor::DirectWrite::Wrote | crate::terminal_actor::DirectWrite::Handled => {
+        phux_terminal::actor::DirectWrite::Wrote | phux_terminal::actor::DirectWrite::Handled => {
             true
         }
-        crate::terminal_actor::DirectWrite::Busy => false,
+        phux_terminal::actor::DirectWrite::Busy => false,
     }
 }
 
@@ -353,13 +354,13 @@ fn try_inline_key(
 /// (ADR-0044) when there is one, spending `credit` (ADR-0144); satellite ids
 /// and the no-lane path use the inline [`handle_terminal_input`] with the
 /// same gates.
-pub(super) async fn route_client_input(
+pub(in crate::runtime) async fn route_client_input(
     state: &SharedState,
     input_lane: Option<&InputLaneHandle>,
     client_id: ClientId,
     terminal_id: WireResourceId,
     input: TerminalInput,
-    credit: Option<crate::terminal_actor::InputCredit>,
+    credit: Option<phux_terminal::actor::InputCredit>,
 ) {
     phux_perf::echo_hop::record("server_recv");
     if try_inline_key(state, client_id, &terminal_id, &input) {

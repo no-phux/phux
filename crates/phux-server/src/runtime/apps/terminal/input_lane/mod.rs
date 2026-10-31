@@ -58,13 +58,14 @@ use self::process::{
 };
 pub(crate) use self::receipt::InputReceipt;
 use self::receipt::{ReceiptFailure, ready_receipt, waiting_receipt};
-#[cfg(doc)]
-use crate::input::InputEncoderSnapshot;
 use crate::runtime::{
     terminal_input_from_event, with_attached_input_destination, with_route_input_destination,
 };
-use crate::state::{ClientId, SharedState, TerminalInput};
-use crate::terminal_actor::{InputCredit, LaneAhead};
+use crate::state::{ClientId, SharedState};
+use phux_terminal::TerminalInput;
+use phux_terminal::actor::{InputCredit, LaneAhead};
+#[cfg(doc)]
+use phux_terminal::input::InputEncoderSnapshot;
 
 /// Bound on the lane's inbound queue. Attached input waits for room
 /// ([`InputLaneHandle::route`]); a command refuses with `RESOURCE_EXHAUSTED`.

@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use libghostty_vt::Terminal as GhosttyTerminal;
-use phux_server::grid::{ConsumerReference, SnapshotSynthesizer};
+use phux_terminal::grid::{ConsumerReference, SnapshotSynthesizer};
 
 struct Counting;
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);

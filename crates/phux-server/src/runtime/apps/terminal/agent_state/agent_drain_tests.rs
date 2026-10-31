@@ -2,11 +2,11 @@ use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 
 use super::{Prior, retract_hook, spawn_agent_state_drain, state_change_hook};
-use crate::agent_asked::AskedPayload;
-use crate::agent_detect::record::AgentRecordJson;
-use crate::agent_detect::{AgentDetectEvent, AgentReport, DetectedState};
 use crate::hooks::AGENT_STATE_UNKNOWN;
 use crate::state::SharedState;
+use phux_resource::agent_asked::AskedPayload;
+use phux_resource::agent_record::AgentRecordJson;
+use phux_terminal::agent_detect::{AgentDetectEvent, AgentReport, DetectedState};
 
 fn report_of(kind: &str, state: DetectedState) -> AgentDetectEvent {
     AgentDetectEvent::State(AgentReport {
@@ -333,7 +333,7 @@ async fn an_ask_sentinel_lands_in_the_ledger_the_hook_shares() {
         let state = SharedState::new();
         let (pane, terminal) = state.with_mut(|s| {
             let (_session, pane) = s.seed_session("demo");
-            (pane, s.intern_terminal_wire(pane))
+            (pane, s.intern_resource_wire(pane))
         });
         let ask = AskedPayload {
             id: "q1".to_owned(),

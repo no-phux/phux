@@ -19,7 +19,7 @@ pub(super) fn native_profile() -> BootstrapProfile {
 /// bootstrap covers nothing yet.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) fn spawn_native_pump(
-    terminal: crate::terminal_actor::TerminalHandle,
+    terminal: phux_terminal::actor::TerminalHandle,
     output: &tokio::sync::broadcast::Sender<PaneOutput>,
     resize: ResizeSender,
 ) -> TwoPumpConsumer {
@@ -41,7 +41,7 @@ pub(super) fn spawn_native_pump(
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn native_pump_context(
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
-    terminal: crate::terminal_actor::TerminalHandle,
+    terminal: phux_terminal::actor::TerminalHandle,
     resize: ResizeSender,
 ) -> OutputPumpContext {
     OutputPumpContext {
@@ -113,7 +113,7 @@ async fn invalidated_final_native_capture_is_a_failure_without_partial_publicati
     };
     request
         .reply
-        .send(Err(crate::native_state::NativeStateError::Resize))
+        .send(Err(phux_terminal::native_state::NativeStateError::Resize))
         .unwrap();
     assert!(matches!(
         final_capture.await,
@@ -153,9 +153,9 @@ async fn unanswered_final_native_capture_has_a_deadline() {
 /// The actor's reply to `capture`: an empty checkpoint at sequence 0.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) fn empty_native_checkpoint(
-    capture: &crate::terminal_actor::NativeBootstrapRequest,
-) -> crate::terminal_actor::NativeBootstrapReply {
-    crate::terminal_actor::NativeBootstrapReply {
+    capture: &phux_terminal::actor::NativeBootstrapRequest,
+) -> phux_terminal::actor::NativeBootstrapReply {
+    phux_terminal::actor::NativeBootstrapReply {
         frames: vec![
             FrameKind::BootstrapBegin {
                 terminal_id: capture.terminal_id.clone(),

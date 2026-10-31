@@ -186,9 +186,9 @@ pub(super) fn spawn_argv_builder(
     state: &SharedState,
     command: Option<Vec<String>>,
 ) -> phux_terminal::pty::CommandBuilder {
-    crate::runtime::commands::argv_command(command).unwrap_or_else(|| {
+    crate::runtime::apps::terminal::launch::argv_command(command).unwrap_or_else(|| {
         let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
-        crate::terminal_actor::default_shell_command(&shell, login_shell)
+        phux_terminal::actor::default_shell_command(&shell, login_shell)
     })
 }
 
@@ -205,9 +205,9 @@ pub(super) async fn build_spawn_command(
 ) -> phux_terminal::pty::CommandBuilder {
     let mut builder = spawn_argv_builder(state, command);
     let default_term = state.with(|s| s.term().to_owned());
-    crate::terminal_actor::apply_term(&mut builder, &default_term);
+    phux_terminal::actor::apply_term(&mut builder, &default_term);
     if let Some(t) = term {
-        crate::terminal_actor::apply_term(&mut builder, t);
+        phux_terminal::actor::apply_term(&mut builder, t);
     }
     if let Some(path) = cwd {
         builder.cwd(path);
@@ -232,7 +232,7 @@ pub(super) fn resolve_spawn_ownership(
 ) -> Result<SpawnOwnership, SpawnError> {
     if let Some(owner) = owner_terminal {
         if !matches!(owner, phux_protocol::ids::ResourceId::Local { .. })
-            || state.with(|s| s.terminal_from_wire(&owner).is_none())
+            || state.with(|s| s.resource_from_wire(&owner).is_none())
         {
             return Err(SpawnError::SpawnFailed(
                 "owner terminal was not found on this server".to_owned(),
@@ -274,7 +274,7 @@ pub(super) fn subscribe_spawning_client(
     ClientCapabilities,
 )> {
     state.with_mut(|s| {
-        let wire_terminal_id = s.intern_terminal_wire(core_terminal_id);
+        let wire_terminal_id = s.intern_resource_wire(core_terminal_id);
         // ADR-0109: provenance before any subscription.
         s.record_spawn(core_terminal_id, client_id);
         let client_caps = s
@@ -282,7 +282,7 @@ pub(super) fn subscribe_spawning_client(
             .get(&client_id)
             .map(|c| c.client_caps)
             .unwrap_or_default();
-        s.subscribe_terminal(client_id, core_terminal_id, Some(out_tx.clone()));
+        s.subscribe_resource(client_id, core_terminal_id, Some(out_tx.clone()));
         s.mark_if_viewer_session(client_id, &wire_terminal_id);
         s.resource_handle(core_terminal_id)
             .cloned()

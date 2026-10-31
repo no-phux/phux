@@ -20,7 +20,7 @@ impl OutputPumpContext {
         generation: &mut PumpGeneration,
         output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
         prior_bootstrap_id: BootstrapId,
-        reason: crate::terminal_actor::ResyncReason,
+        reason: crate::resource::ResyncReason,
     ) -> Result<bool, PumpFault> {
         if generation.is_active()
             && self
@@ -47,7 +47,7 @@ impl OutputPumpContext {
         generation: &mut PumpGeneration,
         output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
         bootstrap_id: BootstrapId,
-        reply: crate::terminal_actor::NativeBootstrapReply,
+        reply: phux_terminal::actor::NativeBootstrapReply,
     ) -> Result<bool, PumpFault> {
         let (cut, cursor) = publish_native_bootstrap(&self.out_tx, reply)
             .await
@@ -99,7 +99,7 @@ impl OutputPumpContext {
         if publishes_native_checkpoints(self.profile) {
             let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
             let capture = request_native_checkpoint(&self.terminal, |reply| {
-                crate::terminal_actor::NativeBootstrapRequest::full_budget(
+                phux_terminal::actor::NativeBootstrapRequest::full_budget(
                     self.client_id.0,
                     self.wire_terminal_id.clone(),
                     self.stream_id,
@@ -121,7 +121,7 @@ impl OutputPumpContext {
                 self.out_tx
                     .send(Outbound::Frame(self.tombstone_frame(
                         generation,
-                        crate::terminal_actor::ResyncReason::Exit,
+                        crate::resource::ResyncReason::Exit,
                     )))
                     .await
                     .map_err(|_| PumpFault::TombstoneNotQueued)?;
@@ -164,7 +164,7 @@ impl OutputPumpContext {
             rows: snapshot.rows,
             bytes: snapshot.bytes.into(),
             base_seq,
-            reason: crate::terminal_actor::ResyncReason::Exit,
+            reason: crate::resource::ResyncReason::Exit,
         };
         match self
             .republish_synthesized_generation(generation, &resync)
@@ -179,7 +179,7 @@ impl OutputPumpContext {
     fn tombstone_frame(
         &self,
         generation: &PumpGeneration,
-        reason: crate::terminal_actor::ResyncReason,
+        reason: crate::resource::ResyncReason,
     ) -> FrameKind {
         FrameKind::BootstrapTombstone {
             terminal_id: self.wire_terminal_id.clone(),
@@ -269,7 +269,7 @@ impl OutputPumpContext {
             let (reply, receive) = oneshot::channel();
             if snapshot
                 .send(SnapshotRequest {
-                    scrollback: Some(crate::resource::terminal::DEFAULT_REPLAY_SCROLLBACK_LINES),
+                    scrollback: Some(phux_terminal::actor::DEFAULT_REPLAY_SCROLLBACK_LINES),
                     image_protocols: self.client_caps.image_protocols,
                     max_bytes: bootstrap_source_ceiling(
                         MAX_STAGED_BOOTSTRAP_BYTES,

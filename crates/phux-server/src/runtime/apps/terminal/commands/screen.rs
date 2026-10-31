@@ -226,7 +226,7 @@ fn reconcile_process_exit(
         return;
     };
     let (retained, pending) = state.with(|s| {
-        let pane = s.terminal_from_wire(terminal_id);
+        let pane = s.resource_from_wire(terminal_id);
         (
             pane.and_then(|pane| s.retained_process_exit(pane)),
             pane.and_then(|pane| s.pending_close_reason(pane)),
@@ -244,12 +244,12 @@ fn reconcile_process_exit(
 /// Ask a Terminal's actor for its typed process facet; `None` when it cannot
 /// answer.
 async fn query_process_facet(
-    terminal: &crate::terminal_actor::TerminalHandle,
+    terminal: &phux_terminal::actor::TerminalHandle,
 ) -> Option<phux_core::process::TerminalProcessState> {
     let (reply, reply_rx) = oneshot::channel();
     terminal
         .process
-        .send(crate::terminal_actor::ProcessFacetRequest { reply })
+        .send(phux_terminal::actor::ProcessFacetRequest { reply })
         .await
         .ok()?;
     reply_rx.await.ok()

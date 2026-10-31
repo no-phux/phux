@@ -68,7 +68,7 @@ impl AttachResourceSession<'_> {
     pub(in crate::runtime) async fn finish_state_sync(
         &self,
         generation: &AttachResourceGeneration,
-        state_sync: crate::terminal_actor::StateSyncBootstrap,
+        state_sync: phux_terminal::actor::StateSyncBootstrap,
     ) -> Result<(), AttachResourceFailure> {
         self.publish_snapshot(generation, state_sync.snapshot, state_sync.base_seq)
             .await?;
@@ -96,10 +96,10 @@ impl AttachResourceSession<'_> {
     async fn capture_native_bootstrap(
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
-    ) -> Result<crate::terminal_actor::NativeBootstrapReply, AttachResourceFailure> {
+    ) -> Result<phux_terminal::actor::NativeBootstrapReply, AttachResourceFailure> {
         use crate::runtime::attach::NativeRequestFailure;
         crate::runtime::attach::request_native_checkpoint(&self.terminal, |reply| {
-            crate::terminal_actor::NativeBootstrapRequest::full_budget(
+            phux_terminal::actor::NativeBootstrapRequest::full_budget(
                 self.client_id.0,
                 self.terminal_id.clone(),
                 self.stream_id,
@@ -180,7 +180,7 @@ impl AttachResourceSession<'_> {
     async fn publish_snapshot(
         &self,
         generation: &AttachResourceGeneration,
-        snapshot: crate::grid::SnapshotBytes,
+        snapshot: phux_terminal::grid::SnapshotBytes,
         cut: u64,
     ) -> Result<(), AttachResourceFailure> {
         let (cols, rows) = (snapshot.cols, snapshot.rows);
@@ -216,13 +216,13 @@ impl AttachResourceSession<'_> {
         &self,
         generation: &mut AttachResourceGeneration,
     ) -> Result<(), AttachResourceFailure> {
-        use crate::terminal_actor::SnapshotRequest;
+        use phux_terminal::actor::SnapshotRequest;
 
         let (snapshot_tx, snapshot_rx) = oneshot::channel();
         self.terminal
             .snapshot
             .send(SnapshotRequest {
-                scrollback: Some(crate::resource::terminal::DEFAULT_REPLAY_SCROLLBACK_LINES),
+                scrollback: Some(phux_terminal::actor::DEFAULT_REPLAY_SCROLLBACK_LINES),
                 image_protocols: self.client_caps.image_protocols,
                 max_bytes: crate::runtime::attach::bootstrap_source_ceiling(
                     crate::runtime::attach::MAX_STAGED_BOOTSTRAP_BYTES,

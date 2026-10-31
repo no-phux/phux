@@ -1,10 +1,10 @@
 use super::{RebuildError, WireResourceId, validate_upgrade_blob};
 use crate::state::ServerState;
-use crate::terminal_actor::TerminalActor;
 use crate::upgrade::blob::{
     AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob,
     StateBlob, WindowBlob,
 };
+use phux_terminal::actor::TerminalActor;
 use std::path::PathBuf;
 
 /// One pane's tree walks into a blob with resolved links and a snapshot.
@@ -100,7 +100,14 @@ async fn rebuild_from_blob_round_trips_the_tree() {
         // phux-1x9s.6: every pane's actor passes through the runtime's
         // wiring before it runs, as a fresh spawn's does.
         let rebuilt = fresh
-            .rebuild_from_blob(&blob, |pane, actor| (pane, actor.has_pty()))
+            .rebuild_from_blob(&blob, |core, pane, scrollback| {
+                crate::runtime::apps::terminal::upgrade::rebuild_pane(
+                    core,
+                    pane,
+                    scrollback,
+                    |pane, actor| (pane, actor.has_pty()),
+                )
+            })
             .expect("rebuild");
         assert_eq!(
             rebuilt.exit_watchers.len(),
@@ -168,7 +175,7 @@ async fn the_instance_token_survives_an_upgrade_and_only_an_upgrade() {
             "a cold start mints a new token"
         );
         upgraded
-            .rebuild_from_blob(&blob, |_, _| ())
+            .rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
             .expect("rebuild");
         assert_eq!(upgraded.idspace.instance(), token, "an upgrade keeps it");
 
@@ -177,7 +184,7 @@ async fn the_instance_token_survives_an_upgrade_and_only_an_upgrade() {
         let mut from_legacy = ServerState::new();
         let fresh = from_legacy.idspace.instance();
         from_legacy
-            .rebuild_from_blob(&legacy, |_, _| ())
+            .rebuild_from_blob(&legacy, crate::runtime::apps::terminal::upgrade::unwired)
             .expect("rebuild");
         assert_eq!(
             from_legacy.idspace.instance(),
@@ -214,12 +221,12 @@ async fn upgrade_twice(user_title: Option<&str>, seed: &[u8]) -> ServerState {
 
     let blob = state.build_upgrade_blob(7).await;
     let mut once = ServerState::new();
-    once.rebuild_from_blob(&blob, |_, _| ())
+    once.rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
         .expect("first rebuild");
     let blob = once.build_upgrade_blob(7).await;
     let mut twice = ServerState::new();
     twice
-        .rebuild_from_blob(&blob, |_, _| ())
+        .rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
         .expect("second rebuild");
     twice
 }
@@ -252,7 +259,7 @@ async fn get_screen_title(state: &ServerState) -> Option<String> {
         .terminal()
         .expect("terminal handle")
         .screen
-        .send(crate::resource::terminal::ScreenRequest {
+        .send(phux_terminal::actor::ScreenRequest {
             pane: 1,
             scrollback: None,
             cells: false,
@@ -262,8 +269,8 @@ async fn get_screen_title(state: &ServerState) -> Option<String> {
         .await
         .expect("send screen request");
     match rx.await.expect("screen reply") {
-        crate::resource::terminal::ScreenReply::Projection(screen) => screen.title,
-        other @ crate::resource::terminal::ScreenReply::TooLarge { .. } => {
+        phux_terminal::actor::ScreenReply::Projection(screen) => screen.title,
+        other @ phux_terminal::actor::ScreenReply::TooLarge { .. } => {
             panic!("unexpected screen reply: {other:?}")
         }
     }

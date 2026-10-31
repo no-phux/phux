@@ -13,14 +13,14 @@ use crate::resource::ResourceHandle;
 impl ServerState {
     /// Current subscribers of `pane`.
     #[must_use]
-    pub fn subscribers_for_terminal(&self, terminal: ResourceId) -> &[ClientId] {
+    pub fn subscribers_for_resource(&self, terminal: ResourceId) -> &[ClientId] {
         self.resources.subscribers_for(terminal)
     }
 
     /// Subscribe `client` to `terminal` (deduplicated). Pass `mailbox` for
     /// clients with no session `ATTACH` behind them (`ATTACH_RESOURCE`) so
     /// terminal-scoped fanout reaches them; `None` only for attached ones.
-    pub fn subscribe_terminal(
+    pub fn subscribe_resource(
         &mut self,
         client: ClientId,
         terminal: ResourceId,
@@ -44,7 +44,7 @@ impl ServerState {
     /// `ATTACH_RESOURCE`-only. Closed mailboxes are skipped.
     #[must_use]
     pub fn terminal_fanout_targets(&self, terminal: ResourceId) -> Vec<mpsc::Sender<Outbound>> {
-        self.subscribers_for_terminal(terminal)
+        self.subscribers_for_resource(terminal)
             .iter()
             .filter_map(|client| self.clients.terminal_fanout_mailbox(*client).cloned())
             .collect()
@@ -66,7 +66,7 @@ impl ServerState {
         handle: ResourceHandle,
         token: CancellationToken,
     ) -> WireResourceId {
-        let wire = self.intern_terminal_wire(terminal);
+        let wire = self.intern_resource_wire(terminal);
         self.resources.register(terminal, handle, token);
         wire
     }
@@ -166,7 +166,7 @@ impl ServerState {
             .collect()
     }
 
-    pub(crate) fn draining_terminal_from_wire(
+    pub(crate) fn draining_resource_from_wire(
         &self,
         wire: &phux_protocol::ids::ResourceId,
     ) -> Option<ResourceId> {
@@ -188,7 +188,7 @@ impl ServerState {
     }
 
     /// Remove `client` from `terminal`'s subscribers.
-    pub fn unsubscribe_terminal(&mut self, client: ClientId, terminal: ResourceId) {
+    pub fn unsubscribe_resource(&mut self, client: ClientId, terminal: ResourceId) {
         self.resources.unsubscribe(client, terminal);
     }
 

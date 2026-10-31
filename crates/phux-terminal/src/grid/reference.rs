@@ -8,9 +8,9 @@ use super::synthesizer::{MOUSE_MODES, SynthesisError};
 #[derive(Debug, Clone, Default)]
 pub struct ConsumerReference {
     /// Reference width. A geometry change resets the row bodies.
-    pub(crate) cols: u16,
+    pub cols: u16,
     /// Reference height.
-    pub(crate) rows: u16,
+    pub rows: u16,
     /// Last-synced rendered body per viewport row.
     pub(crate) rows_body: Vec<Vec<u8>>,
     /// Last-synced cursor placement + DEC mode bits, diffed flat.
@@ -49,7 +49,7 @@ pub(crate) struct ReferenceCursorMode {
     pub(crate) cursor_y: Option<u16>,
     pub(crate) cursor_visible: bool,
     pub(crate) cursor_blinking: bool,
-    pub(crate) bracketed_paste: bool,
+    pub bracketed_paste: bool,
     pub(crate) focus_event: bool,
     /// DEC mode 47 (`ALT_SCREEN_LEGACY`).
     pub(crate) alt_screen_legacy: bool,

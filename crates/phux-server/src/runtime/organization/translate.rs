@@ -276,7 +276,7 @@ fn terminate_op(
         return Err(Refusal::Stale { current: None });
     }
     let id = s
-        .terminal_from_wire(&target.resource)
+        .resource_from_wire(&target.resource)
         .ok_or(Refusal::NotFound)?;
     let key = s.registry().resource_key(id).ok_or(Refusal::NotFound)?;
     Ok(Op::ResourceTerminate {
@@ -443,7 +443,7 @@ fn created_target(
     }
     let activation = current.id;
     Some(LiveTarget {
-        resource: s.intern_terminal_wire(id),
+        resource: s.intern_resource_wire(id),
         instance: s.idspace.instance(),
         activation: ow::activation_id(activation),
     })

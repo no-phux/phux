@@ -25,7 +25,7 @@ async fn publication_dedupe_is_stamped_once_and_updates_lifecycle_inventory() {
                 .await,
                 CommandResult::Error { .. }
             ));
-            let core = fx.state.with(|s| s.terminal_from_wire(&fx.agent).unwrap());
+            let core = fx.state.with(|s| s.resource_from_wire(&fx.agent).unwrap());
             assert_eq!(
                 fx.state.with(|s| s
                     .registry()

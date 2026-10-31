@@ -6,8 +6,8 @@
 use phux_core::ids::ResourceId;
 use phux_protocol::ids::ResourceId as WireResourceId;
 
-use crate::agent_asked::{AskedDetector, AskedPayload, AskedSource, AskedTransition};
-use crate::agent_state::AgentRecordArbiter;
+use phux_resource::agent_asked::{AskedDetector, AskedPayload, AskedSource, AskedTransition};
+use phux_resource::agent_state::AgentRecordArbiter;
 
 /// Both per-pane agent ledgers.
 #[derive(Debug)]

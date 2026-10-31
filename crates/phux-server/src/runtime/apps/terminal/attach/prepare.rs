@@ -243,7 +243,7 @@ pub(super) struct ConsumerRegistration {
     /// The actor's tick is this consumer's sole live emitter: no pump.
     pub(super) tick_managed: bool,
     /// Atomic synthesized bootstrap captured in the same actor turn.
-    pub(super) state_sync_bootstrap: Option<crate::terminal_actor::StateSyncBootstrap>,
+    pub(super) state_sync_bootstrap: Option<phux_terminal::actor::StateSyncBootstrap>,
     /// The actor was gone: its mailbox was closed or it dropped the reply.
     pub(super) actor_gone: bool,
 }

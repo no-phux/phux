@@ -32,25 +32,10 @@ pub mod runtime;
 pub mod state;
 pub mod stream_diagnostics;
 pub mod telemetry;
-pub(crate) use phux_resource::{agent_asked, agent_state, proc_query};
-pub use phux_resource::{cwd_query, perf};
-pub use phux_terminal::actor as terminal_actor;
-pub(crate) use phux_terminal::agent_detect;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-pub use phux_terminal::native_state;
-pub use phux_terminal::{grid, input};
+pub use phux_resource::{cwd_query, mailbox, perf};
 
-/// The substrate plus the apps this host serves.
-pub mod resource {
-    pub use phux_resource::*;
-    pub use phux_terminal::actor as terminal;
-}
-
-/// Mailbox payloads toward a client and toward a pane.
-pub mod mailbox {
-    pub use phux_resource::mailbox::*;
-    pub use phux_terminal::TerminalInput;
-}
+/// The substrate every kind shares.
+pub use phux_resource as resource;
 pub mod transport;
 pub mod upgrade;
 pub mod uplink;
@@ -66,8 +51,4 @@ pub use resource::{
 pub use runtime::{ServerConfig, ServerEnv, ServerError, ServerRuntime, default_socket_path};
 pub use state::{
     AttachError, AttachedClient, ClientId, DEFAULT_GROUP_ID, Outbound, ServerState, SharedState,
-    TerminalInput,
-};
-pub use terminal_actor::{
-    SnapshotRequest, TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle,
 };

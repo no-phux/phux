@@ -26,6 +26,14 @@ impl ResourceApp for AgentSessionApp {
         true
     }
 
+    fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind> {
+        // The input lease is a Terminal-facet concept (L1 §1.1).
+        Err(crate::resource::WrongResourceKind {
+            required: ResourceKind::Terminal,
+            actual: ResourceKind::AgentSession,
+        })
+    }
+
     fn command<'a>(
         &'a self,
         ctx: &'a CommandContext,

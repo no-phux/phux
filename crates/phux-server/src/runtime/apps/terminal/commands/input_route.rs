@@ -137,7 +137,7 @@ pub(in crate::runtime) fn terminal_handle(
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> Result<(phux_core::ids::ResourceId, ResourceHandle), CommandResult> {
     let not_found = || terminal_not_found(terminal_id);
-    let core = s.terminal_from_wire(terminal_id).ok_or_else(not_found)?;
+    let core = s.resource_from_wire(terminal_id).ok_or_else(not_found)?;
     let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
     handle.terminal().map_err(wrong_resource_kind)?;
     Ok((core, handle))

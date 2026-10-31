@@ -8,11 +8,11 @@ use super::*;
 
 /// The atomic ATTACH publication, in the one order the handshake permits.
 pub(super) struct AttachPublication<'a> {
-    pub(super) state: &'a SharedState,
-    pub(super) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
+    pub(in crate::runtime) state: &'a SharedState,
+    pub(in crate::runtime) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
     /// Cancelled when a published generation cannot be activated.
     pub(super) connection_token: &'a CancellationToken,
-    pub(super) client_id: ClientId,
+    pub(in crate::runtime) client_id: ClientId,
     pub(super) attach_id: u32,
     pub(super) stream_id: StreamId,
     pub(super) bootstrap_id: BootstrapId,

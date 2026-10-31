@@ -65,6 +65,42 @@ pub(crate) trait ResourceApp: Sync {
     /// Whether `ATTACH_RESOURCE` may carry a replay cursor for this kind.
     fn resumes_from_cursor(&self) -> bool;
 
+    /// May a client take over this kind's input? `Err` names why not.
+    fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind>;
+
+    /// Drop `client`'s engine-side consumer state now, best effort. Safe under
+    /// the state lock.
+    fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {}
+
+    /// Drop `client`'s consumer state and wait until the engine has stopped
+    /// emitting to it.
+    fn fence_consumer<'a>(
+        &'a self,
+        _handle: &'a ResourceHandle,
+        _client: ClientId,
+    ) -> LocalBoxFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
+    /// Ask this resource to adopt `cols` by `rows`; whether it took the
+    /// request. A kind without geometry never does.
+    fn resize(
+        &self,
+        _handle: &ResourceHandle,
+        _size: (u16, u16),
+        _cell_px: Option<(u16, u16)>,
+    ) -> bool {
+        false
+    }
+
+    /// Where this resource answers a graceful-upgrade handoff request.
+    fn upgrade_sender(
+        &self,
+        _handle: &ResourceHandle,
+    ) -> Option<tokio::sync::mpsc::Sender<crate::resource::handoff::UpgradeHandleRequest>> {
+        None
+    }
+
     /// Serve a facet command this kind owns in the catalog.
     fn command<'a>(
         &'a self,
@@ -86,6 +122,11 @@ static APPS: [&dyn ResourceApp; 2] = [&terminal::TerminalApp, &agent_session::Ag
 /// The app serving `kind`, or `None` for a kind this build does not serve.
 pub(crate) fn app_for(kind: ResourceKind) -> Option<&'static dyn ResourceApp> {
     APPS.iter().copied().find(|app| app.kind() == kind)
+}
+
+/// The native bootstrap profiles this server can offer at HELLO.
+pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabilities {
+    terminal::bootstrap_capabilities()
 }
 
 /// The app that owns `command` in the catalog; `None` for a host command.

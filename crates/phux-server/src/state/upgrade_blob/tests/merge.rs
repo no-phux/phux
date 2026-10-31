@@ -52,7 +52,9 @@ async fn pane_actor_failure_does_not_install_a_partial_tree() {
                 vec![no_pty_pane(3, 2), bad],
             );
             validate_upgrade_blob(&handoff).expect("topology is complete");
-            match state.rebuild_from_blob(&handoff, |_, _| ()) {
+            match state
+                .rebuild_from_blob(&handoff, crate::runtime::apps::terminal::upgrade::unwired)
+            {
                 Err(RebuildError::Actor(_)) => {}
                 other => panic!("expected actor rebuild failure, got {other:?}"),
             }
@@ -94,7 +96,9 @@ async fn upgrade_carries_group_and_global_metadata() {
         let bytes = blob.to_bytes().expect("serialize");
         let blob = StateBlob::from_bytes(&bytes).expect("deserialize");
         let mut fresh = ServerState::new();
-        fresh.rebuild_from_blob(&blob, |_, _| ()).expect("rebuild");
+        fresh
+            .rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
+            .expect("rebuild");
 
         assert_eq!(fresh.metadata.get(&group, &layout), Some(b"tree".to_vec()));
         assert_eq!(
@@ -129,7 +133,7 @@ async fn a_pre_record_import_is_written_to_sqlite_with_the_migration_receipt() {
                 vec![no_pty_pane(3, 2)],
             );
             state
-                .rebuild_from_blob(&handoff, |_, _| ())
+                .rebuild_from_blob(&handoff, crate::runtime::apps::terminal::upgrade::unwired)
                 .expect("import");
             assert_eq!(
                 session_names(&state),
@@ -259,7 +263,9 @@ async fn a_populated_sqlite_store_wins_a_hot_upgrade_merge() {
             let (blob, kept_key, kept_revision) = blob_that_disagrees_with_the_store(&path).await;
             let mut resumed = ServerState::new();
             install_loaded_sqlite(&mut resumed, &path);
-            resumed.rebuild_from_blob(&blob, |_, _| ()).expect("merge");
+            resumed
+                .rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
+                .expect("merge");
             let kept = resumed.session_by_name("kept").expect("store name");
             assert_eq!(kept.key, kept_key);
             assert_eq!(kept.revision, kept_revision);

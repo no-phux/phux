@@ -189,7 +189,7 @@ pub(crate) fn with_attached_input_destination<R>(
             );
             return None;
         }
-        if !s.subscribers_for_terminal(pane).contains(&client_id) {
+        if !s.subscribers_for_resource(pane).contains(&client_id) {
             warn!(
                 ?client_id,
                 ?wire_terminal_id,
@@ -401,7 +401,7 @@ fn frame_ack_subscribed(
     pane: phux_core::ids::ResourceId,
     seq: u64,
 ) -> bool {
-    if s.subscribers_for_terminal(pane).contains(&client_id) {
+    if s.subscribers_for_resource(pane).contains(&client_id) {
         return true;
     }
     warn!(

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::state::{ClientId, SharedState};
-use crate::terminal_actor::{InputCredit, LaneAhead};
+use phux_terminal::actor::{InputCredit, LaneAhead};
 
 use super::{
     AcknowledgedAdmission, AcknowledgedReservation, CacheClaim, InputReceipt, ReceiptFailure,

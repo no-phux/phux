@@ -30,7 +30,7 @@ pub struct RttEstimator {
 impl RttEstimator {
     /// Fold one sample in: the first seeds `srtt`, later ones blend by
     /// [`RTT_EMA_ALPHA`].
-    pub fn observe(&mut self, sample: std::time::Duration) {
+    pub(crate) fn observe(&mut self, sample: std::time::Duration) {
         let sample_s = sample.as_secs_f64();
         let next = self.srtt.map_or(sample_s, |prev| {
             let prev_s = prev.as_secs_f64();
@@ -57,7 +57,7 @@ impl RttEstimator {
 
 /// `RTT/2` clamped to [`MIN_TICK_INTERVAL`]..=[`MAX_TICK_INTERVAL`].
 #[must_use]
-pub fn adaptive_tick_interval(srtt: std::time::Duration) -> std::time::Duration {
+pub(crate) fn adaptive_tick_interval(srtt: std::time::Duration) -> std::time::Duration {
     (srtt / 2).clamp(MIN_TICK_INTERVAL, MAX_TICK_INTERVAL)
 }
 
@@ -80,7 +80,4 @@ pub fn retransmit_timeout(srtt: Option<std::time::Duration>) -> std::time::Durat
     })
 }
 
-/// Debounce for the post-resize resync: a window drag fires many resizes,
-/// and one snapshot at the settled size replaces per-step snapshots that
-/// would land on mismatched mirrors.
-pub const RESIZE_RESYNC_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(50);
+pub use phux_resource::RESIZE_RESYNC_DEBOUNCE;

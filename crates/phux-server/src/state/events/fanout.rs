@@ -173,7 +173,7 @@ impl ServerState {
         let SatelliteScopeChange { terminal, prior } = change;
         let Some(prior) = prior else {
             self.clients
-                .unsubscribe_terminal_events(client_id, &terminal);
+                .unsubscribe_resource_events(client_id, &terminal);
             return;
         };
         if let Some(sub) = self.clients.event_subscriptions.get_mut(&client_id) {
@@ -232,8 +232,8 @@ impl ServerState {
     }
 
     /// Drop `client`'s event scope for terminal `wire` (`DETACH_RESOURCE`).
-    pub fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireResourceId) {
-        self.clients.unsubscribe_terminal_events(client, wire);
+    pub fn unsubscribe_resource_events(&mut self, client: ClientId, wire: &WireResourceId) {
+        self.clients.unsubscribe_resource_events(client, wire);
     }
 
     /// Remember `client_id`'s `HELLO.client_name` for its `ActorRef`.

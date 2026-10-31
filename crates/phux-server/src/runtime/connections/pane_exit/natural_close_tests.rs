@@ -3,13 +3,13 @@
 use super::*;
 use crate::runtime::attach::{OutputPumpContext, OutputPumpStart, run_started_output_pump};
 use crate::runtime::handle_detach_terminal;
-use crate::terminal_actor::{PaneOutput, ResyncAudience, ResyncReason};
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::caps::{BootstrapLimits, ClientCapabilities};
 use phux_protocol::ids::BootstrapId;
 use phux_protocol::ids::StreamId;
 use phux_protocol::wire::frame::CommandResult;
 use phux_terminal::actor::TerminalResource as _;
+use phux_terminal::actor::{PaneOutput, ResyncAudience, ResyncReason};
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::Poll;
@@ -33,7 +33,7 @@ struct Fixture {
     state: SharedState,
     pane: phux_core::ResourceId,
     wire: WireResourceId,
-    terminal: crate::terminal_actor::TerminalHandle,
+    terminal: phux_terminal::actor::TerminalHandle,
     output: tokio::sync::broadcast::Sender<PaneOutput>,
 }
 
@@ -44,7 +44,7 @@ impl Fixture {
 
     fn with_seed(seed: &[u8]) -> Self {
         let state = SharedState::new();
-        let actor = crate::terminal_actor::TerminalActor::new_with_seed(80, 24, seed).unwrap();
+        let actor = phux_terminal::actor::TerminalActor::new_with_seed(80, 24, seed).unwrap();
         let output = actor.handle.output.clone();
         let terminal = actor.handle.terminal().unwrap().clone();
         let (pane, wire) = state.with_mut(|s| {
@@ -73,7 +73,7 @@ impl Fixture {
                 .unwrap();
         }
         self.state
-            .with_mut(|s| s.subscribe_terminal(client, self.pane, Some(tx.clone())));
+            .with_mut(|s| s.subscribe_resource(client, self.pane, Some(tx.clone())));
         let ctx = OutputPumpContext {
             out_tx: tx,
             resize: self.terminal.resize.clone(),
@@ -353,7 +353,7 @@ async fn detaching_a_reaped_wire_aborts_final_publication_before_ack() {
             request
                 .reply
                 .send(Ok((
-                    crate::grid::SnapshotBytes {
+                    phux_terminal::grid::SnapshotBytes {
                         cols: 80,
                         rows: 24,
                         bytes: FINAL_SCREEN.to_vec(),
@@ -372,7 +372,7 @@ async fn detaching_a_reaped_wire_aborts_final_publication_before_ack() {
             assert!(
                 fixture
                     .state
-                    .with(|s| s.terminal_from_wire(&fixture.wire).is_none())
+                    .with(|s| s.resource_from_wire(&fixture.wire).is_none())
             );
             let close = announce_close(&fixture.state, reap, false);
             tokio::pin!(close);

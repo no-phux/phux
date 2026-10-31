@@ -8,18 +8,18 @@ use super::*;
 
 /// The freshly spawned pane and everything its publication needs.
 pub(super) struct SpawnPublication<'a> {
-    pub(super) state: &'a SharedState,
-    pub(super) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
+    pub(in crate::runtime) state: &'a SharedState,
+    pub(in crate::runtime) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
     pub(super) request_id: u32,
-    pub(super) client_id: ClientId,
+    pub(in crate::runtime) client_id: ClientId,
     pub(super) core_terminal_id: ResourceId,
     pub(super) wire_terminal_id: phux_protocol::ids::ResourceId,
     pub(super) handle: ResourceHandle,
-    pub(super) terminal: crate::terminal_actor::TerminalHandle,
-    pub(super) client_caps: ClientCapabilities,
+    pub(super) terminal: phux_terminal::actor::TerminalHandle,
+    pub(in crate::runtime) client_caps: ClientCapabilities,
     pub(super) stream_id: StreamId,
-    pub(super) profile: BootstrapStreamProfile,
-    pub(super) limits: BootstrapLimits,
+    pub(in crate::runtime) profile: BootstrapStreamProfile,
+    pub(in crate::runtime) limits: BootstrapLimits,
     /// Answer with the instance token (ADR-0109).
     pub(super) bind_instance: bool,
     /// Unbound again if the pane is reaped (ADR-0126).
@@ -60,9 +60,9 @@ impl SpawnPublication<'_> {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) async fn capture_native_checkpoint(
         &self,
-    ) -> Option<crate::terminal_actor::NativeBootstrapReply> {
+    ) -> Option<phux_terminal::actor::NativeBootstrapReply> {
         let captured = request_native_checkpoint(&self.terminal, |reply| {
-            crate::terminal_actor::NativeBootstrapRequest::full_budget(
+            phux_terminal::actor::NativeBootstrapRequest::full_budget(
                 self.client_id.0,
                 self.wire_terminal_id.clone(),
                 self.stream_id,
@@ -127,7 +127,7 @@ impl SpawnPublication<'_> {
 
     /// Capture the pane's first synthesized snapshot and the actor cut it was
     /// taken at. `None` once the actor is gone or refuses.
-    async fn capture_snapshot(&self) -> Option<(crate::grid::SnapshotBytes, u64)> {
+    async fn capture_snapshot(&self) -> Option<(phux_terminal::grid::SnapshotBytes, u64)> {
         let (snapshot_tx, snapshot_rx) = oneshot::channel();
         self.terminal
             .snapshot
@@ -246,5 +246,5 @@ struct FirstGeneration {
     pub(super) cut: u64,
     /// The native publication to activate once the frames are queued.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    pub(super) cursor: Option<crate::native_state::OpaqueHistoryCursor>,
+    pub(super) cursor: Option<phux_terminal::native_state::OpaqueHistoryCursor>,
 }

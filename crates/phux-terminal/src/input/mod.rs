@@ -70,7 +70,10 @@ impl Default for InputEncoderSnapshot {
 impl InputEncoderSnapshot {
     /// Capture every terminal mode and dimension read by key, mouse, focus,
     /// and paste encoding.
-    pub fn capture(terminal: &GhosttyTerminal<'_, '_>, cell_px: (u16, u16)) -> Result<Self, Error> {
+    pub(crate) fn capture(
+        terminal: &GhosttyTerminal<'_, '_>,
+        cell_px: (u16, u16),
+    ) -> Result<Self, Error> {
         Ok(Self {
             key: libghostty_vt::key::EncoderOptions::from_terminal(terminal)?,
             mouse: libghostty_vt::mouse::EncoderOptions::from_terminal(terminal)?,

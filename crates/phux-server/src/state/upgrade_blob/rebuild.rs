@@ -58,7 +58,11 @@ impl ServerState {
     pub(crate) fn rebuild_from_blob<W>(
         &mut self,
         blob: &StateBlob,
-        wire_pane: impl FnMut(ResourceId, &mut TerminalActor) -> W,
+        build_pane: impl FnMut(
+            ResourceId,
+            &PaneBlob,
+            phux_config::ScrollbackLimits,
+        ) -> Result<RebuiltPane<W>, RebuildError>,
     ) -> Result<RebuiltTree<W>, RebuildError> {
         validate_upgrade_blob(blob)?;
         let mut fresh = Self::new();
@@ -83,7 +87,7 @@ impl ServerState {
         }
         fresh.sessions.registry = phux_core::Registry::new(org);
         fresh.bind_session_wires(blob, &keyed)?;
-        let mut panes = fresh.rebuild_panes(blob, &keyed, wire_pane)?;
+        let mut panes = fresh.rebuild_panes(blob, &keyed, build_pane)?;
         fresh.rebuild_agent_sessions(blob, &keyed, &mut panes);
         if imported {
             self.org.store.import(
@@ -155,7 +159,11 @@ impl ServerState {
         &mut self,
         blob: &StateBlob,
         keyed: &Keyed,
-        mut wire_pane: impl FnMut(ResourceId, &mut TerminalActor) -> W,
+        mut build_pane: impl FnMut(
+            ResourceId,
+            &PaneBlob,
+            phux_config::ScrollbackLimits,
+        ) -> Result<RebuiltPane<W>, RebuildError>,
     ) -> Result<RebuiltPanes<W>, RebuildError> {
         let scrollback = self.config.scrollback;
         let mut panes = RebuiltPanes {
@@ -178,19 +186,18 @@ impl ServerState {
                 desc.title.clone_from(&p.title);
             }
 
-            let bundle = pane_actor_bundle(p, scrollback)?;
-            // Pre-bind so the spawn's intern returns the blob's id.
-            self.idspace
-                .bind_terminal(core, WireResourceId::local(p.wire_id));
-            let crate::terminal_actor::TerminalActorBundle {
-                mut actor,
+            let RebuiltPane {
                 handle,
                 token,
+                engine,
                 exit_notify,
-                ..
-            } = bundle;
-            panes.wired.push((core, wire_pane(core, &mut actor)));
-            self.spawn_resource_actor(core, handle, token, actor.run());
+                wired,
+            } = build_pane(core, p, scrollback)?;
+            // Pre-bind so the spawn's intern returns the blob's id.
+            self.idspace
+                .bind_resource(core, WireResourceId::local(p.wire_id));
+            panes.wired.push((core, wired));
+            self.spawn_resource_actor(core, handle, token, engine);
             // ADR-0124: what the old image knew about this pane's retention.
             if let Some(secs) = p.retain_secs {
                 self.note_retain_request(core, secs);
@@ -268,7 +275,7 @@ impl ServerState {
             }
             // Pre-bind so the registration's intern returns the blob's id.
             self.idspace
-                .bind_terminal(core, WireResourceId::local(carried.wire_id));
+                .bind_resource(core, WireResourceId::local(carried.wire_id));
             self.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
             panes.exit_watchers.push((core, bundle.exit_notify));
         }
@@ -304,7 +311,7 @@ impl ServerState {
             .panes
             .iter()
             .filter(|pane| pane.retained_exit.is_some())
-            .filter_map(|pane| self.terminal_from_wire(&WireResourceId::local(pane.wire_id)))
+            .filter_map(|pane| self.resource_from_wire(&WireResourceId::local(pane.wire_id)))
             .collect();
         self.close_resources(
             &retained,

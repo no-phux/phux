@@ -60,7 +60,7 @@ impl EvidenceSource {
     /// Rank within the ladder: higher wins. Separate from the ask ladder
     /// ([`crate::agent_asked::AskedSource::priority`]).
     #[must_use]
-    pub const fn priority(self) -> u8 {
+    pub(crate) const fn priority(self) -> u8 {
         match self {
             Self::Screen => 0,
             Self::Process => 1,
@@ -108,7 +108,7 @@ pub struct IdentityOwnership {
 impl IdentityOwnership {
     /// Nothing owned: every field is the detector's.
     #[cfg(test)]
-    pub const DETECTOR: Self = Self {
+    pub(crate) const DETECTOR: Self = Self {
         name: false,
         kind: false,
     };

@@ -16,7 +16,7 @@
 //! event explicitly, and until it drains again refuses at once, so one wedged
 //! pane cannot freeze the rest of the connection.
 //!
-//! [`INPUT_CREDITS`]: crate::terminal_actor::INPUT_CREDITS
+//! [`INPUT_CREDITS`]: phux_terminal::actor::INPUT_CREDITS
 #![allow(
     clippy::redundant_pub_crate,
     reason = "the connection read loop and command handlers use these through the lane's re-export"
@@ -30,7 +30,7 @@ use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 
 use crate::state::SharedState;
-use crate::terminal_actor::{InputCredit, InputCreditPool, TerminalHandle};
+use phux_terminal::actor::{InputCredit, InputCreditPool, TerminalHandle};
 
 /// How long an event waits for its pane to drain before it is refused.
 pub(super) const INPUT_STALL_LIMIT: Duration = Duration::from_secs(5);
@@ -125,7 +125,7 @@ pub(crate) async fn acquire_credit(
 /// The credit pool of the local Terminal `terminal_id` names, if any.
 fn credit_pool(state: &SharedState, terminal_id: &WireResourceId) -> Option<InputCreditPool> {
     state.with(|s| {
-        let core = s.terminal_from_wire(terminal_id)?;
+        let core = s.resource_from_wire(terminal_id)?;
         let terminal = s.resource_handle(core)?.terminal().ok()?;
         Some(terminal.input_credits.clone())
     })
@@ -146,7 +146,7 @@ pub(super) fn credit_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal_actor::{INPUT_CREDITS, TerminalActor};
+    use phux_terminal::actor::{INPUT_CREDITS, TerminalActor};
 
     /// A registered (not running) Terminal and its credit pool.
     fn terminal(state: &SharedState) -> (WireResourceId, InputCreditPool) {

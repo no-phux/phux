@@ -2,7 +2,7 @@
 //! [`crate::runtime::ServerConfig`]: written by the defaults and once by a
 //! `set_*` call before the accept loops start, then never changed.
 
-use phux_terminal::pty::CommandBuilder;
+use crate::runtime::apps::terminal::launch::LaunchCommand;
 
 /// Write-once boot configuration owned by [`super::ServerState`]
 /// (`pub(super)`, so no second public `ServerConfig` is exported).
@@ -45,7 +45,7 @@ pub(super) struct ServerConfig {
     /// (tests default to the cheaper PTY-less actor).
     pub(super) attach_create_seeds_pty: bool,
     /// Override command for that seed pane; `None` uses the default shell.
-    pub(super) attach_create_seed_command: Option<CommandBuilder>,
+    pub(super) attach_create_seed_command: Option<LaunchCommand>,
     /// The pre-seeded session's name: the `AttachTarget::Last` fallback
     /// before any session is touched, while it is live. Never authorizes
     /// creation.
@@ -66,7 +66,7 @@ impl Default for ServerConfig {
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
-            shell: crate::terminal_actor::resolve_shell(None),
+            shell: crate::runtime::apps::terminal::launch::default_shell(),
             login_shell: false,
             server_socket_path: None,
             native_host_executable: None,

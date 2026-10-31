@@ -37,10 +37,10 @@ fn whole(upload_id: FileUploadId, data: &[u8]) -> PutFileChunk {
     chunk(upload_id, 0, data, true, Some(Sha256::digest(data).into()))
 }
 
-fn env_for(root: &Path) -> super::super::ServerEnv {
-    super::super::ServerEnv {
+fn env_for(root: &Path) -> crate::runtime::ServerEnv {
+    crate::runtime::ServerEnv {
         upload_dir: Some(root.to_owned()),
-        ..super::super::ServerEnv::default()
+        ..crate::runtime::ServerEnv::default()
     }
 }
 

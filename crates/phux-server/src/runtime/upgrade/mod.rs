@@ -8,7 +8,6 @@
 //! image keeps serving and no child is stranded) and [`UpgradePlan::exec`]
 //! (the irreversible re-exec). The caller acks the client between the two.
 
-use phux_terminal::actor::TerminalResource as _;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{Seek, SeekFrom, Write};
@@ -22,8 +21,8 @@ use tokio::sync::mpsc;
 
 use super::RuntimeFlags;
 use crate::resource::agent_session::BootstrapRequest;
+use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
 use crate::state::{SharedState, UpgradeHandoffs};
-use crate::terminal_actor::{PaneUpgradeHandle, UpgradeHandleRequest};
 use crate::upgrade::blob::StateBlob;
 
 mod handoff;
@@ -247,7 +246,7 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
                 .values()
                 .filter(|binding| !binding.closed)
                 .find(|binding| {
-                    s.terminal_from_wire(&binding.agent)
+                    s.resource_from_wire(&binding.agent)
                         .is_none_or(|id| !handoffs.agent_sessions.contains_key(&id))
                 })
                 .map(|binding| binding.agent.clone())
@@ -320,7 +319,11 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                         .upgrade_handles()
                         .into_iter()
                         .filter_map(|(pane, handle)| {
-                            Some((pane, handle.terminal().ok()?.upgrade.clone()))
+                            Some((
+                                pane,
+                                crate::runtime::apps::app_for(handle.kind)?
+                                    .upgrade_sender(&handle)?,
+                            ))
                         })
                         .collect(),
                     agent_session_senders: s.upgrade_agent_sessions(),

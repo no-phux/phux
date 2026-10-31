@@ -35,7 +35,7 @@ fn register_seeded_pane(
 ) {
     let pane = state.add_pane_to_session(session).expect("pane");
     let bundle =
-        crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"seeded").expect("actor");
+        phux_terminal::actor::TerminalActor::new_with_seed(20, 5, b"seeded").expect("actor");
     let token = bundle.token;
     tokio::task::spawn_local(bundle.actor.run());
     let wire = state.register_resource_handle(pane, bundle.handle, token.clone());
@@ -143,16 +143,15 @@ const MAILBOX_DEADLINE: Duration = Duration::from_secs(30);
 /// Receivers for a [`stub_terminal`] handle; every channel stays open so
 /// sends succeed, and tests read the ones they observe.
 struct StubRx {
-    snapshot: tokio::sync::mpsc::Receiver<crate::terminal_actor::SnapshotRequest>,
-    resize: crate::terminal_actor::ResizeReceiver,
-    encoded_input: tokio::sync::mpsc::Receiver<crate::terminal_actor::EncodedInputRequest>,
-    consumer_attach: tokio::sync::mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
-    consumer_detach: tokio::sync::mpsc::Receiver<crate::terminal_actor::ConsumerDetachRequest>,
+    snapshot: tokio::sync::mpsc::Receiver<phux_terminal::actor::SnapshotRequest>,
+    resize: phux_terminal::actor::ResizeReceiver,
+    encoded_input: tokio::sync::mpsc::Receiver<phux_terminal::actor::EncodedInputRequest>,
+    consumer_attach: tokio::sync::mpsc::Receiver<phux_terminal::actor::ConsumerAttachRequest>,
+    consumer_detach: tokio::sync::mpsc::Receiver<phux_terminal::actor::ConsumerDetachRequest>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_bootstrap: tokio::sync::mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
+    native_bootstrap: tokio::sync::mpsc::Receiver<phux_terminal::actor::NativeBootstrapRequest>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_publication:
-        tokio::sync::mpsc::Receiver<crate::terminal_actor::NativePublicationRequest>,
+    native_publication: tokio::sync::mpsc::Receiver<phux_terminal::actor::NativePublicationRequest>,
     _keep: Vec<Box<dyn std::any::Any>>,
 }
 
@@ -171,7 +170,7 @@ fn stub_terminal() -> (crate::resource::ResourceHandle, StubRx) {
     let (consumer_ack, rx) = channel(8);
     keep.push(Box::new(rx));
     let (snapshot, snapshot_rx) = channel(8);
-    let (resize, resize_rx) = crate::terminal_actor::ResizeSender::channel(8);
+    let (resize, resize_rx) = phux_terminal::actor::ResizeSender::channel(8);
     let (encoded_input, encoded_rx) = channel(8);
     let (consumer_attach, attach_rx) = channel(8);
     let (consumer_detach, detach_rx) = channel(8);
@@ -179,7 +178,7 @@ fn stub_terminal() -> (crate::resource::ResourceHandle, StubRx) {
     let (native_bootstrap, native_bootstrap_rx) = channel(8);
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let (native_publication, native_publication_rx) = channel(8);
-    let facet = crate::terminal_actor::TerminalHandle {
+    let facet = phux_terminal::actor::TerminalHandle {
         consumer_attach,
         consumer_detach,
         consumer_ack,
@@ -195,7 +194,7 @@ fn stub_terminal() -> (crate::resource::ResourceHandle, StubRx) {
         pwd,
         process,
         resize,
-        ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
+        ..phux_terminal::actor::TerminalHandle::detached_for_test(80, 24)
     };
     let handle = crate::resource::ResourceHandle::new(
         None,
@@ -323,11 +322,11 @@ fn spawn_attach(
     })
 }
 
-fn state_sync_outcome(bytes: &[u8]) -> crate::terminal_actor::ConsumerAttachOutcome {
-    crate::terminal_actor::ConsumerAttachOutcome {
+fn state_sync_outcome(bytes: &[u8]) -> phux_terminal::actor::ConsumerAttachOutcome {
+    phux_terminal::actor::ConsumerAttachOutcome {
         tick_managed: true,
-        state_sync_bootstrap: Some(crate::terminal_actor::StateSyncBootstrap {
-            snapshot: crate::grid::SnapshotBytes {
+        state_sync_bootstrap: Some(phux_terminal::actor::StateSyncBootstrap {
+            snapshot: phux_terminal::grid::SnapshotBytes {
                 cols: 80,
                 rows: 24,
                 bytes: bytes.to_vec(),

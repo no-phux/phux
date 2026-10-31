@@ -211,7 +211,7 @@ fn a_deferred_create_stays_dormant_until_relaunched_with_its_provenance() {
                 s.registry().record(id).unwrap().activation.is_some(),
                 "the relaunch started an activation"
             );
-            s.intern_terminal_wire(id)
+            s.intern_resource_wire(id)
         });
         assert_eq!(
             state.with(|s| s
@@ -278,7 +278,7 @@ fn a_resource_key_grant_reaches_the_activation_a_relaunch_starts() {
             let key = phux_core::ResourceKey::from_bytes(*resource.as_bytes());
             let id = s.registry().resource_id(&key).unwrap();
             let (_, sibling) = s.seed_session("elsewhere");
-            (s.intern_terminal_wire(id), s.intern_terminal_wire(sibling))
+            (s.intern_resource_wire(id), s.intern_resource_wire(sibling))
         });
         let screen = |terminal_id| Command::GetScreen {
             terminal_id,

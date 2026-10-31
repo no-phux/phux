@@ -11,7 +11,7 @@ use super::*;
 fn live_session_probe(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
-) -> crate::agent_detect::live_session::LiveSessionProbe {
+) -> phux_terminal::agent_detect::live_session::LiveSessionProbe {
     let state = state.clone();
     std::rc::Rc::new(move || state.with(|s| s.has_live_agent_session_child(terminal)))
 }
@@ -110,9 +110,9 @@ pub(in crate::runtime) fn register_pty_command(
     cmd: &mut phux_terminal::pty::CommandBuilder,
 ) -> phux_protocol::ids::ResourceId {
     stamp_spawn_cwd(s, terminal, spawn_cwd_of(cmd));
-    let wire = s.intern_terminal_wire(terminal);
-    crate::terminal_actor::apply_terminal_id(cmd, &wire);
-    crate::terminal_actor::apply_server_socket(cmd, s.server_socket_path());
+    let wire = s.intern_resource_wire(terminal);
+    phux_terminal::actor::apply_terminal_id(cmd, &wire);
+    phux_terminal::actor::apply_server_socket(cmd, s.server_socket_path());
     wire
 }
 
@@ -132,7 +132,7 @@ pub(in crate::runtime) fn launch_pane_actor(
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     attribution: SpawnAttribution,
-) -> Result<phux_protocol::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_protocol::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
     launch_pane_actor_with_failure_policy(
         state,
         terminal,
@@ -160,7 +160,7 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     attribution: SpawnAttribution,
     honor_exit_policy_on_failure: bool,
-) -> Result<phux_protocol::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+) -> Result<phux_protocol::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
     let has_pty = cmd.is_some();
     let terminal_token = root_token.child_token();
     let bundle = match TerminalActor::build_with_token_and_colors(
@@ -177,13 +177,13 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
                 if honor_exit_policy_on_failure {
                     s.activation_ended(terminal, phux_core::ExitOutcome::UNKNOWN, true);
                 } else {
-                    s.reap_terminal(terminal);
+                    s.reap_resource(terminal);
                 }
             });
             return Err(err);
         }
     };
-    let crate::terminal_actor::TerminalActorBundle {
+    let phux_terminal::actor::TerminalActorBundle {
         mut actor,
         handle,
         exit_notify,
@@ -205,12 +205,12 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
                 s.note_retain_request(terminal, secs);
             }
         }
-        let wire = s.intern_terminal_wire(terminal);
+        let wire = s.intern_resource_wire(terminal);
         journal_pane_spawned(s, &wire, attribution);
         wire
     });
     let events = wiring.start(state, &wire_terminal_id);
-    spawn_terminal_exit_watcher(
+    spawn_resource_exit_watcher(
         state.clone(),
         terminal,
         exit_notify,
@@ -227,10 +227,9 @@ pub(crate) struct PaneWiring {
     events: crate::resource::event_sink::EventSource,
     /// The runtime end of the detector's sink (ADR-0046); `None` for a
     /// no-PTY pane, which never gets a detector.
-    agent_state: Option<tokio::sync::mpsc::Receiver<crate::agent_detect::AgentDetectEvent>>,
+    agent_state: Option<tokio::sync::mpsc::Receiver<phux_terminal::agent_detect::AgentDetectEvent>>,
     /// Reliable OSC 7501 snapshots, shared by fresh and resumed panes.
-    program_status:
-        tokio::sync::watch::Receiver<Vec<crate::resource::terminal::program_status::Record>>,
+    program_status: tokio::sync::watch::Receiver<Vec<phux_terminal::actor::program_status::Record>>,
 }
 
 /// Install every runtime sink and probe a pane's actor needs: its event sink

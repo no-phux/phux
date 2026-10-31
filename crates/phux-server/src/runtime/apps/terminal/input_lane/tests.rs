@@ -15,9 +15,10 @@ use phux_protocol::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::state::{ClientId, SharedState, TerminalInput};
-use crate::terminal_actor::EncodedInputRequest;
-use crate::terminal_actor::{
+use crate::state::{ClientId, SharedState};
+use phux_terminal::TerminalInput;
+use phux_terminal::actor::EncodedInputRequest;
+use phux_terminal::actor::{
     DEFAULT_INPUT_MAILBOX, INPUT_CREDITS, InputCreditPool, TerminalActor, WriteCompletion,
 };
 

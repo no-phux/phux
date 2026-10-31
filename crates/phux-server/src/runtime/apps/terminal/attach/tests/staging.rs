@@ -75,7 +75,7 @@ fn bootstrap_adaptation_peak_includes_sources_scratch_and_outputs() {
     assert!(!crate::downsample::caps_pass_through(caps));
 
     let adapted = adapt_bootstrap_snapshot(
-        crate::grid::SnapshotBytes {
+        phux_terminal::grid::SnapshotBytes {
             cols: 80,
             rows: 24,
             bytes,
@@ -111,7 +111,7 @@ fn bootstrap_adaptation_restores_images_only_for_kitty_consumers() {
             phux_protocol::caps::ImageProtocol::KittyGraphics,
         ]),
     ] {
-        let snapshot = crate::grid::synthesize(&source).unwrap();
+        let snapshot = phux_terminal::grid::synthesize(&source).unwrap();
         let adapted = adapt_bootstrap_snapshot(
             snapshot,
             ClientCapabilities::default().with_image_protocols(image_protocols),
@@ -167,13 +167,13 @@ fn native_live_bytes_ignore_restrictive_presentation_caps() {
 
 #[test]
 fn aggregate_staging_charges_tiny_rewrites_by_retained_capacity() {
-    fn kitty_snapshot() -> crate::grid::SnapshotBytes {
+    fn kitty_snapshot() -> phux_terminal::grid::SnapshotBytes {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(64 * 1024).expect("kitty reserve");
         bytes.extend_from_slice(b"\x1b_Gf=100,a=T;");
         bytes.resize((64 * 1024) - 2, b'A');
         bytes.extend_from_slice(b"\x1b\\");
-        crate::grid::SnapshotBytes {
+        phux_terminal::grid::SnapshotBytes {
             cols: 80,
             rows: 24,
             bytes,

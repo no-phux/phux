@@ -1,7 +1,7 @@
 //! The pane exit lifecycle: the exit watcher, retention and reaping, cascading
 //! closes to children, and the `RESOURCE_CLOSED` broadcast.
 
-use super::agent_state::drain_retract;
+use crate::runtime::apps::terminal::agent_state::drain_retract;
 
 use super::detach_clients_of_killed_session;
 use crate::hooks::HookEvent;
@@ -28,7 +28,7 @@ use super::pane_events::{
 /// the consumer's decision (ADR-0015). A dropped `exit_notify` sender is
 /// treated as an exit with unknown status. The watcher is also the pane's
 /// event drain (ADR-0123), so every event is journaled before `pane_closed`.
-pub(crate) fn spawn_terminal_exit_watcher(
+pub(crate) fn spawn_resource_exit_watcher(
     state: SharedState,
     pane: CoreResourceId,
     exit_notify: Option<oneshot::Receiver<ExitOutcome>>,
@@ -142,7 +142,7 @@ fn retain_exited_pane(
     let retention = s.retain_exited(pane, exit, crate::state::now_unix_ms())?;
     // The record keeps its outcome (`ExitPolicy::Retain`).
     s.activation_ended(pane, exit, false);
-    let wire_terminal_id = s.intern_terminal_wire(pane);
+    let wire_terminal_id = s.intern_resource_wire(pane);
     if let Some(events) = events {
         journal_pending_events(s, events);
     }
@@ -252,13 +252,13 @@ fn reap_exited_pane(
     // ADR-0124: a retained pane's close reports the exit it was kept with.
     let exit = s.retained_outcome(pane).unwrap_or(exit);
     // Interned before the cascade and the reap, which retires the wire id.
-    let wire_terminal_id = s.intern_terminal_wire(pane);
+    let wire_terminal_id = s.intern_resource_wire(pane);
     if let Some(events) = events {
         journal_pending_events(s, events);
     }
     let parent = s
         .resource_parent(pane)
-        .map(|parent| s.intern_terminal_wire(parent));
+        .map(|parent| s.intern_resource_wire(parent));
     let cascaded = cascade_children(s, pane, &wire_terminal_id);
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets: Vec<mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
@@ -317,7 +317,7 @@ fn cascade_children(
         } else {
             recorded
         };
-        let wire_child_id = s.intern_terminal_wire(child);
+        let wire_child_id = s.intern_resource_wire(child);
         let child_targets = s.terminal_fanout_targets(child);
         let child_exit = s.retained_outcome(child).unwrap_or(ExitOutcome::UNKNOWN);
         let attribution = s.take_close_attribution(child);
@@ -329,7 +329,7 @@ fn cascade_children(
             attribution,
         );
         s.cancel_terminal_pumps(child);
-        s.reap_terminal(child);
+        s.reap_resource(child);
         cascaded.push(CascadedClose {
             wire_terminal_id: wire_child_id,
             targets: child_targets,
@@ -367,7 +367,7 @@ async fn announce_close(
 
     // Children first: the order the tree came apart in.
     for child in &cascaded {
-        broadcast_terminal_closed(
+        broadcast_resource_closed(
             &child.wire_terminal_id,
             &child.targets,
             child.exit,
@@ -443,7 +443,7 @@ struct CascadedClose {
 
 /// Send `RESOURCE_CLOSED` to every mailbox in `targets`, gathered by the
 /// caller under the reap lock. Best-effort: closed mailboxes are skipped.
-pub(crate) async fn broadcast_terminal_closed(
+pub(crate) async fn broadcast_resource_closed(
     wire_terminal_id: &WireResourceId,
     targets: &[mpsc::Sender<Outbound>],
     exit: ExitOutcome,

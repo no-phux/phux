@@ -17,9 +17,8 @@ use tracing::trace;
 #[cfg(test)]
 mod actor_conformance;
 mod api;
-mod apps;
+pub(crate) mod apps;
 pub use apps::terminal::attach;
-mod checkout;
 pub mod connections;
 /// Compatibility name for the server-side connection handlers.
 pub use connections as client;
@@ -32,6 +31,7 @@ mod download;
 mod ephemeral_listener;
 pub mod idempotent_create;
 pub use apps::terminal::input_lane;
+use apps::terminal::{checkout, program_status, upload, voice};
 pub mod keyed_ops;
 mod native_agent;
 pub mod operation_dedupe;
@@ -39,7 +39,6 @@ mod organization;
 mod path_search;
 pub mod perf_control;
 mod process_env;
-mod program_status;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
 pub mod resource_commands;
@@ -49,8 +48,6 @@ pub mod revocation;
 mod revocation_conformance;
 pub(crate) mod service_http;
 mod upgrade;
-mod upload;
-mod voice;
 mod whoami;
 
 #[cfg(test)]

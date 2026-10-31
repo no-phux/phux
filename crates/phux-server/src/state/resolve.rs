@@ -102,7 +102,7 @@ impl ServerState {
             let relay = self.hub_relay(&host);
             return Resolved::Remote(RelayRoute { host, id, relay });
         }
-        let Some(id) = self.terminal_from_wire(wire) else {
+        let Some(id) = self.resource_from_wire(wire) else {
             return Resolved::Unknown;
         };
         let Some(handle) = self.resource_handle(id) else {

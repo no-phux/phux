@@ -99,7 +99,7 @@ pub(crate) async fn spawn_agent_session(
     let Some((core_parent, wire_parent)) = state.with(|s| {
         parent
             .is_local()
-            .then(|| s.terminal_from_wire(&parent))
+            .then(|| s.resource_from_wire(&parent))
             .flatten()
             .map(|core| (core, parent.clone()))
     }) else {
@@ -131,7 +131,7 @@ pub(crate) async fn spawn_agent_session(
             .create_agent_session(core_parent, &facet, &actor)
             .map_err(|_| SpawnError::ParentNotFound)?;
         let _ = s.spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run());
-        let wire = s.intern_terminal_wire(core);
+        let wire = s.intern_resource_wire(core);
         // Journaled before the exit watcher exists (ADR-0123), and fanned out
         // to the parent's subscribers too: nobody can be subscribed to a
         // resource they are hearing about for the first time.
@@ -150,7 +150,7 @@ pub(crate) async fn spawn_agent_session(
         crate::runtime::idempotent_create::bind_spawned(s, resource.idempotency_key, &wire);
         // ADR-0109: provenance before the spawner's own subscription.
         s.record_spawn(core, client_id);
-        s.subscribe_terminal(client_id, core, Some(out_tx.clone()));
+        s.subscribe_resource(client_id, core, Some(out_tx.clone()));
         // ADR-0127: a session attached as `VIEWER` watches its spawns too.
         s.mark_if_viewer_session(client_id, &wire);
         Ok((core, wire))
@@ -163,7 +163,7 @@ pub(crate) async fn spawn_agent_session(
         }
     };
 
-    crate::runtime::client::spawn_terminal_exit_watcher(
+    crate::runtime::client::spawn_resource_exit_watcher(
         state.clone(),
         core_session,
         Some(bundle.exit_notify),

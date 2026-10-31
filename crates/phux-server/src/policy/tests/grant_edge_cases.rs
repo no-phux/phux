@@ -12,7 +12,7 @@ fn append_resource_output_is_admitted_through_the_parent_alone() {
             },
         )
         .unwrap();
-    let child_wire = world.state.intern_terminal_wire(child);
+    let child_wire = world.state.intern_resource_wire(child);
     let append = Command::AppendResourceOutput {
         terminal_id: child_wire.clone(),
         bytes: b"{}\n".to_vec(),
@@ -84,7 +84,7 @@ fn viewport_resize_checks_every_subscribed_session_pane_including_unnamed_ones()
         admits(&world, &one_pane, &resize),
         "an unsubscribed pane is not a viewport target"
     );
-    world.state.subscribe_terminal(CLIENT, pane, None);
+    world.state.subscribe_resource(CLIENT, pane, None);
     assert!(
         !admits(&world, &one_pane, &resize),
         "an unnamed pane in the session is checked, not skipped"
@@ -100,8 +100,8 @@ fn viewport_resize_does_not_require_scope_for_foreign_resource_subscriptions() {
         viewport: ViewportInfo::new(100, 30),
     };
     let home = scoped(&[&format!("bind@group:{}", world.alpha_group)]);
-    let foreign = world.state.terminal_from_wire(&world.beta).unwrap();
-    world.state.subscribe_terminal(CLIENT, foreign, None);
+    let foreign = world.state.resource_from_wire(&world.beta).unwrap();
+    world.state.subscribe_resource(CLIENT, foreign, None);
     assert!(
         admits(&world, &home, &resize),
         "a home-session vote cannot resize a foreign resource subscription"

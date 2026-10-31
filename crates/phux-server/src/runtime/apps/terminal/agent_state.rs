@@ -1,7 +1,7 @@
 //! Fold terminal detector reports into server-owned agent metadata and hooks.
 
-use super::metadata_subscriptions::broadcast_event;
 use crate::hooks::HookEvent;
+use crate::runtime::connections::metadata_subscriptions::broadcast_event;
 use crate::state::{ServerState, SharedState};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
@@ -9,20 +9,20 @@ use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 /// Whether the pane `wire_terminal_id` names is retained after its process
 /// exited (ADR-0124).
 fn pane_exited(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
-    s.terminal_from_wire(wire_terminal_id)
+    s.resource_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.retained_exit(pane).is_some())
 }
 
 /// Spawn the per-pane detector metadata drain (ADR-0046): the actor emits
-/// edge-filtered [`AgentDetectEvent`](crate::agent_detect::AgentDetectEvent)s
+/// edge-filtered [`AgentDetectEvent`](phux_terminal::agent_detect::AgentDetectEvent)s
 /// and this task, which can reach `ServerState`, performs the authority check
 /// and the metadata write.
 pub(crate) fn spawn_agent_state_drain(
     state: SharedState,
     wire_terminal_id: WireResourceId,
-    mut rx: tokio::sync::mpsc::Receiver<crate::agent_detect::AgentDetectEvent>,
+    mut rx: tokio::sync::mpsc::Receiver<phux_terminal::agent_detect::AgentDetectEvent>,
 ) {
-    use crate::agent_detect::AgentDetectEvent;
+    use phux_terminal::agent_detect::AgentDetectEvent;
 
     tokio::task::spawn_local(async move {
         while let Some(event) = rx.recv().await {
@@ -83,11 +83,11 @@ pub(crate) fn spawn_agent_state_drain(
 fn drain_ask_sentinel(
     s: &mut ServerState,
     wire_terminal_id: &WireResourceId,
-    ask: Option<crate::agent_asked::AskedPayload>,
-) -> Option<crate::agent_asked::AskedPayload> {
-    use crate::agent_asked::AskedSource;
+    ask: Option<phux_resource::agent_asked::AskedPayload>,
+) -> Option<phux_resource::agent_asked::AskedPayload> {
+    use phux_resource::agent_asked::AskedSource;
 
-    let terminal = s.terminal_from_wire(wire_terminal_id)?;
+    let terminal = s.resource_from_wire(wire_terminal_id)?;
     let emitted = if let Some(payload) = ask {
         s.report_agent_asked(terminal, AskedSource::Sentinel, payload)
             .emit_payload()
@@ -108,7 +108,7 @@ fn drain_ask_sentinel(
 /// record (L3 §3.7), or a detector record carrying a human's identity, is
 /// withdrawn to `unknown` with its other fields kept; a record the detector
 /// wrote alone is deleted; anything else is not ours.
-pub(super) fn drain_retract(
+pub(in crate::runtime) fn drain_retract(
     s: &mut ServerState,
     wire_terminal_id: &WireResourceId,
     scope: &Scope,
@@ -130,7 +130,7 @@ pub(super) fn drain_retract(
         return None;
     }
     let withdrawn = if s.agent_records().has_explicit_identity(wire_terminal_id) {
-        crate::agent_state::withdraw_state(existing.as_deref())
+        phux_resource::agent_state::withdraw_state(existing.as_deref())
     } else {
         None
     };
@@ -155,7 +155,7 @@ fn withdraw_declared(
     scope: &Scope,
     existing: Option<&[u8]>,
 ) -> Option<()> {
-    let bytes = crate::agent_state::withdraw_state(existing)?;
+    let bytes = phux_resource::agent_state::withdraw_state(existing)?;
     s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
     s.agent_records_mut()
         .note_declaration_withdrawn(wire_terminal_id);
@@ -163,7 +163,7 @@ fn withdraw_declared(
 }
 
 /// The drain's `Reidentified` arm: a different occupant now owns the pane.
-/// One write landing on `unknown` (invariant I2 in `crate::agent_state`); a
+/// One write landing on `unknown` (invariant I2 in `phux_resource::agent_state`); a
 /// declared record is withdrawn rather than corrected, and a pane with no
 /// record is left without one.
 fn drain_reidentified(
@@ -189,8 +189,13 @@ fn drain_reidentified(
         return retract_hook(wire_terminal_id, prior);
     }
     let owned = s.agent_records().identity_ownership(wire_terminal_id);
-    let bytes =
-        crate::agent_state::compose(Some(&existing), kind, name, AGENT_STATE_UNKNOWN, owned);
+    let bytes = phux_resource::agent_state::compose(
+        Some(&existing),
+        kind,
+        name,
+        AGENT_STATE_UNKNOWN,
+        owned,
+    );
     s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
     s.agent_records_mut().note_detector_write(wire_terminal_id);
     state_change_hook(wire_terminal_id, kind, name, prior, AGENT_STATE_UNKNOWN)
@@ -207,7 +212,7 @@ fn drain_state(
     wire_terminal_id: &WireResourceId,
     scope: &Scope,
     hooks_live: bool,
-    report: &crate::agent_detect::AgentReport,
+    report: &phux_terminal::agent_detect::AgentReport,
 ) -> Option<HookEvent> {
     let program_status = s.metadata().contains(
         scope,
@@ -227,24 +232,29 @@ fn drain_state(
         && !s.agent_records().has_explicit_identity(wire_terminal_id)
         && let Some(mut record) = existing
             .as_deref()
-            .and_then(crate::agent_detect::record::AgentRecordJson::decode)
+            .and_then(phux_resource::agent_record::AgentRecordJson::decode)
     {
         record.attention = None;
         existing = Some(record.encode());
     }
     let contradicted = owned.kind
-        && crate::agent_state::explicit_kind_is_contradicted(
+        && phux_resource::agent_state::explicit_kind_is_contradicted(
             existing.as_deref(),
             &report.kind,
-            &crate::agent_detect::rules::global(),
+            &phux_terminal::agent_detect::rules::global(),
         );
     let (to, bytes) = if contradicted {
-        let bytes = crate::agent_state::withdraw_state(existing.as_deref())?;
+        let bytes = phux_resource::agent_state::withdraw_state(existing.as_deref())?;
         (crate::hooks::AGENT_STATE_UNKNOWN, bytes)
     } else {
         let to = report.state.as_str();
-        let bytes =
-            crate::agent_state::compose(existing.as_deref(), &report.kind, &report.name, to, owned);
+        let bytes = phux_resource::agent_state::compose(
+            existing.as_deref(),
+            &report.kind,
+            &report.name,
+            to,
+            owned,
+        );
         (to, bytes)
     };
     s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
@@ -262,7 +272,7 @@ struct Prior(Option<String>);
 /// The prior state, read only when a hook could fire: `None` means no hook
 /// is owed at all.
 fn prior_state(hooks_live: bool, existing: Option<&[u8]>) -> Option<Prior> {
-    hooks_live.then(|| Prior(crate::agent_state::stored_state(existing)))
+    hooks_live.then(|| Prior(phux_resource::agent_state::stored_state(existing)))
 }
 
 /// The `agent-state-changed` event for a detector write, unless hooks are
@@ -295,7 +305,7 @@ fn retract_hook(wire_terminal_id: &WireResourceId, prior: Option<Prior>) -> Opti
 /// `phux.agent/v1` record (ADR-0046 §E); otherwise the filter keeps modelling
 /// a store that no longer exists and suppresses the next write. A full or
 /// closed control mailbox is benign (the actor is wedged or gone).
-pub(super) fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key: &str) {
+pub(in crate::runtime) fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key: &str) {
     if key != RESOURCE_AGENT_KEY {
         return;
     }
@@ -303,13 +313,13 @@ pub(super) fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key:
         return;
     };
     let handle = state.with(|s| {
-        s.terminal_from_wire(wire)
+        s.resource_from_wire(wire)
             .and_then(|pane| s.resource_handle(pane).cloned())
     });
     if let Some(handle) = handle {
         let _ = handle
             .control
-            .try_send(crate::terminal_actor::ControlRequest::AgentRecordInvalidated);
+            .try_send(crate::resource::ControlRequest::AgentRecordInvalidated);
     }
 }
 

@@ -35,7 +35,7 @@ struct NativeSpawnTarget {
 }
 
 struct PreparedNativeHost {
-    command: phux_terminal::pty::CommandBuilder,
+    command: crate::runtime::apps::terminal::launch::LaunchCommand,
     launch: phux_core::TerminalLaunch,
     recipe: SpawnNativeAgent,
     public_spec: String,
@@ -82,10 +82,13 @@ fn spawn_transaction(
             return Err(error);
         }
     };
-    command.env("PHUX_SOCKET", &delegation.socket_path);
-    command.env("PHUX_NATIVE_AGENT_ID", resources.agent_wire.to_string());
-    command.env("PHUX_NATIVE_ACTIVATION", &activation);
-    command.env("PHUX_NATIVE_BINDING", &proof);
+    crate::runtime::apps::terminal::launch::bind_native_host(
+        &mut command,
+        &delegation.socket_path,
+        &resources.agent_wire.to_string(),
+        &activation,
+        &proof,
+    );
     let binding = reserved_binding(
         spec,
         recipe,
@@ -177,7 +180,7 @@ fn selected_guardian(
             return Err(refusal("native insertion requires a local guardian"));
         }
         return s
-            .terminal_from_wire(wire)
+            .resource_from_wire(wire)
             .map(Some)
             .ok_or_else(|| refusal("guardian does not exist"));
     }
@@ -235,18 +238,15 @@ fn prepare_native_host(
     let executable = state
         .with(crate::state::ServerState::native_host_executable)
         .map_err(|error| refusal(error.to_string()))?;
-    let mut command = phux_terminal::pty::CommandBuilder::new(&executable);
-    command.args(["agent", "host"]);
-    if let Some(cwd) = &spec.cwd {
-        command.cwd(cwd);
-    }
-    for (key, value) in &spec.env {
-        command.env(key, value);
-    }
     // Host-only startup carries the real local runtime configuration. The
     // portable saved recipe carries no bootstrap destination or SDK credentials.
     let startup = serde_json::to_string(spec).map_err(|error| refusal(error.to_string()))?;
-    command.env(NATIVE_HOST_SPEC_ENV, startup);
+    let command = crate::runtime::apps::terminal::launch::native_host_command(
+        &executable,
+        spec.cwd.as_deref(),
+        &spec.env,
+        (NATIVE_HOST_SPEC_ENV, &startup),
+    );
     let mut recipe = spec.clone();
     recipe.guardian = None;
     recipe.guardian_key = None;
@@ -304,7 +304,7 @@ fn create_native_resources(
     spec: &SpawnNativeAgent,
     target: &NativeSpawnTarget,
     launch: phux_core::TerminalLaunch,
-    command: &mut phux_terminal::pty::CommandBuilder,
+    command: &mut crate::runtime::apps::terminal::launch::LaunchCommand,
     public_spec: &str,
     operation: Option<phux_protocol::ids::OperationId>,
 ) -> Result<NativeSpawnResources, CommandResult> {
@@ -341,13 +341,13 @@ fn create_native_resources(
                 if target.existing.is_some() {
                     s.activation_ended(parent, phux_core::ExitOutcome::UNKNOWN, true);
                 } else {
-                    s.reap_terminal(parent);
+                    s.reap_resource(parent);
                 }
                 return Err(CommandResult::Refused(crate::org_wire::refusal(&error)));
             }
         };
         let parent_wire = super::commands::register_pty_command(s, parent, command);
-        let agent_wire = s.intern_terminal_wire(agent);
+        let agent_wire = s.intern_resource_wire(agent);
         s.metadata_set(
             &phux_protocol::wire::frame::Scope::Resource(parent_wire.clone()),
             "phux.native-launch/v1",
@@ -445,7 +445,7 @@ fn install_native_session(
         .with_operation_id(operation);
         s.record_and_fanout(announcement);
     });
-    super::client::spawn_terminal_exit_watcher(
+    super::client::spawn_resource_exit_watcher(
         state.clone(),
         resources.agent,
         Some(bundle.exit_notify),
@@ -457,7 +457,7 @@ fn install_native_session(
 fn launch_native_guardian(
     ctx: &CommandContext,
     resources: &NativeSpawnResources,
-    command: phux_terminal::pty::CommandBuilder,
+    command: crate::runtime::apps::terminal::launch::LaunchCommand,
     operation: Option<phux_protocol::ids::OperationId>,
     reused: bool,
     credential: &str,
@@ -482,9 +482,9 @@ fn launch_native_guardian(
     if let Err(error) = launched {
         super::delegation::revoke_delegated_agent(state, credential);
         state.with_mut(|s| {
-            s.reap_terminal(resources.agent);
+            s.reap_resource(resources.agent);
             if !reused {
-                s.reap_terminal(resources.parent);
+                s.reap_resource(resources.parent);
             }
             s.native_agents_mut().bindings.remove(&resources.agent_wire);
             if let Some(wake) = s.native_agents_mut().wakes.remove(&resources.agent_wire) {

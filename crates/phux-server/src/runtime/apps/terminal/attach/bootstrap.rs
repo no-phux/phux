@@ -56,7 +56,7 @@ pub(crate) struct AdaptedBootstrap {
 }
 
 pub(crate) fn adapt_bootstrap_snapshot(
-    snapshot: crate::grid::SnapshotBytes,
+    snapshot: phux_terminal::grid::SnapshotBytes,
     caps: phux_protocol::ClientCapabilities,
     peak_budget: usize,
 ) -> Result<AdaptedBootstrap, ()> {
@@ -163,11 +163,11 @@ pub(super) struct SnapshotGate {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) wire_terminal_id: phux_protocol::ids::ResourceId,
     /// Terminal facet, for the native publication fence.
-    pub(super) terminal: crate::terminal_actor::TerminalHandle,
+    pub(super) terminal: phux_terminal::actor::TerminalHandle,
     pub(super) gate: oneshot::Sender<OutputPumpStart>,
     pub(super) cut: Option<u64>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    pub(super) native_cursor: Option<crate::native_state::OpaqueHistoryCursor>,
+    pub(super) native_cursor: Option<phux_terminal::native_state::OpaqueHistoryCursor>,
 }
 
 /// Connection-wide retention ceiling for an aggregate ATTACH: every pane's
@@ -246,7 +246,7 @@ pub(crate) enum NativeRequestFailure {
     /// The actor dropped the reply.
     Dropped,
     /// The actor refused the request.
-    Refused(crate::native_state::NativeStateError),
+    Refused(phux_terminal::native_state::NativeStateError),
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -262,16 +262,16 @@ impl NativeRequestFailure {
 /// Send the native checkpoint request `make` builds and await its reply.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(in crate::runtime) async fn request_native_checkpoint(
-    terminal: &crate::terminal_actor::TerminalHandle,
+    terminal: &phux_terminal::actor::TerminalHandle,
     make: impl FnOnce(
         oneshot::Sender<
             Result<
-                crate::terminal_actor::NativeBootstrapReply,
-                crate::native_state::NativeStateError,
+                phux_terminal::actor::NativeBootstrapReply,
+                phux_terminal::native_state::NativeStateError,
             >,
         >,
-    ) -> crate::terminal_actor::NativeBootstrapRequest,
-) -> Result<crate::terminal_actor::NativeBootstrapReply, NativeRequestFailure> {
+    ) -> phux_terminal::actor::NativeBootstrapRequest,
+) -> Result<phux_terminal::actor::NativeBootstrapReply, NativeRequestFailure> {
     let (reply_tx, reply_rx) = oneshot::channel();
     terminal
         .native_bootstrap
@@ -287,8 +287,8 @@ pub(in crate::runtime) async fn request_native_checkpoint(
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) async fn publish_native_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    reply: crate::terminal_actor::NativeBootstrapReply,
-) -> Result<(u64, crate::native_state::OpaqueHistoryCursor), ()> {
+    reply: phux_terminal::actor::NativeBootstrapReply,
+) -> Result<(u64, phux_terminal::native_state::OpaqueHistoryCursor), ()> {
     let cut = reply.base_seq;
     let cursor = reply.publication_cursor;
     for frame in reply.frames {
@@ -299,17 +299,17 @@ pub(crate) async fn publish_native_bootstrap(
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) async fn activate_native_publication(
-    handle: &crate::terminal_actor::TerminalHandle,
+    handle: &phux_terminal::actor::TerminalHandle,
     owner: u64,
     terminal_id: phux_protocol::ids::ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
-    cursor: crate::native_state::OpaqueHistoryCursor,
-) -> Result<crate::terminal_actor::NativePublicationReply, NativeRequestFailure> {
+    cursor: phux_terminal::native_state::OpaqueHistoryCursor,
+) -> Result<phux_terminal::actor::NativePublicationReply, NativeRequestFailure> {
     let (reply, publication) = oneshot::channel();
     handle
         .native_publication
-        .send(crate::terminal_actor::NativePublicationRequest {
+        .send(phux_terminal::actor::NativePublicationRequest {
             owner,
             terminal_id,
             stream_id,

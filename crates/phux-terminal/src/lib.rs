@@ -6,6 +6,11 @@
 //! over the screen ([`agent_detect`]). The crate depends on the kind-neutral
 //! [`phux_resource`] substrate and never on the server that hosts it.
 
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "items shared inside the crate; pub would widen the app's API"
+)]
+
 pub mod actor;
 pub mod agent_detect;
 pub mod grid;

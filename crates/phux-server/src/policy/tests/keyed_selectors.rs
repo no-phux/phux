@@ -231,7 +231,7 @@ fn session_key_ceiling_reaches_a_session_no_wire_id_names_yet() {
     assert!(scoped(&[&format!("organize@session:{key}")]).admits_session(Verb::Organize, point));
 
     // A Terminal in it is reached through the key, and so are its events.
-    let terminal = world.state.intern_terminal_wire(gamma_core);
+    let terminal = world.state.intern_resource_wire(gamma_core);
     assert!(world.state.idspace.session_wire(gamma).is_none());
     let observe = scoped(&[&format!("observe@session:{key}")]);
     assert!(admits_command(
@@ -306,7 +306,7 @@ fn keyed_ceilings_survive_a_restart_from_the_persisted_store() {
             *resource_key.as_bytes(),
         ))
         .expect("the record is restored");
-    let terminal = after.intern_terminal_wire(core);
+    let terminal = after.intern_resource_wire(core);
     let allowed = |scopes: &[&str], command: &Command| {
         enforce(&after, CLIENT, &scoped(scopes), Request::Command(command)).is_ok()
     };

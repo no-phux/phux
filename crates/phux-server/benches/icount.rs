@@ -42,7 +42,7 @@ use phux_protocol::wire::framing;
 use phux_protocol::{BootstrapId, ResourceId, StreamId};
 use phux_server::org_scale::{ScaleOrg, ScaleSpec};
 use phux_server::resource::agent_session::{self, AgentSessionActor};
-use phux_server::resource::terminal::icount_join_pty_burst;
+use phux_terminal::actor::icount_join_pty_burst;
 
 const VT_COLS: u16 = 80;
 const VT_ROWS: u16 = 24;

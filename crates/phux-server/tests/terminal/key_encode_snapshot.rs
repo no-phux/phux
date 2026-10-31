@@ -5,7 +5,7 @@
 
 use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
-use phux_server::input::key::PerTerminalKeyEncoder;
+use phux_terminal::input::key::PerTerminalKeyEncoder;
 
 struct Case {
     name: &'static str,

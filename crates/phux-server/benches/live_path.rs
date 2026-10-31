@@ -48,7 +48,7 @@ use phux_protocol::ResourceId;
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::framing;
-use phux_server::grid::{ConsumerReference, SnapshotSynthesizer};
+use phux_terminal::grid::{ConsumerReference, SnapshotSynthesizer};
 
 std::thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };

@@ -93,8 +93,8 @@ fn fixture(engine: Engine, ceiling: impl FnOnce(&Topology) -> Vec<String>) -> Fi
     let (alpha, beta, alpha_group) = state.with_mut(|s| {
         let (alpha_session, alpha_core) = s.seed_session("alpha");
         let (_, beta_core) = s.seed_session("beta");
-        let alpha = s.intern_terminal_wire(alpha_core);
-        let beta = s.intern_terminal_wire(beta_core);
+        let alpha = s.intern_resource_wire(alpha_core);
+        let beta = s.intern_resource_wire(beta_core);
         (alpha, beta, s.idspace.intern_session(alpha_session).get())
     });
     let WireResourceId::Local { id: alpha_id } = alpha else {

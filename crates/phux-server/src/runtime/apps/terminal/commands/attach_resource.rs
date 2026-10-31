@@ -41,12 +41,12 @@ pub(in crate::runtime) struct AttachResourceGeneration {
     /// the actor's tick owns emission and no raw pump was spawned.
     pub(in crate::runtime) snapshot_gate: Option<oneshot::Sender<u64>>,
     /// Atomic synthesized bootstrap captured with state-sync registration.
-    pub(in crate::runtime) state_sync_bootstrap: Option<crate::terminal_actor::StateSyncBootstrap>,
+    pub(in crate::runtime) state_sync_bootstrap: Option<phux_terminal::actor::StateSyncBootstrap>,
     /// Hands the pump its post-replay live receiver at the native publication
     /// fence.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::runtime) native_publication_gate:
-        Option<oneshot::Sender<crate::terminal_actor::NativePublicationReply>>,
+        Option<oneshot::Sender<phux_terminal::actor::NativePublicationReply>>,
 }
 
 /// One in-flight `ATTACH_RESOURCE`: the resolved terminal plus the negotiated
@@ -85,18 +85,18 @@ impl AttachResourceSession<'_> {
         &self,
         failure: AttachResourceFailure,
     ) -> AttachResourceFailure {
-        use crate::terminal_actor::ConsumerDetachRequest;
+        use phux_terminal::actor::ConsumerDetachRequest;
 
         self.state.with_mut(|s| {
             s.cancel_attach_terminal_pump(self.client_id, self.core);
         });
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        let _ =
-            self.terminal
-                .native_release
-                .try_send(crate::terminal_actor::NativeReleaseRequest {
-                    owner: self.client_id.0,
-                });
+        let _ = self
+            .terminal
+            .native_release
+            .try_send(phux_terminal::actor::NativeReleaseRequest {
+                owner: self.client_id.0,
+            });
         let (reply, _ack) = oneshot::channel();
         let _ = self
             .terminal
@@ -115,8 +115,8 @@ impl AttachResourceSession<'_> {
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
         live_gate: tokio::sync::watch::Receiver<bool>,
-    ) -> Option<crate::terminal_actor::ConsumerAttachOutcome> {
-        use crate::terminal_actor::ConsumerAttachRequest;
+    ) -> Option<phux_terminal::actor::ConsumerAttachOutcome> {
+        use phux_terminal::actor::ConsumerAttachRequest;
 
         let wire_terminal_id = self.terminal_id.local_id()?;
         let (reply, reply_rx) = oneshot::channel();
@@ -131,9 +131,7 @@ impl AttachResourceSession<'_> {
                 wants_state_sync: self.wants_state_sync(),
                 image_protocols: self.client_caps.image_protocols,
                 live_gate,
-                state_sync_scrollback: Some(
-                    crate::resource::terminal::DEFAULT_REPLAY_SCROLLBACK_LINES,
-                ),
+                state_sync_scrollback: Some(phux_terminal::actor::DEFAULT_REPLAY_SCROLLBACK_LINES),
                 bootstrap_max_bytes: crate::runtime::attach::bootstrap_source_ceiling(
                     crate::runtime::attach::MAX_STAGED_BOOTSTRAP_BYTES,
                     self.client_caps,
@@ -205,7 +203,7 @@ impl AttachResourceSession<'_> {
 
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         let (native_publication_gate_tx, native_publication_gate_rx) =
-            oneshot::channel::<crate::terminal_actor::NativePublicationReply>();
+            oneshot::channel::<phux_terminal::actor::NativePublicationReply>();
         let snapshot_gate = if tick_managed {
             None
         } else {
@@ -245,13 +243,13 @@ pub(in crate::runtime) struct AttachResourcePumpChannels {
     /// Cancels this generation when a replacement attach supersedes it.
     pub(in crate::runtime) token: CancellationToken,
     /// The pane's broadcast output, subscribed before the prior pump stopped.
-    output_rx: tokio::sync::broadcast::Receiver<crate::terminal_actor::PaneOutput>,
+    output_rx: tokio::sync::broadcast::Receiver<crate::resource::PaneOutput>,
     /// Delivers the published cut, releasing the first forwarded delta.
     pub(in crate::runtime) snapshot_gate: oneshot::Receiver<u64>,
     /// Delivers the post-replay live receiver at the native publication fence.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(in crate::runtime) native_publication_gate:
-        oneshot::Receiver<crate::terminal_actor::NativePublicationReply>,
+        oneshot::Receiver<phux_terminal::actor::NativePublicationReply>,
 }
 
 impl AttachResourcePumpChannels {
@@ -267,7 +265,7 @@ impl AttachResourcePumpChannels {
         profile: phux_protocol::caps::BootstrapStreamProfile,
     ) -> Option<(
         crate::runtime::attach::OutputPumpStart,
-        tokio::sync::broadcast::Receiver<crate::terminal_actor::PaneOutput>,
+        tokio::sync::broadcast::Receiver<crate::resource::PaneOutput>,
     )> {
         let published_cut = tokio::select! {
             () = self.token.cancelled() => return None,

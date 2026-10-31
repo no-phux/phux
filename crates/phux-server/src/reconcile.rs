@@ -92,7 +92,7 @@ pub fn observe(pid: i32) -> Observed {
     Observed {
         alive,
         start_raw: alive
-            .then(|| crate::proc_query::process_start_time(pid))
+            .then(|| phux_resource::proc_query::process_start_time(pid))
             .flatten(),
     }
 }

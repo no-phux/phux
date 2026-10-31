@@ -33,12 +33,12 @@ async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing()
             };
 
             output
-                .send(resync(crate::terminal_actor::ResyncReason::Exit))
+                .send(resync(crate::resource::ResyncReason::Exit))
                 .expect("pump subscribed");
             let invalidated = bootstrap_rx.recv().await.expect("exit capture request");
             invalidated
                 .reply
-                .send(Err(crate::native_state::NativeStateError::Resize))
+                .send(Err(phux_terminal::native_state::NativeStateError::Resize))
                 .expect("pump awaits its capture");
             let request = resync_request_from(&mut resize_rx, &mut consumer).await;
             assert_eq!(
@@ -52,7 +52,7 @@ async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing()
             );
 
             output
-                .send(resync(crate::terminal_actor::ResyncReason::Resize))
+                .send(resync(crate::resource::ResyncReason::Resize))
                 .expect("pump subscribed");
             let capture = bootstrap_rx
                 .recv()
@@ -67,7 +67,7 @@ async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing()
             let publication = publication_rx.recv().await.expect("publication request");
             publication
                 .reply
-                .send(Ok(crate::terminal_actor::NativePublicationReply {
+                .send(Ok(phux_terminal::actor::NativePublicationReply {
                     replay: Vec::new(),
                     live: output.subscribe(),
                 }))
@@ -121,7 +121,7 @@ async fn a_pane_gone_before_its_replacement_publication_is_not_a_connection_faul
                 .send(PaneOutput::Resync {
                     cols: 80,
                     rows: 24,
-                    reason: crate::terminal_actor::ResyncReason::Resize,
+                    reason: crate::resource::ResyncReason::Resize,
                     audience: ResyncAudience::Everyone,
                     base_seq: 0,
                     bytes: bytes::Bytes::new(),

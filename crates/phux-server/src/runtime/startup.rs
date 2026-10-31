@@ -2,11 +2,9 @@
 
 use crate::runtime::config::{ServerConfig, ServerError, validate_socket_path_len};
 use crate::runtime::connections::{
-    handle_existing_socket, prepare_socket_dir, secure_socket_file, spawn_terminal_exit_watcher,
+    handle_existing_socket, prepare_socket_dir, secure_socket_file, spawn_resource_exit_watcher,
 };
-use crate::runtime::{
-    ServerEnv, commands, resume, seed_session_with_actor, seed_session_with_pty, upgrade,
-};
+use crate::runtime::{ServerEnv, resume, seed_session_with_actor, seed_session_with_pty, upgrade};
 use crate::state::SharedState;
 use crate::upgrade::blob::StateBlob;
 use std::os::fd::RawFd;
@@ -210,23 +208,19 @@ pub(in crate::runtime) fn resume_session_tree(
     blob: &StateBlob,
     root_token: &CancellationToken,
 ) -> Result<(), ServerError> {
-    // Each pane is wired exactly as a fresh spawn is (event sink, agent
-    // detector), so a resumed pane keeps its events and agent-state feed.
     let rebuilt = state.with_mut(|s| {
-        s.rebuild_from_blob(blob, |pane, actor| {
-            commands::wire_pane_actor(state, pane, actor)
-        })
+        s.rebuild_from_blob(blob, crate::runtime::apps::terminal::upgrade::wired(state))
     })?;
     let mut pane_events: std::collections::HashMap<_, _> = rebuilt
         .wired_panes
         .into_iter()
         .map(|(pane, wiring)| {
-            let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
+            let wire = state.with_mut(|s| s.intern_resource_wire(pane));
             (pane, wiring.start(state, &wire))
         })
         .collect();
     for (resource, exit_notify) in rebuilt.exit_watchers {
-        spawn_terminal_exit_watcher(
+        spawn_resource_exit_watcher(
             state.clone(),
             resource,
             Some(exit_notify),
@@ -236,7 +230,7 @@ pub(in crate::runtime) fn resume_session_tree(
     }
     // A pane with no exit to watch (no PTY) still drains its events.
     for (pane, events) in pane_events {
-        spawn_terminal_exit_watcher(state.clone(), pane, None, root_token.clone(), Some(events));
+        spawn_resource_exit_watcher(state.clone(), pane, None, root_token.clone(), Some(events));
     }
     // ADR-0124 §6: retained exited panes close with `SERVER_SHUTDOWN`.
     state.with_mut(|s| s.close_upgrade_retained(blob));
@@ -254,7 +248,7 @@ pub(in crate::runtime) fn seed_initial_session(
     state: &SharedState,
     name: &str,
     seed_with_pty: bool,
-    seed_command: Option<phux_terminal::pty::CommandBuilder>,
+    seed_command: Option<crate::runtime::apps::terminal::launch::LaunchCommand>,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
 ) {
@@ -262,7 +256,7 @@ pub(in crate::runtime) fn seed_initial_session(
         seed_session_with_pty(
             state,
             name,
-            seed_pane_command(state, seed_command),
+            crate::runtime::apps::terminal::launch::seed_pane_command(state, seed_command),
             scrollback,
             root_token,
         )
@@ -282,19 +276,4 @@ pub(in crate::runtime) fn seed_initial_session(
             "pre-seeded session in registry"
         );
     }
-}
-
-/// The pre-seeded pane's command (configured, else the default shell), with
-/// the server-wide `TERM` applied.
-pub(in crate::runtime) fn seed_pane_command(
-    state: &SharedState,
-    configured: Option<phux_terminal::pty::CommandBuilder>,
-) -> phux_terminal::pty::CommandBuilder {
-    let mut cmd = configured.unwrap_or_else(|| {
-        let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
-        crate::terminal_actor::default_shell_command(&shell, login_shell)
-    });
-    let term = state.with(|s| s.term().to_owned());
-    crate::terminal_actor::apply_term(&mut cmd, &term);
-    cmd
 }

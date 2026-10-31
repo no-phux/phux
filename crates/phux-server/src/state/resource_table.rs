@@ -100,7 +100,7 @@ pub(super) struct ResourceTable {
     /// recur.
     next_bootstrap: HashMap<ClientId, u64>,
     /// Retired wire ids remain detachable while final publication is pending.
-    draining_terminals: HashMap<phux_protocol::ids::ResourceId, ResourceId>,
+    draining_resources: HashMap<phux_protocol::ids::ResourceId, ResourceId>,
     /// ADR-0109: for spawned resources, the spawner and whether another
     /// connection has used it since. No entry means not client-spawned.
     spawns: HashMap<ResourceId, SpawnRecord>,
@@ -134,7 +134,7 @@ impl ResourceTable {
             pumps: HashMap::new(),
             output_pumps: HashMap::new(),
             next_bootstrap: HashMap::new(),
-            draining_terminals: HashMap::new(),
+            draining_resources: HashMap::new(),
             spawns: HashMap::new(),
         }
     }
@@ -342,19 +342,19 @@ impl ResourceTable {
         wire: phux_protocol::ids::ResourceId,
         core: ResourceId,
     ) {
-        self.draining_terminals.insert(wire, core);
+        self.draining_resources.insert(wire, core);
     }
 
     pub(super) fn draining_terminal(
         &self,
         wire: &phux_protocol::ids::ResourceId,
     ) -> Option<ResourceId> {
-        self.draining_terminals.get(wire).copied()
+        self.draining_resources.get(wire).copied()
     }
 
     pub(super) fn finish_output_drain(&mut self, terminal: ResourceId) {
         self.cancel_pumps_for_terminal(terminal);
-        self.draining_terminals.retain(|_, core| *core != terminal);
+        self.draining_resources.retain(|_, core| *core != terminal);
     }
 
     /// Let this pane's output pumps finish without aborting them.

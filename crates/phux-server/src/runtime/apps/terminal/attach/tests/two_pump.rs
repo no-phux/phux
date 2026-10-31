@@ -157,7 +157,7 @@ pub(super) async fn assert_quiet(consumer: &mut TwoPumpConsumer, who: &str) {
 /// Wait for the gap resync request the pump behind `laggard` sends; on
 /// timeout, report what the laggard was sent and whether its pump died.
 pub(super) async fn resync_request_from(
-    resize_rx: &mut crate::terminal_actor::ResizeReceiver,
+    resize_rx: &mut phux_terminal::actor::ResizeReceiver,
     laggard: &mut TwoPumpConsumer,
 ) -> ResizeRequest {
     let_pumps_run().await;
@@ -189,7 +189,7 @@ pub(super) fn answer_gap_resync(
         .send(PaneOutput::Resync {
             cols: 80,
             rows: 24,
-            reason: crate::terminal_actor::ResyncReason::OutboundGap,
+            reason: crate::resource::ResyncReason::OutboundGap,
             audience,
             base_seq,
             bytes: bytes::Bytes::from_static(b"snapshot"),
@@ -300,7 +300,7 @@ async fn a_stale_consumer_resyncs_without_republishing_its_neighbour() {
                 .send(PaneOutput::Resync {
                     cols: 100,
                     rows: 30,
-                    reason: crate::terminal_actor::ResyncReason::Resize,
+                    reason: crate::resource::ResyncReason::Resize,
                     audience: ResyncAudience::Everyone,
                     base_seq: 4,
                     bytes: bytes::Bytes::from_static(b"reflowed"),

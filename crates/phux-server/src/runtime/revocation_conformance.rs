@@ -150,7 +150,7 @@ impl Fixture {
         .unwrap();
         let alpha = state.with_mut(|s| {
             s.set_policy_engine(engine);
-            s.intern_terminal_wire(alpha_core)
+            s.intern_resource_wire(alpha_core)
         });
         Self {
             _dir: dir,
