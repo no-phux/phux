@@ -1,10 +1,10 @@
 //! The window: a session sidebar, the terminal, and a status line.
 
 use rune::tok;
-use rune::{Color, Cx, El, TextStyle, col, el, row, text};
+use rune::{Color, Cx, El, TextStyle, Transition, col, el, row, text};
 
 use crate::desk::Desk;
-use crate::theme::Theme;
+use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
 
 mod inbox;
 mod machines;
@@ -48,25 +48,29 @@ pub(crate) struct Ink {
     pub(crate) danger: Color,
     /// The rule between the window's regions.
     pub(crate) edge: Color,
+    pub(crate) marks: Marks,
+    /// The terminal's selection.
+    pub(crate) selection: Selection,
 }
 
 fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
     if let Some(theme) = theme {
-        let accent = crate::theme::color(theme.accent);
-        let text = crate::theme::color(theme.foreground);
+        let roles = theme.roles();
         return Ink {
             bg: crate::theme::color(theme.background),
-            raised: theme.surface(0.09),
+            raised: theme.raised(),
             sidebar: theme.surface(0.045),
-            text,
-            dim: text.alpha(0.62),
-            separator: text.alpha(0.13),
-            selected: accent.alpha(0.22),
-            hover: text.alpha(0.07),
-            accent,
-            on_accent: Color::WHITE,
-            danger: crate::theme::color(theme.ansi[1]),
-            edge: text.alpha(0.13),
+            text: roles.text,
+            dim: roles.dim,
+            separator: roles.text.alpha(0.13),
+            selected: crate::theme::color(theme.accent).alpha(SELECTED_WASH),
+            hover: roles.text.alpha(0.07),
+            accent: roles.accent,
+            on_accent: roles.on_accent,
+            danger: roles.danger,
+            edge: roles.edge,
+            marks: roles.marks,
+            selection: roles.selection,
         };
     }
     let t = tok::theme(dark);
@@ -77,12 +81,14 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
         text: t.text,
         dim: t.text_secondary,
         separator: t.separator,
-        selected: accent.alpha(0.22),
+        selected: accent.alpha(SELECTED_WASH),
         hover: t.hover,
         accent,
-        on_accent: Color::WHITE,
+        on_accent: on_fill(accent),
         danger: rune::oklch(0.68, 0.17, 25.0),
         edge: t.separator,
+        marks: Theme::system_marks(dark),
+        selection: Selection::system(),
     }
 }
 
@@ -140,8 +146,18 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .min_h(0.0)
                 .children(top)
                 .children(tabs::strip(desk, &p))
-                .children(status::confirm_bar(desk, &p))
-                .child(panes::view(desk, &p, cx))
+                .child(
+                    // What floats here never takes rows from a terminal.
+                    col()
+                        .key("stage")
+                        .grow(1.0)
+                        .w_full()
+                        .min_w(0.0)
+                        .min_h(0.0)
+                        .child(panes::view(desk, &p, cx))
+                        .children(status::confirm_bar(desk, &p))
+                        .children(overlay::toast(desk, &p)),
+                )
                 .child(el().w_full().h(1.0).fill(p.edge))
                 .child(status::status_line(desk, &p)),
         );
@@ -157,6 +173,83 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         .children(machines::sheet(desk, &p))
         .children(tabs::rename_sheet(desk, &p))
         .children(desk.palette_open.then(|| palette::view(desk, &p)))
+}
+
+/// A modal sheet: scrim, header with a close button, scrolling body, footer.
+pub(crate) struct Sheet {
+    pub(crate) key: &'static str,
+    pub(crate) title: &'static str,
+    pub(crate) width: f32,
+    /// Where the sheet sits when the window has room for that.
+    pub(crate) top: f32,
+    /// How dark the scrim is.
+    pub(crate) scrim: f32,
+    pub(crate) close: fn(&mut Desk),
+}
+
+impl Sheet {
+    /// `body` scrolls when the window can't hold it; the header and `foot`
+    /// always show, down to the smallest window.
+    pub(crate) fn build(self, aside: Option<El>, body: El, foot: El, p: &Ink) -> El {
+        const MARGIN: f32 = 16.0;
+        const MAX_H: f32 = 620.0;
+        let line = || el().w_full().h(1.0).fill(p.separator);
+        let header = row()
+            .w_full()
+            .h(44.0)
+            .pl(18.0)
+            .pr(10.0)
+            .gap(10.0)
+            .items_center()
+            .child(text(self.title).font(LABEL_STRONG).color(p.text))
+            .child(el().grow(1.0))
+            .children(aside)
+            .child(overlay::icon_button(
+                "✕",
+                format!("{}-close", self.key),
+                p,
+                self.close,
+            ));
+        let panel = col()
+            .key(self.key)
+            .w(self.width)
+            .max_w(self.width)
+            .max_h(MAX_H)
+            .shrink()
+            .min_h(0.0)
+            .radius(12.0)
+            .clip_rounded(12.0)
+            .fill(p.raised)
+            .border(1.0, p.separator)
+            .shadow(18.0, 56.0, Color::BLACK.alpha(0.5))
+            .transition(Transition::scale(0.97).combined(Transition::opacity()))
+            .child(header)
+            .child(line())
+            .child(
+                col()
+                    .w_full()
+                    .shrink()
+                    .min_h(0.0)
+                    .scroll(rune::ScrollSpec {
+                        stick_bottom: false,
+                    })
+                    .child(body),
+            )
+            .child(line())
+            .child(el().w_full().px(14.0).py(10.0).child(foot));
+        col()
+            .key(format!("{}-scrim", self.key))
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .py(MARGIN)
+            .items_center()
+            .fill(Color::BLACK.alpha(self.scrim))
+            .transition(Transition::opacity())
+            .modal(true, self.close)
+            .child(el().grow(1.0).max_h(self.top - MARGIN))
+            .child(panel)
+    }
 }
 
 /// Something to press: the hover wash and the pointer. Key errors name the
@@ -175,4 +268,21 @@ pub(crate) fn button(label: &'static str, key: &'static str, p: &Ink, press: fn(
         .border(1.0, p.separator)
         .on_press(press)
         .child(text(label).font(CAPTION).color(p.text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{DIM_BAR, TEXT_BAR, contrast};
+
+    #[test]
+    fn the_system_appearance_clears_the_bars_too() {
+        for dark in [true, false] {
+            let p = ink(dark, rune::oklch(0.6, 0.15, 250.0), None);
+            for ground in [p.bg, p.sidebar] {
+                assert!(contrast(p.text, ground) >= TEXT_BAR, "text, dark {dark}");
+                assert!(contrast(p.dim, ground) >= DIM_BAR, "dim, dark {dark}");
+            }
+        }
+    }
 }

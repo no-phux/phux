@@ -141,7 +141,13 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     let metrics = desk.metrics();
     let keyboard = focused && desk.focused;
     let mut grid_layer = el()
-        .child(grid::paint(&frame, keyboard, desk.blink_on, &metrics))
+        .child(grid::paint(
+            &frame,
+            keyboard,
+            desk.blink_on,
+            &metrics,
+            ink.selection,
+        ))
         .children(overlay::link_underline(desk, id, &metrics, ink));
     if keyboard
         && !desk.palette_open
