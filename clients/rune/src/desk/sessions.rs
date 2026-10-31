@@ -169,10 +169,11 @@ pub(super) fn default_pane(topology: &Topology) -> Option<ResourceId> {
         .map(|p| p.terminal_id.clone())
 }
 
-pub(super) fn connect(socket: &std::path::Path, session: Option<String>) -> Result<Client, String> {
+/// Dials on the runtime's thread: a machine that's away shows as connecting.
+pub(super) fn connect(target: Target, session: Option<String>) -> Result<Client, String> {
     let attach = session.map_or(AttachTarget::Last, AttachTarget::ByName);
     Runtime::connect(
-        Target::uds(socket.to_owned()),
+        target,
         ClientOptions {
             control: ControlOptions {
                 client_name: "phux-rune".to_owned(),
@@ -184,5 +185,5 @@ pub(super) fn connect(socket: &std::path::Path, session: Option<String>) -> Resu
             ..ClientOptions::default()
         },
     )
-    .map_err(|error| format!("could not connect to {}: {error}", socket.display()))
+    .map_err(|error| format!("could not connect: {error}"))
 }

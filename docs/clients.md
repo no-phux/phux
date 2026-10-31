@@ -102,8 +102,11 @@ edges: the terminal UI is ahead of the desktop.
 as a candidate replacement for its GPUI base. It shows every session and
 terminal with each agent's state, a command palette, and splits from the
 session's server-stored arrangement, the same layout the terminal UI shows,
-with find in history, ⌘-clickable links, an agent inbox with notifications, tabs, and themes. It ships as `rune-v*` prereleases (from 0.1.0-alpha.3 Developer ID signed and
-notarized on macOS, plus a Linux tarball) and does not draw Kitty images yet.
+with find in history, ⌘-clickable links, an agent inbox with notifications,
+tabs, themes, and remote machines from the same registry as `phux host add`. It
+ships as `rune-v*` prereleases (from 0.1.0-alpha.3 Developer ID signed and
+notarized on macOS, plus a Linux tarball), updates itself from 0.1.0-alpha.6,
+and does not draw Kitty images yet.
 
 ## Browser
 

@@ -2,14 +2,14 @@
 
 use rune::{Color, El, TextStyle, Transition, col, el, row, text};
 
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG};
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, updates};
 use crate::desk::Desk;
 use crate::theme::{THEMES, Theme, color};
 
 const WIDTH: f32 = 560.0;
 const TILE_W: f32 = 120.0;
 
-fn section(title: &'static str, ink: &Ink) -> El {
+pub(super) fn section(title: &'static str, ink: &Ink) -> El {
     text(title.to_uppercase())
         .font(TextStyle::new(10.5, 650.0).tracking(0.6))
         .color(ink.dim)
@@ -74,7 +74,7 @@ fn switch(on: bool, ink: &Ink) -> El {
         .child(thumb)
 }
 
-fn toggle(
+pub(super) fn toggle(
     key: &'static str,
     title: &'static str,
     detail: &'static str,
@@ -173,7 +173,16 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
             desk.settings.copy_on_select,
             Desk::toggle_copy_on_select,
             ink,
-        ));
+        ))
+        .child(toggle(
+            "set-confirm-close",
+            "Confirm before closing",
+            "Ask before ⌘W ends something running, or a tab closes.",
+            desk.settings.confirm_close,
+            Desk::toggle_confirm_close,
+            ink,
+        ))
+        .child(updates::settings(desk, ink));
     let panel = col()
         .key("settings")
         .w(WIDTH)

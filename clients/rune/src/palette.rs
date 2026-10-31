@@ -40,6 +40,8 @@ const ACTIONS: &[(Shortcut, &str, &str)] = &[
     (Shortcut::JumpToAttention, "Jump to what needs you", "⌘J"),
     (Shortcut::Inbox, "Open inbox", "⌘I"),
     (Shortcut::Settings, "Settings", "⌘,"),
+    (Shortcut::CheckForUpdates, "Check for updates", ""),
+    (Shortcut::Machines, "Switch or add machine", ""),
     (Shortcut::RenameSession, "Rename session", ""),
     (Shortcut::RenameTab, "Rename tab", ""),
     (Shortcut::CloseSession, "Close session", ""),

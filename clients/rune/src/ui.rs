@@ -8,6 +8,7 @@ use crate::desk::{Desk, Pending};
 use crate::theme::Theme;
 
 mod inbox;
+mod machines;
 mod overlay;
 mod palette;
 mod panes;
@@ -15,6 +16,7 @@ pub(crate) use panes::DIVIDER;
 mod settings;
 mod sidebar;
 mod tabs;
+mod updates;
 
 /// The app chord's modifier as shown beside an action.
 pub(crate) const MOD: &str = if cfg!(target_os = "macos") {
@@ -141,8 +143,10 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         // Rune hands the root pastes nothing focused took (Edit ▸ Paste).
         .on_paste_content(|desk: &mut Desk, content, _| desk.paste_content(content))
         .child(main)
+        .children(updates::card(desk, &p, band))
         .children(desk.inbox.open.then(|| inbox::view(desk, &p)))
         .children(desk.settings_open.then(|| settings::view(desk, &p)))
+        .children(machines::sheet(desk, &p))
         .children(tabs::rename_sheet(desk, &p))
         .children(desk.palette_open.then(|| palette::view(desk, &p)))
 }
@@ -218,7 +222,11 @@ fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
 pub(crate) fn placeholder(desk: &Desk, p: &Ink) -> El {
     let (title, detail, color) = match (&desk.error, desk.status) {
         (Some(error), _) => ("Can't reach phux", error.clone(), p.danger),
-        (None, Status::Idle | Status::Connecting) => ("Connecting…", String::new(), p.dim),
+        (None, Status::Idle | Status::Connecting) => {
+            // A machine that's away keeps retrying; say what it answered.
+            let why = desk.client.as_ref().and_then(|client| client.last_error());
+            ("Connecting…", why.unwrap_or_default(), p.dim)
+        }
         (None, _) if desk.topology.as_ref().is_some_and(|t| t.panes.is_empty()) => (
             "No terminals",
             "Create a session or terminal from the sidebar.".to_owned(),
@@ -232,6 +240,17 @@ pub(crate) fn placeholder(desk: &Desk, p: &Ink) -> El {
         .max_w(520.0)
         .child(text(title).font(TextStyle::new(15.0, 600.0)).color(color))
         .child(text(detail).font(LABEL).color(p.dim).wrap())
+        .child(el().h(6.0))
+        .child(
+            button(
+                "Other machines…",
+                "placeholder-machines",
+                p,
+                Desk::toggle_machines,
+            )
+            .grow(0.0)
+            .px(12.0),
+        )
 }
 
 fn status_line(desk: &Desk, p: &Ink) -> El {
@@ -270,6 +289,7 @@ fn status_line(desk: &Desk, p: &Ink) -> El {
                 .color(p.danger)
                 .truncate(),
         })
+        .children(updates::pill(desk, p))
         .child(
             text(geometry)
                 .font(CAPTION.family(Family::SystemMono))

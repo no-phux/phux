@@ -160,10 +160,16 @@ impl Desk {
         }
     }
 
-    /// Close every terminal of a tab, after asking: this ends what runs there.
+    /// Close every terminal of a tab, asking first if the setting says to.
     pub fn close_tab(&mut self, index: usize) {
-        if let Some(tab) = self.tabs.list.get(index) {
-            self.pending = Some(Pending::CloseTab(tab.terminals.clone()));
+        let Some(tab) = self.tabs.list.get(index) else {
+            return;
+        };
+        let terminals = tab.terminals.clone();
+        if self.settings.confirm_close {
+            self.pending = Some(Pending::CloseTab(terminals));
+        } else if let Some(client) = &self.client {
+            let _ = client.close_terminals(terminals);
         }
     }
 

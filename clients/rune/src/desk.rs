@@ -14,7 +14,7 @@ use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::control::{Event, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
-use phux_client_runtime::{Client, Listener, ViewId};
+use phux_client_runtime::{Client, Listener, Target, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
@@ -28,11 +28,14 @@ mod inbox;
 mod input;
 mod layout;
 mod links;
+pub mod machines;
 mod mouse;
 mod palette;
 mod sessions;
 mod settings;
+mod shown;
 mod tabs;
+pub mod updates;
 
 pub use layout::SplitPath;
 pub use tabs::{Renaming, Tab};
@@ -123,6 +126,11 @@ pub struct Desk {
     pub settings: settings::Settings,
     pub settings_open: bool,
     pub tabs: tabs::Tabs,
+    pub updater: updates::Updater,
+    pub machines: machines::Machines,
+    /// How this run started, for moving between machines.
+    launch: Resolved,
+    waker: Option<Waker>,
     /// Image uploads on their way, and the terminal each is for.
     uploads: Vec<(u64, ResourceId)>,
     /// Settings that outlive the window: text size, the sidebar.
@@ -186,6 +194,15 @@ pub struct Desk {
 
 impl Desk {
     pub fn new(resolved: &Resolved) -> Self {
+        let remembered = (!resolved.aimed)
+            .then(|| rune::prefs::Prefs::open(PREFS_ID).get::<String>("machine"))
+            .flatten()
+            .filter(|machine| !machine.is_empty());
+        Self::open(resolved, remembered)
+    }
+
+    /// `machine` is a registered remote; `None` is this computer's server.
+    fn open(resolved: &Resolved, machine: Option<String>) -> Self {
         // `RUNE_PREFS_DIR` keeps headless runs off the real settings.
         let prefs = rune::prefs::Prefs::open(PREFS_ID);
         let font_size = prefs
@@ -218,6 +235,10 @@ impl Desk {
             settings,
             settings_open: false,
             tabs: tabs::Tabs::default(),
+            updater: updates::Updater::new(&prefs, resolved),
+            machines: machines::Machines::new(machine.clone(), resolved.phux.clone()),
+            launch: resolved.clone(),
+            waker: None,
             uploads: Vec::new(),
             prefs,
             preedit: None,
@@ -250,12 +271,13 @@ impl Desk {
             sessions_seq: 0,
             painted: RefCell::new(None),
         };
-        match &resolved.socket {
-            Ok(socket) => match sessions::connect(socket, resolved.session.clone()) {
-                Ok(client) => desk.client = Some(Arc::new(client)),
-                Err(error) => desk.error = Some(error),
-            },
-            Err(error) => desk.error = Some(error.clone()),
+        let target = match &machine {
+            Some(machine) => Target::resolve(machine, None),
+            None => resolved.socket.clone().map(Target::uds),
+        };
+        match target.and_then(|target| sessions::connect(target, resolved.session.clone())) {
+            Ok(client) => desk.client = Some(Arc::new(client)),
+            Err(error) => desk.error = Some(error),
         }
         desk.apply_theme();
         desk
@@ -267,6 +289,14 @@ impl Desk {
 
     /// Rune's setup hook: route runtime wakes into Rune's loop.
     pub fn listen(&mut self, waker: Waker) {
+        self.updater.start(waker.clone());
+        self.machines.listen(waker.clone());
+        self.watch(waker);
+    }
+
+    /// Route this connection's wakes and alerts into Rune's loop.
+    fn watch(&mut self, waker: Waker) {
+        self.waker = Some(waker.clone());
         self.inbox.alerts.listen(waker.clone());
         if let Some(client) = &self.client {
             client.set_listener(Arc::new(Wake(waker)));
@@ -277,11 +307,12 @@ impl Desk {
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
+        let updated = self.pump_updates(tx) | self.pump_machines();
         let Some(client) = self.client.clone() else {
-            return false;
+            return updated;
         };
         let observation = client.take_activity();
-        let mut changed = observation.status != self.status;
+        let mut changed = updated | (observation.status != self.status);
         if observation.connection_epoch != self.epoch {
             // Only the first connection replays news: a reconnect's items
             // are known by id, and what arrived during the gap is new.
@@ -417,109 +448,6 @@ impl Desk {
             | Event::Attached { .. } => true,
             _ => false,
         }
-    }
-
-    fn want(&mut self, terminal: ResourceId) {
-        self.wanted = Some((terminal, Instant::now()));
-    }
-
-    fn drop_shown(&mut self, client: &Client) -> Option<ResourceId> {
-        let shown = self.shown.take()?;
-        let _ = client.destroy_view(shown.view);
-        self.fitted.remove(&shown.terminal);
-        self.painted.replace(None);
-        Some(shown.terminal)
-    }
-
-    fn close_shown(&mut self, client: &Client) {
-        self.drop_shown(client);
-        // Fall back to whatever the server now focuses.
-        self.wanted = None;
-    }
-
-    /// A new connection may be a new server incarnation, whose engine forgot
-    /// every view: open the shown terminal again on this connection.
-    fn reopen_after_reconnect(&mut self, client: &Client) -> bool {
-        for (_, view) in self.others.drain() {
-            let _ = client.destroy_view(view);
-        }
-        self.fetched.clear();
-        self.fitted.clear();
-        let Some(terminal) = self.drop_shown(client) else {
-            return false;
-        };
-        if self.wanted.is_none() {
-            self.want(terminal);
-        }
-        true
-    }
-
-    /// Which terminal should be on screen, if it is not yet: the one the user
-    /// asked for, a new session's once it is selected, else the server's
-    /// focus. `None` also while waiting on one of those.
-    fn target(&mut self, client: &Client) -> Option<ResourceId> {
-        let topology = self.topology.as_ref()?;
-        if let Some((terminal, since)) = &self.wanted {
-            let listed = topology.panes.iter().any(|p| &p.terminal_id == terminal);
-            if listed || since.elapsed() < WANTED_GRACE {
-                return Some(terminal.clone());
-            }
-            // Gone (a restarted server, a closed pane): fall back below.
-            self.wanted = None;
-        }
-        if let Some(name) = &self.pending_session {
-            let session = topology.sessions.iter().find(|s| &s.name == name)?;
-            if client.selected_session() != Some(session.id) {
-                return None;
-            }
-            let panes = || topology.panes.iter().filter(|p| p.session_id == session.id);
-            let pane = panes()
-                .find(|p| p.terminal_id == topology.focused_pane)
-                .or_else(|| panes().next())?;
-            let terminal = pane.terminal_id.clone();
-            self.pending_session = None;
-            return Some(terminal);
-        }
-        if self.shown.is_some() {
-            return None;
-        }
-        sessions::default_pane(topology)
-    }
-
-    /// Open the target terminal once its replica is ready. Retried on every
-    /// drain until it succeeds; the runtime streams attached terminals on
-    /// its own, so nothing here forces a reconnect.
-    fn open_wanted(&mut self, client: &Client) -> bool {
-        let Some(target) = self.target(client) else {
-            return false;
-        };
-        if self.shown.as_ref().is_some_and(|s| s.terminal == target) {
-            self.wanted = None;
-            return false;
-        }
-        if self.others.contains_key(&target) {
-            self.focus_pane(&target);
-            self.wanted = None;
-            return true;
-        }
-        let Ok(view) = client.create_view(&target) else {
-            self.want(target);
-            return false;
-        };
-        // The old focus stays on screen if the layout still shows it.
-        if let Some(old) = self.shown.take() {
-            self.others.insert(old.terminal, old.view);
-            self.painted.replace(None);
-        }
-        self.activities.seen(&target);
-        self.shown = Some(Shown {
-            terminal: target,
-            view,
-        });
-        self.wanted = None;
-        self.notice = None;
-        self.generation += 1;
-        true
     }
 }
 

@@ -15,6 +15,7 @@ explains itself at the top.
 | `@phux/pi`, `@phux/opencode`, `@phux/omp` on npm             | `<component>-vX.Y.Z`                         | `agent-integration-release.yml`          |
 | Claude and Grok plugins                                      | `claude-plugin-vX.Y.Z`, `grok-plugin-vX.Y.Z` | same; GitHub release only                |
 | `phux-protocol` on crates.io                                 | `vX.Y.Z`                                     | `just publish-protocol`, by hand         |
+| Phux Rune alpha (macOS arm64, Linux x86_64) and its feed `rune.json` in `channels` | `rune-vX.Y.Z-alpha.N` | `rune-client.yml` |
 | `next` prerelease                                            | moving `next` tag                            | `next.yml`                               |
 | channel manifests `stable.json`, `next.json`                 | the `channels` release                       | `bun tools/main.ts release-manifest`     |
 
