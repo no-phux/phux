@@ -128,6 +128,42 @@ test("renderer test dependencies track the shipping GPUI and shader parser", () 
   ).toEqual([naga, naga]);
 });
 
+test("Windows icon fixture tracks shipping GPUI without unrelated default features", () => {
+  const shipping = layout();
+  const fixture = readFileSync(
+    join(shipping.toolchain, "../../../scripts/ci/test-windows-brand-icons.ps1"),
+    "utf8",
+  );
+  const template = fixture.match(/@"\r?\n([\s\S]*?)\r?\n"@ \| Set-Content/)?.[1];
+  expect(template).toBeDefined();
+  expect(Bun.TOML.parse(template ?? "")).toMatchObject({
+    dependencies: {
+      gpui: {
+        version: `=${readPin(shipping).crates["gpui-fast"]?.version}`,
+        "default-features": false,
+      },
+      "gpui-windows": { "default-features": false },
+    },
+  });
+  expect(fixture).not.toContain("--precise");
+  const capturePatch = readFileSync(
+    join(shipping.toolchain, "patches/0026-windows-capture-compat.patch"),
+    "utf8",
+  );
+  // A stale optional pin still participates in Cargo's lock resolution.
+  expect([...capturePatch.matchAll(/\+version = "([^"]+)"/g)].map((match) => match[1])).toEqual([
+    "2.0.1",
+    "2.0.1",
+  ]);
+  const testPatch = readFileSync(
+    join(shipping.toolchain, "patches/0027-windows-test-json.patch"),
+    "utf8",
+  );
+  expect(testPatch.match(/\+\[dev-dependencies\.serde_json\]\n\+version = "1\.0"/g)).toHaveLength(
+    2,
+  );
+});
+
 test("downloads are verified before caching; a tampered cache is preserved", async () => {
   const cached = join(paths.cache, "crates/demo-0.1.0.crate");
   const demo = (sha = sha256(ARCHIVE)) =>

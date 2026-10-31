@@ -1,0 +1,26 @@
+diff --git a/gpui-fast/Cargo.toml b/gpui-fast/Cargo.toml
+index 0e5dca1..5ba7d15 100644
+--- a/gpui-fast/Cargo.toml
++++ b/gpui-fast/Cargo.toml
+@@ -529,7 +529,7 @@ features = [
+ ]
+ 
+ [target.'cfg(target_os = "windows")'.dependencies.windows-capture]
+-version = "=1.4.2"
++version = "2.0.1"
+ optional = true
+ 
+ [lints.rust.unexpected_cfgs]
+diff --git a/gpui-fast/Cargo.toml.orig b/gpui-fast/Cargo.toml.orig
+index c711aa8..8a42eec 100644
+--- a/gpui-fast/Cargo.toml.orig
++++ b/gpui-fast/Cargo.toml.orig
+@@ -320,7 +320,7 @@ version = "0.62"
+ features = ["Data_Xml_Dom", "Foundation_Numerics", "Globalization_DateTimeFormatting", "Storage_Search", "Storage_Streams", "System_Threading", "UI_Notifications", "UI_ViewManagement", "Wdk_System_SystemServices", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_DirectComposition", "Win32_Graphics_DirectWrite", "Win32_Graphics_DirectManipulation", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Graphics_Imaging", "Win32_Graphics_Hlsl", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_DataExchange", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Performance", "Win32_System_Pipes", "Win32_System_Power", "Win32_System_RestartManager", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Variant", "Win32_System_WinRT", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging", "Win32_Media", "Win32_System_RemoteDesktop", "Win32_System_WindowsProgramming"]
+ 
+ [target."cfg(target_os = \"windows\")".dependencies.windows-capture]
+-version = "=1.4.2"
++version = "2.0.1"
+ optional = true
+ 
+ [build-dependencies.embed-resource]

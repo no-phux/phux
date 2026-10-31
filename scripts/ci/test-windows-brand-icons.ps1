@@ -24,13 +24,13 @@ path = "$fixture"
 anyhow = "1"
 base64 = "0.23"
 serde_json = "1"
-gpui = { package = "gpui-fast", version = "=0.1.12" }
-gpui-windows = { package = "gpui-fast-windows", path = "windows" }
+gpui = { package = "gpui-fast", version = "=0.1.12", default-features = false }
+gpui-windows = { package = "gpui-fast-windows", path = "windows", default-features = false }
 [patch.crates-io]
 gpui-fast = { path = "$core" }
 "@ | Set-Content (Join-Path $scratch 'Cargo.toml')
-    # Resolve only the disposable fixture; reuse the managed lock's latest
-    # windows-capture instead of imposing the obsolete 1.4.2 downgrade.
+    # Resolve only this disposable fixture, without downgrading the managed
+    # lock to GPUI's former windows-capture 1.4.2 pin.
     cargo run --manifest-path (Join-Path $scratch 'Cargo.toml') --bin windows-brand-icons
     if ($LASTEXITCODE -ne 0) { throw "Windows icon fixture failed: $LASTEXITCODE" }
 } finally {
