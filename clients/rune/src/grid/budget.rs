@@ -181,7 +181,8 @@ fn panes(state: &Panes, _: &mut Cx<Panes>) -> El {
     for view in &state.views {
         perf::RENDERS.incr();
         let frame = state.client.acquire_view(*view).expect("a frame");
-        out = out.child(paint(&frame, true, true, &state.metrics));
+        let selection = crate::theme::Selection::system();
+        out = out.child(paint(&frame, true, true, &state.metrics, selection));
     }
     out
 }

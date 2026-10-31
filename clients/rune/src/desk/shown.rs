@@ -120,7 +120,8 @@ impl Desk {
             view,
         });
         self.wanted = None;
-        self.notice = self.link_notice();
+        self.notice = None;
+        self.say_link_moved();
         self.generation += 1;
         true
     }

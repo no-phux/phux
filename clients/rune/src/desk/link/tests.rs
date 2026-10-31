@@ -15,7 +15,7 @@ use phux_client_runtime::Runtime;
 use phux_client_runtime::control::{ControlOptions, PaneDescriptor, Topology};
 use phux_protocol::ids::ResourceId;
 
-use crate::desk::{Notice, NoticeKind, Pending, Shown};
+use crate::desk::{NoticeKind, Pending, Shown};
 use crate::launch::{self, Options};
 
 fn desk() -> Desk {
@@ -258,13 +258,8 @@ fn a_replaced_client_keeps_whats_waiting_on_you() {
     desk.say(NoticeKind::Error, "spawn failed");
     desk.renew();
     assert_eq!(desk.pending, Some(held));
-    assert_eq!(
-        desk.notice,
-        Some(Notice {
-            kind: NoticeKind::Error,
-            text: "spawn failed".to_owned()
-        })
-    );
+    let notice = desk.notice.as_ref().map(|notice| notice.text.as_str());
+    assert_eq!(notice, Some("spawn failed"));
 }
 
 #[test]

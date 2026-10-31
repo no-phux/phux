@@ -12,16 +12,15 @@ use crate::activity::Mark;
 use crate::desk::Desk;
 use crate::palette::pane_label;
 
-/// A mark's colour: Catppuccin's, as the GPUI desktop uses them.
+/// A mark's colour, from the theme's own palette.
 pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
-    let rgb = |r, g, b| crate::grid::color(phux_client_runtime::publication::Rgb { r, g, b });
     match mark {
-        Mark::Blocked | Mark::Failed => rgb(0xf3, 0x8b, 0xa8),
-        Mark::Done => rgb(0x94, 0xe2, 0xd5),
-        Mark::Bell => rgb(0xfa, 0xb3, 0x87),
-        Mark::Working => rgb(0xf9, 0xe2, 0xaf),
+        Mark::Blocked | Mark::Failed => ink.marks.alert,
+        Mark::Done => ink.marks.done,
+        Mark::Bell => ink.marks.bell,
+        Mark::Working => ink.marks.working,
         Mark::Running => ink.accent,
-        Mark::Succeeded | Mark::Idle => rgb(0xa6, 0xe3, 0xa1),
+        Mark::Succeeded | Mark::Idle => ink.marks.good,
         Mark::None => ink.separator,
     }
 }

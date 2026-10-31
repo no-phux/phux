@@ -48,7 +48,7 @@ impl Desk {
         let terminal = shown.terminal.clone();
         let transfer = client.put_file(terminal.clone(), "png".to_owned(), png);
         self.uploads.push((transfer, terminal));
-        self.say(NoticeKind::Error, "Uploading image…");
+        self.say(NoticeKind::Info, "Uploading image…");
     }
 
     /// Files dropped on a pane land in that pane.
@@ -57,9 +57,12 @@ impl Desk {
         self.paste(&paths_line(paths));
     }
 
-    /// Uploads finishing: paste each path where its image was pasted.
-    pub(super) fn finish_uploads(&mut self, client: &Client) {
-        for receipt in client.take_file_upload_receipts() {
+    /// Uploads finishing: paste each path where its image was pasted. True
+    /// when any finished.
+    pub(super) fn finish_uploads(&mut self, client: &Client) -> bool {
+        let receipts = client.take_file_upload_receipts();
+        let finished = !receipts.is_empty();
+        for receipt in receipts {
             let Some(at) = self
                 .uploads
                 .iter()
@@ -70,7 +73,7 @@ impl Desk {
             let (_, terminal) = self.uploads.remove(at);
             match (receipt.outcome, receipt.path) {
                 (FileUploadOutcome::Completed, Some(path)) => {
-                    self.notice = None;
+                    self.end_uploading_notice();
                     let line = format!("{} ", quoted(Path::new(&path)));
                     if !self.deliver_paste(&terminal, &line) {
                         self.say(
@@ -85,12 +88,61 @@ impl Desk {
                 ),
             }
         }
+        finished
+    }
+
+    /// "Uploading" is over with the last upload. A failure's notice stays.
+    fn end_uploading_notice(&mut self) {
+        if self.uploads.is_empty() {
+            self.notice
+                .take_if(|notice| notice.kind == NoticeKind::Info);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
+    use crate::launch::Resolved;
+
+    fn desk() -> Desk {
+        Desk::new(&Resolved::offline("not launched"))
+    }
+
+    #[test]
+    fn uploading_stays_until_the_last_upload_ends() {
+        let mut desk = desk();
+        desk.uploads.push((2, ResourceId::local(1)));
+        desk.say(NoticeKind::Info, "Uploading image…");
+        desk.end_uploading_notice();
+        assert!(desk.notice.is_some(), "one is still on its way");
+        desk.uploads.clear();
+        desk.end_uploading_notice();
+        assert!(desk.notice.is_none());
+    }
+
+    #[test]
+    fn a_success_leaves_a_failure_showing() {
+        let mut desk = desk();
+        desk.say(NoticeKind::Error, "Image not sent: full");
+        desk.end_uploading_notice();
+        assert!(desk.notice.is_some());
+    }
+
+    #[test]
+    fn a_notice_asks_for_the_poll_that_times_it() {
+        let wakes = Arc::new(AtomicU32::new(0));
+        let counted = wakes.clone();
+        let mut desk = desk();
+        desk.waker = Some(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }));
+        desk.say(NoticeKind::Error, "Rename failed. Try again.");
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn plain_paths_stay_bare() {

@@ -22,6 +22,7 @@ use rune::text::advance;
 use rune::{Color, El, Family, TextStyle, el, memo, text};
 
 use crate::perf;
+use crate::theme::Selection;
 
 mod glyphs;
 
@@ -126,22 +127,14 @@ pub fn color(rgb: Rgb) -> Color {
     }
 }
 
-pub fn theme() -> Theme<Color> {
+pub fn theme(selection: Selection) -> Theme<Color> {
     Theme {
         foreground: None,
         background: None,
         cursor: None,
         ansi: None,
-        selection_foreground: color(Rgb {
-            r: 0xff,
-            g: 0xff,
-            b: 0xff,
-        }),
-        selection_background: color(Rgb {
-            r: 0x3a,
-            g: 0x5f,
-            b: 0x9e,
-        }),
+        selection_foreground: selection.foreground,
+        selection_background: selection.background,
         rgb: color,
     }
 }
@@ -343,7 +336,13 @@ fn row_el(list: &DrawList<Color>, row: &Row<'_>, m: &Metrics) -> El {
 }
 
 /// The whole grid, sized to its cells, over the frame's default background.
-pub fn paint(frame: &GridFrame, focused: bool, blink_on: bool, metrics: &Metrics) -> El {
+pub fn paint(
+    frame: &GridFrame,
+    focused: bool,
+    blink_on: bool,
+    metrics: &Metrics,
+    selection: Selection,
+) -> El {
     let preparing = Instant::now();
     // A generation restarts with its presentation, and an allocation can
     // come back: together with the replica's sequence they name one frame.
@@ -353,11 +352,12 @@ pub fn paint(frame: &GridFrame, focused: bool, blink_on: bool, metrics: &Metrics
         frame.last_seq,
         (focused, blink_on),
         (metrics.font_size.to_bits(), metrics.cell_w.to_bits()),
+        selection.key(),
     );
     let mut built = false;
     let grid = memo(format!("grid-{}", frame.terminal_id), version, || {
         built = true;
-        build(frame, focused, blink_on, metrics)
+        build(frame, focused, blink_on, metrics, selection)
     });
     if built {
         perf::PREPARE_PATCHED.incr();
@@ -368,13 +368,19 @@ pub fn paint(frame: &GridFrame, focused: bool, blink_on: bool, metrics: &Metrics
     grid
 }
 
-fn build(frame: &GridFrame, focused: bool, blink_on: bool, metrics: &Metrics) -> El {
+fn build(
+    frame: &GridFrame,
+    focused: bool,
+    blink_on: bool,
+    metrics: &Metrics,
+    selection: Selection,
+) -> El {
     let visibility = phux_client_runtime::draw::Visibility {
         focused,
         cursor_visible: true,
         blink_visible: blink_on,
     };
-    let list = DrawList::build(frame, &theme(), visibility);
+    let list = DrawList::build(frame, &theme(selection), visibility);
     let mut grid = rune::col()
         .size(
             f32::from(list.cols) * metrics.cell_w,
@@ -448,7 +454,8 @@ fn text_cells(text: &str) -> u16 {
 
 /// The frame's own default background, for the area around the grid.
 pub fn background(frame: &GridFrame) -> Color {
-    let (_, background) = phux_client_runtime::draw::default_colors(frame, &theme());
+    let (_, background) =
+        phux_client_runtime::draw::default_colors(frame, &theme(Selection::system()));
     background
 }
 

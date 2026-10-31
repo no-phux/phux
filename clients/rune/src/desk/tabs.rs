@@ -152,7 +152,8 @@ impl Desk {
         failure: &str,
     ) {
         if let Err(error) = self.submit_arrangement(client, session, doc) {
-            self.say(NoticeKind::Error, format!("{failure}: {error}"));
+            eprintln!("{failure}: {error}");
+            self.say(NoticeKind::Error, format!("{failure}. Try again."));
         }
     }
 
@@ -170,13 +171,15 @@ impl Desk {
         Ok(operation)
     }
 
-    /// Close every terminal of a tab, asking first if the setting says to.
+    /// Close every terminal of a tab. With the setting on, asks first unless
+    /// each one is vouched idle.
     pub fn close_tab(&mut self, index: usize) {
         let Some(tab) = self.tabs.list.get(index) else {
             return;
         };
         let terminals = tab.terminals.clone();
-        if self.settings.confirm_close {
+        let idle = terminals.iter().all(|id| self.vouched_idle(id));
+        if self.settings.confirm_close && !idle {
             self.pending = Some(Pending::CloseTab(terminals));
         } else if let Some(client) = &self.client {
             let _ = client.close_terminals(terminals);
@@ -262,7 +265,8 @@ impl Desk {
         match target {
             Renaming::Session(key) => {
                 if let Err(error) = client.rename_session(key, &name) {
-                    self.say(NoticeKind::Error, format!("Rename failed: {error}"));
+                    eprintln!("Rename failed: {error}");
+                    self.say(NoticeKind::Error, "Rename failed. Try again.");
                 }
             }
             Renaming::Tab(id) => {

@@ -15,7 +15,7 @@ pub struct Settings {
     pub notifications: bool,
     pub option_as_meta: bool,
     pub copy_on_select: bool,
-    /// Ask before ⌘W ends what's running, or a tab closes.
+    /// Ask before closing a terminal or tab with something running.
     pub confirm_close: bool,
 }
 
@@ -99,8 +99,12 @@ impl Desk {
             .set("confirm_close", &self.settings.confirm_close);
     }
 
-    /// Keys while settings is open: arrows walk the themes, previewing live.
-    pub(super) fn settings_key(&mut self, event: &KeyEvent) {
+    /// Keys while settings is open and no control has them: arrows walk the
+    /// themes, previewing live, as a focused theme grid does.
+    pub(super) fn settings_key(&mut self, event: &KeyEvent, tx: &Tx) {
+        if tx.focused().is_some() {
+            return;
+        }
         let at = self
             .settings
             .theme

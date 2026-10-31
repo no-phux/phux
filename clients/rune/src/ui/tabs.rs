@@ -1,9 +1,9 @@
 //! The tab strip, shown once a session has more than one tab, and the
 //! rename sheet.
 
-use rune::{Color, El, TextStyle, Transition, col, el, row, text, text_input};
+use rune::{Color, El, TextStyle, col, el, row, text, text_input};
 
-use super::{CAPTION, Ink, LABEL_STRONG, pressable};
+use super::{CAPTION, Ink, LABEL_STRONG, Sheet, button, pressable};
 use crate::activity::Mark;
 use crate::desk::{Desk, Renaming, Tab};
 
@@ -30,7 +30,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
     let hint = (index < 9).then(|| {
         text(format!("{}{}", super::MOD, index + 1))
             .font(CAPTION)
-            .color(ink.dim.alpha(0.7))
+            .color(ink.dim)
     });
     pressable(format!("tab-{index}"), ink)
         .h(24.0)
@@ -95,46 +95,57 @@ pub fn rename_sheet(desk: &Desk, ink: &Ink) -> Option<El> {
         Renaming::Session(_) => "Rename session",
         Renaming::Tab(_) => "Rename tab",
     };
-    let panel = col()
-        .key("rename")
-        .w(360.0)
-        .padding(16.0)
-        .gap(10.0)
-        .radius(12.0)
-        .fill(ink.raised)
-        .border(1.0, ink.separator)
-        .shadow(18.0, 56.0, Color::BLACK.alpha(0.5))
-        .transition(Transition::scale(0.97).combined(Transition::opacity()))
-        .child(text(title).font(LABEL_STRONG).color(ink.text))
+    let field = row()
+        .w_full()
+        .px(10.0)
+        .py(7.0)
+        .radius(7.0)
+        .fill(ink.separator)
         .child(
-            row()
-                .w_full()
-                .px(10.0)
-                .py(7.0)
-                .radius(7.0)
-                .fill(ink.separator)
-                .child(
-                    text_input(
-                        &desk.tabs.rename_field,
-                        TextStyle::new(14.0, 400.0).lh(20.0),
-                    )
-                    .key("rename-field")
-                    .single_line()
-                    .grow(1.0)
-                    .color(ink.text)
-                    .on_edit(|d: &mut Desk| &mut d.tabs.rename_field)
-                    .on_input_key(|d: &mut Desk, event, tx| d.rename_key(event, tx))
-                    .on_submit(|d: &mut Desk, tx| d.submit_rename(tx)),
-                ),
+            text_input(
+                &desk.tabs.rename_field,
+                TextStyle::new(14.0, 400.0).lh(20.0),
+            )
+            .key("rename-field")
+            .single_line()
+            .grow(1.0)
+            .color(ink.text)
+            .on_edit(|d: &mut Desk| &mut d.tabs.rename_field)
+            .on_input_key(|d: &mut Desk, event, tx| d.rename_key(event, tx))
+            .on_submit(|d: &mut Desk, tx| d.submit_rename(tx)),
         );
+    let save = pressable("rename-save", ink)
+        .px(12.0)
+        .py(6.0)
+        .radius(6.0)
+        .fill(ink.accent)
+        .focusable(true)
+        .role("button")
+        .label("Save")
+        .default_button()
+        .on_press_tx(|d: &mut Desk, tx| d.submit_rename(tx))
+        .child(text("Save (Return)").font(CAPTION).color(ink.on_accent));
+    let cancel = button("Cancel (Esc)", "rename-cancel", ink, Desk::cancel_rename)
+        .grow(0.0)
+        .px(12.0)
+        .focusable(true)
+        .role("button")
+        .label("Cancel");
+    let foot = row()
+        .w_full()
+        .gap(8.0)
+        .child(el().grow(1.0))
+        .child(cancel)
+        .child(save);
     Some(
-        el().key("rename-scrim")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .fill(Color::BLACK.alpha(0.3))
-            .transition(Transition::opacity())
-            .modal(true, |d: &mut Desk| d.cancel_rename())
-            .child(col().w_full().pt(140.0).items_center().child(panel)),
+        Sheet {
+            key: "rename",
+            title,
+            width: 360.0,
+            top: 140.0,
+            scrim: 0.3,
+            close: Desk::cancel_rename,
+        }
+        .build(None, col().w_full().padding(16.0).child(field), foot, ink),
     )
 }

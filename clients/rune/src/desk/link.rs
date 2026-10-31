@@ -15,7 +15,7 @@ use phux_client_runtime::{Client, Target};
 use phux_protocol::ids::SessionKey;
 use rune::Tx;
 
-use super::{Desk, Notice, NoticeKind, sessions};
+use super::{Desk, NoticeKind, sessions};
 use crate::launch::Resolved;
 use crate::machines::LOCAL;
 
@@ -518,12 +518,10 @@ impl Desk {
         }
     }
 
-    pub fn link_notice(&mut self) -> Option<Notice> {
-        let text = self.link.moved.take()?;
-        Some(Notice {
-            kind: NoticeKind::Error,
-            text,
-        })
+    pub(super) fn say_link_moved(&mut self) {
+        if let Some(text) = self.link.moved.take() {
+            self.say(NoticeKind::Error, text);
+        }
     }
 
     /// Whether the server lists `terminal`.

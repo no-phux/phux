@@ -1,17 +1,20 @@
-//! What floats over a pane: the find bar, a held-⌘ link's underline, and,
-//! while history is scrolled back, a position rail and a way back to live.
+//! What floats over the terminals: the find bar, a held-⌘ link's underline,
+//! a toast, and, while history is scrolled back, a position rail and a way
+//! back to live.
 
 use phux_client_runtime::publication::GridFrame;
 use phux_protocol::ids::ResourceId;
 use rune::{Color, El, Family, TextStyle, Transition, el, row, text, text_input};
 
-use super::{CAPTION, Ink, PAD, pressable};
-use crate::desk::Desk;
+use super::status::notice_line;
+use super::{CAPTION, Ink, PAD, keep_from_pane, pressable};
+use crate::desk::{Desk, NoticeKind};
 use crate::grid::Metrics;
 
 const FIND_W: f32 = 340.0;
 const PILL_W: f32 = 132.0;
 const RAIL_W: f32 = 3.0;
+const TOAST_W: f32 = 420.0;
 
 /// The held-⌘ link's underline, in grid points.
 pub fn link_underline(desk: &Desk, id: &ResourceId, m: &Metrics, ink: &Ink) -> Vec<El> {
@@ -32,13 +35,59 @@ pub fn link_underline(desk: &Desk, id: &ResourceId, m: &Metrics, ink: &Ink) -> V
         .collect()
 }
 
-fn icon_button(label: &'static str, key: &'static str, ink: &Ink, press: fn(&mut Desk)) -> El {
+pub(super) fn icon_button(
+    label: &'static str,
+    key: impl Into<String>,
+    ink: &Ink,
+    press: fn(&mut Desk),
+) -> El {
     pressable(key, ink)
         .size(24.0, 24.0)
         .radius(5.0)
         .center()
         .on_press(press)
         .child(text(label).font(CAPTION).color(ink.dim))
+}
+
+/// A key and what it does, as a sheet's footer lists them.
+pub(super) fn key_hint(key: &'static str, what: &'static str, ink: &Ink) -> El {
+    row()
+        .gap(4.0)
+        .child(text(key).font(CAPTION).color(ink.text))
+        .child(text(what).font(CAPTION).color(ink.dim))
+}
+
+/// The current notice, bottom left, clear of the live pill. The inbox's
+/// footer says it instead while the drawer is open.
+pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
+    let notice = desk.notice.as_ref().filter(|_| !desk.inbox.open)?;
+    let edge = match notice.kind {
+        NoticeKind::Info => ink.separator,
+        NoticeKind::Error => ink.danger.alpha(0.6),
+    };
+    let toast = row()
+        .key("toast")
+        .on_drag(keep_from_pane)
+        .shrink()
+        .max_w(TOAST_W)
+        .pl(12.0)
+        .pr(4.0)
+        .py(4.0)
+        .gap(8.0)
+        .items_center()
+        .radius(9.0)
+        .fill(ink.raised)
+        .border(1.0, edge)
+        .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
+        .transition(Transition::opacity())
+        .child(notice_line(Some(notice), ink))
+        .child(icon_button("✕", "toast-close", ink, Desk::dismiss_notice));
+    // The host gives the words a width to wrap at.
+    Some(
+        row()
+            .pin(Some(12.0), None, Some(12.0), Some(12.0))
+            .child(toast),
+    )
 }
 
 /// The find bar, top right of the pane find belongs to.
@@ -78,6 +127,7 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
             .key("find-bar")
             .absolute(left, PAD + 4.0)
             .w(width)
+            .on_drag(keep_from_pane)
             .h(36.0)
             .pl(12.0)
             .pr(4.0)
@@ -90,7 +140,7 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
                 if miss {
                     ink.danger.alpha(0.6)
                 } else {
-                    Color::WHITE.alpha(0.08)
+                    ink.separator
                 },
             )
             .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
@@ -150,7 +200,7 @@ pub fn history(
         .radius(14.0)
         .center()
         .fill(if unread > 0 { ink.accent } else { ink.raised })
-        .border(1.0, Color::WHITE.alpha(0.1))
+        .border(1.0, ink.separator)
         .shadow(6.0, 18.0, Color::BLACK.alpha(0.35))
         .cursor(rune::Cursor::Pointer)
         .transition(Transition::scale(0.9).combined(Transition::opacity()))
@@ -158,7 +208,7 @@ pub fn history(
         .child(
             text(label)
                 .font(CAPTION)
-                .color(if unread > 0 { Color::WHITE } else { ink.text }),
+                .color(if unread > 0 { ink.on_accent } else { ink.text }),
         );
     vec![rail, pill]
 }
