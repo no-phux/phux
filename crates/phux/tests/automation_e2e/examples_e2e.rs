@@ -10,6 +10,25 @@ mod common;
 
 #[test]
 #[ignore = "spawns private servers and PTYs; run through just e2e"]
+fn agent_verify_self_test_covers_the_harness_without_real_agents() {
+    let output = std::process::Command::new("python3")
+        .arg(crate::runner::manifest_dir().join("../../scripts/agent-verify/self_test.py"))
+        .env("PHUX", crate::runner::phux_bin())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run agent-verify self-test");
+    assert!(
+        output.status.success(),
+        "agent-verify self-test failed: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "spawns private servers and PTYs; run through just e2e"]
 fn introductory_examples_use_real_output_and_propagate_failures() {
     let output = std::process::Command::new("bash")
         .arg(crate::runner::manifest_dir().join("../../scripts/examples-smoke.sh"))
