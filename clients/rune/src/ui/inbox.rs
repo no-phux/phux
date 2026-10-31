@@ -1,8 +1,6 @@
 //! The inbox: a drawer of everything waiting on you, answerable in place,
 //! and the card a focused pane shows when its agent is asking.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use phux_client_runtime::approvals::{Approval, Decision};
 use phux_protocol::ids::ResourceId;
 use rune::{Color, El, Family, TextStyle, Transition, col, el, row, text, text_input};
@@ -16,6 +14,19 @@ use crate::inbox::{self, Item, Waiting};
 
 const WIDTH: f32 = 400.0;
 const CARD_W: f32 = 340.0;
+/// Decisions' chords, shown on their buttons.
+const DENY: &str = if cfg!(target_os = "macos") {
+    "Deny  ⌘⌫"
+} else {
+    "Deny  Ctrl+Shift+⌫"
+};
+const APPROVE: &str = if cfg!(target_os = "macos") {
+    "Approve  ⌘↩"
+} else {
+    "Approve  Ctrl+Shift+↩"
+};
+/// An ACP agent answers over the protocol, which only the GPUI app speaks.
+const ACP_ELSEWHERE: &str = "ACP question: answer it in the Phux desktop app.";
 
 fn pick_hint(keys: &'static str, what: &'static str, ink: &Ink) -> El {
     row()
@@ -97,7 +108,7 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
         .ask
         .as_ref()
         .and_then(|ask| ask.since)
-        .map(|since| format!(" · {}", inbox::age(since.elapsed().as_secs())))
+        .map(|since| format!(" · {}", inbox::waited(since)))
         .unwrap_or_default();
     let busy = desk.answering(&waiting.terminal);
     let word = if busy {
@@ -111,12 +122,13 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
         format!("{word}{age}"),
         ink,
     ));
-    card = card.child(
-        text(format!("{} · {}", waiting.label, waiting.session))
-            .font(CAPTION)
-            .color(ink.dim)
-            .truncate(),
-    );
+    let place = match &waiting.kind {
+        Some(kind) if Some(kind) != waiting.agent.as_ref() => {
+            format!("{} · {} · {kind}", waiting.label, waiting.session)
+        }
+        _ => format!("{} · {}", waiting.label, waiting.session),
+    };
+    card = card.child(text(place).font(CAPTION).color(ink.dim).truncate());
     let Some(ask) = &waiting.ask else {
         let hint = (waiting.mark == Mark::Blocked).then(|| {
             text("Waiting on you in its terminal.")
@@ -126,6 +138,9 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
         return card.children(hint);
     };
     card = card.child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
+    if !ask.typed() {
+        return card.child(text(ACP_ELSEWHERE).font(CAPTION).color(ink.dim).wrap());
+    }
     if !ask.suggestions.is_empty() {
         card = card.child(chips(&waiting.terminal, ask, picked, busy, ink));
     }
@@ -154,15 +169,11 @@ fn waiting_card(desk: &Desk, waiting: &Waiting, picked: bool, ink: &Ink) -> El {
 }
 
 fn approval_card(approval: &Approval, ink: &Ink) -> El {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |t| t.as_millis() as u64);
-    let left = approval.expires_at_ms.saturating_sub(now_ms) / 1000;
     let requester = inbox::approval_requester(approval);
     let mut card = col().w_full().gap(8.0).child(header(
         ink.danger,
         inbox::approval_title(approval),
-        format!("expires in {}", inbox::age(left)),
+        inbox::expiry(approval),
         ink,
     ));
     card = card.child(
@@ -198,24 +209,8 @@ fn approval_card(approval: &Approval, ink: &Ink) -> El {
         row()
             .w_full()
             .gap(6.0)
-            .child(decide(
-                Decision::Deny,
-                if cfg!(target_os = "macos") {
-                    "Deny  ⌘⌫"
-                } else {
-                    "Deny"
-                },
-                false,
-            ))
-            .child(decide(
-                Decision::Approve,
-                if cfg!(target_os = "macos") {
-                    "Approve  ⌘↩"
-                } else {
-                    "Approve"
-                },
-                true,
-            )),
+            .child(decide(Decision::Deny, DENY, false))
+            .child(decide(Decision::Approve, APPROVE, true)),
     )
 }
 
@@ -347,14 +342,17 @@ pub fn ask_card(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         .child(header(
             mark_color(Mark::Blocked, ink),
             who,
-            if busy {
-                "sending…".to_owned()
-            } else {
-                format!("{}I to reply", super::MOD)
+            match (busy, ask.typed()) {
+                (true, _) => "sending…".to_owned(),
+                (false, true) => format!("{}I to reply", super::MOD),
+                (false, false) => "ACP".to_owned(),
             },
             ink,
         ))
         .child(text(ask.text.clone()).font(LABEL).color(ink.text).wrap());
+    if !ask.typed() {
+        return Some(card.child(text(ACP_ELSEWHERE).font(CAPTION).color(ink.dim).wrap()));
+    }
     if !ask.suggestions.is_empty() {
         card = card.child(chips(id, &ask, false, busy, ink));
     }

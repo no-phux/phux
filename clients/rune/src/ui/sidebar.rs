@@ -1,7 +1,11 @@
 //! The sidebar: every session and terminal on the server, each terminal
 //! with what it is doing, and what needs you counted per session.
 
-use rune::{Color, El, LoopSpec, TextStyle, col, el, row, text};
+use std::collections::HashMap;
+
+use phux_client_runtime::control::Topology;
+use phux_protocol::ids::{ResourceId, SessionKey};
+use rune::{Color, El, TextStyle, col, el, memo, row, text};
 
 use super::{CAPTION, Ink, LABEL, LABEL_STRONG, SIDEBAR_W, button, pressable};
 use crate::activity::Mark;
@@ -22,12 +26,14 @@ pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
     }
 }
 
+/// A ring while work is under way, a solid dot otherwise; never animated,
+/// so a busy agent costs no frames.
 fn dot(mark: Mark, ink: &Ink) -> El {
-    let dot = el().size(7.0, 7.0).radius(3.5).fill(mark_color(mark, ink));
+    let dot = el().size(7.0, 7.0).radius(3.5);
     let dot = if mark.live() {
-        dot.looping(LoopSpec::opacity(1.4, 0.0, 0.35, 1.0))
+        dot.border(1.5, mark_color(mark, ink))
     } else {
-        dot
+        dot.fill(mark_color(mark, ink))
     };
     el().w(14.0).h(14.0).center().child(dot)
 }
@@ -56,8 +62,7 @@ fn search(ink: &Ink) -> El {
 }
 
 /// The way into the inbox, loud only when something waits.
-fn inbox_button(desk: &Desk, ink: &Ink) -> El {
-    let waiting = desk.inbox_items().len();
+fn inbox_button(waiting: usize, ink: &Ink) -> El {
     let tint = if waiting > 0 {
         mark_color(Mark::Blocked, ink)
     } else {
@@ -82,22 +87,22 @@ fn inbox_button(desk: &Desk, ink: &Ink) -> El {
         )
 }
 
-fn session_header(desk: &Desk, id: u32, name: &str, current: bool, ink: &Ink) -> El {
-    let key = desk
-        .topology
-        .iter()
-        .flat_map(|t| t.sessions.iter())
-        .find(|s| s.id == id)
-        .and_then(|s| s.key);
-    let label = name.to_owned();
-    let waiting = desk
-        .topology
-        .iter()
-        .flat_map(|t| t.panes.iter())
-        .filter(|p| p.session_id == id && desk.activities.mark(&p.terminal_id).needs_you())
-        .count();
+/// What a session header draws. Everything its handlers capture is here, so
+/// a memoized header is never stale.
+#[derive(Hash)]
+struct Header<'a> {
+    id: u32,
+    name: &'a str,
+    key: Option<SessionKey>,
+    current: bool,
+    waiting: usize,
+}
+
+fn session_header(session: &Header, ink: &Ink) -> El {
+    let key = session.key;
+    let label = session.name.to_owned();
     let header = row()
-        .key(format!("session-{id}"))
+        .key(format!("session-{}", session.id))
         .w_full()
         .pt(12.0)
         .pb(4.0)
@@ -110,13 +115,13 @@ fn session_header(desk: &Desk, id: u32, name: &str, current: bool, ink: &Ink) ->
             }
         })
         .child(
-            text(name.to_uppercase())
+            text(session.name.to_uppercase())
                 .font(TextStyle::new(10.5, 650.0).tracking(0.6))
-                .color(if current { ink.text } else { ink.dim })
+                .color(if session.current { ink.text } else { ink.dim })
                 .truncate(),
         )
         .child(el().grow(1.0));
-    if waiting == 0 {
+    if session.waiting == 0 {
         return header;
     }
     header.child(
@@ -124,25 +129,27 @@ fn session_header(desk: &Desk, id: u32, name: &str, current: bool, ink: &Ink) ->
             .radius(8.0)
             .fill(mark_color(Mark::Blocked, ink).alpha(0.22))
             .child(
-                text(waiting.to_string())
+                text(session.waiting.to_string())
                     .font(CAPTION)
                     .color(mark_color(Mark::Blocked, ink)),
             ),
     )
 }
 
-fn pane_row(
-    desk: &Desk,
-    pane: &phux_client_runtime::control::PaneDescriptor,
+/// What a terminal's row draws, likewise.
+#[derive(Hash)]
+struct Row<'a> {
+    id: &'a ResourceId,
+    session: &'a str,
+    label: String,
+    agent: Option<&'a str>,
+    mark: Mark,
     selected: bool,
-    ink: &Ink,
-) -> El {
-    let mark = desk.activities.mark(&pane.terminal_id);
-    let agent = desk
-        .activities
-        .agent_name(&pane.terminal_id)
-        .map(str::to_owned);
-    let (id, session) = (pane.terminal_id.clone(), pane.session_name.clone());
+}
+
+fn pane_row(pane: &Row, ink: &Ink) -> El {
+    let (mark, selected) = (pane.mark, pane.selected);
+    let (id, session) = (pane.id.clone(), pane.session.to_owned());
     let accent = mark_color(mark, ink);
     let mut line = row()
         .w_full()
@@ -150,25 +157,21 @@ fn pane_row(
         .items_center()
         .child(dot(mark, ink))
         .child(
-            text(pane_label(pane))
+            text(pane.label.clone())
                 .font(if selected { LABEL_STRONG } else { LABEL })
                 .color(ink.text)
                 .truncate(),
         )
         .child(el().grow(1.0));
-    if let Some(agent) = agent {
+    if let Some(agent) = pane.agent {
         line = line.child(
             el().px(6.0)
                 .radius(4.0)
                 .fill(accent.alpha(0.16))
-                .child(text(agent).font(CAPTION).color(accent)),
+                .child(text(agent.to_owned()).font(CAPTION).color(accent)),
         );
     }
-    line = line.child(
-        text(pane.terminal_id.to_string())
-            .font(CAPTION)
-            .color(ink.dim),
-    );
+    line = line.child(text(pane.id.to_string()).font(CAPTION).color(ink.dim));
     let detail = (mark != Mark::None && mark != Mark::Idle).then(|| {
         row()
             .w_full()
@@ -176,7 +179,7 @@ fn pane_row(
             .child(text(mark.word()).font(CAPTION).color(accent))
     });
     col()
-        .key(format!("pane-{}", pane.terminal_id))
+        .key(format!("pane-{}", pane.id))
         .w_full()
         .px(6.0)
         .py(5.0)
@@ -202,28 +205,60 @@ fn pane_row(
         .children(detail)
 }
 
-pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
+/// Marks that need you, by session: one pass, for every header and the button.
+fn waiting_by_session(desk: &Desk, topology: &Topology) -> HashMap<u32, usize> {
+    let mut waiting = HashMap::new();
+    for pane in &topology.panes {
+        if desk.activities.mark(&pane.terminal_id).needs_you() {
+            *waiting.entry(pane.session_id).or_default() += 1;
+        }
+    }
+    waiting
+}
+
+/// Every session's header and rows, rebuilt only where their inputs moved:
+/// the view runs for each frame of terminal output.
+fn session_list(desk: &Desk, topology: &Topology, waiting: &HashMap<u32, usize>, ink: &Ink) -> El {
     let mut list = col().w_full().gap(2.0).px(8.0);
     let shown = desk.shown.as_ref().map(|s| &s.terminal);
     let current = desk.selected_session_name();
-    if let Some(topology) = &desk.topology {
-        for session in &topology.sessions {
-            list = list.child(session_header(
-                desk,
-                session.id,
-                &session.name,
-                current.as_deref() == Some(session.name.as_str()),
-                ink,
-            ));
-            for pane in topology
-                .panes
-                .iter()
-                .filter(|pane| pane.session_id == session.id)
-            {
-                list = list.child(pane_row(desk, pane, shown == Some(&pane.terminal_id), ink));
-            }
+    let theme = desk.settings.theme.map(|t| t.id);
+    for session in &topology.sessions {
+        let header = Header {
+            id: session.id,
+            name: &session.name,
+            key: session.key,
+            current: current.as_deref() == Some(session.name.as_str()),
+            waiting: waiting.get(&session.id).copied().unwrap_or(0),
+        };
+        list = list.child(memo(
+            format!("session-{}", session.id),
+            (&header, theme),
+            || session_header(&header, ink),
+        ));
+        for pane in topology.panes.iter().filter(|p| p.session_id == session.id) {
+            let id = &pane.terminal_id;
+            let row = Row {
+                id,
+                session: &pane.session_name,
+                label: pane_label(pane),
+                agent: desk.activities.agent_name(id),
+                mark: desk.activities.mark(id),
+                selected: shown == Some(id),
+            };
+            list = list.child(memo(format!("pane-{id}"), (&row, theme), || {
+                pane_row(&row, ink)
+            }));
         }
     }
+    list
+}
+
+pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
+    let topology = desk.topology.as_ref();
+    let counts = topology.map_or_else(HashMap::new, |t| waiting_by_session(desk, t));
+    let list = topology.map_or_else(col, |t| session_list(desk, t, &counts, ink));
+    let waiting = desk.inbox.approvals.len() + counts.values().sum::<usize>();
     col()
         .w(SIDEBAR_W)
         .h_full()
@@ -241,7 +276,7 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
                         .font(TextStyle::new(13.0, 700.0))
                         .color(ink.text),
                 )
-                .child(inbox_button(desk, ink)),
+                .child(inbox_button(waiting, ink)),
         )
         .child(super::machines::switch(desk, ink))
         .child(el().w_full().px(8.0).pb(4.0).child(search(ink)))

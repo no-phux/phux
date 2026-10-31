@@ -3,6 +3,9 @@
 //!
 //! The same list drives the inbox, its count, and system notifications.
 
+use std::cmp::Reverse;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
 use phux_client_core::ask::parse_ask_title;
 use phux_client_runtime::approvals::Approval;
 use phux_client_runtime::control::{PaneDescriptor, Topology};
@@ -18,6 +21,7 @@ pub struct Waiting {
     pub session: String,
     pub label: String,
     pub agent: Option<String>,
+    pub kind: Option<String>,
     pub mark: Mark,
     pub ask: Option<Ask>,
 }
@@ -60,6 +64,14 @@ impl Item {
             ),
         }
     }
+
+    /// The time its card shows, which moves with nothing else changing.
+    pub fn clock(&self) -> Option<String> {
+        match self {
+            Self::Approval(approval) => Some(expiry(approval)),
+            Self::Terminal(waiting) => waiting.ask.as_ref()?.since.map(waited),
+        }
+    }
 }
 
 const fn rank(mark: Mark) -> u8 {
@@ -87,6 +99,7 @@ pub fn items(
                 session: pane.session_name.clone(),
                 label: pane_label(pane),
                 agent: activities.agent_name(&pane.terminal_id).map(str::to_owned),
+                kind: activities.agent_kind(&pane.terminal_id).map(str::to_owned),
                 mark,
                 ask: question(pane, activities),
             })
@@ -99,6 +112,30 @@ pub fn items(
         .map(Item::Approval)
         .chain(waiting.into_iter().map(Item::Terminal))
         .collect()
+}
+
+/// Where ⌘J goes: the panes that need you by urgency, then newest first,
+/// taking the one after `shown` so repeats walk them all. The inbox keeps its
+/// rows still instead; a jump has no pointer to slide under.
+pub fn next_jump<'a>(
+    panes: &'a [PaneDescriptor],
+    activities: &Activities,
+    shown: Option<&ResourceId>,
+) -> Option<&'a PaneDescriptor> {
+    let mut order: Vec<&PaneDescriptor> = panes
+        .iter()
+        .filter(|p| activities.mark(&p.terminal_id).needs_you())
+        .collect();
+    order.sort_by_key(|p| {
+        let id = &p.terminal_id;
+        (
+            rank(activities.mark(id)),
+            Reverse(activities.changed_at(id)),
+        )
+    });
+    let after = order.iter().position(|p| Some(&p.terminal_id) == shown);
+    let next = after.map_or(0, |at| (at + 1) % order.len());
+    order.get(next).copied()
 }
 
 /// A held command's catalog name in words: `KILL_RESOURCE` is "Kill resource".
@@ -137,10 +174,25 @@ pub fn age(seconds: u64) -> String {
     }
 }
 
+/// How long something has waited.
+pub fn waited(since: Instant) -> String {
+    age(since.elapsed().as_secs())
+}
+
+/// How long a held action has left.
+pub fn expiry(approval: &Approval) -> String {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |t| t.as_millis() as u64);
+    let left = approval.expires_at_ms.saturating_sub(now_ms) / 1000;
+    format!("expires in {}", age(left))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use phux_client_runtime::approvals::Requester;
+    use phux_client_runtime::control::Event;
 
     fn approval(method: &str, signal: Option<&str>, name: Option<&str>) -> Approval {
         Approval {
@@ -183,6 +235,7 @@ mod tests {
                 session: "s".to_owned(),
                 label: "l".to_owned(),
                 agent: None,
+                kind: None,
                 mark: Mark::Blocked,
                 ask: ask.map(|id| Ask {
                     id: id.to_owned(),
@@ -194,6 +247,53 @@ mod tests {
         };
         assert_ne!(waiting(Some("q1")).key(), waiting(Some("q2")).key());
         assert_eq!(waiting(Some("q1")).key(), waiting(Some("q1")).key());
+    }
+
+    fn pane(n: u32) -> PaneDescriptor {
+        PaneDescriptor {
+            terminal_id: ResourceId::local(n),
+            session_id: 1,
+            session_name: "s".to_owned(),
+            cols: 80,
+            rows: 24,
+            title: None,
+            cwd: None,
+            is_focused: false,
+            key: None,
+            revision: None,
+            name: None,
+            activation: None,
+            exec: None,
+        }
+    }
+
+    #[test]
+    fn a_jump_takes_urgency_then_the_newest_and_walks_on() {
+        let panes = [pane(1), pane(2), pane(3), pane(4)];
+        let mut a = Activities::default();
+        let blocked = |n: u32| Event::AgentMetadata {
+            terminal_id: ResourceId::local(n),
+            value: Some(br#"{"name":"c","state":"blocked"}"#.to_vec()),
+        };
+        let bell = Event::Bell {
+            terminal_id: ResourceId::local(1),
+        };
+        a.apply(&bell, &[]);
+        a.apply(&blocked(2), &[]);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        a.apply(&blocked(3), &[]);
+        let at = |shown: Option<u32>| {
+            let shown = shown.map(ResourceId::local);
+            next_jump(&panes, &a, shown.as_ref()).map(|p| p.terminal_id.clone())
+        };
+        let id = |n| Some(ResourceId::local(n));
+        // Pane 4 needs nothing, so from it the walk starts at the top.
+        assert_eq!(at(Some(4)), id(3));
+        assert_eq!(at(Some(3)), id(2));
+        assert_eq!(at(Some(2)), id(1));
+        assert_eq!(at(Some(1)), id(3));
+        assert_eq!(at(None), id(3));
+        assert!(next_jump(&[], &a, None).is_none());
     }
 
     #[test]

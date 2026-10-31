@@ -374,6 +374,7 @@ impl Desk {
         }
         self.finish_uploads(&client);
         changed |= self.sync_alerts();
+        changed |= self.tick_inbox(tx);
         self.settle_pointer();
         changed |= self.autoscroll(tx);
         self.keep_find();

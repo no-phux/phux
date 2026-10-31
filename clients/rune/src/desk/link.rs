@@ -368,7 +368,9 @@ impl Desk {
     /// A connection opened. Only a server's first replays news: after that
     /// its items are known by id, and what arrived during a gap is new.
     pub(super) fn first_contact(&mut self) {
-        if !std::mem::replace(&mut self.link.heard, true) {
+        if std::mem::replace(&mut self.link.heard, true) {
+            self.inbox.relist = true;
+        } else {
             self.inbox.alerts.connected();
         }
     }
