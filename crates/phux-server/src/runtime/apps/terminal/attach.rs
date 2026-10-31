@@ -24,13 +24,13 @@ use tokio_util::sync::CancellationToken;
 
 use tracing::{debug, trace, warn};
 
-use super::{
-    SpawnOwnership, prepare_attach, seed_session_with_pty_and_colors, send_error,
-    spawn_pane_with_pty_and_colors,
-};
 use crate::hub::relay::SatelliteSpawn;
 use crate::resource::ResourceHandle;
 use crate::runtime::pump::{self, PumpGeneration};
+use crate::runtime::{
+    SpawnOwnership, prepare_attach, seed_session_with_pty_and_colors, send_error,
+    spawn_pane_with_pty_and_colors,
+};
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use crate::terminal_actor::{
     ConsumerAttachRequest, ConsumerDetachRequest, PaneOutput, PwdRequest, ResizeRequest,

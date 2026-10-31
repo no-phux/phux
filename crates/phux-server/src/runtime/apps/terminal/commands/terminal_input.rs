@@ -356,7 +356,7 @@ pub(crate) fn handle_frame_ack(
             return;
         };
         let dispatched = terminal.consumer_ack.try_send(ConsumerAckRequest {
-            client_id: super::super::wire_client(client_id),
+            client_id: crate::runtime::wire_client(client_id),
             stream_id,
             bootstrap_id,
             seq,

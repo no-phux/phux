@@ -20,7 +20,7 @@ use super::{
 /// actor was replaced since `encoded_for` (the bytes belong to the old one).
 fn redeliver(
     encoded_for: &TerminalHandle,
-    current: &super::super::InputDestination,
+    current: &crate::runtime::InputDestination,
     bytes: Option<Vec<u8>>,
     input: &TerminalInput,
     credit: Option<InputCredit>,
@@ -189,7 +189,7 @@ pub(super) fn acknowledged_not_written(message: &str) -> CommandResult {
 /// An acknowledged batch that passed every pre-handoff gate: authority, dedupe
 /// binding, paste safety, and encoding.
 struct PreparedBatch {
-    destination: super::super::InputDestination,
+    destination: crate::runtime::InputDestination,
     bytes: Vec<u8>,
 }
 

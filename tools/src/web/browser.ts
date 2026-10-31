@@ -272,7 +272,8 @@ async function chrome(
  * match every `phux_server` info span, so this stays narrow. An inherited
  * `RUST_LOG` is left alone.
  */
-const DEMO_SERVER_LOG = "phux_server::runtime::attach::output_pump_resync=debug,warn";
+const DEMO_SERVER_LOG =
+  "phux_server::runtime::apps::terminal::attach::output_pump_resync=debug,warn";
 
 /** The demo server in its own group, ready on its bound port for `body`. */
 function demoServer(

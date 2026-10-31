@@ -61,9 +61,9 @@ pub(crate) async fn handle_acquire_input(
         .handle
         .control
         .send(ControlRequest::LeaseChanged {
-            input_holder: Some(super::super::wire_client(client_id)),
+            input_holder: Some(crate::runtime::wire_client(client_id)),
             action: grant.action,
-            actor: Some(super::super::wire_client(client_id)),
+            actor: Some(crate::runtime::wire_client(client_id)),
         })
         .await;
     if let Some((ttl_ms, generation)) = grant.expiry {
@@ -77,7 +77,7 @@ pub(crate) async fn handle_acquire_input(
 /// expiry generation and aborts this task; the generation re-check under the
 /// lock covers the window before the abort handle is attached, so exactly
 /// one `terminal_control` results.
-pub(super) fn spawn_input_lease_expiry(
+pub(in crate::runtime) fn spawn_input_lease_expiry(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
     generation: u64,
@@ -127,7 +127,7 @@ struct LiveExpiryTaskGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 #[cfg(test)]
 impl LiveExpiryTaskGuard {
-    pub(super) fn new(counter: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+    pub(in crate::runtime) fn new(counter: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
         counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Self(counter)
     }
@@ -166,7 +166,7 @@ pub(crate) async fn handle_release_input(
         .send(ControlRequest::LeaseChanged {
             input_holder: None,
             action: ControlAction::Released,
-            actor: Some(super::super::wire_client(client_id)),
+            actor: Some(crate::runtime::wire_client(client_id)),
         })
         .await;
     CommandResult::Ok

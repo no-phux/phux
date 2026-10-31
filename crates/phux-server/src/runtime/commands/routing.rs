@@ -213,7 +213,8 @@ async fn route_command(
         && state.with(|s| {
             s.terminal_from_wire(terminal_id)
                 .and_then(|core| s.resource_handle(core))
-                .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::Terminal)
+                .and_then(|handle| crate::runtime::apps::app_for(handle.kind))
+                .is_some_and(|app| !app.resumes_from_cursor())
         })
     {
         send_result(out_tx, request_id, invalid_agent_cursor()).await;

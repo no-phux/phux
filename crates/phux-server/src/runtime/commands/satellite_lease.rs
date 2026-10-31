@@ -333,7 +333,7 @@ fn notify_satellite_lease_seized(
 /// Forward one fire-and-forget frame (`INPUT_*`, `FRAME_ACK`,
 /// `RESIZE_TERMINAL`) for a satellite terminal over the hub link; `build`
 /// receives the satellite-local id. `false` when there is no route.
-pub(super) fn relay_satellite_frame(
+pub(in crate::runtime) fn relay_satellite_frame(
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
     route: &RelayRoute,

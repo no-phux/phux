@@ -17,7 +17,8 @@ use tracing::trace;
 #[cfg(test)]
 mod actor_conformance;
 mod api;
-pub mod attach;
+mod apps;
+pub use apps::terminal::attach;
 mod checkout;
 pub mod connections;
 /// Compatibility name for the server-side connection handlers.
@@ -30,7 +31,7 @@ mod directory;
 mod download;
 mod ephemeral_listener;
 pub mod idempotent_create;
-pub mod input_lane;
+pub use apps::terminal::input_lane;
 pub mod keyed_ops;
 mod native_agent;
 pub mod operation_dedupe;

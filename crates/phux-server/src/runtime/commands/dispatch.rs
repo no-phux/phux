@@ -5,6 +5,7 @@
 )]
 
 use super::*;
+use crate::runtime::apps::ResourceApp;
 
 /// Run a routed command on this server and return its result.
 #[allow(
@@ -27,10 +28,12 @@ pub(super) async fn dispatch_local(
     let client_id = *client_id;
     let input_lane = ctx.input_lane.as_ref();
 
+    // Facet commands belong to the kind the catalog says owns them.
+    if let Some(app) = crate::runtime::apps::app_owning(&command) {
+        return app.command(ctx, command, claim).await;
+    }
+
     match command {
-        Command::NativeAgent { request } => {
-            super::super::native_agent::handle(ctx, request.into_request()).await
-        }
         Command::AttachResource {
             terminal_id,
             role_policy,
@@ -53,54 +56,6 @@ pub(super) async fn dispatch_local(
         Command::GetPerf { reset } => handle_get_perf(state, reset),
         Command::DescribeApi => super::super::api::describe(state),
         Command::PerfControl { op } => super::super::perf_control::handle(op).await,
-        Command::Transcribe {
-            upload_id,
-            terminal_id,
-        } => {
-            super::super::voice::handle_transcribe(
-                state,
-                client_id,
-                upload_id,
-                &terminal_id,
-                input_lane,
-            )
-            .await
-        }
-        Command::GetScreen {
-            terminal_id,
-            request_scrollback,
-            cells,
-            format,
-        } => handle_get_screen(state, &terminal_id, request_scrollback, cells, format).await,
-        Command::RouteInput { terminal_id, event } => match input_lane {
-            // A held `ROUTE_INPUT` waits for a pane input credit exactly as a
-            // direct one does (ADR-0144).
-            Some(lane) => match super::super::input_lane::acquire_credit(state, &terminal_id).await
-            {
-                Ok(credit) => {
-                    lane.begin_route(state, client_id, terminal_id, event, credit)
-                        .await
-                }
-                Err(super::super::input_lane::InputStalled) => {
-                    super::super::input_lane::InputStalled::result(&terminal_id)
-                }
-            },
-            None => handle_route_input(state, client_id, &terminal_id, event),
-        },
-        Command::ApplyInput {
-            operation_id,
-            terminal_id,
-            events,
-        } => match input_lane {
-            Some(lane) => {
-                lane.begin_apply(state, client_id, operation_id, terminal_id, events)
-                    .await
-            }
-            None => CommandResult::Error {
-                code: ErrorCode::InternalError,
-                message: "acknowledged input lane unavailable".to_owned(),
-            },
-        },
         Command::KillResources { ids, operation_id } => {
             handle_kill_terminals(state, client_id, &ids, operation_id).await
         }
@@ -149,67 +104,10 @@ pub(super) async fn dispatch_local(
         Command::RevokeDelegation { credential_id, .. } => {
             super::super::delegation::handle_revoke_delegation(state, &credential_id)
         }
-        Command::GetTerminalState {
-            terminal_id,
-            include_scrollback,
-            max_scrollback_lines,
-        } => {
-            handle_get_terminal_state(
-                state,
-                &terminal_id,
-                include_scrollback,
-                max_scrollback_lines,
-            )
-            .await
-        }
         Command::SubscribeResourceEvents {
             terminal_id,
             event_types,
         } => handle_subscribe_terminal_events(state, client_id, &terminal_id, event_types, out_tx),
-        Command::AcquireInput {
-            terminal_id,
-            mode,
-            ttl_ms,
-        } => handle_acquire_input(state, client_id, &terminal_id, mode, ttl_ms).await,
-        Command::ReleaseInput { terminal_id } => {
-            handle_release_input(state, client_id, &terminal_id).await
-        }
-        Command::SignalTerminal {
-            terminal_id,
-            signal,
-            operation_id,
-        } => {
-            handle_signal_terminal(state, client_id, &terminal_id, signal, operation_id, claim)
-                .await
-        }
-        Command::PutFile {
-            upload_id,
-            terminal_id,
-            extension,
-            offset,
-            data,
-            final_chunk,
-            sha256,
-        } => {
-            super::super::upload::handle_put_file(
-                state,
-                super::super::upload::PutFileChunk {
-                    upload_id,
-                    terminal_id,
-                    extension,
-                    offset,
-                    data,
-                    final_chunk,
-                    sha256,
-                    principal: state.with(|s| super::super::upload::upload_principal(s, client_id)),
-                },
-            )
-            .await
-        }
-        Command::Checkout {
-            terminal_id,
-            request,
-        } => super::super::checkout::handle(state, &terminal_id, request).await,
         Command::GetFile {
             host: _,
             path,
@@ -221,33 +119,6 @@ pub(super) async fn dispatch_local(
                 offset,
                 max_bytes,
             })
-            .await
-        }
-        Command::ReportAsked {
-            terminal_id,
-            id,
-            question,
-            suggestions,
-            elapsed_seconds,
-        } => handle_report_asked(
-            state,
-            &terminal_id,
-            id,
-            question,
-            suggestions,
-            elapsed_seconds,
-        ),
-        Command::ReportAgentState {
-            terminal_id,
-            state: reported,
-        } => handle_report_agent_state(state, &terminal_id, reported).await,
-        Command::AppendResourceOutput { terminal_id, bytes } => {
-            crate::runtime::resource_commands::handle_append_resource_output(
-                state,
-                client_id,
-                &terminal_id,
-                bytes::Bytes::from(bytes),
-            )
             .await
         }
         // A known-but-unwired tag of the `#[non_exhaustive]` catalog (SPEC §5).
@@ -264,14 +135,15 @@ async fn dispatch_attach_resource(
     role: RolePolicy,
     agent_after_seq: Option<u64>,
 ) -> CommandResult {
-    // AgentSession streams retain their replay cursor; only Terminals defer
-    // content subscription until STREAM_BIND. Kind resolution precedes routing.
-    let is_terminal = ctx.state.with(|s| {
+    // A deferring kind's content subscription waits for STREAM_BIND. Kind
+    // resolution precedes routing.
+    let defers = ctx.state.with(|s| {
         s.terminal_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
-            .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::Terminal)
+            .and_then(|handle| crate::runtime::apps::app_for(handle.kind))
+            .is_some_and(ResourceApp::defers_stream_bootstrap)
     });
-    if ctx.defer_subscription && is_terminal {
+    if ctx.defer_subscription && defers {
         subscribe_deferred_attach(&ctx.state, ctx.client_id, terminal_id, &ctx.out_tx, role).await
     } else {
         handle_attach_terminal(ctx, terminal_id, role, agent_after_seq).await

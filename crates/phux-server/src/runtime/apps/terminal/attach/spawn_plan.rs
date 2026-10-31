@@ -69,7 +69,7 @@ pub(super) struct PaneSpawnPlan {
     /// `(cols, rows)` to build the pane's grid and PTY at.
     pub(super) initial_size: Option<(u16, u16)>,
     /// Who asked, for the pane's `pane_spawned` stamp (ADR-0123).
-    pub(super) attribution: super::super::commands::SpawnAttribution,
+    pub(super) attribution: crate::runtime::commands::SpawnAttribution,
 }
 
 /// Spawn the PTY-backed pane into the resolved owner's window, mapping both
@@ -131,7 +131,7 @@ pub(super) async fn refuse_vanished_pane_handle(
         "SPAWN_RESOURCE: spawn succeeded but TerminalHandle vanished",
     );
     state.with_mut(|s| {
-        let _ = super::super::client::reap_pane_journaling_close(s, core_terminal_id);
+        let _ = crate::runtime::client::reap_pane_journaling_close(s, core_terminal_id);
     });
     refuse_spawn(
         out_tx,
@@ -186,7 +186,7 @@ pub(super) fn spawn_argv_builder(
     state: &SharedState,
     command: Option<Vec<String>>,
 ) -> phux_terminal::pty::CommandBuilder {
-    super::super::commands::argv_command(command).unwrap_or_else(|| {
+    crate::runtime::commands::argv_command(command).unwrap_or_else(|| {
         let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
         crate::terminal_actor::default_shell_command(&shell, login_shell)
     })
@@ -320,7 +320,7 @@ pub(super) fn spawn_terminal_output_pump(
                 | PumpFault::PaneGone => {}
                 PumpFault::GenerationLost => {
                     let reaped = pump_state.with_mut(|s| {
-                        super::super::client::reap_pane_journaling_close(s, core_terminal_id)
+                        crate::runtime::client::reap_pane_journaling_close(s, core_terminal_id)
                     });
                     // A pane that already closed ended with RESOURCE_CLOSED;
                     // losing the generation on the way out is no reason to
