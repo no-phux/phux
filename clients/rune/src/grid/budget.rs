@@ -356,12 +356,7 @@ fn window_phase() {
     const FRAMES: u64 = 128;
     let (cols, rows) = (120, 40);
     let mut replica = Replica::new(cols, rows, 1);
-    let mut desk = Desk::new(&Resolved {
-        socket: Err("budget".to_owned()),
-        session: None,
-        phux: None,
-        aimed: true,
-    });
+    let mut desk = Desk::new(&Resolved::offline("budget"));
     desk.client = Some(Arc::clone(&replica.client));
     desk.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
         replica.terminal.clone(),

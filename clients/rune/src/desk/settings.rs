@@ -118,7 +118,7 @@ impl Desk {
     }
 
     /// Selection finished: hand it to the clipboard when asked to.
-    pub fn selection_done(&self, tx: &mut Tx) {
+    pub fn selection_done(&mut self, tx: &mut Tx) {
         if self.settings.copy_on_select {
             self.copy(tx);
         }

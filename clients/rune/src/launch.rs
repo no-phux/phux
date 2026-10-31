@@ -66,6 +66,19 @@ pub struct Resolved {
 }
 
 impl Resolved {
+    /// A run with no server, for tests that only want a window's state.
+    #[cfg(test)]
+    pub(crate) fn offline(why: &str) -> Self {
+        Self {
+            socket: Err(why.to_owned()),
+            session: None,
+            phux: None,
+            aimed: true,
+            pinned: None,
+            named_phux: None,
+        }
+    }
+
     /// `--socket` alone means "that server, as it is": only a CLI named
     /// beside it may start one there.
     pub const fn can_ensure(&self) -> bool {

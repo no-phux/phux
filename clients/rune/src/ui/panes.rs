@@ -5,10 +5,11 @@ use std::time::Instant;
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
-use rune::{Color, Cx, El, Phase, col, el, row};
+use rune::{Color, Cx, El, Phase, PointerButton, col, el, row};
 
 use super::status::placeholder;
 use super::{Ink, PAD, overlay};
+use crate::desk::mouse::Press;
 use crate::desk::{Desk, SplitPath};
 use crate::{grid, perf};
 
@@ -118,7 +119,8 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .zip(view)
         .and_then(|(client, view)| client.acquire_view(view).map(|f| (f, view)));
     perf::ACQUIRE.record_elapsed(acquiring);
-    let (laid, wheel, press, moved, left, dropped) = (
+    let (laid, wheel, press, moved, left, dropped, menu) = (
+        id.clone(),
         id.clone(),
         id.clone(),
         id.clone(),
@@ -150,12 +152,7 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     let mut grid_layer = el()
         .child(grid::paint(&frame, keyboard, desk.blink_on, &metrics))
         .children(overlay::link_underline(desk, id, &metrics, ink));
-    if keyboard
-        && !desk.palette_open
-        && !desk.inbox.open
-        && !desk.settings_open
-        && desk.pending.is_none()
-    {
+    if keyboard && desk.modal().is_none() {
         grid_layer = grid_layer.child(grid::ime_layer(
             &frame,
             desk.preedit.as_deref(),
@@ -174,9 +171,21 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .border(1.0, edge)
         .cursor(if linked { rune::Cursor::Pointer } else { rune::Cursor::Text })
         .on_pointer_move_local(move |d: &mut Desk, event, tx| {
-            d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods().cmd);
+            d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods());
         })
         .on_drop_files(move |d: &mut Desk, paths, _| d.drop_files(&dropped, paths))
+        .pointer_buttons([PointerButton::Middle, PointerButton::Back, PointerButton::Forward])
+        .on_secondary_press_local(move |d: &mut Desk, event, tx| {
+            let at = Press {
+                phase: Phase::Down,
+                x: event.x - PAD,
+                y: event.y - PAD,
+                clicks: 1,
+                mods: tx.mods(),
+                button: PointerButton::Secondary,
+            };
+            d.secondary_press(&menu, at, event.window());
+        })
         .on_hover_change(move |d: &mut Desk, inside, _| {
             if !inside {
                 d.pointer_left(&left);
@@ -189,8 +198,18 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .on_drag(move |d: &mut Desk, drag, tx| {
             // Drag points include the padding; the grid starts inside it.
             let (x, y, mods) = (drag.x - PAD, drag.y - PAD, tx.mods());
-            if !d.press_link(&press, drag.phase, x, y, mods.cmd, tx) {
-                d.pointer(&press, drag.phase, x, y, drag.clicks, mods);
+            // Only the primary button opens links; the rest are the program's.
+            let cmd = mods.cmd && tx.button() == PointerButton::Primary;
+            if !d.press_link(&press, drag.phase, x, y, cmd, tx) {
+                let step = Press {
+                    phase: drag.phase,
+                    x,
+                    y,
+                    clicks: drag.clicks,
+                    mods,
+                    button: tx.button(),
+                };
+                d.pointer(&press, &step, tx);
                 if drag.phase == Phase::Up {
                     d.selection_done(tx);
                 }

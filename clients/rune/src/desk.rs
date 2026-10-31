@@ -11,8 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
-use phux_client_core::org_ops::OrgOutcome;
-use phux_client_runtime::control::{Event, Observation, ProjectionFence, Status, Topology};
+use phux_client_runtime::control::{Observation, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client, Listener, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
@@ -22,6 +21,7 @@ use crate::grid::{self, Metrics};
 use crate::launch::Resolved;
 
 mod attach;
+mod events;
 mod find;
 mod frame;
 mod home;
@@ -31,7 +31,7 @@ mod layout;
 pub mod link;
 mod links;
 pub mod machines;
-mod mouse;
+pub mod mouse;
 mod palette;
 mod sessions;
 mod settings;
@@ -41,6 +41,7 @@ mod tabs;
 pub mod updates;
 
 pub use layout::SplitPath;
+pub use palette::{CONTEXT_MENU, with_menus};
 pub use tabs::{Renaming, Tab};
 
 /// Wakes Rune's loop from the runtime's driver thread. Only posts; never
@@ -133,6 +134,8 @@ pub struct Desk {
     pub palette_open: bool,
     pub palette_query: rune::TextEdit,
     pub palette_picked: usize,
+    /// The palette shows the keyboard shortcuts instead of everything.
+    pub palette_shortcuts: bool,
     pub sidebar_open: bool,
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
@@ -152,6 +155,8 @@ pub struct Desk {
     waker: Option<Waker>,
     /// Image uploads on their way, and the terminal each is for.
     uploads: Vec<(u64, ResourceId)>,
+    /// User pastes the server hasn't answered yet.
+    pastes: HashSet<u64>,
     /// Settings that outlive the window: text size, the sidebar.
     prefs: rune::prefs::Prefs,
     /// What every terminal is doing, for the sidebar's marks.
@@ -193,8 +198,9 @@ pub struct Desk {
     pending_splits: HashMap<u32, Placement>,
     /// The pane the wheel last moved, owning `wheel_rows`.
     wheel_pane: Option<ResourceId>,
-    /// The pane whose program took the last press, until its release.
-    mouse_capture: Option<ResourceId>,
+    /// The pane whose program took the last press, and that press as it last
+    /// moved, until its release.
+    mouse_capture: Option<(ResourceId, mouse::Press)>,
     /// The cell the last reported pointer event was in.
     mouse_cell: Option<(u16, u16)>,
     /// The window title last set.
@@ -258,6 +264,7 @@ impl Desk {
             palette_open: false,
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
+            palette_shortcuts: false,
             sidebar_open,
             find: None,
             find_query: rune::TextEdit::new(""),
@@ -272,6 +279,7 @@ impl Desk {
             launch: resolved.clone(),
             waker: None,
             uploads: Vec::new(),
+            pastes: HashSet::new(),
             prefs,
             preedit: None,
             activities: crate::activity::Activities::default(),
@@ -349,7 +357,7 @@ impl Desk {
         let mut observation = client.take_activity();
         let mut changed = updated | self.follow_connection(&client, &mut observation);
         // Output alone can't move anything: no layout pass per keystroke.
-        let rearrange = changed || observation.events.iter().any(moves_layout);
+        let rearrange = changed || observation.events.iter().any(events::moves_layout);
         for event in std::mem::take(&mut observation.events) {
             changed |= self.apply(&client, event, tx);
         }
@@ -366,6 +374,8 @@ impl Desk {
         }
         self.finish_uploads(&client);
         changed |= self.sync_alerts();
+        self.settle_pointer();
+        changed |= self.autoscroll(tx);
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.
         self.fit();
@@ -400,120 +410,6 @@ impl Desk {
         }
         changed
     }
-
-    fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
-        // A background window shows nothing to anyone.
-        let on_screen = if self.focused {
-            self.on_screen()
-        } else {
-            Vec::new()
-        };
-        let marked = self.activities.apply(&event, &on_screen);
-        let inbox = self.inbox_event(client, &event);
-        marked | inbox | self.apply_view(client, event, tx)
-    }
-
-    /// The terminals in front of the person.
-    pub(super) fn on_screen(&self) -> Vec<ResourceId> {
-        match &self.layout {
-            Some(tree) => phux_client_core::layout::leaves(tree),
-            None => self.shown.iter().map(|s| s.terminal.clone()).collect(),
-        }
-    }
-
-    fn apply_view(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
-        let shown = |id: &ResourceId| self.shown.as_ref().is_some_and(|s| &s.terminal == id);
-        match event {
-            Event::TerminalChanged { terminal_id }
-                if shown(&terminal_id) || self.others.contains_key(&terminal_id) =>
-            {
-                self.relink(&terminal_id);
-                self.generation += 1;
-                true
-            }
-            Event::TerminalSpawned {
-                request_id,
-                terminal_id: Some(new),
-                ..
-            } if self.pending_splits.contains_key(&request_id) => {
-                if let Some(placement) = self.pending_splits.remove(&request_id) {
-                    self.place_split(client, &new, placement);
-                }
-                true
-            }
-            Event::TerminalSpawned {
-                request_id,
-                terminal_id,
-                error,
-            } if self.pending_spawns.contains(&request_id)
-                || self.pending_splits.contains_key(&request_id) =>
-            {
-                self.pending_spawns.retain(|id| *id != request_id);
-                self.pending_splits.remove(&request_id);
-                match (terminal_id, error) {
-                    (Some(id), _) => self.want(id),
-                    (None, error) => self.say(
-                        NoticeKind::Error,
-                        error.unwrap_or_else(|| "spawn failed".to_owned()),
-                    ),
-                }
-                true
-            }
-            Event::TerminalClosed { terminal_id, .. } if shown(&terminal_id) => {
-                // Keep the keyboard in the split: the neighbour takes focus.
-                let next = self
-                    .layout
-                    .as_ref()
-                    .and_then(|t| layout::neighbour(t, &terminal_id));
-                self.close_shown(client);
-                if let Some(next) = next {
-                    self.focus_pane(&next);
-                }
-                true
-            }
-            Event::OrganizationOperation { operation, outcome }
-                if self.layout_ops.remove(&operation) =>
-            {
-                let refused = matches!(outcome, OrgOutcome::Refused(_) | OrgOutcome::Error { .. });
-                self.layout_written(client, operation, refused);
-                true
-            }
-            Event::TerminalClosed { terminal_id, .. } if self.others.contains_key(&terminal_id) => {
-                if let Some(view) = self.others.remove(&terminal_id) {
-                    let _ = client.destroy_view(view);
-                }
-                true
-            }
-            // OSC 52 only from the terminal on screen, while the window has
-            // focus; never retained for later.
-            Event::ClipboardWrite { terminal_id, text } if shown(&terminal_id) && self.focused => {
-                tx.copy(text.0);
-                false
-            }
-            Event::Detached { reason, message } => {
-                let said = reason.map(|reason| reason.describe().to_owned());
-                self.link.ended = said.or((!message.is_empty()).then_some(message));
-                true
-            }
-            Event::ConnectionOpened { .. } => {
-                self.link.ended = None;
-                true
-            }
-            Event::OrganizationUnavailable { .. } => {
-                self.link.org_unavailable = Some(self.epoch);
-                true
-            }
-            Event::StatusChanged(_)
-            | Event::TopologyChanged
-            | Event::OrganizationChanged
-            | Event::Attached { .. } => true,
-            _ => false,
-        }
-    }
-}
-
-const fn moves_layout(event: &Event) -> bool {
-    !matches!(event, Event::TerminalChanged { .. })
 }
 
 impl Drop for Desk {

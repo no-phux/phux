@@ -35,6 +35,9 @@ impl Desk {
         if let Some(image) = content.image().filter(|_| content.text().is_empty()) {
             return self.upload_image(image.png().to_vec());
         }
+        if content.text().is_empty() {
+            return self.say(NoticeKind::Error, "Nothing here can be pasted.");
+        }
         self.paste(content.text());
     }
 
@@ -69,8 +72,12 @@ impl Desk {
                 (FileUploadOutcome::Completed, Some(path)) => {
                     self.notice = None;
                     let line = format!("{} ", quoted(Path::new(&path)));
-                    client.with_control(|control| control.apply_user_paste(&terminal, &line));
-                    client.wake();
+                    if !self.deliver_paste(&terminal, &line) {
+                        self.say(
+                            NoticeKind::Error,
+                            format!("Image saved at {path}; not pasted."),
+                        );
+                    }
                 }
                 _ => self.say(
                     NoticeKind::Error,

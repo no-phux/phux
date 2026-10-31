@@ -49,7 +49,7 @@ fn main() {
         ..AppSpec::new("phux", (1100.0, 720.0), placeholder_init, ui::view)
     };
     perf::report_to_file();
-    let app = rune::App::new(spec)
+    let app = desk::with_menus(rune::App::new(spec))
         .init(move || Desk::new(&resolved))
         .chrome(Chrome {
             full_size_content: true,

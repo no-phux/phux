@@ -331,6 +331,7 @@ impl Desk {
         next.notice = self.notice.take();
         next.palette_open = self.palette_open;
         next.palette_picked = self.palette_picked;
+        next.palette_shortcuts = self.palette_shortcuts;
         next.settings_open = self.settings_open;
         next.sidebar_open = self.sidebar_open;
         next.wanted = self
@@ -345,7 +346,9 @@ impl Desk {
         std::mem::swap(&mut next.updater, &mut self.updater);
         std::mem::swap(&mut next.machines, &mut self.machines);
         std::mem::swap(&mut next.link, &mut self.link);
+        std::mem::swap(&mut next.pointer.failed, &mut self.pointer.failed);
         next.generation = self.generation + 1;
+        next.clock = self.clock;
         next.focused = self.focused;
         next.waker = self.waker.clone();
     }
