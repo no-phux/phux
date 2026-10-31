@@ -45,7 +45,7 @@ impl Desk {
         let terminal = shown.terminal.clone();
         let transfer = client.put_file(terminal.clone(), "png".to_owned(), png);
         self.uploads.push((transfer, terminal));
-        self.say(NoticeKind::Error, "Uploading image…");
+        self.say(NoticeKind::Info, "Uploading image…");
     }
 
     /// Files dropped on a pane land in that pane.

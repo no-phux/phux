@@ -75,16 +75,27 @@ type Fitted = ((u16, u16), (u16, u16));
 /// What kind of thing a notice says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
-    #[expect(dead_code, reason = "every notice so far reports a failure")]
     Info,
     Error,
 }
 
-/// One line for the user, in the status line and the inbox's footer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl NoticeKind {
+    /// Seconds on screen; a failure stays long enough to be read twice.
+    const fn lasts(self) -> f64 {
+        match self {
+            Self::Info => 6.0,
+            Self::Error => 12.0,
+        }
+    }
+}
+
+/// Words for the user, in a toast and the inbox's footer.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
     pub kind: NoticeKind,
     pub text: String,
+    /// When it goes, on the app clock.
+    expires: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,7 +135,8 @@ pub struct Desk {
     epoch: u64,
     /// An action waiting for the user's confirmation.
     pub pending: Option<Pending>,
-    /// A command's failure (a spawn), shown until the next terminal opens.
+    /// What the user was last told, until it expires, they dismiss it, or
+    /// the next terminal opens.
     pub notice: Option<Notice>,
     /// The command palette, while open, and its field and highlighted row.
     pub palette_open: bool,
@@ -211,7 +223,34 @@ impl Desk {
     /// Put a line in front of the user.
     pub fn say(&mut self, kind: NoticeKind, text: impl Into<String>) {
         let text = text.into();
-        self.notice = Some(Notice { kind, text });
+        let expires = self.clock + kind.lasts();
+        self.notice = Some(Notice {
+            kind,
+            text,
+            expires,
+        });
+    }
+
+    pub fn dismiss_notice(&mut self) {
+        self.notice = None;
+    }
+
+    /// Take down a notice whose time is up, and wake for the one still
+    /// showing. "Uploading" stays for as long as that's true.
+    fn expire_notice(&mut self, tx: &mut Tx) -> bool {
+        let Some(notice) = &self.notice else {
+            return false;
+        };
+        if notice.kind == NoticeKind::Info && !self.uploads.is_empty() {
+            return false;
+        }
+        let left = notice.expires - self.clock;
+        if left > 0.0 {
+            tx.wake_after(Duration::from_secs_f64(left));
+            return false;
+        }
+        self.notice = None;
+        true
     }
 
     pub fn new(resolved: &Resolved) -> Self {
@@ -328,7 +367,7 @@ impl Desk {
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
-        let updated = self.pump_updates(tx) | self.pump_machines();
+        let updated = self.pump_updates(tx) | self.pump_machines() | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {
             return updated;
         };

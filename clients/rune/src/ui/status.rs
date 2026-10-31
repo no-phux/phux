@@ -2,27 +2,31 @@
 //! waits in, and what stands in for a terminal that isn't there.
 
 use phux_client_runtime::control::Status;
-use rune::{El, Family, TextStyle, col, el, row, text};
+use rune::{Color, El, Family, TextStyle, col, el, row, text};
 
 use super::{CAPTION, Ink, LABEL, button};
 use crate::desk::{Desk, Notice, NoticeKind, Pending};
 
-/// A notice as one line; with none it draws nothing.
+/// A notice's words, wrapping; with none it draws nothing.
 pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
     let (line, kind) = notice.map_or((String::new(), NoticeKind::Error), |notice| {
         (notice.text.clone(), notice.kind)
     });
     let color = match kind {
-        NoticeKind::Info => p.dim,
+        NoticeKind::Info => p.text,
         NoticeKind::Error => p.danger,
     };
-    text(line).font(CAPTION).color(color).truncate()
+    text(line)
+        .font(CAPTION)
+        .color(color)
+        .wrap()
+        .grow(1.0)
+        .min_w(0.0)
 }
 
-/// A held paste: what it would do, and the choice.
-/// The action waiting on Return or Escape: what it would do, and the choice.
-pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
-    let (message, verb) = match desk.pending.as_ref()? {
+/// What a held action would do, and the word for doing it.
+fn question(pending: &Pending) -> (String, &'static str) {
+    match pending {
         Pending::Paste(held) => {
             let lines = held.lines().count().max(1);
             let plural = if lines == 1 { "" } else { "s" };
@@ -37,9 +41,13 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
             format!("Close {terminal}? Anything running in it ends."),
             "Close (Return)",
         ),
+        Pending::CloseTab(terminals) if terminals.len() == 1 => (
+            "Close this tab? Anything running in it ends.".to_owned(),
+            "Close (Return)",
+        ),
         Pending::CloseTab(terminals) => (
             format!(
-                "Close this tab's {} terminal(s)? Anything running ends.",
+                "Close this tab and its {} terminals? Anything running in them ends.",
                 terminals.len()
             ),
             "Close (Return)",
@@ -48,19 +56,33 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
             format!("End session {name} and everything running in it?"),
             "End session (Return)",
         ),
-    };
+    }
+}
+
+/// The action waiting on Return or Escape, floating over the terminals so
+/// asking never resizes them.
+pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
+    let (message, verb) = question(desk.pending.as_ref()?);
     Some(
         row()
             .key("confirm-bar")
-            .w_full()
+            .pin(Some(0.0), Some(0.0), Some(0.0), None)
             .px(12.0)
             .py(8.0)
             .gap(8.0)
             .items_center()
-            .fill(p.selected)
+            .fill(p.raised)
+            .border(1.0, p.edge)
+            .shadow(6.0, 18.0, Color::BLACK.alpha(0.35))
             .transition(rune::Transition::opacity())
-            .child(text(message).font(LABEL).color(p.text).truncate())
-            .child(el().grow(1.0))
+            .child(
+                text(message)
+                    .font(LABEL)
+                    .color(p.text)
+                    .wrap()
+                    .grow(1.0)
+                    .min_w(0.0),
+            )
             .child(
                 button("Cancel (Esc)", "confirm-cancel", p, Desk::cancel_pending)
                     .grow(0.0)
@@ -133,14 +155,13 @@ pub fn status_line(desk: &Desk, p: &Ink) -> El {
         .child(text(word).font(CAPTION).color(color))
         .child(text(session).font(CAPTION).color(p.dim).truncate())
         .child(el().grow(1.0))
-        .child(match &desk.pointer.hover {
-            // Where a ⌘-click goes, as a browser shows it.
-            Some((_, link)) => text(link.url.clone())
+        // Where a ⌘-click goes, as a browser shows it.
+        .children(desk.pointer.hover.as_ref().map(|(_, link)| {
+            text(link.url.clone())
                 .font(CAPTION)
                 .color(p.accent)
-                .truncate(),
-            None => notice_line(desk.notice.as_ref(), p),
-        })
+                .truncate()
+        }))
         .children(super::updates::pill(desk, p))
         .child(
             text(geometry)
@@ -152,4 +173,23 @@ pub fn status_line(desk: &Desk, p: &Ink) -> El {
                 .font(CAPTION)
                 .color(p.dim),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phux_protocol::ids::ResourceId;
+
+    #[test]
+    fn a_held_tab_close_counts_its_terminals() {
+        let close = |n| Pending::CloseTab((0..n).map(ResourceId::local).collect());
+        assert_eq!(
+            question(&close(1)).0,
+            "Close this tab? Anything running in it ends."
+        );
+        assert_eq!(
+            question(&close(3)).0,
+            "Close this tab and its 3 terminals? Anything running in them ends."
+        );
+    }
 }
