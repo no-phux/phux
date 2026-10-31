@@ -270,7 +270,8 @@ fn every_field_module_is_a_frame_or_a_nested_record() {
         .collect();
     frames.insert(FRAME_COMPRESSED.1);
     let nested: BTreeSet<&str> = NESTED_RECORD_MODULES.into_iter().collect();
-    let modules: BTreeSet<&str> = field_modules().into_keys().collect();
+    let catalog = field_modules();
+    let modules: BTreeSet<&str> = catalog.keys().map(String::as_str).collect();
     assert!(frames.is_disjoint(&nested));
     assert_eq!(
         modules,

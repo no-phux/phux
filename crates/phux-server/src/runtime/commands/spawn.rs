@@ -175,7 +175,12 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
         Err(err) => {
             state.with_mut(|s| {
                 if honor_exit_policy_on_failure {
-                    s.activation_ended(terminal, phux_core::ExitOutcome::UNKNOWN, true);
+                    s.activation_ended_with_diagnostic(
+                        terminal,
+                        phux_core::ExitOutcome::UNKNOWN,
+                        true,
+                        Some(err.launch_diagnostic()),
+                    );
                 } else {
                     s.reap_terminal(terminal);
                 }

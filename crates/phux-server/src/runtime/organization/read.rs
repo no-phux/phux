@@ -1,11 +1,11 @@
 //! Organization reads: arrangements and cursor-paged records.
 
 use phux_core::Refusal;
-use phux_protocol::ids::{ResourceId as WireResourceId, ServerInstance};
+use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::kinds::Verb;
 use phux_protocol::wire::frame::{
-    ActivationInfo, ArrangementValue, CommandResult, CommandValue, OrgFilter, OrganizationPage,
-    ResourceRecord, SessionRecord,
+    ArrangementValue, CommandResult, CommandValue, OrgFilter, OrganizationPage, ResourceRecord,
+    SessionRecord,
 };
 
 use crate::org_wire as ow;
@@ -46,6 +46,9 @@ pub(super) fn organization_page(
     page_size: u32,
     cursor: Option<&[u8]>,
 ) -> CommandResult {
+    if let OrgFilter::Resource(key) = filter {
+        return resource_page(s, client, key);
+    }
     let intake = s.org().authority().intake_session();
     let selected: Vec<phux_core::SessionKey> = match filter {
         OrgFilter::All => s.org().sessions().map(|r| r.key).collect(),
@@ -234,6 +237,30 @@ fn cursor_bytes(pos: PagePos) -> Vec<u8> {
     bytes
 }
 
+/// Exact-key reads need Inventory on the resource, not a live handle.
+/// Hidden and missing records look alike.
+fn resource_page(
+    s: &mut ServerState,
+    client: ClientId,
+    key: phux_protocol::ids::ResourceKey,
+) -> CommandResult {
+    let resource = s
+        .registry()
+        .resource_id(&ow::core_resource_key(&key))
+        .filter(|id| crate::policy::filter::admits_resource(s, client, Verb::Inventory, *id))
+        .and_then(|id| resource_record(s, id));
+    let Some(authority) = phux_protocol::ids::AuthorityId::new(*s.org().authority().id.as_bytes())
+    else {
+        return CommandResult::Refused(ow::refusal(&Refusal::NotFound));
+    };
+    let count = u32::from(resource.is_some());
+    let head = s.journal_head();
+    let page = OrganizationPage::new(authority, phux_protocol::ids::Revision::new(head), head)
+        .with_resources(resource.into_iter().collect())
+        .with_totals(0, count, 0);
+    CommandResult::OkWith(CommandValue::OrganizationPage(Box::new(page)))
+}
+
 /// A resource record on the wire, with its live handle while its engine
 /// runs here.
 fn resource_record(s: &mut ServerState, id: phux_core::ids::ResourceId) -> Option<ResourceRecord> {
@@ -242,14 +269,10 @@ fn resource_record(s: &mut ServerState, id: phux_core::ids::ResourceId) -> Optio
         .resource_handle(id)
         .is_some()
         .then(|| s.intern_terminal_wire(id));
-    let activation = record.activation.as_ref().map(|a| {
-        ActivationInfo::new(
-            ow::activation_id(a.id),
-            ServerInstance::new(*a.instance.as_bytes()),
-            ow::exec_state(a.state),
-        )
-        .with_outcome(a.outcome.map(ow::outcome))
-    });
+    let activation = record
+        .activation
+        .as_ref()
+        .map(|a| ow::activation(a, s.activation_persistence_pending(record.key)));
     Some(
         ResourceRecord::new(
             ow::resource_key(record.key)?,

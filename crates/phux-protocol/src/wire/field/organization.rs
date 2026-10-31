@@ -107,6 +107,10 @@ pub mod org {
     pub const REPLAYED: u32 = 45;
     /// Durable authority of a creation receipt (`bytes16`).
     pub const AUTHORITY: u32 = 46;
+    /// Safe launch-failure evidence on a committed activation (`bytes`).
+    pub const LAUNCH_DIAGNOSTIC: u32 = 47;
+    /// Whether executor evidence is still waiting for a durable store write (`bool`).
+    pub const PERSISTENCE_PENDING: u32 = 48;
 }
 
 /// Fields of a `LaunchSpec` value (`docs/organization.md`).

@@ -165,6 +165,7 @@ impl ServerRuntime {
             .run_until(async move {
                 spawn_shutdown_folder(shutdown, &state, &root_token);
                 arm_idle_exit(&state, exit_after_idle, &root_token);
+                crate::runtime::services::spawn_activation_report_retry(&state, &root_token);
                 install_hook_dispatcher(&state, hook_catalog, hook_socket_path);
                 state.with_mut(|s| {
                     s.arm_hub_reload(satellite_source.clone(), root_token.clone());

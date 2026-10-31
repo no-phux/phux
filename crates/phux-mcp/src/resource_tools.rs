@@ -53,7 +53,7 @@ fn target_schema() -> Value {
 fn show_schema() -> Value {
     schema(
         "phux_resource_show",
-        "Read one resource: kind, parent, lifecycle, how a retained process exited, process facts (pid, foreground group, cwd, prompt state), input-lease holder, tags, agent record, and OSC 7501 program status. Read-only; the document `phux resource show --json` prints.",
+        "Read one resource. A full ^KEY reads the durable current activation (schema 2), even after engine retirement or receipt eviction; removal or scope filtering means absence. Other selectors preserve live-engine inspection (schema 1): kind, parent, lifecycle, how a retained process exited, process facts (pid, foreground group, cwd, prompt state), input-lease holder, tags, agent record, and OSC 7501 program status. Read-only; the document `phux resource show --json` prints.",
         json!({ "target": target_schema(), "socket": string_schema() }),
         &["target"],
     )
@@ -89,6 +89,15 @@ fn methods_schema() -> Value {
 
 async fn show(args: &Value) -> Result<Value, ToolError> {
     strict_object(args, &["target", "socket"], &["target"])?;
+    if let Some(key) = required_str(args, "target")?
+        .strip_prefix('^')
+        .and_then(phux_protocol::ids::ResourceKey::parse)
+    {
+        return phux_client::resource::show::show_key(&socket_or_default(args), key)
+            .await
+            .map(|details| serde_json::to_value(details).unwrap_or_default())
+            .map_err(|error| ToolError::new(error.to_string()));
+    }
     let (socket, id) = target(args).await?;
     phux_client::resource::show::show(&socket, &id)
         .await

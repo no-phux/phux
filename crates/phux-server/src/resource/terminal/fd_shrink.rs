@@ -6,15 +6,17 @@
 //! `POSIX_SPAWN_CLOEXEC_DEFAULT`, so the kernel builds that small table
 //! directly. Either way the server remains the parent of the final shell.
 
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CString, OsStr};
 use std::io::{self, ErrorKind};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
+use phux_core::{LaunchDiagnostic, LaunchStage};
 use portable_pty::{Child, CommandBuilder, MasterPty, SlavePty};
-use tracing::warn;
+
+mod exec_status;
 
 #[cfg(phux_fd_shrink)]
 const TRAMPOLINE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/phux-fd-shrink"));
@@ -24,104 +26,110 @@ const SPAWN_CWD_KEY: &str = "PHUX_FD_SHRINK_CWD";
 #[cfg(test)]
 mod tests;
 
-/// Spawn `cmd` on `master`'s slave. Falls back to portable-pty's fork/exec
-/// when the trampoline cannot be materialized; on Linux that fallback still
-/// execs the trampoline so the table shrinks.
+static TRAMPOLINE_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(phux_fd_shrink)]
+static TRAMPOLINE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Spawn exactly once and wait for the requested exec, not just the launcher.
+/// A missing trampoline falls back to portable-pty for non-strict spawns.
+/// Strict cwd still fails closed: a fallback directory is not execution evidence.
 pub(super) fn spawn_pane_child(
     slave: &(dyn SlavePty + Send),
     master: &dyn MasterPty,
-    mut cmd: CommandBuilder,
-) -> Result<Box<dyn Child + Send + Sync>, String> {
-    if let Some(reason) = missing_program(&cmd) {
-        return Err(reason);
+    cmd: &CommandBuilder,
+) -> Result<Box<dyn Child + Send + Sync>, LaunchDiagnostic> {
+    if trampoline_path().is_err() {
+        return match spawn_route(false, strict_cwd(cmd)) {
+            SpawnRoute::Fallback => fallback_spawn(slave, cmd),
+            SpawnRoute::FailClosed => Err(LaunchDiagnostic {
+                stage: LaunchStage::Spawn,
+                errno: Some(libc::ENOEXEC),
+            }),
+            SpawnRoute::Launcher => posix_spawn_child(master, cmd),
+        };
     }
-    match posix_spawn_child(master, &cmd) {
-        Ok(child) => Ok(child),
-        Err(err) if cmd.get_env(super::spawn::STRICT_CWD_KEY).is_some() => Err(err.to_string()),
-        Err(err) => {
-            warn!(
-                ?err,
-                "small-fd spawn failed; falling back to portable-pty fork"
-            );
-            fallback_spawn(slave, &mut cmd)
-        }
+    posix_spawn_child(master, cmd)
+}
+
+fn strict_cwd(cmd: &CommandBuilder) -> bool {
+    cmd.get_env(super::spawn::STRICT_CWD_KEY).is_some()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpawnRoute {
+    Launcher,
+    Fallback,
+    FailClosed,
+}
+
+const fn spawn_route(trampoline_ready: bool, strict: bool) -> SpawnRoute {
+    if trampoline_ready {
+        SpawnRoute::Launcher
+    } else if strict {
+        SpawnRoute::FailClosed
+    } else {
+        SpawnRoute::Fallback
     }
 }
 
+/// Portable-pty spawn used only when the verified launcher cannot be materialized.
 fn fallback_spawn(
     slave: &(dyn SlavePty + Send),
-    cmd: &mut CommandBuilder,
-) -> Result<Box<dyn Child + Send + Sync>, String> {
-    if cmd.get_env(super::spawn::STRICT_CWD_KEY).is_some() {
-        return Err("strict cwd cannot use the portable-pty fallback".into());
-    }
-    let _ = install_trampoline(cmd);
+    cmd: &CommandBuilder,
+) -> Result<Box<dyn Child + Send + Sync>, LaunchDiagnostic> {
     slave
         .spawn_command(cmd.clone())
-        .map_err(|err| err.to_string())
+        .map_err(|_| LaunchDiagnostic {
+            stage: LaunchStage::Spawn,
+            errno: None,
+        })
 }
 
-/// `Some(reason)` when `cmd`'s program is not executable. The text matches
-/// the substring [`super::spawn::spawn_failure_reason`] strips down to one line.
-fn missing_program(cmd: &CommandBuilder) -> Option<String> {
-    let program = cmd.get_argv().first()?.clone();
-    if program.is_empty() {
-        return Some("Unable to spawn because: empty program".to_owned());
+/// Cache a successful trampoline path. A failure is not remembered, so a later
+/// materialize (after a noexec temp dir or a missing compiler) can succeed.
+///
+/// The fast path only reads `slot`. Materializing takes the lock and checks
+/// again, so concurrent spawns do not rewrite an executing image.
+fn remember_path(
+    slot: &OnceLock<PathBuf>,
+    materialize: impl FnOnce() -> io::Result<PathBuf>,
+) -> io::Result<PathBuf> {
+    if let Some(path) = slot.get() {
+        return Ok(path.clone());
     }
-    if program_is_executable(cmd, &program) {
-        return None;
+    let _guard = TRAMPOLINE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(path) = slot.get() {
+        return Ok(path.clone());
     }
-    let path = cmd.get_env("PATH").unwrap_or_else(|| OsStr::new(""));
-    Some(format!(
-        "Unable to spawn {} because: No viable candidates found in PATH {}",
-        program.to_string_lossy(),
-        path.to_string_lossy()
-    ))
+    let path = materialize()?;
+    Ok(slot.get_or_init(|| path).clone())
 }
 
-fn program_is_executable(cmd: &CommandBuilder, program: &OsStr) -> bool {
-    let path = Path::new(program);
-    let cwd = spawn_directory(cmd);
-    if path.components().count() > 1 || program.as_bytes().contains(&b'/') {
-        let candidate = cwd
-            .as_ref()
-            .map_or_else(|| path.to_path_buf(), |cwd| cwd.join(path));
-        return rustix::fs::access(&candidate, rustix::fs::Access::EXEC_OK).is_ok();
-    }
-    let search = cmd.get_env("PATH").unwrap_or_else(|| OsStr::new(""));
-    std::env::split_paths(search).any(|dir| {
-        let candidate = cwd
-            .as_ref()
-            .map_or_else(|| dir.join(program), |cwd| cwd.join(&dir).join(program));
-        rustix::fs::access(&candidate, rustix::fs::Access::EXEC_OK).is_ok()
-    })
+#[cfg(test)]
+thread_local! {
+    static FORCE_TRAMPOLINE_MISSING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Prefix `cmd`'s argv with the trampoline. No-op when it was not compiled.
-fn install_trampoline(cmd: &mut CommandBuilder) -> io::Result<()> {
-    let path = trampoline_path()?;
-    let argv = cmd.get_argv_mut();
-    if argv.is_empty() {
-        return Err(io::Error::new(
-            ErrorKind::InvalidInput,
-            "fd trampoline cannot wrap a default-program builder",
-        ));
-    }
-    let original = std::mem::take(argv);
-    argv.push(path.into());
-    argv.push(OsString::from("--"));
-    argv.extend(original);
-    Ok(())
+#[cfg(test)]
+fn set_force_trampoline_missing(missing: bool) {
+    FORCE_TRAMPOLINE_MISSING.with(|cell| cell.set(missing));
 }
 
 fn trampoline_path() -> io::Result<PathBuf> {
+    #[cfg(test)]
+    if FORCE_TRAMPOLINE_MISSING.with(std::cell::Cell::get) {
+        return Err(io::Error::new(
+            ErrorKind::NotFound,
+            "trampoline forced missing",
+        ));
+    }
     #[cfg(phux_fd_shrink)]
     {
-        static PATH: OnceLock<io::Result<PathBuf>> = OnceLock::new();
-        match PATH.get_or_init(materialize_trampoline) {
-            Ok(path) => Ok(path.clone()),
-            Err(err) => Err(io::Error::new(err.kind(), err.to_string())),
-        }
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        remember_path(&PATH, materialize_trampoline)
     }
     #[cfg(not(phux_fd_shrink))]
     {
@@ -134,6 +142,8 @@ fn trampoline_path() -> io::Result<PathBuf> {
 
 #[cfg(phux_fd_shrink)]
 fn materialize_trampoline() -> io::Result<PathBuf> {
+    use sha2::Digest as _;
+    use std::fmt::Write as _;
     let dir = cache_dir();
     std::fs::create_dir_all(&dir)?;
     #[cfg(unix)]
@@ -141,15 +151,32 @@ fn materialize_trampoline() -> io::Result<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    let path = dir.join("phux-fd-shrink");
-    let tmp = dir.join(format!("phux-fd-shrink.{}.tmp", std::process::id()));
+    let mut hash = String::with_capacity(64);
+    for byte in sha2::Sha256::digest(TRAMPOLINE_BYTES) {
+        let _ = write!(hash, "{byte:02x}");
+    }
+    let path = dir.join(format!("phux-fd-shrink-{hash}"));
+    if path.is_file() {
+        return Ok(path);
+    }
+    let tmp = dir.join(format!(
+        "phux-fd-shrink-{hash}.{}.{}.tmp",
+        std::process::id(),
+        TRAMPOLINE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     std::fs::write(&tmp, TRAMPOLINE_BYTES)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700))?;
     }
-    std::fs::rename(&tmp, &path)?;
+    if let Err(error) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        if error.raw_os_error() == Some(libc::ETXTBSY) && path.is_file() {
+            return Ok(path);
+        }
+        return Err(error);
+    }
     Ok(path)
 }
 
@@ -163,7 +190,21 @@ fn cache_dir() -> PathBuf {
 fn posix_spawn_child(
     master: &dyn MasterPty,
     cmd: &CommandBuilder,
-) -> io::Result<Box<dyn Child + Send + Sync>> {
+) -> Result<Box<dyn Child + Send + Sync>, LaunchDiagnostic> {
+    let (pid, reader) = spawn_launcher(master, cmd).map_err(|error| LaunchDiagnostic {
+        stage: LaunchStage::Spawn,
+        errno: error.raw_os_error(),
+    })?;
+    exec_status::confirm(pid, reader)?;
+    Ok(Box::new(portable_pty_adopt::AdoptedChild::new(pid)))
+}
+
+/// Complete all fallible setup before ownership of this child leaves the
+/// launcher seam. After spawn, only the bounded status reader may fail.
+fn spawn_launcher(
+    master: &dyn MasterPty,
+    cmd: &CommandBuilder,
+) -> io::Result<(libc::pid_t, OwnedFd)> {
     let trampoline = trampoline_path()?;
     let slave_name = master
         .tty_name()
@@ -171,11 +212,16 @@ fn posix_spawn_child(
     let slave = open_slave(&slave_name)?;
     let argv = spawn_argv(&trampoline, cmd)?;
     let envp = spawn_envp(cmd)?;
-    let cwd = spawn_directory(cmd)
-        .map(|dir| c_os(dir.as_os_str()))
-        .transpose()?;
-    let pid = spawn_with_stdio(slave.as_raw_fd(), &trampoline, &argv, &envp, cwd.as_deref())?;
-    Ok(Box::new(portable_pty_adopt::AdoptedChild::new(pid)))
+    let (reader, writer) = exec_status::channel()?;
+    let pid = spawn_with_stdio(
+        slave.as_raw_fd(),
+        &trampoline,
+        &argv,
+        &envp,
+        writer.as_raw_fd(),
+    )?;
+    drop(writer);
+    Ok((pid, reader))
 }
 
 fn open_slave(path: &Path) -> io::Result<OwnedFd> {
@@ -247,17 +293,15 @@ fn spawn_with_stdio(
     trampoline: &Path,
     argv: &[CString],
     envp: &[CString],
-    cwd: Option<&std::ffi::CStr>,
+    status_fd: std::os::fd::RawFd,
 ) -> io::Result<libc::pid_t> {
     let mut actions = SpawnActions::new()?;
     for target in 0..3 {
         actions.dup2(slave, target)?;
     }
-    // The kernel applies this before the trampoline runs, so a cwd query
-    // in the parent cannot observe the server directory.
-    if let Some(dir) = cwd {
-        actions.chdir(dir)?;
-    }
+    // fd 3 belongs only to the launcher. Its own exec closes it, never the
+    // server's upgrade fd or the requested program's inherited descriptor.
+    actions.dup2(status_fd, 3)?;
     #[cfg(target_os = "macos")]
     let attr = CloexecAttr::new()?;
     #[cfg(not(target_os = "macos"))]
@@ -321,20 +365,6 @@ impl SpawnActions {
     fn dup2(&mut self, from: std::os::fd::RawFd, to: i32) -> io::Result<()> {
         // SAFETY: `self.0` was initialized and is destroyed in `Drop`.
         let rc = unsafe { libc::posix_spawn_file_actions_adddup2(&raw mut self.0, from, to) };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::from_raw_os_error(rc))
-        }
-    }
-
-    /// Queue a `chdir` that the kernel runs before the new image starts.
-    fn chdir(&mut self, path: &std::ffi::CStr) -> io::Result<()> {
-        // SAFETY: `self.0` was initialized and is destroyed in `Drop`.
-        // `path` is a live NUL-terminated string for the duration of the
-        // call; the kernel copies it into the actions object.
-        let rc =
-            unsafe { libc::posix_spawn_file_actions_addchdir_np(&raw mut self.0, path.as_ptr()) };
         if rc == 0 {
             Ok(())
         } else {

@@ -126,6 +126,9 @@ pub enum OrgFilter {
     All,
     /// One session and its members.
     Session(SessionKey),
+    /// One exact durable resource and its current session; requires
+    /// `DURABLE_RESOURCE_INSPECTION`. Absence includes records outside scope.
+    Resource(ResourceKey),
     /// The sessions one workspace links.
     Workspace(WorkspaceKey),
     /// Intake: the designated Intake session and sessions awaiting
@@ -140,6 +143,8 @@ pub(super) const FILTER_SESSION: u8 = 1;
 pub(super) const FILTER_WORKSPACE: u8 = 2;
 
 pub(super) const FILTER_INTAKE: u8 = 3;
+
+pub(super) const FILTER_RESOURCE: u8 = 4;
 
 /// One resource of a `RESOURCE_MOVE_MANY` batch, with the source session
 /// revision the caller saw.

@@ -271,6 +271,9 @@ pub enum Op {
         state: ExecState,
         /// How it ended.
         outcome: Outcome,
+        /// Safe launch failure evidence, absent on older reports.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diagnostic: Option<crate::LaunchDiagnostic>,
     },
     /// Executor report: the owner lost its handle. System only.
     ActivationLost {

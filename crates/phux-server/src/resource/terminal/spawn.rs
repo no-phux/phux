@@ -118,8 +118,8 @@ pub(crate) fn spawn_pty(
     // TERM retains the ncurses-compatible terminfo choice. Truecolor is a
     // separate capability, independent of how the daemon was launched.
     cmd.env("COLORTERM", "truecolor");
-    let child = super::fd_shrink::spawn_pane_child(&*pair.slave, &*pair.master, cmd)
-        .map_err(|reason| TerminalActorError::Spawn(spawn_failure_reason(&reason)))?;
+    let child = super::fd_shrink::spawn_pane_child(&*pair.slave, &*pair.master, &cmd)
+        .map_err(TerminalActorError::Launch)?;
     // Our slave copy would prevent EOF on the master after the child exits.
     drop(pair.slave);
 
@@ -129,6 +129,7 @@ pub(crate) fn spawn_pty(
 /// A PTY spawn failure as one line a user can act on. portable-pty's
 /// command-not-found text spans lines and quotes the whole `PATH` it
 /// searched, which the refusal would carry verbatim to every client.
+#[cfg(test)]
 fn spawn_failure_reason(err: &dyn std::fmt::Display) -> String {
     const NOT_FOUND: &str = "No viable candidates found in PATH";
     let text = err.to_string();

@@ -463,20 +463,10 @@ fn creation_activation(
     if activation.id != phux_core::ActivationId::FIRST {
         return None;
     }
-    let outcome = activation.outcome.map(|outcome| match outcome {
-        phux_core::Outcome::Exit(exit) if exit.status.is_none() && exit.signal.is_none() => {
-            phux_protocol::wire::frame::Outcome::Unobserved
-        }
-        other => ow::outcome(other),
-    });
-    Some(
-        phux_protocol::wire::frame::ActivationInfo::new(
-            ow::activation_id(activation.id),
-            phux_protocol::ids::ServerInstance::new(*activation.instance.as_bytes()),
-            ow::exec_state(activation.state),
-        )
-        .with_outcome(outcome),
-    )
+    Some(ow::activation(
+        activation,
+        s.activation_persistence_pending(key),
+    ))
 }
 
 fn validate_placed_launch(launch: &phux_protocol::wire::frame::LaunchSpec) -> Result<(), String> {

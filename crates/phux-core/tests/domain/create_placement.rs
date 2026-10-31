@@ -254,6 +254,7 @@ fn invalid_missing_moved_and_replaced_anchors_refuse_without_launch_or_records()
         resource,
         activation: phux_core::ActivationId::FIRST,
         state: ExecState::Failed,
+        diagnostic: None,
         outcome: phux_core::Outcome::Unobserved,
     })
     .unwrap();

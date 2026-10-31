@@ -8,6 +8,7 @@ mod file_transfer_snapshots;
 mod frame_wire_snapshots;
 mod hot_path_alloc;
 mod kinds_table;
+mod org_evidence;
 mod org_wire_snapshots;
 mod scope_encoding;
 mod service_http_snapshots;

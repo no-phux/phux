@@ -43,6 +43,16 @@ mod lease_table;
 mod leases;
 mod legacy_snapshot;
 mod lifecycle;
+
+static ACTIVATION_REPORT_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub(crate) fn notify_activation_reports() {
+    ACTIVATION_REPORT_WAKE.notify_one();
+}
+
+pub(crate) async fn activation_reports_woken() {
+    ACTIVATION_REPORT_WAKE.notified().await;
+}
 mod lifecycle_state;
 mod metadata;
 pub(crate) mod native_agent;

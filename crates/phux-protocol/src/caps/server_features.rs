@@ -378,6 +378,8 @@ pub enum ServerFeatureExt {
     CreatePlacement = 0x0000_2000,
     /// Connected-server public workflow description and nested schemas.
     ApiDescription = 0x0000_4000,
+    /// Read a durable resource record and its current activation without a live engine.
+    DurableResourceInspection = 0x0000_8000,
 }
 
 impl ServerFeatureExt {
@@ -398,6 +400,7 @@ impl ServerFeatureExt {
         Self::HostServiceHttp,
         Self::CreatePlacement,
         Self::ApiDescription,
+        Self::DurableResourceInspection,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -419,6 +422,7 @@ impl ServerFeatureExt {
             Self::HostServiceHttp => "HOST_SERVICE_HTTP",
             Self::CreatePlacement => "CREATE_PLACEMENT",
             Self::ApiDescription => "API_DESCRIPTION",
+            Self::DurableResourceInspection => "DURABLE_RESOURCE_INSPECTION",
         }
     }
 
@@ -448,7 +452,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::NativeAgentLaunch as u32
         | ServerFeatureExt::HostServiceHttp as u32
         | ServerFeatureExt::CreatePlacement as u32
-        | ServerFeatureExt::ApiDescription as u32;
+        | ServerFeatureExt::ApiDescription as u32
+        | ServerFeatureExt::DurableResourceInspection as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

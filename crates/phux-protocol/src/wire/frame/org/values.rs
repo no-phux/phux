@@ -65,6 +65,19 @@ pub(super) fn encode_resource_record(record: &ResourceRecord, enc: &mut Encoder<
             enc.write_field_with(field::org::OUTCOME, |e| encode_outcome(outcome, e));
         }
         write_key(enc, field::org::INSTANCE, activation.instance.as_bytes());
+        encode_evidence(activation, enc);
+    }
+}
+
+fn encode_evidence(activation: &ActivationInfo, enc: &mut Encoder<'_>) {
+    if let Some(diagnostic) = activation.diagnostic {
+        // Only an enum and an optional i32: JSON serialization cannot fail.
+        if let Ok(bytes) = serde_json::to_vec(&diagnostic) {
+            enc.write_field(field::org::LAUNCH_DIAGNOSTIC, &bytes);
+        }
+    }
+    if activation.persistence_pending {
+        write_u8(enc, field::org::PERSISTENCE_PENDING, 1);
     }
 }
 
@@ -77,6 +90,8 @@ pub(super) fn decode_resource_record(value: &[u8]) -> Result<ResourceRecord, Dec
             instance,
             state,
             outcome: f.outcome,
+            diagnostic: f.diagnostic,
+            persistence_pending: f.persistence_pending,
         }),
         (None, _, _) => None,
         _ => return Err(DecodeError::UnexpectedEof),
@@ -251,6 +266,7 @@ pub(in crate::wire) fn encode_committed(committed: &Committed, enc: &mut Encoder
             write_u64(&mut e, field::org::ACTIVATION, activation.id.get());
             write_key(&mut e, field::org::INSTANCE, activation.instance.as_bytes());
             write_u8(&mut e, field::org::STATE, activation.state.to_u8());
+            encode_evidence(activation, &mut e);
             if let Some(outcome) = activation.outcome {
                 e.write_field_with(field::org::OUTCOME, |e| encode_outcome(outcome, e));
             }
@@ -289,6 +305,8 @@ pub(in crate::wire) fn decode_committed(dec: &mut Decoder<'_>) -> Result<Committ
                 instance,
                 state,
                 outcome: f.outcome,
+                diagnostic: f.diagnostic,
+                persistence_pending: f.persistence_pending,
             }),
             (None, None, None) => None,
             _ => return Err(DecodeError::UnexpectedEof),

@@ -962,6 +962,7 @@ mod tests {
                 activation: phux_core::ActivationId::FIRST,
                 state: phux_core::ExecState::Completed,
                 outcome: phux_core::Outcome::Exit(phux_core::ExitOutcome::default()),
+                diagnostic: None,
             },
         };
         let applied =

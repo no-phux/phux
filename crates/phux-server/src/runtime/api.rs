@@ -26,17 +26,29 @@ pub(super) fn describe(state: &SharedState) -> CommandResult {
             "completion": "membership, placement and launch intent committed; execution is an observation, not task completion",
             "input_schema": api::terminal_create_schema(),
             "output_schema": api::terminal_created_schema(),
+            "error_schema": api::error_schema(),
+            "semantic_validation": api::semantic_validation(),
             "retry": { "identity": "idempotency_key", "scope": "authority organization store",
                 "max_age_ms": crate::org_store::RECEIPT_HORIZON_MS, "max_count": crate::org_store::RECEIPT_CAP,
-                "after_expiry": "reconcile records; never blindly replay",
+                "after_expiry": "resource.show by saved full durable key; never blindly replay",
                 "lost_reply": "outcome_unknown; query terminal.operation on the same authority before considering any identical replay" },
             "retention": "resource retained until explicit removal; failed/completed result survives engine retirement but explicit relaunch replaces it; not timed screen retention"
         }, {
             "name":"terminal.operation", "supported":true, "required_verbs":["inventory"],
             "input_schema":api::terminal_operation_schema(), "output_schema":api::terminal_created_schema(),
+            "error_schema":api::error_schema(),
             "completion":"read-only retained receipt lookup; no effects",
-            "retry":{"missing_receipt":"original outcome unknown; reconcile records, never blindly replay"}
+            "retry":{"missing_receipt":"original outcome unknown; resource.show by saved full durable key, never blindly replay"}
+        }, {
+            "name":"resource.show", "supported":true, "required_verbs":["inventory"],
+            "required_features":["organization", "durable_resource_inspection"],
+            "selector":"full ^<durable-resource-key>",
+            "input_schema":api::resource_key_schema(),
+            "retry":{"read_only":true},
+            "output_schema":api::resource_observed_schema(),
+            "completion":"read current resource membership and latest activation without a live engine or creation receipt; removed/out-of-scope records are absent; live-handle selectors keep schema 1"
         }],
+        "error_outcomes": api::outcome_schema(),
         "execution_contracts": {
             "terminal.create": "execute argv in a new process; empty argv selects the default shell",
             "run": "submit a POSIX command to an existing shell; input acknowledgement is not execution completion",
