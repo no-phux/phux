@@ -4,8 +4,10 @@
 use phux_client_runtime::control::Status;
 use rune::{El, Family, TextStyle, col, el, row, text};
 
-use super::{CAPTION, Ink, LABEL, button};
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, button, pressable};
+use crate::desk::link::{Banner, Standing};
 use crate::desk::{Desk, Notice, NoticeKind, Pending};
+use crate::launch::INSTALL;
 
 /// A notice as one line; with none it draws nothing.
 pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
@@ -23,7 +25,7 @@ pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
 /// The action waiting on Return or Escape: what it would do, and the choice.
 pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
     let (message, verb) = match desk.pending.as_ref()? {
-        Pending::Paste(held) => {
+        Pending::Paste(_, held) => {
             let lines = held.lines().count().max(1);
             let plural = if lines == 1 { "" } else { "s" };
             (
@@ -74,42 +76,169 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
     )
 }
 
-pub fn placeholder(desk: &Desk, p: &Ink) -> El {
-    let (title, detail, color) = match (&desk.error, desk.status) {
-        (Some(error), _) => ("Can't reach phux", error.clone(), p.danger),
-        (None, Status::Idle | Status::Connecting) => {
-            // A machine that's away keeps retrying; say what it answered.
-            let why = desk.client.as_ref().and_then(|client| client.last_error());
-            ("Connecting…", why.unwrap_or_default(), p.dim)
-        }
-        (None, _) if desk.topology.as_ref().is_some_and(|t| t.panes.is_empty()) => (
-            "No terminals",
-            "Create a session or terminal from the sidebar.".to_owned(),
-            p.dim,
+/// What stands in for the terminal: the words, then what can be done.
+fn words(standing: &Standing, machine: &str) -> (&'static str, String) {
+    match standing {
+        Standing::Starting => ("Starting phux…", String::new()),
+        Standing::NoCli => (
+            "phux isn't installed",
+            "This app runs on the phux command-line tool. Install it, and this window connects \
+             on its own."
+                .to_owned(),
         ),
-        (None, _) => ("Opening terminal…", String::new(), p.dim),
-    };
+        // The server says which side is behind.
+        Standing::Incompatible(words) if words.contains("update the phux server") => (
+            "Update the phux server",
+            format!("This app is newer than the server on {machine}. {words}"),
+        ),
+        Standing::Incompatible(words) => (
+            "Update Phux Rune",
+            format!(
+                "The server on {machine} was upgraded past this app, so they can't talk. Your \
+                 sessions are safe. {words}"
+            ),
+        ),
+        Standing::Unreachable(why) => ("Can't reach phux", why.clone()),
+        Standing::Connecting(why) => ("Connecting…", why.clone()),
+        Standing::Closed(why) => ("Disconnected", why.clone()),
+        Standing::NoSessions => (
+            "No sessions",
+            format!("Nothing is running on {machine} yet."),
+        ),
+        Standing::NoTerminals => (
+            "No terminals",
+            "This session is empty; start a terminal in it.".to_owned(),
+        ),
+        Standing::Opening => ("Opening terminal…", String::new()),
+    }
+}
+
+/// The install line, to copy.
+fn install_line(p: &Ink) -> El {
+    row()
+        .gap(8.0)
+        .items_center()
+        .child(
+            text(INSTALL)
+                .font(CAPTION.family(Family::SystemMono))
+                .color(p.text),
+        )
+        .child(
+            pressable("placeholder-copy", p)
+                .px(10.0)
+                .py(6.0)
+                .radius(6.0)
+                .border(1.0, p.separator)
+                .on_press_tx(|_: &mut Desk, tx| tx.copy(INSTALL.to_owned()))
+                .child(text("Copy").font(CAPTION).color(p.text)),
+        )
+}
+
+fn action(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk)) -> El {
+    button(label, key, p, press).grow(0.0).px(12.0)
+}
+
+/// The one thing to do about `standing`, when there is one.
+fn remedy(standing: &Standing, p: &Ink) -> Option<El> {
+    Some(match standing {
+        Standing::Starting | Standing::Connecting(_) | Standing::Opening => return None,
+        Standing::NoSessions => action("New session", "placeholder-session", p, Desk::new_session),
+        Standing::NoTerminals => action(
+            "New terminal",
+            "placeholder-terminal",
+            p,
+            Desk::new_terminal,
+        ),
+        Standing::Incompatible(_) => action("Check for updates", "placeholder-update", p, |d| {
+            d.updater.check_now()
+        }),
+        Standing::NoCli | Standing::Unreachable(_) | Standing::Closed(_) => {
+            action("Retry", "placeholder-retry", p, Desk::reconnect)
+        }
+    })
+}
+
+pub fn placeholder(desk: &Desk, p: &Ink) -> El {
+    let standing = desk.standing();
+    let (title, detail) = words(&standing, desk.machines.label());
+    let failed = matches!(
+        standing,
+        Standing::Unreachable(_) | Standing::Incompatible(_)
+    );
+    let color = if failed { p.danger } else { p.dim };
+    let buttons = row()
+        .w_full()
+        .center()
+        .gap(8.0)
+        .pt(6.0)
+        .children(remedy(&standing, p))
+        .child(action(
+            "Other machines…",
+            "placeholder-machines",
+            p,
+            Desk::toggle_machines,
+        ));
     col()
         .gap(6.0)
         .items_center()
         .max_w(520.0)
         .child(text(title).font(TextStyle::new(15.0, 600.0)).color(color))
         .child(text(detail).font(LABEL).color(p.dim).wrap())
-        .child(el().h(6.0))
-        .child(
-            button(
-                "Other machines…",
-                "placeholder-machines",
-                p,
-                Desk::toggle_machines,
-            )
-            .grow(0.0)
-            .px(12.0),
-        )
+        .children((standing == Standing::NoCli).then(|| install_line(p)))
+        .child(buttons)
+}
+
+/// Over panes that have stopped updating: what happened, and a way to act.
+/// It floats, so it never resizes a terminal.
+pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
+    let banner = desk.banner()?;
+    let machine = desk.machines.label();
+    let (lost, why) = match &banner {
+        Banner::Reconnecting(why) => (format!("Lost {machine}. Reconnecting…"), why.clone()),
+        Banner::Stuck(standing) => {
+            let (title, why) = words(standing, machine);
+            (title.to_owned(), why)
+        }
+    };
+    let update = matches!(banner, Banner::Stuck(Standing::Incompatible(_)));
+    Some(
+        col()
+            .absolute(0.0, 44.0)
+            .w_full()
+            .items_center()
+            .transition(rune::Transition::opacity())
+            .child(
+                row()
+                    .key("reconnect-banner")
+                    .w(if update { 560.0 } else { 420.0 })
+                    .px(14.0)
+                    .py(8.0)
+                    .gap(12.0)
+                    .radius(9.0)
+                    .items_center()
+                    .fill(p.raised)
+                    .border(1.0, p.separator)
+                    .child(
+                        col()
+                            .gap(2.0)
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .child(text(lost).font(LABEL_STRONG).color(p.text).truncate())
+                            .child(text(why).font(CAPTION).color(p.dim).wrap()),
+                    )
+                    .children(update.then(|| {
+                        action("Check for updates", "banner-update", p, |d| {
+                            d.updater.check_now();
+                        })
+                    }))
+                    .child(action("Retry", "banner-retry", p, Desk::reconnect)),
+            ),
+    )
 }
 
 pub fn status_line(desk: &Desk, p: &Ink) -> El {
     let (word, color) = match desk.status {
+        _ if desk.client.is_none() && desk.link_word() != "connecting" => ("not connected", p.dim),
         Status::Attached => ("attached", p.accent),
         Status::Idle | Status::Connecting => ("connecting", p.dim),
         Status::Negotiated => ("negotiated", p.dim),

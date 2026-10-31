@@ -151,6 +151,7 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
         // Rune hands the root pastes nothing focused took (Edit ▸ Paste).
         .on_paste_content(|desk: &mut Desk, content, _| desk.paste_content(content))
         .child(main)
+        .children(status::banner(desk, &p))
         .children(updates::card(desk, &p, band))
         .children(desk.inbox.open.then(|| inbox::view(desk, &p)))
         .children(desk.settings_open.then(|| settings::view(desk, &p)))

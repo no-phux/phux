@@ -36,8 +36,7 @@ fn main() {
             std::process::exit(2);
         }
     };
-    // `phux server --ensure` is quick when a server is already up, and the
-    // window opens with the failure shown when it is not.
+    // The window opens first; `Desk::listen` finds the server on a worker.
     let resolved = launch::resolve(&options);
     let spec = AppSpec {
         min_size: Some((640.0, 360.0)),
@@ -64,10 +63,5 @@ fn main() {
 
 /// `AppSpec` needs a plain `fn`; `App::init` supplies the real state.
 fn placeholder_init() -> Desk {
-    Desk::new(&launch::Resolved {
-        socket: Err("not launched".to_owned()),
-        session: None,
-        phux: None,
-        aimed: true,
-    })
+    Desk::new(&launch::resolve(&launch::Options::default()))
 }

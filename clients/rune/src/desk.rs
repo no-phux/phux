@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_client_core::org_ops::OrgOutcome;
-use phux_client_runtime::control::{Event, ProjectionFence, Status, Topology};
+use phux_client_runtime::control::{Event, Observation, ProjectionFence, Status, Topology};
 use phux_client_runtime::publication::GridFrame;
-use phux_client_runtime::{Client, Listener, Target, ViewId};
+use phux_client_runtime::{Client, Listener, ViewId};
 use phux_protocol::ids::{ArrangementKey, OperationId, ResourceId, SessionKey};
 use rune::{Tx, Waker};
 
@@ -24,9 +24,11 @@ use crate::launch::Resolved;
 mod attach;
 mod find;
 mod frame;
+mod home;
 mod inbox;
 mod input;
 mod layout;
+pub mod link;
 mod links;
 pub mod machines;
 mod mouse;
@@ -34,6 +36,7 @@ mod palette;
 mod sessions;
 mod settings;
 mod shown;
+mod splits;
 mod tabs;
 pub mod updates;
 
@@ -71,7 +74,6 @@ pub struct Painted {
 /// pixels.
 type Fitted = ((u16, u16), (u16, u16));
 
-/// What waits on the user's Return or Escape.
 /// What kind of thing a notice says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
@@ -87,10 +89,11 @@ pub struct Notice {
     pub text: String,
 }
 
+/// What waits on the user's Return or Escape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
-    /// A paste that would type line breaks into a program.
-    Paste(String),
+    /// A line-breaking paste, and the terminal it was meant for.
+    Paste(ResourceId, String),
     /// Closing a terminal that is running a command.
     Close(ResourceId),
     /// Closing every terminal of a tab.
@@ -143,6 +146,7 @@ pub struct Desk {
     pub tabs: tabs::Tabs,
     pub updater: updates::Updater,
     pub machines: machines::Machines,
+    pub link: link::Link,
     /// How this run started, for moving between machines.
     launch: Resolved,
     waker: Option<Waker>,
@@ -205,6 +209,11 @@ pub struct Desk {
     sessions_seq: u32,
     /// The fenced frame the last view build painted, for the drawn receipt.
     pub painted: RefCell<Option<Painted>>,
+    /// The terminal last told it has the window's focus.
+    focus_told: Option<ResourceId>,
+    /// The arrangement write in flight for a split or tab. One at a time:
+    /// each write's base is the document the last one made.
+    split_write: Option<splits::SplitWrite>,
 }
 
 impl Desk {
@@ -222,7 +231,8 @@ impl Desk {
         Self::open(resolved, remembered)
     }
 
-    /// `machine` is a registered remote; `None` is this computer's server.
+    /// A window with no connection yet; `dial` makes one. `machine` is a
+    /// registered remote; `None` is this computer's server.
     fn open(resolved: &Resolved, machine: Option<String>) -> Self {
         // `RUNE_PREFS_DIR` keeps headless runs off the real settings.
         let prefs = rune::prefs::Prefs::open(PREFS_ID);
@@ -257,7 +267,8 @@ impl Desk {
             settings_open: false,
             tabs: tabs::Tabs::default(),
             updater: updates::Updater::new(&prefs, resolved),
-            machines: machines::Machines::new(machine.clone(), resolved.phux.clone()),
+            machines: machines::Machines::new(machine, resolved.phux.clone()),
+            link: link::Link::default(),
             launch: resolved.clone(),
             waker: None,
             uploads: Vec::new(),
@@ -291,15 +302,9 @@ impl Desk {
             wheel_rows: 0.0,
             sessions_seq: 0,
             painted: RefCell::new(None),
+            focus_told: None,
+            split_write: None,
         };
-        let target = match &machine {
-            Some(machine) => Target::resolve(machine, None),
-            None => resolved.socket.clone().map(Target::uds),
-        };
-        match target.and_then(|target| sessions::connect(target, resolved.session.clone())) {
-            Ok(client) => desk.client = Some(Arc::new(client)),
-            Err(error) => desk.error = Some(error),
-        }
         desk.apply_theme();
         desk
     }
@@ -308,11 +313,19 @@ impl Desk {
         Metrics::new(self.font_size, self.scale.get())
     }
 
-    /// Rune's setup hook: route runtime wakes into Rune's loop.
+    /// Rune's setup hook: the window is about to open, so everything slow
+    /// starts here, on workers. Even on a remote the local server is found,
+    /// because the updater manages it; a run that can't reach one starts
+    /// the updater without it.
     pub fn listen(&mut self, waker: Waker) {
-        self.updater.start(waker.clone());
         self.machines.listen(waker.clone());
         self.watch(waker);
+        self.dial();
+        if !self.launch.can_ensure() {
+            self.start_updater();
+        } else if self.machines.current.is_some() {
+            self.find_server();
+        }
     }
 
     /// Route this connection's wakes and alerts into Rune's loop.
@@ -328,27 +341,54 @@ impl Desk {
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
-        let updated = self.pump_updates(tx) | self.pump_machines();
+        let updated = self.pump_updates(tx) | self.pump_machines() | self.pump_link();
         let Some(client) = self.client.clone() else {
-            return updated;
+            return updated | self.tend_link(tx);
         };
-        let observation = client.take_activity();
-        let mut changed = updated | (observation.status != self.status);
+        let mut observation = client.take_activity();
+        let mut changed = updated | self.follow_connection(&client, &mut observation);
+        // Output alone can't move anything: no layout pass per keystroke.
+        let rearrange = changed || observation.events.iter().any(moves_layout);
+        for event in std::mem::take(&mut observation.events) {
+            changed |= self.apply(&client, event, tx);
+        }
+        let opened = self.settle_home(&client) | self.open_wanted(&client);
+        changed |= opened;
+        let unfocused = self.sync_focus(&client);
+        self.title(tx);
+        if rearrange || opened || self.layout_is_stale() {
+            changed |= self.refresh_layout(&client);
+        }
+        // The replica's news may never come, and a split only waits so long.
+        if unfocused || self.splits_waiting() {
+            tx.wake_after(Duration::from_millis(250));
+        }
+        self.finish_uploads(&client);
+        changed |= self.sync_alerts();
+        self.keep_find();
+        // Also catches a display-scale change, which re-snaps the cells.
+        self.fit();
+        changed | self.blink(&client, tx) | self.tend_link(tx)
+    }
+
+    /// What an observation says about the connection itself. The topology
+    /// is only sampled when the batch can have changed it.
+    fn follow_connection(&mut self, client: &Client, observation: &mut Observation) -> bool {
+        let mut changed = observation.status != self.status;
         if observation.connection_epoch != self.epoch {
-            // Only the first connection replays news: a reconnect's items
-            // are known by id, and what arrived during the gap is new.
-            if self.epoch == 0 {
-                self.inbox.alerts.connected();
-            }
+            self.first_contact();
             self.epoch = observation.connection_epoch;
-            changed |= self.reopen_after_reconnect(&client);
+            self.focus_told = None;
+            changed |= self.reopen_after_reconnect(client);
         }
         self.status = observation.status;
-        if let Some(error) = observation.last_error.filter(|_| self.status.is_terminal()) {
+        let failure = observation.last_error.take();
+        if let Some(error) = failure.filter(|_| self.status.is_terminal()) {
             changed |= self.error.as_ref() != Some(&error);
+            self.failed_with(&error);
             self.error = Some(error);
         }
-        if let Some(topology) = client.topology()
+        if let Some(topology) = observation.topology.take()
             && self.topology.as_ref() != Some(&topology)
         {
             self.topology = Some(topology);
@@ -357,21 +397,7 @@ impl Desk {
         if self.server.is_none() {
             self.server = client.server().map(|info| format!("{info:?}"));
         }
-        let events = !observation.events.is_empty();
-        for event in observation.events {
-            changed |= self.apply(&client, event, tx);
-        }
-        changed |= self.open_wanted(&client);
-        self.title(tx);
-        if changed || events || self.layout_is_stale() {
-            changed |= self.refresh_layout(&client);
-        }
-        self.finish_uploads(&client);
-        changed |= self.sync_alerts();
-        self.keep_find();
-        // Also catches a display-scale change, which re-snaps the cells.
-        self.fit();
-        changed | self.blink(&client, tx)
+        changed
     }
 
     fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
@@ -447,12 +473,8 @@ impl Desk {
             Event::OrganizationOperation { operation, outcome }
                 if self.layout_ops.remove(&operation) =>
             {
-                if matches!(outcome, OrgOutcome::Refused(_) | OrgOutcome::Error { .. }) {
-                    self.say(
-                        NoticeKind::Error,
-                        "The layout changed elsewhere first; try again.",
-                    );
-                }
+                let refused = matches!(outcome, OrgOutcome::Refused(_) | OrgOutcome::Error { .. });
+                self.layout_written(client, operation, refused);
                 true
             }
             Event::TerminalClosed { terminal_id, .. } if self.others.contains_key(&terminal_id) => {
@@ -467,6 +489,19 @@ impl Desk {
                 tx.copy(text.0);
                 false
             }
+            Event::Detached { reason, message } => {
+                let said = reason.map(|reason| reason.describe().to_owned());
+                self.link.ended = said.or((!message.is_empty()).then_some(message));
+                true
+            }
+            Event::ConnectionOpened { .. } => {
+                self.link.ended = None;
+                true
+            }
+            Event::OrganizationUnavailable { .. } => {
+                self.link.org_unavailable = Some(self.epoch);
+                true
+            }
             Event::StatusChanged(_)
             | Event::TopologyChanged
             | Event::OrganizationChanged
@@ -474,6 +509,10 @@ impl Desk {
             _ => false,
         }
     }
+}
+
+const fn moves_layout(event: &Event) -> bool {
+    !matches!(event, Event::TerminalChanged { .. })
 }
 
 impl Drop for Desk {
