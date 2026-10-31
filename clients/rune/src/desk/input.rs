@@ -17,7 +17,7 @@ pub(super) mod selection;
 
 /// What the window says while keys can't reach the terminal; the next key
 /// that does takes it back.
-const INPUT_PAUSED: &str = "Not connected; input isn't reaching the terminal.";
+pub(super) const INPUT_PAUSED: &str = "Not connected; input isn't reaching the terminal.";
 
 /// What has the keyboard instead of the terminal, in the order they claim it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +36,7 @@ impl Modal {
     /// Whether a command, by chord or menu pick, may run while this has the
     /// keyboard. The find field leaves the shown terminal in view; a sheet
     /// hides what a command would touch.
-    const fn allows(self, action: Shortcut) -> bool {
+    pub(super) const fn allows(self, action: Shortcut) -> bool {
         match self {
             Self::FindField => true,
             Self::Palette => matches!(action, Shortcut::Palette),
@@ -79,8 +79,9 @@ impl Desk {
             (self.settings_open, Modal::Settings),
             (self.tabs.renaming.is_some(), Modal::Rename),
             (self.palette_open, Modal::Palette),
-            (self.find_query.focused, Modal::FindField),
+            // A question outranks the field: the bar says what its keys do.
             (self.pending.is_some(), Modal::Confirm),
+            (self.find_query.focused, Modal::FindField),
         ]
         .into_iter()
         .find_map(|(open, modal)| open.then_some(modal))
@@ -121,7 +122,9 @@ impl Desk {
                 self.machines_key(event, tx);
             }
             Modal::Settings if action.is_none() => self.settings_key(event, tx),
-            Modal::Confirm => self.confirm_key(event),
+            Modal::Confirm => {
+                self.confirm_key(event);
+            }
             _ => {
                 if let Some(action) = action {
                     self.modal_command(modal, action, tx);
@@ -143,12 +146,14 @@ impl Desk {
         self.shortcut(action, tx);
     }
 
-    fn confirm_key(&mut self, event: &rune::KeyEvent) {
+    /// The confirm bar's keys. True when `event` answered it.
+    pub(super) fn confirm_key(&mut self, event: &rune::KeyEvent) -> bool {
         match event.key {
             rune::Key::Enter => self.confirm_pending(),
             rune::Key::Escape => self.pending = None,
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     /// A key that is terminal input, or `false` when it isn't.
@@ -229,9 +234,7 @@ impl Desk {
         match action {
             Shortcut::Copy => self.copy(tx),
             Shortcut::SelectAll => self.select_all(),
-            Shortcut::Paste => tx.read_clipboard(|desk: &mut Desk, content, _| {
-                desk.paste_content(content);
-            }),
+            Shortcut::Paste => self.paste_clipboard(tx),
             Shortcut::NewTerminal => self.new_tab(),
             Shortcut::Tab(index) => self.select_tab(usize::from(index)),
             Shortcut::RenameSession => self.rename_selected_session(),
@@ -280,24 +283,23 @@ impl Desk {
         }
     }
 
-    /// The user's clipboard paste. One that would type line breaks into a
-    /// program without bracketed paste waits for confirmation.
-    pub fn paste(&mut self, text: &str) {
+    /// The user's paste into `terminal`. One that would type line breaks into
+    /// a program without bracketed paste waits for confirmation.
+    pub(super) fn paste(&mut self, terminal: &ResourceId, text: &str) {
         if text.is_empty() {
             return;
         }
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
+        let Some(client) = &self.client else {
             return;
         };
-        let terminal = shown.terminal.clone();
         let bracketed = client
             .engine()
-            .is_some_and(|engine| engine.bracketed_paste(&terminal).unwrap_or(false));
+            .is_some_and(|engine| engine.bracketed_paste(terminal).unwrap_or(false));
         if paste_needs_confirmation(bracketed, text) {
-            self.pending = Some(Pending::Paste(terminal, text.to_owned()));
+            self.pending = Some(Pending::Paste(terminal.clone(), text.to_owned()));
             return;
         }
-        self.send_paste(&terminal, text);
+        self.send_paste(terminal, text);
     }
 
     pub fn confirm_pending(&mut self) {
@@ -456,6 +458,13 @@ impl Desk {
 #[cfg(test)]
 mod tests {
     use super::{Modal, Shortcut, paste_needs_confirmation};
+
+    #[test]
+    fn nothing_pastes_past_a_question() {
+        assert!(Modal::FindField.allows(Shortcut::Paste));
+        assert!(!Modal::Confirm.allows(Shortcut::Paste));
+        assert!(!Modal::Settings.allows(Shortcut::Paste));
+    }
 
     #[test]
     fn the_find_field_leaves_commands_running() {

@@ -139,8 +139,8 @@ pub struct Desk {
     epoch: u64,
     /// An action waiting for the user's confirmation.
     pub pending: Option<Pending>,
-    /// What the user was last told, until it expires, they dismiss it, or
-    /// the next terminal opens.
+    /// What the user was last told, until it expires or they dismiss it. A
+    /// terminal opening takes down only what was in passing.
     pub notice: Option<Notice>,
     /// The command palette, while open, and its field and highlighted row.
     pub palette_open: bool,
@@ -293,7 +293,7 @@ impl Desk {
             });
         let sidebar_open = prefs.get("sidebar_open").unwrap_or(true);
         let settings = settings::Settings::load(&prefs);
-        let mut desk = Self {
+        Self {
             client: None,
             error: None,
             status: Status::Idle,
@@ -356,9 +356,7 @@ impl Desk {
             painted: RefCell::new(None),
             focus_told: None,
             split_write: None,
-        };
-        desk.apply_theme();
-        desk
+        }
     }
 
     pub fn metrics(&self) -> Metrics {

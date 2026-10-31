@@ -8,11 +8,12 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use phux_client_runtime::Target;
 use rune::{Key, KeyEvent, TextEdit, Tx, Waker};
 
-use super::Desk;
+use super::{Desk, NoticeKind};
 use crate::machines::{self, Add, Host, Peer};
 
 enum Done {
-    Listed(Result<Vec<Host>, String>, Vec<Peer>),
+    /// A listing, tagged with the refresh that started it.
+    Listed(u64, Result<Vec<Host>, String>, Vec<Peer>),
     Step(String),
     Added(Result<(), String>),
     Removed(String, Result<(), String>),
@@ -38,6 +39,13 @@ pub struct Machines {
     /// machines from before it.
     request: Option<Add>,
     before: Option<Vec<Host>>,
+    /// Refreshes started, and the newest one heard back: a slow one can
+    /// finish after a later one and must not undo it.
+    refreshes: u64,
+    listed: u64,
+    /// The refresh started once an add finished: an older one may have read
+    /// the registry before that add wrote to it.
+    awaited: Option<u64>,
     done: (Sender<Done>, Receiver<Done>),
     waker: Option<Waker>,
 }
@@ -57,6 +65,9 @@ impl Machines {
             removing: None,
             request: None,
             before: None,
+            refreshes: 0,
+            listed: 0,
+            awaited: None,
             done: channel(),
             waker: None,
         }
@@ -86,14 +97,16 @@ impl Machines {
         });
     }
 
-    fn refresh(&self) {
-        let Some(phux) = self.phux.clone() else {
-            return;
-        };
-        self.worker(move |send| {
-            let hosts = machines::registered(&phux);
-            send(Done::Listed(hosts, machines::tailnet(&phux)));
-        });
+    fn refresh(&mut self) -> u64 {
+        self.refreshes += 1;
+        let refresh = self.refreshes;
+        if let Some(phux) = self.phux.clone() {
+            self.worker(move |send| {
+                let hosts = machines::registered(&phux);
+                send(Done::Listed(refresh, hosts, machines::tailnet(&phux)));
+            });
+        }
+        refresh
     }
 
     fn add(&mut self, request: Add) {
@@ -125,9 +138,10 @@ impl Machines {
         });
     }
 
-    /// The host a finished add registered, whatever it was named. Only that
-    /// refresh moves the window; any other list is just a list.
-    fn take_added(&mut self) -> Option<String> {
+    /// The host a finished add registered, whatever it was named. Only the
+    /// refresh after that add answers it; any other list is just a list.
+    fn take_added(&mut self, refresh: u64) -> Option<String> {
+        self.awaited.take_if(|awaited| *awaited == refresh)?;
         let before = self.before.take()?;
         let request = self.request.take()?;
         let host = machines::added(&self.hosts, &before, &request);
@@ -219,14 +233,11 @@ impl Desk {
             let saved = machine.clone().unwrap_or_default();
             let _ = self.prefs.set("machine", &saved);
         }
-        // Notifications from the machine being left would open nothing here.
-        self.inbox.alerts.sync(&[], |_| true, false);
+        self.left_server();
         let mut launch = self.launch.clone();
         launch.session = None;
         let mut next = Desk::open(&launch, machine.clone());
         self.carry_into(&mut next);
-        next.link.home = None;
-        next.link.heard = false;
         next.machines.current = machine;
         next.close_machines();
         *self = next;
@@ -238,13 +249,15 @@ impl Desk {
         while let Ok(done) = self.machines.done.1.try_recv() {
             changed = true;
             match done {
-                Done::Listed(hosts, peers) => {
+                Done::Listed(refresh, _, _) if refresh < self.machines.listed => {}
+                Done::Listed(refresh, hosts, peers) => {
+                    self.machines.listed = refresh;
                     match hosts {
                         Ok(hosts) => self.machines.hosts = hosts,
                         Err(error) => self.machines.error = Some(error),
                     }
                     self.machines.peers = peers;
-                    if let Some(host) = self.machines.take_added() {
+                    if let Some(host) = self.machines.take_added(refresh) {
                         self.landed(host);
                     }
                 }
@@ -258,7 +271,7 @@ impl Desk {
                     match result {
                         Ok(()) => {
                             self.machines.before = Some(self.machines.hosts.clone());
-                            self.machines.refresh();
+                            self.machines.awaited = Some(self.machines.refresh());
                         }
                         Err(error) => {
                             self.machines.request = None;
@@ -277,11 +290,18 @@ impl Desk {
         changed
     }
 
-    /// An add finished: go there, and leave the sheet saying so.
+    /// An add finished. With the sheet still open that's a wish to go there,
+    /// and the sheet says so. With it closed the person has gone back to
+    /// work, so the window stays and only offers: moving it would send their
+    /// next keys to another computer.
     fn landed(&mut self, host: String) {
-        let open = self.machines.open;
+        if !self.machines.open {
+            self.machines.outcome = Some(Ok(format!("{host} is set up.")));
+            let offer = format!("{host} is set up. Switch to it from Machines.");
+            return self.say(NoticeKind::Info, offer);
+        }
         self.switch_machine(Some(host.clone()));
-        self.machines.open = open;
+        self.machines.open = true;
         if self.machines.current.as_ref() == Some(&host) {
             self.machines.outcome = Some(Ok(format!("{host} is set up.")));
         }
@@ -307,14 +327,52 @@ mod tests {
         };
         let mut list = Machines::new(None, None);
         list.hosts = vec![host("a"), host("b")];
-        assert_eq!(list.take_added(), None);
+        assert_eq!(list.take_added(1), None);
         list.before = Some(vec![host("a")]);
+        list.awaited = Some(2);
         list.request = Some(Add {
             target: "me@b".to_owned(),
             name: None,
             tailnet: false,
         });
-        assert_eq!(list.take_added().as_deref(), Some("b"));
-        assert_eq!(list.take_added(), None);
+        // A listing from before the add finished can't speak for it.
+        assert_eq!(list.take_added(1), None);
+        assert_eq!(list.take_added(2).as_deref(), Some("b"));
+        assert_eq!(list.take_added(2), None);
+    }
+
+    fn desk() -> Desk {
+        Desk::open(&crate::launch::Resolved::offline("not launched"), None)
+    }
+
+    #[test]
+    fn a_slow_listing_cant_undo_a_newer_one() {
+        let mut desk = desk();
+        let list = |refresh, name: &str| {
+            let hosts = vec![Host {
+                name: name.to_owned(),
+                ssh: None,
+                needs_direct: false,
+            }];
+            Done::Listed(refresh, Ok(hosts), Vec::new())
+        };
+        let sender = desk.machines.done.0.clone();
+        sender.send(list(2, "new")).unwrap();
+        sender.send(list(1, "old")).unwrap();
+        desk.pump_machines();
+        assert_eq!(desk.machines.hosts[0].name, "new");
+    }
+
+    #[test]
+    fn an_add_finishing_behind_a_closed_sheet_stays_put_and_offers() {
+        let mut desk = desk();
+        desk.landed("mini".to_owned());
+        assert_eq!(desk.machines.current, None);
+        assert_eq!(
+            desk.machines.outcome,
+            Some(Ok("mini is set up.".to_owned()))
+        );
+        let notice = desk.notice.as_ref().map(|notice| notice.text.as_str());
+        assert_eq!(notice, Some("mini is set up. Switch to it from Machines."));
     }
 }

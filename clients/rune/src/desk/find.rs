@@ -159,6 +159,10 @@ impl Desk {
 
     /// Keys inside the find field.
     pub fn find_key(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
+        // This field holds the keyboard, so the confirm bar answers here.
+        if self.pending.is_some() {
+            return self.confirm_key(event);
+        }
         match event.key {
             Key::Enter if event.mods.shift => self.step_find(1),
             Key::Enter => self.step_find(-1),
@@ -185,5 +189,29 @@ impl Desk {
         if !alive {
             self.close_find();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_confirm_bars_keys_win_over_the_find_field() {
+        use crate::desk::Pending;
+        use crate::desk::input::Modal;
+        use rune::Mods;
+        let mut desk = Desk::new(&crate::launch::Resolved::offline("not launched"));
+        desk.find_query.focused = true;
+        assert_eq!(desk.modal(), Some(Modal::FindField));
+        desk.pending = Some(Pending::Close(phux_protocol::ids::ResourceId::local(1)));
+        assert_eq!(desk.modal(), Some(Modal::Confirm));
+        let key = |key| KeyEvent {
+            key,
+            mods: Mods::default(),
+        };
+        assert!(!desk.confirm_key(&key(Key::Text("x".into()))));
+        assert!(desk.confirm_key(&key(Key::Escape)));
+        assert_eq!(desk.pending, None);
     }
 }

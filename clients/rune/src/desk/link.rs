@@ -19,6 +19,10 @@ use super::{Desk, NoticeKind, sessions};
 use crate::launch::Resolved;
 use crate::machines::LOCAL;
 
+mod standing;
+
+pub use standing::{Banner, Standing};
+
 /// The longest wait between automatic attempts on an ended connection.
 const RETRY_CEILING: Duration = Duration::from_secs(30);
 /// How long a connection may be down before anyone is told: a resync or a
@@ -28,6 +32,10 @@ const BANNER_AFTER: Duration = Duration::from_secs(1);
 const ENSURE_AFTER: Duration = Duration::from_secs(3);
 /// How long between those starts.
 const ENSURE_EVERY: Duration = Duration::from_secs(30);
+
+/// How long a refusal is put down to the old server after a handoff:
+/// "upgrading" means its re-exec started, not that it finished.
+const HANDOFF_PATIENCE: Duration = Duration::from_secs(30);
 
 /// How the runtime renders a refusal of this client's protocol major.
 const INCOMPATIBLE: &str = "VersionIncompatible";
@@ -67,6 +75,12 @@ pub struct Link {
     /// Why this window isn't on the machine it remembered, for after its
     /// first terminal opens.
     pub moved: Option<String>,
+    /// Counts the servers this window has been on, so what was asked of one
+    /// can tell it isn't on that one any more.
+    pub(super) server: u64,
+    /// The local server was just handed off: until then, a protocol refusal
+    /// may be the old one on its way out.
+    handoff_until: Option<Instant>,
 }
 
 impl Default for Link {
@@ -88,6 +102,8 @@ impl Default for Link {
             org_unavailable: None,
             creating: false,
             moved: None,
+            server: 0,
+            handoff_until: None,
         }
     }
 }
@@ -105,6 +121,22 @@ impl Link {
         self.last_ensure = None;
         self.ended = None;
         self.incompatible = None;
+        self.handoff_until = None;
+    }
+
+    fn handing_off(&self) -> bool {
+        self.handoff_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    /// What was true of the last server, for a window that has left it.
+    fn left_server(&mut self) {
+        self.up();
+        self.server += 1;
+        self.heard = false;
+        self.home = None;
+        self.org_unavailable = None;
+        self.creating = false;
     }
 }
 
@@ -113,56 +145,10 @@ fn backoff(tries: u32) -> Duration {
     Duration::from_secs(2u64.saturating_mul(1u64 << tries.min(8))).min(RETRY_CEILING)
 }
 
-/// A failure in words, without the transport's.
-pub fn plainly(error: &str) -> String {
-    let lower = error.to_ascii_lowercase();
-    if is_fatal_refusal_detail(error) {
-        "This machine no longer accepts this computer. Set it up again from Machines.".to_owned()
-    } else if lower.contains("refused") || lower.contains("no such file") {
-        "The server isn't answering.".to_owned()
-    } else if lower.contains("no answer") || lower.contains("timed out") {
-        "No answer from the machine.".to_owned()
-    } else {
-        error.to_owned()
-    }
-}
-
 /// The server's words from a protocol refusal, when `error` is one.
 fn incompatible(error: &str) -> Option<String> {
     let (_, words) = error.split_once(INCOMPATIBLE)?;
     Some(words.trim_start_matches([':', ' ']).to_owned())
-}
-
-/// Where the window stands when there is no terminal to show.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Standing {
-    /// `phux server --ensure` is running.
-    Starting,
-    /// No CLI to start a server with.
-    NoCli,
-    /// The server speaks another protocol major.
-    Incompatible(String),
-    /// Nothing answered, and this keeps trying unless retrying can't help.
-    Unreachable(String),
-    /// The runtime is dialing, with the last thing it heard.
-    Connecting(String),
-    /// The connection ended on purpose.
-    Closed(String),
-    /// A server with no sessions at all.
-    NoSessions,
-    /// The selected session holds no terminals.
-    NoTerminals,
-    /// Nothing is wrong; a terminal is on its way.
-    Opening,
-}
-
-/// What goes over panes that have stopped updating.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Banner {
-    /// Still trying, with the last thing heard.
-    Reconnecting(String),
-    /// Trying stopped: someone has to act.
-    Stuck(Standing),
 }
 
 impl Desk {
@@ -189,19 +175,31 @@ impl Desk {
     /// The machine this window remembered can't be dialed: this computer
     /// stands in, and a host that's gone is forgotten for the next launch.
     fn lost_remembered(&mut self, machine: &str, why: String) {
-        if why.contains("not a registered host") {
+        let stored = self.prefs.get::<String>("machine");
+        if forgets(self.launch.aimed, stored.as_deref(), machine, &why) {
             let _ = self.prefs.set("machine", &String::new());
         }
         self.machines.current = None;
-        self.link.heard = false;
+        self.left_server();
         self.link.moved = Some(format!("{machine} isn't available, so this is {LOCAL}."));
         self.dial_local();
+    }
+
+    /// This window is leaving one server for another: terminal ids and news
+    /// mean nothing on the next one, so nothing held here may land there.
+    pub(super) fn left_server(&mut self) {
+        self.link.left_server();
+        self.pending = None;
+        self.wanted = None;
+        // Notifications from the machine being left would open nothing here.
+        self.inbox.alerts.sync(&[], |_| true, false);
     }
 
     fn connect(&mut self, target: Target) {
         match sessions::connect(target) {
             Ok(client) => {
                 self.client = Some(std::sync::Arc::new(client));
+                self.apply_theme();
                 if let Some(waker) = self.waker.clone() {
                     self.watch(waker);
                 }
@@ -254,17 +252,16 @@ impl Desk {
     fn adopt(&mut self, found: Resolved) {
         let moved = found.socket.is_ok() && found.socket != self.launch.socket;
         self.machines.phux = found.phux.clone();
-        let server = found.socket.clone().ok();
-        self.updater.target = found.phux.clone().zip(server);
+        // A failed search says nothing about where the server is.
+        if let Ok(socket) = &found.socket {
+            self.updater.target = found.phux.clone().zip(Some(socket.clone()));
+            self.launch.socket = found.socket.clone();
+        }
         self.updater
             .target
             .take_if(|_| self.updater.install.is_err() || found.aimed);
         self.start_updater();
         self.launch.phux = found.phux;
-        // A failed search says nothing about where the server is.
-        if found.socket.is_ok() {
-            self.launch.socket = found.socket.clone();
-        }
         if self.machines.current.is_some() {
             return;
         }
@@ -280,19 +277,17 @@ impl Desk {
     /// The local server is up at `socket`: use it, by the client that's
     /// still dialing when that client can get there.
     fn reach(&mut self, socket: std::path::PathBuf, moved: bool) {
-        match &self.client {
-            Some(client) if !moved && !client.status().is_terminal() => client.nudge(),
-            Some(_) => {
-                self.renew();
-                // Another server's terminals and news aren't these.
-                if moved {
-                    self.link.heard = false;
-                    self.pending = None;
-                }
-                self.connect(Target::uds(socket));
-            }
-            None => self.connect(Target::uds(socket)),
+        let keeps = |client: &Client| !moved && !client.status().is_terminal();
+        if let Some(client) = self.client.as_ref().filter(|client| keeps(client)) {
+            return client.nudge();
         }
+        if self.client.is_some() {
+            self.renew();
+        }
+        if moved {
+            self.left_server();
+        }
+        self.connect(Target::uds(socket));
     }
 
     /// Retry from the placeholder, the banner or the machine row.
@@ -301,6 +296,16 @@ impl Desk {
         self.link.retry_at = None;
         self.link.incompatible = None;
         self.attempt();
+    }
+
+    /// The local server was handed off. Until it comes back it may still
+    /// refuse, so that isn't final yet. A remote isn't this server.
+    pub(super) fn server_handed_off(&mut self) {
+        if self.machines.current.is_some() || self.link_is_up() {
+            return;
+        }
+        self.link.handoff_until = Some(Instant::now() + HANDOFF_PATIENCE);
+        self.reconnect();
     }
 
     fn attempt(&mut self) {
@@ -377,7 +382,7 @@ impl Desk {
 
     /// Note a terminal failure the runtime reported.
     pub(super) fn failed_with(&mut self, error: &str) {
-        self.link.incompatible = incompatible(error);
+        self.link.incompatible = incompatible(error).filter(|_| !self.link.handing_off());
     }
 
     /// Once per poll: keep trying while the connection is down. True when
@@ -451,73 +456,6 @@ impl Desk {
         }
     }
 
-    pub fn standing(&self) -> Standing {
-        if let Some(words) = &self.link.incompatible {
-            return Standing::Incompatible(words.clone());
-        }
-        let why = || {
-            let last = self.client.as_ref().and_then(|client| client.last_error());
-            let error = self.error.clone().or(last).unwrap_or_default();
-            plainly(&error)
-        };
-        match (&self.client, self.status) {
-            (None, _) if self.link.finding => Standing::Starting,
-            (None, _) if self.machines.current.is_none() && self.launch.missing_cli() => {
-                Standing::NoCli
-            }
-            (None, _) | (Some(_), Status::Failed) => Standing::Unreachable(why()),
-            (Some(_), Status::Closed) => {
-                Standing::Closed(self.link.ended.clone().unwrap_or_default())
-            }
-            (Some(_), Status::Attached) if self.link.ended.is_none() => self.inventory(),
-            (Some(_), _) => Standing::Connecting(why()),
-        }
-    }
-
-    /// Connected, with nothing on screen: is there anything to show?
-    fn inventory(&self) -> Standing {
-        let selected = self.client.as_ref().and_then(|c| c.selected_session());
-        let Some(topology) = &self.topology else {
-            return Standing::Opening;
-        };
-        let session = topology.sessions.iter().find(|s| Some(s.id) == selected);
-        let waiting = self.pending_session.is_some() || !self.pending_spawns.is_empty();
-        match session {
-            _ if waiting => Standing::Opening,
-            None if topology.sessions.is_empty() => Standing::NoSessions,
-            Some(s) if !topology.panes.iter().any(|p| p.session_id == s.id) => {
-                Standing::NoTerminals
-            }
-            _ => Standing::Opening,
-        }
-    }
-
-    /// What to say over panes that have stopped updating. Silent for the
-    /// first moment of any drop.
-    pub fn banner(&self) -> Option<Banner> {
-        if self.shown.is_none() || self.link_is_up() || !self.link.is_down_for(BANNER_AFTER) {
-            return None;
-        }
-        if self.stuck() {
-            return Some(Banner::Stuck(self.standing()));
-        }
-        let last = self.client.as_ref().and_then(|client| client.last_error());
-        let why = self.link.ended.clone().or(last).map(|why| plainly(&why));
-        Some(Banner::Reconnecting(why.unwrap_or_else(|| {
-            "Your sessions keep running on the server.".to_owned()
-        })))
-    }
-
-    /// A word for the current machine's row.
-    pub fn link_word(&self) -> &'static str {
-        match self.status {
-            _ if self.link_is_up() => "connected",
-            Status::Failed | Status::Closed => "not connected",
-            _ if self.client.is_none() && !self.link.finding => "not connected",
-            _ => "connecting",
-        }
-    }
-
     pub(super) fn say_link_moved(&mut self) {
         if let Some(text) = self.link.moved.take() {
             self.say(NoticeKind::Error, text);
@@ -530,6 +468,12 @@ impl Desk {
             .as_ref()
             .is_some_and(|t| t.panes.iter().any(|p| &p.terminal_id == terminal))
     }
+}
+
+/// Whether a machine that's gone leaves the next launch on this computer: only
+/// a real launch forgets, and only the machine it had stored.
+fn forgets(aimed: bool, stored: Option<&str>, machine: &str, why: &str) -> bool {
+    !aimed && stored == Some(machine) && why.contains("not a registered host")
 }
 
 /// Whether a client's control plane has the records a home choice reads.

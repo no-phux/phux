@@ -6,6 +6,7 @@ fn updater() -> Updater {
         manage_phux: true,
         install: Ok(PathBuf::from("/Applications/Phux Rune.app")),
         target: Some(("/phux".into(), "/sock".into())),
+        aimed: false,
         work: Work::Idle,
         release: None,
         cli: None,
@@ -63,6 +64,23 @@ fn the_action_follows_what_is_due() {
     assert_eq!(updater.action(), Some(Action::RestartAndUpdateServer));
     updater.cli = None;
     assert_eq!(updater.action(), Some(Action::Restart));
+}
+
+#[test]
+fn a_restart_mid_reconnect_returns_to_the_session_it_was_on() {
+    let mut desk = Desk::open(&Resolved::offline("not launched"), None);
+    assert_eq!(desk.return_session(), None);
+    desk.link.home = Some(("work".to_owned(), None));
+    assert_eq!(desk.return_session().as_deref(), Some("work"));
+}
+
+#[test]
+fn a_window_aimed_by_hand_quits_instead_of_relaunching() {
+    let mut updater = updater();
+    updater.target = None;
+    updater.aimed = true;
+    updater.staged = Some("99.0.0".to_owned());
+    assert_eq!(updater.action(), Some(Action::Quit));
 }
 
 #[test]

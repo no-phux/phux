@@ -40,6 +40,9 @@ pub enum Action {
     /// The app downloads now; the server moves at the restart.
     DownloadForBoth,
     RestartAndUpdateServer,
+    /// Exiting installs it. A window aimed by hand doesn't reopen itself: the
+    /// relaunch couldn't carry that aim and would land on the default server.
+    Quit,
 }
 
 impl Action {
@@ -51,6 +54,7 @@ impl Action {
             Self::UpdateServer { retry: true } => "Retry server handoff",
             Self::DownloadForBoth => "Download Phux Rune",
             Self::RestartAndUpdateServer => "Restart & update server",
+            Self::Quit => "Quit to update",
         }
     }
 }
@@ -71,6 +75,8 @@ pub struct Updater {
     pub install: Result<PathBuf, &'static str>,
     /// The CLI and socket this window may update; absent when aimed by hand.
     pub(super) target: Option<(PathBuf, PathBuf)>,
+    /// A flag or the environment chose this run's server.
+    aimed: bool,
     pub work: Work,
     pub release: Option<Release>,
     pub cli: Option<Cli>,
@@ -102,6 +108,7 @@ impl Updater {
                 .clone()
                 .zip(socket)
                 .filter(|_| install.is_ok() && !resolved.aimed),
+            aimed: resolved.aimed,
             install,
             work: Work::Idle,
             release: None,
@@ -212,6 +219,7 @@ impl Updater {
         }
         match (self.staged.is_some(), self.app_due(), self.phux_due()) {
             (true, _, true) => Some(Action::RestartAndUpdateServer),
+            (true, _, false) if self.aimed => Some(Action::Quit),
             (true, _, false) => Some(Action::Restart),
             (false, true, true) => Some(Action::DownloadForBoth),
             (false, true, false) => Some(Action::Download),
@@ -382,8 +390,10 @@ impl Desk {
                 }
                 Done::CopiedShown => updater.copied = false,
                 Done::Server(result, restart_after) => {
-                    if updater.server_done(result) && restart_after {
-                        self.restart(tx);
+                    match (updater.server_done(result), restart_after) {
+                        (true, true) => self.restart(tx),
+                        (true, false) => self.server_handed_off(),
+                        (false, _) => {}
                     }
                 }
             }
@@ -396,11 +406,18 @@ impl Desk {
         let Ok(path) = self.updater.install.clone() else {
             return;
         };
-        let session = self.selected_session_name();
+        let session = self.return_session();
         match install::relaunch_after_exit(&path, session.as_deref()) {
             Ok(()) => tx.quit(),
             Err(error) => self.updater.message = Some(error),
         }
+    }
+
+    /// The session to reopen. A reconnect clears the selection until the
+    /// window attaches again, and a handoff is a reconnect.
+    fn return_session(&self) -> Option<String> {
+        let home = self.link.home.as_ref().map(|(name, _)| name.clone());
+        self.selected_session_name().or(home)
     }
 
     pub fn update_act(&mut self, tx: &mut Tx) {
@@ -409,6 +426,7 @@ impl Desk {
             Some(Action::Restart) => self.restart(tx),
             Some(Action::UpdateServer { .. }) => self.updater.update_server(false),
             Some(Action::RestartAndUpdateServer) => self.updater.update_server(true),
+            Some(Action::Quit) => tx.quit(),
             None => {}
         }
     }

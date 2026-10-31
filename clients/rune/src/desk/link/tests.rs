@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use phux_client_runtime::Client;
 use phux_client_runtime::control::Status;
 
-use super::{Banner, Desk, RETRY_CEILING, Standing, backoff, incompatible, plainly, sessions};
+use super::standing::plainly;
+use super::{Banner, Desk, RETRY_CEILING, Standing, backoff, forgets, incompatible, sessions};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -272,14 +273,108 @@ fn a_replaced_client_keeps_the_notice_clock() {
     assert!(expires > 100.0);
 }
 
+/// A stale window holding everything a server can leave behind.
+fn holding(client: Option<Arc<Client>>) -> Desk {
+    let mut desk = stale(embedded());
+    desk.client = client;
+    desk.link.heard = true;
+    desk.link.home = Some(("work".to_owned(), None));
+    desk.link.org_unavailable = Some(1);
+    desk.link.incompatible = Some("server speaks 12".to_owned());
+    desk.pending = Some(Pending::Close(ResourceId::local(1)));
+    desk.wanted = Some((ResourceId::local(3), Instant::now()));
+    desk
+}
+
+fn assert_nothing_held(desk: &Desk) {
+    assert_eq!(desk.pending, None);
+    assert_eq!(desk.wanted, None);
+    assert_eq!(desk.link.home, None);
+    assert_eq!(desk.link.org_unavailable, None);
+    assert_eq!(desk.link.incompatible, None);
+    assert!(!desk.link.heard);
+    assert_eq!(desk.link.down_since, None);
+}
+
 #[test]
 fn another_server_drops_what_was_held_for_this_one() {
-    let mut desk = stale(embedded());
-    desk.link.heard = true;
-    desk.pending = Some(Pending::Close(ResourceId::local(1)));
+    let mut desk = holding(Some(embedded()));
+    let server = desk.link.server;
     desk.reach(PathBuf::from("/nowhere/other.sock"), true);
-    assert_eq!(desk.pending, None);
-    assert!(!desk.link.heard);
+    assert_nothing_held(&desk);
+    assert!(desk.link.server > server);
+}
+
+#[test]
+fn another_server_with_no_client_drops_it_too() {
+    let mut desk = holding(None);
+    desk.reach(PathBuf::from("/nowhere/other.sock"), true);
+    assert_nothing_held(&desk);
+}
+
+#[test]
+fn a_lost_machine_leaves_nothing_for_the_stand_in() {
+    let mut desk = holding(None);
+    desk.machines.current = Some("mini".to_owned());
+    desk.lost_remembered("mini", "not a registered host".to_owned());
+    assert_nothing_held(&desk);
+    assert_eq!(desk.machines.current, None);
+    assert!(desk.link.moved.is_some());
+}
+
+#[test]
+fn only_a_real_launch_forgets_only_its_own_machine() {
+    let gone = "mini is not a registered host";
+    assert!(forgets(false, Some("mini"), "mini", gone));
+    assert!(!forgets(true, Some("mini"), "mini", gone));
+    assert!(!forgets(false, Some("other"), "mini", gone));
+    assert!(!forgets(false, None, "mini", gone));
+    assert!(!forgets(false, Some("mini"), "mini", "config unreadable"));
+}
+
+const REFUSED: &str = "server error VersionIncompatible: server speaks 12";
+
+#[test]
+fn a_finished_handoff_outlasts_the_old_servers_refusal() {
+    let mut desk = stale(embedded());
+    desk.status = Status::Failed;
+    desk.failed_with(REFUSED);
+    assert!(desk.stuck());
+    desk.server_handed_off();
+    assert!(!desk.stuck());
+    // The re-exec is still going: that refusal is the old server's.
+    desk.status = Status::Failed;
+    desk.failed_with(REFUSED);
+    assert!(!desk.stuck());
+    assert!(matches!(desk.standing(), Standing::Connecting(_)));
+    // Past that it's the answer, and it says so again.
+    desk.link.handoff_until = Some(Instant::now());
+    desk.failed_with(REFUSED);
+    assert!(desk.stuck());
+    assert!(matches!(desk.standing(), Standing::Incompatible(_)));
+}
+
+#[test]
+fn a_handoff_here_changes_nothing_on_a_remote() {
+    let mut desk = stale(embedded());
+    desk.machines.current = Some("mini".to_owned());
+    desk.failed_with(REFUSED);
+    desk.server_handed_off();
+    assert!(desk.stuck());
+}
+
+#[test]
+fn a_refusal_in_words_keeps_only_the_servers() {
+    assert_eq!(plainly(REFUSED), "server speaks 12");
+}
+
+#[test]
+fn a_new_client_gets_the_chosen_theme() {
+    let mut desk = desk();
+    let before = desk.generation;
+    desk.connect(phux_client_runtime::Target::uds("/nowhere/phux.sock"));
+    assert!(desk.client.is_some());
+    assert_eq!(desk.generation, before + 1, "apply_theme ran on the client");
 }
 
 #[test]
@@ -291,6 +386,29 @@ fn a_failed_search_keeps_the_last_known_server() {
     desk.adopt(failed);
     assert_eq!(desk.launch.socket, aimed);
     assert_eq!(desk.error.as_deref(), Some("timed out"));
+}
+
+#[test]
+fn a_failed_search_keeps_what_the_updater_manages() {
+    let mut desk = desk();
+    let target = (PathBuf::from("/phux"), PathBuf::from("/sock"));
+    desk.updater.install = Ok(PathBuf::from("/Applications/Phux Rune.app"));
+    desk.updater.target = Some(target.clone());
+    let mut failed = desk.launch.clone();
+    failed.socket = Err("timed out".to_owned());
+    failed.aimed = false;
+    desk.adopt(failed.clone());
+    assert_eq!(desk.updater.target, Some(target));
+    // A search that found one replaces it, and an aimed run still has none.
+    let found = PathBuf::from("/sock2");
+    failed.socket = Ok(found.clone());
+    failed.phux = Some(PathBuf::from("/phux"));
+    desk.adopt(failed.clone());
+    assert_eq!(desk.updater.target.as_ref().map(|t| &t.1), Some(&found));
+    failed.socket = Err("timed out".to_owned());
+    failed.aimed = true;
+    desk.adopt(failed);
+    assert_eq!(desk.updater.target, None);
 }
 
 #[test]

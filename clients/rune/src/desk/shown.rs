@@ -7,7 +7,7 @@ use phux_client_runtime::Client;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::AttachTarget;
 
-use super::{Desk, Shown, WANTED_GRACE, sessions};
+use super::{Desk, NoticeKind, Shown, WANTED_GRACE, input, sessions};
 
 impl Desk {
     pub(super) fn want(&mut self, terminal: ResourceId) {
@@ -83,6 +83,14 @@ impl Desk {
         (client.selected_session() != Some(pane.session_id)).then(|| pane.session_name.clone())
     }
 
+    /// What a terminal opening makes old news. A failure stays its full time:
+    /// a warning raised by the reconnect that reopened this view is exactly
+    /// what the person is about to need.
+    fn clear_passing_notice(&mut self) {
+        self.notice
+            .take_if(|n| n.kind == NoticeKind::Info || n.text == input::INPUT_PAUSED);
+    }
+
     /// Open the target terminal once its replica is ready. Retried on every
     /// drain until it succeeds; the runtime streams attached terminals on
     /// its own, so nothing here forces a reconnect.
@@ -120,9 +128,39 @@ impl Desk {
             view,
         });
         self.wanted = None;
-        self.notice = None;
+        self.clear_passing_notice();
         self.say_link_moved();
         self.generation += 1;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::launch::Resolved;
+
+    fn desk() -> Desk {
+        Desk::new(&Resolved::offline("not launched"))
+    }
+
+    #[test]
+    fn a_terminal_opening_leaves_a_warning_up() {
+        let mut desk = desk();
+        let warning = "Paste may not have landed; look before pasting again.";
+        desk.say(NoticeKind::Error, warning);
+        desk.clear_passing_notice();
+        assert_eq!(desk.notice.as_ref().map(|n| n.text.as_str()), Some(warning));
+    }
+
+    #[test]
+    fn a_terminal_opening_clears_what_was_in_passing() {
+        let mut desk = desk();
+        desk.say(NoticeKind::Info, "Diagnostics copied.");
+        desk.clear_passing_notice();
+        assert_eq!(desk.notice, None);
+        desk.say(NoticeKind::Error, input::INPUT_PAUSED);
+        desk.clear_passing_notice();
+        assert_eq!(desk.notice, None);
     }
 }

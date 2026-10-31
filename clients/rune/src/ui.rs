@@ -164,8 +164,9 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     el().w_full()
         .h_full()
         .fill(p.bg)
-        // Rune hands the root pastes nothing focused took (Edit ▸ Paste).
-        .on_paste_content(|desk: &mut Desk, content, _| desk.paste_content(content))
+        // No root paste hook: it would read the clipboard before anything
+        // here saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead,
+        // which answers to the modal and keeps the terminal asked for.
         .child(main)
         .children(status::banner(desk, &p))
         .children(updates::card(desk, &p, band))

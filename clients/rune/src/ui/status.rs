@@ -99,8 +99,22 @@ pub fn confirm_bar(desk: &Desk, p: &Ink) -> Option<El> {
     )
 }
 
+/// The refusal says the server is the one behind.
+fn server_behind(words: &str) -> bool {
+    words.contains("update the phux server")
+}
+
+/// Whether this computer's updates can fix `standing`. The app can always
+/// catch up, but a server behind on another machine updates there.
+fn updates_can_fix(standing: &Standing, remote: bool) -> bool {
+    match standing {
+        Standing::Incompatible(words) => !(remote && server_behind(words)),
+        _ => false,
+    }
+}
+
 /// What stands in for the terminal: the words, then what can be done.
-fn words(standing: &Standing, machine: &str) -> (&'static str, String) {
+fn words(standing: &Standing, machine: &str, remote: bool) -> (&'static str, String) {
     match standing {
         Standing::Starting => ("Starting phux…", String::new()),
         Standing::NoCli => (
@@ -110,7 +124,14 @@ fn words(standing: &Standing, machine: &str) -> (&'static str, String) {
                 .to_owned(),
         ),
         // The server says which side is behind.
-        Standing::Incompatible(words) if words.contains("update the phux server") => (
+        Standing::Incompatible(words) if server_behind(words) && remote => (
+            "Update the phux server",
+            format!(
+                "This app is newer than the server on {machine}, and updating it happens there: \
+                 run `phux update` on {machine}, then retry. {words}"
+            ),
+        ),
+        Standing::Incompatible(words) if server_behind(words) => (
             "Update the phux server",
             format!("This app is newer than the server on {machine}. {words}"),
         ),
@@ -162,7 +183,7 @@ fn action(label: &'static str, key: &'static str, p: &Ink, press: fn(&mut Desk))
 }
 
 /// The one thing to do about `standing`, when there is one.
-fn remedy(standing: &Standing, p: &Ink) -> Option<El> {
+fn remedy(standing: &Standing, remote: bool, p: &Ink) -> Option<El> {
     Some(match standing {
         Standing::Starting | Standing::Connecting(_) | Standing::Opening => return None,
         Standing::NoSessions => action("New session", "placeholder-session", p, Desk::new_session),
@@ -172,18 +193,26 @@ fn remedy(standing: &Standing, p: &Ink) -> Option<El> {
             p,
             Desk::new_terminal,
         ),
-        Standing::Incompatible(_) => action("Check for updates", "placeholder-update", p, |d| {
-            d.updater.check_now()
-        }),
-        Standing::NoCli | Standing::Unreachable(_) | Standing::Closed(_) => {
-            action("Retry", "placeholder-retry", p, Desk::reconnect)
+        Standing::Incompatible(_) if updates_can_fix(standing, remote) => {
+            action("Check for updates", "placeholder-update", p, |d| {
+                d.updater.check_now();
+            })
         }
+        Standing::Incompatible(_)
+        | Standing::NoCli
+        | Standing::Unreachable(_)
+        | Standing::Closed(_) => retry(p),
     })
+}
+
+fn retry(p: &Ink) -> El {
+    action("Retry", "placeholder-retry", p, Desk::reconnect)
 }
 
 pub fn placeholder(desk: &Desk, p: &Ink) -> El {
     let standing = desk.standing();
-    let (title, detail) = words(&standing, desk.machines.label());
+    let remote = desk.machines.current.is_some();
+    let (title, detail) = words(&standing, desk.machines.label(), remote);
     let failed = matches!(
         standing,
         Standing::Unreachable(_) | Standing::Incompatible(_)
@@ -194,7 +223,9 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
         .center()
         .gap(8.0)
         .pt(6.0)
-        .children(remedy(&standing, p))
+        .children(remedy(&standing, remote, p))
+        // A server updated from elsewhere never says so.
+        .children(updates_can_fix(&standing, remote).then(|| retry(p)))
         .child(action(
             "Other machines…",
             "placeholder-machines",
@@ -216,14 +247,15 @@ pub fn placeholder(desk: &Desk, p: &Ink) -> El {
 pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
     let banner = desk.banner()?;
     let machine = desk.machines.label();
+    let remote = desk.machines.current.is_some();
     let (lost, why) = match &banner {
         Banner::Reconnecting(why) => (format!("Lost {machine}. Reconnecting…"), why.clone()),
         Banner::Stuck(standing) => {
-            let (title, why) = words(standing, machine);
+            let (title, why) = words(standing, machine, remote);
             (title.to_owned(), why)
         }
     };
-    let update = matches!(banner, Banner::Stuck(Standing::Incompatible(_)));
+    let update = matches!(&banner, Banner::Stuck(standing) if updates_can_fix(standing, remote));
     // A held confirmation keeps the top of the stage.
     let top = if desk.pending.is_some() { 96.0 } else { 44.0 };
     Some(
@@ -312,6 +344,23 @@ pub fn status_line(desk: &Desk, p: &Ink) -> El {
 mod tests {
     use super::*;
     use phux_protocol::ids::ResourceId;
+
+    #[test]
+    fn a_remote_servers_update_happens_on_that_machine() {
+        let behind =
+            Standing::Incompatible("server requires 12.x; update the phux server".to_owned());
+        assert!(updates_can_fix(&behind, false));
+        assert!(!updates_can_fix(&behind, true));
+        assert!(
+            words(&behind, "mini", true)
+                .1
+                .contains("`phux update` on mini")
+        );
+        assert!(!words(&behind, "here", false).1.contains("`phux update`"));
+        // The app is this computer's to update, wherever the server is.
+        let ahead = Standing::Incompatible("update the phux app/client".to_owned());
+        assert!(updates_can_fix(&ahead, true));
+    }
 
     #[test]
     fn a_held_tab_close_counts_its_terminals() {
