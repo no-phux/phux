@@ -74,6 +74,9 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(TERMINAL, PreviousTab),
         item!(TERMINAL, NextTerminal),
         item!(TERMINAL, PreviousTerminal),
+        item!(TERMINAL, PromptUp),
+        item!(TERMINAL, PromptDown),
+        item!(TERMINAL, ScrollBottom),
         item!(TERMINAL, JumpToAttention),
     ]
     .into_iter()

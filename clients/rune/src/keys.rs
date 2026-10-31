@@ -65,6 +65,8 @@ pub enum Shortcut {
     ToggleFullScreen,
     KeyboardShortcuts,
     SelectAll,
+    PromptUp,
+    PromptDown,
 }
 
 impl Shortcut {

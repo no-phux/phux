@@ -225,6 +225,8 @@ impl Desk {
             Shortcut::ZoomReset => self.zoom(None),
             Shortcut::ScrollTop => self.scroll(Scroll::Top),
             Shortcut::ScrollBottom => self.scroll(Scroll::Bottom),
+            Shortcut::PromptUp => self.scroll(Scroll::Prompt(-1)),
+            Shortcut::PromptDown => self.scroll(Scroll::Prompt(1)),
             Shortcut::Palette => self.toggle_palette(),
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::Inbox => self.toggle_inbox(),

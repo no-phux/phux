@@ -359,14 +359,26 @@ pub const COMMANDS: &[Command] = &[
     row!(
         Shortcut::ScrollTop,
         "Scroll to Top of History",
-        [Chord::cmd(Cap::Up), Chord::cmd(Cap::Home)],
+        [Chord::cmd(Cap::Home)],
         [Chord::ctrl(Cap::Home).shift()]
     ),
     row!(
         Shortcut::ScrollBottom,
         "Scroll to Bottom",
-        [Chord::cmd(Cap::Down), Chord::cmd(Cap::End)],
-        [Chord::ctrl(Cap::End).shift()]
+        [m('l'), Chord::cmd(Cap::End)],
+        [l('l'), Chord::ctrl(Cap::End).shift()]
+    ),
+    row!(
+        Shortcut::PromptUp,
+        "Jump to Previous Prompt",
+        [Chord::cmd(Cap::Up)],
+        [Chord::ctrl(Cap::Up).shift()]
+    ),
+    row!(
+        Shortcut::PromptDown,
+        "Jump to Next Prompt",
+        [Chord::cmd(Cap::Down)],
+        [Chord::ctrl(Cap::Down).shift()]
     ),
     row!(hidden Shortcut::Palette, "Command Palette", [m('p'), m('k'), m('p').shift()], [l('p'), l('k')]),
     row!(hidden Shortcut::FindNext, "Find Next", [m('g')], [l('g')]),
