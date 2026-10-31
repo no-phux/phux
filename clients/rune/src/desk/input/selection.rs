@@ -7,6 +7,7 @@ use phux_client_runtime::engine::{BoundedSelectionText, Scroll, SelectionGesture
 use phux_protocol::ids::ResourceId;
 use rune::{Phase, Tx};
 
+use super::Modal;
 use crate::desk::mouse::Press;
 use crate::desk::{Desk, NoticeKind};
 
@@ -20,15 +21,15 @@ const AUTOSCROLL_TICK: Duration = Duration::from_millis(40);
 /// The farthest one autoscroll tick moves, in rows.
 const AUTOSCROLL_MAX_ROWS: f32 = 8.0;
 
-/// A selection drag held past the grid's top or bottom edge.
+/// A selection drag in progress, at its last point.
 #[derive(Debug, Clone)]
 pub struct Held {
     terminal: ResourceId,
     x: f32,
     y: f32,
     clicks: u32,
-    /// App clock seconds of the next scroll.
-    next: f64,
+    /// App clock seconds of the next scroll, while past the top or bottom edge.
+    next: Option<f64>,
 }
 
 /// A view's selection, as far as the clipboard is concerned.
@@ -145,9 +146,11 @@ impl Desk {
             screen_height: height.max(1),
             padding_left: 0,
         };
-        if let Ok(result) = engine.view_selection_gesture(view, event) {
-            self.gesture = if phase == 2 { 0 } else { result.handle };
-        }
+        // A refused step ended the gesture, as a release does.
+        self.gesture = match engine.view_selection_gesture(view, event) {
+            Ok(result) if phase != 2 => result.handle,
+            _ => 0,
+        };
         self.generation += 1;
     }
 
@@ -163,24 +166,24 @@ impl Desk {
         })
     }
 
-    /// Keep or drop the autoscroll as a selection drag moves.
+    /// Note where a selection drag is, arming or dropping its autoscroll.
     pub(in crate::desk) fn track_drag(
         &mut self,
         terminal: &ResourceId,
         press: &Press,
         tx: &mut Tx,
     ) {
-        if press.phase == Phase::Up || self.rows_past_edge(terminal, press.y) == 0 {
+        if press.phase == Phase::Up {
             self.pointer.held = None;
             return;
         }
-        let next = self.pointer.held.as_ref().map_or_else(
-            || {
+        let armed = self.pointer.held.as_ref().and_then(|held| held.next);
+        let next = (self.rows_past_edge(terminal, press.y) != 0).then(|| {
+            armed.unwrap_or_else(|| {
                 tx.wake_after(AUTOSCROLL_TICK);
                 self.clock + AUTOSCROLL_TICK.as_secs_f64()
-            },
-            |held| held.next,
-        );
+            })
+        });
         self.pointer.held = Some(Held {
             terminal: terminal.clone(),
             x: press.x,
@@ -188,6 +191,33 @@ impl Desk {
             clicks: press.clicks,
             next,
         });
+    }
+
+    /// Finish a selection drag whose release won't come, where it last was.
+    fn end_drag(&mut self) {
+        if let Some(held) = self.pointer.held.take()
+            && self.gesture != 0
+        {
+            self.select(&held.terminal, Phase::Up, held.x, held.y, held.clicks);
+        }
+        self.gesture = 0;
+    }
+
+    /// End what Rune will never release: its pane closed, so no handler hears
+    /// the release, or a modal dropped the press. A window losing focus needs
+    /// nothing here, since Rune sends that drag a cancelled release.
+    pub(in crate::desk) fn settle_pointer(&mut self) {
+        let covered = self.modal().is_some_and(Modal::takes_pointer);
+        let dragging = self.pointer.held.as_ref().map(|held| &held.terminal);
+        if dragging.is_some_and(|terminal| covered || self.view_of(terminal).is_none()) {
+            self.end_drag();
+        }
+        if self
+            .capture_terminal()
+            .is_some_and(|terminal| covered || self.view_of(terminal).is_none())
+        {
+            self.release_capture();
+        }
     }
 
     /// One autoscroll step, when one is due: scroll toward the pointer, then
@@ -200,14 +230,17 @@ impl Desk {
             self.pointer.held = None;
             return false;
         }
+        let Some(next) = held.next else {
+            return false;
+        };
         // Early by a frame's rounding: the wake that got here was the only one.
-        if held.next > self.clock {
-            tx.wake_after(Duration::from_secs_f64(held.next - self.clock));
+        if next > self.clock {
+            tx.wake_after(Duration::from_secs_f64(next - self.clock));
             return false;
         }
         tx.wake_after(AUTOSCROLL_TICK);
         self.pointer.held = Some(Held {
-            next: self.clock + AUTOSCROLL_TICK.as_secs_f64(),
+            next: Some(self.clock + AUTOSCROLL_TICK.as_secs_f64()),
             ..held.clone()
         });
         if !self.scroll_toward(&held) {

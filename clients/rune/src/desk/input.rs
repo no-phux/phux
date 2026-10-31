@@ -44,6 +44,21 @@ impl Modal {
             Self::ContextMenu | Self::Machines | Self::Rename | Self::Confirm => false,
         }
     }
+
+    /// Whether this covers the panes as a Rune modal, which drops any held
+    /// press without its release.
+    pub(in crate::desk) const fn takes_pointer(self) -> bool {
+        !matches!(self, Self::FindField | Self::Confirm)
+    }
+}
+
+/// Whether a view's frame shows a highlight.
+fn has_selection(frame: &GridFrame) -> bool {
+    frame
+        .buffer
+        .cells
+        .iter()
+        .any(|cell| cell.flags & phux_client_core::grid::CELL_SELECTED != 0)
 }
 
 /// A paste that would arrive as typed keys with line breaks, each one an
@@ -442,6 +457,14 @@ mod tests {
         assert!(!Modal::Confirm.allows(Shortcut::ZoomIn));
         assert!(!Modal::Palette.allows(Shortcut::FindNext));
         assert!(Modal::Palette.allows(Shortcut::Palette));
+    }
+
+    #[test]
+    fn only_rune_modals_take_the_pointer() {
+        assert!(Modal::ContextMenu.takes_pointer());
+        assert!(Modal::Palette.takes_pointer());
+        assert!(!Modal::FindField.takes_pointer());
+        assert!(!Modal::Confirm.takes_pointer());
     }
 
     #[test]

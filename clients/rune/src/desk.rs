@@ -194,8 +194,9 @@ pub struct Desk {
     pending_splits: HashMap<u32, Placement>,
     /// The pane the wheel last moved, owning `wheel_rows`.
     wheel_pane: Option<ResourceId>,
-    /// The pane whose program took the last press, until its release.
-    mouse_capture: Option<ResourceId>,
+    /// The pane whose program took the last press, and that press as it last
+    /// moved, until its release.
+    mouse_capture: Option<(ResourceId, mouse::Press)>,
     /// The cell the last reported pointer event was in.
     mouse_cell: Option<(u16, u16)>,
     /// The window title last set.
@@ -375,6 +376,7 @@ impl Desk {
         }
         self.finish_uploads(&client);
         changed |= self.sync_alerts();
+        self.settle_pointer();
         changed |= self.autoscroll(tx);
         self.keep_find();
         // Also catches a display-scale change, which re-snaps the cells.

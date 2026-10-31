@@ -60,7 +60,7 @@ impl Desk {
         if press.phase == Phase::Down {
             self.focus_pane(terminal);
         }
-        let captured = self.mouse_capture.as_ref() == Some(terminal);
+        let captured = self.capture_terminal() == Some(terminal);
         let tracking = self.mouse_mode(terminal) != MouseMode::None && !press.mods.shift;
         if captured || (press.phase == Phase::Down && tracking) {
             self.report(terminal, press);
@@ -69,6 +69,10 @@ impl Desk {
         // Selection is the primary button's; with no program to tell, the
         // others do nothing here.
         if press.button != PointerButton::Primary {
+            return;
+        }
+        // The rest of a drag that already ended.
+        if press.phase != Phase::Down && self.gesture == 0 {
             return;
         }
         self.track_drag(terminal, press, tx);
@@ -90,11 +94,12 @@ impl Desk {
         let (col, row) = metrics.cell_at(x, y, frame.cols, frame.rows);
         let action = match phase {
             Phase::Down => {
-                self.mouse_capture = Some(terminal.clone());
+                self.mouse_capture = Some((terminal.clone(), *press));
                 self.mouse_cell = Some((col, row));
                 MouseAction::Press
             }
             Phase::Move => {
+                self.mouse_capture = Some((terminal.clone(), *press));
                 // Only motion-tracking programs hear drags, once per cell.
                 let mode = self.mouse_mode(terminal);
                 if !matches!(mode, MouseMode::Button | MouseMode::Any)
@@ -123,15 +128,33 @@ impl Desk {
         send_mouse(&client, terminal, event);
     }
 
+    /// The pane whose program holds a press.
+    pub(super) fn capture_terminal(&self) -> Option<&ResourceId> {
+        self.mouse_capture.as_ref().map(|(terminal, _)| terminal)
+    }
+
+    /// Give the program the release Rune won't deliver, where the press last
+    /// was. A pane that is gone just forgets it.
+    pub(super) fn release_capture(&mut self) {
+        if let Some((terminal, press)) = self.mouse_capture.take() {
+            let phase = Phase::Up;
+            self.report(&terminal, &Press { phase, ..press });
+            self.mouse_cell = None;
+        }
+    }
+
     /// The secondary button's click at `at`, in a pane: the program's if it
-    /// tracks the mouse, else the context menu.
+    /// tracks the mouse, else the context menu. The click holds nothing, so a
+    /// press the program already has keeps its capture and gets its release.
     pub fn secondary_press(&mut self, terminal: &ResourceId, at: Press, window: PointerPress) {
         self.focus_pane(terminal);
         if self.mouse_mode(terminal) != MouseMode::None && !at.mods.shift {
+            let held = (self.mouse_capture.clone(), self.mouse_cell);
             let phase = Phase::Down;
             self.report(terminal, &Press { phase, ..at });
             let phase = Phase::Up;
             self.report(terminal, &Press { phase, ..at });
+            (self.mouse_capture, self.mouse_cell) = held;
             return;
         }
         self.pointer.menu = Some(window);
