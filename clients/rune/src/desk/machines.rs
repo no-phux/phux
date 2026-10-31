@@ -5,15 +5,17 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use phux_client_runtime::Target;
 use rune::{Key, KeyEvent, TextEdit, Tx, Waker};
 
 use super::Desk;
-use crate::machines::{self, Add, Peer};
+use crate::machines::{self, Add, Host, Peer};
 
 enum Done {
-    Listed(Result<Vec<String>, String>, Vec<Peer>),
+    Listed(Result<Vec<Host>, String>, Vec<Peer>),
     Step(String),
     Added(Result<(), String>),
+    Removed(String, Result<(), String>),
 }
 
 pub struct Machines {
@@ -22,14 +24,20 @@ pub struct Machines {
     pub current: Option<String>,
     /// The CLI that holds the registry.
     pub phux: Option<PathBuf>,
-    pub hosts: Vec<String>,
+    pub hosts: Vec<Host>,
     pub peers: Vec<Peer>,
     pub field: TextEdit,
     /// Enrollment running, and its latest step.
     pub adding: Option<String>,
     pub error: Option<String>,
-    /// The machines before a finished add, to go to the one it made.
-    before: Option<Vec<String>>,
+    /// How the last add ended; stays until the next one starts.
+    pub outcome: Option<Result<String, String>>,
+    /// The row asking whether to really remove its machine.
+    pub removing: Option<String>,
+    /// The add in hand, until a listing shows what it made, and the
+    /// machines from before it.
+    request: Option<Add>,
+    before: Option<Vec<Host>>,
     done: (Sender<Done>, Receiver<Done>),
     waker: Option<Waker>,
 }
@@ -45,6 +53,9 @@ impl Machines {
             field: TextEdit::new(""),
             adding: None,
             error: None,
+            outcome: None,
+            removing: None,
+            request: None,
             before: None,
             done: channel(),
             waker: None,
@@ -95,9 +106,22 @@ impl Machines {
         }
         self.adding = Some(format!("Setting up {}…", request.target));
         self.error = None;
+        self.outcome = None;
+        self.request = Some(request.clone());
         self.worker(move |send| {
             let result = machines::add(&phux, &request, &|step| send(Done::Step(step)));
             send(Done::Added(result));
+        });
+    }
+
+    fn remove(&mut self, name: String) {
+        let Some(phux) = self.phux.clone() else {
+            return;
+        };
+        self.removing = None;
+        self.worker(move |send| {
+            let result = machines::remove(&phux, &name);
+            send(Done::Removed(name, result));
         });
     }
 
@@ -105,10 +129,9 @@ impl Machines {
     /// refresh moves the window; any other list is just a list.
     fn take_added(&mut self) -> Option<String> {
         let before = self.before.take()?;
-        self.hosts
-            .iter()
-            .find(|host| !before.contains(host))
-            .cloned()
+        let request = self.request.take()?;
+        let host = machines::added(&self.hosts, &before, &request);
+        host.map(|host| host.name.clone())
     }
 }
 
@@ -146,11 +169,29 @@ impl Desk {
             self.machines.error = Some("Enter an ssh destination such as me@mini.".to_owned());
             return;
         }
+        // The tailnet authenticates its peers' addresses, so typing one's
+        // full name is the same as pressing its row.
+        let peer = machines::peer_for(&self.machines.peers, &target);
+        let name = peer.map(|peer| peer.name.clone());
         self.machines.add(Add {
+            tailnet: peer.is_some(),
             target,
-            name: None,
-            tailnet: false,
+            name,
         });
+    }
+
+    /// First press asks; the row's second answer removes. The window can't
+    /// stay on a machine it no longer knows, so that one goes home first.
+    pub fn ask_remove(&mut self, name: Option<String>) {
+        self.machines.removing = name;
+    }
+
+    pub fn remove_machine(&mut self, name: String) {
+        if self.machines.current.as_ref() == Some(&name) {
+            self.switch_machine(None);
+            self.machines.open = true;
+        }
+        self.machines.remove(name);
     }
 
     pub fn add_peer(&mut self, peer: &Peer) {
@@ -162,10 +203,15 @@ impl Desk {
     }
 
     /// Move this window to `machine` and remember it for the next launch.
-    /// Rebuilding drops the old connection and everything it knew.
+    /// Rebuilding drops the old connection and everything it knew. A machine
+    /// that can't be dialed leaves the window where it is.
     pub fn switch_machine(&mut self, machine: Option<String>) {
         if machine == self.machines.current {
             self.close_machines();
+            return;
+        }
+        if let Some(Err(why)) = machine.as_ref().map(|m| Target::resolve(m, None)) {
+            self.machines.error = Some(why);
             return;
         }
         // An aimed run stays out of what the next real launch reopens.
@@ -178,16 +224,12 @@ impl Desk {
         let mut launch = self.launch.clone();
         launch.session = None;
         let mut next = Desk::open(&launch, machine.clone());
-        std::mem::swap(&mut next.updater, &mut self.updater);
-        std::mem::swap(&mut next.machines, &mut self.machines);
+        self.carry_into(&mut next);
+        next.link.home = None;
         next.machines.current = machine;
-        next.generation = self.generation + 1;
-        next.focused = self.focused;
-        if let Some(waker) = self.waker.clone() {
-            next.watch(waker);
-        }
         next.close_machines();
         *self = next;
+        self.dial();
     }
 
     pub(super) fn pump_machines(&mut self) -> bool {
@@ -202,7 +244,7 @@ impl Desk {
                     }
                     self.machines.peers = peers;
                     if let Some(host) = self.machines.take_added() {
-                        self.switch_machine(Some(host));
+                        self.landed(host);
                     }
                 }
                 Done::Step(step) => {
@@ -217,12 +259,31 @@ impl Desk {
                             self.machines.before = Some(self.machines.hosts.clone());
                             self.machines.refresh();
                         }
-                        Err(error) => self.machines.error = Some(error),
+                        Err(error) => {
+                            self.machines.request = None;
+                            self.machines.outcome = Some(Err(error));
+                        }
                     }
+                }
+                Done::Removed(name, result) => {
+                    if let Err(error) = result {
+                        self.machines.error = Some(format!("{name} not removed: {error}"));
+                    }
+                    self.machines.refresh();
                 }
             }
         }
         changed
+    }
+
+    /// An add finished: go there, and leave the sheet saying so.
+    fn landed(&mut self, host: String) {
+        let open = self.machines.open;
+        self.switch_machine(Some(host.clone()));
+        self.machines.open = open;
+        if self.machines.current.as_ref() == Some(&host) {
+            self.machines.outcome = Some(Ok(format!("{host} is set up.")));
+        }
     }
 }
 
@@ -238,10 +299,20 @@ mod tests {
 
     #[test]
     fn a_listing_moves_the_window_only_after_an_add() {
+        let host = |name: &str| Host {
+            name: name.to_owned(),
+            ssh: None,
+            needs_direct: false,
+        };
         let mut list = Machines::new(None, None);
-        list.hosts = vec!["a".to_owned(), "b".to_owned()];
+        list.hosts = vec![host("a"), host("b")];
         assert_eq!(list.take_added(), None);
-        list.before = Some(vec!["a".to_owned()]);
+        list.before = Some(vec![host("a")]);
+        list.request = Some(Add {
+            target: "me@b".to_owned(),
+            name: None,
+            tailnet: false,
+        });
         assert_eq!(list.take_added().as_deref(), Some("b"));
         assert_eq!(list.take_added(), None);
     }

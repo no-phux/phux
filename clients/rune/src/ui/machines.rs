@@ -5,7 +5,7 @@ use rune::{Color, El, TextStyle, Transition, col, el, row, text, text_input};
 use super::settings::section;
 use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
 use crate::desk::Desk;
-use crate::machines::{LOCAL, Peer};
+use crate::machines::{Host, LOCAL, Peer};
 
 pub fn switch(desk: &Desk, ink: &Ink) -> El {
     row()
@@ -26,31 +26,118 @@ pub fn switch(desk: &Desk, ink: &Ink) -> El {
         .child(text("▾").font(CAPTION).color(ink.dim))
 }
 
-fn machine(name: Option<String>, current: bool, ink: &Ink) -> El {
-    let label = name.clone().unwrap_or_else(|| LOCAL.to_owned());
-    pressable(format!("machine-{label}"), ink)
+/// A small word to press in a row.
+fn chip(label: &'static str, key: String, ink: &Ink, press: impl Fn(&mut Desk) + 'static) -> El {
+    pressable(key, ink)
+        .px(6.0)
+        .radius(5.0)
+        .on_press(press)
+        .child(text(label).font(CAPTION).color(ink.accent))
+}
+
+/// What the current machine's row says: how the connection is, and a way to
+/// retry when it's down.
+fn current_state(desk: &Desk, ink: &Ink) -> Vec<El> {
+    let word = desk.link_word();
+    let up = word == "connected";
+    let color = if up { ink.accent } else { ink.dim };
+    let mut state = vec![text(word).font(CAPTION).color(color)];
+    if !up {
+        state.push(chip(
+            "Retry",
+            "machine-retry".to_owned(),
+            ink,
+            Desk::reconnect,
+        ));
+    }
+    state
+}
+
+/// A registered machine's removal, asked once.
+fn removal(name: &str, desk: &Desk, ink: &Ink) -> Vec<El> {
+    if desk.machines.removing.as_deref() != Some(name) {
+        let held = name.to_owned();
+        let ask = move |d: &mut Desk| d.ask_remove(Some(held.clone()));
+        return vec![chip("Remove", format!("machine-remove-{name}"), ink, ask)];
+    }
+    let held = name.to_owned();
+    vec![
+        chip(
+            "Remove for good",
+            format!("machine-remove-yes-{name}"),
+            ink,
+            move |d: &mut Desk| d.remove_machine(held.clone()),
+        ),
+        chip(
+            "Keep",
+            format!("machine-remove-no-{name}"),
+            ink,
+            |d: &mut Desk| d.ask_remove(None),
+        ),
+    ]
+}
+
+fn row_shell(key: String, ink: &Ink) -> El {
+    pressable(key, ink)
         .w_full()
         .px(10.0)
         .py(7.0)
         .gap(8.0)
         .radius(7.0)
         .items_center()
-        .on_press(move |d: &mut Desk| d.switch_machine(name.clone()))
-        .child(text(label).font(LABEL).color(ink.text).truncate())
+}
+
+fn local_machine(desk: &Desk, ink: &Ink) -> El {
+    let current = desk.machines.current.is_none();
+    row_shell(format!("machine-{LOCAL}"), ink)
+        .on_press(|d: &mut Desk| d.switch_machine(None))
+        .child(text(LOCAL).font(LABEL).color(ink.text).truncate())
         .child(el().grow(1.0))
-        .children(current.then(|| text("connected").font(CAPTION).color(ink.accent)))
+        .children(
+            current
+                .then(|| current_state(desk, ink))
+                .into_iter()
+                .flatten(),
+        )
+}
+
+/// A machine a window can't dial is listed, with what it needs, but doesn't
+/// press: its only route is ssh.
+fn machine(host: &Host, desk: &Desk, ink: &Ink) -> El {
+    let name = host.name.clone();
+    let current = desk.machines.current.as_ref() == Some(&host.name);
+    let label = text(name.clone()).font(LABEL).color(ink.text).truncate();
+    let row = if host.needs_direct {
+        row().w_full().px(10.0).py(7.0).gap(8.0).items_center()
+    } else {
+        let held = name.clone();
+        row_shell(format!("machine-{name}"), ink)
+            .on_press(move |d: &mut Desk| d.switch_machine(Some(held.clone())))
+    };
+    row.child(label)
+        .child(el().grow(1.0))
+        .children(
+            host.needs_direct
+                .then(|| text("needs a direct route").font(CAPTION).color(ink.dim)),
+        )
+        .children(
+            current
+                .then(|| current_state(desk, ink))
+                .into_iter()
+                .flatten(),
+        )
+        .children(removal(&name, desk, ink))
 }
 
 fn peer(peer: &Peer, ink: &Ink) -> El {
     let held = peer.clone();
-    pressable(format!("peer-{}", peer.name), ink)
-        .w_full()
-        .px(10.0)
-        .py(7.0)
-        .gap(8.0)
-        .radius(7.0)
-        .items_center()
-        .on_press(move |d: &mut Desk| d.add_peer(&held))
+    let shell = if peer.online {
+        row_shell(format!("peer-{}", peer.name), ink)
+            .on_press(move |d: &mut Desk| d.add_peer(&held))
+    } else {
+        row().w_full().px(10.0).py(7.0).gap(8.0).items_center()
+    };
+    shell
         .child(
             text(peer.name.clone())
                 .font(LABEL)
@@ -112,10 +199,9 @@ pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
         .padding(16.0)
         .gap(6.0)
         .child(text("Machines").font(LABEL_STRONG).color(ink.text))
-        .child(machine(None, list.current.is_none(), ink));
+        .child(local_machine(desk, ink));
     for host in &list.hosts {
-        let current = list.current.as_ref() == Some(host);
-        body = body.child(machine(Some(host.clone()), current, ink));
+        body = body.child(machine(host, desk, ink));
     }
     if !list.peers.is_empty() {
         body = body
@@ -140,6 +226,15 @@ pub fn sheet(desk: &Desk, ink: &Ink) -> Option<El> {
     }
     if let Some(error) = &list.error {
         body = body.child(text(error.clone()).font(CAPTION).color(ink.danger).wrap());
+    }
+    match &list.outcome {
+        Some(Ok(done)) => {
+            body = body.child(text(done.clone()).font(CAPTION).color(ink.accent).wrap());
+        }
+        Some(Err(why)) => {
+            body = body.child(text(why.clone()).font(CAPTION).color(ink.danger).wrap());
+        }
+        None => {}
     }
     let panel = col()
         .key("machines")
