@@ -118,6 +118,15 @@ impl Chord {
         held.chain([key.as_str()]).collect::<Vec<_>>().join("+")
     }
 
+    /// As this platform writes it.
+    fn label(self) -> String {
+        if cfg!(target_os = "macos") {
+            self.mac_label()
+        } else {
+            self.linux_label()
+        }
+    }
+
     /// As macOS writes it: `⇧⌘D`.
     fn mac_label(self) -> String {
         let marks = [
@@ -172,15 +181,20 @@ impl Command {
         }
     }
 
+    /// Every chord that reaches it, for the shortcut list.
+    pub fn hints(&self) -> String {
+        let chords = self.chords().iter();
+        chords
+            .map(|chord| chord.label())
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
+
     /// The chord shown beside it, or nothing.
     pub fn hint(&self) -> String {
-        self.chords().first().map_or_else(String::new, |chord| {
-            if cfg!(target_os = "macos") {
-                chord.mac_label()
-            } else {
-                chord.linux_label()
-            }
-        })
+        self.chords()
+            .first()
+            .map_or_else(String::new, |c| c.label())
     }
 }
 
@@ -242,6 +256,7 @@ pub const COMMANDS: &[Command] = &[
     ),
     row!(Shortcut::Inbox, "Open Inbox", [m('i')], [l('i')]),
     row!(Shortcut::Settings, "Settings", [m(',')], [l(',')]),
+    row!(Shortcut::KeyboardShortcuts, "Keyboard Shortcuts", [], []),
     row!(Shortcut::CheckForUpdates, "Check for Updates", [], []),
     row!(Shortcut::InstallUpdate, "Update Now", [], []),
     row!(Shortcut::Machines, "Switch or Add Machine", [], []),

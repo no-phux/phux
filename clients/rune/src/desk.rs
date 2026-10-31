@@ -131,6 +131,8 @@ pub struct Desk {
     pub palette_open: bool,
     pub palette_query: rune::TextEdit,
     pub palette_picked: usize,
+    /// The palette shows the keyboard shortcuts instead of everything.
+    pub palette_shortcuts: bool,
     pub sidebar_open: bool,
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
@@ -251,6 +253,7 @@ impl Desk {
             palette_open: false,
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
+            palette_shortcuts: false,
             sidebar_open,
             find: None,
             find_query: rune::TextEdit::new(""),

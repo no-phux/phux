@@ -74,6 +74,19 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
     out
 }
 
+/// Every chord the app answers to, generated from the command table.
+pub fn shortcut_items() -> Vec<Item> {
+    let bound = COMMANDS.iter().filter(|c| !c.chords().is_empty());
+    bound
+        .map(|command| Item {
+            title: command.title.to_owned(),
+            detail: command.hints(),
+            kind: "action",
+            target: Target::Action(command.action),
+        })
+        .collect()
+}
+
 /// A terminal's name, else its title, else its folder.
 pub fn pane_label(pane: &PaneDescriptor) -> String {
     let nonempty = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
@@ -182,6 +195,23 @@ mod tests {
     fn ranking_puts_the_best_title_first_and_falls_back_to_details() {
         let hits = rank(items(None), "new tab");
         assert_eq!(hits[0].item.target, Target::Action(Shortcut::NewTerminal));
+    }
+
+    #[test]
+    fn the_shortcut_list_fits_and_shows_only_bound_commands() {
+        let list = shortcut_items();
+        assert!(list.len() <= ROWS, "{}", list.len());
+        assert!(list.iter().all(|item| !item.detail.is_empty()));
+        let tab = list.iter().find(|i| i.title == "Close Tab");
+        assert!(tab.is_some());
+    }
+
+    #[test]
+    fn close_and_step_tab_are_in_the_palette() {
+        let list = items(None);
+        for action in [Shortcut::CloseTab, Shortcut::NextTab, Shortcut::PreviousTab] {
+            assert!(list.iter().any(|i| i.target == Target::Action(action)));
+        }
     }
 
     #[test]

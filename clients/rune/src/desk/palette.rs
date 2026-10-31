@@ -63,6 +63,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, ZoomReset),
         item!(VIEW, Inbox),
         item!(VIEW, Palette),
+        item!(VIEW, KeyboardShortcuts),
         item!(TERMINAL, SplitRight),
         item!(TERMINAL, SplitDown),
         item!(TERMINAL, Find),
@@ -101,18 +102,28 @@ impl Desk {
         self.palette_query.focused = true;
     }
 
+    /// The palette listing every chord; picking one runs it.
+    pub(super) fn show_shortcuts(&mut self) {
+        self.close_palette();
+        self.toggle_palette();
+        self.palette_shortcuts = true;
+    }
+
     pub fn close_palette(&mut self) {
         self.palette_open = false;
+        self.palette_shortcuts = false;
         self.palette_query.clear();
         self.palette_query.focused = false;
     }
 
     /// The palette's rows for the current query, best first.
     pub fn palette_hits(&self) -> Vec<Hit> {
-        palette::rank(
-            palette::items(self.topology.as_ref()),
-            &self.palette_query.text,
-        )
+        let items = if self.palette_shortcuts {
+            palette::shortcut_items()
+        } else {
+            palette::items(self.topology.as_ref())
+        };
+        palette::rank(items, &self.palette_query.text)
     }
 
     /// Arrow keys and Escape inside the palette's field.

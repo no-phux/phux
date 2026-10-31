@@ -63,6 +63,7 @@ pub enum Shortcut {
     InstallUpdate,
     Machines,
     ToggleFullScreen,
+    KeyboardShortcuts,
 }
 
 impl Shortcut {

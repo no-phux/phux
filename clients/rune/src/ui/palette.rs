@@ -11,12 +11,17 @@ const WIDTH: f32 = 600.0;
 pub fn view(desk: &Desk, ink: &Ink) -> El {
     let hits = desk.palette_hits();
     let picked = desk.palette_picked.min(hits.len().saturating_sub(1));
+    let prompt = if desk.palette_shortcuts {
+        "Filter keyboard shortcuts…"
+    } else {
+        "Jump to a terminal, session, or action…"
+    };
     let field = text_input(&desk.palette_query, TextStyle::new(16.0, 400.0).lh(24.0))
         .key("palette-query")
         .single_line()
         .grow(1.0)
         .color(ink.text)
-        .placeholder("Jump to a terminal, session, or action…", ink.dim)
+        .placeholder(prompt, ink.dim)
         .on_edit(|d: &mut Desk| &mut d.palette_query)
         .on_input_key(|d: &mut Desk, event, tx| d.palette_key(event, tx))
         .on_input_change(|d: &mut Desk, _| d.palette_picked = 0)
