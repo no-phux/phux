@@ -1,5 +1,6 @@
 use super::*;
 
+mod compression;
 mod residency;
 
 #[test]

@@ -7,6 +7,7 @@
 
 use std::io::{self, Write};
 
+use flate2::write::ZlibEncoder;
 use libghostty_vt::{
     Terminal as GhosttyTerminal,
     kitty::graphics::{self, Compression, Image, ImageFormat, PlacementIterator},
@@ -51,7 +52,8 @@ pub fn configure_terminal_for_kitty_graphics(
 /// image whose placements moved is re-placed without its payload, and an
 /// image that is no longer visibly placed is deleted. Unchanged state writes
 /// nothing. Placements keep their original identities, source rectangles,
-/// offsets and stacking order.
+/// offsets and stacking order. Raw pixel payloads travel zlib-compressed
+/// (`o=z`) when that is smaller.
 ///
 /// Returns `true` when a classic (cell-anchored) placement was written or
 /// removed: the cursor moved and cells may be overlaid. Payload transmission
@@ -78,7 +80,8 @@ pub fn emit_kitty_graphics_replay(
 /// The receiver clips its own viewport. Preserve right/bottom extents so a
 /// later cell-pixel resize can reveal the rest of a natural-size image.
 /// All resident payloads, including unplaced images, are restored so later
-/// live placement commands can reference them.
+/// live placement commands can reference them. Raw pixel payloads travel
+/// zlib-compressed (`o=z`) when that is smaller.
 ///
 /// Returns `true` when bytes were written.
 pub fn emit_kitty_graphics_snapshot(
@@ -400,15 +403,17 @@ fn write_image_apc(out: &mut impl Write, image: &Image<'_>) -> Result<bool, Kitt
     let Some((format, data)) = image_payload(image)? else {
         return Ok(false);
     };
+    let compressed = (format != PNG_FORMAT).then(|| zlib(data)).flatten();
     let header = ImageHeader {
         format,
         id: image.id()?,
         width: image.width()?,
         height: image.height()?,
+        compressed: compressed.is_some(),
     };
     // Anonymous p=0 placements cannot be overwritten by ID.
     write_delete_image(out, header.id)?;
-    write_image_chunks(out, &header, data)?;
+    write_image_chunks(out, &header, compressed.as_deref().unwrap_or(data))?;
     Ok(true)
 }
 
@@ -422,11 +427,22 @@ fn write_delete_placements(out: &mut impl Write, id: u32) -> io::Result<()> {
     write!(out, "\x1b_Ga=d,d=i,i={id},q=2;\x1b\\")
 }
 
+/// `data` deflated into a zlib stream (Kitty's `o=z`), or `None` when that
+/// would not shrink it. libghostty stores only decoded pixels, so raw RGB(A)
+/// payloads are the norm and usually compress well.
+fn zlib(data: &[u8]) -> Option<Vec<u8>> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(data).ok()?;
+    let deflated = encoder.finish().ok()?;
+    (deflated.len() < data.len()).then_some(deflated)
+}
+
 struct ImageHeader {
     format: u32,
     id: u32,
     width: u32,
     height: u32,
+    compressed: bool,
 }
 
 fn image_payload<'a>(
@@ -456,8 +472,12 @@ fn write_image_chunks(out: &mut impl Write, header: &ImageHeader, data: &[u8]) -
         if first {
             write!(
                 out,
-                "\x1b_Ga=t,f={},s={},v={},i={},q=2,m={more};",
-                header.format, header.width, header.height, header.id
+                "\x1b_Ga=t,f={},s={},v={},i={},{}q=2,m={more};",
+                header.format,
+                header.width,
+                header.height,
+                header.id,
+                if header.compressed { "o=z," } else { "" },
             )?;
             first = false;
         } else {
@@ -470,11 +490,13 @@ fn write_image_chunks(out: &mut impl Write, header: &ImageHeader, data: &[u8]) -
     Ok(())
 }
 
+const PNG_FORMAT: u32 = 100;
+
 const fn kitty_format_code(format: ImageFormat) -> Option<u32> {
     match format {
         ImageFormat::Rgb => Some(24),
         ImageFormat::Rgba => Some(32),
-        ImageFormat::Png => Some(100),
+        ImageFormat::Png => Some(PNG_FORMAT),
         _ => None,
     }
 }
