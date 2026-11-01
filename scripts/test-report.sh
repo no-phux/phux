@@ -20,14 +20,8 @@ if [[ "${1:-}" == --base ]]; then
     shift 2
 fi
 
-# Where nextest's `report` profile leaves its files for the current checkout.
-report_dir() {
-    cargo metadata --no-deps --format-version 1 |
-        python3 -B -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])' |
-        sed 's|$|/nextest/report|'
-}
-
-work="$(report_dir)"
+# Nextest's store sits under the workspace root, whatever CARGO_TARGET_DIR is.
+work="$root/target/nextest/report"
 known="$root/scripts/known-failing-tests.txt"
 mkdir -p "$work"
 rm -f "$work/junit.xml" "$work/run.log"
@@ -74,16 +68,15 @@ rerun_on_base() {
         filter="${filter:+$filter + }(binary_id(=$binary) & test(=$test))"
     done <"$list"
     phux_info "rerunning $(wc -l <"$list" | tr -d ' ') failure(s) on $base"
-    report="$(
+    (
         cd "$tree"
-        export CARGO_TARGET_DIR="${work%/nextest/report}/test-report-base"
+        export CARGO_TARGET_DIR="$root/target/test-report-base"
         cp "$root/.config/nextest.toml" .config/nextest.toml
-        run_nextest --workspace --features phux-server/measure -E "$filter" >"$work/base.log" 2>&1 || true
-        report_dir
-    )/junit.xml"
+        run_nextest --workspace --features phux-server/measure -E "$filter"
+    ) >"$work/base.log" 2>&1 || true
+    report="$tree/target/nextest/report/junit.xml"
     if [[ -f "$report" ]]; then
         failed_tests "$report" >"$out"
-        rm -f "$report"
     else
         phux_warn "the rerun on $base produced no report; see $work/base.log"
         : >"$out"
