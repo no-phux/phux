@@ -33,6 +33,9 @@ changes tool resolution but leaves Nix's compiler variables in place.
 and the workflows disagree about a version. `just toolchain-parity`
 resolves both environments and compares the binaries they hand you.
 
+Intel Macs use maintained nixpkgs 26.05 through December 31, 2026: 26.11
+dropped them. Other systems follow unstable; bridges align the tool pins.
+
 `cargo-nextest` is not in Mise's registry. Install the
 [prebuilt binary](https://nexte.st/docs/installation/pre-built-binaries/);
 Nix provides it.
@@ -48,7 +51,8 @@ download) builds it from source with Zig, about 200 seconds once per set
 of inputs, cached outside any `target/` directory. `GHOSTTY_SOURCE_DIR`
 builds a local Ghostty checkout; `LIBGHOSTTY_VT_SYS_LIB_DIR` links one you
 built. `just ghostty-pin-check` confirms the pinned revision publishes an
-archive for every target.
+archive for every target. Ghostty requires Zig 0.16.0; 0.17.0's build API
+is incompatible.
 
 ## Build cache (mbx)
 
@@ -87,7 +91,7 @@ changed under a build: check `rustc -V`, `cargo -V`, `mbx doctor`, then
 | docs                          | Git, Bash                                                     | `just docs-check`                                                                  |
 | pure Rust: domain, wire codec | Rust, a linker                                                | `just core-check` or `just crate-check phux-protocol`                              |
 | server, TUI, CLI, FFI         | Rust, Zig, platform packages                                  | `just doctor native`, then `just crate-check phux-server`                          |
-| agent integrations            | Node 24, Bun                                                  | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
+| agent integrations            | Node 26, Bun                                                  | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
 | browser client                | Rust wasm target, Node, wasm tools                            | `just doctor web`                                                                  |
 | desktop                       | Apple silicon Mac with Xcode, or Linux with desktop libraries | `just doctor desktop`, then `just desktop-app`                                     |
 | everything                    | all of the above plus gate tools                              | `just doctor ci`, then `just check`                                                |
@@ -352,19 +356,8 @@ each snapshot before clearing its counters, including in watch mode.
 
 ## Mutation testing
 
-Regression tests belong in the ordinary suite; mutation runs are a bounded,
-opt-in way to find tests that would not notice a change.
-
-```sh
-just mutation-rust-install                                     # pinned cargo-mutants
-just mutation-rust                                             # default scope
-just mutation-rust --file crates/phux-core/src/window.rs --limit 16
-just mutation-rust --in-diff origin/main --list
-```
-
-A caught mutant is evidence for that test; a missed one is a place to look,
-not necessarily a test to add. Unviable mutants and timeouts are not
-evidence of anything.
+[Mutation testing](./mutation-testing.md) describes the bounded, opt-in
+mutation recipes. Regression tests still belong in the ordinary suite.
 
 ## Demos and recordings
 

@@ -84,5 +84,6 @@ pub(crate) fn specular(color: Hsla, inset: f32) -> Option<gpui::Div> {
 
 /// `chord` as a GPUI keystroke, when it parses.
 pub(crate) fn keystroke(chord: &str) -> Option<Keystroke> {
-    Keystroke::parse(&gpui_stroke(chord)?).ok()
+    // gpui_stroke has already resolved host aliases to explicit modifiers.
+    Keystroke::parse_with_os(&gpui_stroke(chord)?, gpui::OperatingSystem::Unknown).ok()
 }

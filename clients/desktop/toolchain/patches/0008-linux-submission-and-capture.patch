@@ -1,9 +1,9 @@
 diff --git a/gpui-fast-linux/Cargo.toml b/gpui-fast-linux/Cargo.toml
-index 9d30ec3..a9d3f42 100644
+index 8ec2029..6290856 100644
 --- a/gpui-fast-linux/Cargo.toml
 +++ b/gpui-fast-linux/Cargo.toml
 @@ -150,6 +150,10 @@ package = "gpui-fast-wgpu"
- version = "=0.3.9"
+ version = "=0.3.10"
  package = "gpui-pre-http-client"
  
 +[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.image]
@@ -14,12 +14,12 @@ index 9d30ec3..a9d3f42 100644
  version = "0.2"
  
 diff --git a/gpui-fast-linux/Cargo.toml.orig b/gpui-fast-linux/Cargo.toml.orig
-index 1050b41..b2458ef 100644
+index 78c6573..ae7fde0 100644
 --- a/gpui-fast-linux/Cargo.toml.orig
 +++ b/gpui-fast-linux/Cargo.toml.orig
 @@ -73,6 +73,10 @@ path = "../gpui_wgpu"
  package = "gpui-pre-http-client"
- version = "=0.3.9"
+ version = "=0.3.10"
  
 +[target."cfg(any(target_os = \"linux\", target_os = \"freebsd\"))".dependencies.image]
 +version = "0.25.1"
@@ -162,7 +162,7 @@ index a3b71f7..0028b86 100644
  
      fn draw_composed(&self, scene: gpui::ComposedScene<'_>) {
 diff --git a/gpui-fast-wgpu/Cargo.toml b/gpui-fast-wgpu/Cargo.toml
-index 21e5ac0..a96376e 100644
+index 0964373..598c48e 100644
 --- a/gpui-fast-wgpu/Cargo.toml
 +++ b/gpui-fast-wgpu/Cargo.toml
 @@ -41,13 +41,11 @@ resolver = "2"
@@ -192,20 +192,20 @@ index 21e5ac0..a96376e 100644
  version = "1.10"
  
 +[dev-dependencies.gpui]
-+version = "=0.1.9"
++version = "=0.1.12"
 +default-features = false
 +features = ["test-support"]
 +package = "gpui-fast"
 +
 +[dev-dependencies.naga]
-+version = "29.0"
++version = "30.0"
 +features = ["wgsl-in"]
 +
  [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.wgpu]
- version = "29.0"
+ version = "=30.0.1"
  features = [
 diff --git a/gpui-fast-wgpu/Cargo.toml.orig b/gpui-fast-wgpu/Cargo.toml.orig
-index 2bccc85..956d309 100644
+index 690a0a4..2c0d509 100644
 --- a/gpui-fast-wgpu/Cargo.toml.orig
 +++ b/gpui-fast-wgpu/Cargo.toml.orig
 @@ -23,9 +23,9 @@ name = "gpui_wgpu"
@@ -233,23 +233,23 @@ index 2bccc85..956d309 100644
  optional = true
  
 +[dev-dependencies.gpui]
-+version = "=0.1.9"
++version = "=0.1.12"
 +default-features = false
 +features = ["test-support"]
 +package = "gpui-fast"
 +
 +[dev-dependencies.naga]
-+version = "29.0"
++version = "30.0"
 +features = ["wgsl-in"]
 +
  [target."cfg(any(target_os = \"linux\", target_os = \"freebsd\"))".dependencies.wgpu]
- version = "29.0"
  default-features = false
+ features = ["std", "metal", "gles", "vulkan", "wgsl", "webgpu"]
 diff --git a/gpui-fast-wgpu/src/wgpu_renderer.rs b/gpui-fast-wgpu/src/wgpu_renderer.rs
-index 0ae5fe7..21dc47a 100644
+index 4aea14e..e712d12 100644
 --- a/gpui-fast-wgpu/src/wgpu_renderer.rs
 +++ b/gpui-fast-wgpu/src/wgpu_renderer.rs
-@@ -19,6 +19,28 @@ use std::sync::Arc;
+@@ -20,6 +20,28 @@ use std::sync::Arc;
  
  const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
  
@@ -278,7 +278,7 @@ index 0ae5fe7..21dc47a 100644
  const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
  
  /// Shader variant for backends with storage buffer support: the shared shader
-@@ -1127,6 +1149,45 @@ impl WgpuRenderer {
+@@ -1122,6 +1144,45 @@ impl WgpuRenderer {
          self.max_texture_size
      }
  
@@ -324,7 +324,7 @@ index 0ae5fe7..21dc47a 100644
      pub fn draw(&mut self, scene: &Scene) -> bool {
          #[cfg(target_family = "wasm")]
          if self.device_lost() {
-@@ -2284,19 +2345,13 @@ impl WgpuRenderer {
+@@ -2279,19 +2340,13 @@ impl WgpuRenderer {
      }
  }
  
@@ -346,7 +346,7 @@ index 0ae5fe7..21dc47a 100644
  impl HeadlessRenderTarget {
      fn size(&self) -> Size<DevicePixels> {
          Size {
-@@ -2344,16 +2399,6 @@ impl WgpuHeadlessRenderer {
+@@ -2339,16 +2394,6 @@ impl WgpuHeadlessRenderer {
      }
  
      fn ensure_render_target(&mut self, size: Size<DevicePixels>) -> anyhow::Result<()> {
@@ -363,7 +363,7 @@ index 0ae5fe7..21dc47a 100644
          if self
              .render_target
              .as_ref()
-@@ -2362,26 +2407,7 @@ impl WgpuHeadlessRenderer {
+@@ -2357,26 +2402,7 @@ impl WgpuHeadlessRenderer {
              return Ok(());
          }
  
@@ -391,7 +391,7 @@ index 0ae5fe7..21dc47a 100644
          Ok(())
      }
  
-@@ -2417,12 +2443,99 @@ impl WgpuHeadlessRenderer {
+@@ -2412,12 +2438,99 @@ impl WgpuHeadlessRenderer {
      /// Copies the current render target back to the CPU. Dimensions come from the
      /// target texture itself, so the copy can never disagree with what was rendered.
      fn read_image(&mut self) -> anyhow::Result<image::RgbaImage> {
@@ -495,7 +495,7 @@ index 0ae5fe7..21dc47a 100644
          let bytes_per_row = width
              .checked_mul(4)
              .ok_or_else(|| anyhow::anyhow!("Headless render target row size overflowed"))?;
-@@ -2433,12 +2546,11 @@ impl WgpuHeadlessRenderer {
+@@ -2428,12 +2541,11 @@ impl WgpuHeadlessRenderer {
              .checked_mul(u64::from(height))
              .ok_or_else(|| anyhow::anyhow!("Headless readback buffer size overflowed"))?;
          anyhow::ensure!(
@@ -511,7 +511,7 @@ index 0ae5fe7..21dc47a 100644
              .resources
              .device
              .create_buffer(&wgpu::BufferDescriptor {
-@@ -2448,15 +2560,14 @@ impl WgpuHeadlessRenderer {
+@@ -2443,15 +2555,14 @@ impl WgpuHeadlessRenderer {
                  mapped_at_creation: false,
              });
          let mut encoder =
@@ -529,7 +529,7 @@ index 0ae5fe7..21dc47a 100644
                  mip_level: 0,
                  origin: wgpu::Origin3d::ZERO,
                  aspect: wgpu::TextureAspect::All,
-@@ -2475,33 +2586,19 @@ impl WgpuHeadlessRenderer {
+@@ -2470,33 +2581,19 @@ impl WgpuHeadlessRenderer {
                  depth_or_array_layers: 1,
              },
          );
@@ -569,10 +569,10 @@ index 0ae5fe7..21dc47a 100644
 +        let (readback_buffer, submission, padded_bytes_per_row) = self.copy_to_buffer(core)?;
 +        let bytes_per_row = width * 4; // Checked by copy_to_buffer before allocation.
 +        map_readback_buffer(&core.resources.device, &readback_buffer, submission)?;
-         let mapped_data = readback_buffer.slice(..).get_mapped_range();
+         let mapped_data = readback_buffer.slice(..).get_mapped_range()?;
          let pixel_capacity = usize::try_from(u64::from(bytes_per_row) * u64::from(height))
              .map_err(|_| anyhow::anyhow!("Headless image size exceeds addressable memory"))?;
-@@ -2515,7 +2612,10 @@ impl WgpuHeadlessRenderer {
+@@ -2510,7 +2607,10 @@ impl WgpuHeadlessRenderer {
          drop(mapped_data);
          readback_buffer.unmap();
  
@@ -584,7 +584,7 @@ index 0ae5fe7..21dc47a 100644
              for pixel in pixels.chunks_exact_mut(4) {
                  pixel.swap(0, 2);
              }
-@@ -2526,6 +2626,33 @@ impl WgpuHeadlessRenderer {
+@@ -2521,6 +2621,33 @@ impl WgpuHeadlessRenderer {
      }
  }
  
@@ -618,7 +618,7 @@ index 0ae5fe7..21dc47a 100644
  #[cfg(all(
      not(target_family = "wasm"),
      any(test, feature = "bench-support", feature = "test-support")
-@@ -2625,7 +2752,91 @@ mod tests {
+@@ -2620,7 +2747,91 @@ mod tests {
      #[cfg(target_os = "linux")]
      use gpui::{DevicePixels, PlatformHeadlessRenderer, Scene};
  
@@ -711,7 +711,7 @@ index 0ae5fe7..21dc47a 100644
      fn device_size(width: i32, height: i32) -> Size<DevicePixels> {
          Size {
              width: DevicePixels(width),
-@@ -2633,7 +2844,7 @@ mod tests {
+@@ -2628,7 +2839,7 @@ mod tests {
          }
      }
  
@@ -720,7 +720,7 @@ index 0ae5fe7..21dc47a 100644
      fn solid_quad(x: f32, y: f32, width: f32, height: f32, color: Hsla) -> Quad {
          let bounds = Bounds {
              origin: Point {
-@@ -2659,7 +2870,7 @@ mod tests {
+@@ -2654,7 +2865,7 @@ mod tests {
  
      /// Channels are compared with a small tolerance so the assertions hold across
      /// drivers without pinning exact rasterizer output.
@@ -730,10 +730,10 @@ index 0ae5fe7..21dc47a 100644
          let actual = image.get_pixel(x, y).0;
          assert!(
 diff --git a/gpui-fast/src/platform.rs b/gpui-fast/src/platform.rs
-index 246953c..9e5c180 100644
+index 5e1667e..b6501c2 100644
 --- a/gpui-fast/src/platform.rs
 +++ b/gpui-fast/src/platform.rs
-@@ -1195,7 +1195,8 @@ pub enum TextInputStateChange {
+@@ -1226,7 +1226,8 @@ pub enum TextInputStateChange {
  /// visible. Query this on the UI thread.
  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
  pub enum NativeVisibility {
@@ -743,7 +743,7 @@ index 246953c..9e5c180 100644
      Visible,
      /// A real native window exists, but it is hidden, minimized, or occluded.
      Obscured,
-@@ -1305,8 +1306,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+@@ -1336,8 +1337,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
          NativeVisibility::Unavailable
      }
      fn draw(&self, scene: &Scene);

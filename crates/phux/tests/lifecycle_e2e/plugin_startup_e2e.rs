@@ -35,6 +35,46 @@ fn poll_until(limit: Duration, mut pred: impl FnMut() -> bool) -> bool {
     pred()
 }
 
+// Shell redirection creates the file before echo publishes its PID.
+fn pid_ready(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    text.ends_with('\n') && text.trim().parse::<i32>().is_ok_and(|pid| pid > 0)
+}
+
+#[test]
+fn pid_readiness_requires_a_complete_positive_pid_record() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("pid");
+    assert!(!pid_ready(&path));
+    for (text, ready) in [
+        ("", false),
+        ("42", false),
+        ("\n", false),
+        ("0\n", false),
+        ("-42\n", false),
+        ("not-a-pid\n", false),
+        ("42\n", true),
+    ] {
+        std::fs::write(&path, text).unwrap();
+        assert!(path.is_file());
+        assert_eq!(pid_ready(&path), ready, "{text:?}");
+    }
+}
+
+// The fixture writes fds last, after env, cwd and umask are complete.
+fn wait_for_sidecar_files(root: &Path, pid: i32) {
+    let fds = root.join(format!("fds.{pid}"));
+    assert!(
+        poll_until(Duration::from_secs(20), || {
+            std::fs::read_to_string(&fds)
+                .is_ok_and(|text| text.ends_with('\n') && !text.trim().is_empty())
+        }),
+        "sidecar wrote its pid before fds.{pid}"
+    );
+}
+
 fn write_plugin(root: &Path, script: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(root).unwrap();
     std::fs::write(root.join("run.sh"), script).unwrap();
@@ -107,9 +147,7 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
     let server = start_server(&xdg, "stup");
     let pids = root.path().join("pids");
     assert!(
-        poll_until(Duration::from_secs(20), || {
-            std::fs::read_to_string(&pids).is_ok_and(|text| !text.trim().is_empty())
-        }),
+        poll_until(Duration::from_secs(20), || pid_ready(&pids)),
         "sidecar did not start"
     );
     let first: i32 = std::fs::read_to_string(&pids)
@@ -120,14 +158,8 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
         .trim()
         .parse()
         .unwrap();
-    let fds_path = root.path().join(format!("fds.{first}"));
-    assert!(
-        poll_until(Duration::from_secs(20), || {
-            std::fs::read_to_string(&fds_path).is_ok_and(|text| !text.trim().is_empty())
-        }),
-        "sidecar wrote its pid before fds.{first}"
-    );
     let mut reap = Reap(first);
+    wait_for_sidecar_files(root.path(), first);
     let env = std::fs::read_to_string(root.path().join(format!("env.{first}"))).unwrap();
     assert!(env.contains("PHUX_PLUGIN_ID=example.startup"), "{env}");
     assert!(env.contains("PHUX_PLUGIN_NAME=Startup"), "{env}");
@@ -174,7 +206,9 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
     assert!(
         poll_until(Duration::from_secs(30), || {
             let text = std::fs::read_to_string(&pids).unwrap_or_default();
-            text.lines().filter(|line| !line.is_empty()).count() >= 2 && !alive(first)
+            text.ends_with('\n')
+                && text.lines().filter(|line| !line.is_empty()).count() >= 2
+                && !alive(first)
         }),
         "upgrade should replace the sidecar; pids={:?} first alive={}",
         std::fs::read_to_string(&pids),
@@ -191,6 +225,7 @@ fn upgrade_restarts_the_sidecar_with_a_scrubbed_environment() {
     reap.0 = second;
     assert!(alive(second));
     assert_ne!(first, second);
+    wait_for_sidecar_files(root.path(), second);
     let env = std::fs::read_to_string(root.path().join(format!("env.{second}"))).unwrap();
     assert!(
         env.contains(&format!("PHUX_SOCKET={}", server.socket.display())),
@@ -212,7 +247,7 @@ fn sigkill_of_the_server_is_reaped_by_the_next_start() {
     install_config(&xdg, &manifest);
     let mut server = start_server(&xdg, "sreap");
     let pid_path = root.path().join("pid");
-    assert!(poll_until(Duration::from_secs(20), || pid_path.is_file()));
+    assert!(poll_until(Duration::from_secs(20), || pid_ready(&pid_path)));
     let pid: i32 = std::fs::read_to_string(&pid_path)
         .unwrap()
         .trim()
@@ -249,7 +284,7 @@ fn sigkill_reaps_a_grandchild_when_the_leader_honors_term() {
     let mut server = start_server(&xdg, "sgrand");
     let grand_path = root.path().join("grand");
     assert!(
-        poll_until(Duration::from_secs(20), || grand_path.is_file()),
+        poll_until(Duration::from_secs(20), || pid_ready(&grand_path)),
         "sidecar did not fork a grandchild"
     );
     let leader: i32 = std::fs::read_to_string(root.path().join("pid"))
@@ -265,17 +300,22 @@ fn sigkill_reaps_a_grandchild_when_the_leader_honors_term() {
     let reap_leader = Reap(leader);
     let reap_grand = Reap(grand);
     server.sigkill();
-    assert!(
-        poll_until(Duration::from_secs(20), || !alive(leader)),
-        "PDEATHSIG should terminate a leader that honors SIGTERM"
-    );
-    assert!(
-        alive(grand),
-        "the grandchild should survive the leader's SIGTERM"
-    );
+    // Only Linux delivers PDEATHSIG. On macOS both processes remain for
+    // the next start's orphan reaper, which is the cross-platform contract.
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            poll_until(Duration::from_secs(20), || !alive(leader)),
+            "PDEATHSIG should terminate a leader that honors SIGTERM"
+        );
+        assert!(
+            alive(grand),
+            "the grandchild should survive the leader's SIGTERM"
+        );
+    }
     let next = start_server(&xdg, "sgrand2");
     assert!(
-        poll_until(Duration::from_secs(20), || !alive(grand)),
+        poll_until(Duration::from_secs(20), || !alive(leader) && !alive(grand)),
         "the next server start should reap the leftover grandchild"
     );
     drop(next);
@@ -298,7 +338,7 @@ fn sigkill_reaps_a_grandchild_forked_in_the_leaders_start_tick() {
     let mut server = start_server(&xdg, "stick");
     let grand_path = root.path().join("grand");
     assert!(
-        poll_until(Duration::from_secs(20), || grand_path.is_file()),
+        poll_until(Duration::from_secs(20), || pid_ready(&grand_path)),
         "sidecar did not fork a grandchild"
     );
     let leader: i32 = std::fs::read_to_string(root.path().join("pid"))
@@ -314,17 +354,20 @@ fn sigkill_reaps_a_grandchild_forked_in_the_leaders_start_tick() {
     let reap_leader = Reap(leader);
     let reap_grand = Reap(grand);
     server.sigkill();
-    assert!(
-        poll_until(Duration::from_secs(20), || !alive(leader)),
-        "PDEATHSIG should terminate a leader that honors SIGTERM"
-    );
-    assert!(
-        alive(grand),
-        "an immediately forked grandchild should survive the leader"
-    );
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            poll_until(Duration::from_secs(20), || !alive(leader)),
+            "PDEATHSIG should terminate a leader that honors SIGTERM"
+        );
+        assert!(
+            alive(grand),
+            "an immediately forked grandchild should survive the leader"
+        );
+    }
     let next = start_server(&xdg, "stick2");
     assert!(
-        poll_until(Duration::from_secs(20), || !alive(grand)),
+        poll_until(Duration::from_secs(20), || !alive(leader) && !alive(grand)),
         "the next start should reap a same-tick grandchild"
     );
     drop(next);

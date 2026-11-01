@@ -183,7 +183,7 @@ fn side_tabs_scroll_and_reorder_using_their_scrolled_positions(cx: &mut TestAppC
     let shelf = cx
         .debug_bounds("sidebar-tab-shelf")
         .expect("fixed tab area");
-    cx.simulate_event(gpui::ScrollWheelEvent {
+    cx.simulate_event(gpui::ScrollEvent {
         position: shelf.center(),
         delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-210.))),
         ..Default::default()
@@ -254,7 +254,7 @@ fn overflowing_top_tabs_scroll_and_reorder_at_their_painted_positions(cx: &mut T
     run(&desk, "tabs-top", cx);
     let hidden = cx.debug_bounds("tab-fixture-h").unwrap();
     assert!(hidden.origin.x > px(800.));
-    cx.simulate_event(gpui::ScrollWheelEvent {
+    cx.simulate_event(gpui::ScrollEvent {
         // Far enough that the seventh tab clears the main menu rail.
         position: point(px(500.), px(TITLEBAR / 2.)),
         delta: gpui::ScrollDelta::Pixels(point(px(-560.), px(0.))),
@@ -302,7 +302,7 @@ fn plain_bottom_tabs_scroll_reorder_and_cancel_drag_on_placement_change(cx: &mut
     run(&desk, "tabs-bottom", cx);
     let strip = cx.debug_bounds("bottom-tabs").expect("bottom scroller");
     assert!(cx.debug_bounds("tab-fixture-h").unwrap().right() > px(800.));
-    cx.simulate_event(gpui::ScrollWheelEvent {
+    cx.simulate_event(gpui::ScrollEvent {
         position: strip.center(),
         delta: gpui::ScrollDelta::Pixels(point(px(-560.), px(0.))),
         ..Default::default()

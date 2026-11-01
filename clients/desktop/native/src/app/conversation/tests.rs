@@ -356,7 +356,7 @@ fn tab_and_enter_or_space_operate_folded_thinking_and_tool_rows(cx: &mut gpui::T
     }
 }
 
-fn press_fold_key(cx: &mut gpui::VisualTestContext, key: &str) {
+fn press_fold_key(cx: &mut gpui::VisualTestContext, key: &'static str) {
     use gpui::InputEvent as _;
     let keystroke = gpui::Keystroke::parse(key).unwrap();
     cx.update(|window, cx| {

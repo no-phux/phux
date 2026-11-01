@@ -57,12 +57,12 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config mold curl xz-utils
       - run: bash scripts/setup-rust.sh native
       - run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: windows-desktop-wsl-server
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --locked --release -p phux
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-desktop-wsl-server
           path: target/release/phux
@@ -102,7 +102,7 @@ jobs:
           "PHUX_MSVC_RUNTIME_DIR=$($crt.FullName)" >> $env:GITHUB_ENV
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
           "PHUX_BUILD_SHA=$(git rev-parse HEAD)" >> $env:GITHUB_ENV
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: clients/desktop/native -> target
           shared-key: windows-desktop-msvc
@@ -133,7 +133,7 @@ jobs:
           if (@($tests).Count -ne 1) { throw 'Expected one desktop policy test executable' }
           New-Item -ItemType Directory windows-policy | Out-Null
           Copy-Item -LiteralPath $tests.executable windows-policy/phux-desktop-policy.exe
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-policy-windows-x64
           path: windows-policy/phux-desktop-policy.exe
@@ -149,7 +149,7 @@ jobs:
           [IO.File]::WriteAllText(($archive.FullName + '.sha256'), "$digest  $($archive.Name)`n", [Text.UTF8Encoding]::new($false))
       # Retain build products even if qualification fails, for native iteration.
       # A red qualification still prevents the caller's signing/publication gate.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-build-windows-x64
           path: |
@@ -170,19 +170,19 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: desktop-build-windows-x64
           path: windows-package
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-desktop-wsl-server
           path: wsl-server
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: desktop-policy-windows-x64
           path: windows-policy
-      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
         with:
           distribution: Ubuntu-24.04
           wsl-version: 2
@@ -197,7 +197,7 @@ jobs:
           wsl.exe --terminate Ubuntu-24.04
           $uid = (& wsl.exe --distribution Ubuntu-24.04 --exec id -u) -join ''
           if ($LASTEXITCODE -ne 0 -or $uid -notmatch '^[1-9][0-9]*$') { throw 'Native desktop qualification requires the selected non-root WSL default user' }
-          choco install tesseract --version=5.5.0.20241111 --yes --no-progress
+          choco install tesseract --version=5.5.3.20260724 --yes --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'OCR installation failed' }
       - name: Installer contracts under both PowerShell hosts
         shell: pwsh
@@ -245,7 +245,7 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows-bridge-teardown.ps1 -ServerBinary "$env:GITHUB_WORKSPACE/wsl-server/phux" -Output "$env:RUNNER_TEMP/desktop-evidence"
           if ($LASTEXITCODE -ne 0) { throw 'Native WSL bridge teardown qualification failed' }
       - name: Hand only GUI-qualified bytes to release publication
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-windows-x64
           path: |
@@ -254,7 +254,7 @@ jobs:
           if-no-files-found: error
       - name: Retain native runtime evidence, also on failure
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-runtime-windows-${{ github.run_attempt }}
           path: ${{ runner.temp }}/desktop-evidence
@@ -273,7 +273,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.release-tag }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: desktop-windows-x64
           path: ${{ runner.temp }}/desktop-windows
@@ -311,7 +311,7 @@ jobs:
           sha256sum -c ./*.sha256
       - name: Hand the stable checksum to the isolated signer
         if: inputs.channel == 'stable'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-sidecar-windows-x64
           path: ${{ runner.temp }}/desktop-windows/*.zip.sha256

@@ -49,7 +49,7 @@ jobs:
       # job. Majors are pinned; extends resolution finds
       # @commitlint/config-conventional right next to the CLI.
       - name: Install commitlint
-        run: npm install --no-save --no-audit --no-fund @commitlint/cli@19 @commitlint/config-conventional@19
+        run: npm install --no-save --no-audit --no-fund @commitlint/cli@21 @commitlint/config-conventional@21
 
       - name: Lint PR commits
         env:

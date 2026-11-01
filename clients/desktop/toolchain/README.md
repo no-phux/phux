@@ -1,9 +1,9 @@
 # Desktop framework toolchain
 
-The desktop builds against GPUI Kit 0.7.3 on
-[gpui-fast](https://github.com/longbridge/gpui-fast) 0.1.9, a GPUI fork with
+The desktop builds against GPUI Kit 0.8.1 on
+[gpui-fast](https://github.com/longbridge/gpui-fast) 0.1.12, a GPUI fork with
 retained views, layout and text measurement, at the Zed revision of the
-`gpui-pre` 0.3.9 snapshot Kit pins. Kit's `gpui-pre` crates are served by
+`gpui-pre` 0.3.10 snapshot Kit pins. Kit's `gpui-pre` crates are served by
 small compatibility crates in `compat/` that re-export gpui-fast. Six
 gpui-fast crates carry reviewed local patches. `source.json` pins each
 crates.io archive and each patch by SHA-256; `just desktop-source`
@@ -36,7 +36,7 @@ re-exporting the published gpui-fast crate of the same library name
 gpui-fast's own `compat/` directory, which depends on gpui-fast by path; these
 depend on the crates.io release. The support crates gpui-fast itself uses
 (`gpui-pre-util`, `gpui-pre-sum-tree`, `gpui-pre-collections` and the rest)
-are the genuine 0.3.9 snapshot crates, shared with Kit.
+are the genuine 0.3.10 snapshot crates, shared with Kit.
 
 gpui-fast redraws a view only when something it read changed: an entity or
 global it read, a `ListState` or `ScrollHandle` it tracked, the pointer, its

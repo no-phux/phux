@@ -115,7 +115,7 @@ jobs:
           PHUX_TEST_REAL_MINISIGN: "1"
         run: |
           nix shell --inputs-from . nixpkgs#actionlint nixpkgs#shellcheck nixpkgs#just \
-            nixpkgs#nodejs_24 nixpkgs#python3 nixpkgs#jq nixpkgs#minisign -c just guards
+            nixpkgs#nodejs_26 nixpkgs#python3 nixpkgs#jq nixpkgs#minisign -c just guards
 
   lint:
     name: rust lint
@@ -166,7 +166,7 @@ jobs:
         run: nix develop -c just test-archive
       # Already zstd. One retry: a single CreateArtifact ECONNRESET once lost a
       # finished build.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: upload
         continue-on-error: true
         with:
@@ -175,7 +175,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.upload.outcome == 'failure'
         with:
           name: phux-tests
@@ -202,7 +202,7 @@ jobs:
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           build-cache: none
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: phux-tests
           path: ${{ runner.temp }}
@@ -229,7 +229,7 @@ jobs:
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           build-cache: none
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: phux-tests
           path: ${{ runner.temp }}
@@ -281,7 +281,7 @@ jobs:
           PHUX_PERF_BASELINE_UPDATE: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'perf-baseline') && '1' || '0' }}
           PHUX_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
         run: nix develop -c just perf-icount
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: perf-icount
@@ -304,9 +304,9 @@ jobs:
           persist-credentials: false
       # No npm cache: a PR-scoped entry is unrestorable after the PR closes
       # and only evicts main's build caches.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
       - uses: ./.github/actions/setup-bun
       # `just agent-integrations-check`, without installing just.
       - run: bash scripts/ci/agent-integrations.sh
@@ -384,7 +384,7 @@ jobs:
         env:
           PHUX_DESKTOP_SMOKE_ARGS: --output ${{ runner.temp }}/desktop-evidence ${{ matrix.smoke }}
         run: just desktop-framework-check debug
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: desktop-${{ matrix.platform }}-${{ github.run_attempt }}
@@ -444,7 +444,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/receipt"
           printf '%s\n' "$RECEIPT" > "$RUNNER_TEMP/receipt/receipt.json"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: github.event_name == 'pull_request'
         with:
           name: ${{ needs.plan.outputs.receipt_name }}

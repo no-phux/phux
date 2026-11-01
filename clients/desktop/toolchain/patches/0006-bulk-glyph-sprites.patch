@@ -14,7 +14,7 @@ index a635bc4..19f9962 100644
  
  impl AtlasBackend for MetalAtlasTextures {
 diff --git a/gpui-fast/src/fast/composition.rs b/gpui-fast/src/fast/composition.rs
-index 5e27d46..d66b7f0 100644
+index 2638426..99c6cee 100644
 --- a/gpui-fast/src/fast/composition.rs
 +++ b/gpui-fast/src/fast/composition.rs
 @@ -511,7 +511,7 @@ impl Scene {
@@ -104,7 +104,7 @@ index 14e29be..075a148 100644
      };
      if sharing_top != 1 || !covers(quad, viewport) {
 diff --git a/gpui-fast/src/fast/layers/lists.rs b/gpui-fast/src/fast/layers/lists.rs
-index a46e7ff..8594320 100644
+index 587770f..0fa53e0 100644
 --- a/gpui-fast/src/fast/layers/lists.rs
 +++ b/gpui-fast/src/fast/layers/lists.rs
 @@ -1632,6 +1632,9 @@ fn drawn_alike(a: &Row, b: &Row) -> bool {
@@ -354,10 +354,10 @@ index df9c763..de61ed5 100644
              )
          };
 diff --git a/gpui-fast/src/platform.rs b/gpui-fast/src/platform.rs
-index f81dd29..44f5bf0 100644
+index 4745232..d4c9067 100644
 --- a/gpui-fast/src/platform.rs
 +++ b/gpui-fast/src/platform.rs
-@@ -1803,6 +1803,14 @@ pub trait PlatformAtlas {
+@@ -1834,6 +1834,14 @@ pub trait PlatformAtlas {
      ) -> Result<Option<AtlasTile>>;
      fn remove(&self, key: &AtlasKey);
  
@@ -372,7 +372,7 @@ index f81dd29..44f5bf0 100644
      #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
      fn contains(&self, _key: &AtlasKey) -> bool {
          false
-@@ -1824,6 +1832,8 @@ pub trait AtlasBackend {
+@@ -1855,6 +1863,8 @@ pub trait AtlasBackend {
  #[doc(hidden)]
  pub struct AtlasState<Backend> {
      tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
@@ -381,7 +381,7 @@ index f81dd29..44f5bf0 100644
      pub backend: Backend,
  }
  
-@@ -1831,6 +1841,7 @@ impl<Backend> AtlasState<Backend> {
+@@ -1862,6 +1872,7 @@ impl<Backend> AtlasState<Backend> {
      pub fn new(backend: Backend) -> Self {
          Self {
              tiles_by_key: FxHashMap::default(),
@@ -389,7 +389,7 @@ index f81dd29..44f5bf0 100644
              backend,
          }
      }
-@@ -1839,8 +1850,13 @@ impl<Backend> AtlasState<Backend> {
+@@ -1870,8 +1881,13 @@ impl<Backend> AtlasState<Backend> {
          self.tiles_by_key.contains_key(key)
      }
  
@@ -403,7 +403,7 @@ index f81dd29..44f5bf0 100644
          reset_backend(&mut self.backend);
      }
  }
-@@ -1875,6 +1891,7 @@ impl<Backend: AtlasBackend> AtlasState<Backend> {
+@@ -1906,6 +1922,7 @@ impl<Backend: AtlasBackend> AtlasState<Backend> {
  
      pub fn remove(&mut self, key: &AtlasKey) {
          if let Some(tile) = self.tiles_by_key.remove(key) {
@@ -411,7 +411,7 @@ index f81dd29..44f5bf0 100644
              self.backend.remove(tile);
          }
      }
-@@ -1933,6 +1950,10 @@ impl PlatformAtlas for HeadlessAtlas {
+@@ -1964,6 +1981,10 @@ impl PlatformAtlas for HeadlessAtlas {
          self.0.lock().remove(key);
      }
  
@@ -423,7 +423,7 @@ index f81dd29..44f5bf0 100644
      fn contains(&self, key: &AtlasKey) -> bool {
          self.0.lock().contains(key)
 diff --git a/gpui-fast/src/scene.rs b/gpui-fast/src/scene.rs
-index cef791d..6860626 100644
+index ca6f25d..b96d441 100644
 --- a/gpui-fast/src/scene.rs
 +++ b/gpui-fast/src/scene.rs
 @@ -14,6 +14,7 @@ use std::{
@@ -651,7 +651,7 @@ index cef791d..6860626 100644
  #[expect(missing_docs)]
  pub enum Primitive {
 diff --git a/gpui-fast/src/window.rs b/gpui-fast/src/window.rs
-index 397bf8b..44e90ce 100644
+index 3b8706f..ca43d94 100644
 --- a/gpui-fast/src/window.rs
 +++ b/gpui-fast/src/window.rs
 @@ -5,6 +5,7 @@ use crate::DebugFrameOverlayMode;
@@ -662,7 +662,7 @@ index 397bf8b..44e90ce 100644
  use crate::{
      Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
      AsyncApp, AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
-@@ -2296,6 +2297,17 @@ pub struct DispatchEventResult {
+@@ -2308,6 +2309,17 @@ pub struct DispatchEventResult {
      pub default_prevented: bool,
  }
  
@@ -680,7 +680,7 @@ index 397bf8b..44e90ce 100644
  /// Indicates which region of the window is visible. Content falling outside of this mask will not be
  /// rendered. Currently, only rectangular content masks are supported, but we give the mask its own type
  /// to leave room to support more complex shapes in the future.
-@@ -5063,6 +5075,117 @@ impl Window {
+@@ -5083,6 +5095,117 @@ impl Window {
          Ok(())
      }
  

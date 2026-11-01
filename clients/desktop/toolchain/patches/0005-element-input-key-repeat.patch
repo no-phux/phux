@@ -1,8 +1,8 @@
 diff --git a/gpui-fast-macos/src/events.rs b/gpui-fast-macos/src/events.rs
-index 71bcb10..f049e24 100644
+index 6ca0584..276954a 100644
 --- a/gpui-fast-macos/src/events.rs
 +++ b/gpui-fast-macos/src/events.rs
-@@ -335,6 +335,36 @@ pub(crate) unsafe fn platform_input_from_native(
+@@ -338,6 +338,31 @@ pub(crate) unsafe fn platform_input_from_native(
      }
  }
  
@@ -13,7 +13,7 @@ index 71bcb10..f049e24 100644
 +/// # Safety
 +/// `native_event` must be a live NSEvent key-down event.
 +pub(crate) unsafe fn printable_repeat_text(
-+    native_event: id,
++    native_event: *mut AnyObject,
 +    event: &KeyDownEvent,
 +) -> Option<String> {
 +    let modifiers = event.keystroke.modifiers;
@@ -21,25 +21,20 @@ index 71bcb10..f049e24 100644
 +        return None;
 +    }
 +    event.keystroke.key_char.as_ref()?;
-+    // SAFETY: The caller supplies a live key-down NSEvent. Its NSString is
-+    // borrowed only while that event is alive, and copied before returning.
-+    unsafe {
-+        let characters = native_event.characters();
-+        if characters.is_null() {
-+            return None;
-+        }
-+        let text = characters.to_str();
-+        if text.is_empty() || text.chars().any(char::is_control) {
-+            return None;
-+        }
-+        Some(text.to_owned())
++    // SAFETY: The caller supplies a live key-down NSEvent. Copy its NSString
++    // before returning so no borrowed native storage escapes the callback.
++    let characters = unsafe { (&*native_event.cast::<NSEvent>()).characters() }?;
++    let text = characters.to_string();
++    if text.is_empty() || text.chars().any(char::is_control) {
++        return None;
 +    }
++    Some(text)
 +}
 +
- unsafe fn parse_keystroke(native_event: id) -> Keystroke {
-     unsafe {
-         use cocoa::appkit::*;
-@@ -572,3 +602,89 @@ fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
+ fn parse_keystroke(native_event: &NSEvent) -> Keystroke {
+     let characters = unsafe {
+         let characters: *mut AnyObject = msg_send![native_event, charactersIgnoringModifiers];
+@@ -570,3 +595,89 @@ fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
      }
      String::from_utf16(&buffer[..buffer_size]).unwrap_or_default()
  }
@@ -130,7 +125,7 @@ index 71bcb10..f049e24 100644
 +    }
 +}
 diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
-index 078b406..e37bb87 100644
+index b8d41cc..33db51b 100644
 --- a/gpui-fast-macos/src/window.rs
 +++ b/gpui-fast-macos/src/window.rs
 @@ -1,7 +1,8 @@
@@ -143,8 +138,8 @@ index 078b406..e37bb87 100644
      kTISPropertyInputSourceIsASCIICapable, kTISPropertyInputSourceType, kTISTypeKeyboardInputMode,
      ns_string, renderer,
  };
-@@ -2883,12 +2884,11 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent:
-                 return YES;
+@@ -2876,12 +2877,11 @@ extern "C" fn handle_key_event(
+                 return Bool::YES;
              }
  
 -            if key_down_event.is_held
@@ -156,14 +151,14 @@ index 078b406..e37bb87 100644
                      if !input_handler.apple_press_and_hold_enabled() {
 -                        input_handler.replace_text_in_range(None, key_char);
 +                        input_handler.replace_text_in_range(None, &text);
-                         return YES;
+                         return Bool::YES;
                      }
-                     NO
+                     Bool::NO
 diff --git a/gpui-fast/src/app/test_context.rs b/gpui-fast/src/app/test_context.rs
-index 7cc2401..906b155 100644
+index f5c0085..f41b547 100644
 --- a/gpui-fast/src/app/test_context.rs
 +++ b/gpui-fast/src/app/test_context.rs
-@@ -648,7 +648,7 @@ impl TestAppContext {
+@@ -659,7 +659,7 @@ impl TestAppContext {
      }
  
      /// Returns the `TestWindow` backing the given handle.
@@ -173,10 +168,10 @@ index 7cc2401..906b155 100644
              .borrow_mut()
              .windows
 diff --git a/gpui-fast/src/input.rs b/gpui-fast/src/input.rs
-index ff194b6..239f68f 100644
+index 54f84b8..45a1c92 100644
 --- a/gpui-fast/src/input.rs
 +++ b/gpui-fast/src/input.rs
-@@ -129,6 +129,7 @@ pub trait EntityInputHandler: 'static + Sized {
+@@ -153,6 +153,7 @@ pub trait EntityInputHandler: 'static + Sized {
  pub struct ElementInputHandler<V> {
      view: Entity<V>,
      element_bounds: Bounds<Pixels>,
@@ -184,7 +179,7 @@ index ff194b6..239f68f 100644
  }
  
  impl<V: 'static> ElementInputHandler<V> {
-@@ -139,11 +140,23 @@ impl<V: 'static> ElementInputHandler<V> {
+@@ -163,11 +164,23 @@ impl<V: 'static> ElementInputHandler<V> {
          ElementInputHandler {
              view,
              element_bounds,

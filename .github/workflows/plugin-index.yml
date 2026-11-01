@@ -46,7 +46,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: 1.99.0
+          toolchain: 1.99.1
 
       # scripts/plugin-index is its own workspace, so the root `cargo deny check`
       # never reads this lockfile. Same deny.toml, same 0.20.2 pin as mise.toml.
@@ -97,7 +97,7 @@ jobs:
           echo '--- plugin-index.json ---'
           cat "${RUNNER_TEMP}/plugin-index/plugin-index.json"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plugin-index
           path: ${{ runner.temp }}/plugin-index

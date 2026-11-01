@@ -11,14 +11,14 @@
     "check": "bun run format:check && bun run typecheck && bun run lint && bun test"
   },
   "devDependencies": {
-    "@types/bun": "1.4.2",
-    "oxfmt": "0.72.0",
-    "oxlint": "1.87.0",
-    "oxlint-tsgolint": "7.0.2003",
+    "@types/bun": "1.4.4",
+    "oxfmt": "0.75.0",
+    "oxlint": "1.90.0",
+    "oxlint-tsgolint": "7.0.2005",
     "typescript": "7.0.2"
   },
   "engines": {
-    "bun": "1.4.2"
+    "bun": "1.4.4"
   },
-  "packageManager": "bun@1.4.2"
+  "packageManager": "bun@1.4.4"
 }

@@ -6,7 +6,7 @@ fn draw(cx: &mut VisualTestContext) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
 }
 
-fn keys(cx: &mut VisualTestContext, keys: &str) {
+fn keys(cx: &mut VisualTestContext, keys: &'static str) {
     for key in keys.split_whitespace() {
         cx.update(|window, cx| {
             let stroke = Keystroke::parse(key).unwrap();

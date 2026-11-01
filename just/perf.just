@@ -56,7 +56,7 @@ complexity CCN="15":
       echo "complexity: uvx not found; install uv to run this report" >&2
       exit 1
     fi
-    uvx --from lizard==1.24.0 lizard -l rust crates --CCN {{CCN}} -w \
+    uvx --from lizard==1.24.3 lizard -l rust crates --CCN {{CCN}} -w \
       | grep -v -e '/tests/' -e '/benches/' -e '/examples/' \
       || echo "no production function exceeds CCN {{CCN}}"
 

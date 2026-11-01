@@ -1,8 +1,8 @@
 diff --git a/gpui-fast-apple/src/metal_renderer.rs b/gpui-fast-apple/src/metal_renderer.rs
-index ab77a7e..312a084 100644
+index 668cda1..5f5f71b 100644
 --- a/gpui-fast-apple/src/metal_renderer.rs
 +++ b/gpui-fast-apple/src/metal_renderer.rs
-@@ -152,6 +152,52 @@ pub struct PathRasterizationVertex {
+@@ -154,6 +154,52 @@ pub struct PathRasterizationVertex {
      pub bounds: Bounds<ScaledPixels>,
  }
  
@@ -54,8 +54,8 @@ index ab77a7e..312a084 100644
 +
  impl MetalRenderer {
      /// Creates a new MetalRenderer with a CAMetalLayer for window-based rendering.
-     pub fn new(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>, transparent: bool) -> Self {
-@@ -498,46 +544,39 @@ impl MetalRenderer {
+     pub fn new(
+@@ -526,46 +572,39 @@ impl MetalRenderer {
      }
  
      pub fn draw(&mut self, scene: &Scene) {
@@ -125,10 +125,10 @@ index ab77a7e..312a084 100644
  
      pub(crate) fn render_frame(
 diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
-index 3dcc3e0..b504f63 100644
+index 2fe8105..6556b94 100644
 --- a/gpui-fast-macos/src/window.rs
 +++ b/gpui-fast-macos/src/window.rs
-@@ -1430,6 +1430,32 @@ fn if_window_not_closed(closed: Arc<AtomicBool>, f: impl FnOnce()) {
+@@ -1408,6 +1408,32 @@ fn if_window_not_closed(closed: Arc<AtomicBool>, f: impl FnOnce()) {
      }
  }
  
@@ -161,7 +161,7 @@ index 3dcc3e0..b504f63 100644
  impl PlatformWindow for MacWindow {
      fn bounds(&self) -> Bounds<Pixels> {
          self.0.as_ref().lock().bounds()
-@@ -2128,11 +2154,27 @@ impl PlatformWindow for MacWindow {
+@@ -2103,11 +2129,27 @@ impl PlatformWindow for MacWindow {
          self.0.as_ref().lock().toggle_tab_bar_callback = Some(callback);
      }
  
@@ -190,7 +190,7 @@ index 3dcc3e0..b504f63 100644
          crate::fast::composition::draw_composed(&self.0, scene)
      }
 diff --git a/gpui-fast/src/fast/composition.rs b/gpui-fast/src/fast/composition.rs
-index c0b3de9..5e27d46 100644
+index 5ffd4c2..2638426 100644
 --- a/gpui-fast/src/fast/composition.rs
 +++ b/gpui-fast/src/fast/composition.rs
 @@ -1351,12 +1351,21 @@ fn synchronize_geometry(window: &mut Window) {
@@ -227,10 +227,10 @@ index c0b3de9..5e27d46 100644
  
  /// Visibility and ancestor clips come from the existing managed surface tree.
 diff --git a/gpui-fast/src/platform.rs b/gpui-fast/src/platform.rs
-index 49c9b83..5104921 100644
+index d485c98..8c75781 100644
 --- a/gpui-fast/src/platform.rs
 +++ b/gpui-fast/src/platform.rs
-@@ -1190,6 +1190,20 @@ pub enum TextInputStateChange {
+@@ -1221,6 +1221,20 @@ pub enum TextInputStateChange {
      ContentChanged,
  }
  
@@ -251,7 +251,7 @@ index 49c9b83..5104921 100644
  #[expect(missing_docs)]
  pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      fn bounds(&self) -> Bounds<Pixels>;
-@@ -1274,7 +1288,24 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+@@ -1305,7 +1319,24 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      fn on_close(&self, callback: Box<dyn FnOnce()>);
      fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
      fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
@@ -277,7 +277,7 @@ index 49c9b83..5104921 100644
          crate::fast::composition::draw_uncomposed(self, scene)
      }
 diff --git a/gpui-fast/src/profiler/hang.rs b/gpui-fast/src/profiler/hang.rs
-index 827682c..886b300 100644
+index 386bd20..15fa977 100644
 --- a/gpui-fast/src/profiler/hang.rs
 +++ b/gpui-fast/src/profiler/hang.rs
 @@ -1817,7 +1817,7 @@ mod tests {
@@ -290,7 +290,7 @@ index 827682c..886b300 100644
          });
      }
 diff --git a/gpui-fast/src/window.rs b/gpui-fast/src/window.rs
-index 4410aaf..88b53b0 100644
+index 4f45d7a..9677729 100644
 --- a/gpui-fast/src/window.rs
 +++ b/gpui-fast/src/window.rs
 @@ -7,13 +7,13 @@ use crate::Inspector;
@@ -309,7 +309,7 @@ index 4410aaf..88b53b0 100644
      PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
      PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
      RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
-@@ -731,6 +731,43 @@ pub struct DismissEvent;
+@@ -739,6 +739,43 @@ pub struct DismissEvent;
  
  type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
  
@@ -353,7 +353,7 @@ index 4410aaf..88b53b0 100644
  pub(crate) type AnyMouseListener =
      Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
  
-@@ -1277,6 +1314,9 @@ pub struct Window {
+@@ -1285,6 +1322,9 @@ pub struct Window {
      pub(crate) next_tooltip_id: TooltipId,
      pub(crate) tooltip_bounds: Option<TooltipBounds>,
      pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
@@ -363,7 +363,7 @@ index 4410aaf..88b53b0 100644
      pub(crate) dirty_views: FxHashSet<EntityId>,
      focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
      pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
-@@ -1920,14 +1960,14 @@ impl Window {
+@@ -1932,14 +1972,14 @@ impl Window {
                                      window.refresh();
                                  }
                                  let arena_clear_needed = window.draw(cx);
@@ -380,7 +380,7 @@ index 4410aaf..88b53b0 100644
                          .log_err();
                  }
  
-@@ -2180,6 +2220,9 @@ impl Window {
+@@ -2192,6 +2232,9 @@ impl Window {
              rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
              next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
              next_frame_callbacks,
@@ -390,7 +390,7 @@ index 4410aaf..88b53b0 100644
              next_hitbox_id: HitboxId(0),
              next_tooltip_id: TooltipId::default(),
              tooltip_bounds: None,
-@@ -2732,6 +2775,40 @@ impl Window {
+@@ -2744,6 +2787,40 @@ impl Window {
          AsyncWindowContext::new_context(cx.to_async(), self.handle)
      }
  
@@ -431,7 +431,7 @@ index 4410aaf..88b53b0 100644
      /// Schedule the given closure to be run directly after the current frame is rendered.
      pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
          RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
-@@ -3634,13 +3711,44 @@ impl Window {
+@@ -3654,13 +3731,44 @@ impl Window {
          self.invalidator.replace_views(views);
      }
  
@@ -478,7 +478,7 @@ index 4410aaf..88b53b0 100644
          #[cfg(feature = "profiler")]
          self.window_profiler.record_present(
              present_start,
-@@ -3654,9 +3762,9 @@ impl Window {
+@@ -3674,9 +3782,9 @@ impl Window {
  
      /// Presents the most recently drawn frame if it hasn't been presented yet.
      #[cfg(all(test, feature = "profiler"))]

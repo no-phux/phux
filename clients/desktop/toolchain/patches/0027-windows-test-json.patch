@@ -1,0 +1,31 @@
+diff --git a/gpui-fast-windows/Cargo.toml b/gpui-fast-windows/Cargo.toml
+index 0781694..15b9100 100644
+--- a/gpui-fast-windows/Cargo.toml
++++ b/gpui-fast-windows/Cargo.toml
+@@ -227,6 +227,11 @@ version = "0.6.0"
+ [target.'cfg(target_os = "windows")'.build-dependencies.windows-registry]
+ version = "0.6.0"
+ 
++# Native instrumentation needs JSON. Cargo can run these dependency libtests
++# from the host workspace only if this is not a dev-dependency.
++[dependencies.serde_json]
++version = "1.0"
++
+ [lints.rust.unexpected_cfgs]
+ level = "allow"
+ priority = 0
+diff --git a/gpui-fast-windows/Cargo.toml.orig b/gpui-fast-windows/Cargo.toml.orig
+index df373bc..25cb0e4 100644
+--- a/gpui-fast-windows/Cargo.toml.orig
++++ b/gpui-fast-windows/Cargo.toml.orig
+@@ -117,5 +117,10 @@ optional = true
+ [target."cfg(target_os = \"windows\")".build-dependencies.windows-registry]
+ version = "0.6.0"
+ 
++# Native instrumentation needs JSON. Cargo can run these dependency libtests
++# from the host workspace only if this is not a dev-dependency.
++[dependencies.serde_json]
++version = "1.0"
++
+ [lints.rust.unexpected_cfgs]
+ level = "allow"

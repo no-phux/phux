@@ -11,7 +11,7 @@ fn wheel_scrolls_the_pane_under_the_pointer_and_repaints(cx: &mut TestAppContext
     cx.run_until_parked();
     let offset = |client: &Client| client.acquire_view(view).expect("frame").scrollbar.offset;
     let at_tail = offset(&client);
-    let wheel = |pixels: f32| gpui::ScrollWheelEvent {
+    let wheel = |pixels: f32| gpui::ScrollEvent {
         position: point(px(4.), px(4.)),
         delta: gpui::ScrollDelta::Pixels(point(px(0.), px(pixels))),
         ..Default::default()

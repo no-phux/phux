@@ -39,26 +39,27 @@
     "gates": "bun run typecheck && bun run compile && bun test"
   },
   "dependencies": {
-    "@opencode/plugin": "2.2.0"
+    "@opencode/plugin": "2.2.5"
   },
   "devDependencies": {
-    "@opentui/core": "0.7.0",
-    "@opentui/solid": "0.7.0",
-    "@types/bun": "1.4.3",
-    "effect": "4.0.1",
-    "solid-js": "1.9.12",
+    "@opentui/core": "0.8.1",
+    "@opentui/solid": "0.8.1",
+    "@types/bun": "1.4.4",
+    "effect": "4.1.1",
+    "solid-js": "1.9.18",
     "typescript": "7.0.2",
-    "vite": "7.3.7",
-    "vite-plugin-solid": "2.11.14"
+    "vite": "8.3.5",
+    "vite-plugin-solid": "2.11.15"
   },
   "peerDependencies": {
-    "solid-js": "1.9.12",
-    "@opentui/core": "0.7.0",
-    "@opentui/solid": "0.7.0"
+    "solid-js": "1.9.18",
+    "@opentui/core": "0.8.1",
+    "@opentui/solid": "0.8.1"
   },
   "overrides": {
-    "seroval": "1.6.9",
-    "seroval-plugins": "1.6.9"
+    "effect": "4.1.1",
+    "seroval": "1.7.6",
+    "seroval-plugins": "1.7.6"
   },
   "publishConfig": {
     "access": "public",

@@ -22,17 +22,15 @@ name = "windows-brand-icons"
 path = "$fixture"
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 serde_json = "1"
-gpui = { package = "gpui-fast", version = "=0.1.9" }
-gpui-windows = { package = "gpui-fast-windows", path = "windows" }
+gpui = { package = "gpui-fast", version = "=0.1.12", default-features = false }
+gpui-windows = { package = "gpui-fast-windows", path = "windows", default-features = false }
 [patch.crates-io]
 gpui-fast = { path = "$core" }
 "@ | Set-Content (Join-Path $scratch 'Cargo.toml')
-    # The managed Windows capture patch pins 1.4.2; the Unix-resolved lock can
-    # retain 1.5.0 through optional zed-scap. Resolve this disposable Windows copy.
-    cargo update --manifest-path (Join-Path $scratch 'Cargo.toml') -p windows-capture --precise 1.4.2
-    if ($LASTEXITCODE -ne 0) { throw "Windows fixture resolution failed: $LASTEXITCODE" }
+    # Resolve only this disposable fixture, without downgrading the managed
+    # lock to GPUI's former windows-capture 1.4.2 pin.
     cargo run --manifest-path (Join-Path $scratch 'Cargo.toml') --bin windows-brand-icons
     if ($LASTEXITCODE -ne 0) { throw "Windows icon fixture failed: $LASTEXITCODE" }
 } finally {

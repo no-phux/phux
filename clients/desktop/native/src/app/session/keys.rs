@@ -2,6 +2,18 @@
 
 use super::*;
 
+fn load_binding(stroke: &str, action: impl gpui::Action, cx: &App) -> anyhow::Result<KeyBinding> {
+    let context = gpui::KeyBindingContextPredicate::parse(binding_context(stroke))?;
+    Ok(KeyBinding::load(
+        stroke,
+        Box::new(action),
+        Some(context.into()),
+        false,
+        None,
+        cx,
+    )?)
+}
+
 impl Desktop {
     /// Bind `keymap` as GPUI key bindings in the `Desk` context, publish the menus
     /// (which show those bindings), and arm Ghostty's global quick-terminal chords.
@@ -32,15 +44,17 @@ impl Desktop {
         let mut bindings = Vec::new();
         for old in &self.bound {
             if !strokes.iter().any(|(stroke, _)| stroke == old) {
-                bindings.push(KeyBinding::new(old, NoAction, Some(binding_context(old))));
+                match load_binding(old, NoAction, cx) {
+                    Ok(binding) => bindings.push(binding),
+                    Err(error) => log::error!("invalid retired key binding {old}: {error}"),
+                }
             }
         }
         for (stroke, id) in &strokes {
-            bindings.push(KeyBinding::new(
-                stroke,
-                Run::new(id.clone()),
-                Some(binding_context(stroke)),
-            ));
+            match load_binding(stroke, Run::new(id.clone()), cx) {
+                Ok(binding) => bindings.push(binding),
+                Err(error) => log::error!("invalid key binding {stroke}: {error}"),
+            }
         }
         cx.bind_keys(bindings);
         self.bound = strokes.into_iter().map(|(stroke, _)| stroke).collect();

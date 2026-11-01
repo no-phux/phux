@@ -24,17 +24,17 @@ phux-perf = { path = "../../../../crates/phux-perf" }
 phux-protocol = { path = "../../../../crates/phux-protocol" }
 # gpui-fast's library is named `gpui`. The desktop's `[patch.crates-io]`
 # serves its patched copy; an embedder gets the published crate.
-gpui = { package = "gpui-fast", version = "=0.1.9", default-features = false }
+gpui = { package = "gpui-fast", version = "=0.1.12", default-features = false }
 log = "0.4"
 unicode-segmentation = "1"
 # GPUI's RenderImage owns image::Frame; use the same already-resolved pixel type.
 image = { version = "0.25", default-features = false }
 
 [dev-dependencies]
-gpui = { package = "gpui-fast", version = "=0.1.9", default-features = false, features = ["test-support"] }
+gpui = { package = "gpui-fast", version = "=0.1.12", default-features = false, features = ["test-support"] }
 # `examples/embed.rs` opens a real window and wakes it from the runtime's
 # listener, the way the desktop does. Both are already in the desktop lock.
-gpui_platform = { package = "gpui-fast-platform", version = "=0.1.9", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
+gpui_platform = { package = "gpui-fast-platform", version = "=0.1.12", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
 async-channel = "2"
 
 [lints.rust]

@@ -20,17 +20,17 @@ phux-client-runtime = { path = "../../crates/phux-client-runtime" }
 phux-perf = { path = "../../crates/phux-perf" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
-rune = { git = "https://github.com/anomalyco/rune", rev = "3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1" }
-rune-mac = { git = "https://github.com/anomalyco/rune", rev = "3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "3062e9b86b5a02b97c8ed4e8f49fcfc4d6902fc1" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "791971423cf6614aff061491e1f82e283dfc9f0e" }
+rune-mac = { git = "https://github.com/anomalyco/rune", rev = "791971423cf6614aff061491e1f82e283dfc9f0e" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "791971423cf6614aff061491e1f82e283dfc9f0e" }
 serde_json = "1"
 # The same digest the runtime uses, for a downloaded update.
 sha2 = "0.11"
 
 # The Dock count is the one call Rune doesn't wrap; same objc2 as Rune's.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.5.2"
-objc2-foundation = { version = "0.2.2", features = ["NSString"] }
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", features = ["NSString"] }
 
 [profile.release]
 lto = "thin"
