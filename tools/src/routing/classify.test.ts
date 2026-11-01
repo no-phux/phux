@@ -51,6 +51,7 @@ test.each<[string[], Surface[]]>([
   [["examples/agents/03-send-keys-and-wait.sh"], ["phux"]],
   [["examples/plugins/theme-pack/phux-plugin.toml"], ["phux"]],
   [["scripts/examples-smoke.sh"], ["phux"]],
+  [["scripts/agent-verify/run.py"], ["phux"]],
   [["scripts/test-agent-examples.py"], ["phux"]],
   [["scripts/record-readme.sh"], ["phux"]],
   [["clients/desktop/native/src/main.rs"], ["desktop"]],
