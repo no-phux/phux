@@ -26,23 +26,6 @@ pub struct ConsumerSyncState {
     pub wants_state_sync: bool,
 }
 
-/// Tests read replication fields as they did before the engine moved out.
-#[cfg(test)]
-impl std::ops::Deref for ConsumerSyncState {
-    type Target = ConsumerSync<ConsumerReference>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.sync
-    }
-}
-
-#[cfg(test)]
-impl std::ops::DerefMut for ConsumerSyncState {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.sync
-    }
-}
-
 impl std::fmt::Debug for ConsumerSyncState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsumerSyncState")

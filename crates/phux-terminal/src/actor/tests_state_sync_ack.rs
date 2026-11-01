@@ -19,7 +19,11 @@ fn on_frame_ack_advances_last_acked_seq_in_order() {
         actor.tick_emit();
         actor.on_frame_ack(client, seq);
         assert_eq!(
-            actor.consumer_state(client).expect("state").last_acked_seq,
+            actor
+                .consumer_state(client)
+                .expect("state")
+                .sync
+                .last_acked_seq,
             seq,
             "in-order ack must advance last_acked_seq",
         );
@@ -43,12 +47,12 @@ fn on_frame_ack_older_or_duplicate_is_dropped() {
         actor.tick_emit();
     }
     actor.on_frame_ack(client, 5);
-    assert_eq!(actor.consumer_state(client).unwrap().last_acked_seq, 5);
+    assert_eq!(actor.consumer_state(client).unwrap().sync.last_acked_seq, 5);
 
     // Older ack.
     actor.on_frame_ack(client, 3);
     assert_eq!(
-        actor.consumer_state(client).unwrap().last_acked_seq,
+        actor.consumer_state(client).unwrap().sync.last_acked_seq,
         5,
         "older ack must NOT regress last_acked_seq",
     );
@@ -56,14 +60,14 @@ fn on_frame_ack_older_or_duplicate_is_dropped() {
     // Duplicate ack.
     actor.on_frame_ack(client, 5);
     assert_eq!(
-        actor.consumer_state(client).unwrap().last_acked_seq,
+        actor.consumer_state(client).unwrap().sync.last_acked_seq,
         5,
         "duplicate ack must NOT touch last_acked_seq",
     );
 
     // Higher ack still progresses.
     actor.on_frame_ack(client, 6);
-    assert_eq!(actor.consumer_state(client).unwrap().last_acked_seq, 6);
+    assert_eq!(actor.consumer_state(client).unwrap().sync.last_acked_seq, 6);
 }
 
 /// A raw consumer's ack (a pump-local seq) does not move `last_acked_seq`.
@@ -81,7 +85,11 @@ fn on_frame_ack_for_raw_consumer_is_dropped() {
     let folded = actor.on_frame_ack(client, 7);
     assert!(!folded, "raw-consumer ack produces no RTT sample");
     assert_eq!(
-        actor.consumer_state(client).expect("state").last_acked_seq,
+        actor
+            .consumer_state(client)
+            .expect("state")
+            .sync
+            .last_acked_seq,
         0,
         "raw-pump ack must not advance the per-consumer last_acked_seq",
     );
@@ -118,7 +126,7 @@ fn on_frame_ack_after_detach_is_noop() {
         actor.tick_emit();
     }
     actor.on_frame_ack(client, 2);
-    assert_eq!(actor.consumer_state(client).unwrap().last_acked_seq, 2);
+    assert_eq!(actor.consumer_state(client).unwrap().sync.last_acked_seq, 2);
 
     actor.unregister_consumer(client);
     assert!(actor.consumer_state(client).is_none());
@@ -138,14 +146,14 @@ fn future_ack_cannot_erase_pending_data_or_poison_later_acknowledgements() {
     actor.enable_loss_tolerance(client);
     actor.vt_write_for_test(b"one");
     actor.tick_emit();
-    let next = actor.consumer_state(client).unwrap().next_seq;
+    let next = actor.consumer_state(client).unwrap().sync.next_seq;
     assert_eq!(next, 2);
     let state = actor.consumer_state(client).unwrap();
-    let pending = state.emit_instants.len();
-    let stream = state.stream_id;
-    let bootstrap = state.bootstrap_id;
-    let acked_rows = state.acked_reference.rows_body.clone();
-    assert_eq!(state.pending_refs.len(), 1);
+    let pending = state.sync.emit_instants.len();
+    let stream = state.sync.stream_id;
+    let bootstrap = state.sync.bootstrap_id;
+    let acked_rows = state.sync.acked_reference.rows_body.clone();
+    assert_eq!(state.sync.pending_refs.len(), 1);
     for (stream_id, bootstrap_id, seq) in [
         (stream, bootstrap, next),
         (stream, bootstrap, u64::MAX),
@@ -162,18 +170,18 @@ fn future_ack_cannot_erase_pending_data_or_poison_later_acknowledgements() {
     ] {
         assert!(!actor.on_generation_frame_ack(client, stream_id, bootstrap_id, seq));
         let state = actor.consumer_state(client).unwrap();
-        assert_eq!(state.last_acked_seq, 0);
-        assert_eq!(state.emit_instants.len(), pending);
-        assert_eq!(state.pending_refs.len(), 1);
-        assert_eq!(state.acked_reference.rows_body, acked_rows);
-        assert!(state.rtt.smoothed().is_none());
+        assert_eq!(state.sync.last_acked_seq, 0);
+        assert_eq!(state.sync.emit_instants.len(), pending);
+        assert_eq!(state.sync.pending_refs.len(), 1);
+        assert_eq!(state.sync.acked_reference.rows_body, acked_rows);
+        assert!(state.sync.rtt.smoothed().is_none());
     }
     assert!(actor.on_generation_frame_ack(client, stream, bootstrap, 1));
     let state = actor.consumer_state(client).unwrap();
-    assert_eq!(state.last_acked_seq, 1);
-    assert!(state.emit_instants.is_empty());
-    assert!(state.pending_refs.is_empty());
-    assert_ne!(state.acked_reference.rows_body, acked_rows);
+    assert_eq!(state.sync.last_acked_seq, 1);
+    assert!(state.sync.emit_instants.is_empty());
+    assert!(state.sync.pending_refs.is_empty());
+    assert_ne!(state.sync.acked_reference.rows_body, acked_rows);
 }
 
 #[test]
@@ -188,7 +196,7 @@ fn ack_between_pty_mutation_and_tick_preserves_pending_row_changes() {
     actor.tick_emit();
     let state = actor.consumer_state(ClientId(1)).unwrap();
     assert!(
-        state.reference.rows_body[1]
+        state.sync.reference.rows_body[1]
             .windows(6)
             .any(|bytes| bytes == b"SECOND")
     );
