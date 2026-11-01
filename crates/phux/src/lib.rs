@@ -253,6 +253,9 @@ fn run_cli() -> ExitCode {
         output::bytes(format!("{}\n", kind.as_str()).as_bytes());
         return ExitCode::SUCCESS;
     }
+    if std::env::var_os(phux_config::instance::PROBE_UPGRADE_BLOB_ENV).is_some() {
+        return commands::server::answer_upgrade_preflight();
+    }
     // A development build whose state directory resolves to production
     // (`PHUX_PROFILE=default` outside a temp sandbox) would log, record, and
     // provision into the day-to-day installation's state. Nothing runs.

@@ -73,20 +73,11 @@ impl ServerState {
             fresh.idspace.set_instance(self.idspace.instance());
         }
         fresh.restore_counters(blob);
-        let instance = fresh.instance_id();
-        let (mut org, keyed, imported) = match &blob.org {
-            Some(carried) => merge_carried(self.org(), self.org.loaded, carried, blob, instance)?,
-            None => import_tree(self.org(), blob, instance)?,
-        };
-        // Every session has an arrangement (SPEC L2 §2.2); a carried session
-        // written before that rule gets its missing one now, and the store
-        // learns it below.
-        let arranged_now = org.sessions().any(|s| s.arrangement.is_none());
-        if arranged_now {
-            crate::state::org::ensure_arrangements(&mut org);
-        }
-        fresh.sessions.registry = phux_core::Registry::new(org);
-        fresh.bind_session_wires(blob, &keyed)?;
+        let RebuiltRecords {
+            keyed,
+            imported,
+            arranged_now,
+        } = fresh.rebuild_records(self.org(), self.org.loaded, blob)?;
         let mut panes = fresh.rebuild_panes(blob, &keyed, build_pane)?;
         fresh.rebuild_agent_sessions(blob, &keyed, &mut panes);
         if imported {
@@ -106,6 +97,36 @@ impl ServerState {
         Ok(RebuiltTree {
             exit_watchers: panes.exit_watchers,
             wired_panes: panes.wired,
+        })
+    }
+
+    /// Install the blob's organization records in this fresh server and bind
+    /// its sessions: every step of a resume that needs no live process, and
+    /// so all [`dry_run_records`] can prove.
+    fn rebuild_records(
+        &mut self,
+        current: &Org,
+        loaded: bool,
+        blob: &StateBlob,
+    ) -> Result<RebuiltRecords, RebuildError> {
+        let instance = self.instance_id();
+        let (mut org, keyed, imported) = match &blob.org {
+            Some(carried) => merge_carried(current, loaded, carried, blob, instance)?,
+            None => import_tree(current, blob, instance)?,
+        };
+        // Every session has an arrangement (SPEC L2 §2.2); a carried session
+        // written before that rule gets its missing one now, and the store
+        // learns it after the rebuild.
+        let arranged_now = org.sessions().any(|s| s.arrangement.is_none());
+        if arranged_now {
+            crate::state::org::ensure_arrangements(&mut org);
+        }
+        self.sessions.registry = phux_core::Registry::new(org);
+        self.bind_session_wires(blob, &keyed)?;
+        Ok(RebuiltRecords {
+            keyed,
+            imported,
+            arranged_now,
         })
     }
 
@@ -336,4 +357,24 @@ impl ServerState {
                 .set_instance(phux_protocol::ids::ServerInstance::new(bytes));
         }
     }
+}
+
+/// What [`ServerState::rebuild_records`] leaves for the rest of the rebuild.
+struct RebuiltRecords {
+    keyed: Keyed,
+    /// The tree came from an image that predates the records.
+    imported: bool,
+    /// A carried session gained its arrangement, so the store must learn it.
+    arranged_now: bool,
+}
+
+/// Run a resume's record rebuild against an empty in-memory server. Touches
+/// no store and no process, so a candidate binary can answer it while the
+/// running image can still refuse the upgrade.
+pub(crate) fn dry_run_records(blob: &StateBlob) -> Result<(), RebuildError> {
+    validate_upgrade_blob(blob)?;
+    let mut fresh = ServerState::new();
+    fresh.restore_counters(blob);
+    let empty = ServerState::new();
+    fresh.rebuild_records(empty.org(), false, blob).map(drop)
 }

@@ -429,10 +429,11 @@ use import::*;
     clippy::wildcard_imports,
     reason = "re-export for siblings"
 )]
-use rebuild::*;
+pub(crate) use rebuild::dry_run_records;
 #[allow(
     unused_imports,
     clippy::wildcard_imports,
     reason = "re-export for siblings"
 )]
-use validate::*;
+use rebuild::*;
+pub(crate) use validate::validate_upgrade_blob;

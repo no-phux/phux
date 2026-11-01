@@ -128,6 +128,11 @@ impl BuildKind {
 /// variable and runs the accompanying `--version` instead.
 pub const PROBE_BUILD_KIND_ENV: &str = "PHUX_PROBE_BUILD_KIND";
 
+/// The environment variable that makes `phux` read an upgrade blob from
+/// stdin and report whether it could resume from it, before parsing
+/// anything. A binary that predates it runs the accompanying `--version`.
+pub const PROBE_UPGRADE_BLOB_ENV: &str = "PHUX_PROBE_UPGRADE_BLOB";
+
 /// Classify this executable.
 #[must_use]
 pub fn build_kind() -> BuildKind {
