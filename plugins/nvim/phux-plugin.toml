@@ -1,0 +1,15 @@
+id = "com.phux.nvim"
+name = "phux Neovim"
+version = "0.1.0"
+min_phux_version = "0.115.0"
+description = "One Neovim behind many panes: :split opens a real phux pane, and buffers, registers, undo and language servers stay shared."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release", "--locked"]
+
+[[panes]]
+id = "editor"
+title = "Neovim (panes)"
+placement = "split"
+command = ["target/release/phux-nvim"]
