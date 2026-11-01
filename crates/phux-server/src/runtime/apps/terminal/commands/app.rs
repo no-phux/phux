@@ -10,7 +10,8 @@ use phux_terminal::actor::TerminalResource as _;
 
 use super::*;
 use crate::resource::ResourceKind;
-use crate::runtime::apps::{ResourceApp, StreamBootstrap};
+use crate::runtime::apps::{ResourceApp, StreamBootstrap, StreamFrameContext};
+use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
 
 /// Serves [`ResourceKind::Terminal`].
@@ -53,6 +54,14 @@ impl ResourceApp for TerminalApp {
         claim: Option<&'a OperationClaim>,
     ) -> LocalBoxFuture<'a, CommandResult> {
         serve(ctx, command, claim).boxed_local()
+    }
+
+    fn stream_frame<'a>(
+        &'a self,
+        ctx: StreamFrameContext<'a>,
+        frame: FrameKind,
+    ) -> LocalBoxFuture<'a, FrameFlow> {
+        crate::runtime::apps::terminal::frames::serve(ctx, frame).boxed_local()
     }
 
     fn bootstrap<'a>(

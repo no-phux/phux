@@ -107,6 +107,60 @@ fn the_apps_check_reads_code_not_comments() {
     assert!(!names_the_apps("let x = 1; // runtime::apps"));
 }
 
+/// Names that would route an input or stream frame by kind outside the apps.
+const FRAME_ROUTING_TOKENS: [&str; 6] = [
+    "is_input_frame",
+    "is_stream_frame",
+    "handle_frame_ack",
+    "serve_history_request",
+    "handle_terminal_resize",
+    "is_agent_session",
+];
+
+/// Connection dispatch hands an input or stream frame to the app serving
+/// the resource it addresses ([`super::ResourceApp::stream_frame`]); it
+/// never picks a kind's handler or refusal itself.
+#[test]
+fn connections_route_stream_frames_only_through_the_apps() {
+    fn scan(dir: &Path, root: &Path, hits: &mut BTreeMap<String, Vec<&'static str>>) {
+        for entry in std::fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                scan(&path, root, hits);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .expect("under src")
+                .to_string_lossy()
+                .replace('\\', "/");
+            if path.extension().is_none_or(|ext| ext != "rs") || is_test_source(&relative) {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read source");
+            let named: Vec<&'static str> = FRAME_ROUTING_TOKENS
+                .into_iter()
+                .filter(|token| {
+                    source
+                        .lines()
+                        .any(|line| line.split("//").next().unwrap_or(line).contains(token))
+                })
+                .collect();
+            if !named.is_empty() {
+                hits.insert(relative, named);
+            }
+        }
+    }
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by the test runner");
+    let src = Path::new(&manifest).join("src");
+    let mut hits = BTreeMap::new();
+    scan(&src.join("runtime/connections"), &src, &mut hits);
+    assert!(
+        hits.is_empty(),
+        "connections route stream frames by kind; add to ResourceApp::stream_frame instead: {hits:?}"
+    );
+}
+
 #[test]
 fn the_host_reaches_the_terminal_engine_only_through_its_app() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by the test runner");

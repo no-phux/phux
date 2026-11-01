@@ -2,11 +2,12 @@
 
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
-use super::{ResourceApp, StreamBootstrap};
+use super::{ResourceApp, StreamBootstrap, StreamFrameContext};
 use crate::resource::ResourceKind;
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
+use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
 
 /// Serves [`ResourceKind::AgentSession`].
@@ -63,6 +64,23 @@ impl ResourceApp for AgentSessionApp {
         .boxed_local()
     }
 
+    fn stream_frame<'a>(
+        &'a self,
+        ctx: StreamFrameContext<'a>,
+        frame: FrameKind,
+    ) -> LocalBoxFuture<'a, FrameFlow> {
+        let Some((code, message)) = stream_refusal(&frame) else {
+            // Input and RESIZE_TERMINAL keep the Terminal path, whose
+            // attachment checks precede its WRONG_RESOURCE_KIND refusal.
+            return super::terminal::TerminalApp.stream_frame(ctx, frame);
+        };
+        async move {
+            crate::runtime::send_error(&ctx.plumbing.out_tx, code, message).await;
+            FrameFlow::Continue(())
+        }
+        .boxed_local()
+    }
+
     fn bootstrap<'a>(
         &'a self,
         stream: StreamBootstrap<'a>,
@@ -91,5 +109,21 @@ impl ResourceApp for AgentSessionApp {
             }
         }
         .boxed_local()
+    }
+}
+
+/// ADR-0103 §4: an agent-session stream is raw-profile with no history
+/// beyond its bootstrap. Both refusals keep the connection.
+const fn stream_refusal(frame: &FrameKind) -> Option<(ErrorCode, &'static str)> {
+    match frame {
+        FrameKind::FrameAck { .. } => Some((
+            ErrorCode::MalformedMessage,
+            "FRAME_ACK is not valid on an agent-session stream",
+        )),
+        FrameKind::HistoryRequest { .. } => Some((
+            ErrorCode::WrongResourceKind,
+            "an agent-session stream retains no history beyond its bootstrap",
+        )),
+        _ => None,
     }
 }

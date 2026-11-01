@@ -229,8 +229,9 @@ ownership recommendation. No keeper bootload service exists today.
 
 A resource kind is an app. The host reaches one through `ResourceApp` in
 `phux-server/src/runtime/apps/`: `app_owning` routes a facet command by the
-same catalog rows authorization uses, and `app_for` answers per-kind questions
-such as how a stream bootstraps. `state/` sits below the apps and never names
+same catalog rows authorization uses, `app_addressed` hands an authorized
+input or stream frame to the app serving the resource it names, and `app_for`
+answers per-kind questions such as how a stream bootstraps. `state/` sits below the apps and never names
 them; what it asks of any resource is the required `ResourceOps` on its handle.
 A new kind is one `ResourceApp`, one `APPS` row, and its `ResourceOps`. Only
 `runtime/apps/terminal` may name the Terminal engine, and

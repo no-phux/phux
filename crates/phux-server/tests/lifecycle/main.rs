@@ -10,6 +10,7 @@
 
 mod agent_session;
 mod agent_session_producer;
+mod agent_session_stream_frames;
 mod attach_roles;
 mod common;
 mod conditional_kill;

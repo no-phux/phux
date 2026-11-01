@@ -230,7 +230,10 @@ impl ClientPlumbing {
 
     /// The mailbox for Terminal-addressed outbound: the bound stream's sender
     /// when this connection bound the Terminal, else the control mailbox.
-    pub(super) fn sender_for(&self, terminal_id: &WireResourceId) -> mpsc::Sender<Outbound> {
+    pub(in crate::runtime) fn sender_for(
+        &self,
+        terminal_id: &WireResourceId,
+    ) -> mpsc::Sender<Outbound> {
         self.stream_bindings
             .get(terminal_id)
             .map_or_else(|| self.out_tx.clone(), |binding| binding.tx.clone())

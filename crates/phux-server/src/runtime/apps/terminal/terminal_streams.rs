@@ -40,7 +40,7 @@ pub(in crate::runtime) struct AttachFrame {
 }
 
 /// `INPUT_*` frames: routed to the Terminal's input path.
-pub(in crate::runtime) const fn is_input_frame(frame: &FrameKind) -> bool {
+pub(super) const fn is_input_frame(frame: &FrameKind) -> bool {
     matches!(
         frame,
         FrameKind::InputKey { .. }
@@ -48,17 +48,6 @@ pub(in crate::runtime) const fn is_input_frame(frame: &FrameKind) -> bool {
             | FrameKind::InputFocus { .. }
             | FrameKind::InputPaste { .. }
             | FrameKind::InputTerminalReply { .. }
-    )
-}
-
-/// Frames about an attached Terminal's size or content stream.
-pub(in crate::runtime) const fn is_stream_frame(frame: &FrameKind) -> bool {
-    matches!(
-        frame,
-        FrameKind::ViewportResize { .. }
-            | FrameKind::ResizeTerminal { .. }
-            | FrameKind::FrameAck { .. }
-            | FrameKind::HistoryRequest { .. }
     )
 }
 

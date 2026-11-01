@@ -219,16 +219,6 @@ fn push_error(out_tx: &mpsc::Sender<Outbound>, code: ErrorCode, message: impl In
     }));
 }
 
-/// Whether `terminal_id` resolves, on this server, to an agent session;
-/// `false` for unknown or satellite ids, which other handlers answer.
-pub(super) fn is_agent_session(state: &SharedState, terminal_id: &WireResourceId) -> bool {
-    state.with(|s| {
-        s.resource_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core))
-            .is_some_and(|handle| handle.kind == crate::resource::ResourceKind::AgentSession)
-    })
-}
-
 /// Journal an unattributed server-driven [`AgentEvent`] about `terminal`
 /// (`None` for server-scoped) and fan it out (ADR-0123).
 pub(crate) fn broadcast_event(
