@@ -179,6 +179,8 @@ impl<R> ConsumerSync<R> {
     /// Advance the acked reference to the snapshot of the highest emitted
     /// `seq` this ack covers, dropping older snapshots (ADR-0042).
     fn advance_acked_reference(&mut self, seq: u64) {
+        // Take the highest covered snapshot first, then drop the older
+        // covered ones below it.
         if let Some((&covered, _)) = self.pending_refs.range(..=seq).next_back()
             && let Some(snapshot) = self.pending_refs.remove(&covered)
         {
@@ -275,7 +277,9 @@ impl<R> ConsumerSync<R> {
 
     /// Record a shipped `seq`: its emit instant for RTT on ack and, when
     /// loss-tolerant, the reference it brought the consumer to (`snapshot`
-    /// runs only then). Both are bounded by [`MAX_EMIT_INSTANTS`].
+    /// runs only then). Call it after the frame's bytes are built, so
+    /// `snapshot` captures the live state the frame carries, not the state it
+    /// was diffed from. Both are bounded by [`MAX_EMIT_INSTANTS`].
     pub fn record_emit(&mut self, seq: u64, snapshot: impl FnOnce() -> R) {
         record_bounded(&mut self.emit_instants, seq, Instant::now());
         if self.loss_tolerant {
