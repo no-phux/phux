@@ -1,6 +1,11 @@
 //! Answering `SPAWN_RESOURCE`, for any kind: the typed reply, and relaying a
 //! satellite-addressed spawn over the hub link.
 
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "private module shared across the runtime; pub would violate unreachable_pub"
+)]
+
 use phux_protocol::wire::frame::{FrameKind, SpawnError, SpawnResult};
 use tracing::debug;
 
