@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::rules::RuleSet;
 
-#[cfg(test)]
-use super::IdentitySource;
+use super::identity::KernelIdentity;
 use super::{
     AgentDetector, AgentReport, Cadence, DetectedState, TICK_CONFIRMING, TICK_IDENTIFIED,
     TICK_UNIDENTIFIED, live_session,
@@ -84,7 +83,7 @@ impl AgentDetector {
     }
 
     /// Build a detector; `now` anchors the identity acquire window.
-    pub(crate) const fn new(rules: Rc<RuleSet>, now: Instant) -> Self {
+    pub(crate) fn new(rules: Rc<RuleSet>, now: Instant) -> Self {
         Self {
             rules,
             identified: None,
@@ -105,8 +104,7 @@ impl AgentDetector {
             live_session_held: false,
             stream_state: None,
             cadence: Cadence::Unidentified,
-            #[cfg(test)]
-            identity_source: IdentitySource::Kernel,
+            identity: Box::new(KernelIdentity),
         }
     }
 

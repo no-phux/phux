@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use tokio::sync::mpsc::{self, error::TrySendError};
 
-use super::spawn::{PTY_READ_BATCH, PTY_READ_CHUNK, PtyEvent, drain_master_to_eof, send_pty_chunk};
+use super::spawn::{
+    PTY_READ_BATCH, PTY_READ_CHUNK, PtyEvent, drain_master_with_budget, send_pty_chunk,
+};
 
 /// How long a dedicated reader waits for the next byte before giving its fd
 /// back to the shared poller.
@@ -109,7 +111,8 @@ pub(super) fn promote_count() -> u64 {
 }
 
 /// Read `file` until the actor drops the channel. Prefers the shared poller.
-pub(super) fn attach(file: File, tx: mpsc::Sender<PtyEvent>) -> PtyReader {
+pub(super) fn attach(file: File, tx: mpsc::Sender<PtyEvent>, drain_budget: Duration) -> PtyReader {
+    let file = PtyMaster { file, drain_budget };
     match shared_park() {
         Some(park) => park.deposit(file, tx),
         None => PtyReader {
@@ -162,7 +165,7 @@ enum SlotState {
 }
 
 struct ParkedPty {
-    file: File,
+    file: PtyMaster,
     tx: mpsc::Sender<PtyEvent>,
 }
 
@@ -198,7 +201,7 @@ impl Park {
         }
     }
 
-    fn deposit(&'static self, file: File, tx: mpsc::Sender<PtyEvent>) -> PtyReader {
+    fn deposit(&'static self, file: PtyMaster, tx: mpsc::Sender<PtyEvent>) -> PtyReader {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Err(err) = self.reactor.add(file.as_fd(), id) {
             tracing::warn!(?err, "parking a pty failed; using a dedicated reader");

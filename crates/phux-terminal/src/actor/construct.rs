@@ -1,6 +1,7 @@
 //! Constructors and build wiring for [`TerminalActor`], default colors, and
 //! libghostty effect handlers.
 
+use super::hangup::HangupPolicy;
 use super::process_facet::ChildFacts;
 use super::{
     CancellationToken, CanonicalTerminal, Cell, CommandBuilder, ConsumerAckRequest,
@@ -26,6 +27,7 @@ impl TerminalActor {
             DEFAULT_SCROLLBACK,
             CancellationToken::new(),
             None,
+            HangupPolicy::default(),
         )
     }
 
@@ -43,6 +45,7 @@ impl TerminalActor {
             DEFAULT_SCROLLBACK,
             CancellationToken::new(),
             None,
+            HangupPolicy::default(),
         )
     }
 
@@ -62,6 +65,7 @@ impl TerminalActor {
             scrollback,
             token,
             None,
+            HangupPolicy::default(),
         )
     }
 
@@ -82,6 +86,7 @@ impl TerminalActor {
             scrollback,
             token,
             default_colors,
+            HangupPolicy::default(),
         )
     }
 
@@ -107,6 +112,7 @@ impl TerminalActor {
             scrollback,
             token,
             None,
+            HangupPolicy::default(),
         )?;
         bundle.actor.terminal.borrow_mut().vt_write(seed);
         bundle.actor.restore_program_status();
@@ -128,6 +134,7 @@ impl TerminalActor {
         scrollback: ScrollbackLimits,
         token: CancellationToken,
         default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
+        hangup: HangupPolicy,
     ) -> Result<TerminalActorBundle, TerminalActorError> {
         let mut terminal = {
             let mut terminal = GhosttyTerminal::new(cols, rows)?;
@@ -204,7 +211,8 @@ impl TerminalActor {
             phux_resource::output_broadcast_capacity(),
         );
 
-        let (pty_rx, pty_tx, pty) = initialize_pty(pty_source, cols, rows)?;
+        let (pty_rx, pty_tx, pty) =
+            initialize_pty(pty_source, cols, rows, hangup.orphan_drain_budget())?;
         let child_facts = ChildFacts::capture(pty.as_ref());
         // R12: the identity a restart reconciles this activation by.
         let proc = pty
@@ -225,6 +233,7 @@ impl TerminalActor {
 
         let actor = Self {
             terminal: RefCell::new(CanonicalTerminal::Plain(Some(terminal))),
+            hangup,
             synth: RefCell::new(synth),
             // Initial content may exist; start dirty so the first tick emits.
             terminal_dirty_since_tick: true,
@@ -246,6 +255,8 @@ impl TerminalActor {
             reflow_tombstoned: Vec::new(),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             pending_native_bootstrap: None,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_alloc: Box::new(super::try_native_bytes),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_bootstrap_backlog: VecDeque::new(),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -435,14 +446,15 @@ fn initialize_pty(
     source: PtySource,
     cols: u16,
     rows: u16,
+    drain_budget: std::time::Duration,
 ) -> Result<OptionalPty, TerminalActorError> {
     let opened = match source {
         PtySource::None => return Ok((None, None, None)),
-        PtySource::Spawn(command) => spawn_pty(command, cols, rows)?,
+        PtySource::Spawn(command) => spawn_pty(command, cols, rows, drain_budget)?,
         PtySource::Adopt {
             master_fd,
             child_pid,
-        } => adopt_pty(master_fd, child_pid)?,
+        } => adopt_pty(master_fd, child_pid, drain_budget)?,
     };
     Ok((Some(opened.0), Some(opened.1), Some(opened.2)))
 }

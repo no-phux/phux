@@ -5,9 +5,9 @@
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use super::{
     Bytes, CanonicalTerminal, FrameKind, HashSet, MAX_NATIVE_HISTORY_CLIENTS,
-    MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeBootstrapReply,
-    NativeBootstrapRequest, NativeCursorKey, NativeCursorOwner, NativeHistoryReply,
-    NativeHistoryRequest, NativePublicationGeneration, NativePublicationReply,
+    MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeAlloc,
+    NativeBootstrapReply, NativeBootstrapRequest, NativeCursorKey, NativeCursorOwner,
+    NativeHistoryReply, NativeHistoryRequest, NativePublicationGeneration, NativePublicationReply,
     NativePublicationRequest, PaneOutput, PendingNativeBootstrap, PendingNativeHistory, VecDeque,
     native_step_bytes, reserve_native_bytes, warn,
 };
@@ -33,10 +33,11 @@ pub(super) const fn initial_native_scratch_bytes(ceiling: usize) -> usize {
 /// failure.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn grow_native_scratch(
+    alloc: &NativeAlloc,
     scratch: &mut Vec<u8>,
     required_bytes: usize,
 ) -> Result<(), crate::native_state::NativeStateError> {
-    let mut grown = reserve_native_bytes(required_bytes)?;
+    let mut grown = reserve_native_bytes(alloc, required_bytes)?;
     grown.resize(required_bytes, 0);
     *scratch = grown;
     Ok(())
@@ -141,7 +142,7 @@ impl TerminalActor {
             }
         };
         let scratch_bytes = initial_native_scratch_bytes(scratch_ceiling);
-        let mut scratch = match reserve_native_bytes(scratch_bytes) {
+        let mut scratch = match reserve_native_bytes(&self.native_alloc, scratch_bytes) {
             Ok(scratch) => scratch,
             Err(error) => {
                 if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
@@ -222,7 +223,8 @@ impl TerminalActor {
                 required_bytes,
                 required_rows: 0,
             }) if required_bytes > scratch_len && required_bytes <= step_ceiling => {
-                match grow_native_scratch(&mut pending.scratch, required_bytes) {
+                match grow_native_scratch(&self.native_alloc, &mut pending.scratch, required_bytes)
+                {
                     Ok(()) => self.pending_native_bootstrap = Some(pending),
                     Err(error) => self.fail_native_bootstrap(pending, error),
                 }
@@ -248,7 +250,7 @@ impl TerminalActor {
             );
             return;
         }
-        let mut payload = match reserve_native_bytes(record_len) {
+        let mut payload = match reserve_native_bytes(&self.native_alloc, record_len) {
             Ok(payload) => payload,
             Err(error) => {
                 self.fail_native_bootstrap(pending, error);

@@ -149,7 +149,8 @@ fn spawn_pty_starts_in_the_requested_directory() {
     cmd.arg("-c");
     cmd.arg("pwd; read _");
     cmd.cwd(expected.as_os_str());
-    let (mut pty_rx, _input_tx, mut pty) = spawn_pty(cmd, 80, 24).expect("spawn");
+    let (mut pty_rx, _input_tx, mut pty) =
+        spawn_pty(cmd, 80, 24, super::ORPHAN_DRAIN_BUDGET).expect("spawn");
     let pid = pty.child.process_id().expect("child pid");
     let immediate =
         phux_resource::cwd_query::process_cwd(pid).map(|path| path.canonicalize().unwrap_or(path));
@@ -181,7 +182,7 @@ fn spawn_pty_starts_in_the_requested_directory() {
 /// Spawn `cmd` under a real PTY and collect output up to the first `]`.
 async fn spawn_and_capture(cmd: CommandBuilder) -> String {
     let (mut pty_rx, _input_tx, mut pty) =
-        spawn_pty(cmd, 80, 24).expect("spawn sh under a real pty");
+        spawn_pty(cmd, 80, 24, super::ORPHAN_DRAIN_BUDGET).expect("spawn sh under a real pty");
     let mut received = Vec::new();
     let deadline = tokio::time::Instant::now() + DELIVERY_DEADLINE;
     while !received.contains(&b']') {
@@ -254,8 +255,13 @@ async fn write_and_wait(
 /// A newline-free overlong write is refused before any byte is sent.
 #[tokio::test(flavor = "current_thread")]
 async fn newline_free_write_over_the_limit_is_refused_before_any_byte_is_sent() {
-    let (mut pty_rx, input_tx, mut pty) =
-        spawn_pty(CommandBuilder::new("cat"), 80, 24).expect("spawn cat under a real pty");
+    let (mut pty_rx, input_tx, mut pty) = spawn_pty(
+        CommandBuilder::new("cat"),
+        80,
+        24,
+        super::ORPHAN_DRAIN_BUDGET,
+    )
+    .expect("spawn cat under a real pty");
     match write_and_wait(&input_tx, vec![b'a'; 4097]).await {
         WriteCompletion::CanonicalLimitExceeded { limit } => assert!(limit > 0),
         other => panic!("expected CanonicalLimitExceeded, got {other:?}"),
@@ -272,8 +278,13 @@ async fn newline_free_write_over_the_limit_is_refused_before_any_byte_is_sent() 
 /// wedging the pane.
 #[tokio::test(flavor = "current_thread")]
 async fn terminating_cr_past_the_limit_is_refused_not_wedged() {
-    let (mut pty_rx, input_tx, mut pty) =
-        spawn_pty(CommandBuilder::new("cat"), 80, 24).expect("spawn cat under a real pty");
+    let (mut pty_rx, input_tx, mut pty) = spawn_pty(
+        CommandBuilder::new("cat"),
+        80,
+        24,
+        super::ORPHAN_DRAIN_BUDGET,
+    )
+    .expect("spawn cat under a real pty");
     let mut payload = vec![b'a'; platform_canonical_limit() + 776];
     payload.push(b'\r');
     assert!(matches!(
@@ -291,8 +302,13 @@ async fn terminating_cr_past_the_limit_is_refused_not_wedged() {
 /// A refusal leaves the input path alive for later writes.
 #[tokio::test(flavor = "current_thread")]
 async fn refusal_does_not_wedge_the_pane_for_later_writes() {
-    let (mut pty_rx, input_tx, mut pty) =
-        spawn_pty(CommandBuilder::new("cat"), 80, 24).expect("spawn cat under a real pty");
+    let (mut pty_rx, input_tx, mut pty) = spawn_pty(
+        CommandBuilder::new("cat"),
+        80,
+        24,
+        super::ORPHAN_DRAIN_BUDGET,
+    )
+    .expect("spawn cat under a real pty");
     assert!(matches!(
         write_and_wait(&input_tx, vec![b'a'; 5000]).await,
         WriteCompletion::CanonicalLimitExceeded { .. }
@@ -318,8 +334,13 @@ async fn refusal_does_not_wedge_the_pane_for_later_writes() {
 /// delivered intact.
 #[tokio::test(flavor = "current_thread")]
 async fn raw_mode_delivers_a_large_newline_free_payload_intact() {
-    let (mut pty_rx, input_tx, mut pty) =
-        spawn_pty(CommandBuilder::new("cat"), 80, 24).expect("spawn cat under a real pty");
+    let (mut pty_rx, input_tx, mut pty) = spawn_pty(
+        CommandBuilder::new("cat"),
+        80,
+        24,
+        super::ORPHAN_DRAIN_BUDGET,
+    )
+    .expect("spawn cat under a real pty");
     // Raw mode (and no echo) on the shared master, as a TUI would set it.
     {
         let raw_fd = pty
