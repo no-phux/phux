@@ -99,6 +99,7 @@ pub(crate) fn spawn_pty(
     mut cmd: CommandBuilder,
     cols: u16,
     rows: u16,
+    drain_budget: std::time::Duration,
 ) -> Result<SpawnedPty, TerminalActorError> {
     let pty_system = native_pty_system();
     // Nonzero initial pixel size for children that query `TIOCGWINSZ` before
@@ -123,7 +124,7 @@ pub(crate) fn spawn_pty(
     // Our slave copy would prevent EOF on the master after the child exits.
     drop(pair.slave);
 
-    start_pty_bridge(pair.master, child)
+    start_pty_bridge(pair.master, child, drain_budget)
 }
 
 /// A PTY spawn failure as one line a user can act on. portable-pty's
@@ -148,6 +149,7 @@ fn spawn_failure_reason(err: &dyn std::fmt::Display) -> String {
 pub(crate) fn adopt_pty(
     master_fd: std::os::fd::RawFd,
     child_pid: i32,
+    drain_budget: std::time::Duration,
 ) -> Result<SpawnedPty, TerminalActorError> {
     // SAFETY: `master_fd` is the inherited PTY master (FD_CLOEXEC cleared
     // before the exec), owned solely by this process now.
@@ -155,36 +157,26 @@ pub(crate) fn adopt_pty(
         Box::new(unsafe { portable_pty_adopt::AdoptedMaster::from_raw_fd(master_fd) });
     let child: Box<dyn Child + Send + Sync> =
         Box::new(portable_pty_adopt::AdoptedChild::new(child_pid));
-    start_pty_bridge(master, child)
+    start_pty_bridge(master, child, drain_budget)
 }
 
-/// Budget for the reader's post-actor drain: the hangup grace plus the reap
-/// budget, i.e. the whole window in which the child may still be writing.
-/// It only bounds a child that outlives the actor and writes forever.
-const ORPHAN_DRAIN_BUDGET: std::time::Duration = {
-    // Tests stretch the hangup ceiling (up to a 30 s trap-marker hold plus
-    // 2.5 s); the reader cannot see that gate, so include it. EOF still ends
-    // the drain.
-    const GRACE: std::time::Duration = if cfg!(test) {
-        std::time::Duration::from_millis(30_000 + 2_500)
-    } else {
-        super::PANE_KILL_GRACE
-    };
-    GRACE.saturating_add(super::PANE_KILL_REAP_BUDGET)
-};
+/// The production drain budget (see
+/// [`HangupPolicy::orphan_drain_budget`](super::HangupPolicy)).
+#[cfg(test)]
+const ORPHAN_DRAIN_BUDGET: std::time::Duration =
+    super::PANE_KILL_GRACE.saturating_add(super::PANE_KILL_REAP_BUDGET);
 
-/// Keep draining the master after the actor is gone, until EOF or
-/// [`ORPHAN_DRAIN_BUDGET`]. An unread master blocks the child's `write(2)`
-/// after ~1 KiB, which would wedge a job flushing in its `SIGHUP` handler.
+/// Keep draining the master after the actor is gone, until EOF or `budget`.
+/// An unread master blocks the child's `write(2)` after ~1 KiB, which would
+/// wedge a job flushing in its `SIGHUP` handler.
 ///
 /// The budget is checked only between reads; a read blocked by an outside
 /// holder of the slave is why `shutdown_pty` bounds the join itself.
-pub(super) fn drain_master_to_eof<R: Read>(reader: &mut R, buf: &mut [u8]) {
-    drain_master_with_budget(reader, buf, ORPHAN_DRAIN_BUDGET);
-}
-
-/// [`drain_master_to_eof`] with an explicit budget (for tests).
-fn drain_master_with_budget<R: Read>(reader: &mut R, buf: &mut [u8], budget: std::time::Duration) {
+pub(super) fn drain_master_with_budget<R: Read>(
+    reader: &mut R,
+    buf: &mut [u8],
+    budget: std::time::Duration,
+) {
     let deadline = std::time::Instant::now() + budget;
     loop {
         match reader.read(buf) {
@@ -259,6 +251,7 @@ fn dup_master_reader(master: &dyn MasterPty) -> Result<std::fs::File, TerminalAc
 fn start_pty_bridge(
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
+    drain_budget: std::time::Duration,
 ) -> Result<SpawnedPty, TerminalActorError> {
     let reader = dup_master_reader(&*master)?;
     // One open file description backs the master, reader, and writer.
@@ -277,7 +270,7 @@ fn start_pty_bridge(
     let (input_tx_to_writer, input_rx_for_writer) =
         mpsc::channel::<EncodedInputRequest>(super::PTY_WRITER_QUEUE);
 
-    let reader = super::park::attach(reader, pty_tx_to_actor);
+    let reader = super::park::attach(reader, pty_tx_to_actor, drain_budget);
     let fast =
         super::fast_pty::PtyFastPath::new(input_tx_to_writer.clone(), master_for_writer, writer);
     let writer_fast = Arc::clone(&fast);

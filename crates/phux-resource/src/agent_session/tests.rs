@@ -43,7 +43,7 @@ fn icount_helper_appends_and_replays_the_ring() {
     )
     .expect("accepted");
     assert!(replayed > 0, "replay copies the stamped records");
-    assert_eq!(actor.ring.len(), 2);
+    assert_eq!(actor.ring.retained(), 2);
 }
 
 fn append(actor: &mut AgentSessionActor, payload: &str) -> Result<AppendAccepted, AppendRejection> {

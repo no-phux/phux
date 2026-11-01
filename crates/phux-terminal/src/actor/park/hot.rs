@@ -14,7 +14,7 @@ use super::*;
 pub(in crate::actor) fn hot_loop(
     park: &'static Park,
     id: u64,
-    mut file: File,
+    mut file: PtyMaster,
     mut tx: mpsc::Sender<PtyEvent>,
     cancel: std::sync::Arc<AtomicBool>,
     pending: Vec<PtyEvent>,
@@ -72,7 +72,7 @@ impl AfterRead {
 pub(in crate::actor) fn handle_hot_read(
     park: &'static Park,
     id: u64,
-    file: &mut File,
+    file: &mut PtyMaster,
     tx: &mpsc::Sender<PtyEvent>,
     bufs: &mut CoalesceBufs,
     last: &mut Instant,
@@ -84,7 +84,7 @@ pub(in crate::actor) fn handle_hot_read(
             *last = Instant::now();
             let chunk = bufs.batch.split().freeze();
             if send_pty_chunk(tx, chunk, *last).is_break() {
-                drain_file_to_eof(file, &mut bufs.scratch);
+                file.drain_to_eof(&mut bufs.scratch);
                 park.remove(id);
                 return AfterRead::Exit;
             }
@@ -111,7 +111,7 @@ pub(in crate::actor) fn finish_hot(
 /// `false` when the actor is gone and the master has been drained.
 pub(in crate::actor) fn flush_pending(
     tx: &mpsc::Sender<PtyEvent>,
-    file: &mut File,
+    file: &mut PtyMaster,
     pending: Vec<PtyEvent>,
 ) -> bool {
     for event in pending {
@@ -119,7 +119,7 @@ pub(in crate::actor) fn flush_pending(
             PtyEvent::Bytes { chunk, read_at } => {
                 if send_pty_chunk(tx, chunk, read_at).is_break() {
                     let mut buf = vec![0_u8; PTY_READ_CHUNK];
-                    drain_file_to_eof(file, &mut buf);
+                    file.drain_to_eof(&mut buf);
                     return false;
                 }
             }
@@ -136,14 +136,14 @@ pub(in crate::actor) enum Repark {
     /// Fd is on the poller, or the pane is gone. The reader thread exits.
     Parked,
     /// Stay on this thread; the poller refused the fd.
-    Keep(File, mpsc::Sender<PtyEvent>),
+    Keep(PtyMaster, mpsc::Sender<PtyEvent>),
 }
 
 /// Park `file`. On cancel the slot is removed and `file` is dropped here.
 pub(in crate::actor) fn try_repark(
     park: &'static Park,
     id: u64,
-    file: File,
+    file: PtyMaster,
     tx: mpsc::Sender<PtyEvent>,
 ) -> Repark {
     let mut slots = park.slots();
@@ -206,7 +206,10 @@ pub(in crate::actor) fn poll_readable(file: &File, wait: Duration) -> PollRead {
     }
 }
 
-pub(in crate::actor) fn spawn_dedicated(file: File, tx: mpsc::Sender<PtyEvent>) -> JoinHandle<()> {
+pub(in crate::actor) fn spawn_dedicated(
+    file: PtyMaster,
+    tx: mpsc::Sender<PtyEvent>,
+) -> JoinHandle<()> {
     std::thread::Builder::new()
         .name("phux-pty-reader".to_owned())
         .stack_size(READER_STACK)
@@ -221,7 +224,7 @@ pub(in crate::actor) fn spawn_dedicated(file: File, tx: mpsc::Sender<PtyEvent>) 
         })
 }
 
-pub(in crate::actor) fn dedicated_loop(file: &mut File, tx: &mpsc::Sender<PtyEvent>) {
+pub(in crate::actor) fn dedicated_loop(file: &mut PtyMaster, tx: &mpsc::Sender<PtyEvent>) {
     phux_resource::perf::promote_helper_thread("phux-pty-reader");
     let mut bufs = CoalesceBufs::new();
     loop {
@@ -241,7 +244,7 @@ pub(in crate::actor) fn dedicated_loop(file: &mut File, tx: &mpsc::Sender<PtyEve
             Gathered::Bytes { eof } => {
                 let chunk = bufs.batch.split().freeze();
                 if send_pty_chunk(tx, chunk, Instant::now()).is_break() {
-                    drain_file_to_eof(file, &mut bufs.scratch);
+                    file.drain_to_eof(&mut bufs.scratch);
                     break;
                 }
                 if eof {

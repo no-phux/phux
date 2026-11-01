@@ -232,7 +232,8 @@ A resource kind is an app. The host reaches one through `ResourceApp` in
 same catalog rows authorization uses, and `app_for` answers per-kind questions
 such as how a stream bootstraps. `state/` sits below the apps and never names
 them; what it asks of any resource is the required `ResourceOps` on its handle.
-A new kind is one `ResourceApp`, one `APPS` row, and its `ResourceOps`. Only
+A new kind does not compile until `app_for` names its app, and neither
+`ResourceApp` nor `ResourceOps` has a default method to inherit. Only
 `runtime/apps/terminal` may name the Terminal engine, and
 `seam_tests.rs` fails if any host module does. The host holds a launch command
 as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.

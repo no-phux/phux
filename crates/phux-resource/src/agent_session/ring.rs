@@ -74,14 +74,8 @@ impl RecordRing {
 
     /// How many records are currently retained.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub fn retained(&self) -> usize {
         self.records.len()
-    }
-
-    /// `true` iff the ring currently retains nothing.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
     }
 }
 
@@ -98,7 +92,7 @@ mod tests {
         let mut ring = RecordRing::new(100);
         ring.push(record(10));
         ring.push(record(20));
-        assert_eq!(ring.len(), 2);
+        assert_eq!(ring.retained(), 2);
         assert_eq!(ring.bytes(), 30);
         assert_eq!(ring.dropped(), 0);
     }
@@ -109,7 +103,7 @@ mod tests {
         for _ in 0..4 {
             ring.push(record(20));
         }
-        assert_eq!(ring.len(), 2, "two 20-byte records fit under 50");
+        assert_eq!(ring.retained(), 2, "two 20-byte records fit under 50");
         assert_eq!(ring.bytes(), 40);
         assert_eq!(ring.dropped(), 2);
         assert!(
@@ -123,7 +117,7 @@ mod tests {
         let mut ring = RecordRing::new(4);
         ring.push(record(10));
         ring.push(record(11));
-        assert_eq!(ring.len(), 1);
+        assert_eq!(ring.retained(), 1);
         assert_eq!(ring.records().next().expect("one").len(), 11);
         assert_eq!(ring.dropped(), 1);
     }

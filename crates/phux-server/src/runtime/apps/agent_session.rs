@@ -5,19 +5,16 @@ use futures_util::future::LocalBoxFuture;
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
 
 use super::{ResourceApp, StreamBootstrap};
-use crate::resource::ResourceKind;
+use crate::resource::{ResourceHandle, ResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::operation_dedupe::OperationClaim;
+use crate::state::ClientId;
 
 /// Serves [`ResourceKind::AgentSession`].
 #[derive(Debug)]
 pub(crate) struct AgentSessionApp;
 
 impl ResourceApp for AgentSessionApp {
-    fn kind(&self) -> ResourceKind {
-        ResourceKind::AgentSession
-    }
-
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -32,6 +29,20 @@ impl ResourceApp for AgentSessionApp {
             required: ResourceKind::Terminal,
             actual: ResourceKind::AgentSession,
         })
+    }
+
+    fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {
+        // The record stream keeps nothing per consumer in the engine: a
+        // client's pump is host-side and `pump::stop_output` ends it.
+    }
+
+    fn fence_consumer<'a>(
+        &'a self,
+        _handle: &'a ResourceHandle,
+        _client: ClientId,
+    ) -> LocalBoxFuture<'a, ()> {
+        // Nothing to fence: the engine emits only to the shared broadcast.
+        Box::pin(std::future::ready(()))
     }
 
     fn command<'a>(

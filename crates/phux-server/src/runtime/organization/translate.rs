@@ -32,7 +32,7 @@ pub(super) fn translate(
                 resource: launch.map(|launch| phux_core::NewResource {
                     kind: ResourceKind::Terminal,
                     name: None,
-                    launch: ow::core_launch(ResourceKind::Terminal, &launch),
+                    launch: Some(ow::core_launch(ResourceKind::Terminal, &launch)),
                     on_exit: phux_core::ExitPolicy::Remove,
                     parent: None,
                     launch_mode: phux_core::LaunchMode::Immediate,
@@ -114,7 +114,7 @@ pub(super) fn translate(
                         name,
                         launch: launch
                             .as_deref()
-                            .and_then(|launch| ow::core_launch(kind, launch))
+                            .map(|launch| ow::core_launch(kind, launch))
                             .or_else(|| {
                                 (kind == ResourceKind::Terminal).then(|| {
                                     phux_core::LaunchSpec::Terminal(

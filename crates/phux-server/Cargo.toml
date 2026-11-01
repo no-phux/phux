@@ -43,7 +43,7 @@ phux-core.workspace = true
 phux-resource.workspace = true
 # The Terminal app. The host reaches VT and PTY only through it.
 phux-terminal.workspace = true
-# `GET_SCREEN --format vt` capture encoding and OSC 7501 upgrade replay.
+# `Authorization: Basic` for the OpenCode host service.
 base64.workspace = true
 # Canonical scrollback bounds and config schema defaults.
 phux-config.workspace = true
@@ -58,7 +58,7 @@ chrono.workspace = true
 # The graceful-upgrade state blob and JSON records.
 serde.workspace = true
 serde_json.workspace = true
-# SIMD ESC search on the PTY output hot path.
+# SIMD ESC search when downsampling bootstrap bytes for a client's caps.
 memchr.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -68,23 +68,16 @@ tracing-appender.workspace = true
 tokio.workspace = true
 # `CancellationToken` (the `rt` feature gates it).
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
-# Safe POSIX wrappers: process-group signals (`signal`), foreground pgid
-# (`term`), `fpathconf(_PC_MAX_CANON)` (`fs` + `feature`), the detached
-# reaper's `waitpid` (`process`), and whoami's uid/login/host (`user`,
-# `hostname`). Quiet PTY masters wait on `event` (epoll / kqueue).
+# Safe POSIX wrappers: plugin process-group signals (`signal`), the plugin
+# control fifo and file modes (`fs`), and whoami's uid/login/host (`user`,
+# `hostname`).
 nix = { version = "0.31", default-features = false, features = [
     "signal",
-    "term",
     "fs",
-    "feature",
-    "process",
     "user",
     "hostname",
-    # epoll on Linux, kqueue on macOS: one poller for quiet PTY masters.
-    "event",
 ] }
-# `posix_spawn` for pane children (the fd table must not be fork-copied)
-# and macOS `proc_pidinfo` / `getpeereid`.
+# Plugin child pre-exec setup and `getpeereid` on the Unix socket.
 libc = "0.2"
 bytes.workspace = true
 # In-process performance telemetry (`GET_PERF`, `phux perf`).
@@ -134,23 +127,18 @@ wtransport-proto = { version = "0.7.2", optional = true, features = ["async"] }
 # Decodes Huffman-coded literal header names for that duplicate check.
 httlib-huffman = { version = "0.3.4", optional = true }
 console-subscriber = { version = "0.5", optional = true }
-# The PTY backend; blocking halves bridge to async via threads.
-# Re-adopt inherited PTY masters and children after an upgrade re-exec.
-# Upgrade handoff: clear FD_CLOEXEC and carry the blob in a temp file.
+# Upgrade handoff `FD_CLOEXEC` flags, credential store locks, and cwd checks.
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
+# The upgrade blob travels in an anonymous temp file.
 tempfile.workspace = true
 # The legacy TUI layout envelope (`phux.tui.layout/v1`, L3 §3.2): R17
 # translates that key to and from the session arrangement with the one codec
-# clients use. No default features: no terminal engine, no runtime.
+# clients use. Also the agent record size limit. No default features: no
+# terminal engine, no runtime.
 phux-client-core.workspace = true
 # The organization store (ADR-0162): sessions, resources, arrangements, and
 # receipts commit in one SQLite transaction before memory changes.
 rusqlite.workspace = true
-
-# The native terminal engine (needs zig 0.16.x); target-gated to keep its
-# C/Zig library off wasm.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-
 
 [dev-dependencies]
 # Tests and benches drive the VT and PTY layers directly; the host never does.
@@ -166,7 +154,6 @@ http-body-util = { version = "0.1", features = ["channel"] }
 iai-callgrind.workspace = true
 # `test-util`: paused time for tick and deadline tests.
 tokio = { workspace = true, features = ["test-util"] }
-tempfile.workspace = true
 # Drive the production server through the native session kernel.
 phux-client-ffi.workspace = true
 # Tests drive the native engine the client kernel uses.

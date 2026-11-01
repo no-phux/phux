@@ -83,9 +83,7 @@ fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<Detache
 /// best-effort, so this is safe under the state lock.
 fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
     for handle in s.subscribed_resource_handles(client_id) {
-        if let Some(app) = crate::runtime::apps::app_for(handle.kind) {
-            app.release_consumer(&handle, client_id);
-        }
+        crate::runtime::apps::app_for(handle.kind).release_consumer(&handle, client_id);
     }
 }
 
