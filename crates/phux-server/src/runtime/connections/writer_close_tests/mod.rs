@@ -329,7 +329,7 @@ async fn a_lone_frame_is_written_without_waiting_for_company() {
 async fn terminal_error_is_written_before_transport_close() {
     let recorder = write_all([
         pong(1),
-        Outbound::TerminalError {
+        Outbound::FatalError {
             request_id: None,
             code: ErrorCode::CodecUnavailable,
             message: "fatal native stream failure".to_owned(),

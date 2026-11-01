@@ -20,7 +20,7 @@ pub(super) fn native_profile() -> BootstrapProfile {
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) fn spawn_native_pump(
     terminal: phux_terminal::actor::TerminalHandle,
-    output: &tokio::sync::broadcast::Sender<PaneOutput>,
+    output: &tokio::sync::broadcast::Sender<ResourceOutput>,
     resize: ResizeSender,
 ) -> TwoPumpConsumer {
     let (out_tx, out_rx) = tokio::sync::mpsc::channel(32);
@@ -82,7 +82,7 @@ async fn final_drain_wins_over_expired_gap_and_ready_broadcasts() {
     let mut output = handle.output.subscribe();
     handle
         .output
-        .send(PaneOutput::Live {
+        .send(ResourceOutput::Live {
             seq: 1,
             bytes: bytes::Bytes::from_static(b"old"),
             at: std::time::Instant::now(),

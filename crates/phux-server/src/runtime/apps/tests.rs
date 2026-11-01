@@ -4,7 +4,7 @@ use phux_protocol::kinds::{KINDS, command_kind};
 #[test]
 fn every_catalog_kind_has_an_app() {
     for spec in &KINDS {
-        let kind = crate::resource::core_kind(spec.kind).expect("a served kind");
+        let kind = crate::id_bridge::core_kind(spec.kind).expect("a served kind");
         assert_eq!(app_for(kind).expect("an app").kind(), kind);
     }
 }

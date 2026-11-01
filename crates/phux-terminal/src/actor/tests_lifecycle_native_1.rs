@@ -401,7 +401,7 @@ async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes(
                     .await
                     .expect("raw output stalled")
                     .expect("raw output channel closed");
-                if let PaneOutput::Live { seq, bytes, .. } = output {
+                if let ResourceOutput::Live { seq, bytes, .. } = output {
                     assert_eq!(seq, expected_seq);
                     expected_seq += 1;
                     raw_bytes += bytes.len();

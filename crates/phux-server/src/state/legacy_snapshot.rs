@@ -199,7 +199,7 @@ impl ServerState {
                 .with_native_id(facet.native_id.clone())
             });
             panes.push(
-                ResourceInfo::resource(wire, crate::resource::wire_kind(descriptor.kind))
+                ResourceInfo::resource(wire, crate::id_bridge::wire_kind(descriptor.kind))
                     .with_parent(parent)
                     .with_agent(agent)
                     .with_session(session),

@@ -10,7 +10,7 @@ impl TerminalActor {
         &self,
         scrollback: Option<u32>,
     ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
-        let _timer = phux_resource::perf::BOOTSTRAP_SYNTH.timer();
+        let _timer = crate::perf::BOOTSTRAP_SYNTH.timer();
         let canonical = self.terminal.borrow();
         let Some(terminal) = canonical.try_terminal() else {
             return Err(crate::grid::SynthesisError::TerminalUnavailable);
@@ -26,7 +26,7 @@ impl TerminalActor {
         max_bytes: usize,
         image_protocols: phux_protocol::caps::ImageProtocolSet,
     ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
-        let _timer = phux_resource::perf::BOOTSTRAP_SYNTH.timer();
+        let _timer = crate::perf::BOOTSTRAP_SYNTH.timer();
         let canonical = self.terminal.borrow();
         let Some(terminal) = canonical.try_terminal() else {
             return Err(crate::grid::SynthesisError::TerminalUnavailable);
@@ -106,7 +106,7 @@ impl TerminalActor {
     fn pane_quiet_for_echo(&self) -> bool {
         self.last_output_at
             .get()
-            .is_none_or(|at| at.elapsed() >= phux_resource::perf::ECHO_QUIET_WINDOW)
+            .is_none_or(|at| at.elapsed() >= crate::perf::ECHO_QUIET_WINDOW)
     }
 
     /// Encode a [`TerminalInput`] into PTY bytes. `Ok(None)` means
@@ -196,7 +196,7 @@ impl TerminalActor {
         };
         match queued {
             Ok(()) => {
-                phux_resource::perf::INPUT_EVENTS.incr();
+                crate::perf::INPUT_EVENTS.incr();
                 if echo_probe && self.pane_quiet_for_echo() {
                     self.last_input_at.set(Some(std::time::Instant::now()));
                 }

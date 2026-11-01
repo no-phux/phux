@@ -13,7 +13,7 @@ impl TerminalActor {
         let _ = self
             .core
             .output_tx
-            .send(PaneOutput::Control { owner, frame });
+            .send(ResourceOutput::Control { owner, frame });
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

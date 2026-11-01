@@ -1,14 +1,11 @@
-//! Server performance telemetry for `GET_PERF`.
+//! The Terminal's half of the server's `GET_PERF` telemetry.
 //!
 //! Static [`phux_perf`] metrics are recorded at each hop, grouped by pipeline
-//! stage (`pty.*`, `echo.*`, `input.*`, `tick.*`, `pump.*`, `wire.*`,
-//! `cmd.*`/`attach.*`, `consumer.*`, process gauges). Names are diagnostic,
-//! not a wire contract; see `docs/troubleshooting.md#lag`.
+//! stage (`pty.*`, `echo.*`, `input.*`, `tick.*`, `consumer.*`,
+//! `bootstrap.*`). Names are diagnostic, not a wire contract; see
+//! `docs/troubleshooting.md#lag`.
 
-use std::sync::OnceLock;
-use std::time::Instant;
-
-use phux_perf::{Counter, Gauge, Histogram, Metric, PerfReport, Unit};
+use phux_perf::{Counter, Histogram, Metric, Unit};
 
 // --- pty: child output into the actor -------------------------------------
 
@@ -108,50 +105,8 @@ pub static CONSUMER_REAPED: Counter = Counter::new();
 /// round trip to each state-sync client, transport included.
 pub static CONSUMER_ACK_RTT: Histogram = Histogram::new();
 
-// --- pump: raw broadcast fanout -------------------------------------------
+// --- bootstrap ------------------------------------------------------------
 
-/// `RESOURCE_OUTPUT` frames forwarded by broadcast pumps.
-pub static PUMP_FRAMES: Counter = Counter::new();
-/// Payload bytes those frames carried.
-pub static PUMP_BYTES: Counter = Counter::new();
-/// Payload bytes per forwarded frame.
-pub static PUMP_FRAME_BYTES: Histogram = Histogram::new();
-/// Broadcast receivers that lagged past the channel capacity and lost
-/// frames. Each one costs the client a full resync.
-pub static PUMP_LAGGED: Counter = Counter::new();
-/// In-band resyncs requested after a lag.
-pub static PUMP_GAP_RESYNC: Counter = Counter::new();
-
-// --- wire: socket writes --------------------------------------------------
-
-/// Microseconds per coalesced socket write (write plus flush) to a client.
-pub static WIRE_WRITE: Histogram = Histogram::new();
-/// Bytes per coalesced socket write.
-pub static WIRE_WRITE_BYTES: Histogram = Histogram::new();
-/// Total bytes written to every client.
-pub static WIRE_BYTES_OUT: Counter = Counter::new();
-/// Microseconds encoding one admitted outbound frame, including negotiated
-/// compression. Excludes queue wait, generation-fenced drops and socket writes.
-pub static WIRE_ENCODE: Histogram = Histogram::new();
-/// Frames encoded per coalesced batch, even if later revoked or write-failed.
-pub static WIRE_BATCH_FRAMES: Histogram = Histogram::new();
-
-// --- control plane --------------------------------------------------------
-
-/// Microseconds per L2 `COMMAND` handled, all kinds.
-pub static CMD_HANDLE: Histogram = Histogram::new();
-/// Microseconds per session `ATTACH` handled.
-pub static ATTACH_HANDLE: Histogram = Histogram::new();
-/// Wall microseconds staging all panes for a non-deferred attach.
-///
-/// Includes consumer registration, actor queues/capture replies, capability
-/// adaptation and failed staging; excludes prepare, rollback and publication.
-pub static ATTACH_CAPTURE_WALL: Histogram = Histogram::new();
-/// Wall microseconds queueing `ATTACHED` through `ATTACH_READY`.
-///
-/// Includes mailbox backpressure, synchronous hook enqueue and closed-mailbox
-/// failures; excludes socket drain and native publication activation.
-pub static ATTACH_PUBLISH_WALL: Histogram = Histogram::new();
 /// Microseconds synthesizing a VT snapshot in the actor.
 ///
 /// Includes scrollback and bounded refusals for raw/state-sync attach and
@@ -166,18 +121,7 @@ pub static BOOTSTRAP_NATIVE_BEGIN: Histogram = Histogram::new();
 /// handling/replay. No pending capture means no sample; excludes inter-turn scheduling.
 pub static BOOTSTRAP_NATIVE_STEP: Histogram = Histogram::new();
 
-// --- gauges, refreshed when a report is taken -----------------------------
-
-/// Connected clients.
-pub static CLIENTS: Gauge = Gauge::new();
-/// Live panes.
-pub static PANES: Gauge = Gauge::new();
-/// Sessions.
-pub static SESSIONS: Gauge = Gauge::new();
-/// `1` when the runtime thread got user-interactive scheduling.
-pub static SCHED_INTERACTIVE: Gauge = Gauge::new();
-
-/// The table `GET_PERF` reports, in render order.
+/// The Terminal's rows of the `GET_PERF` report, in render order.
 pub static TABLE: &[Metric] = &[
     Metric::histogram("pty.read.size", Unit::Bytes, &PTY_READ_SIZE),
     Metric::counter("pty.read.bytes", Unit::Bytes, &PTY_READ_BYTES),
@@ -221,20 +165,6 @@ pub static TABLE: &[Metric] = &[
     Metric::counter("consumer.mailbox_full", Unit::Count, &CONSUMER_MAILBOX_FULL),
     Metric::counter("consumer.reaped", Unit::Count, &CONSUMER_REAPED),
     Metric::histogram("consumer.ack_rtt", Unit::Micros, &CONSUMER_ACK_RTT),
-    Metric::counter("pump.frames", Unit::Count, &PUMP_FRAMES),
-    Metric::counter("pump.bytes", Unit::Bytes, &PUMP_BYTES),
-    Metric::histogram("pump.frame.bytes", Unit::Bytes, &PUMP_FRAME_BYTES),
-    Metric::counter("pump.lagged", Unit::Count, &PUMP_LAGGED),
-    Metric::counter("pump.gap_resync", Unit::Count, &PUMP_GAP_RESYNC),
-    Metric::histogram("wire.write", Unit::Micros, &WIRE_WRITE),
-    Metric::histogram("wire.write.bytes", Unit::Bytes, &WIRE_WRITE_BYTES),
-    Metric::counter("wire.bytes_out", Unit::Bytes, &WIRE_BYTES_OUT),
-    Metric::histogram("wire.encode", Unit::Micros, &WIRE_ENCODE),
-    Metric::histogram("wire.batch.frames", Unit::Count, &WIRE_BATCH_FRAMES),
-    Metric::histogram("cmd.handle", Unit::Micros, &CMD_HANDLE),
-    Metric::histogram("attach.handle", Unit::Micros, &ATTACH_HANDLE),
-    Metric::histogram("attach.capture_wall", Unit::Micros, &ATTACH_CAPTURE_WALL),
-    Metric::histogram("attach.publish_wall", Unit::Micros, &ATTACH_PUBLISH_WALL),
     Metric::histogram("bootstrap.synth", Unit::Micros, &BOOTSTRAP_SYNTH),
     Metric::histogram(
         "bootstrap.native_begin",
@@ -246,10 +176,6 @@ pub static TABLE: &[Metric] = &[
         Unit::Micros,
         &BOOTSTRAP_NATIVE_STEP,
     ),
-    Metric::gauge("proc.clients", Unit::Count, &CLIENTS),
-    Metric::gauge("proc.panes", Unit::Count, &PANES),
-    Metric::gauge("proc.sessions", Unit::Count, &SESSIONS),
-    Metric::gauge("proc.sched_interactive", Unit::Count, &SCHED_INTERACTIVE),
 ];
 
 /// Server-side echo samples longer than this are a program that did not
@@ -265,38 +191,11 @@ pub const WARN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10
 /// Warn throttle for a consumer whose mailbox is full.
 pub static MAILBOX_FULL_WARN: phux_perf::Throttle = phux_perf::Throttle::new(WARN_INTERVAL);
 
-/// Uptime epoch and the rusage read with it (the epoch restarts on upgrade
-/// re-exec while the pid's rusage survives).
-fn started() -> &'static (Instant, Option<phux_perf::ProcessStats>) {
-    static STARTED: OnceLock<(Instant, Option<phux_perf::ProcessStats>)> = OnceLock::new();
-    STARTED.get_or_init(|| (Instant::now(), phux_perf::ProcessStats::capture()))
-}
-
-/// Pin the uptime epoch and promote the runtime thread to interactive
-/// scheduling (idempotent).
-pub fn mark_started() {
-    let _ = started();
-    SCHED_INTERACTIVE.set(u64::from(phux_perf::promote_current_thread()));
-}
-
 /// Promote a helper thread on the keystroke path (refusal is only logged).
 pub fn promote_helper_thread(name: &str) {
     if !phux_perf::promote_current_thread() {
         tracing::debug!(thread = name, "interactive scheduling not granted");
     }
-}
-
-/// Take a report. The gauges are the caller's to refresh first (they are
-/// derived from registry state this module cannot see).
-#[must_use]
-pub fn report() -> PerfReport {
-    let (epoch, baseline) = started();
-    phux_perf::snapshot_since("server", TABLE, epoch.elapsed(), baseline.as_ref())
-}
-
-/// Zero every metric after a `GET_PERF { reset: true }`.
-pub fn reset() {
-    phux_perf::reset(TABLE);
 }
 
 #[cfg(test)]
@@ -311,14 +210,5 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), n, "duplicate metric name in TABLE");
         assert!(TABLE.iter().all(|m| m.name.contains('.')));
-    }
-
-    #[test]
-    fn report_carries_every_table_row_and_a_server_role() {
-        mark_started();
-        let r = report();
-        assert_eq!(r.role, "server");
-        assert_eq!(r.metrics.len(), TABLE.len());
-        assert!(r.process.is_some());
     }
 }

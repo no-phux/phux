@@ -8,9 +8,9 @@ use phux_protocol::ClientId;
 use phux_protocol::ids::{BootstrapId, StreamId};
 use tokio::sync::{mpsc, oneshot, watch};
 
+pub use crate::mailbox::ControlRequest;
 pub use phux_resource::{
-    ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResyncAudience, ResyncReason,
-    ResyncTarget,
+    DEFAULT_OUTPUT_BROADCAST, ResourceOutput, ResyncAudience, ResyncReason, ResyncTarget,
 };
 
 /// Bounded input admission credits and PTY writer handoff.
@@ -188,7 +188,7 @@ pub enum ScreenReply {
     },
 }
 
-pub use phux_resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
+pub use phux_resource::handoff::{ProcessHandoff, UpgradeHandleRequest};
 
 /// Request the pane's live cwd from the kernel.
 ///
@@ -220,6 +220,8 @@ pub use resize::*;
 /// Terminal-only requests are refused for other kinds at one seam.
 #[derive(Debug, Clone)]
 pub struct TerminalHandle {
+    /// Supervisory control (ADR-0033).
+    pub control: mpsc::Sender<ControlRequest>,
     /// Register a consumer before its bootstrap goes out (ADR-0018).
     pub consumer_attach: mpsc::Sender<ConsumerAttachRequest>,
     /// Drop a consumer (detach or EOF cleanup); idempotent.
@@ -294,6 +296,24 @@ impl phux_resource::ResourceOps for TerminalHandle {
     ) -> Option<tokio::sync::mpsc::Sender<phux_resource::handoff::UpgradeHandleRequest>> {
         Some(self.upgrade.clone())
     }
+
+    fn lease_changed(&self, change: phux_resource::LeaseChange) -> phux_resource::Delivery {
+        let control = self.control.clone();
+        Box::pin(async move {
+            let _ = control.send(ControlRequest::LeaseChanged(change)).await;
+        })
+    }
+
+    fn try_lease_changed(&self, change: phux_resource::LeaseChange) {
+        let _ = self.control.try_send(ControlRequest::LeaseChanged(change));
+    }
+
+    fn retire(&self) -> phux_resource::Delivery {
+        let control = self.control.clone();
+        Box::pin(async move {
+            let _ = control.send(ControlRequest::Retire).await;
+        })
+    }
 }
 
 /// The Terminal facet of a [`phux_resource::ResourceHandle`].
@@ -319,6 +339,7 @@ impl TerminalHandle {
     #[must_use]
     pub fn detached_for_test(cols: u16, rows: u16) -> Self {
         Self {
+            control: mpsc::channel(1).0,
             consumer_attach: mpsc::channel(1).0,
             consumer_detach: mpsc::channel(1).0,
             consumer_ack: mpsc::channel(1).0,

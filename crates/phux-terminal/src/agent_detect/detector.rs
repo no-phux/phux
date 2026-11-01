@@ -21,7 +21,7 @@ impl AgentDetector {
         state: DetectedState,
         now: Instant,
     ) -> Option<AgentReport> {
-        if !phux_resource::agent_state::EvidenceSource::Hook.outranks(self.published_source) {
+        if !phux_agent_session::state::EvidenceSource::Hook.outranks(self.published_source) {
             // A live stream carries the same facts in order; keep the hook
             // pending for when the stream retracts.
             self.pending_hook = Some((state, now));
@@ -39,7 +39,7 @@ impl AgentDetector {
         self.pending_idle = None;
         self.cadence = Cadence::Identified;
         self.current = Some(state);
-        self.published_source = phux_resource::agent_state::EvidenceSource::Hook;
+        self.published_source = phux_agent_session::state::EvidenceSource::Hook;
         if self.published.as_ref() == Some(&report) {
             return None;
         }
@@ -59,11 +59,11 @@ impl AgentDetector {
         self.stream_state = state;
         let Some(state) = state else {
             // Withdrawing a claim publishes nothing by itself.
-            self.published_source = phux_resource::agent_state::EvidenceSource::Screen;
+            self.published_source = phux_agent_session::state::EvidenceSource::Screen;
             self.pending_idle = None;
             return None;
         };
-        self.published_source = phux_resource::agent_state::EvidenceSource::Stream;
+        self.published_source = phux_agent_session::state::EvidenceSource::Stream;
         let Some(kind) = self.identified.clone() else {
             self.pending_hook = Some((state, now));
             return None;
@@ -100,7 +100,7 @@ impl AgentDetector {
             published_occupant: None,
             pending_occupant: None,
             pending_hook: None,
-            published_source: phux_resource::agent_state::EvidenceSource::Screen,
+            published_source: phux_agent_session::state::EvidenceSource::Screen,
             live_session: None,
             live_session_held: false,
             stream_state: None,

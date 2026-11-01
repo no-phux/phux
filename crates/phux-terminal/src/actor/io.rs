@@ -3,7 +3,7 @@
 
 use super::{
     Bytes, EncodedInputRequest, InputEncoderSnapshot, PANE_KILL_POLL, PANE_KILL_REAP_BUDGET,
-    PaneOutput, PasteOutcome, PtyOwned, PtySize, ResyncAudience, ResyncReason, SizeReportSize,
+    PasteOutcome, PtyOwned, PtySize, ResourceOutput, ResyncAudience, ResyncReason, SizeReportSize,
     SnapshotBytes, TerminalActor, TerminalInput, WriteCompletion, debug, error, exit_outcome, mpsc,
     trace, warn,
 };

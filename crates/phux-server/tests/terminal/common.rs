@@ -13,7 +13,7 @@ use libghostty_vt::screen::CellWide;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, StateScope};
-use phux_terminal::actor::PaneOutput;
+use phux_terminal::actor::ResourceOutput;
 use portable_pty::CommandBuilder;
 use tokio::net::UnixStream;
 use tokio::sync::broadcast;
@@ -98,20 +98,20 @@ pub(crate) fn render_grid(t: &GhosttyTerminal<'_, '_>) -> Vec<String> {
 /// Drain a pane's output broadcast until `needle` appears. A lag is a hard
 /// failure: callers compare byte streams, so dropped chunks void the check.
 pub(crate) async fn collect_until(
-    rx: &mut broadcast::Receiver<PaneOutput>,
+    rx: &mut broadcast::Receiver<ResourceOutput>,
     needle: &[u8],
 ) -> Vec<u8> {
     let work = async {
         let mut acc = Vec::new();
         loop {
             match rx.recv().await {
-                Ok(PaneOutput::Live { bytes, .. } | PaneOutput::Resync { bytes, .. }) => {
+                Ok(ResourceOutput::Live { bytes, .. } | ResourceOutput::Resync { bytes, .. }) => {
                     acc.extend_from_slice(&bytes);
                     if acc.windows(needle.len()).any(|w| w == needle) {
                         return acc;
                     }
                 }
-                Ok(PaneOutput::Control { .. }) => {}
+                Ok(ResourceOutput::Control { .. }) => {}
                 Err(e) => panic!("broadcast {e:?} before {needle:?}; acc={acc:?}"),
             }
         }

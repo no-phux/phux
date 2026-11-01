@@ -87,7 +87,7 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     actor
         .core
         .output_tx
-        .send(PaneOutput::Live {
+        .send(ResourceOutput::Live {
             seq: 5,
             bytes: Bytes::from_static(b"prior"),
             at: std::time::Instant::now(),
@@ -97,9 +97,9 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
 
     assert!(matches!(
         output.try_recv(),
-        Ok(PaneOutput::Live { seq: 5, .. })
+        Ok(ResourceOutput::Live { seq: 5, .. })
     ));
-    let Ok(PaneOutput::Control { owner: 7, frame }) = output.try_recv() else {
+    let Ok(ResourceOutput::Control { owner: 7, frame }) = output.try_recv() else {
         panic!("ordered generation tombstone");
     };
     assert!(matches!(
@@ -378,7 +378,7 @@ async fn eof_returns_a_loan_before_final_output_and_resumes_queued_capture() {
                 .expect("exit outcome");
             let mut final_snapshot = None;
             while let Ok(event) = output.try_recv() {
-                if let PaneOutput::Resync {
+                if let ResourceOutput::Resync {
                     reason: super::super::ResyncReason::Exit,
                     bytes,
                     ..

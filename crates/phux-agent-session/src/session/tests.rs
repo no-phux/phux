@@ -22,7 +22,8 @@ fn one_batch_broadcast_is_the_concatenation_of_its_lines() {
     let (mut actor, _facet, handle) = engine();
     let mut subscriber = handle.output.subscribe();
     append(&mut actor, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
-    let super::PaneOutput::Live { bytes, .. } = subscriber.try_recv().expect("broadcast") else {
+    let super::ResourceOutput::Live { bytes, .. } = subscriber.try_recv().expect("broadcast")
+    else {
         panic!("append publishes a live batch");
     };
     let replay = actor.bootstrap(None);
@@ -411,7 +412,7 @@ fn live_output_carries_whole_records_sequenced_by_the_last() {
     let accepted =
         append(&mut actor, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
     match subscriber.try_recv().expect("one live frame") {
-        PaneOutput::Live { seq, bytes, .. } => {
+        ResourceOutput::Live { seq, bytes, .. } => {
             assert_eq!(seq, accepted.last_seq);
             let text = String::from_utf8(bytes.to_vec()).expect("utf-8");
             assert_eq!(text.lines().count(), 2);

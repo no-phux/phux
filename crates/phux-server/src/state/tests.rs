@@ -38,7 +38,6 @@ pub(super) fn mk_handle() -> ResourceHandle {
     ResourceHandle::new(
         None,
         channels.output,
-        channels.control,
         TerminalHandle::detached_for_test(80, 24),
     )
 }

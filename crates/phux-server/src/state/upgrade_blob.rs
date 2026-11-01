@@ -13,7 +13,7 @@
 //! each window becomes a group of the session's arrangement, and each live
 //! pane becomes a resource bound to its running process as activation 1.
 
-use phux_resource::agent_session::AgentSessionResource as _;
+use phux_agent_session::session::AgentSessionResource as _;
 use std::collections::{HashMap, HashSet};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
@@ -34,19 +34,19 @@ use tokio_util::sync::CancellationToken;
 
 use super::ServerState;
 use crate::resource::ResourceHandle;
-use crate::resource::agent_session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
-use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
+use crate::resource::handoff::{ProcessHandoff, UpgradeHandleRequest};
 use crate::upgrade::blob::{
     AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, MetadataBlob, OrgBlob, PaneBlob,
     RetainedExitBlob, SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
 };
+use phux_agent_session::session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
 
 /// What the reversible half of an upgrade collected from live engines: each
 /// carried pane's PTY handoff and each carried agent session's stream cut.
 #[derive(Debug, Default)]
 pub(crate) struct UpgradeHandoffs {
     /// PTY handoff + replay snapshot per carried pane.
-    pub(crate) panes: HashMap<ResourceId, PaneUpgradeHandle>,
+    pub(crate) panes: HashMap<ResourceId, ProcessHandoff>,
     /// Record-stream cut per carried `AgentSession`. A session without one
     /// is not carried.
     pub(crate) agent_sessions: HashMap<ResourceId, AgentSessionBootstrap>,
@@ -283,7 +283,7 @@ fn pane_blob(
     window_wire_id: u32,
     desc: &TerminalFacet,
     term: &str,
-    handoff: Option<&PaneUpgradeHandle>,
+    handoff: Option<&ProcessHandoff>,
     retained_exit: Option<RetainedExitBlob>,
     retain_secs: Option<u32>,
 ) -> PaneBlob {

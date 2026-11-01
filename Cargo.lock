@@ -2873,6 +2873,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "phux-agent-session"
+version = "0.115.0"
+dependencies = [
+ "bytes",
+ "phux-agent-rules",
+ "phux-core",
+ "phux-protocol",
+ "phux-resource",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "toml",
+]
+
+[[package]]
 name = "phux-client"
 version = "0.115.0"
 dependencies = [
@@ -3165,12 +3181,8 @@ dependencies = [
  "bytes",
  "libc",
  "nix 0.31.3",
- "phux-agent-rules",
  "phux-core",
- "phux-perf",
  "phux-protocol",
- "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -3202,6 +3214,7 @@ dependencies = [
  "libghostty-vt",
  "memchr",
  "nix 0.31.3",
+ "phux-agent-session",
  "phux-client-core",
  "phux-client-ffi",
  "phux-config",
@@ -3272,6 +3285,7 @@ dependencies = [
  "memchr",
  "nix 0.31.3",
  "phux-agent-rules",
+ "phux-agent-session",
  "phux-client-core",
  "phux-config",
  "phux-core",

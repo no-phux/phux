@@ -146,7 +146,7 @@ impl PtyFastPath {
             return Err(mpsc::error::TrySendError::Closed(request));
         };
         if request.credit.is_none() && input_tx.capacity() <= INPUT_CREDITS {
-            phux_resource::perf::INPUT_WRITER_FULL.incr();
+            crate::perf::INPUT_WRITER_FULL.incr();
             return Err(mpsc::error::TrySendError::Full(request));
         }
         // Drop the lane count only after `pending` is visible, and only
@@ -165,7 +165,7 @@ impl PtyFastPath {
             Ok(()) => Ok(()),
             Err(err) => {
                 if matches!(&err, mpsc::error::TrySendError::Full(_)) {
-                    phux_resource::perf::INPUT_WRITER_FULL.incr();
+                    crate::perf::INPUT_WRITER_FULL.incr();
                 }
                 Err(err)
             }
@@ -206,7 +206,7 @@ impl PtyFastPath {
     /// Writer thread: block on `rx`, and never write while a direct write
     /// holds the phase bit.
     pub(super) fn run_writer(self: &Arc<Self>, mut rx: mpsc::Receiver<EncodedInputRequest>) {
-        phux_resource::perf::promote_helper_thread("phux-pty-writer");
+        crate::perf::promote_helper_thread("phux-pty-writer");
         loop {
             let Some(request) = rx.blocking_recv() else {
                 self.finish_clean();
@@ -277,7 +277,7 @@ impl PtyFastPath {
             return DirectWrite::Busy;
         };
         if let Some(overflow) = spawn::canonical_refusal(&self.master, bytes) {
-            phux_resource::perf::INPUT_CANONICAL_REFUSED.incr();
+            crate::perf::INPUT_CANONICAL_REFUSED.incr();
             tracing::error!(
                 len = bytes.len(),
                 limit = overflow.limit,
@@ -289,11 +289,11 @@ impl PtyFastPath {
         let started = Instant::now();
         let outcome = spawn::write_all_pty(&mut **writer, &self.master, bytes)
             .and_then(|()| spawn::flush_pty(&mut **writer, &self.master));
-        phux_resource::perf::INPUT_PTY_WRITE.record_elapsed(started);
+        crate::perf::INPUT_PTY_WRITE.record_elapsed(started);
         match outcome {
             Ok(()) => {
                 phux_perf::echo_hop::record("pty_write");
-                phux_resource::perf::INPUT_EVENTS.incr();
+                crate::perf::INPUT_EVENTS.incr();
                 DirectWrite::Wrote
             }
             Err(err) => {

@@ -155,7 +155,7 @@ pub(crate) const fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
 pub(crate) struct OutputPumpStart {
     pub(crate) published_cut: u64,
     pub(crate) replay: Vec<(u64, bytes::Bytes)>,
-    pub(crate) live: Option<tokio::sync::broadcast::Receiver<PaneOutput>>,
+    pub(crate) live: Option<tokio::sync::broadcast::Receiver<ResourceOutput>>,
 }
 
 pub(super) struct SnapshotGate {

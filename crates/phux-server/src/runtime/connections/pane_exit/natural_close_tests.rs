@@ -9,7 +9,7 @@ use phux_protocol::ids::BootstrapId;
 use phux_protocol::ids::StreamId;
 use phux_protocol::wire::frame::CommandResult;
 use phux_terminal::actor::TerminalResource as _;
-use phux_terminal::actor::{PaneOutput, ResyncAudience, ResyncReason};
+use phux_terminal::actor::{ResourceOutput, ResyncAudience, ResyncReason};
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::Poll;
@@ -34,7 +34,7 @@ struct Fixture {
     pane: phux_core::ResourceId,
     wire: WireResourceId,
     terminal: phux_terminal::actor::TerminalHandle,
-    output: tokio::sync::broadcast::Sender<PaneOutput>,
+    output: tokio::sync::broadcast::Sender<ResourceOutput>,
 }
 
 impl Fixture {
@@ -253,14 +253,14 @@ async fn close_waits_for_a_pump_parked_on_a_prior_gap_generation() {
             let (output, _) = tokio::sync::broadcast::channel(8);
             let live = output.subscribe();
             output
-                .send(PaneOutput::Live {
+                .send(ResourceOutput::Live {
                     seq: 1,
                     bytes: bytes::Bytes::from_static(b"GAPPED"),
                     at: std::time::Instant::now(),
                 })
                 .unwrap();
             output
-                .send(PaneOutput::Resync {
+                .send(ResourceOutput::Resync {
                     cols: 80,
                     rows: 24,
                     bytes: bytes::Bytes::from_static(b"OLD_SCREEN"),

@@ -105,6 +105,7 @@ test("hot paths select the job and docs do not", () => {
     [["crates/phux-server/src/lib.rs"], true],
     [["crates/phux-terminal/src/actor/mod.rs"], true],
     [["crates/phux-resource/src/lib.rs"], true],
+    [["crates/phux-agent-session/src/session/mod.rs"], true],
     [["benchmarks/icount-baseline.json"], true],
     [["tools/src/perf/icount.ts"], true],
     [["docs/performance.md"], false],
