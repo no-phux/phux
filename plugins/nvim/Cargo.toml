@@ -1,0 +1,22 @@
+# A standalone workspace: this plugin talks to phux only through the `phux`
+# command line, the pane's environment and its terminal. It must never depend
+# on a phux crate.
+[workspace]
+
+[package]
+name = "phux-nvim"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "One Neovim behind many phux panes: every window is a real pane."
+publish = false
+
+[dependencies]
+libc = "0.2"
+rmpv = "1"
+serde_json = "1"
+signal-hook = "0.3"
+
+[profile.release]
+lto = "thin"
+strip = true
