@@ -235,3 +235,11 @@ impl std::fmt::Debug for MintedCredential {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn remote_tokens() {
+        phux_frozen::json::<super::CredentialFile>("remote-tokens").check();
+    }
+}

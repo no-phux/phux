@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "authority": "myj43ek6r7symbe3u7dnlsojee",
+  "created": [
+    {
+      "key": "rplgnyv4msq4b453bjhwn62sp4",
+      "name": "alpha"
+    }
+  ],
+  "moved": [
+    {
+      "pane": "n5mmkthu2rjbchfwgjgj65u5oy",
+      "from": "rplgnyv4msq4b453bjhwn62sp4",
+      "to": "jch3kqthu2fgl7727nekazm57u"
+    }
+  ],
+  "renamed": [
+    {
+      "session": "jch3kqthu2fgl7727nekazm57u",
+      "from": "old",
+      "to": "new"
+    }
+  ]
+}

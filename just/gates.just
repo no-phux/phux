@@ -38,7 +38,7 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash scripts/check-file-tokens_test.sh
     bash scripts/check-toolchain-sync.sh
     bash scripts/check-cache-portable.sh
-    bash scripts/check-upgrade-fixtures.sh
+    bash scripts/check-frozen-fixtures.sh
     bash scripts/check-e2e-lanes.sh
     bash scripts/check-release-cpu-baselines.sh
     bash scripts/test-demo-pi-setup.sh

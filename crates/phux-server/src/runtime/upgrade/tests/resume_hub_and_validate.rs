@@ -361,7 +361,11 @@ fn a_hung_candidate_is_killed_and_reaped_at_the_deadline() {
         .unwrap();
     // A zombie still answers `kill(pid, 0)`; only a reaped child is gone.
     // SAFETY: signal 0 delivers nothing; it only tests that the PID exists.
-    assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "pid {pid} was not reaped");
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "pid {pid} was not reaped"
+    );
     assert_eq!(
         std::io::Error::last_os_error().raw_os_error(),
         Some(libc::ESRCH)

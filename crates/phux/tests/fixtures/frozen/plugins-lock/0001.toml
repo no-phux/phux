@@ -1,0 +1,22 @@
+version = 1
+
+[[plugin]]
+id = "nvim"
+source = "git"
+ref = "https://example.com/nvim.git"
+branch = "main"
+subdir = "plugins/nvim"
+rev = "0123456789abcdef0123456789abcdef01234567"
+build_steps = "aa"
+
+[[plugin]]
+id = "local"
+source = "dir"
+ref = "/home/u/plugin"
+build_steps = "bb"
+
+[[plugin]]
+id = "packed"
+source = "tarball"
+ref = "/home/u/plugin.tar.gz"
+build_steps = "cc"

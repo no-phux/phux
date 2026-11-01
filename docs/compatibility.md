@@ -139,3 +139,56 @@ only when that satellite advertises the feature, and refuses
   tests](../crates/phux-server/tests/protocol) (`newer_client*.rs`) and the
   [codec's wire contract](../crates/phux-protocol/tests/it/wire_contract)
   (`tail_extension.rs`, `wire_roundtrip/hello_growth.rs`).
+
+## Persisted formats
+
+A file on disk is an old writer and a newer reader, like the wire, and in a
+rollback the other way round. Field and variant names are the format. A
+renamed Rust field keeps its stored name with `#[serde(rename)]`. On a
+`#[serde(default)]` field a rename fails nothing: the old file parses and the
+value is gone. A round trip of today's type cannot see that, so these formats
+are held to a file frozen from a release (`phux-frozen`):
+
+| Format | Fixture |
+| --- | --- |
+| Upgrade blob | `phux-server`: `upgrade-blob` |
+| `org/v1.sqlite3`: receipts | `phux-core`: `org-receipts`, every `Op` variant |
+| `org/v1.sqlite3`: sessions, resources, arrangements | `upgrade-blob` carries the same types |
+| `remote-tokens` | `phux-server`: `remote-tokens` |
+| `workload-keys` | `phux-server`: `workload-keys` |
+| `enrollment-tickets` | `phux-server`: `enrollment-tickets` |
+| `plugin-startup/<id>/*.pid` | `phux-server`: `plugin-pidfile` |
+| `plugin-runs.jsonl` | `phux-plugin`: `plugin-runs` |
+| `work-v1.sqlite`: objective and mail `result_json` | `phux-work`: `objectives`, `mail` |
+| `workspace.json` | `phux`: `workspace-archive` |
+| `plugins.lock` | `phux`: `plugins-lock` |
+| `trusted-projects.toml` | `phux`: `trusted-projects` |
+| `organize/last.json` | `phux-client-core`: `organize-journal` |
+| `onboarding.json`, `collapsed-projects.json`, `agents-filter.json` | `phux-tui`: one each |
+| `phux.agent/v1` | `phux-resource`: `agent-record` |
+
+Fixtures live in `crates/<crate>/tests/fixtures/frozen/<format>/` (the blob's
+in `tests/fixtures/upgrade-blob/`) and are append-only:
+`scripts/check-frozen-fixtures.sh` refuses an edit, so a sweeping rename cannot
+rewrite the proof along with the code. A check fails when a released fixture
+loses a value, when the newest no longer matches what this build writes, and
+when the newest leaves a field empty. To freeze a change, run the test with
+`PHUX_BLESS_FROZEN=<format>`, which writes the next fixture, and fill in what
+that leaves empty. A field skipped when empty is invisible to the last check,
+so give a new one a value by hand.
+
+The rest have a reason not to:
+
+| Format | Why no fixture |
+| --- | --- |
+| `work-v1.sqlite`: start `result_json` | Every field is required, so a rename fails the retry that reads it rather than losing a value. Its objective and binding are frozen as `objectives`; `StartSnapshot` is private to a file too large to touch. |
+| `ideas/spool/*` | A short-lived send queue. A lost `permanent_error` only retries a message that will fail again. |
+| Agent stream records | The blob carries stamped lines as opaque text, replayed to consumers and not parsed on resume. Their shape is the public record contract. |
+| `phux.tui.layout/v1` values | Opaque to the server; the blob carries the bytes. The client's CBOR envelope has only required fields and a version it checks, so a rename is refused, not lost. |
+| `known-authorities`, `relay-tokens`, `server-starts.log` | Line formats parsed by hand, with no field names to rename. |
+| TLS, CA and ACME files, `*.token`, `.phux-channel` | PEM or plain text in a standard shape. |
+| Service unit, plist, wrapper | Generated, and rewritten in place on reconcile. |
+| Update `manifest.json` | Written and read by key, with no type to rename. A missing `binaries` fails the rollback loudly. |
+| `.cast` | Has its own golden tests (`golden_v3_round_trips_through_both_writers_unchanged`). |
+| `config.toml` and layers | Written by people, and `deny_unknown_fields` makes a rename fail loudly. |
+| `update-check.json`, `usage/state.json`, logs, reports | Caches and diagnostics: losing them costs a recompute. |

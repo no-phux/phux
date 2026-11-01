@@ -153,6 +153,7 @@ rusqlite.workspace = true
 
 
 [dev-dependencies]
+phux-frozen.workspace = true
 # Tests and benches drive the VT and PTY layers directly; the host never does.
 libghostty-vt.workspace = true
 portable-pty.workspace = true

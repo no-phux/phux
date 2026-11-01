@@ -42,6 +42,7 @@ nix = { version = "0.31", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+phux-frozen.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true
 tempfile.workspace = true

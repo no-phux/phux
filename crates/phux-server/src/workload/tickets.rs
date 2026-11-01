@@ -494,3 +494,11 @@ mod tests {
         assert!(mint_ticket(&path, scopes(), 3600, 0).is_err());
     }
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn enrollment_tickets() {
+        phux_frozen::json::<super::TicketFile>("enrollment-tickets").check();
+    }
+}
