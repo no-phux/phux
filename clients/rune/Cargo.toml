@@ -1,6 +1,6 @@
 [package]
 name = "phux-rune"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 description = "An alpha phux desktop client built on the Rune UI framework."
 edition = "2024"
 publish = false
@@ -20,9 +20,9 @@ phux-client-runtime = { path = "../../crates/phux-client-runtime" }
 phux-perf = { path = "../../crates/phux-perf" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 # Rune has no releases; apps pin a `dev` revision (dev is fast-forward only).
-rune = { git = "https://github.com/anomalyco/rune", rev = "791971423cf6614aff061491e1f82e283dfc9f0e" }
-rune-mac = { git = "https://github.com/anomalyco/rune", rev = "791971423cf6614aff061491e1f82e283dfc9f0e" }
-rune-perf = { git = "https://github.com/anomalyco/rune", rev = "791971423cf6614aff061491e1f82e283dfc9f0e" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "8a14dda87f8755fdd4feab73ab4715daae8db83c" }
+rune-mac = { git = "https://github.com/anomalyco/rune", rev = "8a14dda87f8755fdd4feab73ab4715daae8db83c" }
+rune-perf = { git = "https://github.com/anomalyco/rune", rev = "8a14dda87f8755fdd4feab73ab4715daae8db83c" }
 serde_json = "1"
 # The same digest the runtime uses, for a downloaded update.
 sha2 = "0.11"
