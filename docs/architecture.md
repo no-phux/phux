@@ -85,7 +85,7 @@ Cargo manifests define the actual edges.
 | `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication |
 | `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
 | `phux-client-ffi` | the one binding crate: a projection with a C ABI encoder and a UniFFI encoder |
-| `phux-resource` | the kind-neutral substrate: output stream, lifecycle, control, opaque facets, and the agent-session record stream; no VT, no PTY |
+| `phux-resource` | the kind-neutral substrate: output stream, lifecycle, control, opaque facets, per-consumer replicated-state delivery, and the agent-session record stream; no VT, no PTY |
 | `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
 | `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |

@@ -4,9 +4,10 @@
 
 use super::{
     ClientId, ConsumerAttachError, ConsumerAttachOutcome, ConsumerAttachRequest, ConsumerReference,
-    ConsumerSyncState, DEFAULT_TICK_INTERVAL, Outbound, RttEstimator, StateSyncBootstrap,
-    TICK_RESET_DEADBAND, TerminalActor, mpsc, trace, warn, watch,
+    ConsumerSyncState, DEFAULT_TICK_INTERVAL, Outbound, StateSyncBootstrap, TICK_RESET_DEADBAND,
+    TerminalActor, mpsc, trace, warn, watch,
 };
+use phux_resource::replication::{AckRejection, ConsumerSync};
 
 impl TerminalActor {
     /// Register `client_id` as an attached consumer, priming its reference
@@ -46,26 +47,20 @@ impl TerminalActor {
         self.consumer_states.insert(
             client_id,
             ConsumerSyncState {
-                reference,
+                // The bootstrap and `next_seq` share one cut. Emit-once until
+                // `enable_loss_tolerance`; walked once on the next tick even
+                // on a clean terminal.
+                sync: ConsumerSync::new(
+                    stream_id,
+                    bootstrap_id,
+                    next_seq,
+                    reference,
+                    ConsumerReference::new(),
+                ),
                 outbound,
                 wire_terminal_id,
-                stream_id,
-                bootstrap_id,
                 live_gate,
-                // The bootstrap and this sequence share one cut.
-                next_seq,
-                last_acked_seq: 0,
-                // Walk once on the next tick even on a clean terminal.
-                needs_initial_emit: true,
-                behind: false,
-                // Cold-start cadence until the first ack round-trip.
-                rtt: RttEstimator::default(),
-                emit_instants: std::collections::BTreeMap::new(),
                 wants_state_sync,
-                // Loss tolerance is opt-in via `enable_loss_tolerance`.
-                loss_tolerant: false,
-                acked_reference: ConsumerReference::new(),
-                pending_refs: std::collections::BTreeMap::new(),
             },
         );
         Ok(())
@@ -202,10 +197,10 @@ impl TerminalActor {
         };
         match synth
             .borrow_mut()
-            .prime_reference(terminal, &mut state.acked_reference)
+            .prime_reference(terminal, &mut state.sync.acked_reference)
         {
             Ok(()) => {
-                state.loss_tolerant = true;
+                state.sync.loss_tolerant = true;
                 trace!(?client_id, "loss-tolerant state-sync enabled for consumer");
             }
             Err(err) => {
@@ -241,7 +236,7 @@ impl TerminalActor {
         let Some(consumer) = self.consumer_states.get(&client_id) else {
             return false;
         };
-        if consumer.stream_id != stream_id || consumer.bootstrap_id != bootstrap_id {
+        if !consumer.sync.matches_generation(stream_id, bootstrap_id) {
             trace!(
                 ?client_id,
                 ?stream_id,
@@ -265,30 +260,6 @@ impl TerminalActor {
             );
             return false;
         };
-        if !Self::accepts_frame_ack(consumer, client_id, seq, force_all_consumers) {
-            return false;
-        }
-        consumer.last_acked_seq = seq;
-
-        if consumer.loss_tolerant {
-            Self::advance_acked_reference(consumer, seq);
-        }
-        let sampled = Self::fold_rtt_sample(client_id, consumer, seq);
-
-        trace!(
-            ?client_id,
-            seq, "FRAME_ACK applied: last_acked_seq advanced"
-        );
-        sampled
-    }
-
-    /// Read-only admission: a rejected ack changes nothing.
-    fn accepts_frame_ack(
-        consumer: &ConsumerSyncState,
-        client_id: ClientId,
-        seq: u64,
-        force_all_consumers: bool,
-    ) -> bool {
         // A raw consumer acks the pump's own seq space, unrelated to this
         // state; folding it in would corrupt accounting.
         if !force_all_consumers && !consumer.wants_state_sync {
@@ -298,77 +269,21 @@ impl TerminalActor {
             );
             return false;
         }
-        if seq <= consumer.last_acked_seq {
-            // Cumulative: nothing new.
-            trace!(
-                ?client_id,
-                seq,
-                last_acked_seq = consumer.last_acked_seq,
-                "FRAME_ACK older/duplicate; dropping",
-            );
-            return false;
-        }
-        if seq >= consumer.next_seq {
-            // An ack beyond what was emitted is rejected.
-            trace!(
-                ?client_id,
-                seq,
-                next_seq = consumer.next_seq,
-                "FRAME_ACK beyond emitted sequence; dropping"
-            );
-            return false;
-        }
-        true
-    }
-
-    /// Advance a loss-tolerant consumer's acked reference to the snapshot of
-    /// the highest emitted `seq` this ack covers, dropping older snapshots
-    /// (ADR-0042).
-    fn advance_acked_reference(consumer: &mut ConsumerSyncState, seq: u64) {
-        if let Some((&covered, _)) = consumer.pending_refs.range(..=seq).next_back()
-            && let Some(snapshot) = consumer.pending_refs.remove(&covered)
-        {
-            consumer.acked_reference = snapshot;
-        }
-        // Drain only covered entries; preserve the in-flight tree in place.
-        while consumer
-            .pending_refs
-            .first_key_value()
-            .is_some_and(|(&key, _)| key <= seq)
-        {
-            consumer.pending_refs.pop_first();
-        }
-    }
-
-    /// Turn the ack into an RTT sample from the newest covered emit instant,
-    /// then prune every covered instant. `true` when a sample was folded.
-    fn fold_rtt_sample(client_id: ClientId, consumer: &mut ConsumerSyncState, seq: u64) -> bool {
-        let now = tokio::time::Instant::now();
-        let rtt_sample = consumer
-            .emit_instants
-            .range(..=seq)
-            .next_back()
-            .map(|(_, &emitted_at)| now.saturating_duration_since(emitted_at));
-        while consumer
-            .emit_instants
-            .first_key_value()
-            .is_some_and(|(&key, _)| key <= seq)
-        {
-            consumer.emit_instants.pop_first();
-        }
-        let Some(sample) = rtt_sample else {
-            return false;
+        let sample = match consumer.sync.ack(seq) {
+            Ok(sample) => sample,
+            Err(rejection) => {
+                trace_rejected_ack(client_id, seq, rejection);
+                return false;
+            }
         };
-        phux_resource::perf::CONSUMER_ACK_RTT.record_duration(sample);
-        consumer.rtt.observe(sample);
+        if let Some(sample) = sample {
+            trace_rtt_sample(client_id, seq, sample, consumer.sync.rtt.smoothed());
+        }
         trace!(
             ?client_id,
-            seq,
-            rtt_ms = sample.as_secs_f64() * 1000.0,
-            srtt_ms = consumer.rtt.smoothed().map(|d| d.as_secs_f64() * 1000.0),
-            "FRAME_ACK: RTT sample folded into EMA",
+            seq, "FRAME_ACK applied: last_acked_seq advanced"
         );
-        true
+        sample.is_some()
     }
 
     /// The shared tick interval: the minimum desired interval over all
@@ -377,7 +292,7 @@ impl TerminalActor {
     pub(super) fn adaptive_tick_interval(&self) -> std::time::Duration {
         self.consumer_states
             .values()
-            .map(|s| s.rtt.desired_tick_interval())
+            .map(|s| s.sync.rtt.desired_tick_interval())
             .min()
             .unwrap_or(DEFAULT_TICK_INTERVAL)
     }
@@ -410,4 +325,34 @@ impl TerminalActor {
     pub fn consumer_state(&self, client_id: ClientId) -> Option<&ConsumerSyncState> {
         self.consumer_states.get(&client_id)
     }
+}
+
+/// Trace why a tick ack was dropped; a rejected ack changes nothing.
+fn trace_rejected_ack(client_id: ClientId, seq: u64, rejection: AckRejection) {
+    match rejection {
+        AckRejection::Stale { last_acked_seq } => trace!(
+            ?client_id,
+            seq, last_acked_seq, "FRAME_ACK older/duplicate; dropping",
+        ),
+        AckRejection::BeyondEmitted { next_seq } => trace!(
+            ?client_id,
+            seq, next_seq, "FRAME_ACK beyond emitted sequence; dropping"
+        ),
+    }
+}
+
+/// Trace the RTT sample an applied ack folded into the EMA.
+fn trace_rtt_sample(
+    client_id: ClientId,
+    seq: u64,
+    sample: std::time::Duration,
+    srtt: Option<std::time::Duration>,
+) {
+    trace!(
+        ?client_id,
+        seq,
+        rtt_ms = sample.as_secs_f64() * 1000.0,
+        srtt_ms = srtt.map(|d| d.as_secs_f64() * 1000.0),
+        "FRAME_ACK: RTT sample folded into EMA",
+    );
 }

@@ -45,7 +45,7 @@ impl TerminalActor {
         if let Some(state) = self.consumer_states.get_mut(&client_id) {
             let now = tokio::time::Instant::now();
             let past = now.checked_sub(by).unwrap_or(now);
-            for instant in state.emit_instants.values_mut() {
+            for instant in state.sync.emit_instants.values_mut() {
                 *instant = past;
             }
         }

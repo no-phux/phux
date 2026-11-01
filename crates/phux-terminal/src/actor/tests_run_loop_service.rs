@@ -219,8 +219,8 @@ async fn service_rotation_cannot_be_monopolized_by_snapshot_requests() {
         .consumer_ack
         .try_send(ConsumerAckRequest {
             client_id: ClientId(1),
-            stream_id: stream.stream_id,
-            bootstrap_id: stream.bootstrap_id,
+            stream_id: stream.sync.stream_id,
+            bootstrap_id: stream.sync.bootstrap_id,
             seq: 1,
         })
         .expect("ack");
@@ -244,6 +244,7 @@ async fn service_rotation_cannot_be_monopolized_by_snapshot_requests() {
         actor
             .consumer_state(ClientId(1))
             .expect("state")
+            .sync
             .last_acked_seq,
         1
     );

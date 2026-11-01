@@ -72,12 +72,16 @@ fn tick_emit_emits_once_when_gate_is_on() {
         "gate on: an unchanged grid stays silent after ack",
     );
     assert_eq!(
-        actor.consumer_state(client).expect("state").next_seq,
+        actor.consumer_state(client).expect("state").sync.next_seq,
         3,
         "two emissions advanced next_seq to 3; the post-ack tick was silent",
     );
     assert_eq!(
-        actor.consumer_state(client).expect("state").last_acked_seq,
+        actor
+            .consumer_state(client)
+            .expect("state")
+            .sync
+            .last_acked_seq,
         2,
         "FRAME_ACK advanced last_acked_seq",
     );
@@ -231,6 +235,7 @@ fn new_consumer_served_even_when_terminal_clean() {
         actor
             .consumer_state(client_b)
             .expect("b present")
+            .sync
             .needs_initial_emit,
         "B should be awaiting its first emission",
     );
@@ -241,6 +246,7 @@ fn new_consumer_served_even_when_terminal_clean() {
         !actor
             .consumer_state(client_b)
             .expect("b present")
+            .sync
             .needs_initial_emit,
         "B's first pass must have run despite the Clean terminal",
     );

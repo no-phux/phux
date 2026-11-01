@@ -1,6 +1,9 @@
+use crate::grid::ConsumerReference;
+use phux_resource::replication::ConsumerSync;
+
 use super::{
-    ClientId, ConsumerSyncState, FrameKind, MAX_EMIT_INSTANTS, Outbound, SnapshotSynthesizer,
-    TerminalActor, TickEmitWalk, TickOutcome, TickRender, debug, tick, trace, warn,
+    ClientId, ConsumerSyncState, FrameKind, Outbound, SnapshotSynthesizer, TerminalActor,
+    TickEmitWalk, TickOutcome, TickRender, debug, trace, warn,
 };
 
 impl TerminalActor {
@@ -56,7 +59,12 @@ impl TerminalActor {
     pub(super) fn take_tick_mutation(&mut self) -> Option<bool> {
         let mutated = self.terminal_dirty_since_tick;
         self.terminal_dirty_since_tick = false;
-        if !mutated && !self.consumer_states.values().any(must_walk_when_clean) {
+        if !mutated
+            && !self
+                .consumer_states
+                .values()
+                .any(|s| s.sync.must_walk_when_clean())
+        {
             return None;
         }
         Some(mutated)
@@ -138,8 +146,7 @@ impl TerminalActor {
             return TickOutcome::Skipped;
         }
         // Captured before the reset: a delta held back by backpressure.
-        let was_behind = state.behind;
-        state.needs_initial_emit = false;
+        let was_behind = state.sync.begin_turn();
         // Reserve before diffing: the diff advances the reference, so a
         // delta that then failed to send would be lost for good. A full
         // mailbox skips this consumer untouched; a closed one is reaped.
@@ -148,7 +155,7 @@ impl TerminalActor {
             Err(tokio::sync::mpsc::error::TrySendError::Full(())) => {
                 // Retry next tick without advancing; `behind` keeps the walk
                 // alive even if the grid goes clean meanwhile.
-                state.behind = true;
+                state.sync.mark_behind();
                 phux_resource::perf::CONSUMER_MAILBOX_FULL.incr();
                 if let Some(suppressed) = phux_resource::perf::MAILBOX_FULL_WARN.admit() {
                     warn!(
@@ -172,7 +179,7 @@ impl TerminalActor {
             }
         };
         // Holding a permit: this consumer is served this tick.
-        state.behind = false;
+        state.sync.mark_served();
         let _synth_span = tracing::debug_span!(
             "synthesize",
             ?client_id,
@@ -180,41 +187,32 @@ impl TerminalActor {
         )
         .entered();
         let synth_started = std::time::Instant::now();
-        let bytes = consumer_delta(
-            synth,
-            render,
-            state.loss_tolerant,
-            &state.acked_reference,
-            &mut state.reference,
-        );
+        let bytes = consumer_delta(synth, render, &mut state.sync);
         phux_resource::perf::TICK_SYNTH.record_elapsed(synth_started);
         if bytes.is_empty() {
             // Unchanged; the permit drops unused.
             return TickOutcome::Skipped;
         }
-        if state.loss_tolerant && holds_loss_tolerant_delta(state, mutated, was_behind) {
+        if state.sync.holds_delta(mutated, was_behind) {
             return TickOutcome::Skipped;
         }
-        let seq = state.next_seq;
         let out_bytes = bytes.len();
         phux_resource::perf::TICK_OUT_BYTES.record_len(out_bytes);
-        state.next_seq = state.next_seq.wrapping_add(1);
+        let seq = state.sync.allocate_seq();
         let frame = FrameKind::ResourceOutput {
             terminal_id: phux_protocol::ids::ResourceId::local(state.wire_terminal_id),
-            stream_id: state.stream_id,
-            bootstrap_id: state.bootstrap_id,
+            stream_id: state.sync.stream_id,
+            bootstrap_id: state.sync.bootstrap_id,
             seq,
             bytes: bytes.into(),
         };
         // Infallible with a reserved permit.
         permit.send(Outbound::Frame(frame));
-        record_emit_instant(&mut state.emit_instants, seq);
         // Loss-tolerant: remember the grid this `seq` shipped so a later
         // ack can advance the acked reference to it (bounded).
-        if state.loss_tolerant {
-            let snapshot = synth.snapshot_tick_reference(render.cols, render.rows, render.live_cm);
-            record_pending_ref(&mut state.pending_refs, seq, snapshot);
-        }
+        state.sync.record_emit(seq, || {
+            synth.snapshot_tick_reference(render.cols, render.rows, render.live_cm)
+        });
         trace!(
             ?client_id,
             wire_terminal_id = state.wire_terminal_id,
@@ -231,59 +229,23 @@ impl TerminalActor {
 fn consumer_delta(
     synth: &SnapshotSynthesizer<'_>,
     render: TickRender,
-    loss_tolerant: bool,
-    acked_reference: &crate::grid::ConsumerReference,
-    reference: &mut crate::grid::ConsumerReference,
+    sync: &mut ConsumerSync<ConsumerReference>,
 ) -> Vec<u8> {
-    if loss_tolerant {
-        synth.diff_against_base(render.cols, render.rows, render.live_cm, acked_reference)
+    if sync.loss_tolerant {
+        synth.diff_against_base(
+            render.cols,
+            render.rows,
+            render.live_cm,
+            &sync.acked_reference,
+        )
     } else {
         synth
-            .diff_consumer(render.cols, render.rows, render.live_cm, reference)
+            .diff_consumer(
+                render.cols,
+                render.rows,
+                render.live_cm,
+                &mut sync.reference,
+            )
             .bytes
-    }
-}
-
-/// Whether a consumer must be walked on a clean terminal: it has never been
-/// served (`needs_initial_emit`), a backpressured delta is owed (`behind`),
-/// or a loss-tolerant frame is still un-acked.
-pub(super) fn must_walk_when_clean(state: &ConsumerSyncState) -> bool {
-    state.needs_initial_emit || state.behind || !state.pending_refs.is_empty()
-}
-
-/// Loss-tolerant emit gate: the diff stays non-empty while a frame is
-/// un-acked, so ship only on new content, a post-backpressure flush, or a
-/// due retransmit.
-fn holds_loss_tolerant_delta(state: &ConsumerSyncState, mutated: bool, was_behind: bool) -> bool {
-    let now = tokio::time::Instant::now();
-    let retransmit_due = !state.pending_refs.is_empty()
-        && state.emit_instants.values().next_back().is_none_or(|last| {
-            now.saturating_duration_since(*last) >= tick::retransmit_timeout(state.rtt.smoothed())
-        });
-    !mutated && !was_behind && !retransmit_due
-}
-
-/// Record the emit instant for `seq`, for RTT on its `FRAME_ACK`. Oldest
-/// entries are evicted past [`MAX_EMIT_INSTANTS`] so a consumer that never
-/// acks cannot grow the map.
-fn record_emit_instant(
-    emit_instants: &mut std::collections::BTreeMap<u64, tokio::time::Instant>,
-    seq: u64,
-) {
-    emit_instants.insert(seq, tokio::time::Instant::now());
-    while emit_instants.len() > MAX_EMIT_INSTANTS {
-        emit_instants.pop_first();
-    }
-}
-
-/// Retain the grid a loss-tolerant `seq` shipped, bounded like emit instants.
-fn record_pending_ref(
-    pending_refs: &mut std::collections::BTreeMap<u64, crate::grid::ConsumerReference>,
-    seq: u64,
-    snapshot: crate::grid::ConsumerReference,
-) {
-    pending_refs.insert(seq, snapshot);
-    while pending_refs.len() > MAX_EMIT_INSTANTS {
-        pending_refs.pop_first();
     }
 }
