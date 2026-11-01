@@ -23,6 +23,7 @@ pub mod id_bridge;
 pub mod org_scale;
 pub mod org_store;
 pub mod org_wire;
+pub mod perf;
 /// Supervised `[[startup]]` sidecars declared by plugins.
 pub mod plugin_startup;
 pub mod policy;
@@ -32,7 +33,7 @@ pub mod runtime;
 pub mod state;
 pub mod stream_diagnostics;
 pub mod telemetry;
-pub use phux_resource::{cwd_query, mailbox, perf};
+pub use phux_resource::mailbox;
 
 /// The substrate every kind shares.
 pub use phux_resource as resource;

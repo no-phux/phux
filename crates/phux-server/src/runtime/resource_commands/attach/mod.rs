@@ -7,18 +7,18 @@
 )]
 
 use bytes::Bytes;
+use phux_agent_session::session::AgentSessionResource as _;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile};
 use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind};
-use phux_resource::agent_session::AgentSessionResource as _;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::DEFAULT_AGENT_CHUNK_BYTES;
 use crate::mailbox::Outbound;
-use crate::resource::PaneOutput;
-use crate::resource::agent_session::{AgentSessionBootstrap, BootstrapRequest};
+use crate::resource::ResourceOutput;
 use crate::state::{ClientId, SharedState};
+use phux_agent_session::session::{AgentSessionBootstrap, BootstrapRequest};
 /// Bootstrap an `AgentSession` at one atomic cut: a full retained replacement
 /// or a cursor-anchored suffix, followed by live records. The live subscription
 /// precedes the cut so nothing appended between them is lost.
@@ -221,7 +221,7 @@ fn bootstrap_frames(
     reason = "stream identity, cut, cancellation, and the shared delivery cursor"
 )]
 async fn live_pump(
-    mut live: tokio::sync::broadcast::Receiver<PaneOutput>,
+    mut live: tokio::sync::broadcast::Receiver<ResourceOutput>,
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
     terminal_id: phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
@@ -236,7 +236,7 @@ async fn live_pump(
             received = live.recv() => received,
         };
         match output {
-            Ok(PaneOutput::Live { seq, bytes, .. }) => {
+            Ok(ResourceOutput::Live { seq, bytes, .. }) => {
                 if seq <= base_seq {
                     continue;
                 }
@@ -256,7 +256,7 @@ async fn live_pump(
                 last_seq.store(seq, std::sync::atomic::Ordering::Release);
             }
             // A session has no grid to resync.
-            Ok(PaneOutput::Resync { .. } | PaneOutput::Control { .. }) => {}
+            Ok(ResourceOutput::Resync { .. } | ResourceOutput::Control { .. }) => {}
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                 warn!(
                     session = %terminal_id,

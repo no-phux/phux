@@ -221,14 +221,14 @@ async fn targeted_gap_resyncs_coalesce_into_one_snapshot_for_exactly_their_pumps
             let mut resyncs = Vec::new();
             loop {
                 match out.try_recv() {
-                    Ok(PaneOutput::Resync {
+                    Ok(ResourceOutput::Resync {
                         cols,
                         rows,
                         reason,
                         audience,
                         ..
                     }) => resyncs.push((cols, rows, reason, audience)),
-                    Ok(PaneOutput::Live { .. } | PaneOutput::Control { .. })
+                    Ok(ResourceOutput::Live { .. } | ResourceOutput::Control { .. })
                     | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
                     Err(_) => break,
                 }
@@ -287,7 +287,7 @@ async fn resync_only_request_rebroadcasts_snapshot_without_resizing() {
             let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
             while tokio::time::Instant::now() < deadline {
                 match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
-                    Ok(Ok(PaneOutput::Resync {
+                    Ok(Ok(ResourceOutput::Resync {
                         cols, rows, bytes, ..
                     })) => {
                         resync_dims = Some((cols, rows));
@@ -298,8 +298,8 @@ async fn resync_only_request_rebroadcasts_snapshot_without_resizing() {
                             break;
                         }
                     }
-                    Ok(Ok(PaneOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
-                    Ok(Ok(PaneOutput::Control { .. })) => {}
+                    Ok(Ok(ResourceOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
+                    Ok(Ok(ResourceOutput::Control { .. })) => {}
                     Ok(Err(_)) => break,
                     Err(_) => tokio::task::yield_now().await,
                 }

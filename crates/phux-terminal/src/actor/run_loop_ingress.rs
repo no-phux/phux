@@ -1,6 +1,6 @@
 use super::{
     Bytes, EncodedInputRequest, MAX_INPUT_COALESCE, MAX_PTY_COALESCE, MAX_PTY_COALESCE_BYTES,
-    PaneOutput, PtyBurst, PtyEvent, PtyTurn, TerminalActor, TerminalInput, debug, error,
+    PtyBurst, PtyEvent, PtyTurn, ResourceOutput, TerminalActor, TerminalInput, debug, error,
     join_pty_burst, mpsc,
 };
 
@@ -44,19 +44,19 @@ impl TerminalActor {
             return PtyTurn::Continue;
         };
         phux_perf::echo_hop::record("main");
-        phux_resource::perf::PTY_QUEUE_WAIT.record_elapsed(read_at);
+        crate::perf::PTY_QUEUE_WAIT.record_elapsed(read_at);
         // Server-side echo latency; slower than the ceiling means the
         // program did not echo.
         if let Some(input_at) = self.last_input_at.take() {
             let since_input = input_at.elapsed();
-            if since_input < phux_resource::perf::ECHO_SAMPLE_CEILING {
-                phux_resource::perf::ECHO_SERVER.record_duration(since_input);
+            if since_input < crate::perf::ECHO_SAMPLE_CEILING {
+                crate::perf::ECHO_SERVER.record_duration(since_input);
             }
         }
         self.last_output_at.set(Some(std::time::Instant::now()));
         let burst = self.coalesce_pty_burst(first);
-        phux_resource::perf::PTY_BURST_BYTES.record_len(burst.payload.len());
-        phux_resource::perf::PTY_BURST_CHUNKS.record(burst.chunks);
+        crate::perf::PTY_BURST_BYTES.record_len(burst.payload.len());
+        crate::perf::PTY_BURST_CHUNKS.record(burst.chunks);
         debug!(
             bytes = burst.payload.len(),
             "vt_write: PTY chunk(s) -> Terminal"
@@ -73,7 +73,7 @@ impl TerminalActor {
         if !deferred {
             self.ingest_pty_payload(&burst.payload);
         }
-        let _ = self.core.output_tx.send(PaneOutput::Live {
+        let _ = self.core.output_tx.send(ResourceOutput::Live {
             seq,
             bytes: burst.payload,
             at: read_at,
@@ -85,7 +85,7 @@ impl TerminalActor {
             // Capped with more queued: yield so input and sibling tasks run.
             let yield_started = std::time::Instant::now();
             tokio::task::yield_now().await;
-            phux_resource::perf::PTY_YIELD_WAIT.record_elapsed(yield_started);
+            crate::perf::PTY_YIELD_WAIT.record_elapsed(yield_started);
         }
         PtyTurn::Stepped(native_step_due)
     }
@@ -150,9 +150,8 @@ impl TerminalActor {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.start_next_native_bootstrap();
         let done = std::time::Instant::now();
-        phux_resource::perf::PTY_VT_PARSE
-            .record_duration(parsed.saturating_duration_since(started));
-        phux_resource::perf::PTY_POST_APPLY.record_duration(done.saturating_duration_since(parsed));
-        phux_resource::perf::PTY_VT_APPLY.record_duration(done.saturating_duration_since(started));
+        crate::perf::PTY_VT_PARSE.record_duration(parsed.saturating_duration_since(started));
+        crate::perf::PTY_POST_APPLY.record_duration(done.saturating_duration_since(parsed));
+        crate::perf::PTY_VT_APPLY.record_duration(done.saturating_duration_since(started));
     }
 }

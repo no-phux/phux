@@ -243,7 +243,7 @@ pub(in crate::runtime) struct AttachResourcePumpChannels {
     /// Cancels this generation when a replacement attach supersedes it.
     pub(in crate::runtime) token: CancellationToken,
     /// The pane's broadcast output, subscribed before the prior pump stopped.
-    output_rx: tokio::sync::broadcast::Receiver<crate::resource::PaneOutput>,
+    output_rx: tokio::sync::broadcast::Receiver<crate::resource::ResourceOutput>,
     /// Delivers the published cut, releasing the first forwarded delta.
     pub(in crate::runtime) snapshot_gate: oneshot::Receiver<u64>,
     /// Delivers the post-replay live receiver at the native publication fence.
@@ -265,7 +265,7 @@ impl AttachResourcePumpChannels {
         profile: phux_protocol::caps::BootstrapStreamProfile,
     ) -> Option<(
         crate::runtime::attach::OutputPumpStart,
-        tokio::sync::broadcast::Receiver<crate::resource::PaneOutput>,
+        tokio::sync::broadcast::Receiver<crate::resource::ResourceOutput>,
     )> {
         let published_cut = tokio::select! {
             () = self.token.cancelled() => return None,

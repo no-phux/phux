@@ -12,18 +12,10 @@ authors.workspace = true
 [lints]
 workspace = true
 
-[features]
-# Fixtures for dependents' tests; a dependency's `cfg(test)` is invisible.
-test-support = []
-
 [dependencies]
 phux-protocol.workspace = true
 phux-core.workspace = true
-phux-perf.workspace = true
-phux-agent-rules.workspace = true
 bytes.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
@@ -42,6 +34,7 @@ nix = { version = "0.31", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+# The boundary guard parses this crate's own manifest.
 toml.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true

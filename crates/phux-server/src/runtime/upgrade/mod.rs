@@ -20,10 +20,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::RuntimeFlags;
-use crate::resource::agent_session::BootstrapRequest;
-use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
+use crate::resource::handoff::{ProcessHandoff, UpgradeHandleRequest};
 use crate::state::{SharedState, UpgradeHandoffs};
 use crate::upgrade::blob::StateBlob;
+use phux_agent_session::session::BootstrapRequest;
 
 mod handoff;
 #[cfg(test)]
@@ -149,7 +149,7 @@ pub(super) struct UpgradePlan {
     _listener_fd: OwnedFd,
     /// Each carried delegated socket's duplicated listener (ADR-0163 §5).
     _delegated_listeners: Vec<OwnedFd>,
-    _handoffs: HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
+    _handoffs: HashMap<phux_core::ids::ResourceId, ProcessHandoff>,
     /// Lifted only if `exec` returns, so the old image keeps streaming.
     agent_seal: AgentSessionSeal,
     _native_seal: Option<NativeBrokerSeal>,

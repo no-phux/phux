@@ -359,7 +359,7 @@ impl TerminalActor {
         let Some(sample) = rtt_sample else {
             return false;
         };
-        phux_resource::perf::CONSUMER_ACK_RTT.record_duration(sample);
+        crate::perf::CONSUMER_ACK_RTT.record_duration(sample);
         consumer.rtt.observe(sample);
         trace!(
             ?client_id,

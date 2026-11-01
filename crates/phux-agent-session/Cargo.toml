@@ -1,0 +1,32 @@
+[package]
+name = "phux-agent-session"
+description = "Agent sessions: the record-stream engine, and the agent state, asked, and record authority it feeds."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Fixtures for dependents' tests; a dependency's `cfg(test)` is invisible.
+test-support = []
+
+[dependencies]
+phux-protocol.workspace = true
+phux-core.workspace = true
+phux-resource.workspace = true
+phux-agent-rules.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+toml.workspace = true

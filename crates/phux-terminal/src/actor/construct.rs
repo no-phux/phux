@@ -186,6 +186,9 @@ impl TerminalActor {
         let (set_default_colors_tx, set_default_colors_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (screen_tx, screen_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (upgrade_tx, upgrade_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
+        let (control_tx, control_rx) = mpsc::channel(super::CONTROL_MAILBOX);
+        let (agent_parent_tx, agent_parent_rx) =
+            mpsc::channel(phux_agent_session::parent::AGENT_PARENT_MAILBOX);
         let (pwd_tx, pwd_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (process_tx, process_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (resize_tx, resize_rx) = super::ResizeSender::channel(DEFAULT_INPUT_MAILBOX);
@@ -257,6 +260,8 @@ impl TerminalActor {
             set_default_colors_rx,
             screen_rx,
             upgrade_rx,
+            control_rx,
+            agent_parent_rx,
             pwd_rx,
             process_rx,
             resize_rx,
@@ -305,6 +310,7 @@ impl TerminalActor {
             consumer_detach: consumer_detach_tx,
             consumer_ack: consumer_ack_tx,
             upgrade: upgrade_tx,
+            control: control_tx,
             input: input_tx,
             encoded_input: encoded_input_tx,
             input_credits: super::InputCreditPool::default(),
@@ -327,12 +333,10 @@ impl TerminalActor {
             rows,
             fast_pty: fast_pty.as_ref().map(std::sync::Arc::downgrade),
         };
-        let handle = ResourceHandle::new(
-            actor.core.parent(),
-            core_channels.output,
-            core_channels.control,
-            facet,
-        );
+        let handle = ResourceHandle::new(actor.core.parent(), core_channels.output, facet)
+            .with_companion(phux_agent_session::parent::AgentParent {
+                mailbox: agent_parent_tx,
+            });
         Ok(TerminalActorBundle {
             actor,
             handle,

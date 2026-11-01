@@ -8,7 +8,7 @@
 
 #![allow(
     clippy::redundant_pub_crate,
-    reason = "private server module shared by sibling runtime/state modules"
+    reason = "items shared inside the crate; pub would widen its API"
 )]
 
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ pub enum AskedSource {
     Hook,
     /// A live `AgentSession` child's `ask` (or permission/elicitation
     /// notification) record (ADR-0103 §5): top of the ladder, like
-    /// [`crate::agent_state::EvidenceSource::Stream`].
+    /// [`crate::state::EvidenceSource::Stream`].
     Stream,
 }
 

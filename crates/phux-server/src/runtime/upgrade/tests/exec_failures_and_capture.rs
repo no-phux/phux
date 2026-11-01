@@ -4,7 +4,7 @@ use super::super::handoff::*;
 use super::super::*;
 use super::support::*;
 use crate::state::request_agent_session_cut;
-use phux_resource::agent_session::AgentSessionResource as _;
+use phux_agent_session::session::AgentSessionResource as _;
 
 #[tokio::test(flavor = "current_thread")]
 async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {
@@ -17,7 +17,7 @@ async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {
             let (_, seal) = capture_blob(&state).await;
             assert!(matches!(
                 try_append(&append, "{\"type\":\"stop\"}").await,
-                Err(crate::resource::agent_session::AppendRejection::Overflow(_))
+                Err(phux_agent_session::session::AppendRejection::Overflow(_))
             ));
             let (plan, _listener, _) = unexecutable_plan(seal);
             assert_eq!(

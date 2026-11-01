@@ -188,7 +188,7 @@ impl ServerState {
     pub(in crate::state) async fn request_pane_handoff(
         &self,
         tid: ResourceId,
-    ) -> Option<PaneUpgradeHandle> {
+    ) -> Option<ProcessHandoff> {
         let handle = self.resource_handle(tid)?;
         let upgrade = handle.ops().upgrade_sender()?;
         let (reply, rx) = oneshot::channel();

@@ -23,7 +23,7 @@ async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing()
             let (resize, mut resize_rx) = ResizeSender::channel(4);
             let terminal = handle.terminal().expect("terminal facet").clone();
             let mut consumer = spawn_native_pump(terminal, &output, resize);
-            let resync = |reason| PaneOutput::Resync {
+            let resync = |reason| ResourceOutput::Resync {
                 cols: 80,
                 rows: 24,
                 reason,
@@ -118,7 +118,7 @@ async fn a_pane_gone_before_its_replacement_publication_is_not_a_connection_faul
             let mut consumer = spawn_native_pump(terminal, &output, resize);
 
             output
-                .send(PaneOutput::Resync {
+                .send(ResourceOutput::Resync {
                     cols: 80,
                     rows: 24,
                     reason: crate::resource::ResyncReason::Resize,
@@ -188,7 +188,7 @@ async fn fresh_native_capacity_failure_sends_error_then_closes_without_publicati
 
             assert!(matches!(
                 out_rx.recv().await,
-                Some(Outbound::TerminalError {
+                Some(Outbound::FatalError {
                     code: ErrorCode::CodecUnavailable,
                     ..
                 })
@@ -258,7 +258,7 @@ async fn replacement_native_capacity_failure_closes_but_preserves_terminal_state
             }
             assert!(matches!(
                 out_rx.recv().await,
-                Some(Outbound::TerminalError {
+                Some(Outbound::FatalError {
                     code: ErrorCode::CodecUnavailable,
                     ..
                 })

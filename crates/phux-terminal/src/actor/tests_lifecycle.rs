@@ -65,7 +65,7 @@ async fn snapshot_under_pty_pressure(refill_chunks: usize) {
             .await
             .expect("output deadline")
             .expect("output");
-        if let PaneOutput::Live {
+        if let ResourceOutput::Live {
             seq, bytes: chunk, ..
         } = next
         {
@@ -394,7 +394,7 @@ async fn run_native_server_kernel_flow(
                 })
                 .await
                 .expect("live PTY bytes");
-            let PaneOutput::Live { seq, bytes, .. } = live.recv().await.expect("live output")
+            let ResourceOutput::Live { seq, bytes, .. } = live.recv().await.expect("live output")
             else {
                 panic!("expected live output");
             };

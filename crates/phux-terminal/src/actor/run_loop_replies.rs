@@ -1,5 +1,5 @@
 use super::{
-    CanonicalTerminal, PaneUpgradeHandle, PwdRequest, ScreenReply, ScreenRequest,
+    CanonicalTerminal, ProcessHandoff, PwdRequest, ScreenReply, ScreenRequest,
     SetDefaultColorsRequest, SnapshotBytes, SnapshotRequest, SynthesisError, TerminalActor,
     UpgradeHandleRequest, warn,
 };
@@ -112,7 +112,7 @@ impl TerminalActor {
             });
         let cell_px = (self.cell_px != (0, 0)).then_some(self.cell_px);
         snap.bytes.extend_from_slice(&self.program_status.replay());
-        let _ = req.reply.send(PaneUpgradeHandle {
+        let _ = req.reply.send(ProcessHandoff {
             master_fd,
             child_pid,
             cols: self.cols,

@@ -50,7 +50,13 @@ pub(crate) async fn handle_signal_terminal(
         operation_id,
         reply: reply_tx,
     };
-    if !commit_signal(&handle.control, request, commit).await {
+    let Ok(terminal) = handle.terminal() else {
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "pane actor unavailable for SIGNAL_TERMINAL".to_owned(),
+        };
+    };
+    if !commit_signal(&terminal.control, request, commit).await {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor unavailable for SIGNAL_TERMINAL".to_owned(),

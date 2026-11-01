@@ -208,6 +208,8 @@ async fn signal_freezes_resumes_and_kills_the_child() {
             // Freeze → Frozen.
             let (reply, ack) = oneshot::channel();
             handle
+                .terminal()
+                .expect("a Terminal")
                 .control
                 .send(ControlRequest::Signal {
                     signal: TerminalSignal::Freeze,
@@ -231,6 +233,8 @@ async fn signal_freezes_resumes_and_kills_the_child() {
             // Resume → Running.
             let (reply, ack) = oneshot::channel();
             handle
+                .terminal()
+                .expect("a Terminal")
                 .control
                 .send(ControlRequest::Signal {
                     signal: TerminalSignal::Resume,
@@ -250,6 +254,8 @@ async fn signal_freezes_resumes_and_kills_the_child() {
             // Kill → the child actually dies; its EOF fires the exit notify.
             let (reply, ack) = oneshot::channel();
             handle
+                .terminal()
+                .expect("a Terminal")
                 .control
                 .send(ControlRequest::Signal {
                     signal: TerminalSignal::Kill,
@@ -334,10 +340,12 @@ async fn input_interleaves_with_a_large_pty_output_burst() {
             let mut emitted: usize = 0;
             loop {
                 match out_rx.try_recv() {
-                    Ok(PaneOutput::Live { bytes, .. } | PaneOutput::Resync { bytes, .. }) => {
+                    Ok(
+                        ResourceOutput::Live { bytes, .. } | ResourceOutput::Resync { bytes, .. },
+                    ) => {
                         emitted += bytes.len();
                     }
-                    Ok(PaneOutput::Control { .. }) => {}
+                    Ok(ResourceOutput::Control { .. }) => {}
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
                         let skipped = usize::try_from(n).unwrap_or(usize::MAX);
                         emitted += skipped.saturating_mul(MAX_PTY_COALESCE_BYTES);

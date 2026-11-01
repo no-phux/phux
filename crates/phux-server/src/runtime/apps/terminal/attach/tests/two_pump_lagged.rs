@@ -14,7 +14,7 @@ async fn a_lagged_consumer_resyncs_without_republishing_its_neighbour() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (output, _seed) = tokio::sync::broadcast::channel::<PaneOutput>(4);
+            let (output, _seed) = tokio::sync::broadcast::channel::<ResourceOutput>(4);
             let (resize_tx, mut resize_rx) = ResizeSender::channel(8);
             let mut fresh = spawn_two_pump_consumer(1, 0, 64, &output, &resize_tx);
             let mut lagging = spawn_two_pump_consumer(2, 0, 1, &output, &resize_tx);

@@ -10,7 +10,7 @@ use tokio::time::Sleep;
 
 use super::{RunLoopState, TerminalActor};
 
-const SERVICE_SLOTS: usize = 13;
+const SERVICE_SLOTS: usize = 14;
 
 #[derive(Default)]
 pub(super) struct ServiceRotation {
@@ -32,7 +32,7 @@ impl TerminalActor {
             let slot = (state.service.next + offset) % SERVICE_SLOTS;
             let served = match slot {
                 0..6 => !bootstrap_pending && self.try_snapshot_service(slot, state),
-                6..10 => self.try_control_service(slot, state),
+                6..11 => self.try_control_service(slot, state),
                 _ => {
                     self.try_timer_service(slot, state, resync_deadline.as_mut(), bootstrap_pending)
                 }
@@ -101,10 +101,14 @@ impl TerminalActor {
                 .map(|r| self.service_consumer_detach(r, &mut state.tick, &mut state.tick_interval))
                 .is_ok(),
             9 => self
-                .core
                 .control_rx
                 .try_recv()
                 .map(|r| self.handle_control_request(r))
+                .is_ok(),
+            10 => self
+                .agent_parent_rx
+                .try_recv()
+                .map(|r| self.handle_agent_parent_request(r))
                 .is_ok(),
             _ => unreachable!("control service slot"),
         }
@@ -121,17 +125,17 @@ impl TerminalActor {
             return false;
         }
         match slot {
-            10 if state.resync.pending => deadline
+            11 if state.resync.pending => deadline
                 .now_or_never()
                 .map(|()| self.fire_owed_resync(&mut state.resync))
                 .is_some(),
-            11 if self.state_tick_armed() => state
+            12 if self.state_tick_armed() => state
                 .tick
                 .tick()
                 .now_or_never()
                 .map(|_| self.service_state_tick())
                 .is_some(),
-            12 if self.detector_tick_armed(false) => state
+            13 if self.detector_tick_armed(false) => state
                 .detect_tick
                 .tick()
                 .now_or_never()
@@ -147,7 +151,7 @@ impl TerminalActor {
         state: &mut RunLoopState,
     ) {
         if state.detect_deadline_valid {
-            phux_resource::perf::RUNTIME_DETECT_TICK_LATE.record_duration(scheduled.elapsed());
+            crate::perf::RUNTIME_DETECT_TICK_LATE.record_duration(scheduled.elapsed());
         }
         state.detect_deadline_valid = true;
         self.service_detect_tick(&mut state.detect_tick, &mut state.detect_interval);

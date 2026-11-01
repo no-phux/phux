@@ -284,12 +284,14 @@ impl ServerState {
                 log_bytes,
                 agent_session_cut(carried),
             );
-            if let (Some(parent_handle), Ok(session)) =
-                (self.resource_handle(parent), bundle.handle.agent_session())
+            let agent_parent = self
+                .resource_handle(parent)
+                .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>());
+            if let (Some(agent_parent), Ok(session)) = (agent_parent, bundle.handle.agent_session())
             {
                 // The parent's mailbox is fresh, so this cannot be full.
-                let _ = parent_handle.control.try_send(
-                    crate::resource::ControlRequest::BindAgentSession {
+                let _ = agent_parent.mailbox.try_send(
+                    phux_agent_session::parent::AgentParentRequest::BindSession {
                         append: session.append.clone(),
                     },
                 );

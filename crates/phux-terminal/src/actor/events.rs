@@ -8,7 +8,7 @@ use super::{
     ResourceLifecycle, TerminalActor, TerminalSignal, effects, mpsc, trace,
 };
 use crate::agent_detect::DetectedState;
-use phux_resource::agent_asked::AskedPayload;
+use phux_agent_session::asked::AskedPayload;
 
 impl TerminalActor {
     /// Wire the agent-event sink (SPEC §7.5); the runtime drains it into the
@@ -97,7 +97,7 @@ impl TerminalActor {
     /// under this Terminal (ADR-0103 §6). The latest session wins.
     pub(crate) fn bind_agent_session(
         &mut self,
-        append: mpsc::Sender<phux_resource::agent_session::AppendRequest>,
+        append: mpsc::Sender<phux_agent_session::session::AppendRequest>,
     ) {
         self.agent_session_append = Some(append);
     }
@@ -155,7 +155,7 @@ impl TerminalActor {
     pub(super) fn viewport_lines(&self) -> Option<Vec<String>> {
         let canonical = self.terminal.borrow();
         let terminal = canonical.try_terminal()?;
-        let _timer = phux_resource::perf::AGENT_VIEWPORT.timer();
+        let _timer = crate::perf::AGENT_VIEWPORT.timer();
         let mut synth = self.synth.borrow_mut();
         match synth.screen_state_with_scrollback(terminal, 0, None, false) {
             Ok(state) => Some(state.lines),
@@ -171,7 +171,7 @@ impl TerminalActor {
     /// back.
     pub(super) fn detect_tick(&mut self) -> Option<std::time::Duration> {
         let mut detector = self.agent_detect.take()?;
-        let _timer = phux_resource::perf::AGENT_DETECT.timer();
+        let _timer = crate::perf::AGENT_DETECT.timer();
         let now = std::time::Instant::now();
         // The detector's own dirty flag (the tick's is cleared far more
         // often). Consumed only by a scan that happened: an unidentified pane
@@ -363,7 +363,7 @@ impl TerminalActor {
         };
         let query_started = std::time::Instant::now();
         let cwd = phux_resource::cwd_query::process_cwd(pid);
-        phux_resource::perf::PROC_CWD_QUERY.record_elapsed(query_started);
+        crate::perf::PROC_CWD_QUERY.record_elapsed(query_started);
         let Some(cwd) = cwd else {
             return;
         };

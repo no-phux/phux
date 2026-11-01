@@ -1,11 +1,14 @@
 use super::*;
-use crate::resource::ControlRequest;
+use phux_agent_session::parent::{AgentParent, AgentParentRequest};
 
-fn delayed_parent(fx: &Fixture, capacity: usize) -> mpsc::Receiver<ControlRequest> {
+fn delayed_parent(fx: &Fixture, capacity: usize) -> mpsc::Receiver<AgentParentRequest> {
     let (control, receive) = mpsc::channel(capacity);
     fx.state.with_mut(|s| {
-        let mut handle = s.resource_handle(fx.parent).unwrap().clone();
-        handle.control = control;
+        let handle = s
+            .resource_handle(fx.parent)
+            .unwrap()
+            .clone()
+            .with_companion(AgentParent { mailbox: control });
         s.register_resource_handle(fx.parent, handle, fx.root.child_token());
     });
     receive
@@ -57,7 +60,7 @@ async fn delayed_parent_reply_cannot_reopen_native_ask_inventory_after_closure()
             let generation = fx.ready().await;
             let mut parent = delayed_parent(&fx, 4);
             let publication = question_publication(&fx, generation);
-            let ControlRequest::ReportStreamState {
+            let AgentParentRequest::ReportStreamState {
                 state,
                 reply: old_reply,
             } = parent.recv().await.unwrap()
@@ -73,7 +76,8 @@ async fn delayed_parent_reply_cannot_reopen_native_ask_inventory_after_closure()
             let close = tokio::task::spawn_local(async move {
                 source_exited(&close_state, resource).await;
             });
-            let ControlRequest::ReportStreamState { state, reply } = parent.recv().await.unwrap()
+            let AgentParentRequest::ReportStreamState { state, reply } =
+                parent.recv().await.unwrap()
             else {
                 panic!("expected closure evidence");
             };
@@ -95,12 +99,17 @@ async fn mailbox_capacity_wait_rechecks_native_closure_before_enqueuing_evidence
             let fx = Fixture::new();
             let generation = fx.ready().await;
             let mut parent = delayed_parent(&fx, 1);
-            let sender = fx
-                .state
-                .with(|s| s.resource_handle(fx.parent).unwrap().control.clone());
+            let sender = fx.state.with(|s| {
+                s.resource_handle(fx.parent)
+                    .unwrap()
+                    .companion::<AgentParent>()
+                    .unwrap()
+                    .mailbox
+                    .clone()
+            });
             let (reply, _held) = oneshot::channel();
             sender
-                .try_send(ControlRequest::ReportStreamState { state: None, reply })
+                .try_send(AgentParentRequest::ReportStreamState { state: None, reply })
                 .unwrap();
             let publication = question_publication(&fx, generation);
             // Actor acceptance is the barrier. The parent mailbox is still full,

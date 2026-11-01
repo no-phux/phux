@@ -2,14 +2,16 @@
 //!
 //! Every resource has the same backing-agnostic surface: an ordered output
 //! stream with a checked `u64` sequence, a semantic event sink
-//! ([`event_sink`], ADR-0123), a lifecycle, and a control mailbox.
+//! ([`event_sink`], ADR-0123), and a lifecycle.
 //! [`ResourceCore`] owns it engine-side; [`ResourceHandle`] is the
 //! `Send + Clone` channel set the host holds.
 //!
 //! Per-kind channels are the facet: an opaque [`ResourceFacet`] the host
 //! stores without knowing its type, reached only through
 //! [`ResourceHandle::facet`], the single source of [`WrongResourceKind`].
-//! An app owns its facet type, so this crate names no kind's internals.
+//! An app owns its facet type, so this crate names no kind's internals: what
+//! the host asks of every kind is [`ResourceOps`], and a surface several
+//! kinds could share is a [companion](ResourceHandle::companion).
 //! Engines follow ADR-0014: `!Send` state stays in one `spawn_local` task.
 
 #![allow(
@@ -21,48 +23,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use phux_protocol::ClientId;
-use phux_protocol::wire::frame::{ControlAction, FrameKind, ReportedAgentState, TerminalSignal};
+use phux_protocol::wire::frame::{ControlAction, FrameKind};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-pub mod agent_asked;
-pub mod agent_record;
-pub mod agent_session;
-pub mod agent_state;
 pub mod cwd_query;
 pub mod event_sink;
 pub mod handoff;
 pub mod handoff_env;
 pub mod mailbox;
-pub mod perf;
 pub mod proc_query;
 
 pub use phux_core::ids::ResourceId;
 pub use phux_core::resource::ResourceKind;
-
-/// The wire tag for a kind the server serves (this crate is where the
-/// domain and wire kind enums meet).
-#[must_use]
-pub const fn wire_kind(kind: ResourceKind) -> phux_protocol::ids::ResourceKind {
-    match kind {
-        ResourceKind::Terminal => phux_protocol::ids::ResourceKind::Terminal,
-        ResourceKind::AgentSession => phux_protocol::ids::ResourceKind::AgentSession,
-        // A domain kind with no tag yet is reported opaque (255 is
-        // unallocated), never mistaken for a Terminal.
-        _ => phux_protocol::ids::ResourceKind::Unknown { tag: u8::MAX },
-    }
-}
-
-/// The domain kind a wire tag names, or `None` for one this build does not
-/// serve (a typed refusal, not a decode failure).
-#[must_use]
-pub const fn core_kind(kind: phux_protocol::ids::ResourceKind) -> Option<ResourceKind> {
-    match kind {
-        phux_protocol::ids::ResourceKind::Terminal => Some(ResourceKind::Terminal),
-        phux_protocol::ids::ResourceKind::AgentSession => Some(ResourceKind::AgentSession),
-        _ => None,
-    }
-}
 
 /// The server's wall clock in Unix milliseconds, `0` if it reads before the
 /// epoch.
@@ -99,9 +72,6 @@ pub fn set_output_broadcast_capacity_for_test(capacity: usize) {
     OUTPUT_BROADCAST_CAPACITY.store(capacity.max(1), Ordering::Relaxed);
 }
 
-/// Depth of the core's request mailboxes (event subscription, control).
-const CORE_MAILBOX: usize = 64;
-
 // ---- output stream ----------------------------------------------------------
 
 /// Continuity reason carried with an engine-generated full resync.
@@ -111,12 +81,12 @@ pub enum ResyncReason {
     Resize,
     /// A bounded output subscriber observed a sequence gap.
     OutboundGap,
-    /// The child exited; this is the final grid, queued before
+    /// The backing exited; this is the final state, queued before
     /// `RESOURCE_CLOSED`.
     Exit,
 }
 
-/// One output pump on a pane: its owning client and wire stream, the same
+/// One output pump on a resource: its owning client and wire stream, the same
 /// pair control frames are routed by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ResyncTarget {
@@ -129,7 +99,7 @@ pub struct ResyncTarget {
     pub bootstrap_id: phux_protocol::ids::BootstrapId,
 }
 
-/// Which pumps a [`PaneOutput::Resync`] is for. A reflow owes everyone; a
+/// Which pumps a [`ResourceOutput::Resync`] is for. A reflow owes everyone; a
 /// pump that fell behind is resynced alone so the others keep their
 /// generation (resyncs are expensive).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,12 +123,12 @@ impl ResyncAudience {
 
 /// Payload of the per-resource output broadcast.
 ///
-/// Each attach pump maps `Live` → `RESOURCE_OUTPUT`, `Resync` →
-/// `TERMINAL_SNAPSHOT` (so the client mirror resizes to the carried dims
-/// before repainting; raw output could never grow a pane), and `Control` →
-/// an ordered control frame for the matching owner.
+/// Each attach pump maps `Live` to `RESOURCE_OUTPUT`, `Resync` to the kind's
+/// replacement snapshot (the client mirror adopts the carried dims before
+/// repainting, which raw output could never do), and `Control` to an ordered
+/// control frame for the matching owner.
 #[derive(Clone, Debug)]
-pub enum PaneOutput {
+pub enum ResourceOutput {
     /// Live output chunk forwarded as `RESOURCE_OUTPUT`.
     Live {
         /// Resource-global, strictly increasing raw output sequence.
@@ -169,12 +139,12 @@ pub enum PaneOutput {
         /// has fallen behind in time.
         at: std::time::Instant,
     },
-    /// Full post-reflow grid replay (with reset preamble) and the dims the
-    /// client mirror must adopt.
+    /// A full replacement of the stream's state and the dims the client
+    /// mirror must adopt.
     Resync {
-        /// Post-reflow grid width the client mirror resizes to.
+        /// Width in cells the client mirror resizes to.
         cols: u16,
-        /// Post-reflow grid height the client mirror resizes to.
+        /// Height in cells the client mirror resizes to.
         rows: u16,
         /// Why the prior generation can no longer continue.
         reason: ResyncReason,
@@ -182,7 +152,7 @@ pub enum PaneOutput {
         audience: ResyncAudience,
         /// Resource-global raw sequence included by the replacement cut.
         base_seq: u64,
-        /// Synthesized grid replay (with reset preamble) for `vt_write`.
+        /// The replacement bytes, including any reset preamble.
         bytes: Bytes,
     },
     /// Ordered native control, sharing the sequence with [`Self::Live`] so a
@@ -195,77 +165,23 @@ pub enum PaneOutput {
     },
 }
 
-// ---- supervisory control ----------------------------------------------------
+// ---- input lease ------------------------------------------------------------
 
-/// A supervisory request to a resource's engine (ADR-0033).
-///
-/// The input lease lives in `ServerState`; the engine emits `TerminalControl`
-/// because it owns the lifecycle. Engines answer inapplicable variants with an
-/// error where a reply exists.
-#[derive(Debug)]
-pub enum ControlRequest {
-    /// The input lease changed; broadcast the new holder and action.
-    LeaseChanged {
-        /// The client now holding the lease, or `None` if released to `Open`.
-        input_holder: Option<ClientId>,
-        /// `Acquired` / `Seized` / `Released` / `Expired`.
-        action: ControlAction,
-        /// The acting client; `None` for a server-side release (TTL or
-        /// revocation).
-        actor: Option<ClientId>,
-    },
-    /// Something else wrote `phux.agent/v1` (ADR-0046 §E): clear the
-    /// detector's edge filter so it republishes once. No-op without a
-    /// detector.
-    AgentRecordInvalidated,
-    /// Bind the producer channel of an `AgentSession` child just spawned
-    /// here (ADR-0103 §6). No reply.
-    BindAgentSession {
-        /// The child engine's append channel.
-        append: mpsc::Sender<agent_session::AppendRequest>,
-    },
-    /// Feed an `AgentSession` child's state into the detector at the
-    /// `Stream` rank (ADR-0103 §5); `None` is the `session_end` retraction.
-    ReportStreamState {
-        /// The derived state, or `None` to withdraw the stream's claim.
-        state: Option<ReportedAgentState>,
-        /// Whether the detector accepted the evidence.
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-    /// Feed lifecycle-hook evidence into the pane's detector.
-    ReportAgentState {
-        /// Hook-reported state.
-        state: ReportedAgentState,
-        /// Whether the detector accepted the evidence.
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-    /// Append hook-reported state as a synthesized record on this
-    /// Terminal's live `AgentSession` child (ADR-0103 §6); used only when a
-    /// live child exists.
-    SynthesizeAgentStateRecord {
-        /// Hook-reported state to append.
-        state: ReportedAgentState,
-        /// Whether the record was accepted.
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-    /// Signal the pane's process group, update the lifecycle, and broadcast
-    /// `TerminalControl`; `reply` carries delivery or an error.
-    Signal {
-        /// The signal to deliver.
-        signal: TerminalSignal,
-        /// The lease holder at the time of the signal, for the broadcast.
-        input_holder: Option<ClientId>,
-        /// The client requesting the signal.
-        by: ClientId,
-        /// The signal's `operation_id` (L1 §5.1.1).
-        operation_id: Option<phux_protocol::ids::IdempotencyKey>,
-        /// Delivery acknowledgement.
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-    /// The child exited and the pane is retained (ADR-0124): report
-    /// `Exited`, stop the detector, refuse input. No reply.
-    Retire,
+/// A change to a resource's input lease (ADR-0033). The lease lives with the
+/// host; the engine broadcasts it because it owns the lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeaseChange {
+    /// The client now holding the lease, or `None` if released to `Open`.
+    pub input_holder: Option<ClientId>,
+    /// `Acquired` / `Seized` / `Released` / `Expired`.
+    pub action: ControlAction,
+    /// The acting client; `None` for a server-side release (TTL or
+    /// revocation).
+    pub actor: Option<ClientId>,
 }
+
+/// A mailbox send the host may await after releasing its state lock.
+pub type Delivery = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 // ---- handle -----------------------------------------------------------------
 
@@ -293,9 +209,20 @@ pub trait ResourceOps: Send + Sync + std::fmt::Debug {
     /// Ask the engine to take `size` in cells, returning whether it accepted.
     fn resize(&self, size: (u16, u16), cell_px: Option<(u16, u16)>) -> bool;
 
-    /// Where this resource answers a graceful-upgrade PTY handoff, if it has
-    /// a process to hand off.
+    /// Where this resource answers a graceful-upgrade handoff, if it has a
+    /// process to hand off.
     fn upgrade_sender(&self) -> Option<mpsc::Sender<handoff::UpgradeHandleRequest>>;
+
+    /// Tell the engine its input lease changed, waiting for mailbox room.
+    fn lease_changed(&self, change: LeaseChange) -> Delivery;
+
+    /// [`Self::lease_changed`] for a caller that may not wait; a full
+    /// mailbox drops the notice.
+    fn try_lease_changed(&self, change: LeaseChange);
+
+    /// The backing exited and the resource is retained (ADR-0124): report
+    /// it, stop any background work, refuse input.
+    fn retire(&self) -> Delivery;
 }
 
 /// `Send + Clone` handle to one resource's engine (ADR-0014). Every field
@@ -307,22 +234,24 @@ pub struct ResourceHandle {
     /// The resource this one is bound to, if any (immutable).
     pub parent: Option<ResourceId>,
     /// Output broadcast: live chunks, resyncs, and ordered control.
-    pub output: broadcast::Sender<PaneOutput>,
-    /// Supervisory control (ADR-0033).
-    pub control: mpsc::Sender<ControlRequest>,
+    pub output: broadcast::Sender<ResourceOutput>,
     /// The kind-specific channels. Reach them through [`Self::facet`].
     facet: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     /// The same facet, as the operations every kind answers.
     ops: std::sync::Arc<dyn ResourceOps>,
+    /// Surfaces beyond the facet, newest first (see [`Self::companion`]).
+    companions: std::sync::Arc<[Companion]>,
 }
+
+/// One value in [`ResourceHandle`]'s companion list.
+type Companion = std::sync::Arc<dyn std::any::Any + Send + Sync>;
 
 impl ResourceHandle {
     /// A handle for a resource of `F::KIND`, carrying `facet`.
     #[must_use]
     pub fn new<F: ResourceFacet>(
         parent: Option<ResourceId>,
-        output: broadcast::Sender<PaneOutput>,
-        control: mpsc::Sender<ControlRequest>,
+        output: broadcast::Sender<ResourceOutput>,
         facet: F,
     ) -> Self {
         let facet = std::sync::Arc::new(facet);
@@ -330,10 +259,31 @@ impl ResourceHandle {
             kind: F::KIND,
             parent,
             output,
-            control,
             ops: facet.clone(),
             facet,
+            companions: std::sync::Arc::from([]),
         }
+    }
+
+    /// This handle with `companion` added; a later one of the same type
+    /// shadows an earlier one.
+    #[must_use]
+    pub fn with_companion<C: std::any::Any + Send + Sync>(mut self, companion: C) -> Self {
+        let added: Companion = std::sync::Arc::new(companion);
+        self.companions = std::iter::once(added)
+            .chain(self.companions.iter().cloned())
+            .collect();
+        self
+    }
+
+    /// A surface of type `C` this resource offers beyond its facet, for
+    /// callers that need it without knowing the resource's kind. The crate
+    /// that owns `C` defines what it means.
+    #[must_use]
+    pub fn companion<C: std::any::Any>(&self) -> Option<&C> {
+        self.companions
+            .iter()
+            .find_map(|companion| companion.downcast_ref::<C>())
     }
 
     /// The operations every kind answers.
@@ -357,8 +307,8 @@ impl ResourceHandle {
 
 // ---- engine-side core -------------------------------------------------------
 
-/// The engine-side half of a resource: output sequence and broadcast,
-/// lifecycle, and the control receiver, owned by one engine task.
+/// The engine-side half of a resource: output sequence and broadcast and
+/// lifecycle, owned by one engine task.
 pub struct ResourceCore {
     /// Which engine owns this core.
     pub kind: ResourceKind,
@@ -369,22 +319,18 @@ pub struct ResourceCore {
     pub seq: u64,
     /// Output sender; the seed receiver was dropped, so `receiver_count()`
     /// counts live subscribers.
-    pub output_tx: broadcast::Sender<PaneOutput>,
+    pub output_tx: broadcast::Sender<ResourceOutput>,
     /// Fired once when the backing exits.
     pub exit_notify: Option<oneshot::Sender<phux_core::process::ExitOutcome>>,
     /// Cancellation token the engine watches (dropping does not cancel).
     pub token: CancellationToken,
-    /// Supervisory control mailbox (ADR-0033).
-    pub control_rx: mpsc::Receiver<ControlRequest>,
 }
 
 /// Sender halves paired with a fresh [`ResourceCore`].
 #[derive(Debug)]
 pub struct ResourceCoreChannels {
     /// Output broadcast sender, cloned into the handle.
-    pub output: broadcast::Sender<PaneOutput>,
-    /// Supervisory control sender.
-    pub control: mpsc::Sender<ControlRequest>,
+    pub output: broadcast::Sender<ResourceOutput>,
     /// Fires with the exit outcome.
     pub exit_notify: oneshot::Receiver<phux_core::process::ExitOutcome>,
 }
@@ -399,7 +345,6 @@ impl ResourceCore {
         output_capacity: usize,
     ) -> (Self, ResourceCoreChannels) {
         let (output_tx, _seed_rx) = broadcast::channel(output_capacity);
-        let (control_tx, control_rx) = mpsc::channel(CORE_MAILBOX);
         let (exit_tx, exit_rx) = oneshot::channel();
         let core = Self {
             kind,
@@ -408,11 +353,9 @@ impl ResourceCore {
             output_tx: output_tx.clone(),
             exit_notify: Some(exit_tx),
             token,
-            control_rx,
         };
         let channels = ResourceCoreChannels {
             output: output_tx,
-            control: control_tx,
             exit_notify: exit_rx,
         };
         (core, channels)
@@ -466,98 +409,4 @@ impl std::fmt::Debug for ResourceCore {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Debug)]
-    struct StubFacet(u16);
-
-    impl ResourceFacet for StubFacet {
-        const KIND: ResourceKind = ResourceKind::Terminal;
-    }
-
-    impl ResourceOps for StubFacet {
-        fn resize(&self, _: (u16, u16), _: Option<(u16, u16)>) -> bool {
-            false
-        }
-
-        fn upgrade_sender(&self) -> Option<mpsc::Sender<handoff::UpgradeHandleRequest>> {
-            None
-        }
-    }
-
-    #[derive(Debug)]
-    struct OtherFacet;
-
-    impl ResourceFacet for OtherFacet {
-        const KIND: ResourceKind = ResourceKind::AgentSession;
-    }
-
-    impl ResourceOps for OtherFacet {
-        fn resize(&self, _: (u16, u16), _: Option<(u16, u16)>) -> bool {
-            false
-        }
-
-        fn upgrade_sender(&self) -> Option<mpsc::Sender<handoff::UpgradeHandleRequest>> {
-            None
-        }
-    }
-
-    fn stub_handle() -> ResourceHandle {
-        let (core, channels) = ResourceCore::new(
-            ResourceKind::Terminal,
-            None,
-            CancellationToken::new(),
-            DEFAULT_OUTPUT_BROADCAST,
-        );
-        drop(core);
-        ResourceHandle::new(None, channels.output, channels.control, StubFacet(80))
-    }
-
-    #[test]
-    fn a_facet_resolves_only_for_its_own_kind() {
-        let handle = stub_handle();
-        assert_eq!(handle.kind, ResourceKind::Terminal);
-        assert_eq!(handle.facet::<StubFacet>().expect("own facet").0, 80);
-        assert_eq!(
-            handle
-                .facet::<OtherFacet>()
-                .expect_err("another kind's facet"),
-            WrongResourceKind {
-                required: ResourceKind::AgentSession,
-                actual: ResourceKind::Terminal,
-            }
-        );
-    }
-
-    #[test]
-    fn next_seq_is_checked() {
-        let (mut core, _channels) = ResourceCore::new(
-            ResourceKind::Terminal,
-            None,
-            CancellationToken::new(),
-            DEFAULT_OUTPUT_BROADCAST,
-        );
-        assert_eq!(core.next_seq(), Some(1));
-        assert_eq!(core.seq(), 1);
-        core.seq = u64::MAX;
-        assert_eq!(core.next_seq(), None, "an exhausted sequence never wraps");
-        assert_eq!(core.seq(), u64::MAX);
-    }
-
-    #[test]
-    fn exit_notify_fires_once() {
-        let (mut core, channels) = ResourceCore::new(
-            ResourceKind::Terminal,
-            None,
-            CancellationToken::new(),
-            DEFAULT_OUTPUT_BROADCAST,
-        );
-        core.notify_exit(phux_core::process::ExitOutcome::exited(3));
-        core.notify_exit(phux_core::process::ExitOutcome::signaled(9));
-        assert_eq!(
-            channels.exit_notify.blocking_recv(),
-            Ok(phux_core::process::ExitOutcome::exited(3))
-        );
-    }
-}
+mod tests;

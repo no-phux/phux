@@ -5,7 +5,7 @@ use super::{
     AgentDetector, Bytes, CanonicalTerminal, ClientId, ConsumerAckRequest, ConsumerDetachRequest,
     ConsumerSyncState, DEFAULT_TICK_INTERVAL, EncodedInputRequest, FrameKind, MAX_EMIT_INSTANTS,
     MAX_INPUT_COALESCE, MAX_PTY_COALESCE, MAX_PTY_COALESCE_BYTES, NativeOrPty, Outbound,
-    PaneOutput, PaneUpgradeHandle, PtyEvent, PwdRequest, RESIZE_RESYNC_DEBOUNCE, ResizeRequest,
+    ProcessHandoff, PtyEvent, PwdRequest, RESIZE_RESYNC_DEBOUNCE, ResizeRequest, ResourceOutput,
     ResyncAudience, ResyncReason, ResyncTarget, ScreenReply, ScreenRequest,
     SetDefaultColorsRequest, SnapshotBytes, SnapshotRequest, TerminalActor, TerminalInput,
     UpgradeHandleRequest, debug, error, mpsc, recv_native_or_pty, tick, trace, warn,

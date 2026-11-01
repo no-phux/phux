@@ -41,11 +41,12 @@ pub use throttle::Throttle;
 /// here with `getrusage(2)` and is `None` only when that syscall fails.
 #[must_use]
 pub fn snapshot(role: &str, table: &[Metric], uptime: std::time::Duration) -> PerfReport {
-    snapshot_since(role, table, uptime, None)
+    snapshot_since(role, &[table], uptime, None)
 }
 
-/// [`snapshot`] with the process section taken relative to `baseline`, the
-/// `getrusage` reading captured when `uptime` started counting.
+/// [`snapshot`] over `tables` in order, with the process section taken
+/// relative to `baseline`, the `getrusage` reading captured when `uptime`
+/// started counting.
 ///
 /// A server that re-execs in place (`phux upgrade`) keeps its cumulative
 /// rusage while its uptime restarts, so CPU must be measured from the
@@ -53,7 +54,7 @@ pub fn snapshot(role: &str, table: &[Metric], uptime: std::time::Duration) -> Pe
 #[must_use]
 pub fn snapshot_since(
     role: &str,
-    table: &[Metric],
+    tables: &[&[Metric]],
     uptime: std::time::Duration,
     baseline: Option<&ProcessStats>,
 ) -> PerfReport {
@@ -68,7 +69,11 @@ pub fn snapshot_since(
         captured_unix_ms: unix_ms_now(),
         uptime_ms: duration_ms(uptime),
         process,
-        metrics: table.iter().map(Metric::snapshot).collect(),
+        metrics: tables
+            .iter()
+            .flat_map(|table| table.iter())
+            .map(Metric::snapshot)
+            .collect(),
     }
 }
 

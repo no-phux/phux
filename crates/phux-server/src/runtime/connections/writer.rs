@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use tracing::debug;
 
 /// Encode one outbound message onto the end of `batch`, recording its frame
-/// boundary in `ends`. Returns the message of an [`Outbound::TerminalError`],
+/// boundary in `ends`. Returns the message of an [`Outbound::FatalError`],
 /// after which the caller must stop draining.
 fn encode_into_batch(
     message: Outbound,
@@ -25,7 +25,7 @@ fn encode_into_batch(
 ) -> Option<String> {
     let (frame, terminal_message) = match message {
         Outbound::Frame(frame) => (frame, None),
-        Outbound::TerminalError {
+        Outbound::FatalError {
             request_id,
             code,
             message,

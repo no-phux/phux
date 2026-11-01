@@ -1,4 +1,4 @@
-use super::{BootstrapId, Outbound, PaneOutput, StreamId, mpsc, oneshot};
+use super::{BootstrapId, Outbound, ResourceOutput, StreamId, mpsc, oneshot};
 use bytes::Bytes;
 use phux_protocol::wire::frame::FrameKind;
 use tokio::sync::broadcast;
@@ -24,7 +24,7 @@ pub struct NativeBootstrapReply {
 #[derive(Debug)]
 pub struct NativePublicationReply {
     pub replay: Vec<(u64, Bytes)>,
-    pub live: broadcast::Receiver<PaneOutput>,
+    pub live: broadcast::Receiver<ResourceOutput>,
 }
 
 /// Complete the `READY`/`ATTACH_READY` publication fence for one owner.

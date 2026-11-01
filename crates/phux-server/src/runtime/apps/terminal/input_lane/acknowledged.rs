@@ -326,7 +326,7 @@ impl CompletionWaiter {
         let join = std::thread::Builder::new()
             .name("phux-input-ack".to_owned())
             .spawn(move || {
-                crate::perf::promote_helper_thread("phux-input-ack");
+                phux_terminal::perf::promote_helper_thread("phux-input-ack");
                 run_waiter(&rx, &cache);
             })?;
         Ok(Self {

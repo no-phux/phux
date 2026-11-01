@@ -257,7 +257,7 @@ fn resource_record(s: &mut ServerState, id: phux_core::ids::ResourceId) -> Optio
             ow::revision(record.revision),
         )
         .with_name(record.name.clone())
-        .with_kind(crate::resource::wire_kind(record.kind))
+        .with_kind(crate::id_bridge::wire_kind(record.kind))
         .with_on_exit(ow::exit_policy(record.on_exit))
         .with_activation(activation)
         .with_live(live),

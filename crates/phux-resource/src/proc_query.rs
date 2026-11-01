@@ -1,14 +1,14 @@
-//! Kernel process introspection for the agent detector (ADR-0046),
+//! Kernel process introspection (ADR-0046),
 //! best-effort like [`crate::cwd_query`]: any failure yields `None`.
 //!
 //! [`foreground_pgid`] (`tcgetpgrp` via `nix`) finds the process group
-//! owning the pane's tty; [`process_argv`] reads its argv (Linux
-//! `/proc/<pid>/cmdline`, macOS `sysctl(KERN_PROCARGS2)`). Pane content is
+//! owning a tty; [`process_argv`] reads its argv (Linux
+//! `/proc/<pid>/cmdline`, macOS `sysctl(KERN_PROCARGS2)`). Screen content is
 //! never read, and pgids and argv are logged at `trace` at most.
 
 #![allow(
     clippy::redundant_pub_crate,
-    reason = "private server module shared by the sibling agent_detect module"
+    reason = "items shared inside the crate; pub would widen the app's API"
 )]
 #![allow(
     clippy::similar_names,

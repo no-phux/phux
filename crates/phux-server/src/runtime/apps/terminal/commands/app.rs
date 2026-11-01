@@ -34,6 +34,10 @@ impl ResourceApp for TerminalApp {
         Ok(())
     }
 
+    fn metrics(&self) -> &'static [phux_perf::Metric] {
+        phux_terminal::perf::TABLE
+    }
+
     fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
         release_terminal_consumer(handle, client);
     }

@@ -8,8 +8,8 @@ use crate::actor::test_support::dummy_outbound;
 use crate::actor::{
     ConsumerAckRequest, ConsumerDetachRequest, ProcessFacetRequest, PwdRequest, SnapshotRequest,
 };
+use phux_agent_session::parent::{AgentParent, AgentParentRequest};
 use phux_protocol::ClientId;
-use phux_resource::ControlRequest;
 use tokio::sync::oneshot;
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -140,7 +140,7 @@ async fn native_cursor_expiry_runs_through_the_armed_loop_timer() {
         assert!(futures_util::poll!(run.as_mut()).is_pending());
         assert!(matches!(
             controls.try_recv().expect("timer dispatched expiry"),
-            PaneOutput::Control {
+            ResourceOutput::Control {
                 frame: FrameKind::HistoryTombstone {
                     reason: HistoryTombstoneReason::Expired,
                     ..
@@ -201,9 +201,11 @@ async fn service_rotation_cannot_be_monopolized_by_snapshot_requests() {
     let (reply, mut control) = oneshot::channel();
     bundle
         .handle
-        .control
-        .try_send(ControlRequest::ReportStreamState { state: None, reply })
-        .expect("control");
+        .companion::<AgentParent>()
+        .expect("a Terminal hosts agents")
+        .mailbox
+        .try_send(AgentParentRequest::ReportStreamState { state: None, reply })
+        .expect("agent mailbox");
     let (outbound, mut output) = dummy_outbound();
     actor
         .register_consumer(ClientId(1), outbound, 11, true)

@@ -101,9 +101,9 @@ fn announce_lease_releases(
         let Some(handle) = s.resource_handle(pane) else {
             continue;
         };
-        let _ = handle
-            .control
-            .try_send(crate::resource::ControlRequest::LeaseChanged {
+        handle
+            .ops()
+            .try_lease_changed(crate::resource::LeaseChange {
                 input_holder: None,
                 action: phux_protocol::wire::frame::ControlAction::Released,
                 actor,

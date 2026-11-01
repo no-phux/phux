@@ -97,6 +97,9 @@ pub(crate) trait ResourceApp: Sync {
         &'a self,
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>>;
+
+    /// This kind's rows of the `GET_PERF` report.
+    fn metrics(&self) -> &'static [phux_perf::Metric];
 }
 
 /// Every app this server hosts.
@@ -107,6 +110,11 @@ pub(crate) fn app_for(kind: ResourceKind) -> Option<&'static dyn ResourceApp> {
     APPS.iter().copied().find(|app| app.kind() == kind)
 }
 
+/// Every app's rows of the `GET_PERF` report.
+pub(crate) fn metric_tables() -> Vec<&'static [phux_perf::Metric]> {
+    APPS.iter().map(|app| app.metrics()).collect()
+}
+
 /// The native bootstrap profiles this server can offer at HELLO.
 pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabilities {
     terminal::bootstrap_capabilities()
@@ -114,7 +122,7 @@ pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabili
 
 /// The app that owns `command` in the catalog; `None` for a host command.
 pub(crate) fn app_owning(command: &Command) -> Option<&'static dyn ResourceApp> {
-    app_for(crate::resource::core_kind(
+    app_for(crate::id_bridge::core_kind(
         phux_protocol::kinds::command_kind(command)?,
     )?)
 }

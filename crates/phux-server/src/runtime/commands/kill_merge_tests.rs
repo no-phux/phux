@@ -3,6 +3,7 @@ use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
 use crate::runtime::keyed_ops::{KeyedAdmission, admit};
 use phux_protocol::ids::{IdempotencyKey, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::CommandValue;
+use phux_terminal::ControlRequest;
 
 /// A hub whose satellite `up` has a live link, answered by the test, and
 /// whose satellite `down` has none.

@@ -294,7 +294,7 @@ pub(super) fn subscribe_spawning_client(
 /// This pump owns its pane, so a lost generation reaps it.
 pub(super) fn spawn_terminal_output_pump(
     ctx: OutputPumpContext,
-    output_rx: tokio::sync::broadcast::Receiver<PaneOutput>,
+    output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
     state: &SharedState,
     connection_token: &CancellationToken,
     core_terminal_id: ResourceId,

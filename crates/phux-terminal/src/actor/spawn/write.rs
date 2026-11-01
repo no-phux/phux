@@ -275,11 +275,11 @@ pub(in crate::actor) fn service_write_request(
     request: EncodedInputRequest,
 ) -> WriterLoopControl {
     if let Some(queued_at) = request.writer_queued_at {
-        phux_resource::perf::INPUT_WRITER_QUEUE_WAIT.record_elapsed(queued_at);
+        crate::perf::INPUT_WRITER_QUEUE_WAIT.record_elapsed(queued_at);
     }
     let len = request.bytes.len();
     if let Some(overflow) = canonical_refusal(master, &request.bytes) {
-        phux_resource::perf::INPUT_CANONICAL_REFUSED.incr();
+        crate::perf::INPUT_CANONICAL_REFUSED.incr();
         // Refuse before writing: zero bytes beat a truncated, uncompletable
         // line that wedges the pane. Input stays alive.
         error!(
@@ -301,7 +301,7 @@ pub(in crate::actor) fn service_write_request(
     let write_started = std::time::Instant::now();
     let outcome =
         write_all_pty(writer, master, &request.bytes).and_then(|()| flush_pty(writer, master));
-    phux_resource::perf::INPUT_PTY_WRITE.record_elapsed(write_started);
+    crate::perf::INPUT_PTY_WRITE.record_elapsed(write_started);
     match outcome {
         Ok(()) => {
             phux_perf::echo_hop::record("pty_write");
