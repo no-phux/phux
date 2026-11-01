@@ -19,11 +19,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use phux_config::{Action, vocab};
+use phux_config::Action;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, warn};
 
 pub use catalog::{HookCatalog, PluginEventHook};
+/// Hook point names (defined in [`phux_config::vocab`]).
+pub use phux_config::vocab::{
+    AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED,
+    PANE_EXIT, WORKTREE_CREATED,
+};
 pub use spec::{HookEventSpec, hook_event_specs};
 
 /// Upper bound on concurrently-running hook child processes.
@@ -34,12 +39,6 @@ pub const HOOK_EVENT_QUEUE: usize = 64;
 
 /// Per-hook timeout; the child is killed and logged.
 pub const HOOK_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Hook point names (defined in [`phux_config::vocab`]).
-pub use phux_config::vocab::{
-    AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED,
-    PANE_EXIT, WORKTREE_CREATED,
-};
 
 /// The `to` value when the detector withdraws a record (the L3 `unknown`).
 pub const AGENT_STATE_UNKNOWN: &str = "unknown";

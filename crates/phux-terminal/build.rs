@@ -31,7 +31,6 @@ fn main() {
     match compiled {
         Ok(status) if status.success() => {
             println!("cargo::rustc-cfg=phux_fd_shrink");
-            println!("cargo::rustc-env=PHUX_FD_SHRINK_BIN={}", dest.display());
         }
         Ok(status) => {
             println!(
