@@ -105,8 +105,13 @@ phux failed to keep.
 
 Two parts change (`phux-phiio.4`):
 
-- A producer is its own activation identity, not a Terminal. A capture helper
-  has no PTY.
+- The producer binding stops naming a kind. Today an `AgentSession` must have
+  a Terminal parent, and the broker authenticates the guardian against that
+  Terminal's activation. The rule that matters is that a projection's parent
+  supervises its producer and carries the activation the producer is checked
+  against. A helper keeps running in a Terminal, as the ACP guardian does, so
+  it inherits supervision, logs and upgrade survival; a PTY-less supervised
+  process is a later kind, added only if a PTY proves costly.
 - The server relays per-viewer feedback to the producer: acknowledgements,
   viewport and RTT, besides today's typed intents. Encoding happens where the
   state is, so the server stays a fenced relay and its single-threaded
