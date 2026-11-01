@@ -444,6 +444,9 @@ pub mod agent_stream;
 pub mod agent_transcript;
 
 #[cfg(test)]
+mod agent_gap_tests;
+
+#[cfg(test)]
 mod kernel_rig;
 
 #[cfg(test)]
