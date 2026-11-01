@@ -12,6 +12,15 @@ git-fetch-with-cli = true
 # also lets dev builds link the download instead of running Zig.
 [env]
 LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"
+# Only scripts/test-env-runner.sh removes this, so a test that still sees it
+# was started without the runner (crates/phux-config-core/tests/test_env_runner.rs).
+PHUX_SCRUB_CANARY = "planted"
+
+# Every `cargo test` and `cargo nextest run` test process starts through this,
+# which strips inherited PHUX_* so a run inside a production pane cannot reach
+# production. Windows has no pane environment to inherit and no Bash to rely on.
+[target.'cfg(unix)']
+runner = "scripts/test-env-runner.sh"
 
 # Fast linker on Linux. `mold` replaces the bottleneck link step of
 # incremental dev/test builds (every `cargo check --all-targets` /
