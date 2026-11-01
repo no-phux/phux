@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   boundPort,
+  DEMO_SERVER_LOG,
   isolatedEnvironment,
   poll,
   REQUIRED_TESTS,
@@ -19,6 +20,7 @@ import {
   websocketReady,
 } from "./browser.ts";
 import { AgentFixture } from "./fixture.ts";
+import { repoPath } from "../lib/repo.ts";
 
 let scratch: string;
 beforeEach(() => {
@@ -26,6 +28,13 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
+});
+
+test("the demo server log filter names a module that exists", () => {
+  const target = DEMO_SERVER_LOG.split("=", 1)[0] ?? "";
+  const [crate = "", ...modules] = target.split("::");
+  const source = `crates/${crate.replaceAll("_", "-")}/src/${modules.join("/")}.rs`;
+  expect(existsSync(repoPath(source))).toBe(true);
 });
 
 const running = { exitCode: null, signalCode: null };
