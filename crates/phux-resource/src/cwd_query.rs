@@ -1,8 +1,8 @@
-//! Best-effort kernel query for a live PTY child's cwd.
+//! Best-effort kernel query for a live process's cwd.
 //!
-//! Serves `defaults.cwd-inheritance = inherit-focused`. OSC 7 is unreliable
-//! and not exposed by the bundled libghostty, so Linux reads
-//! `/proc/<pid>/cwd` and macOS uses `proc_pidinfo(PROC_PIDVNODEPATHINFO)`;
+//! Serves `defaults.cwd-inheritance = inherit-focused`. What a program
+//! reports about itself is unreliable, so Linux reads `/proc/<pid>/cwd` and
+//! macOS uses `proc_pidinfo(PROC_PIDVNODEPATHINFO)`;
 //! other targets and any failure yield `None`.
 
 use std::path::PathBuf;

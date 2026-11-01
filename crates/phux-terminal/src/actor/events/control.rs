@@ -16,7 +16,15 @@ impl TerminalActor {
             ControlRequest::LeaseChanged(change) => {
                 self.emit_terminal_control(change.action, change.input_holder, change.actor, None);
             }
-            ControlRequest::Retire => self.retire_after_exit(),
+            ControlRequest::Retire => {
+                // Retiring stops the detector, so answer what is already
+                // queued for it first: the mailboxes are separate, and a
+                // report sent before the retire must still land.
+                while let Ok(req) = self.agent_parent_rx.try_recv() {
+                    self.handle_agent_parent_request(req);
+                }
+                self.retire_after_exit();
+            }
             ControlRequest::Signal {
                 signal,
                 input_holder,

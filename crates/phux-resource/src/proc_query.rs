@@ -18,7 +18,7 @@
 
 use std::os::fd::RawFd;
 
-/// Foreground process group of the PTY `master_fd`, or `None`.
+/// Foreground process group of the tty behind `master_fd`, or `None`.
 #[must_use]
 pub fn foreground_pgid(master_fd: RawFd) -> Option<i32> {
     if master_fd < 0 {

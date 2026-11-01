@@ -58,7 +58,7 @@ const EVERYTHING: Classification = {
 
 /** The instruction-count guard's inputs. */
 const PERF_ICOUNT_PATHS = [
-  "crates/{phux-server,phux-terminal,phux-resource,phux-protocol,phux-client-core,phux-core}/**",
+  "crates/{phux-server,phux-terminal,phux-resource,phux-agent-session,phux-protocol,phux-client-core,phux-core}/**",
   "{Cargo.toml,Cargo.lock,rust-toolchain.toml,flake.nix,flake.lock}",
   ".cargo/**",
   "benchmarks/icount-baseline.json",

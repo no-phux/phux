@@ -4,6 +4,7 @@ use crate::actor::TerminalResource as _;
 use futures_util::FutureExt;
 
 use super::*;
+use crate::ControlRequest;
 use crate::actor::test_support::dummy_outbound;
 use crate::actor::{
     ConsumerAckRequest, ConsumerDetachRequest, ProcessFacetRequest, PwdRequest, SnapshotRequest,
@@ -351,4 +352,23 @@ async fn service_rotation_services_due_state_tick_under_request_pressure() {
         "due timer gets a turn before a second queued snapshot"
     );
     assert!(!actor.state_tick_armed());
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn retire_answers_queued_agent_requests_first() {
+    let bundle = TerminalActor::new(20, 5).expect("actor");
+    let mut actor = bundle.actor;
+    let (append, _appends) = tokio::sync::mpsc::channel(1);
+    bundle
+        .handle
+        .companion::<AgentParent>()
+        .expect("a Terminal hosts agents")
+        .mailbox
+        .try_send(AgentParentRequest::BindSession { append })
+        .expect("agent mailbox");
+    actor.handle_control_request(ControlRequest::Retire);
+    assert!(
+        actor.agent_session_append.is_some(),
+        "a request queued before the retire is served, not overtaken"
+    );
 }

@@ -1,6 +1,6 @@
 [package]
 name = "phux-resource"
-description = "The kind-neutral resource substrate: output streams, lifecycle, control, and opaque facets."
+description = "The kind-neutral resource substrate: output streams, lifecycle, and opaque facets."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -29,8 +29,6 @@ nix = { version = "0.31", default-features = false, features = [
     "process",
     "user",
     "hostname",
-    # epoll on Linux, kqueue on macOS: one poller for quiet PTY masters.
-    "event",
 ] }
 
 [dev-dependencies]
