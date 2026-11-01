@@ -1,4 +1,21 @@
-async fn publish(
+use super::closure::CLOSURE_PUBLICATION_ID;
+use super::controller::{authenticated_host_binding, closed, json, refusal};
+use crate::runtime::commands::CommandContext;
+use crate::state::SharedState;
+use crate::state::native_agent::NativeBinding;
+use crate::state::native_agent::NativePublication;
+use crate::state::native_agent::fingerprint;
+use bytes::Bytes;
+use phux_protocol::ids::ResourceId;
+use phux_protocol::native_agent::MAX_NATIVE_OPERATIONS;
+use phux_protocol::native_agent::NATIVE_SCHEMA;
+use phux_protocol::native_agent::NativePublicationReceipt;
+use phux_protocol::native_agent::NativeUpdate;
+use phux_protocol::native_agent::NativeView;
+use phux_protocol::wire::frame::CommandResult;
+use phux_protocol::wire::frame::ErrorCode;
+
+pub(super) async fn publish(
     ctx: &CommandContext,
     agent: ResourceId,
     activation: String,
@@ -57,7 +74,7 @@ async fn publish(
     acknowledge_publication(&ctx.state, &agent, view, generation, &receipt, &update)
 }
 
-fn acknowledge_publication(
+pub(super) fn acknowledge_publication(
     state: &SharedState,
     agent: &ResourceId,
     view: NativeView,
@@ -96,7 +113,7 @@ fn acknowledge_publication(
     json(receipt)
 }
 
-fn reserve_publication(
+pub(super) fn reserve_publication(
     binding: &mut NativeBinding,
     id: u64,
     fingerprint: &str,
@@ -149,7 +166,10 @@ fn reserve_publication(
     Ok(view)
 }
 
-fn encode_publication(update: &NativeUpdate, view: &NativeView) -> Result<Bytes, CommandResult> {
+pub(super) fn encode_publication(
+    update: &NativeUpdate,
+    view: &NativeView,
+) -> Result<Bytes, CommandResult> {
     let mut records = Vec::new();
     records.push(
         serde_json::json!({"type":"provider_raw","data":{"schema":NATIVE_SCHEMA,"update":update}}),
@@ -283,7 +303,7 @@ fn rollback_publication(state: &SharedState, agent: &ResourceId, id: u64) {
         }
     });
 }
-fn sync_ask_inventory(state: &SharedState, agent: &ResourceId) {
+pub(super) fn sync_ask_inventory(state: &SharedState, agent: &ResourceId) {
     let published = state.with_mut(|s| {
         let binding = s.native_agents().bindings.get(agent)?;
         let parent = binding.parent.clone();

@@ -1,3 +1,25 @@
+use super::controller::{denied, json, refusal};
+use crate::resource::agent_session::AgentSessionActor;
+use crate::runtime::commands::CommandContext;
+use crate::state::SharedState;
+use crate::state::native_agent::NativeBinding;
+use phux_protocol::ids::ResourceId;
+use phux_protocol::native_agent::NATIVE_HOST_SPEC_ENV;
+use phux_protocol::native_agent::NativeCapabilities;
+use phux_protocol::native_agent::NativeRequest;
+use phux_protocol::native_agent::NativeRequestPayload;
+use phux_protocol::native_agent::NativeView;
+use phux_protocol::native_agent::SpawnNativeAgent;
+use phux_protocol::native_agent::SpawnedNativeAgent;
+use phux_protocol::native_agent::validate_payload;
+use phux_protocol::wire::frame::AgentEvent;
+use phux_protocol::wire::frame::CommandResult;
+use phux_protocol::wire::frame::ErrorCode;
+use std::collections::BTreeMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use tokio::sync::Notify;
+
 /// An explicit saved native recipe uses the same transaction as new native
 /// launches, while preserving the ordinary relaunch receipt/operation.
 pub(crate) fn spawn_relaunch(
@@ -494,4 +516,8 @@ fn launch_native_guardian(
         return Err(refusal(error.to_string()));
     }
     Ok(())
+}
+
+pub(super) fn spawn(ctx: &CommandContext, spec: &SpawnNativeAgent) -> CommandResult {
+    spawn_transaction(ctx, spec, None).map_or_else(|error| error, |spawned| json(&spawned))
 }

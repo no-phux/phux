@@ -1,3 +1,19 @@
+use super::controller::{authenticated_host_binding, refusal};
+use super::publication::sync_ask_inventory;
+use crate::runtime::commands::CommandContext;
+use crate::state::SharedState;
+use crate::state::native_agent::NativeBinding;
+use crate::state::native_agent::fingerprint;
+use bytes::Bytes;
+use phux_protocol::ids::ResourceId;
+use phux_protocol::native_agent::NATIVE_SCHEMA;
+use phux_protocol::native_agent::NativeCapabilities;
+use phux_protocol::native_agent::NativeCommandResult;
+use phux_protocol::native_agent::NativeDisposition;
+use phux_protocol::wire::frame::AgentEvent;
+use phux_protocol::wire::frame::CommandResult;
+use phux_protocol::wire::frame::ErrorCode;
+
 fn fence_closure(binding: &mut NativeBinding) -> Vec<NativeCommandResult> {
     if binding.closed {
         return Vec::new();
@@ -28,7 +44,7 @@ fn fence_closure(binding: &mut NativeBinding) -> Vec<NativeCommandResult> {
     results
 }
 
-fn begin_closure(s: &mut crate::state::ServerState, agent: &ResourceId) {
+pub(super) fn begin_closure(s: &mut crate::state::ServerState, agent: &ResourceId) {
     let Some(binding) = s.native_agents_mut().bindings.get_mut(agent) else {
         return;
     };
@@ -55,8 +71,8 @@ fn begin_closure(s: &mut crate::state::ServerState, agent: &ResourceId) {
 
 // Reserved above the host's publication sequence. The actor deduplicates this
 // terminal transaction before checking ended/sealed state, including lost acks.
-const CLOSURE_PUBLICATION_ID: u64 = u64::MAX;
-async fn commit_closure(state: &SharedState, agent: &ResourceId) -> CommandResult {
+pub(super) const CLOSURE_PUBLICATION_ID: u64 = u64::MAX;
+pub(super) async fn commit_closure(state: &SharedState, agent: &ResourceId) -> CommandResult {
     let view = state.with(|s| {
         s.native_agents().bindings.get(agent).and_then(|binding| {
             (binding.closed && !binding.closure_committed).then(|| binding.view.clone())
@@ -100,7 +116,7 @@ async fn commit_closure(state: &SharedState, agent: &ResourceId) -> CommandResul
     CommandResult::Ok
 }
 
-fn schedule_closure(state: &SharedState, agent: &ResourceId) {
+pub(super) fn schedule_closure(state: &SharedState, agent: &ResourceId) {
     let start = state.with_mut(|s| {
         let pending = s
             .native_agents()
@@ -142,7 +158,7 @@ pub(crate) fn retry_pending_closures(state: &SharedState) {
     }
 }
 
-async fn close(
+pub(super) async fn close(
     ctx: &CommandContext,
     agent: &ResourceId,
     activation: &str,

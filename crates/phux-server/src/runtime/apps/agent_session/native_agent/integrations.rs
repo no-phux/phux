@@ -1,5 +1,6 @@
 //! Host-local profile resolution, off the event loop and fenced by stable session.
-use super::{denied, json, refusal, spawn};
+use super::controller::{denied, json, refusal};
+use super::launch::spawn;
 use crate::runtime::commands::CommandContext;
 use phux_plugin::{LaunchMode, resolve_launch};
 use phux_protocol::ids::SessionKey;

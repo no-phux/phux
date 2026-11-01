@@ -1,29 +1,51 @@
+use super::closure::close;
+use super::integrations;
+use super::launch::spawn;
+use super::publication::publish;
+use super::source_dispatch::refuse_undeliverable;
+use crate::runtime::commands::CommandContext;
+use crate::state::ClientId;
+use crate::state::SharedState;
+use crate::state::native_agent::NativeBinding;
+use phux_protocol::ids::ResourceId;
+use phux_protocol::native_agent::NativeCommand;
+use phux_protocol::native_agent::NativeCommandResult;
+use phux_protocol::native_agent::NativeDisposition;
+use phux_protocol::native_agent::NativeIntent;
+use phux_protocol::native_agent::NativeRequest;
+use phux_protocol::wire::frame::AgentEvent;
+use phux_protocol::wire::frame::CommandResult;
+use phux_protocol::wire::frame::CommandValue;
+use phux_protocol::wire::frame::ErrorCode;
+use serde::Serialize;
+use subtle::ConstantTimeEq as _;
+
 use phux_resource::agent_session::AgentSessionResource as _;
-fn refusal(message: impl Into<String>) -> CommandResult {
+pub(super) fn refusal(message: impl Into<String>) -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::InvalidCommand,
         message: message.into(),
     }
 }
-fn denied(message: impl Into<String>) -> CommandResult {
+pub(super) fn denied(message: impl Into<String>) -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::PermissionDenied,
         message: message.into(),
     }
 }
-fn closed(message: impl Into<String>) -> CommandResult {
+pub(super) fn closed(message: impl Into<String>) -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::TerminalNotFound,
         message: message.into(),
     }
 }
-fn json<T: Serialize>(value: &T) -> CommandResult {
+pub(super) fn json<T: Serialize>(value: &T) -> CommandResult {
     match serde_json::to_string(value) {
         Ok(value) => CommandResult::OkWith(CommandValue::Json(value)),
         Err(error) => refusal(error.to_string()),
     }
 }
-fn authenticated_host_binding<'a>(
+pub(super) fn authenticated_host_binding<'a>(
     s: &'a mut crate::state::ServerState,
     client: ClientId,
     agent: &ResourceId,
@@ -371,7 +393,7 @@ fn register_controller(
     json(&serde_json::json!({"generation":generation}))
 }
 
-async fn receive(
+pub(super) async fn receive(
     ctx: &CommandContext,
     agent: &ResourceId,
     activation: &str,
@@ -417,7 +439,7 @@ async fn receive(
     }
 }
 
-fn complete(
+pub(super) fn complete(
     s: &mut crate::state::ServerState,
     client: ClientId,
     agent: ResourceId,
