@@ -3,9 +3,10 @@
 //! An app owns everything its kind needs from the host: its facet commands
 //! and how a client's stream bootstraps. The runtime reaches a kind only
 //! through [`app_for`] and [`app_owning`], so what a kind *is* stays in its
-//! app, and a new kind is one [`ResourceApp`] plus one [`APPS`] row. `state`
-//! sits below this module: what it needs from any resource is
-//! [`crate::resource::ResourceHandle::ops`].
+//! app. A new kind does not compile until [`app_for`] names its app, and
+//! every [`ResourceApp`] method is required, so no kind inherits an answer
+//! by omission. `state` sits below this module: what it needs from any
+//! resource is [`crate::resource::ResourceHandle::ops`].
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -57,9 +58,6 @@ pub(crate) struct StreamBootstrap<'a> {
 
 /// What the host asks of the app serving a kind.
 pub(crate) trait ResourceApp: Sync {
-    /// The kind this app serves.
-    fn kind(&self) -> ResourceKind;
-
     /// Whether a multi-stream connection waits for `STREAM_BIND` before
     /// bootstrapping this kind's content.
     fn defers_stream_bootstrap(&self) -> bool;
@@ -72,17 +70,15 @@ pub(crate) trait ResourceApp: Sync {
 
     /// Drop `client`'s engine-side consumer state now, best effort. Safe under
     /// the state lock.
-    fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {}
+    fn release_consumer(&self, handle: &ResourceHandle, client: ClientId);
 
     /// Drop `client`'s consumer state and wait until the engine has stopped
     /// emitting to it.
     fn fence_consumer<'a>(
         &'a self,
-        _handle: &'a ResourceHandle,
-        _client: ClientId,
-    ) -> LocalBoxFuture<'a, ()> {
-        Box::pin(std::future::ready(()))
-    }
+        handle: &'a ResourceHandle,
+        client: ClientId,
+    ) -> LocalBoxFuture<'a, ()>;
 
     /// Serve a facet command this kind owns in the catalog.
     fn command<'a>(
@@ -99,13 +95,24 @@ pub(crate) trait ResourceApp: Sync {
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>>;
 }
 
-/// Every app this server hosts.
-static APPS: [&dyn ResourceApp; 2] = [&terminal::TerminalApp, &agent_session::AgentSessionApp];
-
-/// The app serving `kind`, or `None` for a kind this build does not serve.
-pub(crate) fn app_for(kind: ResourceKind) -> Option<&'static dyn ResourceApp> {
-    APPS.iter().copied().find(|app| app.kind() == kind)
+/// The app serving `kind`. Exhaustive: a kind with no app does not compile.
+pub(crate) const fn app_for(kind: ResourceKind) -> &'static dyn ResourceApp {
+    match kind {
+        ResourceKind::Terminal => &terminal::TerminalApp,
+        ResourceKind::AgentSession => &agent_session::AgentSessionApp,
+    }
 }
+
+/// The build fails if the catalog lists a kind this server does not serve,
+/// so [`owning_kind`] cannot lose a facet command to the host arm.
+const _: () = {
+    let kinds = &phux_protocol::kinds::KINDS;
+    let mut row = 0;
+    while row < kinds.len() {
+        assert!(crate::resource::core_kind(kinds[row].kind).is_some());
+        row += 1;
+    }
+};
 
 /// The native bootstrap profiles this server can offer at HELLO.
 pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabilities {
@@ -114,9 +121,12 @@ pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabili
 
 /// The app that owns `command` in the catalog; `None` for a host command.
 pub(crate) fn app_owning(command: &Command) -> Option<&'static dyn ResourceApp> {
-    app_for(crate::resource::core_kind(
-        phux_protocol::kinds::command_kind(command)?,
-    )?)
+    owning_kind(command).map(app_for)
+}
+
+/// The kind whose catalog rows carry `command`; `None` for a host command.
+fn owning_kind(command: &Command) -> Option<ResourceKind> {
+    phux_protocol::kinds::command_kind(command).and_then(crate::resource::core_kind)
 }
 
 #[cfg(test)]

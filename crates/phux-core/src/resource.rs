@@ -15,9 +15,12 @@ use crate::ids::ResourceId;
 use crate::keys::{OperationId, ResourceKey, Revision, SessionKey};
 use crate::terminal::TerminalFacet;
 
-/// What kind of thing a resource is. Open: a client that meets a kind it
-/// does not know must treat the resource as opaque, never as a Terminal.
-#[non_exhaustive]
+/// What kind of thing a resource is.
+///
+/// Closed on purpose: every match in the workspace is exhaustive, so a new
+/// kind does not compile until each one answers for it. The open form is the
+/// wire tag, whose `Unknown` a client must treat as opaque, never as a
+/// Terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {

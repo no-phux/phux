@@ -18,10 +18,6 @@ use crate::runtime::operation_dedupe::OperationClaim;
 pub(crate) struct TerminalApp;
 
 impl ResourceApp for TerminalApp {
-    fn kind(&self) -> ResourceKind {
-        ResourceKind::Terminal
-    }
-
     fn defers_stream_bootstrap(&self) -> bool {
         true
     }
@@ -63,10 +59,19 @@ impl ResourceApp for TerminalApp {
     }
 }
 
+/// The Terminal facet of a handle `app_for` routed here. A miss means the
+/// handle's kind and facet disagree, which leaks a consumer: say so.
+fn routed_terminal(handle: &ResourceHandle) -> Option<&phux_terminal::actor::TerminalHandle> {
+    handle
+        .terminal()
+        .inspect_err(|error| tracing::error!(%error, "consumer teardown skipped"))
+        .ok()
+}
+
 /// Free a client's native cut and consumer entry without blocking: a full
 /// mailbox is reaped by `tick_emit` when the client's mailbox closes.
 fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
-    let Ok(terminal) = handle.terminal() else {
+    let Some(terminal) = routed_terminal(handle) else {
         return;
     };
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -99,7 +104,7 @@ fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
 /// Drop a consumer and wait for the actor's reply, so nothing it emitted can
 /// follow what the caller queues next.
 async fn fence_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
-    let Ok(terminal) = handle.terminal() else {
+    let Some(terminal) = routed_terminal(handle) else {
         return;
     };
     let (reply_tx, reply_rx) = oneshot::channel();
