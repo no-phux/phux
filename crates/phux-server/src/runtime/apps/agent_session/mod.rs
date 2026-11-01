@@ -52,7 +52,7 @@ impl ResourceApp for AgentSessionApp {
         request: super::ResourceFrame<'a>,
         frame: phux_protocol::wire::frame::FrameKind,
     ) -> LocalBoxFuture<'a, super::FrameFlow> {
-        frames::serve(request, frame).boxed_local()
+        std::future::ready(frames::serve(&request, &frame)).boxed_local()
     }
 
     fn command<'a>(

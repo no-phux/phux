@@ -8,10 +8,12 @@ use crate::resource::{ResourceKind, WrongResourceKind};
 use crate::runtime::apps::ResourceFrame;
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::connections::frames::direction_invalid;
+use crate::state::Outbound;
 
-/// Refuse one client frame about an `AgentSession`.
-pub(super) async fn serve(request: ResourceFrame<'_>, frame: FrameKind) -> FrameFlow {
-    let (code, message) = match &frame {
+/// Refuse one client frame about an `AgentSession`. A refusal never waits on
+/// the mailbox: a full one drops it, so a flood cannot stall this read loop.
+pub(super) fn serve(request: &ResourceFrame<'_>, frame: &FrameKind) -> FrameFlow {
+    let (code, message) = match frame {
         FrameKind::FrameAck { .. } => (
             ErrorCode::MalformedMessage,
             "FRAME_ACK is not valid on an agent-session stream".to_owned(),
@@ -42,7 +44,14 @@ pub(super) async fn serve(request: ResourceFrame<'_>, frame: FrameKind) -> Frame
         }
         other => return direction_invalid(request.client_id, other),
     };
-    crate::runtime::send_error(&request.plumbing.out_tx, code, &message).await;
+    let _ = request
+        .plumbing
+        .out_tx
+        .try_send(Outbound::Frame(FrameKind::Error {
+            request_id: None,
+            code,
+            message,
+        }));
     FrameFlow::Continue(())
 }
 

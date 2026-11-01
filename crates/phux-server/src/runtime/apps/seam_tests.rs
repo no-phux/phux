@@ -158,28 +158,31 @@ fn connections_hand_resource_frames_to_the_app() {
         "serve_history_request",
         "route_client_input",
         "dispatch_terminal_reply",
-        "ResourceKind::AgentSession",
+        "ResourceKind::",
     ];
+    fn scan(dir: &Path, root: &Path, hits: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("entry").path();
+            let relative = path.strip_prefix(root).expect("under src");
+            if path.is_dir() {
+                scan(&path, root, hits);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !is_test_source(&relative.to_string_lossy())
+            {
+                let source = std::fs::read_to_string(&path).expect("read source");
+                hits.extend(
+                    HELPERS
+                        .iter()
+                        .filter(|helper| source.contains(**helper))
+                        .map(|helper| format!("{}: {helper}", relative.display())),
+                );
+            }
+        }
+    }
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo and nextest");
     let src = Path::new(&manifest).join("src");
-    let dir = src.join("runtime/connections");
-    let hits: Vec<String> = std::fs::read_dir(&dir)
-        .expect("read connections")
-        .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().is_some_and(|e| e == "rs"))
-        .filter(|path| {
-            let relative = path.strip_prefix(&src).expect("under src");
-            !is_test_source(&relative.to_string_lossy())
-        })
-        .flat_map(|path| {
-            let source = std::fs::read_to_string(&path).expect("read source");
-            HELPERS
-                .iter()
-                .filter(|helper| source.contains(**helper))
-                .map(|helper| format!("{}: {helper}", path.display()))
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    let mut hits = Vec::new();
+    scan(&src.join("runtime/connections"), &src, &mut hits);
     assert!(hits.is_empty(), "connections routes by kind: {hits:?}");
 }
 
