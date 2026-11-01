@@ -1,6 +1,6 @@
 //! Native launch transaction and exclusive authenticated controller broker.
-use super::commands::CommandContext;
 use crate::resource::agent_session::AgentSessionActor;
+use crate::runtime::commands::CommandContext;
 use crate::state::native_agent::{NativeBinding, NativePublication, fingerprint};
 use crate::state::{ClientId, SharedState};
 use bytes::Bytes;

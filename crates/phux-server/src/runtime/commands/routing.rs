@@ -161,7 +161,9 @@ async fn route_command(
                 .with(|s| super::super::organization::native_relaunch_spec(s, resource, *expected))
             {
                 Ok(Some(spec)) => {
-                    let result = super::super::native_agent::spawn_relaunch(ctx, spec, *operation);
+                    let result = crate::runtime::apps::agent_session::native_agent::spawn_relaunch(
+                        ctx, spec, *operation,
+                    );
                     send_result(out_tx, request_id, result).await;
                     return None;
                 }

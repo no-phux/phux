@@ -33,7 +33,6 @@ pub mod idempotent_create;
 pub use apps::terminal::input_lane;
 use apps::terminal::{checkout, program_status, upload, voice};
 pub mod keyed_ops;
-mod native_agent;
 pub mod operation_dedupe;
 mod organization;
 mod path_search;
@@ -41,7 +40,6 @@ pub mod perf_control;
 mod process_env;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
-pub mod resource_commands;
 mod resume;
 pub mod revocation;
 #[cfg(test)]

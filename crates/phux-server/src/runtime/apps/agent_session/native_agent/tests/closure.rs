@@ -47,7 +47,7 @@ async fn accept_without_ack(
         )
         .unwrap()
     });
-    let accepted = super::super::super::resource_commands::append_native_publication(
+    let accepted = crate::runtime::apps::agent_session::append::append_native_publication(
         &fx.state,
         &fx.agent,
         encode_publication(update, &view).unwrap(),

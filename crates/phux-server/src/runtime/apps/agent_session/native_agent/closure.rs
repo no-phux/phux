@@ -81,7 +81,7 @@ async fn commit_closure(state: &SharedState, agent: &ResourceId) -> CommandResul
             Err(error) => return refusal(error),
         },
     };
-    let accepted = super::resource_commands::append_native_publication(
+    let accepted = crate::runtime::apps::agent_session::append::append_native_publication(
         state,
         agent,
         Bytes::from(bytes),
@@ -128,7 +128,7 @@ fn schedule_closure(state: &SharedState, agent: &ResourceId) {
     });
 }
 
-pub(super) fn retry_pending_closures(state: &SharedState) {
+pub(crate) fn retry_pending_closures(state: &SharedState) {
     let agents: Vec<_> = state.with(|s| {
         s.native_agents()
             .bindings

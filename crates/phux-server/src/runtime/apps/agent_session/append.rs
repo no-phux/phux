@@ -14,16 +14,6 @@ use tracing::debug;
 use crate::resource::agent_session::{AppendRejection, AppendRequest, StreamEvidence};
 use crate::state::{ClientId, SharedState};
 
-mod attach;
-mod spawn;
-
-pub(crate) use attach::attach_agent_session;
-pub(crate) use spawn::spawn_agent_session;
-
-/// Payload budget for one `BOOTSTRAP_CHUNK` when the connection negotiated
-/// none. Records are at most 16 KiB, so this fits several per chunk.
-const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
-
 /// Handle `APPEND_RESOURCE_OUTPUT` (ADR-0103 §3), replying with the stamped
 /// `{"seq":…,"ts_ms":…}` header. Only a local owner connection may produce:
 /// a remote peer must not forge a local agent's lifecycle.
@@ -70,7 +60,7 @@ pub(crate) async fn handle_append_resource_output(
     }
 }
 
-pub(super) async fn append_native_output(
+pub(crate) async fn append_native_output(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,
@@ -78,7 +68,7 @@ pub(super) async fn append_native_output(
     append_output(state, terminal_id, bytes, None).await
 }
 
-pub(super) async fn append_native_publication(
+pub(crate) async fn append_native_publication(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,

@@ -111,7 +111,7 @@ fn host_binding<'a>(
     Ok(binding)
 }
 
-pub(super) async fn handle(ctx: &CommandContext, request: NativeRequest) -> CommandResult {
+pub(crate) async fn handle(ctx: &CommandContext, request: NativeRequest) -> CommandResult {
     let state = &ctx.state;
     let client = ctx.client_id;
     if state.with(|s| s.native_agents().sealed)

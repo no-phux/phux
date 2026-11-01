@@ -35,7 +35,7 @@ async fn publish(
         Ok(bytes) => bytes,
         Err(error) => return error,
     };
-    let accepted = super::resource_commands::append_native_publication(
+    let accepted = crate::runtime::apps::agent_session::append::append_native_publication(
         &ctx.state,
         &agent,
         bytes,
@@ -317,6 +317,6 @@ fn sync_ask_inventory(state: &SharedState, agent: &ResourceId) {
         payload.map(|payload| (parent, payload))
     });
     if let Some((parent, payload)) = published {
-        super::client::broadcast_event(state, Some(&parent), &payload.into_event());
+        crate::runtime::client::broadcast_event(state, Some(&parent), &payload.into_event());
     }
 }

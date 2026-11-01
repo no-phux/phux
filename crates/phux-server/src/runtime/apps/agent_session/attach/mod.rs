@@ -3,7 +3,7 @@
 
 #![allow(
     clippy::redundant_pub_crate,
-    reason = "private submodule re-exported by resource_commands at crate visibility"
+    reason = "private module of the agent session app"
 )]
 
 use bytes::Bytes;

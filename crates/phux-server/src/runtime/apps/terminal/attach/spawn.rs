@@ -171,7 +171,7 @@ pub(crate) async fn handle_spawn_terminal(
         Some(crate::resource::ResourceKind::Terminal) => {}
         Some(crate::resource::ResourceKind::AgentSession) => {
             let resource = resource.unwrap_or_default();
-            crate::runtime::resource_commands::spawn_agent_session(
+            crate::runtime::apps::agent_session::spawn::spawn_agent_session(
                 state,
                 client_id,
                 request_id,

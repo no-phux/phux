@@ -230,7 +230,7 @@ async fn generic_hooks_cannot_create_another_source_or_self_input_under_native_g
                 s.native_agents_mut().bindings.remove(&fx.agent);
             });
             let (tx, mut rx) = mpsc::channel(4);
-            super::super::resource_commands::spawn_agent_session(
+            crate::runtime::apps::agent_session::spawn::spawn_agent_session(
                 &fx.state,
                 fx.owner,
                 900,

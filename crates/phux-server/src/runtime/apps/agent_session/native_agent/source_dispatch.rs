@@ -94,7 +94,7 @@ fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &ResourceId) {
 
 /// A real executing-host/stream exit is source closure, not an interrupt.
 /// Publish unavailable controls while the readable stream is still alive.
-pub(super) async fn source_exited(state: &SharedState, resource: phux_core::ids::ResourceId) {
+pub(crate) async fn source_exited(state: &SharedState, resource: phux_core::ids::ResourceId) {
     let agents = state.with_mut(|s| {
         let Some(wire) = s.resource_wire_of(resource) else {
             return Vec::new();

@@ -3,7 +3,7 @@
 
 #![allow(
     clippy::redundant_pub_crate,
-    reason = "private submodule re-exported by resource_commands at crate visibility"
+    reason = "private module of the agent session app"
 )]
 
 use phux_protocol::caps::BootstrapLimits;
@@ -13,7 +13,7 @@ use phux_resource::agent_session::AgentSessionResource as _;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use super::attach_agent_session;
+use super::attach::attach_agent_session;
 use crate::mailbox::Outbound;
 use crate::resource::agent_session::AgentSessionActor;
 use crate::runtime::attach::refuse_spawn;

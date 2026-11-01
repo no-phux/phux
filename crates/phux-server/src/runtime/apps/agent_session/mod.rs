@@ -9,6 +9,15 @@ use crate::resource::ResourceKind;
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::operation_dedupe::OperationClaim;
 
+pub(crate) mod append;
+mod attach;
+pub(crate) mod native_agent;
+pub(crate) mod spawn;
+
+/// Payload budget for one `BOOTSTRAP_CHUNK` when the connection negotiated
+/// none. Records are at most 16 KiB, so this fits several per chunk.
+const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
+
 /// Serves [`ResourceKind::AgentSession`].
 #[derive(Debug)]
 pub(crate) struct AgentSessionApp;
@@ -43,10 +52,10 @@ impl ResourceApp for AgentSessionApp {
         async move {
             match command {
                 Command::NativeAgent { request } => {
-                    crate::runtime::native_agent::handle(ctx, request.into_request()).await
+                    native_agent::handle(ctx, request.into_request()).await
                 }
                 Command::AppendResourceOutput { terminal_id, bytes } => {
-                    crate::runtime::resource_commands::handle_append_resource_output(
+                    append::handle_append_resource_output(
                         &ctx.state,
                         ctx.client_id,
                         &terminal_id,
@@ -68,7 +77,7 @@ impl ResourceApp for AgentSessionApp {
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         async move {
-            match crate::runtime::resource_commands::attach_agent_session(
+            match attach::attach_agent_session(
                 stream.state,
                 stream.client_id,
                 stream.wire,

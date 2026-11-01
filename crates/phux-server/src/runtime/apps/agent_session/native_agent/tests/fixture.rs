@@ -40,7 +40,7 @@ impl Fixture {
         };
         let (owner, session, parent, parent_wire) =
             Self::create_guardian(&state, &root, dir.path(), &peer, &recipe);
-        let delegation = super::super::delegation::delegate_agent(
+        let delegation = crate::runtime::delegation::delegate_agent(
             &state,
             owner,
             session,
