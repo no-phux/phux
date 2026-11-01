@@ -41,24 +41,36 @@ pub fn configure_terminal_for_kitty_graphics(
     Ok(())
 }
 
-/// Re-emit Kitty graphics state held by `terminal` as APC bytes.
+/// Re-emit the delta of `terminal`'s visible Kitty graphics against what
+/// `residency` says the outer terminal already holds.
 ///
 /// `origin` is the outer-terminal cell coordinate for pane-local `(0, 0)`.
-/// `clip` is the pane's visible cell extent. Only payloads needed by collected,
-/// clipped placements are transmitted, followed by explicit classic or
-/// Unicode-placeholder placements with their original identities, source
-/// rectangles, offsets and stacking order.
-/// The caller owns clearing stale placements before a full repaint.
+/// `clip` is the pane's visible cell extent. Only images referenced by
+/// collected, clipped placements are kept in the outer terminal: an image
+/// whose content generation the outer terminal lacks is transmitted once, an
+/// image whose placements moved is re-placed without its payload, and an
+/// image that is no longer visibly placed is deleted. Unchanged state writes
+/// nothing. Placements keep their original identities, source rectangles,
+/// offsets and stacking order.
 ///
-/// Returns `true` when bytes were written.
+/// Returns `true` when a classic (cell-anchored) placement was written or
+/// removed: the cursor moved and cells may be overlaid. Payload transmission
+/// and Unicode-placeholder placements leave cells and cursor alone.
+///
+/// The caller calls [`KittyResidency::forget`] whenever the outer terminal
+/// may have lost or never received what was emitted (a screen clear, a
+/// dropped frame).
 pub fn emit_kitty_graphics_replay(
     terminal: &GhosttyTerminal<'_, '_>,
     placement_iter: &mut PlacementIterator<'_>,
+    residency: &mut KittyResidency,
     out: &mut impl Write,
     origin: (u16, u16),
     clip: (u16, u16),
 ) -> Result<bool, KittyReplayError> {
-    emit_replay(terminal, placement_iter, out, origin, Some(clip))
+    let graphics = terminal.kitty_graphics()?;
+    let replay = sorted_placements(terminal, &graphics, placement_iter, Some(clip))?;
+    residency.replay(&graphics, &replay, origin, out)
 }
 
 /// Restore graphics into a dedicated terminal replica.
@@ -67,40 +79,39 @@ pub fn emit_kitty_graphics_replay(
 /// later cell-pixel resize can reveal the rest of a natural-size image.
 /// All resident payloads, including unplaced images, are restored so later
 /// live placement commands can reference them.
+///
+/// Returns `true` when bytes were written.
 pub fn emit_kitty_graphics_snapshot(
     terminal: &GhosttyTerminal<'_, '_>,
     placement_iter: &mut PlacementIterator<'_>,
     out: &mut impl Write,
 ) -> Result<bool, KittyReplayError> {
-    emit_replay(terminal, placement_iter, out, (0, 0), None)
-}
-
-fn emit_replay(
-    terminal: &GhosttyTerminal<'_, '_>,
-    placement_iter: &mut PlacementIterator<'_>,
-    out: &mut impl Write,
-    origin: (u16, u16),
-    clip: Option<(u16, u16)>,
-) -> Result<bool, KittyReplayError> {
     let graphics = terminal.kitty_graphics()?;
     let mut image_ids = Vec::new();
     graphics.image_ids_into(&mut image_ids)?;
-    image_ids.sort_unstable();
-    let mut replay = collect_placements(terminal, &graphics, placement_iter, &image_ids, clip)?;
-    // Preserve default-placeholder preference without exposing internal IDs.
-    replay.sort_by_key(|p| (p.image_id, !p.external, p.placement_id));
-    if clip.is_some() {
-        image_ids.retain(|id| replay.binary_search_by_key(id, |p| p.image_id).is_ok());
-    }
+    let mut replay = sorted_placements(terminal, &graphics, placement_iter, None)?;
     transmit_images(&graphics, out, &mut image_ids)?;
     replay.retain(|p| image_ids.binary_search(&p.image_id).is_ok());
-    let wrote = !image_ids.is_empty();
     for placement in replay {
-        placement.write(out, origin)?;
+        placement.write(out, (0, 0))?;
     }
-    Ok(wrote)
+    Ok(!image_ids.is_empty())
 }
 
+/// Collect `clip`ped placements, grouped by image in a stable order.
+fn sorted_placements(
+    terminal: &GhosttyTerminal<'_, '_>,
+    graphics: &graphics::Graphics<'_>,
+    placement_iter: &mut PlacementIterator<'_>,
+    clip: Option<(u16, u16)>,
+) -> Result<Vec<ReplayPlacement>, KittyReplayError> {
+    let mut replay = collect_placements(terminal, graphics, placement_iter, clip)?;
+    // Preserve default-placeholder preference without exposing internal IDs.
+    replay.sort_by_key(|p| (p.image_id, !p.external, p.placement_id));
+    Ok(replay)
+}
+
+/// Transmit each of `ids`, keeping only those that had a payload to send.
 fn transmit_images(
     graphics: &graphics::Graphics<'_>,
     out: &mut impl Write,
@@ -131,7 +142,6 @@ fn collect_placements(
     terminal: &GhosttyTerminal<'_, '_>,
     graphics: &graphics::Graphics<'_>,
     iter: &mut PlacementIterator<'_>,
-    image_ids: &[u32],
     clip: Option<(u16, u16)>,
 ) -> Result<Vec<ReplayPlacement>, KittyReplayError> {
     let cell = cell_pixels(terminal)?;
@@ -139,9 +149,6 @@ fn collect_placements(
     let mut replay = Vec::new();
     while let Some(placement) = placements.next() {
         let id = placement.image_id()?;
-        if image_ids.binary_search(&id).is_err() {
-            continue;
-        }
         let Some(image) = graphics.image(id) else {
             continue;
         };
@@ -400,9 +407,19 @@ fn write_image_apc(out: &mut impl Write, image: &Image<'_>) -> Result<bool, Kitt
         height: image.height()?,
     };
     // Anonymous p=0 placements cannot be overwritten by ID.
-    write!(out, "\x1b_Ga=d,d=I,i={},q=2;\x1b\\", header.id)?;
+    write_delete_image(out, header.id)?;
     write_image_chunks(out, &header, data)?;
     Ok(true)
+}
+
+/// Delete image `id` with its placements and pixels (`d=I`).
+fn write_delete_image(out: &mut impl Write, id: u32) -> io::Result<()> {
+    write!(out, "\x1b_Ga=d,d=I,i={id},q=2;\x1b\\")
+}
+
+/// Delete image `id`'s placements but keep its pixels resident (`d=i`).
+fn write_delete_placements(out: &mut impl Write, id: u32) -> io::Result<()> {
+    write!(out, "\x1b_Ga=d,d=i,i={id},q=2;\x1b\\")
 }
 
 struct ImageHeader {
@@ -504,6 +521,10 @@ fn write_cup(out: &mut impl Write, row: u16, col: u16) -> io::Result<()> {
         col.saturating_add(1)
     )
 }
+
+mod residency;
+
+pub use residency::KittyResidency;
 
 #[cfg(test)]
 mod tests;
