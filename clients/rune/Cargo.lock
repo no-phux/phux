@@ -2264,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "phux-rune"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
@@ -2439,7 +2439,7 @@ dependencies = [
 [[package]]
 name = "procwatch"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=791971423cf6614aff061491e1f82e283dfc9f0e#791971423cf6614aff061491e1f82e283dfc9f0e"
+source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
 dependencies = [
  "libc",
 ]
@@ -2734,7 +2734,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 [[package]]
 name = "rune"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=791971423cf6614aff061491e1f82e283dfc9f0e#791971423cf6614aff061491e1f82e283dfc9f0e"
+source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
 dependencies = [
  "arboard",
  "blake3",
@@ -2760,15 +2760,20 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "opuscule",
+ "parking_lot",
  "parley",
  "png 0.18.1",
  "pollster",
  "portable-atomic",
  "raw-window-handle",
+ "raw-window-metal",
  "resvg",
  "rune-motion",
  "rune-staging",
+ "rune-taffy",
+ "rustc-demangle",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -2788,6 +2793,7 @@ dependencies = [
  "wgpu",
  "wgpu-core",
  "wgpu-hal",
+ "wgpu-naga-bridge",
  "windows-sys 0.59.0",
  "winit",
  "x11rb",
@@ -2799,7 +2805,7 @@ dependencies = [
 [[package]]
 name = "rune-mac"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=791971423cf6614aff061491e1f82e283dfc9f0e#791971423cf6614aff061491e1f82e283dfc9f0e"
+source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
@@ -2808,12 +2814,12 @@ dependencies = [
 [[package]]
 name = "rune-motion"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=791971423cf6614aff061491e1f82e283dfc9f0e#791971423cf6614aff061491e1f82e283dfc9f0e"
+source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
 
 [[package]]
 name = "rune-perf"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=791971423cf6614aff061491e1f82e283dfc9f0e#791971423cf6614aff061491e1f82e283dfc9f0e"
+source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
 dependencies = [
  "procwatch",
  "serde_json",
@@ -2822,10 +2828,24 @@ dependencies = [
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=791971423cf6614aff061491e1f82e283dfc9f0e#791971423cf6614aff061491e1f82e283dfc9f0e"
+source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
 dependencies = [
  "wgpu",
 ]
+
+[[package]]
+name = "rune-taffy"
+version = "0.0.1"
+source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
+dependencies = [
+ "taffy",
+]
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "rustc-hash"

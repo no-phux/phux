@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
-use rune::{Color, Cx, El, Phase, PointerButton, col, el, row};
+use rune::{Cx, El, Phase, PointerButton, col, el, row};
 
 use super::status::placeholder;
 use super::{Ink, PAD, overlay};
@@ -166,15 +166,10 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
             (ink.text, ink.raised),
         ));
     }
-    let edge = if several && focused {
-        ink.accent.alpha(0.55)
-    } else {
-        Color::TRANSPARENT
-    };
     let linked = desk.pointer.hover.as_ref().is_some_and(|(t, _)| t == id);
     let area = desk.pane_area(id).unwrap_or([0.0, 0.0]);
-    host.fill(grid::background(&frame))
-        .border(1.0, edge)
+    let ground = grid::background(&frame);
+    host.fill(ground)
         .cursor(if linked { rune::Cursor::Pointer } else { rune::Cursor::Text })
         .on_pointer_move_local(move |d: &mut Desk, event, tx| {
             d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods());
@@ -226,5 +221,5 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .children(overlay::find_bar(desk, id, area, ink))
         .children(focused.then(|| super::inbox::ask_card(desk, id, area, ink)).flatten())
         // Panes without the keyboard sit back a little.
-        .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(Color::BLACK.alpha(0.18)).inert()))
+        .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(ground.alpha(0.42)).inert()))
 }

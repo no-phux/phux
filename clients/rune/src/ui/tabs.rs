@@ -3,11 +3,9 @@
 
 use rune::{Color, El, TextStyle, col, el, row, text, text_input};
 
-use super::{CAPTION, Ink, LABEL_STRONG, Sheet, button, pressable};
+use super::{CAPTION, Ink, LABEL_STRONG, Sheet, button, icon_press, icons, pressable};
 use crate::activity::Mark;
 use crate::desk::{Desk, Renaming, Tab};
-
-pub(super) const STRIP_H: f32 = 32.0;
 
 fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
     let waiting = tab
@@ -25,7 +23,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
             .radius(4.0)
             .center()
             .on_press(move |d: &mut Desk| d.close_tab(index))
-            .child(text("✕").font(CAPTION).color(ink.dim))
+            .child(rune::icon(&icons::CLOSE, 11.0).color(ink.dim))
     });
     let hint = (index < 9).then(|| {
         text(format!("{}{}", super::MOD, index + 1))
@@ -41,7 +39,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
         .radius(6.0)
         .items_center()
         .fill(if tab.active {
-            ink.selected
+            ink.current
         } else {
             Color::TRANSPARENT
         })
@@ -68,25 +66,17 @@ pub fn strip(desk: &Desk, ink: &Ink) -> Option<El> {
     }
     let mut line = row()
         .key("tabs")
-        .w_full()
-        .h(STRIP_H)
-        .px(6.0)
+        .shrink()
         .gap(3.0)
         .items_center()
-        .fill(ink.sidebar)
         .min_w(0.0);
     for (index, item) in desk.tabs.list.iter().enumerate() {
         line = line.child(tab(desk, item, index, ink));
     }
     Some(
-        line.child(
-            pressable("tab-new", ink)
-                .size(24.0, 24.0)
-                .radius(6.0)
-                .center()
-                .on_press(|d: &mut Desk| d.new_tab())
-                .child(text("+").font(LABEL_STRONG).color(ink.dim)),
-        ),
+        line.child(icon_press(&icons::PLUS, "tab-new", ink, |d: &mut Desk| {
+            d.new_tab();
+        })),
     )
 }
 

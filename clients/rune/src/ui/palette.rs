@@ -193,7 +193,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
         .radius(8.0)
         .items_center()
         .fill(if picked {
-            ink.accent.alpha(0.2)
+            ink.current
         } else {
             Color::TRANSPARENT
         })

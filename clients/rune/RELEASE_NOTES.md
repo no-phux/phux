@@ -1,22 +1,14 @@
-**Phux Rune 0.1.0-alpha.8**: a window that recovers, renders faster, and speaks plainly.
+**Phux Rune 0.1.0-alpha.9**: a new look, and the latest Rune.
 
-- **Connection recovery.** A dropped connection comes back by itself, and the
-  window says where it stands: starting, connecting, no sessions, or a server
-  that needs updating, each with what to do next.
-- **Faster rendering.** A scrolled row keeps what it already built. Scrolling
-  rebuilds 128 rows where it rebuilt 2,944, and a stream beside an idle split
-  128 where it rebuilt 10,112. Box drawing, shades and Powerline glyphs now
-  line up across cells.
-- **One command table.** The shortcuts, the palette and the native menus run
-  the same commands by the same rules.
-- **⇧⌘W** closes the tab.
-- **Agent attention** shows what needs you without drawing continuously, so an
-  idle window stays idle.
-- **Readable themes and keyboard Settings.** Every theme keeps its text legible,
-  and Settings works without a mouse.
-- **Copy Diagnostics** puts the facts a bug report needs on the clipboard.
-- **Install it** with `curl -fsSL https://phux.sh/install | sh -s -- --rune`.
-
-From alpha.6 this arrives by itself; earlier alphas need one manual download.
-Signed, notarized and stapled. Alpha: one window on one machine. See
-[clients/rune/README.md](https://github.com/no-phux/phux/blob/main/clients/rune/README.md).
+- **The terminal is a card.** It sits inset with rounded corners on one quiet
+  surface, in neutral colours that leave a terminal's own alone.
+- **One title bar.** Session and terminal, tabs, updates and link targets share
+  the band over the terminal; the status line is gone, so nothing costs a row,
+  and the connection is only mentioned when it's in trouble.
+- **A sidebar that reads.** A session of one terminal is one row, with what its
+  agent is doing beneath the name. Marks are larger, and `@N` shows only where
+  it tells two terminals apart.
+- **Splits.** Panes without the keyboard dim instead of the focused one wearing
+  a border.
+- **Rune.** Pinned to current upstream, which draws with its Metal backend on
+  macOS and handles a double click on an empty titlebar natively.
