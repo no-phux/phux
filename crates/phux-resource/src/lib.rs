@@ -36,6 +36,7 @@ pub mod handoff_env;
 pub mod mailbox;
 pub mod perf;
 pub mod proc_query;
+pub mod replication;
 
 pub use phux_core::ids::ResourceId;
 pub use phux_core::resource::ResourceKind;

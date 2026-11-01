@@ -3,12 +3,12 @@
 
 use super::{
     AgentDetector, Bytes, CanonicalTerminal, ClientId, ConsumerAckRequest, ConsumerDetachRequest,
-    ConsumerSyncState, DEFAULT_TICK_INTERVAL, EncodedInputRequest, FrameKind, MAX_EMIT_INSTANTS,
-    MAX_INPUT_COALESCE, MAX_PTY_COALESCE, MAX_PTY_COALESCE_BYTES, NativeOrPty, Outbound,
-    PaneOutput, PaneUpgradeHandle, PtyEvent, PwdRequest, RESIZE_RESYNC_DEBOUNCE, ResizeRequest,
-    ResyncAudience, ResyncReason, ResyncTarget, ScreenReply, ScreenRequest,
-    SetDefaultColorsRequest, SnapshotBytes, SnapshotRequest, TerminalActor, TerminalInput,
-    UpgradeHandleRequest, debug, error, mpsc, recv_native_or_pty, tick, trace, warn,
+    ConsumerSyncState, DEFAULT_TICK_INTERVAL, EncodedInputRequest, FrameKind, MAX_INPUT_COALESCE,
+    MAX_PTY_COALESCE, MAX_PTY_COALESCE_BYTES, NativeOrPty, Outbound, PaneOutput, PaneUpgradeHandle,
+    PtyEvent, PwdRequest, RESIZE_RESYNC_DEBOUNCE, ResizeRequest, ResyncAudience, ResyncReason,
+    ResyncTarget, ScreenReply, ScreenRequest, SetDefaultColorsRequest, SnapshotBytes,
+    SnapshotRequest, TerminalActor, TerminalInput, UpgradeHandleRequest, debug, error, mpsc,
+    recv_native_or_pty, trace, warn,
 };
 use crate::grid::SnapshotSynthesizer;
 use crate::grid::SynthesisError;
@@ -21,13 +21,12 @@ mod service;
 mod drive;
 #[path = "run_loop_tick.rs"]
 mod emitter;
+#[path = "run_loop_helpers.rs"]
+mod helpers;
 #[path = "run_loop_ingress.rs"]
 mod ingress;
 #[path = "run_loop_replies.rs"]
 mod replies;
-use emitter::must_walk_when_clean;
-#[path = "run_loop_helpers.rs"]
-mod helpers;
 pub(super) use helpers::icount_join_pty_burst;
 use helpers::{armed_interval, join_pty_burst};
 #[cfg(test)]
@@ -436,7 +435,7 @@ impl TerminalActor {
         }
         self.consumer_states.values().any(|state| {
             state.wants_state_sync
-                && (self.terminal_dirty_since_tick || must_walk_when_clean(state))
+                && (self.terminal_dirty_since_tick || state.sync.must_walk_when_clean())
         })
     }
 
