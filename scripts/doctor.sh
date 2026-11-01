@@ -5,8 +5,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 scope="${1:-native}"
 case "$scope" in
-    docs|core|native|integrations|web|desktop|ci) ;;
-    *) phux_error "usage: bash scripts/doctor.sh [docs|core|native|integrations|web|desktop|ci]"; exit 2 ;;
+    docs|core|native|server|integrations|web|desktop|ci) ;;
+    *) phux_error "usage: bash scripts/doctor.sh [docs|core|native|server|integrations|web|desktop|ci]"; exit 2 ;;
 esac
 [[ $# -le 1 ]] || exit 2
 cd "$DEV_ROOT"
@@ -163,13 +163,43 @@ linux_desktop_tools() {
     fi
 }
 
+# Advisory: the size ratchet and the docs check run from these hooks, and Git
+# ignores them until core.hooksPath points here. `bd hooks install` sets it.
+git_hooks() {
+    if [[ "$(git config --get core.hooksPath 2>/dev/null || true)" == *.beads/hooks ]]; then
+        ok 'Git hooks in .beads/hooks'
+    else
+        phux_warn 'core.hooksPath is not .beads/hooks; pre-commit gates will not run'
+        phux_hint 'git config core.hooksPath .beads/hooks'
+    fi
+}
+# What `just test` needs beyond a native build, and what a pane leaks into it.
+server_tools() {
+    native_tools
+    need cargo-nextest "$(env_remedy 'see docs/development.md#validating-a-change')"
+    need python3 'just test-report reads the JUnit report with python3'
+    if [[ -x scripts/test-env-runner.sh ]] && grep -q '^runner = "scripts/test-env-runner.sh"' .cargo/config.toml; then
+        ok 'test runner strips inherited PHUX_* from test processes'
+    else
+        fail 'test env runner' 'restore [target.'"'"'cfg(unix)'"'"'] runner in .cargo/config.toml'
+    fi
+    local names
+    names="${!PHUX_@}"
+    if [[ -n "$names" ]]; then
+        phux_warn "this shell has ${names} set; tests never see them, but cargo run and raw phux do"
+        phux_hint 'keep dev servers on `just rebuild` or an explicit temp socket'
+    fi
+}
+
 need git 'Install Git with your platform package manager'
+git_hooks
 case "$scope" in
     docs)
         for tool in awk sed grep find sort; do need "$tool" 'Install standard Unix utilities'; done
         ;;
     core) rust_tools core ;;
     native) native_tools ;;
+    server) server_tools ;;
     desktop) desktop_tools ;;
     integrations)
         node_tools

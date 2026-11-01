@@ -69,6 +69,16 @@ test: worktree-claim && (worktree-verify "test")
     # An rdeps filterset can select nothing; that is a pass, not an error.
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run "${source[@]}" --no-tests=warn ${extra[@]+"${extra[@]}"}
 
+# The whole unit pool to the end, with failures matched against
+# scripts/known-failing-tests.txt. `--base origin/main` reruns anything
+# unexplained on that ref. Other arguments go to nextest in place of the
+# workspace selection: `just test-report -p phux-server`.
+[group('test')]
+[doc('Run every unit test to the end and report only unexplained failures.')]
+test-report *ARGS: worktree-claim && (worktree-verify "test-report")
+    bash scripts/test-report.sh {{ARGS}}
+
+
 # `phux-server/measure` builds the e2e lane's `perf` target, which a
 # default-feature build skips. The feature is empty: it changes no code and no
 # dependency's feature set, so the unit pool and e2e share one build.
@@ -171,7 +181,7 @@ e2e-repro: worktree-claim
 [group('test')]
 [doc('Hermetic argv and control-flow gate for the placed-fleet example.')]
 agents-fleet-smoke: worktree-claim
-    bash examples/agents/tests/placed-fleet-smoke.sh
+    bash scripts/test-env-runner.sh --all bash examples/agents/tests/placed-fleet-smoke.sh
 
 
 # Also exercised by automation_e2e from CI's same-checkout test archive.
@@ -179,7 +189,7 @@ agents-fleet-smoke: worktree-claim
 [doc('Build the checkout CLI and execute every introductory agent example.')]
 examples-smoke: worktree-claim && (worktree-verify "examples-smoke")
     cargo build --locked -p phux --bin phux
-    PHUX="{{justfile_directory()}}/target/debug/phux" bash scripts/examples-smoke.sh
+    PHUX="{{justfile_directory()}}/target/debug/phux" bash scripts/test-env-runner.sh --all bash scripts/examples-smoke.sh
 
 
 # Real isolated server dogfood for placement/layout/watch/ask with shell panes;
@@ -190,7 +200,7 @@ examples-smoke: worktree-claim && (worktree-verify "examples-smoke")
 agents-fleet-live: worktree-claim
     cargo build -p phux
     PHUX="{{justfile_directory()}}/target/debug/phux" \
-      bash examples/agents/tests/placed-fleet-live.sh
+      bash scripts/test-env-runner.sh --all bash examples/agents/tests/placed-fleet-live.sh
 
 
 # Run the checked-in plugin package through the same discover/validate/run
@@ -201,7 +211,7 @@ plugin-demo:
     #!/usr/bin/env bash
     set -euo pipefail
     export XDG_CONFIG_HOME="{{justfile_directory()}}/plugins/agent-tools/config"
-    demo() { cargo run -q -p phux --bin phux -- "$@"; }
+    demo() { bash scripts/test-env-runner.sh --all cargo run -q -p phux --bin phux -- "$@"; }
     demo config plugins
     demo config plugins --json
     demo config run com.phux.demo.agent-tools inspect

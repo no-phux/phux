@@ -1,0 +1,8 @@
+# Tests that fail on main for a tracked reason. `just test-report` lists these
+# apart from new failures. One `binary-id test-name` per line, with the bead
+# after a `#`. Delete a line when its bead closes; never add one to get a green.
+
+# macOS only
+phux-server plugin_startup::reap::tests::reap_kills_a_grandchild_after_the_leader_exits # phux-mhk4n
+phux-server plugin_startup::supervise::tests::fired_watch_is_polled_again_when_the_first_wait_misses # phux-mhk4n
+phux-server::lifecycle plugin_startup::backoff_resets_after_a_minute_up # phux-mhk4n
