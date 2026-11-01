@@ -12,11 +12,10 @@ use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind};
 use phux_resource::agent_session::AgentSessionResource as _;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::DEFAULT_AGENT_CHUNK_BYTES;
 use crate::mailbox::Outbound;
-use crate::resource::PaneOutput;
 use crate::resource::agent_session::{AgentSessionBootstrap, BootstrapRequest};
 use crate::state::{ClientId, SharedState};
 /// Bootstrap an `AgentSession` at one atomic cut: a full retained replacement
@@ -116,23 +115,25 @@ pub(crate) async fn attach_agent_session(
     }
     last_seq.store(cut.base_seq, std::sync::atomic::Ordering::Release);
 
-    let pump_out = out_tx.clone();
-    let pump_terminal = terminal_id.clone();
+    let pump = live::LivePump {
+        state: state.clone(),
+        client_id,
+        core,
+        bootstrap: session.bootstrap.clone(),
+        out_tx: out_tx.clone(),
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        limits,
+        cancel,
+        last_seq,
+    };
     let connection_cancel = connection_token.clone();
     let handle = tokio::task::spawn_local(async move {
         let _done = pump_done;
         tokio::select! {
             () = connection_cancel.cancelled() => {}
-            () = live_pump(
-                live,
-                pump_out,
-                pump_terminal,
-                stream_id,
-                bootstrap_id,
-                cut.base_seq,
-                cancel,
-                last_seq,
-            ) => {}
+            () = pump.run(live, cut.base_seq) => {}
         }
     });
     state.with_mut(|s| {
@@ -214,60 +215,7 @@ fn bootstrap_frames(
         .chain(std::iter::once(ready))
 }
 
-/// Forward live records to one attached consumer until it detaches or the
-/// session closes.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "stream identity, cut, cancellation, and the shared delivery cursor"
-)]
-async fn live_pump(
-    mut live: tokio::sync::broadcast::Receiver<PaneOutput>,
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
-    terminal_id: phux_protocol::ids::ResourceId,
-    stream_id: phux_protocol::ids::StreamId,
-    bootstrap_id: phux_protocol::ids::BootstrapId,
-    base_seq: u64,
-    cancel: CancellationToken,
-    last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
-) {
-    loop {
-        let output = tokio::select! {
-            () = cancel.cancelled() => return,
-            received = live.recv() => received,
-        };
-        match output {
-            Ok(PaneOutput::Live { seq, bytes, .. }) => {
-                if seq <= base_seq {
-                    continue;
-                }
-                if out_tx
-                    .send(Outbound::Frame(FrameKind::ResourceOutput {
-                        terminal_id: terminal_id.clone(),
-                        stream_id,
-                        bootstrap_id,
-                        seq,
-                        bytes,
-                    }))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                last_seq.store(seq, std::sync::atomic::Ordering::Release);
-            }
-            // A session has no grid to resync.
-            Ok(PaneOutput::Resync { .. } | PaneOutput::Control { .. }) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                warn!(
-                    session = %terminal_id,
-                    skipped,
-                    "agent session consumer fell behind; records were dropped from its view"
-                );
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-        }
-    }
-}
+mod live;
 
 #[cfg(test)]
 mod tests;
