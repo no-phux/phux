@@ -147,6 +147,42 @@ fn owns_agent_session(path: &str) -> bool {
     path.starts_with("runtime/apps/agent_session/") || AGENT_SESSION_EXEMPT.contains(&path)
 }
 
+/// Frames about one resource reach its kind through `ResourceApp::frame`:
+/// `connections/` names no stream helper and branches on no kind.
+#[test]
+fn connections_hand_resource_frames_to_the_app() {
+    const HELPERS: [&str; 7] = [
+        "is_agent_session",
+        "handle_frame_ack",
+        "handle_terminal_resize",
+        "serve_history_request",
+        "route_client_input",
+        "dispatch_terminal_reply",
+        "ResourceKind::AgentSession",
+    ];
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo and nextest");
+    let src = Path::new(&manifest).join("src");
+    let dir = src.join("runtime/connections");
+    let hits: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read connections")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().is_some_and(|e| e == "rs"))
+        .filter(|path| {
+            let relative = path.strip_prefix(&src).expect("under src");
+            !is_test_source(&relative.to_string_lossy())
+        })
+        .flat_map(|path| {
+            let source = std::fs::read_to_string(&path).expect("read source");
+            HELPERS
+                .iter()
+                .filter(|helper| source.contains(**helper))
+                .map(|helper| format!("{}: {helper}", path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(hits.is_empty(), "connections routes by kind: {hits:?}");
+}
+
 #[test]
 fn the_host_reaches_the_terminal_engine_only_through_its_app() {
     let found = crossings(&TERMINAL_TOKENS, owns_terminal);

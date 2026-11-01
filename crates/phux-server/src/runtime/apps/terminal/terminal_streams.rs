@@ -1,7 +1,6 @@
 use crate::runtime::apps::terminal::input_lane::{InputLaneHandle, RoutedInput};
-use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow};
 use crate::runtime::connections::hello::NegotiatedConnection;
-use crate::runtime::connections::plumbing::{ClientPlumbing, ConnectionClose};
+use crate::runtime::connections::plumbing::ClientPlumbing;
 use crate::runtime::{
     bootstrap_attach_terminal, handle_detach_terminal, handle_terminal_input,
     subscribe_attach_terminal,
@@ -12,22 +11,11 @@ use crate::transport::quic::{
 };
 use phux_dial::window::SendWindow;
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
-use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind};
+use phux_protocol::wire::frame::ErrorCode;
 use phux_terminal::TerminalInput;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
-
-/// A frame kind a client may not send in the negotiated phase: close.
-pub(in crate::runtime) fn direction_invalid(client_id: ClientId, other: &FrameKind) -> FrameFlow {
-    warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
-    FrameFlow::Break(ConnectionEnding::Violation(ConnectionClose {
-        attached_reason: Some("direction-invalid frame"),
-        detach_reason: DetachReason::ProtocolError,
-        code: ErrorCode::InvalidCommand,
-        message: format!("frame is not valid from a client in the negotiated phase: {other:?}"),
-    }))
-}
+use tracing::debug;
 
 /// The fields of one `ATTACH` frame.
 pub(in crate::runtime) struct AttachFrame {
@@ -37,42 +25,6 @@ pub(in crate::runtime) struct AttachFrame {
     pub(in crate::runtime) request_scrollback: bool,
     pub(in crate::runtime) scrollback_limit_lines: u32,
     pub(in crate::runtime) role_policy: Option<phux_protocol::wire::frame::RolePolicy>,
-}
-
-/// `INPUT_*` frames: routed to the Terminal's input path.
-pub(in crate::runtime) const fn is_input_frame(frame: &FrameKind) -> bool {
-    matches!(
-        frame,
-        FrameKind::InputKey { .. }
-            | FrameKind::InputMouse { .. }
-            | FrameKind::InputFocus { .. }
-            | FrameKind::InputPaste { .. }
-            | FrameKind::InputTerminalReply { .. }
-    )
-}
-
-/// Frames about an attached Terminal's size or content stream.
-pub(in crate::runtime) const fn is_stream_frame(frame: &FrameKind) -> bool {
-    matches!(
-        frame,
-        FrameKind::ViewportResize { .. }
-            | FrameKind::ResizeTerminal { .. }
-            | FrameKind::FrameAck { .. }
-            | FrameKind::HistoryRequest { .. }
-    )
-}
-
-/// L3 metadata and event-subscription frames.
-pub(in crate::runtime) const fn is_metadata_frame(frame: &FrameKind) -> bool {
-    matches!(
-        frame,
-        FrameKind::GetMetadata { .. }
-            | FrameKind::SetMetadata { .. }
-            | FrameKind::DeleteMetadata { .. }
-            | FrameKind::ListMetadata { .. }
-            | FrameKind::SubscribeMetadata { .. }
-            | FrameKind::SubscribeEvents { .. }
-    )
 }
 
 /// Handle one QUIC Terminal-stream event (docs/protocol.md#quic-stream-routing). `Bound` binds and

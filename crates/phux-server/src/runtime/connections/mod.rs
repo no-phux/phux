@@ -11,14 +11,14 @@
 )]
 
 mod commands;
-pub(in crate::runtime) mod dispatch;
-mod frames;
-pub(in crate::runtime) mod hello;
+pub(crate) mod dispatch;
+pub(in crate::runtime) mod frames;
+pub(crate) mod hello;
 mod lifecycle;
 mod metadata_mutation;
 mod metadata_read;
 pub(in crate::runtime) mod metadata_subscriptions;
-pub(in crate::runtime) mod plumbing;
+pub(crate) mod plumbing;
 mod session_create;
 mod unsupported;
 mod writer;
