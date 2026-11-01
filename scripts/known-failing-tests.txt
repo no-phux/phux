@@ -1,0 +1,3 @@
+# Tests that fail on main for a tracked reason. `just test-report` lists these
+# apart from new failures. One `binary-id test-name` per line, with the bead
+# after a `#`. Delete a line when its bead closes; never add one to get a green.

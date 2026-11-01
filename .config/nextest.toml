@@ -230,3 +230,8 @@ test-group = 'pty-ci'
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# `just test-report` reads failures back from this. Overrides fall back to
+# profile.default, as they do for `ci`.
+[profile.report.junit]
+path = "junit.xml"
