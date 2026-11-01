@@ -110,6 +110,10 @@ try:
     fails += not wait(
         lambda: "alpha" in phux("snapshot", new).stdout, "the client's size reaches it"
     )
+    logs = [f for f in os.listdir(work) if f.endswith(".log")]
+    log = "".join(open(os.path.join(work, f)).read() for f in logs)
+    print("ok  " if not log else "FAIL", "the daemon logged nothing", repr(log[:300]))
+    fails += bool(log)
     type_keys(b"Oclient typed\x1b")
     fails += not wait(
         lambda: "client typed" in phux("snapshot", new).stdout,
