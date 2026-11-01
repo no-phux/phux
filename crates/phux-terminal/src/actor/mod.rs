@@ -302,7 +302,7 @@ pub struct TerminalActor {
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
     /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,
-    /// Detector output sink, drained by `runtime::client::spawn_agent_state_drain`.
+    /// Detector output sink, drained by `runtime::connections::spawn_agent_state_drain`.
     agent_state_sink: Option<mpsc::Sender<AgentDetectEvent>>,
     /// "Does this pane own a live `AgentSession` child?" (ADR-0103 §5),
     /// handed to the detector when [`Self::run`] builds it.

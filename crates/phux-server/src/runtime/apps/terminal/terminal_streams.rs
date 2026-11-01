@@ -1,7 +1,7 @@
+use crate::runtime::apps::terminal::input_lane::{InputLaneHandle, RoutedInput};
 use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow};
 use crate::runtime::connections::hello::NegotiatedConnection;
 use crate::runtime::connections::plumbing::{ClientPlumbing, ConnectionClose};
-use crate::runtime::input_lane::{InputLaneHandle, RoutedInput};
 use crate::runtime::{
     bootstrap_attach_terminal, handle_detach_terminal, handle_terminal_input,
     subscribe_attach_terminal,
@@ -379,7 +379,7 @@ pub(in crate::runtime) async fn route_client_input(
         // in the lane thread; the next printable would otherwise write the
         // PTY ahead of it. `ROUTE_INPUT` and `APPLY_INPUT` arm in the lane
         // admission, so every source for the pane shares this count.
-        let ahead = crate::runtime::input_lane::arm_pane_lane(state, &terminal_id);
+        let ahead = crate::runtime::apps::terminal::input_lane::arm_pane_lane(state, &terminal_id);
         lane.route(
             RoutedInput::attached(client_id, terminal_id, input, frame_label)
                 .with_credit(credit)

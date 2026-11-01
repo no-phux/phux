@@ -117,7 +117,7 @@ pub struct AgentReport {
 }
 
 /// Something a pane's actor derived that only `ServerState` can act on,
-/// drained by `runtime::client::spawn_agent_state_drain`. Not a wire type.
+/// drained by `runtime::connections::spawn_agent_state_drain`. Not a wire type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentDetectEvent {
     /// Publish the privacy-bounded foreground-process observation.

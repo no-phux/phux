@@ -282,7 +282,11 @@ fn publish_stream_ask(
         (payload, Some(wire))
     });
     if let (Some(payload), Some(wire_parent)) = (payload, wire_parent) {
-        crate::runtime::client::broadcast_event(state, Some(&wire_parent), &payload.into_event());
+        crate::runtime::connections::broadcast_event(
+            state,
+            Some(&wire_parent),
+            &payload.into_event(),
+        );
     }
 }
 

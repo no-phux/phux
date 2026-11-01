@@ -128,7 +128,7 @@ pub(crate) fn handle_detach_clients(state: &SharedState, session: Option<&str>) 
             reason: Some(DetachReason::Requested),
             message: "detached by `phux detach`".to_owned(),
         }));
-        super::super::client::detach_and_release_consumer_state(state, client_id);
+        crate::runtime::connections::detach_and_release_consumer_state(state, client_id);
     }
     debug!(
         ?session,

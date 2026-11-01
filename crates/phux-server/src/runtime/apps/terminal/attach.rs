@@ -15,7 +15,7 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{BootstrapId, GroupId, StreamId};
 use phux_protocol::wire::frame::{
     AttachTarget, DetachReason, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, MoveError,
-    MoveResult, SpawnError, SpawnResult,
+    MoveResult, SpawnError,
 };
 use std::ops::ControlFlow;
 use tokio::sync::oneshot;
@@ -27,6 +27,8 @@ use tracing::{debug, trace, warn};
 use crate::hub::relay::SatelliteSpawn;
 use crate::resource::ResourceHandle;
 use crate::runtime::pump::{self, PumpGeneration};
+use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn, spawned_result};
+use crate::runtime::stream_id_from;
 use crate::runtime::{
     SpawnOwnership, prepare_attach, seed_session_with_pty_and_colors, send_error,
     spawn_pane_with_pty_and_colors,
@@ -76,7 +78,6 @@ use pump_loop::next_wait;
 pub(crate) use pump_loop::*;
 use pump_loop::{GapCause, fail_aggregate_attach_prepublication, run_output_pump};
 pub(crate) use spawn::*;
-pub(crate) use spawn_plan::*;
 use spawn_plan::{
     PaneSpawnPlan, build_spawn_command, forwarded_resource, log_spawn_request,
     refuse_vanished_pane_handle, resolve_spawn_ownership, spawn_argv_builder,

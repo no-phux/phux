@@ -4,9 +4,9 @@ use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 
 use super::terminal_streams::{direction_invalid, route_client_input};
+use crate::runtime::apps::terminal::input_lane::InputStalled;
 use crate::runtime::connections::dispatch::{ConnectionEnding, FrameDispatch, FrameFlow};
 use crate::runtime::connections::plumbing::dispatch_terminal_reply;
-use crate::runtime::input_lane::InputStalled;
 use crate::transport::FrameReader;
 use phux_terminal::TerminalInput;
 

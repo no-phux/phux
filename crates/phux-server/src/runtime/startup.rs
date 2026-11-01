@@ -209,7 +209,11 @@ pub(in crate::runtime) fn resume_session_tree(
     root_token: &CancellationToken,
 ) -> Result<(), ServerError> {
     let rebuilt = state.with_mut(|s| {
-        s.rebuild_from_blob(blob, crate::runtime::apps::terminal::upgrade::wired(state))
+        s.rebuild_from_blob(
+            blob,
+            crate::runtime::apps::terminal::upgrade::wired(state),
+            crate::runtime::apps::rebuild_session,
+        )
     })?;
     let mut pane_events: std::collections::HashMap<_, _> = rebuilt
         .wired_panes

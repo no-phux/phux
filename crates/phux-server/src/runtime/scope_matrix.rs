@@ -27,11 +27,11 @@ use phux_protocol::wire::frame::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::client::handle_client;
-use super::input_lane::InputLaneHandle;
 use super::test_support::{Feed, Wire, encode, workload_identity};
 use crate::auth::AuthenticatedCredential;
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
+use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, SharedState};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
 

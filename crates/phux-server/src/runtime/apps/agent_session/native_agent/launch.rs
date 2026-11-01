@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 
 /// An explicit saved native recipe uses the same transaction as new native
 /// launches, while preserving the ordinary relaunch receipt/operation.
-pub(crate) fn spawn_relaunch(
+pub(super) fn spawn_relaunch(
     ctx: &CommandContext,
     spec: SpawnNativeAgent,
     operation: phux_protocol::ids::OperationId,
@@ -467,7 +467,7 @@ fn install_native_session(
         .with_operation_id(operation);
         s.record_and_fanout(announcement);
     });
-    crate::runtime::client::spawn_resource_exit_watcher(
+    crate::runtime::connections::spawn_resource_exit_watcher(
         state.clone(),
         resources.agent,
         Some(bundle.exit_notify),

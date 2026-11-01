@@ -20,8 +20,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::RuntimeFlags;
-use crate::resource::agent_session::BootstrapRequest;
 use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
+use crate::runtime::apps::StreamUpgrade;
 use crate::state::{SharedState, UpgradeHandoffs};
 use crate::upgrade::blob::StateBlob;
 
@@ -30,14 +30,13 @@ mod handoff;
 mod tests;
 pub(super) mod validate;
 
-use handoff::{AgentSessionSeal, collect_agent_session_cuts, collect_pane_handoffs};
+use handoff::collect_pane_handoffs;
 pub(super) use validate::{InheritedUpgradeEnv, cleanup_executable_snapshot};
 use validate::{
     PinnedExecutable, clear_inherited_cloexec, pin_validated_executable, preflight_blob,
 };
 
 const PANE_HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
-const AGENT_ROLLBACK_TIMEOUT: Duration = Duration::from_secs(2);
 const UPGRADE_SOURCE_EXE: &str = crate::upgrade::SOURCE_EXE_ENV;
 const UPGRADE_SNAPSHOT_DIR: &str = crate::upgrade::SNAPSHOT_DIR_ENV;
 
@@ -151,8 +150,7 @@ pub(super) struct UpgradePlan {
     _delegated_listeners: Vec<OwnedFd>,
     _handoffs: HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
     /// Lifted only if `exec` returns, so the old image keeps streaming.
-    agent_seal: AgentSessionSeal,
-    _native_seal: Option<NativeBrokerSeal>,
+    streams: Box<dyn StreamUpgrade>,
 }
 
 /// Everything `prepare_upgrade` reads out of the live server under one lock,
@@ -168,38 +166,6 @@ struct UpgradeContext {
         phux_core::ids::ResourceId,
         mpsc::Sender<UpgradeHandleRequest>,
     )>,
-    /// Bootstrap mailbox of every agent session the upgrade carries.
-    agent_session_senders: Vec<(phux_core::ids::ResourceId, mpsc::Sender<BootstrapRequest>)>,
-}
-
-/// Stop native input/receipt mutation across the sealed upgrade cut. The
-/// durable SDK keeps draining into its bounded output/receipt spool; rollback
-/// resumes this broker, while successful exec replaces it with restored state.
-struct NativeBrokerSeal(SharedState);
-impl NativeBrokerSeal {
-    fn new(state: &SharedState) -> Result<Self, UpgradeError> {
-        let admitted = state.with_mut(|s| {
-            let broker = s.native_agents_mut();
-            if broker.sealed {
-                return false;
-            }
-            broker.sealed = true;
-            true
-        });
-        admitted
-            .then(|| Self(state.clone()))
-            .ok_or(UpgradeError::TreeChanged)
-    }
-}
-impl Drop for NativeBrokerSeal {
-    fn drop(&mut self) {
-        self.0.with_mut(|s| {
-            s.native_agents_mut().sealed = false;
-            for wake in s.native_agents().wakes.values() {
-                wake.notify_waiters();
-            }
-        });
-    }
 }
 
 /// Do everything reversible: snapshot the tree into a handoff blob, stage it in
@@ -221,38 +187,30 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
 }
 
 async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
-    let native_seal = NativeBrokerSeal::new(state)?;
+    let mut streams =
+        crate::runtime::apps::begin_stream_upgrade(state).ok_or(UpgradeError::TreeChanged)?;
     let UpgradeContext {
         listener_fd,
         socket_path,
         flags,
         tree_identity,
         pane_senders,
-        agent_session_senders,
     } = capture_upgrade_context(state)?;
+    // No await since the capture: the streams are chosen from the same tree.
+    let cuts = streams.cut(state, PANE_HANDOFF_TIMEOUT);
     refuse_invalid_hub_registry(state, &flags)?;
 
     let listener = dup_listener(listener_fd)?;
-    let (panes, (agent_sessions, mut agent_seal)) = tokio::join!(
+    let (panes, agent_sessions) = tokio::join!(
         collect_pane_handoffs(pane_senders, PANE_HANDOFF_TIMEOUT),
-        collect_agent_session_cuts(agent_session_senders, PANE_HANDOFF_TIMEOUT),
+        cuts,
     );
     let staged: Result<_, UpgradeError> = async {
         let handoffs = UpgradeHandoffs {
             panes: panes?,
             agent_sessions,
         };
-        if let Some(agent) = state.with(|s| {
-            s.native_agents()
-                .bindings
-                .values()
-                .filter(|binding| !binding.closed)
-                .find(|binding| {
-                    s.resource_from_wire(&binding.agent)
-                        .is_none_or(|id| !handoffs.agent_sessions.contains_key(&id))
-                })
-                .map(|binding| binding.agent.clone())
-        }) {
+        if let Some(agent) = state.with(|s| streams.uncarried(s, &handoffs.agent_sessions)) {
             return Err(UpgradeError::NativeAgentHandoff { agent });
         }
         let blob = reassemble_unchanged_tree(
@@ -286,7 +244,7 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
             // Await responsive actors before reporting the failure (#1035).
             // Drop retains responsibility for actors that miss rollback's
             // deadline, including ones that never answered their initial cut.
-            agent_seal.lift().await;
+            streams.lift().await;
             return Err(error);
         }
     };
@@ -301,8 +259,7 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
         _listener_fd: listener,
         _delegated_listeners: delegated_listeners,
         _handoffs: handoffs.panes,
-        agent_seal,
-        _native_seal: Some(native_seal),
+        streams,
     })
 }
 
@@ -323,7 +280,6 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                         .into_iter()
                         .filter_map(|(pane, handle)| Some((pane, handle.ops().upgrade_sender()?)))
                         .collect(),
-                    agent_session_senders: s.upgrade_agent_sessions(),
                 })
         })
         .ok_or(UpgradeError::NoContext)
@@ -400,7 +356,7 @@ impl UpgradePlan {
     pub(super) async fn exec(mut self) -> std::io::Error {
         let error = self.try_exec();
         drop(self.fd_flags);
-        self.agent_seal.lift().await;
+        self.streams.lift().await;
         error
     }
 

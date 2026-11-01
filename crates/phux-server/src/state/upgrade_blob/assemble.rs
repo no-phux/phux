@@ -142,7 +142,7 @@ impl ServerState {
     /// closed, or whose parent stopped crossing, since its cut is dropped.
     pub(in crate::state) fn agent_session_blobs(
         &self,
-        cuts: &HashMap<ResourceId, AgentSessionBootstrap>,
+        cuts: &HashMap<ResourceId, AgentStreamCut>,
         live_panes: &HashSet<u32>,
     ) -> Vec<AgentSessionBlob> {
         let mut blobs: Vec<AgentSessionBlob> = cuts
@@ -163,12 +163,7 @@ impl ServerState {
                     base_seq: cut.base_seq,
                     dropped: cut.dropped,
                     ended: cut.ended,
-                    // Stamped records are canonical JSON, so always UTF-8.
-                    records: cut
-                        .records
-                        .iter()
-                        .map(|record| String::from_utf8_lossy(record).into_owned())
-                        .collect(),
+                    records: cut.records.clone(),
                     key: Some(desc.key),
                     native_publications: cut.native_publications.clone(),
                     native_publication_high_water: cut.native_publication_high_water,
@@ -185,6 +180,7 @@ impl ServerState {
         clippy::future_not_send,
         reason = "ADR-0014: the server runs on a LocalSet; pane actors are reached through !Send local futures"
     )]
+    #[cfg(test)]
     pub(in crate::state) async fn request_pane_handoff(
         &self,
         tid: ResourceId,
@@ -208,7 +204,7 @@ impl ServerState {
             .map(phux_protocol::WindowId::get)
     }
 
-    pub(in crate::state) fn resource_wire(&self, tid: ResourceId) -> Option<u32> {
+    pub(crate) fn resource_wire(&self, tid: ResourceId) -> Option<u32> {
         self.idspace
             .resource_wire(tid)
             .and_then(phux_protocol::ResourceId::local_id)

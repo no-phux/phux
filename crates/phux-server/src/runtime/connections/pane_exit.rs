@@ -44,7 +44,7 @@ pub(crate) fn spawn_resource_exit_watcher(
     state.with_mut(|s| s.begin_exit_watch(pane));
     tokio::task::spawn_local(async move {
         let (exit, mut events) = journal_until_exit(&state, rx, events).await;
-        crate::runtime::apps::agent_session::native_agent::source_exited(&state, pane).await;
+        crate::runtime::apps::resource_exited(&state, pane).await;
         // ADR-0124: a retained pane stays `Exited` until purged or expired,
         // then takes the ordinary close path below.
         let retained = state.with_mut(|s| retain_exited_pane(s, pane, exit, events.as_mut()));

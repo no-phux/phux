@@ -127,13 +127,6 @@ pub(crate) const fn bootstrap_stream_profile(
     }
 }
 
-pub(crate) const fn stream_id_from(raw: u64) -> StreamId {
-    match StreamId::new(raw.saturating_add(1)) {
-        Some(id) => id,
-        None => unreachable!(),
-    }
-}
-
 pub(super) const fn initial_bootstrap_id() -> BootstrapId {
     match BootstrapId::new(1) {
         Some(id) => id,

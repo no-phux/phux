@@ -177,7 +177,7 @@ pub(crate) fn release_after_pump_fault(
         PumpFault::OutboundClosed | PumpFault::ReplayAbandoned | PumpFault::PaneGone => {}
         PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
             warn!(?client_id, ?fault, "attach pump failed; closing the client");
-            crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+            crate::runtime::connections::detach_and_release_consumer_state(state, client_id);
             connection_token.cancel();
         }
         PumpFault::PublicationNotActivated => {
@@ -207,7 +207,8 @@ pub(super) async fn fail_aggregate_attach_prepublication(
 ) {
     staged_pumps.abort_all();
     while staged_pumps.join_next().await.is_some() {}
-    crate::runtime::client::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
+    crate::runtime::connections::abort_output_pumps(committed_pumps, client_id, "failed ATTACH")
+        .await;
 
     let wire_client_id = crate::runtime::wire_client(client_id);
     let producer_deadline = std::time::Duration::from_secs(1);
@@ -241,7 +242,7 @@ pub(super) async fn fail_aggregate_attach_prepublication(
             let _ = tokio::time::timeout(producer_deadline, done).await;
         }
     }
-    crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+    crate::runtime::connections::detach_and_release_consumer_state(state, client_id);
 
     // The writer closes right after this terminal ERROR, discarding anything
     // a surviving producer races in behind it.

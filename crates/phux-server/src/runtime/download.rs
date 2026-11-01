@@ -86,7 +86,7 @@ fn read_chunk(path: &Path, offset: u64, max_bytes: u32) -> Result<FileChunk, (Er
         u64::try_from(data.len()).map_err(|_| io_error(std::io::Error::other("chunk too long")))?;
     let sha256 = if offset.saturating_add(read) >= size {
         file.seek(SeekFrom::Start(0)).map_err(io_error)?;
-        Some(super::upload::digest_reader(&mut file)?.into())
+        Some(crate::runtime::apps::terminal::upload::digest_reader(&mut file)?.into())
     } else {
         None
     };

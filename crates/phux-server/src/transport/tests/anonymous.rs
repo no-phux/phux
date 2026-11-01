@@ -29,8 +29,13 @@ async fn the_anonymous_listener_caps_live_connections() {
             let accept_state = state.clone();
             let accept_token = root_token.clone();
             let accept_task = tokio::task::spawn_local(async move {
-                crate::runtime::client::accept_loop(&listener, accept_state, accept_token, None)
-                    .await
+                crate::runtime::connections::accept_loop(
+                    &listener,
+                    accept_state,
+                    accept_token,
+                    None,
+                )
+                .await
             });
             let connect = || async move {
                 let tcp = TcpStream::connect(addr).await.unwrap();

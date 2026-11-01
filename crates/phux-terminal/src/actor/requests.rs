@@ -294,6 +294,10 @@ impl phux_resource::ResourceOps for TerminalHandle {
     ) -> Option<tokio::sync::mpsc::Sender<phux_resource::handoff::UpgradeHandleRequest>> {
         Some(self.upgrade.clone())
     }
+
+    fn is_live_stream(&self) -> bool {
+        false
+    }
 }
 
 /// The Terminal facet of a [`phux_resource::ResourceHandle`].

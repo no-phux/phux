@@ -135,7 +135,7 @@ async fn serve(
             upload_id,
             terminal_id,
         } => {
-            crate::runtime::voice::handle_transcribe(
+            crate::runtime::apps::terminal::voice::handle_transcribe(
                 state,
                 client_id,
                 upload_id,
@@ -154,13 +154,20 @@ async fn serve(
             // A held `ROUTE_INPUT` waits for a pane input credit exactly as a
             // direct one does (ADR-0144).
             Some(lane) => {
-                match crate::runtime::input_lane::acquire_credit(state, &terminal_id).await {
+                match crate::runtime::apps::terminal::input_lane::acquire_credit(
+                    state,
+                    &terminal_id,
+                )
+                .await
+                {
                     Ok(credit) => {
                         lane.begin_route(state, client_id, terminal_id, event, credit)
                             .await
                     }
-                    Err(crate::runtime::input_lane::InputStalled) => {
-                        crate::runtime::input_lane::InputStalled::result(&terminal_id)
+                    Err(crate::runtime::apps::terminal::input_lane::InputStalled) => {
+                        crate::runtime::apps::terminal::input_lane::InputStalled::result(
+                            &terminal_id,
+                        )
                     }
                 }
             }
@@ -218,9 +225,9 @@ async fn serve(
             final_chunk,
             sha256,
         } => {
-            crate::runtime::upload::handle_put_file(
+            crate::runtime::apps::terminal::upload::handle_put_file(
                 state,
-                crate::runtime::upload::PutFileChunk {
+                crate::runtime::apps::terminal::upload::PutFileChunk {
                     upload_id,
                     terminal_id,
                     extension,
@@ -228,8 +235,9 @@ async fn serve(
                     data,
                     final_chunk,
                     sha256,
-                    principal: state
-                        .with(|s| crate::runtime::upload::upload_principal(s, client_id)),
+                    principal: state.with(|s| {
+                        crate::runtime::apps::terminal::upload::upload_principal(s, client_id)
+                    }),
                 },
             )
             .await
@@ -237,7 +245,7 @@ async fn serve(
         Command::Checkout {
             terminal_id,
             request,
-        } => crate::runtime::checkout::handle(state, &terminal_id, request).await,
+        } => crate::runtime::apps::terminal::checkout::handle(state, &terminal_id, request).await,
         Command::ReportAsked {
             terminal_id,
             id,
@@ -280,7 +288,8 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
         connection_token,
         ..
     } = stream;
-    let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
+    let Some(stream_profile) =
+        crate::runtime::apps::terminal::attach::bootstrap_stream_profile(bootstrap_profile)
     else {
         return Err(AttachResourceFailure {
             code: ErrorCode::CodecUnavailable,

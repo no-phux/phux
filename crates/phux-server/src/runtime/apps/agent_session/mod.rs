@@ -2,17 +2,20 @@
 
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
+use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
 
-use super::{ResourceApp, StreamBootstrap};
+use super::{ResourceApp, ResourceSpawn, StreamBootstrap};
 use crate::resource::ResourceKind;
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::operation_dedupe::OperationClaim;
+use crate::state::SharedState;
 
-pub(crate) mod append;
+mod append;
 mod attach;
-pub(crate) mod native_agent;
-pub(crate) mod spawn;
+mod native_agent;
+pub(super) mod spawn;
+pub(crate) mod upgrade;
 
 /// Payload budget for one `BOOTSTRAP_CHUNK` when the connection negotiated
 /// none. Records are at most 16 KiB, so this fits several per chunk.
@@ -100,5 +103,31 @@ impl ResourceApp for AgentSessionApp {
             }
         }
         .boxed_local()
+    }
+
+    fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
+        spawn::spawn_agent_session(spawn).boxed_local()
+    }
+
+    fn resumed(&self, state: &SharedState) {
+        native_agent::retry_pending_closures(state);
+    }
+
+    fn resource_exited<'a>(
+        &'a self,
+        state: &'a SharedState,
+        resource: phux_core::ids::ResourceId,
+    ) -> LocalBoxFuture<'a, ()> {
+        native_agent::source_exited(state, resource).boxed_local()
+    }
+
+    fn claim_relaunch(
+        &self,
+        ctx: &CommandContext,
+        operation: OperationId,
+        resource: &ResourceKey,
+        expected: Revision,
+    ) -> Option<CommandResult> {
+        native_agent::claim_relaunch(ctx, operation, resource, expected)
     }
 }

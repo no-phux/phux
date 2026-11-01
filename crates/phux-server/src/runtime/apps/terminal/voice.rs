@@ -19,8 +19,8 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
 use tracing::{debug, warn};
 
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 use crate::runtime::commands::handle_route_input;
-use crate::runtime::input_lane::InputLaneHandle;
 use crate::state::{ClientId, ServerState, SharedState};
 
 /// Largest transcript the server will paste, in bytes. A transcriber that
@@ -42,7 +42,8 @@ pub(in crate::runtime) async fn handle_transcribe(
     }
     let voice = state.with(ServerState::voice);
     let env = state.with(ServerState::server_env);
-    let principal = state.with(|s| crate::runtime::upload::upload_principal(s, client_id));
+    let principal =
+        state.with(|s| crate::runtime::apps::terminal::upload::upload_principal(s, client_id));
     let started = std::time::Instant::now();
     let clip = ClipRequest {
         upload_id,
@@ -166,7 +167,7 @@ fn resolve_clip(
     env: &crate::runtime::ServerEnv,
     request: &ClipRequest<'_>,
 ) -> Result<std::path::PathBuf, CommandResult> {
-    let clip = match crate::runtime::upload::completed_upload_path(
+    let clip = match crate::runtime::apps::terminal::upload::completed_upload_path(
         env,
         request.upload_id,
         request.principal,

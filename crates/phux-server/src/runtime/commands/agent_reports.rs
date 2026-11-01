@@ -79,7 +79,7 @@ pub(crate) fn handle_subscribe_terminal_events(
     if registered.is_none() {
         return terminal_not_found(terminal_id);
     }
-    super::super::client::ensure_event_pump(state, client_id);
+    crate::runtime::connections::ensure_event_pump(state, client_id);
     debug!(
         ?client_id,
         ?terminal_id,
@@ -125,7 +125,11 @@ pub(crate) fn handle_report_asked(
         transition
     });
     if let Some(payload) = transition.emit_payload() {
-        super::super::client::broadcast_event(state, Some(terminal_id), &payload.into_event());
+        crate::runtime::connections::broadcast_event(
+            state,
+            Some(terminal_id),
+            &payload.into_event(),
+        );
     }
     CommandResult::Ok
 }

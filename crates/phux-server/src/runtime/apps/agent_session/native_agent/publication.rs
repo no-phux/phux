@@ -337,6 +337,6 @@ pub(super) fn sync_ask_inventory(state: &SharedState, agent: &ResourceId) {
         payload.map(|payload| (parent, payload))
     });
     if let Some((parent, payload)) = published {
-        crate::runtime::client::broadcast_event(state, Some(&parent), &payload.into_event());
+        crate::runtime::connections::broadcast_event(state, Some(&parent), &payload.into_event());
     }
 }

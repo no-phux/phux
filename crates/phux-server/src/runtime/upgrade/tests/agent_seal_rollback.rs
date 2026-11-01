@@ -1,8 +1,9 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use super::super::handoff::*;
 use super::super::*;
 use super::support::*;
+use crate::resource::agent_session::BootstrapRequest;
+use crate::runtime::apps::agent_session::upgrade::AGENT_ROLLBACK_TIMEOUT;
 use tokio::sync::oneshot;
 
 /// phux-twft regression: the live server refused every upgrade with

@@ -233,7 +233,8 @@ same catalog rows authorization uses, and `app_for` answers per-kind questions
 such as how a stream bootstraps. `state/` sits below the apps and never names
 them; what it asks of any resource is the required `ResourceOps` on its handle.
 A new kind is one `ResourceApp`, one `APPS` row, and its `ResourceOps`. Only
-`runtime/apps/terminal` may name the Terminal engine, and
+`runtime/apps/terminal` may name the Terminal engine and only
+`runtime/apps/agent_session` the `AgentSession` engine;
 `seam_tests.rs` fails if any host module does. The host holds a launch command
 as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.
 
@@ -247,8 +248,7 @@ accept and teardown, `hello` authenticates and negotiates, `dispatch` and
 and `writer` owns output ordering and generation fencing. `pane_events`
 journals terminal events; `agent_state` folds detector reports into agent
 metadata. These are server responsibilities; client dialing and reconnect
-remain in `phux-client-runtime`. `runtime::client` is a compatibility alias
-for `runtime::connections`.
+remain in `phux-client-runtime`.
 
 ## Decisions
 
