@@ -236,6 +236,9 @@ A new kind is one `ResourceApp`, one `APPS` row, and its `ResourceOps`. Only
 `runtime/apps/terminal` may name the Terminal engine, and
 `seam_tests.rs` fails if any host module does. The host holds a launch command
 as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.
+Stream and input frames, connection negotiation and client engines still
+assume a Terminal; [resource kinds beyond terminals](./resource-kinds.md)
+is the design that removes those assumptions.
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration

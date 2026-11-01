@@ -89,6 +89,7 @@ Generated from the `phux` binary, so they match the code these docs describe.
 - [Decisions](./decisions.md): the constraints the code keeps, and why.
 - [Organization](./organization.md): how the server owns sessions and their contents.
 - [Substrate](./substrate.md): how people, hosts, and agents fit together.
+- [Resource kinds beyond terminals](./resource-kinds.md): the design for accessibility-tree, pixel and browser resources, and the order it lands in.
 - [Server protocol](./protocol.md): framing, handshake, capabilities, and changing the wire.
 - [File transfer and checkout](./protocol-files.md): the commands that move files and inspect a checkout.
 - [Host services](./host-services.md): HTTP to a host service (OpenCode) over the phux connection.
