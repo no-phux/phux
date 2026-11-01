@@ -181,7 +181,7 @@ The rest have a reason not to:
 
 | Format | Why no fixture |
 | --- | --- |
-| `work-v1.sqlite`: start `result_json` | Every field is required, so a rename fails the retry that reads it rather than losing a value. Its objective and binding are frozen as `objectives`; `StartSnapshot` is private to a file too large to touch. |
+| `work-v1.sqlite`: start `result_json` | Every field is required, so a rename fails the retry that reads it rather than losing a value. Its objective is frozen as `objectives`; `StartSnapshot` is private to a file too large to touch. |
 | `ideas/spool/*` | A short-lived send queue. A lost `permanent_error` only retries a message that will fail again. |
 | Agent stream records | The blob carries stamped lines as opaque text, replayed to consumers and not parsed on resume. Their shape is the public record contract. |
 | `phux.tui.layout/v1` values | Opaque to the server; the blob carries the bytes. The client's CBOR envelope has only required fields and a version it checks, so a rename is refused, not lost. |
