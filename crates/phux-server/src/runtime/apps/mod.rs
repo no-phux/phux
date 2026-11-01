@@ -1,9 +1,11 @@
 //! The apps this server hosts, one per resource kind.
 //!
 //! An app owns everything its kind needs from the host: its facet commands
-//! and how a client's stream bootstraps. Host modules reach a kind only
+//! and how a client's stream bootstraps. The runtime reaches a kind only
 //! through [`app_for`] and [`app_owning`], so what a kind *is* stays in its
-//! app, and a new kind is one [`ResourceApp`] plus one [`APPS`] row.
+//! app, and a new kind is one [`ResourceApp`] plus one [`APPS`] row. `state`
+//! sits below this module: what it needs from any resource is
+//! [`crate::resource::ResourceHandle::ops`].
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -80,25 +82,6 @@ pub(crate) trait ResourceApp: Sync {
         _client: ClientId,
     ) -> LocalBoxFuture<'a, ()> {
         Box::pin(std::future::ready(()))
-    }
-
-    /// Ask this resource to adopt `cols` by `rows`; whether it took the
-    /// request. A kind without geometry never does.
-    fn resize(
-        &self,
-        _handle: &ResourceHandle,
-        _size: (u16, u16),
-        _cell_px: Option<(u16, u16)>,
-    ) -> bool {
-        false
-    }
-
-    /// Where this resource answers a graceful-upgrade handoff request.
-    fn upgrade_sender(
-        &self,
-        _handle: &ResourceHandle,
-    ) -> Option<tokio::sync::mpsc::Sender<crate::resource::handoff::UpgradeHandleRequest>> {
-        None
     }
 
     /// Serve a facet command this kind owns in the catalog.

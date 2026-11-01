@@ -6,12 +6,6 @@ use crate::state::{ServerState, SharedState};
 /// How a pane's process starts. Opaque to the host.
 pub(crate) type LaunchCommand = phux_terminal::pty::CommandBuilder;
 
-/// The shell a new server defaults to.
-#[must_use]
-pub(crate) fn default_shell() -> String {
-    phux_terminal::actor::resolve_shell(None)
-}
-
 /// A command from a non-empty request argv.
 pub(crate) fn argv_command(argv: Option<Vec<String>>) -> Option<LaunchCommand> {
     let mut argv = argv?.into_iter();
@@ -56,23 +50,19 @@ pub(crate) fn bind_native_host(
     command.env("PHUX_NATIVE_BINDING", binding);
 }
 
-/// A named session's seed command: a server-wide override wins, then the
-/// request argv, then the shell. An invalid cwd is dropped with a warn, never
-/// failing the create.
+/// A named session's seed command: the request argv, else the shell. An
+/// invalid cwd is dropped with a warn, never failing the create.
 pub(crate) fn named_session_command(
     state: &SharedState,
     name: &str,
-    override_cmd: Option<LaunchCommand>,
     command: Option<Vec<String>>,
     cwd: Option<&str>,
     env: std::collections::BTreeMap<String, String>,
 ) -> LaunchCommand {
     let (term, shell, login_shell) =
         state.with(|s| (s.term().to_owned(), s.shell().to_owned(), s.login_shell()));
-    let mut seed_cmd = override_cmd.unwrap_or_else(|| {
-        argv_command(command)
-            .unwrap_or_else(|| phux_terminal::actor::default_shell_command(&shell, login_shell))
-    });
+    let mut seed_cmd = argv_command(command)
+        .unwrap_or_else(|| phux_terminal::actor::default_shell_command(&shell, login_shell));
     phux_terminal::actor::apply_spawn_cwd(&mut seed_cmd, cwd, name);
     for (key, value) in env {
         seed_cmd.env(key, value);

@@ -110,17 +110,16 @@ pub(crate) async fn resolve_create_if_missing(
         return Some(name);
     }
 
-    let (with_pty, override_cmd, scrollback, term) = state.with(|s| {
+    let (with_pty, scrollback, term) = state.with(|s| {
         (
             s.attach_create_seeds_pty(),
-            s.attach_create_seed_command(),
             s.scrollback_limits(),
             s.term().to_owned(),
         )
     });
 
     let seed_result = if with_pty {
-        let mut seed_cmd = override_cmd.unwrap_or_else(|| spawn_argv_builder(state, command));
+        let mut seed_cmd = spawn_argv_builder(state, command);
         phux_terminal::actor::apply_spawn_cwd(&mut seed_cmd, cwd.as_deref(), &name);
         phux_terminal::actor::apply_term(&mut seed_cmd, &term);
         seed_session_with_pty_and_colors(

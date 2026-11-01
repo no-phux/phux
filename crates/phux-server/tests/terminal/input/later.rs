@@ -193,7 +193,7 @@ fn routed_paste_honors_dec_2004_and_trust() {
 /// stay on `xterm-256color` until that is proven safe.
 #[test]
 fn default_shell_command_advertises_xterm_256color() {
-    let shell = phux_terminal::actor::resolve_shell(None);
+    let shell = phux_config::shell::resolve_shell(None);
     let cmd = phux_terminal::actor::default_shell_command(&shell, false);
     assert_eq!(
         cmd.get_env("TERM").and_then(|t| t.to_str()),

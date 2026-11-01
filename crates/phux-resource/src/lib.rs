@@ -282,9 +282,20 @@ pub struct WrongResourceKind {
 
 /// The kind-specific channel set of one resource. The app that serves
 /// [`Self::KIND`] owns the type; the host stores it opaquely.
-pub trait ResourceFacet: std::any::Any + Send + Sync + std::fmt::Debug {
+pub trait ResourceFacet: ResourceOps + std::any::Any {
     /// The kind whose channels this facet carries.
     const KIND: ResourceKind;
+}
+
+/// What the host asks of any resource without knowing its kind. Every kind
+/// answers each one: there is no default to inherit by omission.
+pub trait ResourceOps: Send + Sync + std::fmt::Debug {
+    /// Ask the engine to take `size` in cells, returning whether it accepted.
+    fn resize(&self, size: (u16, u16), cell_px: Option<(u16, u16)>) -> bool;
+
+    /// Where this resource answers a graceful-upgrade PTY handoff, if it has
+    /// a process to hand off.
+    fn upgrade_sender(&self) -> Option<mpsc::Sender<handoff::UpgradeHandleRequest>>;
 }
 
 /// `Send + Clone` handle to one resource's engine (ADR-0014). Every field
@@ -301,6 +312,8 @@ pub struct ResourceHandle {
     pub control: mpsc::Sender<ControlRequest>,
     /// The kind-specific channels. Reach them through [`Self::facet`].
     facet: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    /// The same facet, as the operations every kind answers.
+    ops: std::sync::Arc<dyn ResourceOps>,
 }
 
 impl ResourceHandle {
@@ -312,13 +325,21 @@ impl ResourceHandle {
         control: mpsc::Sender<ControlRequest>,
         facet: F,
     ) -> Self {
+        let facet = std::sync::Arc::new(facet);
         Self {
             kind: F::KIND,
             parent,
             output,
             control,
-            facet: std::sync::Arc::new(facet),
+            ops: facet.clone(),
+            facet,
         }
+    }
+
+    /// The operations every kind answers.
+    #[must_use]
+    pub fn ops(&self) -> &dyn ResourceOps {
+        self.ops.as_ref()
     }
 
     /// This resource's facet of type `F`.
@@ -455,11 +476,31 @@ mod tests {
         const KIND: ResourceKind = ResourceKind::Terminal;
     }
 
+    impl ResourceOps for StubFacet {
+        fn resize(&self, _: (u16, u16), _: Option<(u16, u16)>) -> bool {
+            false
+        }
+
+        fn upgrade_sender(&self) -> Option<mpsc::Sender<handoff::UpgradeHandleRequest>> {
+            None
+        }
+    }
+
     #[derive(Debug)]
     struct OtherFacet;
 
     impl ResourceFacet for OtherFacet {
         const KIND: ResourceKind = ResourceKind::AgentSession;
+    }
+
+    impl ResourceOps for OtherFacet {
+        fn resize(&self, _: (u16, u16), _: Option<(u16, u16)>) -> bool {
+            false
+        }
+
+        fn upgrade_sender(&self) -> Option<mpsc::Sender<handoff::UpgradeHandleRequest>> {
+            None
+        }
     }
 
     fn stub_handle() -> ResourceHandle {

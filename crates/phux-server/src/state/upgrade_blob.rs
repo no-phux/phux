@@ -255,10 +255,7 @@ impl ServerState {
             .filter(|tid| self.resource_wire(*tid).is_some() && self.retained_exit(*tid).is_none())
             .filter_map(|tid| {
                 self.resource_handle(tid)
-                    .filter(|handle| {
-                        crate::runtime::apps::app_for(handle.kind)
-                            .is_some_and(|app| app.upgrade_sender(handle).is_some())
-                    })
+                    .filter(|handle| handle.ops().upgrade_sender().is_some())
                     .map(|handle| (tid, handle.clone()))
             })
             .collect()

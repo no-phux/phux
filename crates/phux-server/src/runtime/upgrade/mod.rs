@@ -321,13 +321,7 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                     pane_senders: s
                         .upgrade_handles()
                         .into_iter()
-                        .filter_map(|(pane, handle)| {
-                            Some((
-                                pane,
-                                crate::runtime::apps::app_for(handle.kind)?
-                                    .upgrade_sender(&handle)?,
-                            ))
-                        })
+                        .filter_map(|(pane, handle)| Some((pane, handle.ops().upgrade_sender()?)))
                         .collect(),
                     agent_session_senders: s.upgrade_agent_sessions(),
                 })

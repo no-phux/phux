@@ -275,6 +275,27 @@ impl phux_resource::ResourceFacet for TerminalHandle {
     const KIND: phux_resource::ResourceKind = phux_resource::ResourceKind::Terminal;
 }
 
+impl phux_resource::ResourceOps for TerminalHandle {
+    fn resize(&self, (cols, rows): (u16, u16), cell_px: Option<(u16, u16)>) -> bool {
+        self.resize
+            .try_send(ResizeRequest {
+                cols,
+                rows,
+                cell_px,
+                resync_clients: true,
+                resync_only: false,
+                resync_for: None,
+            })
+            .is_ok()
+    }
+
+    fn upgrade_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Sender<phux_resource::handoff::UpgradeHandleRequest>> {
+        Some(self.upgrade.clone())
+    }
+}
+
 /// The Terminal facet of a [`phux_resource::ResourceHandle`].
 pub trait TerminalResource {
     /// The Terminal facet.

@@ -54,6 +54,18 @@ impl ResourceFacet for AgentSessionHandle {
     const KIND: ResourceKind = ResourceKind::AgentSession;
 }
 
+/// A record stream has no grid to size and no process to hand off; an upgrade
+/// carries it through its bootstrap mailbox instead.
+impl crate::ResourceOps for AgentSessionHandle {
+    fn resize(&self, _size: (u16, u16), _cell_px: Option<(u16, u16)>) -> bool {
+        false
+    }
+
+    fn upgrade_sender(&self) -> Option<mpsc::Sender<crate::handoff::UpgradeHandleRequest>> {
+        None
+    }
+}
+
 /// The `AgentSession` facet of a [`ResourceHandle`].
 pub trait AgentSessionResource {
     /// The `AgentSession` facet.

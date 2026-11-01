@@ -43,7 +43,7 @@ pub struct ServerConfig {
     /// per-spawn `env` entry overrides it.
     pub term: String,
     /// Default shell for command-less spawns: `defaults.shell`, else
-    /// `$SHELL`, else `/bin/sh` ([`phux_terminal::actor::resolve_shell`]).
+    /// `$SHELL`, else `/bin/sh` ([`phux_config::shell::resolve_shell`]).
     pub shell: String,
     /// Run [`Self::shell`] in login mode for command-less spawns. Set only
     /// when a service manager started the server, whose minimal environment
@@ -153,7 +153,7 @@ impl ServerConfig {
             retain: crate::state::RetainPolicy::default(),
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
-            shell: crate::runtime::apps::terminal::launch::default_shell(),
+            shell: phux_config::shell::resolve_shell(None),
             login_shell: false,
             window_size: phux_config::WindowSize::default(),
             voice: phux_config::VoiceCfg::default(),

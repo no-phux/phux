@@ -122,7 +122,7 @@ pub(in crate::runtime) fn mirror_config_into_state(
         s.set_pre_seeded_session(cfg.pre_seeded_session.clone());
         // Only the PTY mode is mirrored: a `CreateIfMissing` session runs its
         // own wire command, never the pre-seeded session's `seed_command`.
-        s.set_attach_create_pty(cfg.seed_with_pty, None);
+        s.set_attach_create_pty(cfg.seed_with_pty);
         // Injected as `PHUX_SOCKET` into every pane.
         s.set_server_socket_path(socket_path.to_path_buf());
         s.set_scrollback_limits(cfg.scrollback);

@@ -1,5 +1,3 @@
-use crate::runtime::apps::terminal::launch::LaunchCommand;
-
 use super::ServerState;
 
 /// Boot-configuration setters and getters.
@@ -16,24 +14,17 @@ impl ServerState {
         self.config.pre_seeded_session.as_deref()
     }
 
-    /// Configure the attach-time `CreateIfMissing` seed: a PTY pane
-    /// (`cmd`, or the default shell when `None`) or, without `with_pty`, a
+    /// Configure the attach-time `CreateIfMissing` seed: a PTY pane running
+    /// the request's command or the default shell, or, without `with_pty`, a
     /// PTY-less actor.
-    pub fn set_attach_create_pty(&mut self, with_pty: bool, cmd: Option<LaunchCommand>) {
+    pub const fn set_attach_create_pty(&mut self, with_pty: bool) {
         self.config.attach_create_seeds_pty = with_pty;
-        self.config.attach_create_seed_command = cmd;
     }
 
     /// Read the PTY-mode flag set by [`Self::set_attach_create_pty`].
     #[must_use]
     pub const fn attach_create_seeds_pty(&self) -> bool {
         self.config.attach_create_seeds_pty
-    }
-
-    /// A fresh clone of the seed command for one create.
-    #[must_use]
-    pub fn attach_create_seed_command(&self) -> Option<LaunchCommand> {
-        self.config.attach_create_seed_command.clone()
     }
 
     /// Set the per-pane scrollback bounds.

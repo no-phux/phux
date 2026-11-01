@@ -122,7 +122,7 @@ pub(super) fn build_server_config(
 ) -> ServerConfig {
     // Resolve the default shell once (`defaults.shell`, `$SHELL`, `/bin/sh`)
     // for every server-owned spawn path.
-    let shell = phux_terminal::actor::resolve_shell(defaults.shell.as_deref());
+    let shell = phux_config::shell::resolve_shell(defaults.shell.as_deref());
 
     // A server started from a unit `phux service install` wrote (marked by
     // `SERVICE_MANAGED_ENV`) never ran a login shell, so its panes need login-shell

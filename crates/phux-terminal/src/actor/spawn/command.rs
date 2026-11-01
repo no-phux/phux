@@ -9,23 +9,6 @@
 use portable_pty::CommandBuilder;
 use tracing::warn;
 
-/// The shell for server-spawned panes: `configured` (`defaults.shell`) when
-/// non-blank, else `$SHELL`, else `/bin/sh`.
-#[must_use]
-pub fn resolve_shell(configured: Option<&str>) -> String {
-    resolve_shell_from(configured, std::env::var("SHELL").ok())
-}
-
-/// Env-independent core of [`resolve_shell`].
-pub(super) fn resolve_shell_from(configured: Option<&str>, env_shell: Option<String>) -> String {
-    configured
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .or(env_shell)
-        .unwrap_or_else(|| "/bin/sh".to_owned())
-}
-
 /// The argv flag that puts `shell` into login mode.
 ///
 /// Matched on basename: `-l` for bash/zsh/sh, `--login` for fish, `None` for anything else.
