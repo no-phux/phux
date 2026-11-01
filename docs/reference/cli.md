@@ -363,7 +363,9 @@ Read a pane's agent session stream.
 Attaches to the session as an observer, the way `phux rec` attaches to a pane:
 the retained records arrive first and, with `--follow`, live records after them
 until Ctrl-C or the session closes. There is no `--timeout`; run a following log
-under a child-process deadline exactly as you would `phux watch`.
+under a child-process deadline exactly as you would `phux watch`. A follower
+that falls behind records the session has already evicted exits 1 rather than
+skip them.
 
 Usage: phux agent log [FLAGS] <TARGET>
 
