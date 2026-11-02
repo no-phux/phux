@@ -49,7 +49,7 @@ lifetime into this durable receipt model; each store owns its retention.
 The [server commit seam](../crates/phux-server/src/state/org.rs) separates
 `persist_command_from` from `mirror_persisted`; its
 `a_failed_store_write_refuses_and_leaves_memory_unchanged` test is the
-regression boundary. The per-socket [SQLite organization store](../crates/phux-server/src/org_store.rs)
+regression boundary. The per-socket [SQLite organization store](../crates/phux-server/src/org_store/mod.rs)
 uses WAL and full synchronization. It stores organization/launch intent,
 receipts and journal position, not PTY output, scrollback or a recoverable
 terminal process. Event payloads remain a bounded in-memory journal: a gap
