@@ -65,3 +65,64 @@ fn open_org_store_backfills_sessions_that_have_no_arrangement() {
     assert_eq!(backfill.revision, phux_core::Revision::FIRST);
     assert!(!store.has_migration(LIVE_IMPORT_MIGRATION).unwrap());
 }
+
+/// A receipt this binary cannot decode leaves the server able to start and
+/// the operation unable to run twice: its retry is refused, while a retry of
+/// a readable receipt still replays and new work still commits.
+#[test]
+fn open_org_store_starts_past_an_unreadable_receipt_and_refuses_its_retry() {
+    use phux_core::{Actor, Attrs, Command, Op, OperationId, Refusal, SessionLifetime};
+
+    fn create(name: &str, id: u8) -> Command {
+        Command {
+            operation: OperationId::from_bytes([id; 16]),
+            op: Op::SessionCreate {
+                name: name.to_owned(),
+                lifetime: SessionLifetime::Persistent,
+                attrs: Attrs::default(),
+                resource: None,
+            },
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v1.sqlite3");
+    let location = crate::OrgStoreLocation::Path(path.clone());
+    let actor = Actor::owner();
+
+    let state = SharedState::new();
+    open_org_store(&state, &location).unwrap();
+    state.with_mut(|s| {
+        s.persist_first_start().unwrap();
+        s.commit_command_from(&create("lost", 1), &actor, None)
+            .unwrap();
+        s.commit_command_from(&create("kept", 2), &actor, None)
+            .unwrap();
+    });
+    drop(state);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE receipts SET receipt = '{}' WHERE operation = ?1",
+            [[1u8; 16].as_slice()],
+        )
+        .unwrap();
+
+    let state = SharedState::new();
+    open_org_store(&state, &location).unwrap();
+    state.with_mut(|s| {
+        let sessions = s.org().sessions().count();
+        assert!(matches!(
+            s.commit_command_from(&create("lost", 1), &actor, None),
+            Err(Refusal::DuplicateOperation)
+        ));
+        assert_eq!(s.org().sessions().count(), sessions, "nothing ran twice");
+        let replay = s
+            .commit_command_from(&create("kept", 2), &actor, None)
+            .unwrap();
+        assert!(replay.applied.replayed);
+        s.commit_command_from(&create("new", 3), &actor, None)
+            .unwrap();
+        assert_eq!(s.org().sessions().count(), sessions + 1);
+    });
+}

@@ -3,13 +3,14 @@
 use std::path::{Path, PathBuf};
 
 use phux_core::{
-    Arrangement, ArrangementOwner, Authority, AuthorityId, Delta, Key16 as _, Org, Receipt,
-    Resource, Session, SessionKey, Stamp, Transition,
+    Arrangement, ArrangementOwner, Authority, AuthorityId, Delta, Key16 as _, OperationId, Org,
+    Receipt, Resource, Session, SessionKey, Stamp, Transition,
 };
 use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 
 use super::{
     OrgStore, RECEIPT_CAP, RECEIPT_HORIZON_MS, StoreError, StoredOrg, TOMBSTONE_HORIZON_MS,
+    UnreadableReceipt,
 };
 
 /// Schema migrations, in order. `PRAGMA user_version` is the index of the
@@ -384,6 +385,53 @@ impl SqliteOrgStore {
         }
         Ok(out)
     }
+
+    /// Every receipt row, oldest first, split by whether this binary can
+    /// decode it. One unreadable row must not stop the server: it reports
+    /// past work, and its indexed columns still keep its operation id claimed.
+    /// Reading records strictly is right for live state, not for this.
+    fn receipts(&self) -> Result<(Vec<Receipt>, Vec<UnreadableReceipt>), StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT operation, at, receipt FROM receipts ORDER BY at")?;
+        let mut rows = stmt.query([])?;
+        let (mut receipts, mut unreadable) = (Vec::new(), Vec::new());
+        let mut first_error = None;
+        while let Some(row) = rows.next()? {
+            let error = match decode_receipt(row) {
+                Ok(receipt) => {
+                    receipts.push(receipt);
+                    continue;
+                }
+                Err(error) => error,
+            };
+            first_error.get_or_insert(error);
+            // No command can carry an id that is not 16 bytes, so there is
+            // nothing to keep claimed for such a row.
+            if let Ok(id) = key16(row.get_ref(0)?.as_blob().unwrap_or_default(), "operation") {
+                unreadable.push(UnreadableReceipt {
+                    operation: OperationId::from_bytes(id),
+                    at: Stamp(u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0)),
+                });
+            }
+        }
+        if let Some(error) = first_error {
+            tracing::warn!(
+                claimed = unreadable.len(),
+                %error,
+                "org store holds receipts this binary cannot decode; \
+                 retries of those operations are refused until they expire"
+            );
+        }
+        Ok((receipts, unreadable))
+    }
+}
+
+/// The receipt in `row`, or why its JSON column does not decode.
+fn decode_receipt(row: &rusqlite::Row<'_>) -> Result<Receipt, String> {
+    let column = row.get_ref(2).map_err(|error| error.to_string())?;
+    let text = column.as_str().map_err(|error| error.to_string())?;
+    serde_json::from_str(text).map_err(|error| error.to_string())
 }
 
 impl OrgStore for SqliteOrgStore {
@@ -400,12 +448,14 @@ impl OrgStore for SqliteOrgStore {
             .map(|bytes| key8(&bytes))
             .transpose()?
             .unwrap_or(0);
+        let (receipts, unreadable_receipts) = self.receipts()?;
         Ok(Some(StoredOrg {
             authority,
             sessions: self.records("SELECT record FROM sessions")?,
             resources: self.records("SELECT record FROM resources")?,
             arrangements: self.records("SELECT record FROM arrangements")?,
-            receipts: self.records("SELECT receipt FROM receipts ORDER BY at")?,
+            receipts,
+            unreadable_receipts,
             journal_seq,
         }))
     }

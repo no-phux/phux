@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use phux_core::{Arrangement, Authority, Org, Receipt, Resource, Session, Stamp, Transition};
+use phux_core::{
+    Arrangement, Authority, OperationId, Org, Receipt, Resource, Session, Stamp, Transition,
+};
 
 mod sqlite;
 pub use sqlite::{SCHEMA_VERSION, SqliteOrgStore};
@@ -139,10 +141,28 @@ pub struct StoredOrg {
     pub resources: Vec<Resource>,
     /// Every arrangement record.
     pub arrangements: Vec<Arrangement>,
-    /// Every unexpired receipt.
+    /// Every stored receipt this binary can decode. Expired ones stay until
+    /// the next commit prunes them.
     pub receipts: Vec<Receipt>,
+    /// Stored receipts this binary cannot decode.
+    pub unreadable_receipts: Vec<UnreadableReceipt>,
     /// The journal position of the last commit.
     pub journal_seq: u64,
+}
+
+/// A stored receipt whose row this binary cannot decode, typically one a newer
+/// binary wrote for an [`phux_core::Op`] variant this one lacks.
+///
+/// The row stays in the store, so the binary that wrote it can still read it
+/// after a roll forward. Its id stays claimed: treating the receipt as absent
+/// would let a retry of that operation run a second time, so the server
+/// refuses the id until the row would have expired anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnreadableReceipt {
+    /// The operation the row answers for, from its indexed column.
+    pub operation: OperationId,
+    /// When the operation committed, from its indexed column.
+    pub at: Stamp,
 }
 
 /// The durable side of [`crate::ServerState::commit`].

@@ -324,6 +324,110 @@ fn the_cap_drops_the_receipts_memory_drops() {
     assert_eq!(kept, mirrored);
 }
 
+/// Rewrite the receipt row for `operation` to what a newer binary might have
+/// left: JSON naming an [`Op`] variant this one does not have.
+fn scramble_receipt(path: &Path, operation: OperationId) {
+    Connection::open(path)
+        .unwrap()
+        .execute(
+            "UPDATE receipts SET receipt = ?1 WHERE operation = ?2",
+            rusqlite::params![
+                r#"{"op":{"future_op":{}}}"#,
+                operation.as_bytes().as_slice()
+            ],
+        )
+        .unwrap();
+}
+
+/// A store holding one session and the two receipts that made it and its
+/// neighbour, committed at `Stamp(5)`.
+fn store_with_two_receipts(path: &Path) -> Registry {
+    let mut keys = SequentialKeys::new(*b"storetst");
+    let mut store = SqliteOrgStore::open(path).unwrap();
+    let mut registry = Registry::new(org(&mut keys));
+    store.import(registry.org(), None, Stamp(0)).unwrap();
+    for n in 1..=2 {
+        let cmd = Command {
+            operation: op_id(n),
+            op: Op::ResourceCreate {
+                placement: None,
+                session: None,
+                resource: shell(),
+            },
+        };
+        let applied =
+            phux_core::apply(registry.org(), &cmd, &Actor::owner(), Stamp(5), &mut keys).unwrap();
+        store
+            .commit(&applied.transition, u64::from(n), Stamp(5))
+            .unwrap();
+        let _ = registry.commit(&applied.transition);
+    }
+    registry
+}
+
+#[test]
+fn an_undecodable_receipt_stays_claimed_and_stored_on_a_healthy_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v1.sqlite3");
+    let registry = store_with_two_receipts(&path);
+    scramble_receipt(&path, op_id(1));
+
+    let mut store = SqliteOrgStore::open(&path).unwrap();
+    let stored = store.load().unwrap().expect("written");
+    assert_eq!(stored.resources.len(), registry.org().resources().count());
+    assert_eq!(stored.receipts.len(), 1);
+    assert_eq!(stored.receipts[0].operation, op_id(2));
+    assert_eq!(
+        stored.unreadable_receipts,
+        [UnreadableReceipt {
+            operation: op_id(1),
+            at: Stamp(5),
+        }]
+    );
+
+    // Whole-org writes and commits must not take the row away from the
+    // binary that can read it.
+    let restored = Org::restore(
+        stored.authority,
+        registry.org().instance(),
+        stored.sessions,
+        stored.resources,
+        stored.arrangements,
+        stored.receipts,
+    )
+    .unwrap();
+    store.import(&restored, None, Stamp(6)).unwrap();
+    store.commit(&Transition::default(), 9, Stamp(6)).unwrap();
+    assert_eq!(store.count("receipts").unwrap(), 2);
+    assert_eq!(store.load().unwrap().unwrap().unreadable_receipts.len(), 1);
+
+    // It leaves when any receipt would.
+    let later = Stamp(RECEIPT_HORIZON_MS + 10);
+    store.commit(&Transition::default(), 10, later).unwrap();
+    assert_eq!(store.count("receipts").unwrap(), 0);
+}
+
+#[test]
+fn a_receipt_row_with_no_usable_id_claims_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v1.sqlite3");
+    store_with_two_receipts(&path);
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE receipts SET operation = x'00', receipt = 'junk' WHERE operation = ?1",
+            [op_id(1).as_bytes().as_slice()],
+        )
+        .unwrap();
+    let stored = SqliteOrgStore::open(&path)
+        .unwrap()
+        .load()
+        .unwrap()
+        .expect("written");
+    assert_eq!(stored.receipts.len(), 1);
+    assert!(stored.unreadable_receipts.is_empty());
+}
+
 #[test]
 fn a_newer_schema_is_refused() {
     let dir = tempfile::tempdir().unwrap();
