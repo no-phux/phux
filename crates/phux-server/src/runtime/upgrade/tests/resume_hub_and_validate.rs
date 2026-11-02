@@ -288,6 +288,47 @@ fn validate_binary_accepts_when_version_and_config_check_succeed() {
     validate_binary(&path).expect("a coherent replacement image must pass");
 }
 
+/// The candidate's verdict on the staged blob decides the upgrade, and the
+/// file comes back rewound for the real resume either way. A candidate that
+/// predates the check answers `--version`, which must not block an upgrade.
+#[test]
+fn the_candidate_vets_the_blob_before_the_irreversible_exec() {
+    use std::io::{Read as _, Seek as _, Write as _};
+
+    let blob = |bytes: &[u8]| {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(bytes).unwrap();
+        file.rewind().unwrap();
+        file
+    };
+    let dir = tempfile::tempdir().unwrap();
+
+    let refuses = write_stub_phux(
+        dir.path(),
+        "#!/bin/sh\ncat >/dev/null\necho 'unsupported upgrade blob version 2' >&2\nexit 1\n",
+    );
+    let error = preflight_blob(&refuses, &mut blob(b"{}")).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported upgrade blob version 2"),
+        "{error}"
+    );
+
+    let older = write_stub_phux(dir.path(), "#!/bin/sh\necho 'phux 0.115.0'\n");
+    preflight_blob(&older, &mut blob(b"{}")).expect("an older candidate is not refused");
+
+    let reads = write_stub_phux(
+        dir.path(),
+        "#!/bin/sh\ncat >/dev/null\necho upgrade-blob-readable\n",
+    );
+    let mut staged = blob(b"staged");
+    preflight_blob(&reads, &mut staged).expect("readable");
+    let mut left = String::new();
+    staged.read_to_string(&mut left).unwrap();
+    assert_eq!(left, "staged", "the resume must read from the start");
+}
+
 /// A tree pane whose engine exited but is not reaped yet aborts as
 /// retryable, never staging a blob that would resurrect it as a blank
 /// pane in the new image.

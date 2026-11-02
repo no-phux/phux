@@ -1,19 +1,22 @@
-**Phux Rune 0.1.0-alpha.4**: find, links, and history you can find your way back from.
+**Phux Rune 0.1.0-alpha.8**: a window that recovers, renders faster, and speaks plainly.
 
-- **Find in history** (⌘F): incremental search over the focused pane's
-  loaded history, newest match first. ↩ / ⌘G walk back, ⇧↩ / ⌘⇧G forward,
-  Aa for case, ⌘E searches for the selection. A miss turns the bar red.
-- **Links**: hold ⌘ over a URL or an OSC 8 hyperlink to underline it and see
-  its target in the status line; ⌘-click opens it (Ctrl-click on Linux).
-  URLs soft-wrapped across rows work. Only `http`, `https` and `mailto`
-  open, so output can't launch arbitrary URL handlers.
-- **Back to live**: scrolled into history, a pane shows a position rail and
-  a pill that counts new lines arriving below; click it to return.
-- **Remembers** text size and the folded sidebar between launches.
-- **Folded sidebar** now gets a proper titlebar showing the focused terminal,
-  instead of a tall empty band.
+- **Connection recovery.** A dropped connection comes back by itself, and the
+  window says where it stands: starting, connecting, no sessions, or a server
+  that needs updating, each with what to do next.
+- **Faster rendering.** A scrolled row keeps what it already built. Scrolling
+  rebuilds 128 rows where it rebuilt 2,944, and a stream beside an idle split
+  128 where it rebuilt 10,112. Box drawing, shades and Powerline glyphs now
+  line up across cells.
+- **One command table.** The shortcuts, the palette and the native menus run
+  the same commands by the same rules.
+- **⇧⌘W** closes the tab.
+- **Agent attention** shows what needs you without drawing continuously, so an
+  idle window stays idle.
+- **Readable themes and keyboard Settings.** Every theme keeps its text legible,
+  and Settings works without a mouse.
+- **Copy Diagnostics** puts the facts a bug report needs on the clipboard.
+- **Install it** with `curl -fsSL https://phux.sh/install | sh -s -- --rune`.
 
-Signed, notarized and stapled like alpha.3. Alpha: one window, no settings
-window or images yet. It needs the phux CLI and never installs or upgrades
-it. Verify an archive with its `.sha256` file. See
+From alpha.6 this arrives by itself; earlier alphas need one manual download.
+Signed, notarized and stapled. Alpha: one window on one machine. See
 [clients/rune/README.md](https://github.com/no-phux/phux/blob/main/clients/rune/README.md).

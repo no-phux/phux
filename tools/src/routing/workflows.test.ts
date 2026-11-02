@@ -83,9 +83,9 @@ test("each lane is one job gated on its plan output that runs the lane's recipes
     );
     const owner = gated.find(([id]) => id !== "test-build");
     expect([lane, owner === undefined]).toEqual([lane, false]);
-    const commands = steps(owner?.[1] ?? {})
-      .map(run)
-      .join("\n");
+    const called = uses(owner?.[1] ?? {}).replace("./.github/workflows/", "");
+    const laneJobs = called === "" ? [owner?.[1] ?? {}] : Object.values(jobs(workflow(called)));
+    const commands = laneJobs.flatMap(steps).map(run).join("\n");
     for (const argv of LANE_RECIPES[lane]) {
       const [recipe] = argv;
       expect([lane, recipe, recipe in RECIPES]).toEqual([lane, recipe, true]);

@@ -395,7 +395,7 @@ impl RelayHandle {
 
     /// Drop `client`'s subscription to one terminal and wait for the proxy
     /// withdrawal, bounded by [`RELAY_COMMAND_TIMEOUT`].
-    pub(crate) async fn unsubscribe_terminal(
+    pub(crate) async fn unsubscribe_resource(
         &self,
         client: ClientId,
         terminal: u32,

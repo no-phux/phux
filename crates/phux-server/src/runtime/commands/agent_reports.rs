@@ -15,7 +15,7 @@ pub(crate) async fn handle_report_agent_state(
     reported: phux_protocol::wire::frame::ReportedAgentState,
 ) -> CommandResult {
     if state.with(|s| {
-        s.terminal_from_wire(terminal_id)
+        s.resource_from_wire(terminal_id)
             .is_some_and(|core| s.native_owned_terminal(core))
     }) {
         return CommandResult::Error {
@@ -27,7 +27,7 @@ pub(crate) async fn handle_report_agent_state(
     let (resolved, live_session) = state.with(|server| {
         let resolved = server.resolve_resource(terminal_id).into_owned();
         let live_session = matches!(resolved, ResolvedOwned::Local(_))
-            && crate::agent_detect::live_session::server_has_live_session(server, terminal_id);
+            && server.resource_has_live_session(terminal_id);
         (resolved, live_session)
     });
     // The report addresses the instrumented Terminal, never the child stream.
@@ -72,7 +72,7 @@ pub(crate) fn handle_subscribe_terminal_events(
 ) -> CommandResult {
     let filter = crate::state::EventFilter::of(event_types);
     let registered = state.with_mut(|s| {
-        s.terminal_from_wire(terminal_id)?;
+        s.resource_from_wire(terminal_id)?;
         s.subscribe_resource_events(client_id, terminal_id.clone(), filter, out_tx.clone());
         Some(())
     });

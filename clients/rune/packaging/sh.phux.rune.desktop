@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Phux Rune
+Comment=Your phux sessions and agents in one window
+Exec=phux-rune
+Icon=sh.phux.rune
+Terminal=false
+Categories=Development;

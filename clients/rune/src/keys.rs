@@ -7,6 +7,10 @@ use phux_client_runtime::control::keys::physical_key_for_char;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use rune::{Key, Mods, PhysicalKeyCode};
 
+mod commands;
+pub use commands::{COMMANDS, command};
+use commands::{Cap, Chord};
+
 /// What a key press should do in the terminal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Typed {
@@ -37,6 +41,9 @@ pub enum Shortcut {
     SplitDown,
     ZoomPane,
     CloseTerminal,
+    CloseTab,
+    NextTab,
+    PreviousTab,
     FocusLeft,
     FocusRight,
     FocusUp,
@@ -45,6 +52,40 @@ pub enum Shortcut {
     FindNext,
     FindPrevious,
     FindSelection,
+    Inbox,
+    Settings,
+    /// The tab at this index.
+    Tab(u8),
+    RenameSession,
+    RenameTab,
+    CloseSession,
+    CheckForUpdates,
+    InstallUpdate,
+    Machines,
+    RetryConnection,
+    CopyDiagnostics,
+    ToggleFullScreen,
+    KeyboardShortcuts,
+    SelectAll,
+    PromptUp,
+    PromptDown,
+}
+
+impl Shortcut {
+    /// Over the inbox or settings the terminal behind is out of reach: no
+    /// pasting into it or closing it unseen.
+    pub const fn works_over_sheets(self) -> bool {
+        matches!(
+            self,
+            Self::Inbox
+                | Self::Settings
+                | Self::ZoomIn
+                | Self::ZoomOut
+                | Self::ZoomReset
+                | Self::CheckForUpdates
+                | Self::ToggleFullScreen
+        )
+    }
 }
 
 pub fn mods(mods: Mods) -> ModSet {
@@ -175,71 +216,52 @@ pub fn us_char(code: PhysicalKeyCode) -> Option<char> {
     })
 }
 
-/// The Command (macOS) or Ctrl-Shift (elsewhere) chords the app keeps.
+/// The app's action for a press, if it is exactly a chord in the table.
 /// `physical` names the key itself, so a shifted chord (Ctrl-Shift-minus
 /// arrives as `_`) and other layouts still match.
 pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Option<Shortcut> {
-    let Key::Command(c) = key else {
-        return None;
-    };
-    // Off macOS Rune reports Ctrl chords as `Command`; only Ctrl-Shift ones
-    // belong to the app, so plain Ctrl-C still reaches the shell.
-    if !cfg!(target_os = "macos") && !mods.shift {
-        return None;
-    }
-    // Exact chords: ⌘⌥D or ⌘⌃T stay with the program.
-    if mods.alt || (cfg!(target_os = "macos") && mods.ctrl) {
-        return None;
-    }
-    Some(match physical.and_then(us_char).unwrap_or(*c) {
-        'c' => Shortcut::Copy,
-        'v' => Shortcut::Paste,
-        't' => Shortcut::NewTerminal,
-        'k' | 'p' => Shortcut::Palette,
-        'b' => Shortcut::ToggleSidebar,
-        'j' => Shortcut::JumpToAttention,
-        'w' => Shortcut::CloseTerminal,
-        'd' if mods.shift && cfg!(target_os = "macos") => Shortcut::SplitDown,
-        'd' => Shortcut::SplitRight,
-        'e' if !cfg!(target_os = "macos") => Shortcut::SplitDown,
-        'e' => Shortcut::FindSelection,
-        'f' => Shortcut::Find,
-        // Off macOS every app chord has Shift, so G alone is next there.
-        'g' if mods.shift && cfg!(target_os = "macos") => Shortcut::FindPrevious,
-        'g' => Shortcut::FindNext,
-        'n' => Shortcut::NewSession,
-        ']' | '}' => Shortcut::NextTerminal,
-        '[' | '{' => Shortcut::PreviousTerminal,
-        '=' | '+' => Shortcut::ZoomIn,
-        '-' | '_' => Shortcut::ZoomOut,
-        '0' | ')' => Shortcut::ZoomReset,
+    commands::action_of(Chord {
+        cap: cap(key, physical)?,
+        // Rune's `cmd` is Ctrl off macOS, which the table names as Ctrl.
+        command: if cfg!(target_os = "macos") {
+            mods.cmd
+        } else {
+            mods.logo
+        },
+        ctrl: mods.ctrl,
+        alt: mods.alt,
+        shift: mods.shift,
+    })
+}
+
+/// The chord key of a press. Letters and digits arrive only as `Command`:
+/// plain typing never reaches the table.
+fn cap(key: &Key, physical: Option<PhysicalKeyCode>) -> Option<Cap> {
+    Some(match key {
+        Key::Command(c) => Cap::Char(unshifted(physical.and_then(us_char).unwrap_or(*c))),
+        Key::Enter => Cap::Enter,
+        Key::Left => Cap::Left,
+        Key::Right => Cap::Right,
+        Key::Up => Cap::Up,
+        Key::Down => Cap::Down,
+        Key::Home => Cap::Home,
+        Key::End => Cap::End,
+        Key::PageUp => Cap::PageUp,
+        Key::PageDown => Cap::PageDown,
         _ => return None,
     })
 }
 
-/// Command-↑/↓ (and Home/End) jump through history rather than reaching the
-/// shell.
-pub fn scroll_shortcut(key: &Key, mods: Mods) -> Option<Shortcut> {
-    if !(mods.cmd && cfg!(target_os = "macos")) {
-        return None;
-    }
-    // ⌘⌥ arrows move between panes; ⌘⇧↩ zooms one.
-    if mods.alt {
-        return match key {
-            Key::Left => Some(Shortcut::FocusLeft),
-            Key::Right => Some(Shortcut::FocusRight),
-            Key::Up => Some(Shortcut::FocusUp),
-            Key::Down => Some(Shortcut::FocusDown),
-            _ => None,
-        };
-    }
-    if mods.shift && *key == Key::Enter {
-        return Some(Shortcut::ZoomPane);
-    }
-    match key {
-        Key::Home | Key::Up => Some(Shortcut::ScrollTop),
-        Key::End | Key::Down => Some(Shortcut::ScrollBottom),
-        _ => None,
+/// The US key a shifted symbol sits on, for a press with no physical key.
+const fn unshifted(c: char) -> char {
+    match c {
+        '<' => ',',
+        '{' => '[',
+        '}' => ']',
+        '+' => '=',
+        '_' => '-',
+        ')' => '0',
+        other => other,
     }
 }
 
@@ -266,13 +288,14 @@ pub fn typed(
     key_mods: Mods,
     base: Option<char>,
     physical: Option<PhysicalKeyCode>,
+    option_as_meta: bool,
 ) -> Option<Typed> {
     let set = mods(key_mods);
     if let Some(physical) = named(key) {
         return Some(Typed::Key(atom(physical, set, None)));
     }
     match key {
-        Key::Text(text) if !key_mods.ctrl && !alt_is_meta(key_mods) => {
+        Key::Text(text) if !key_mods.ctrl && !alt_is_meta(key_mods, option_as_meta) => {
             Some(Typed::Text(text.clone()))
         }
         Key::Text(text) => {
@@ -289,10 +312,10 @@ pub fn typed(
     }
 }
 
-/// macOS Option types layout characters (å, ∑), as Ghostty's default does;
-/// elsewhere Alt is Meta.
-const fn alt_is_meta(mods: Mods) -> bool {
-    mods.alt && !cfg!(target_os = "macos")
+/// macOS Option types layout characters (å, ∑), as Ghostty's default does,
+/// unless the person turned on Option as Meta; elsewhere Alt is Meta.
+const fn alt_is_meta(mods: Mods, option_as_meta: bool) -> bool {
+    mods.alt && (option_as_meta || !cfg!(target_os = "macos"))
 }
 
 #[cfg(test)]
@@ -308,7 +331,13 @@ mod tests {
     #[test]
     fn plain_text_types() {
         assert_eq!(
-            typed(&Key::Text("a".into()), Mods::default(), Some('a'), None),
+            typed(
+                &Key::Text("a".into()),
+                Mods::default(),
+                Some('a'),
+                None,
+                false
+            ),
             Some(Typed::Text("a".into()))
         );
     }
@@ -320,6 +349,7 @@ mod tests {
             m(|m| m.ctrl = true),
             Some('c'),
             None,
+            false,
         ) else {
             panic!("ctrl-c is a key atom");
         };
@@ -335,6 +365,7 @@ mod tests {
             m(|m| m.ctrl = true),
             Some(' '),
             None,
+            false,
         ) else {
             panic!("ctrl-space is a key atom");
         };
@@ -343,7 +374,8 @@ mod tests {
 
     #[test]
     fn named_keys_carry_shift() {
-        let Some(Typed::Key(event)) = typed(&Key::Tab, m(|m| m.shift = true), None, None) else {
+        let Some(Typed::Key(event)) = typed(&Key::Tab, m(|m| m.shift = true), None, None, false)
+        else {
             panic!("tab is a key atom");
         };
         assert_eq!(event.key, PhysicalKey::Tab);
@@ -370,14 +402,35 @@ mod tests {
             shortcut(&Key::Command('t'), cmd, None),
             Some(Shortcut::NewTerminal)
         );
-        assert_eq!(typed(&Key::Command('q'), cmd, Some('q'), None), None);
+        assert_eq!(typed(&Key::Command('q'), cmd, Some('q'), None, false), None);
+    }
+
+    #[test]
+    fn option_as_meta_sends_the_chord() {
+        let Some(Typed::Key(event)) = typed(
+            &Key::Text("å".into()),
+            m(|m| m.alt = true),
+            Some('a'),
+            None,
+            true,
+        ) else {
+            panic!("option is meta");
+        };
+        assert_eq!(event.key, physical_key_for_char('a'));
+        assert!(event.mods.contains(ModSet::ALT));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn option_types_layout_text_on_macos() {
         assert_eq!(
-            typed(&Key::Text("å".into()), m(|m| m.alt = true), Some('a'), None),
+            typed(
+                &Key::Text("å".into()),
+                m(|m| m.alt = true),
+                Some('a'),
+                None,
+                false
+            ),
             Some(Typed::Text("å".into()))
         );
     }
@@ -390,6 +443,7 @@ mod tests {
             m(|m| m.ctrl = true),
             Some('с'),
             Some(PhysicalKeyCode::KeyC),
+            false,
         ) else {
             panic!("ctrl-c is a key atom");
         };
@@ -425,15 +479,51 @@ mod tests {
     }
 
     #[test]
-    fn shifted_zoom_chords_match_by_physical_key() {
+    fn shifted_symbols_match_by_physical_key() {
         let chord = m(|m| {
+            m.shift = true;
+            m.cmd = true;
+            m.logo = cfg!(target_os = "macos");
+            m.ctrl = !cfg!(target_os = "macos");
+        });
+        let plus = shortcut(&Key::Command('+'), chord, Some(PhysicalKeyCode::Equal));
+        assert_eq!(plus, Some(Shortcut::ZoomIn));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shift_is_part_of_the_chord() {
+        let cmd = m(|m| m.cmd = true);
+        let shifted = m(|m| {
             m.cmd = true;
             m.shift = true;
         });
-        let minus = shortcut(&Key::Command('_'), chord, Some(PhysicalKeyCode::Minus));
-        assert_eq!(minus, Some(Shortcut::ZoomOut));
-        let zero = shortcut(&Key::Command(')'), chord, Some(PhysicalKeyCode::Digit0));
-        assert_eq!(zero, Some(Shortcut::ZoomReset));
+        let w = Some(PhysicalKeyCode::KeyW);
+        assert_eq!(
+            shortcut(&Key::Command('w'), cmd, w),
+            Some(Shortcut::CloseTerminal)
+        );
+        assert_eq!(
+            shortcut(&Key::Command('w'), shifted, w),
+            Some(Shortcut::CloseTab)
+        );
+        let close = Some(PhysicalKeyCode::BracketRight);
+        assert_eq!(
+            shortcut(&Key::Command('}'), shifted, close),
+            Some(Shortcut::NextTab)
+        );
+        // Not in the table, so not the app's.
+        assert_eq!(shortcut(&Key::Command('t'), shifted, None), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn chords_stay_exact_with_other_modifiers() {
+        let held = m(|m| {
+            m.cmd = true;
+            m.alt = true;
+        });
+        assert_eq!(shortcut(&Key::Command('d'), held, None), None);
     }
 
     #[test]

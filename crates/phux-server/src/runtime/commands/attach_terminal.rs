@@ -64,7 +64,7 @@ pub(super) async fn handle_attach_terminal(
             // any lease seizure or role widening it made (ADR-0127).
             let restore = was_viewer && !role.is_viewer();
             let (released, holder) = state.with_mut(|s| {
-                s.unsubscribe_terminal(client_id, core);
+                s.unsubscribe_resource(client_id, core);
                 if restore {
                     s.set_viewer_mark(client_id, terminal_id, true);
                 }
@@ -124,80 +124,27 @@ pub(crate) async fn bootstrap_attach_terminal(
     connection_token: &CancellationToken,
     agent_after_seq: Option<u64>,
 ) -> Result<(), AttachResourceFailure> {
-    // A non-Terminal stream has its own bootstrap shape (ADR-0103 §4).
-    if handle.kind == crate::resource::ResourceKind::AgentSession {
-        return match crate::runtime::resource_commands::attach_agent_session(
-            state,
-            client_id,
-            terminal_id,
-            core,
-            handle,
-            content_tx,
-            bootstrap_limits,
-            connection_token,
-            agent_after_seq,
-        )
-        .await
-        {
-            CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
-            CommandResult::Error { code, message } => Err(AttachResourceFailure { code, message }),
-            other => Err(AttachResourceFailure::internal(&format!(
-                "agent session attach returned an unexpected result: {other:?}"
-            ))),
-        };
-    }
-    let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
-    else {
-        return Err(AttachResourceFailure {
-            code: ErrorCode::CodecUnavailable,
-            message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
-        });
-    };
-
-    let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
-    else {
-        return Err(AttachResourceFailure {
-            code: ErrorCode::ResourceExhausted,
-            message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
-        });
-    };
-
-    let terminal = match handle.terminal() {
-        Ok(terminal) => terminal.clone(),
-        Err(error) => {
-            state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
-            return Err(AttachResourceFailure {
-                code: ErrorCode::WrongResourceKind,
-                message: error.to_string(),
-            });
-        }
-    };
-    let session = AttachResourceSession {
+    let stream = crate::runtime::apps::StreamBootstrap {
         state,
-        out_tx: content_tx,
-        connection_token,
-        terminal_id,
-        core,
-        handle: handle.clone(),
-        terminal,
         client_id,
+        wire: terminal_id,
+        core,
+        handle,
+        content_tx,
         stream_id,
         client_caps,
-        stream_profile,
-        bootstrap_limits,
+        profile: bootstrap_profile,
+        limits: bootstrap_limits,
+        connection_token,
+        after_seq: agent_after_seq,
     };
-
-    let mut generation = match session.establish_generation(bootstrap_id).await {
-        Ok(generation) => generation,
-        Err(failure) => return Err(session.failed(failure)),
+    let Some(app) = crate::runtime::apps::app_for(handle.kind) else {
+        return Err(AttachResourceFailure {
+            code: ErrorCode::WrongResourceKind,
+            message: format!("this server does not serve {}", handle.kind),
+        });
     };
-
-    let finished = if let Some(state_sync) = generation.state_sync_bootstrap.take() {
-        session.finish_state_sync(&generation, state_sync).await
-    } else {
-        session.finish_bootstrap(&mut generation).await
-    };
-    finished.map_err(|failure| session.failed(failure))
+    app.bootstrap(stream).await
 }
 
 /// Resolve the wire terminal id and register the caller as an output
@@ -216,18 +163,19 @@ pub(crate) fn subscribe_attach_terminal(
 ) -> Result<AttachSubscription, CommandResult> {
     let not_found = || terminal_not_found(terminal_id);
     state.with_mut(|s| {
-        let core = s.terminal_from_wire(terminal_id).ok_or_else(not_found)?;
+        let core = s.resource_from_wire(terminal_id).ok_or_else(not_found)?;
         let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
         // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
         // any other kind is refused the way `ACQUIRE_INPUT` refuses it.
         if role.is_some_and(RolePolicy::takes_over)
-            && let Err(error) = handle.terminal()
+            && let Some(Err(error)) = crate::runtime::apps::app_for(handle.kind)
+                .map(crate::runtime::apps::ResourceApp::check_takeover)
         {
             return Err(wrong_resource_kind(error));
         }
-        let was_subscribed = s.subscribers_for_terminal(core).contains(&client_id);
+        let was_subscribed = s.subscribers_for_resource(core).contains(&client_id);
         let was_viewer = s.is_viewer(client_id, terminal_id);
-        s.subscribe_terminal(client_id, core, Some(out_tx.clone()));
+        s.subscribe_resource(client_id, core, Some(out_tx.clone()));
         let effects = role.map_or_else(RoleEffects::default, |policy| {
             s.apply_attach_role(client_id, terminal_id, Some(core), policy, was_subscribed)
         });
@@ -335,7 +283,7 @@ pub(super) fn refuse_invalid_role_policy(command: &Command) -> Option<CommandRes
 /// Whether a negotiated bootstrap profile streams the official progressive
 /// libghostty snapshot rather than a synthesized VT bootstrap.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-pub(super) const fn native_checkpoint_profile(
+pub(in crate::runtime) const fn native_checkpoint_profile(
     profile: phux_protocol::caps::BootstrapStreamProfile,
 ) -> bool {
     matches!(

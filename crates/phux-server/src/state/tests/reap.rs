@@ -86,7 +86,7 @@ fn reaping_the_last_pane_of_an_ephemeral_session_deletes_it() {
         )
         .expect("quick");
 
-    let idle = s.reap_terminal(pid);
+    let idle = s.reap_resource(pid);
 
     assert!(idle, "nothing runs once the only pane is reaped");
     assert!(
@@ -101,7 +101,7 @@ fn reaping_the_last_pane_of_a_persistent_session_keeps_it_empty() {
     let mut s = ServerState::new();
     let (sid, pid) = s.seed_session("work");
 
-    let idle = s.reap_terminal(pid);
+    let idle = s.reap_resource(pid);
 
     assert!(idle);
     let session = s.registry().session(sid).expect("persistent session stays");
@@ -115,7 +115,7 @@ fn reap_one_of_two_sessions_keeps_server_alive() {
     let (_sid_a, pid_a) = s.seed_session("a");
     let (sid_b, _pb) = s.seed_session("b");
 
-    let idle = s.reap_terminal(pid_a);
+    let idle = s.reap_resource(pid_a);
 
     assert!(!idle, "a second session's pane is still live");
     assert!(s.registry().session(sid_b).is_some(), "session b untouched");
@@ -127,7 +127,7 @@ fn reap_pane_beside_a_sibling_keeps_the_session() {
     let (sid, pid1) = s.seed_session("default");
     let pid2 = s.add_pane_to_session(sid).unwrap();
 
-    let idle = s.reap_terminal(pid1);
+    let idle = s.reap_resource(pid1);
 
     assert!(!idle);
     assert!(s.registry().session(sid).is_some());
@@ -144,9 +144,9 @@ fn reap_is_idempotent_on_unknown_pane() {
     let mut s = ServerState::new();
     let (_sid, pid) = s.seed_session("default");
 
-    assert!(s.reap_terminal(pid), "first reap leaves nothing live");
+    assert!(s.reap_resource(pid), "first reap leaves nothing live");
     // A repeat reap is harmless.
-    assert!(s.reap_terminal(pid));
+    assert!(s.reap_resource(pid));
     assert!(s.registry().record(pid).is_none());
 }
 
@@ -156,15 +156,15 @@ fn reap_clears_pane_bookkeeping() {
     let (_sid, pid) = s.seed_session("default");
     let cid = s.new_client_id();
     s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-    let wire = s.intern_terminal_wire(pid);
-    assert!(!s.subscribers_for_terminal(pid).is_empty());
-    assert_eq!(s.terminal_from_wire(&wire), Some(pid));
+    let wire = s.intern_resource_wire(pid);
+    assert!(!s.subscribers_for_resource(pid).is_empty());
+    assert_eq!(s.resource_from_wire(&wire), Some(pid));
 
-    s.reap_terminal(pid);
+    s.reap_resource(pid);
 
-    assert!(s.subscribers_for_terminal(pid).is_empty());
+    assert!(s.subscribers_for_resource(pid).is_empty());
     assert!(
-        s.terminal_from_wire(&wire).is_none(),
+        s.resource_from_wire(&wire).is_none(),
         "wire id retired on reap",
     );
 }
@@ -175,8 +175,8 @@ fn reap_clears_agent_asked_state() {
     let (_sid, pid) = s.seed_session("default");
     s.report_agent_asked(
         pid,
-        crate::agent_asked::AskedSource::Hook,
-        crate::agent_asked::AskedPayload {
+        phux_resource::agent_asked::AskedSource::Hook,
+        phux_resource::agent_asked::AskedPayload {
             id: "hook".to_owned(),
             question: "Approve?".to_owned(),
             suggestions: Vec::new(),
@@ -185,7 +185,7 @@ fn reap_clears_agent_asked_state() {
     );
     assert!(s.current_agent_asked(pid).is_some());
 
-    s.reap_terminal(pid);
+    s.reap_resource(pid);
 
     assert!(s.current_agent_asked(pid).is_none());
 }

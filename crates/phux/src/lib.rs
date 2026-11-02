@@ -17,6 +17,9 @@
     reason = "internal submodules expose items to the crate root via pub(crate) rather than plain `pub`; the crate's only real public API is `run`, everything else stays crate-private on purpose"
 )]
 
+// usage 7's derive output names the package, even when Cargo calls it `usage`.
+extern crate usage as usage_rs;
+
 use std::ffi::OsStr;
 use std::process::ExitCode;
 
@@ -252,6 +255,9 @@ fn run_cli() -> ExitCode {
         let kind = phux_config::instance::build_kind();
         output::bytes(format!("{}\n", kind.as_str()).as_bytes());
         return ExitCode::SUCCESS;
+    }
+    if std::env::var_os(phux_config::instance::PROBE_UPGRADE_BLOB_ENV).is_some() {
+        return commands::server::answer_upgrade_preflight();
     }
     // A development build whose state directory resolves to production
     // (`PHUX_PROFILE=default` outside a temp sandbox) would log, record, and

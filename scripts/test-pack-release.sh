@@ -6,6 +6,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# install.sh appends to the invoking shell's profile; keep that out of the real home.
+export HOME="$TMP/home"
+unset ZDOTDIR XDG_CONFIG_HOME
+
 INSTALLER_SH="$(command -v dash || echo /bin/sh)"
 VERSION=v9.8.7
 TARGET=x86_64-unknown-linux-gnu

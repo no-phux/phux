@@ -55,7 +55,7 @@ jobs:
       prs: ${{ steps.hold.outputs.prs }}
       held: ${{ steps.hold.outputs.held }}
     steps:
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.RELEASE_APP_ID }}
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.RELEASE_APP_ID }}
@@ -213,7 +213,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: cli-*
           path: dist
@@ -316,7 +316,7 @@ jobs:
           for workflow in ffi-xcframework.yml ffi-android.yml; do
             gh workflow run "$workflow" --ref main -f tag="$TAG"
           done
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.RELEASE_APP_ID }}
@@ -346,7 +346,7 @@ jobs:
           git checkout --quiet "refs/tags/$TAG"
           base="$(git describe --tags --match 'v[0-9]*' --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)"
           echo "base=$base" >> "$GITHUB_OUTPUT"
-      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
+      - uses: linear/linear-release-action@dd4fc407f860b9460d2cf0b3fb1edd8985cf443f # v0.18.2
         if: needs.cli.result == 'success'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
@@ -358,7 +358,7 @@ jobs:
           release_notes: ${{ runner.temp }}/release-notes.md
           links: |
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.TAG }}
-      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
+      - uses: linear/linear-release-action@dd4fc407f860b9460d2cf0b3fb1edd8985cf443f # v0.18.2
         if: needs.cli.result == 'success'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}

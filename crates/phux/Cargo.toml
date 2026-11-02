@@ -42,6 +42,8 @@ base64.workspace = true
 # Defaults are controlled by this executable's feature forwarding below.
 # Other workspace consumers can retain the server's own defaults.
 phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }
+# The Terminal app: this binary composes the server with what a pane runs.
+phux-terminal.workspace = true
 # `phux agent explain` evaluates detection manifests with no daemon in the
 # loop (phux-w7z2.24). The rules crate is the same evaluator the server
 # ticks; depending on it here keeps that path off `phux-server`.
@@ -176,7 +178,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # Schema. Dev-only, so the binary does not link it. The workspace had no
 # JSON Schema validator. Default features pull an HTTP resolver this
 # schema does not use.
-jsonschema = { version = "0.33", default-features = false }
+jsonschema = { version = "0.60", default-features = false }
 # Read-only inspection of the work store while the keeper holds its lock.
 rusqlite.workspace = true
 # The update tests sign fake releases the way the minisign CLI does (Ed25519
@@ -184,7 +186,7 @@ rusqlite.workspace = true
 # `ring` is already locked (rustls, quinn, rcgen); `blake2` is one dev-only
 # crate over the `digest` 0.10 already locked. Neither ships in the binary.
 ring = "0.17"
-blake2 = "0.10"
+blake2 = "0.11"
 
 [features]
 default = ["webtransport"]

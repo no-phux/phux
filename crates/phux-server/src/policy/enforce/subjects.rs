@@ -47,7 +47,7 @@ pub(super) enum Located {
 impl TerminalPoint {
     pub(super) fn of(s: &ServerState, wire: &WireResourceId) -> Self {
         match wire {
-            WireResourceId::Local { id } => local_terminal(s, *id, s.terminal_from_wire(wire)),
+            WireResourceId::Local { id } => local_terminal(s, *id, s.resource_from_wire(wire)),
             WireResourceId::Satellite { host, id } => Self {
                 at: Located::Satellite(host.as_str().to_owned(), *id),
                 group: None,
@@ -88,7 +88,7 @@ fn local_terminal(s: &ServerState, id: u32, core: Option<CoreResourceId>) -> Ter
 /// A local resource by core id, matched only as itself. One with no wire id
 /// yet is [`Located::Unnamed`], never skipped.
 pub(super) fn local_point(s: &ServerState, core: CoreResourceId) -> TerminalPoint {
-    let at = match s.terminal_wire_of(core) {
+    let at = match s.resource_wire_of(core) {
         Some(WireResourceId::Local { id }) => Located::Local(id),
         _ => Located::Unnamed,
     };
@@ -129,7 +129,7 @@ fn parent_subject(s: &ServerState, wire: &WireResourceId) -> Option<Point> {
     let WireResourceId::Local { id } = wire else {
         return None;
     };
-    let core = s.terminal_from_wire(wire);
+    let core = s.resource_from_wire(wire);
     let subject = core.and_then(|core| s.resource_parent(core)).map_or_else(
         || local_terminal(s, *id, core).alone(),
         |parent| local_point(s, parent),

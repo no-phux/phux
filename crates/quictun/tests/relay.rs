@@ -16,6 +16,7 @@ use quictun::{CidTag, HalfClose, Protocol};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -388,8 +389,52 @@ async fn counting_target() -> SocketAddr {
     addr
 }
 
-#[tokio::test]
+// The post-claim event is the fixture's receipt: Tunnel::open only sends
+// the preamble. Wait for publication, rather than retrying the TLS assertion.
+struct RouteUp(Arc<tokio::sync::Notify>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RouteUp {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct Message {
+            up: bool,
+            route: bool,
+        }
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" && format!("{value:?}") == "tunnel up" {
+                    self.up = true;
+                }
+                if field.name() == "route" && format!("{value:?}") == "echo" {
+                    self.route = true;
+                }
+            }
+        }
+        if event.metadata().target() != "quictun::relay::runtime" {
+            return;
+        }
+        let mut message = Message {
+            up: false,
+            route: false,
+        };
+        event.record(&mut message);
+        if message.up && message.route {
+            self.0.notify_one();
+        }
+    }
+}
+
+// The scoped subscriber must observe the relay tasks on this same thread.
+#[tokio::test(flavor = "current_thread")]
 async fn tls_clients_without_quic_reach_a_route_through_the_tcp_ingress() {
+    // Keep tracing's single-dispatcher fast path from caching another test
+    // thread's NoSubscriber interest for the shared relay callsite. This
+    // dispatcher is registered but never installed as a default subscriber.
+    let _interest_cache_guard =
+        tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let route_up = Arc::new(tokio::sync::Notify::new());
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(RouteUp(Arc::clone(&route_up))),
+    );
     timeout(DEADLINE, async {
         let relay = Relay::start_with(Protocol::quictun(), |config| {
             config.tcp_ingress = Some(TcpIngress {
@@ -410,6 +455,7 @@ async fn tls_clients_without_quic_reach_a_route_through_the_tcp_ingress() {
         ));
         let target = counting_target().await;
         tokio::spawn(async move { serve_tunnel(&tunnel, target, &tls).await });
+        route_up.notified().await;
 
         let ingress = relay.tcp.expect("tcp ingress");
         let connector = tokio_rustls::TlsConnector::from(Arc::new(

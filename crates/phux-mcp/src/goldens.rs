@@ -323,8 +323,8 @@ fn golden_path(name: &str) -> PathBuf {
 }
 
 /// Run `case` against a scripted server that answers every connection the
-/// tool dials with a fresh copy of its spec, and return the pretty-printed
-/// document exactly as `tools/call` would carry it.
+/// tool dials with a fresh copy of its spec, and return the canonical JSON
+/// document carried by `tools/call` (object key order is not a contract).
 async fn run(case: &Case) -> String {
     let dir = tempfile::tempdir().expect("temp dir");
     let socket = dir.path().join("golden.sock");
@@ -334,8 +334,9 @@ async fn run(case: &Case) -> String {
     args["socket"] = json!(socket.to_string_lossy());
     let result = crate::tools::dispatch(case.tool, &args).await;
     server.abort();
-    let value = result.unwrap_or_else(|err| panic!("{} failed: {}", case.golden, err.0));
+    let mut value = result.unwrap_or_else(|err| panic!("{} failed: {}", case.golden, err.0));
     crate::contract_tests::validate_output(case.tool, &value);
+    value.sort_all_objects();
     serde_json::to_string_pretty(&value).expect("pretty") + "\n"
 }
 

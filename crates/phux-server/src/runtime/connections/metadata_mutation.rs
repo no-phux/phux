@@ -1,6 +1,6 @@
-use super::agent_state::invalidate_agent_detector;
 use super::metadata_read::protected_key_refusal;
 use super::session_create::{apply_session_keep_empty, handle_session_create_metadata};
+use crate::runtime::apps::terminal::agent_state::invalidate_agent_detector;
 use crate::state::{ClientId, Outbound, ServerInterceptedKey, ServerState, SharedState};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, Scope};
@@ -19,7 +19,7 @@ fn reject_unknown_local_terminal_scope(
     let Scope::Resource(terminal @ WireResourceId::Local { .. }) = scope else {
         return false;
     };
-    if state.with(|s| s.terminal_from_wire(terminal)).is_some() {
+    if state.with(|s| s.resource_from_wire(terminal)).is_some() {
         return false;
     }
     warn!(

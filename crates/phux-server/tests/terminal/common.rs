@@ -13,7 +13,7 @@ use libghostty_vt::screen::CellWide;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, StateScope};
-use phux_server::terminal_actor::PaneOutput;
+use phux_terminal::actor::PaneOutput;
 use portable_pty::CommandBuilder;
 use tokio::net::UnixStream;
 use tokio::sync::broadcast;

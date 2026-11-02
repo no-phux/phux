@@ -60,7 +60,7 @@ mod session_table;
 mod sessions;
 mod snapshot;
 mod terminals;
-mod upgrade_blob;
+pub(crate) mod upgrade_blob;
 mod viewport;
 mod wire_ids;
 
@@ -85,7 +85,7 @@ pub use retained::{RetainPolicy, close_reason_name, process_exit};
 pub use roles::RoleEffects;
 // The mailbox payloads live in `crate::mailbox` so `state` and the actor
 // share them without depending on each other.
-pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound, TerminalInput};
+pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound};
 use lease_table::LeaseTable;
 pub(crate) use lease_table::SatelliteLease;
 use lifecycle_state::Lifecycle;

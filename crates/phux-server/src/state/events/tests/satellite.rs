@@ -254,7 +254,7 @@ fn a_pump_that_outlived_its_subscription_is_told_it_is_gone() {
     let (tx, _rx) = mpsc::channel(8);
     state.subscribe_events(client, Some(pane(1)), tx.clone());
     let old = state.claim_event_pump(client).expect("first pump");
-    state.unsubscribe_terminal_events(client, &pane(1));
+    state.unsubscribe_resource_events(client, &pane(1));
     state.subscribe_events(client, Some(pane(1)), tx);
     let new = state
         .claim_event_pump(client)

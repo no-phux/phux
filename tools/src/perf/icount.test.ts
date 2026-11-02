@@ -103,6 +103,8 @@ test("hot paths select the job and docs do not", () => {
   const cases: [string[], boolean][] = [
     [[], true],
     [["crates/phux-server/src/lib.rs"], true],
+    [["crates/phux-terminal/src/actor/mod.rs"], true],
+    [["crates/phux-resource/src/lib.rs"], true],
     [["benchmarks/icount-baseline.json"], true],
     [["tools/src/perf/icount.ts"], true],
     [["docs/performance.md"], false],

@@ -7,10 +7,9 @@
 //! tree back; another client sees it on its next read.
 
 use phux_client_core::layout::{
-    ArrangementDoc, Direction, LayoutNode, SplitDir, focus_direction, kill_pane, leaves, split_at,
+    ArrangementDoc, Direction, LayoutNode, focus_direction, kill_pane, leaves,
 };
 use phux_client_runtime::Client;
-use phux_client_runtime::control::SpawnRequest;
 use phux_protocol::ids::{ResourceId, SessionKey};
 
 use super::Desk;
@@ -24,7 +23,7 @@ const MIN_RATIO: f32 = 0.1;
 impl Desk {
     /// The selected session's key, and its arrangement when the replica
     /// holds it (fetching it once when it does not).
-    fn arrangement(&mut self, client: &Client) -> Option<(SessionKey, ArrangementDoc)> {
+    pub(super) fn arrangement(&mut self, client: &Client) -> Option<(SessionKey, ArrangementDoc)> {
         let selected = client.selected_session()?;
         let session = self
             .topology
@@ -33,7 +32,9 @@ impl Desk {
             .iter()
             .find(|s| s.id == selected)?;
         let key = session.key?;
-        if let Some((_, _, doc, _)) = client.organization().arrangement_document(&key) {
+        if let Some((_, _, mut doc, _)) = client.organization().arrangement_document(&key) {
+            let shown = self.shown.as_ref().map(|s| &s.terminal);
+            super::tabs::focus_group(&mut doc, shown);
             return Some((key, doc));
         }
         if let Some(arrangement) = session.arrangement
@@ -42,6 +43,26 @@ impl Desk {
             let _ = client.fetch_arrangement(arrangement);
         }
         None
+    }
+
+    /// The layout owes the screen something no event will bring: the keyboard
+    /// moved to a terminal it doesn't hold (another tab), a pane has no view
+    /// yet, or a spawn is waiting to be placed.
+    pub(super) fn layout_is_stale(&self) -> bool {
+        if self.splits_waiting() {
+            return true;
+        }
+        match (&self.layout, &self.shown) {
+            (Some(tree), Some(shown)) => {
+                let on_screen = leaves(tree);
+                !on_screen.contains(&shown.terminal)
+                    || on_screen
+                        .iter()
+                        .any(|id| id != &shown.terminal && !self.others.contains_key(id))
+            }
+            (None, None) => false,
+            _ => true,
+        }
     }
 
     /// Recompute what the terminal area shows: the arrangement's active
@@ -63,6 +84,7 @@ impl Desk {
             // the stored tree, so it is pruned here, never written.
             .and_then(|tree| prune(tree, &listed, &shown))
             .filter(|tree| leaves(tree).contains(&shown));
+        self.sync_tabs(client, &listed);
         let tree = match (&self.zoomed, tree) {
             (Some(zoomed), Some(tree)) if leaves(&tree).contains(zoomed) => {
                 LayoutNode::Leaf(zoomed.clone())
@@ -76,8 +98,10 @@ impl Desk {
         };
         let changed = self.layout.as_ref() != Some(&tree);
         // Everything on screen counts as seen, not only the keyboard's pane.
-        for id in leaves(&tree) {
-            self.activities.seen(&id);
+        if self.focused {
+            for id in leaves(&tree) {
+                self.activities.seen(&id);
+            }
         }
         self.layout = Some(tree);
         changed | self.sync_views(client)
@@ -151,88 +175,6 @@ impl Desk {
         }
     }
 
-    /// Split the focused pane: spawn a terminal beside it, placed when the
-    /// server answers.
-    pub fn split(&mut self, dir: SplitDir) {
-        let (Some(client), Some(shown)) = (&self.client, &self.shown) else {
-            return;
-        };
-        let request = client.spawn_terminal(SpawnRequest {
-            command: None,
-            cwd: None,
-            env: None,
-            session_id: client.selected_session(),
-            initial_size: None,
-        });
-        self.pending_splits
-            .insert(request, (shown.terminal.clone(), dir));
-        self.zoomed = None;
-    }
-
-    /// Queue a spawned terminal for placement beside its split's target.
-    pub(super) fn place_split(
-        &mut self,
-        client: &Client,
-        target: &ResourceId,
-        new: &ResourceId,
-        dir: SplitDir,
-    ) {
-        self.unplaced_splits
-            .push((target.clone(), new.clone(), dir, std::time::Instant::now()));
-        self.place_pending_splits(client);
-    }
-
-    /// Place every queued split whose session arrangement the replica now
-    /// holds; the keyboard stays where it is until then. One that waits too
-    /// long shows on its own with a notice.
-    fn place_pending_splits(&mut self, client: &Client) {
-        const PATIENCE: std::time::Duration = std::time::Duration::from_secs(3);
-        let pending = std::mem::take(&mut self.unplaced_splits);
-        for (target, new, dir, since) in pending {
-            if self.arrangement(client).is_some() {
-                self.write_split(client, &target, &new, dir);
-            } else if since.elapsed() < PATIENCE {
-                self.unplaced_splits.push((target, new, dir, since));
-            } else {
-                self.notice = Some("The split could not be saved; it shows on its own.".to_owned());
-                self.want(new);
-            }
-        }
-    }
-
-    fn write_split(
-        &mut self,
-        client: &Client,
-        target: &ResourceId,
-        new: &ResourceId,
-        dir: SplitDir,
-    ) {
-        if let Some((session, mut doc)) = self.arrangement(client)
-            && let Some(group) = doc.active_group_mut()
-        {
-            let tree = group
-                .tree
-                .clone()
-                .unwrap_or_else(|| LayoutNode::Leaf(target.clone()));
-            let base = if leaves(&tree).contains(target) {
-                tree
-            } else {
-                LayoutNode::Leaf(target.clone())
-            };
-            if let Ok(split) = split_at(&base, target, new, dir, 0.5) {
-                group.tree = Some(split);
-                group.focus = Some(new.clone());
-                match client.replace_arrangement(session, &doc) {
-                    Ok(operation) => {
-                        self.layout_ops.insert(operation);
-                    }
-                    Err(error) => self.notice = Some(format!("Split not saved: {error}")),
-                }
-            }
-        }
-        self.want(new.clone());
-    }
-
     /// A split's container moved or resized.
     pub fn split_laid_out(&mut self, path: SplitPath, size: [f32; 2]) {
         self.split_sizes.insert(path, size);
@@ -266,12 +208,7 @@ impl Desk {
                 .and_then(|t| with_ratio(t, &path, ratio))
         {
             group.tree = Some(tree);
-            match client.replace_arrangement(session, &doc) {
-                Ok(operation) => {
-                    self.layout_ops.insert(operation);
-                }
-                Err(error) => self.notice = Some(format!("Divider not saved: {error}")),
-            }
+            self.write_arrangement(&client, session, &doc, "Divider not saved");
         }
         self.refresh_layout(&client);
         self.fit();
@@ -335,6 +272,7 @@ pub fn with_ratio(tree: &LayoutNode, path: &[bool], ratio: f32) -> Option<Layout
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phux_client_core::layout::SplitDir;
 
     fn leaf(n: u32) -> LayoutNode {
         LayoutNode::Leaf(ResourceId::local(n))

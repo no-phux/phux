@@ -51,8 +51,8 @@ try {
   assert.equal(metadata.exports?.["."]?.import, "./dist/src/index.js");
   for (const name of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
     const sdk = `@earendil-works/${name}`;
-    assert.equal(metadata.peerDependencies?.[sdk], "^1.1.0", `${sdk} must require the current host API`);
-    assert.equal(metadata.devDependencies?.[sdk], "1.1.0", `${sdk} loader tests must use the pinned SDK`);
+    assert.equal(metadata.peerDependencies?.[sdk], "^1.4.0", `${sdk} must require the current host API`);
+    assert.equal(metadata.devDependencies?.[sdk], "1.4.0", `${sdk} loader tests must use the pinned SDK`);
   }
 
   const adapterTypes = await readFile(

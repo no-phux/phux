@@ -6,7 +6,15 @@
 import { pathClosure, type BuildRoot } from "../lib/cargo.ts";
 import { ROOT } from "../lib/repo.ts";
 
-export const SURFACES = ["phux", "web", "web_engine", "integrations", "native", "desktop"] as const;
+export const SURFACES = [
+  "phux",
+  "web",
+  "web_engine",
+  "integrations",
+  "native",
+  "desktop",
+  "rune",
+] as const;
 export type Surface = (typeof SURFACES)[number];
 export type Route = readonly [pattern: string, surfaces: readonly Surface[]];
 
@@ -81,8 +89,15 @@ const ROUTES: Record<string, Surface[]> = {
   ".agents/skills/{using-phux,using-phux-mcp}/**": ["phux"],
   ".agents/lib/**": ["integrations"],
   "clients/{phux-web,phux-vt-web}/**": ["web"],
-  // The Rune client has its own workspace and lane (rune-client.yml).
-  "clients/rune/**": [],
+  // The Rune client has its own workspace, lock and lane (rune-build.yml).
+  "clients/rune/**": ["rune"],
+  ".github/workflows/rune-build.yml": ["rune"],
+  "just/rune.just": ["rune"],
+  // What that lane packages and qualifies with, outside its tree.
+  "scripts/check-binary-portability.sh": ["rune"],
+  "clients/desktop/native/src/diag/redact.rs": ["rune"],
+  "clients/desktop/scripts/notices.ts": ["desktop", "rune"],
+  "clients/desktop/packaging/licenses/**": ["desktop", "rune"],
   "clients/phux-vt-web/vendor/**": ["web", "web_engine"],
   "scripts/build-vt-wasm.sh": ["web", "web_engine"],
   "scripts/{prepare,smoke,test}-vt-wasm.mjs": ["web", "web_engine"],
@@ -94,7 +109,7 @@ const ROUTES: Record<string, Surface[]> = {
   // root CLI inputs (e.g. phux-protocol), so they still fail closed.
   "clients/desktop/native/**": ["desktop"],
   "clients/desktop/packaging/AppIcon.svg": ["desktop"],
-  "clients/desktop/packaging/AppIcon.png": ["desktop"],
+  "clients/desktop/packaging/AppIcon.png": ["desktop", "rune"],
   "clients/desktop/packaging/brand-profile{,s}.json": ["desktop"],
   "clients/desktop/scripts/brand.ts": ["desktop"],
   "clients/desktop/scripts/package-{app,dmg}.ts": ["desktop"],
@@ -113,20 +128,20 @@ const ROUTES: Record<string, Surface[]> = {
   // Path crates inherit `workspace = true` keys from the root manifest, and
   // the desktop build reads the root toolchain and Cargo config. Its lock is
   // its own, so the root Cargo.lock stays off the desktop lane.
-  "{Cargo.toml,rust-toolchain.toml}": [...SHARED, "desktop"],
-  ".cargo/**": [...SHARED, "desktop"],
+  "{Cargo.toml,rust-toolchain.toml}": [...SHARED, "desktop", "rune"],
+  ".cargo/**": [...SHARED, "desktop", "rune"],
   "Cargo.lock": SHARED,
   "flake.{nix,lock}": ["phux", "web"],
   // The native lane; the desktop lane provisions with setup-rust.sh too.
   "just/setup.just": ["native"],
   "scripts/{doctor,test-dev-setup,native-smoke}.sh": ["native"],
-  "scripts/setup-rust.sh": ["native", "desktop"],
+  "scripts/setup-rust.sh": ["native", "desktop", "rune"],
   "scripts/{setup,test}-macos-desktop.sh": ["native", "desktop"],
   "scripts/lib/macos-desktop.sh": ["native", "desktop"],
   // How the native, web-engine and desktop lanes get libghostty's Zig; the Nix
   // lanes use flake.nix's compiler.
   ".config/zig-toolchain.json": [...SHARED, ...ZIG],
-  "scripts/install-zig.sh": ZIG,
+  "scripts/install-zig.sh": [...ZIG, "rune"],
   "scripts/lib/dev-toolchain.sh": ZIG,
   // The lint lane runs build-features-check against the real graph.
   "just/{gates,test,build}.just": ["phux"],
@@ -167,6 +182,7 @@ export const LANE_BUILDS: readonly [Surface, readonly BuildRoot[]][] = [
     ],
   ],
   ["desktop", [{ dir: "clients/desktop/native", dev: true }]],
+  ["rune", [{ dir: "clients/rune", dev: true }]],
 ];
 
 export function routes(root = ROOT): Route[] {

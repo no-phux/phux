@@ -31,7 +31,7 @@ fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &ResourceId) {
         return;
     };
     let parent = binding.parent.clone();
-    let Some(core_parent) = s.terminal_from_wire(&parent) else {
+    let Some(core_parent) = s.resource_from_wire(&parent) else {
         return;
     };
     let candidates: Vec<_> = binding
@@ -96,7 +96,7 @@ fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &ResourceId) {
 /// Publish unavailable controls while the readable stream is still alive.
 pub(super) async fn source_exited(state: &SharedState, resource: phux_core::ids::ResourceId) {
     let agents = state.with_mut(|s| {
-        let Some(wire) = s.terminal_wire_of(resource) else {
+        let Some(wire) = s.resource_wire_of(resource) else {
             return Vec::new();
         };
         let agents: Vec<_> = s

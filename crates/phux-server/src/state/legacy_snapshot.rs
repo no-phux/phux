@@ -109,7 +109,7 @@ impl ServerState {
             let created_at_unix_secs =
                 i64::try_from(record.created.as_millis() / 1000).unwrap_or(i64::MAX);
             let recent = self.recent_member(sid, &members);
-            let recent_input = recent.map(|p| self.intern_terminal_wire(p));
+            let recent_input = recent.map(|p| self.intern_resource_wire(p));
             sessions.push(
                 SessionInfo::new(session_wire, record.name.clone())
                     .with_active_window(window_wire)
@@ -124,7 +124,7 @@ impl ServerState {
             let Some(window_wire) = window_wire else {
                 continue;
             };
-            let active = active_pane(recent, &members).map(|p| self.intern_terminal_wire(p));
+            let active = active_pane(recent, &members).map(|p| self.intern_resource_wire(p));
             windows.push(
                 WindowInfo::new(window_wire, session_wire, "window-0".to_owned())
                     .with_index(0)
@@ -134,7 +134,7 @@ impl ServerState {
                 let Some(terminal) = self.sessions.registry.terminal(pid).cloned() else {
                     continue;
                 };
-                let terminal_wire = self.intern_terminal_wire(pid);
+                let resource_wire = self.intern_resource_wire(pid);
                 let cwd =
                     Some(terminal.cwd.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
                 // ADR-0124: a retained pane reports how its process ended.
@@ -150,7 +150,7 @@ impl ServerState {
                 });
                 // ADR-0127: who watches without input.
                 let viewers = self
-                    .terminal_viewers(&terminal_wire)
+                    .terminal_viewers(&resource_wire)
                     .into_iter()
                     .map(|viewer| {
                         phux_protocol::ids::ClientId::new(
@@ -159,7 +159,7 @@ impl ServerState {
                     })
                     .collect();
                 panes.push(
-                    ResourceInfo::new(terminal_wire, window_wire, terminal.dims.0, terminal.dims.1)
+                    ResourceInfo::new(resource_wire, window_wire, terminal.dims.0, terminal.dims.1)
                         .with_title(terminal.title.clone())
                         .with_cwd(cwd)
                         .with_lifecycle(lifecycle)
@@ -184,8 +184,8 @@ impl ServerState {
             if !self.legacy_visible(id) {
                 continue;
             }
-            let wire = self.intern_terminal_wire(id);
-            let parent = descriptor.parent.map(|p| self.intern_terminal_wire(p));
+            let wire = self.intern_resource_wire(id);
+            let parent = descriptor.parent.map(|p| self.intern_resource_wire(p));
             let session = self
                 .sessions
                 .registry
@@ -221,7 +221,7 @@ impl ServerState {
             |pane| {
                 (
                     self.intern_window_wire(focus_session),
-                    self.intern_terminal_wire(pane),
+                    self.intern_resource_wire(pane),
                 )
             },
         );

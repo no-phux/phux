@@ -322,7 +322,7 @@ fn wait_for(cx: &mut TestAppContext, mut predicate: impl FnMut(&mut TestAppConte
 /// key-up. GPUI's `simulate_keystrokes` also runs a
 /// simulated IME that types `"\n"` after a propagated Enter binding, which
 /// marks a just-submitted composer draft as edited; a real Return never does.
-fn press(cx: &mut TestAppContext, window: gpui::AnyWindowHandle, key: &str) {
+fn press(cx: &mut TestAppContext, window: gpui::AnyWindowHandle, key: &'static str) {
     use gpui::InputEvent as _;
     let keystroke = gpui::Keystroke::parse(key).unwrap();
     cx.update_window(window, |_, window, cx| {
