@@ -3,17 +3,18 @@
 //! Each function is one callgrind region. Setup runs outside that region.
 //! Scenarios:
 //!
-//! - VT apply: libghostty parses a mixed text and SGR stream.
 //! - Frame encode and decode: one `RESOURCE_OUTPUT` through the live-path
 //!   writer and the client `split_frame` + `decode_shared` read.
 //! - Agent append and replay: validate, stamp, retain, and copy the ring.
 //! - Client-kernel history slice and resync: the session kernel, with a
 //!   stand-in engine so the count is the kernel rather than a second
 //!   libghostty.
-//! - PTY batch handoff: the burst copy the actor performs for one wakeup.
 //! - Organization commit: one `ResourceMove` through `ServerState` into a
 //!   SQLite store holding 5,000 resources in 200 sessions and a receipt
 //!   window at its cap (CONTRACTS §08).
+//!
+//! The engine's own scenarios are `phux-terminal`'s `terminal_icount` bench;
+//! both report to `benchmarks/icount-baseline.json`.
 
 #![allow(
     clippy::expect_used,
@@ -28,7 +29,6 @@ use std::hint::black_box;
 
 use bytes::{Bytes, BytesMut};
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
-use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_client_core::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
     EngineEffectBuffer, HistoryApplyOutcome,
@@ -42,20 +42,12 @@ use phux_protocol::wire::framing;
 use phux_protocol::{BootstrapId, ResourceId, StreamId};
 use phux_server::org_scale::{ScaleOrg, ScaleSpec};
 use phux_server::resource::agent_session::{self, AgentSessionActor};
-use phux_terminal::actor::icount_join_pty_burst;
 
 const VT_COLS: u16 = 80;
 const VT_ROWS: u16 = 24;
 const FRAME_BYTES: usize = 4 * 1024;
 const HISTORY_BYTES: usize = 8 * 1024;
-const PTY_CHUNKS: usize = 47;
-const PTY_CHUNK_BYTES: usize = 1024;
 const AGENT_RECORDS: usize = 32;
-
-struct VtReady {
-    terminal: GhosttyTerminal<'static, 'static>,
-    bytes: Vec<u8>,
-}
 
 struct EncodeReady {
     frame: FrameKind,
@@ -166,15 +158,6 @@ const fn generation() -> BootstrapId {
     BootstrapId::new(9).expect("generation")
 }
 
-fn vt_bytes() -> Vec<u8> {
-    let line = b"\x1b[38;5;2mthe quick brown fox jumps over the lazy dog\x1b[0m\r\n";
-    let mut out = Vec::with_capacity(8192);
-    while out.len() < 8192 {
-        out.extend_from_slice(line);
-    }
-    out
-}
-
 fn output_frame(payload: &Bytes) -> FrameKind {
     FrameKind::ResourceOutput {
         terminal_id: ResourceId::local(7),
@@ -264,16 +247,6 @@ fn ready_kernel() -> HistoryReady {
     }
 }
 
-fn setup_vt() -> VtReady {
-    let mut terminal = GhosttyTerminal::new(VT_COLS, VT_ROWS).expect("terminal");
-    // One warm write so the measured call is steady-state parsing.
-    terminal.vt_write(b"\x1b[H");
-    VtReady {
-        terminal,
-        bytes: vt_bytes(),
-    }
-}
-
 fn setup_encode() -> EncodeReady {
     let payload = Bytes::from(vec![b'x'; FRAME_BYTES]);
     EncodeReady {
@@ -301,12 +274,6 @@ fn setup_agent() -> AgentReady {
 
 fn setup_history() -> HistoryReady {
     ready_kernel()
-}
-
-fn setup_pty() -> Vec<Bytes> {
-    (0..PTY_CHUNKS)
-        .map(|index| Bytes::from(vec![u8::try_from(index).unwrap_or(0); PTY_CHUNK_BYTES]))
-        .collect()
 }
 
 struct OrgReady {
@@ -349,14 +316,6 @@ fn setup_org() -> OrgReady {
         org,
         command,
     }
-}
-
-#[library_benchmark]
-#[bench::apply(setup = setup_vt)]
-fn vt_apply(mut ready: VtReady) -> usize {
-    ready.terminal.vt_write(black_box(&ready.bytes));
-    black_box(&ready.terminal);
-    ready.bytes.len()
 }
 
 #[library_benchmark]
@@ -459,12 +418,6 @@ fn history_resync(mut ready: HistoryReady) -> usize {
 }
 
 #[library_benchmark]
-#[bench::join(setup = setup_pty)]
-fn pty_batch_handoff(chunks: Vec<Bytes>) -> usize {
-    black_box(icount_join_pty_burst(black_box(chunks)).len())
-}
-
-#[library_benchmark]
 #[bench::commit(setup = setup_org)]
 fn org_commit(mut ready: OrgReady) -> OrgReady {
     let commit = ready
@@ -479,7 +432,7 @@ fn org_commit(mut ready: OrgReady) -> OrgReady {
 
 library_benchmark_group!(
     name = hot_path;
-    benchmarks = vt_apply, frame_encode, frame_decode, agent_append_replay, history_slice, history_resync, pty_batch_handoff, org_commit
+    benchmarks = frame_encode, frame_decode, agent_append_replay, history_slice, history_resync, org_commit
 );
 
 main!(library_benchmark_groups = hot_path);

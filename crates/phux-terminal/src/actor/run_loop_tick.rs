@@ -264,7 +264,7 @@ fn holds_loss_tolerant_delta(state: &ConsumerSyncState, mutated: bool, was_behin
 }
 
 /// Record the emit instant for `seq`, for RTT on its `FRAME_ACK`. Oldest
-/// entries are evicted past [`MAX_EMIT_INSTANTS`] so a consumer that never
+/// entries are evicted past `MAX_EMIT_INSTANTS` so a consumer that never
 /// acks cannot grow the map.
 fn record_emit_instant(
     emit_instants: &mut std::collections::BTreeMap<u64, tokio::time::Instant>,

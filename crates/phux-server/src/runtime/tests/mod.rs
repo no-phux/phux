@@ -1,4 +1,7 @@
 use super::*;
+use crate::runtime::apps::terminal::test_support::{
+    StubRx, TerminalInput, seeded_terminal, snapshot_bytes, state_sync_outcome, stub_terminal,
+};
 use crate::runtime::config::{
     MAX_SOCKET_PATH_LEN, ServerConfig, ServerError, validate_socket_path_len,
 };
@@ -34,8 +37,7 @@ fn register_seeded_pane(
     CancellationToken,
 ) {
     let pane = state.add_pane_to_session(session).expect("pane");
-    let bundle =
-        phux_terminal::actor::TerminalActor::new_with_seed(20, 5, b"seeded").expect("actor");
+    let bundle = seeded_terminal(20, 5, b"seeded");
     let token = bundle.token;
     tokio::task::spawn_local(bundle.actor.run());
     let wire = state.register_resource_handle(pane, bundle.handle, token.clone());
@@ -140,83 +142,6 @@ fn bind_resume_listener(dir: &tempfile::TempDir) -> (std::path::PathBuf, std::os
 /// a loaded machine does not produce false failures.
 const MAILBOX_DEADLINE: Duration = Duration::from_secs(30);
 
-/// Receivers for a [`stub_terminal`] handle; every channel stays open so
-/// sends succeed, and tests read the ones they observe.
-struct StubRx {
-    snapshot: tokio::sync::mpsc::Receiver<phux_terminal::actor::SnapshotRequest>,
-    resize: phux_terminal::actor::ResizeReceiver,
-    encoded_input: tokio::sync::mpsc::Receiver<phux_terminal::actor::EncodedInputRequest>,
-    consumer_attach: tokio::sync::mpsc::Receiver<phux_terminal::actor::ConsumerAttachRequest>,
-    consumer_detach: tokio::sync::mpsc::Receiver<phux_terminal::actor::ConsumerDetachRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_bootstrap: tokio::sync::mpsc::Receiver<phux_terminal::actor::NativeBootstrapRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_publication: tokio::sync::mpsc::Receiver<phux_terminal::actor::NativePublicationRequest>,
-    _keep: Vec<Box<dyn std::any::Any>>,
-}
-
-/// A Terminal resource handle with no actor behind it.
-fn stub_terminal() -> (crate::resource::ResourceHandle, StubRx) {
-    use tokio::sync::mpsc::channel;
-    let mut keep: Vec<Box<dyn std::any::Any>> = Vec::new();
-    let (input, rx) = channel(8);
-    keep.push(Box::new(rx));
-    let (screen, rx) = channel(8);
-    keep.push(Box::new(rx));
-    let (pwd, rx) = channel(8);
-    keep.push(Box::new(rx));
-    let (process, rx) = channel(8);
-    keep.push(Box::new(rx));
-    let (consumer_ack, rx) = channel(8);
-    keep.push(Box::new(rx));
-    let (snapshot, snapshot_rx) = channel(8);
-    let (resize, resize_rx) = phux_terminal::actor::ResizeSender::channel(8);
-    let (encoded_input, encoded_rx) = channel(8);
-    let (consumer_attach, attach_rx) = channel(8);
-    let (consumer_detach, detach_rx) = channel(8);
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    let (native_bootstrap, native_bootstrap_rx) = channel(8);
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    let (native_publication, native_publication_rx) = channel(8);
-    let facet = phux_terminal::actor::TerminalHandle {
-        consumer_attach,
-        consumer_detach,
-        consumer_ack,
-        upgrade: channel(8).0,
-        input,
-        encoded_input,
-        snapshot,
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        native_bootstrap,
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        native_publication,
-        screen,
-        pwd,
-        process,
-        resize,
-        ..phux_terminal::actor::TerminalHandle::detached_for_test(80, 24)
-    };
-    let handle = crate::resource::ResourceHandle::new(
-        None,
-        tokio::sync::broadcast::channel(8).0,
-        channel(8).0,
-        facet,
-    );
-    let rx = StubRx {
-        snapshot: snapshot_rx,
-        resize: resize_rx,
-        encoded_input: encoded_rx,
-        consumer_attach: attach_rx,
-        consumer_detach: detach_rx,
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        native_bootstrap: native_bootstrap_rx,
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        native_publication: native_publication_rx,
-        _keep: keep,
-    };
-    (handle, rx)
-}
-
 /// Register a [`stub_terminal`] for `pane` and return its receivers. The
 /// native channels are closed, so capture falls back to the VT path.
 fn register_stub(state: &SharedState, pane: phux_core::ids::ResourceId) -> StubRx {
@@ -320,21 +245,6 @@ fn spawn_attach(
         )
         .await;
     })
-}
-
-fn state_sync_outcome(bytes: &[u8]) -> phux_terminal::actor::ConsumerAttachOutcome {
-    phux_terminal::actor::ConsumerAttachOutcome {
-        tick_managed: true,
-        state_sync_bootstrap: Some(phux_terminal::actor::StateSyncBootstrap {
-            snapshot: phux_terminal::grid::SnapshotBytes {
-                cols: 80,
-                rows: 24,
-                bytes: bytes.to_vec(),
-                scrollback: Vec::new(),
-            },
-            base_seq: 0,
-        }),
-    }
 }
 
 /// An organization whose Inbox and `bare` have no arrangement, and whose

@@ -49,7 +49,7 @@ async fn image_resync_recaptures_resident_payload_and_its_own_geometry_and_cut()
                     .await
                     .is_continue()
             );
-            let mut receiver = libghostty_vt::Terminal::new(10, 5).unwrap();
+            let mut receiver = phux_terminal::vt::Terminal::new(10, 5).unwrap();
             phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut receiver)
                 .unwrap();
             let mut began = false;

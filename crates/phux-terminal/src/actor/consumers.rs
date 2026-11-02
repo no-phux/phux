@@ -401,13 +401,13 @@ impl TerminalActor {
 
     /// Test-only: number of consumers currently registered.
     #[cfg(test)]
-    pub fn consumer_count(&self) -> usize {
+    pub(crate) fn consumer_count(&self) -> usize {
         self.consumer_states.len()
     }
 
     /// Test-only: borrow the per-consumer state for `client_id`.
     #[cfg(test)]
-    pub fn consumer_state(&self, client_id: ClientId) -> Option<&ConsumerSyncState> {
+    pub(crate) fn consumer_state(&self, client_id: ClientId) -> Option<&ConsumerSyncState> {
         self.consumer_states.get(&client_id)
     }
 }

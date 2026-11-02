@@ -1,10 +1,12 @@
 use super::{RebuildError, WireResourceId, validate_upgrade_blob};
+use crate::runtime::apps::terminal::test_support::{
+    ScreenReply, ScreenRequest, TerminalResource as _, seeded_terminal,
+};
 use crate::state::ServerState;
 use crate::upgrade::blob::{
     AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob,
     StateBlob, WindowBlob,
 };
-use phux_terminal::actor::TerminalActor;
 use std::path::PathBuf;
 
 /// One pane's tree walks into a blob with resolved links and a snapshot.
@@ -21,7 +23,7 @@ async fn build_upgrade_blob_captures_tree_and_snapshot() {
             let window_wire = state.intern_window_wire(sid).get();
 
             // A real (no-PTY) actor answering the upgrade request.
-            let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
+            let bundle = seeded_terminal(20, 5, b"hello");
             let handle = bundle.handle.clone();
             let token = bundle.token.clone();
             tokio::task::spawn_local(bundle.actor.run());
@@ -85,7 +87,7 @@ async fn rebuild_from_blob_round_trips_the_tree() {
         let (sid, tid) = state.seed_session("main");
         state.idspace.intern_session(sid);
         state.intern_window_wire(sid);
-        let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
+        let bundle = seeded_terminal(20, 5, b"hello");
         tokio::task::spawn_local(bundle.actor.run());
         state.register_resource_handle(tid, bundle.handle, bundle.token);
 
@@ -215,7 +217,7 @@ async fn upgrade_twice(user_title: Option<&str>, seed: &[u8]) -> ServerState {
         .title = user_title.map(ToOwned::to_owned);
     state.idspace.intern_session(sid);
     state.intern_window_wire(sid);
-    let bundle = TerminalActor::new_with_seed(20, 5, seed).expect("new_with_seed");
+    let bundle = seeded_terminal(20, 5, seed);
     tokio::task::spawn_local(bundle.actor.run());
     state.register_resource_handle(tid, bundle.handle, bundle.token);
 
@@ -250,7 +252,6 @@ fn get_state_title(state: &mut ServerState) -> Option<String> {
     reason = "test helper driving pane actors on the current-thread LocalSet"
 )]
 async fn get_screen_title(state: &ServerState) -> Option<String> {
-    use phux_terminal::actor::TerminalResource as _;
     let handles = state.upgrade_handles();
     assert_eq!(handles.len(), 1);
     let (reply, rx) = tokio::sync::oneshot::channel();
@@ -259,7 +260,7 @@ async fn get_screen_title(state: &ServerState) -> Option<String> {
         .terminal()
         .expect("terminal handle")
         .screen
-        .send(phux_terminal::actor::ScreenRequest {
+        .send(ScreenRequest {
             pane: 1,
             scrollback: None,
             cells: false,
@@ -269,8 +270,8 @@ async fn get_screen_title(state: &ServerState) -> Option<String> {
         .await
         .expect("send screen request");
     match rx.await.expect("screen reply") {
-        phux_terminal::actor::ScreenReply::Projection(screen) => screen.title,
-        other @ phux_terminal::actor::ScreenReply::TooLarge { .. } => {
+        ScreenReply::Projection(screen) => screen.title,
+        other @ ScreenReply::TooLarge { .. } => {
             panic!("unexpected screen reply: {other:?}")
         }
     }

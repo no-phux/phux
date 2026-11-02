@@ -6,7 +6,6 @@ use phux_core::ids::ResourceId;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
 };
-use phux_terminal::actor::TerminalHandle;
 
 use phux_protocol::wire::frame::{FrameKind, Scope};
 
@@ -28,19 +27,7 @@ fn mk_tx() -> mpsc::Sender<Outbound> {
     tx
 }
 pub(super) fn mk_handle() -> ResourceHandle {
-    let (core, channels) = crate::resource::ResourceCore::new(
-        crate::resource::ResourceKind::Terminal,
-        None,
-        CancellationToken::new(),
-        8,
-    );
-    drop(core);
-    ResourceHandle::new(
-        None,
-        channels.output,
-        channels.control,
-        TerminalHandle::detached_for_test(80, 24),
-    )
+    crate::runtime::apps::terminal::test_support::detached_terminal()
 }
 
 #[test]

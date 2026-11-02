@@ -22,10 +22,6 @@ webtransport = ["dep:wtransport-proto", "dep:httlib-huffman"]
 tokio-console = ["dep:console-subscriber"]
 # Incremental native checkpoint capture/advertisement.
 native-engine = ["phux-terminal/native-engine"]
-# Benchmark/example tooling, opt-in so default test builds skip Criterion
-# and DHAT.
-capture-bench = ["dep:criterion", "dep:dhat"]
-ack-allocations-example = ["dep:dhat"]
 # Builds the `#[ignore]`d `stress` storms. Only `just stress` runs them, so
 # the default test build skips compiling and linking that binary.
 stress = []
@@ -34,9 +30,6 @@ measure = []
 
 
 [dependencies]
-# Optional (not dev-dependencies) so default test builds do not compile them.
-criterion = { workspace = true, optional = true }
-dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 # The substrate every kind shares.
@@ -153,8 +146,7 @@ rusqlite.workspace = true
 
 
 [dev-dependencies]
-# Tests and benches drive the VT and PTY layers directly; the host never does.
-libghostty-vt.workspace = true
+# Tests name a seeded pane's launch directly.
 portable-pty.workspace = true
 # Terminal fixtures for the host's own tests.
 phux-terminal = { workspace = true, features = ["test-support"] }
@@ -192,21 +184,11 @@ name = "perf"
 path = "tests/perf/main.rs"
 required-features = ["measure"]
 
-[[example]]
-name = "ack_allocations"
-required-features = ["ack-allocations-example"]
-
+# Warm attach over a real socket, the host half of the capture gates.
 [[bench]]
-name = "capture"
+name = "warm_attach"
 harness = false
-required-features = ["native-engine", "capture-bench"]
-
-# State-sync tick and wire-copy stages (phux-69pq.5): allocation table plus
-# Criterion timings.
-[[bench]]
-name = "live_path"
-harness = false
-required-features = ["capture-bench"]
+required-features = ["native-engine"]
 
 # Callgrind instruction counts for the hot paths. No Criterion feature:
 # `cargo bench -p phux-server --bench icount` builds this alone.

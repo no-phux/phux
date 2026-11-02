@@ -123,7 +123,7 @@ fn terminal_replies_are_discarded_and_focus_hooks_fire() {
                 &state,
                 client,
                 &wire_terminal_id,
-                phux_terminal::TerminalInput::Focus(event),
+                TerminalInput::Focus(event),
                 "INPUT_FOCUS",
             );
         };

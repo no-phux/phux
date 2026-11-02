@@ -26,6 +26,8 @@ phux-relay.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 libghostty-vt.workspace = true
+# `Screen::synthesized`: the canonical replay of a replica's grid.
+phux-terminal.workspace = true
 portable-pty.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

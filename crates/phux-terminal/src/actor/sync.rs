@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, watch};
 
 /// Cap on [`ConsumerSyncState::emit_instants`] (and pending refs), for a
 /// consumer that never acks: about 5 s of ticks at the 20 ms floor.
-pub const MAX_EMIT_INSTANTS: usize = 256;
+pub(crate) const MAX_EMIT_INSTANTS: usize = 256;
 
 /// Per-consumer state-sync cache (ADR-0018), one per attached consumer on
 /// the actor. `!Send` like the terminal it tracks.
@@ -47,7 +47,7 @@ pub struct ConsumerSyncState {
     /// Smoothed RTT for the adaptive cadence.
     pub rtt: RttEstimator,
     /// Emit instants of in-flight `seq`s, for RTT on ack. Pruned on ack and
-    /// capped at [`MAX_EMIT_INSTANTS`].
+    /// capped at `MAX_EMIT_INSTANTS`.
     pub emit_instants: std::collections::BTreeMap<u64, tokio::time::Instant>,
     /// Whether this consumer negotiated `StateSync`; otherwise the broadcast
     /// pump serves it (unless the test override forces the tick).
@@ -60,7 +60,7 @@ pub struct ConsumerSyncState {
     pub acked_reference: ConsumerReference,
     /// Snapshots of emitted, un-acked frames by `seq`; an ack advances
     /// [`Self::acked_reference`] to the highest covered one. Capped at
-    /// [`MAX_EMIT_INSTANTS`].
+    /// `MAX_EMIT_INSTANTS`.
     pub pending_refs: std::collections::BTreeMap<u64, ConsumerReference>,
 }
 

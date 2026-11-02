@@ -4,7 +4,6 @@
 use std::time::Duration;
 
 use base64::Engine as _;
-use libghostty_vt::terminal::{Point, PointCoordinate};
 use phux_core::screen::ScreenState;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
@@ -17,6 +16,7 @@ use phux_protocol::wire::frame::{
     SESSION_NAME_KEY, Scope, SpawnResult, StateScope,
 };
 use phux_protocol::wire::info::SessionSnapshot;
+use phux_server_testkit::screen::Screen;
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -432,25 +432,11 @@ fn get_screen_formats_render_html_and_replayable_vt_bounded_by_scrollback() {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&rendered.data)
             .unwrap();
-        let mut replay = libghostty_vt::Terminal::new(pane.cols, pane.rows).unwrap();
-        replay.vt_write(&bytes);
-        let mut formatter = libghostty_vt::fmt::Formatter::new(
-            &replay,
-            libghostty_vt::fmt::FormatterOptions::new()
-                .with_format(libghostty_vt::fmt::Format::Plain)
-                .with_trim(true),
-        )
-        .unwrap();
-        let text = String::from_utf8_lossy(&formatter.format_alloc(None).unwrap()).into_owned();
+        let mut replay = Screen::new(pane.cols, pane.rows).unwrap();
+        replay.write(&bytes);
+        let text = replay.snapshot_text();
         assert!(text.contains("roundtrip-vt-check"), "{text:?}");
-        let replay_styled = replay
-            .grid_ref(Point::Viewport(PointCoordinate {
-                x: styled.col,
-                y: u32::from(styled.row),
-            }))
-            .and_then(|grid_ref| grid_ref.cell())
-            .and_then(libghostty_vt::screen::Cell::has_styling)
-            .unwrap_or(false);
+        let replay_styled = replay.cell_has_styling(styled.col, styled.row);
         assert!(
             replay_styled,
             "cell ({}, {}) keeps its styling",

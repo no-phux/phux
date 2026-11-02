@@ -144,15 +144,15 @@ E2E_TARGETS := "--test automation_e2e --test terminal_e2e --test recording_e2e -
 
 
 # Heavy stress storms — off CI entirely: starvation-sensitive on 2-core
-# runners, so run them locally on a multi-core box before risky merges. Also hosts
-# perf_bursty_output (~110s, allocation count, not wall time). The `stress`
-# feature builds the target, which the default test build skips.
+# runners, so run them locally on a multi-core box before risky merges. Also runs
+# phux-terminal's perf_bursty_output (~110s, allocation count, not wall time).
+# The `stress` features build the targets, which the default test build skips.
 [group('test')]
 [doc('Heavy stress storms; local only, off CI.')]
 stress: worktree-claim
     cargo nextest run --workspace --run-ignored ignored-only \
-      {{TEST_FEATURES}} --features phux-server/stress --test-threads=1 --retries=2 \
-      -E 'binary_id(phux-server::stress)'
+      {{TEST_FEATURES}} --features phux-server/stress,phux-terminal/stress --test-threads=1 --retries=2 \
+      -E 'binary_id(phux-server::stress) + binary_id(phux-terminal::perf_bursty_output)'
 
 
 # Spins a real `phux` server + session, drives a scripted scenario (heavy
