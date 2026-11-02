@@ -138,7 +138,7 @@ def _live_session(show: dict[str, Any], resource: dict[str, Any]) -> bool:
 
 
 def _screen_idle_fallback(show: dict[str, Any], state: str) -> bool:
-    """A manifest that matches nothing publishes idle. That is still the screen rung."""
+    """The detector publishes idle when no rule matches. That is not a signal."""
     if state != "idle":
         return False
     return any(
@@ -188,12 +188,19 @@ def classify(show_doc: dict[str, Any] | None, resource_doc: dict[str, Any] | Non
                 "candidates": [TIER_OSC],
                 "note": "resource show program_status.active matches the published state and no live agent session outranks it",
             }
-    if _screen_agrees(show) or _screen_idle_fallback(show, state):
+    if _screen_idle_fallback(show, state):
+        return {
+            "tier": None,
+            "state": state,
+            "candidates": [],
+            "note": "the detector failed safe to idle because no rule matched; that is not a measured signal",
+        }
+    if _screen_agrees(show):
         return {
             "tier": TIER_SCREEN,
             "state": state,
             "candidates": [TIER_SCREEN],
-            "note": "agent show says the record was derived by the detection manifest, or the manifest missed and the detector failed safe to idle. A hook report of the same state is not separately visible.",
+            "note": "agent show says the record was derived by the detection manifest. A hook report of the same state is not separately visible.",
         }
     return {
         "tier": TIER_UNRESOLVED,

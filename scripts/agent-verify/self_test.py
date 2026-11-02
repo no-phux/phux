@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -110,7 +109,8 @@ def test_classify() -> None:
         ]
     }
     ranked = lib.classify(idle, {})
-    expect(ranked["tier"] == "screen", str(ranked))
+    expect(ranked["tier"] is None, str(ranked))
+    expect(ranked["state"] == "idle", str(ranked))
 
     # A live session outranks OSC even when the screen rule also matches.
     both = {
@@ -147,10 +147,16 @@ def test_table_marks_blanks() -> None:
     expect("| opencode | n/a | — | — | — | — | not_installed |" in text, text)
 
 
+def _install_stub(bindir: Path, names: tuple[str, ...]) -> None:
+    """Copy the stub into the temp bin. Never chmod the tracked source."""
+    copy = bindir / "stub_agent.py"
+    shutil.copyfile(HERE / "stub_agent.py", copy)
+    copy.chmod(0o755)
+    for name in names:
+        os.symlink(copy, bindir / name)
+
+
 def test_live(phux: Path) -> None:
-    stub = HERE / "stub_agent.py"
-    mode = stub.stat().st_mode
-    stub.chmod(mode | stat.S_IEXEC)
     with tempfile.TemporaryDirectory(prefix="phux-agent-verify-") as raw:
         root = Path(raw)
         bindir = root / "bin"
@@ -158,14 +164,14 @@ def test_live(phux: Path) -> None:
         out = root / "out"
         bindir.mkdir()
         home.mkdir()
-        for name in ("claude", "codex", "pi"):
-            os.symlink(stub, bindir / name)
+        _install_stub(bindir, ("claude", "codex", "pi"))
         saved = {key: os.environ.get(key) for key in ("PATH", "HOME", "XDG_CONFIG_HOME", "PHUX_SOCKET", "PHUX_PROFILE")}
         os.environ["PATH"] = f"{bindir}{os.pathsep}/usr/bin{os.pathsep}/bin"
         os.environ["HOME"] = str(home)
         os.environ.pop("XDG_CONFIG_HOME", None)
         os.environ.pop("PHUX_SOCKET", None)
         os.environ.pop("PHUX_PROFILE", None)
+        os.environ.pop("PHUX_AGENT_VERIFY_SIGNAL", None)
         try:
             code = run.execute(
                 ["--phux", str(phux), "--out", str(out), "--timeout", "25", "--home", str(home)]
@@ -206,6 +212,62 @@ def test_live(phux: Path) -> None:
         expect(code == 0, f"harness exit {code}")
 
 
+def test_dead_screen_signal(phux: Path) -> None:
+    """A claude-named stub that never emits a working signal must not pass."""
+    with tempfile.TemporaryDirectory(prefix="phux-agent-verify-dead-") as raw:
+        root = Path(raw)
+        bindir = root / "bin"
+        home = root / "home"
+        out = root / "out"
+        bindir.mkdir()
+        home.mkdir()
+        _install_stub(bindir, ("claude",))
+        keys = ("PATH", "HOME", "XDG_CONFIG_HOME", "PHUX_SOCKET", "PHUX_PROFILE", "PHUX_AGENT_VERIFY_SIGNAL")
+        saved = {key: os.environ.get(key) for key in keys}
+        os.environ["PATH"] = f"{bindir}{os.pathsep}/usr/bin{os.pathsep}/bin"
+        os.environ["HOME"] = str(home)
+        os.environ["PHUX_AGENT_VERIFY_SIGNAL"] = "0"
+        os.environ.pop("XDG_CONFIG_HOME", None)
+        os.environ.pop("PHUX_SOCKET", None)
+        os.environ.pop("PHUX_PROFILE", None)
+        try:
+            code = run.execute(
+                [
+                    "--phux",
+                    str(phux),
+                    "--out",
+                    str(out),
+                    "--timeout",
+                    "10",
+                    "--home",
+                    str(home),
+                    "--agents",
+                    "claude",
+                ]
+            )
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        payload = __import__("json").loads((out / "results.json").read_text(encoding="utf-8"))
+        off = next(row for row in payload["runs"] if row["agent"] == "claude" and row["integration"] == "off")
+        timing = off["time_to_state_ms"]
+        print(
+            "dead-signal: "
+            f"result={off['result']} tier={off['tier']} states={off['states']} "
+            f"p50={timing['p50']} max={timing['max']} exit={code}"
+        )
+        expect(off["result"] != "pass", f"dead screen signal passed: {off}")
+        expect(off["result"] == "no-signal", f"dead screen signal was not no-signal: {off}")
+        expect(off["tier"] is None, f"dead screen signal invented a tier: {off}")
+        expect(timing["p50"] is None and timing["max"] is None, f"dead screen signal timed an idle: {timing}")
+        expect(timing["samples"] == [], f"dead screen signal recorded samples: {timing}")
+        expect("working" not in (off["states"] or []), f"dead stub reported working: {off}")
+        expect(code != 0, "dead screen signal run exited 0")
+
+
 def main() -> None:
     test_redact()
     test_percentile()
@@ -219,6 +281,7 @@ def main() -> None:
     if not phux:
         raise SystemExit("self-test needs PHUX or target/debug/phux")
     test_live(Path(phux))
+    test_dead_screen_signal(Path(phux))
     print("agent-verify self-test: ok")
 
 

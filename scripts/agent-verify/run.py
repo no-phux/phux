@@ -7,6 +7,10 @@ agents are `not_installed`. Codex has no lifecycle integration, so that row
 is `integration_unavailable`. Nothing here is invented when a run does not
 happen.
 
+A manual run starts each real agent it finds and sends it a prompt. That
+makes billable model calls on the operator's own agent logins. The CI
+self-test uses a stub and does not.
+
   python3 scripts/agent-verify/run.py
 """
 
@@ -644,6 +648,10 @@ def _summarize(
             continue
         if state not in states:
             states.append(state)
+        # Only a reported `working` is a measured signal. Fail-safe idle is
+        # the detector's default when nothing matched, so it has no latency.
+        if state != "working":
+            continue
         delay, source = latency_ms(state, seen, marks, prompt_ms, spawn_ms)
         samples.append({"state": state, "ms": delay, "t0_source": source})
         sources.append(source)
@@ -692,15 +700,35 @@ def _summarize(
         divergence.append("the two attach clients disagree on whether an agent is listed")
     row["divergence"] = "; ".join(divergence) if divergence else None
     row["agreement"] = "yes" if not divergence else "no"
+    working = (
+        primary is not None
+        and primary.get("watch_state") == "working"
+        and show_state == "working"
+        and row["tier"] in (lib.TIER_STREAM, lib.TIER_OSC, lib.TIER_SCREEN)
+    )
+    if not working:
+        # A fail-safe idle, or no event at all, is not a measurement.
+        row["tier"] = None
+        row["tier_note"] = (
+            "no working signal was observed; a fail-safe idle is not a measurement"
+        )
+        row["tier_candidates"] = []
+        row["time_to_state_ms"] = {
+            "samples": [],
+            "p50": None,
+            "max": None,
+            "t0_source": None,
+        }
+        row["result"] = "no-signal"
+        row["agreement"] = None
+        row["divergence"] = row["tier_note"]
+        return row
     if row["tier"] in (None, lib.TIER_UNRESOLVED):
         row["result"] = "fail"
         if row["tier"] == lib.TIER_UNRESOLVED and not divergence:
             row["divergence"] = rank.get("note")
     elif divergence:
         row["result"] = "fail"
-    elif not row["states"] and not rank.get("state"):
-        row["result"] = "fail"
-        row["divergence"] = "phux published no lifecycle state before the timeout"
     else:
         row["result"] = "pass"
     return row
@@ -721,7 +749,12 @@ def blank_skip(agent: str) -> dict[str, Any]:
 
 
 def execute(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Measure phux agent-state evidence on real CLIs.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Measure phux agent-state evidence on real CLIs. "
+            "A manual run makes billable model calls on the operator's own agent logins."
+        )
+    )
     parser.add_argument("--phux", help="phux binary. Defaults to $PHUX, then PATH, then target/debug/phux.")
     parser.add_argument("--out", type=Path, help="Results directory. Default: ./agent-verify-results/<UTC>/")
     parser.add_argument("--timeout", type=float, default=90, help="Seconds to wait for a state in one run.")
@@ -800,7 +833,7 @@ def execute(argv: list[str] | None = None) -> int:
     lib.write_results(work, payload)
     print(lib.markdown_table(runs), end="")
     print(f"results: {work / 'results.json'}")
-    failed = [run for run in runs if run.get("result") == "fail"]
+    failed = [run for run in runs if run.get("result") in ("fail", "no-signal")]
     return 1 if failed else 0
 
 

@@ -19,11 +19,13 @@ the stimulus (the stub's mark, the prompt, or spawn) to the watch line.
 ## Run it
 
 From a checkout, on macOS or Linux, with the agents you care about already
-logged in. The harness does not log in, does not install an integration into
-your account, and does not send telemetry. It starts a private server
+logged in. A manual run starts each real agent it finds and sends it a
+prompt. That makes billable model calls on your own agent logins. The
+harness does not log in, does not install an integration into your account,
+and does not send telemetry. It starts a private server
 (`PHUX_PROFILE=agent-verify`, a private socket) and leaves your default server
 alone. Real CLIs still see your home directory so they can use the logins
-already there.
+already there. The CI self-test uses a stub and does not call a model.
 
 ```sh
 python3 scripts/agent-verify/run.py
@@ -58,7 +60,10 @@ config. Each live run pastes `Reply with exactly the word pong.` and waits.
 
 `results.md` is the table: agent, integration, tier that won, time-to-state
 p50 and max (milliseconds), whether the two attach clients and the watch
-client agreed, and pass or fail. Logs are redacted (home directories and
+client agreed, and pass or fail. A row passes only when phux reports
+`working` from a stream, an OSC 7501 record, or a screen rule. The
+detector's fail-safe `idle` is not a measurement: that row is `no-signal`
+and has no time-to-state. Logs are redacted (home directories and
 token-shaped strings). The directory is gitignored.
 
 Useful flags: `--agents claude,pi`, `--timeout 90`, `--out DIR`, `--home DIR`.

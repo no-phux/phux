@@ -121,6 +121,13 @@ def main() -> int:
         agent = os.environ.get("PHUX_AGENT_VERIFY_AGENT", "claude")
     mode = os.environ.get("PHUX_AGENT_VERIFY_MODE", "plain")
     mark("start", agent=agent, mode=mode, argv0=sys.argv[0])
+    # PHUX_AGENT_VERIFY_SIGNAL=0 is the dead-screen case: stay identified as
+    # the agent and emit nothing, so the detector can only fail safe to idle.
+    if os.environ.get("PHUX_AGENT_VERIFY_SIGNAL") == "0":
+        mark("dead")
+        time.sleep(30)
+        mark("exit", agent=agent)
+        return 0
     # Let the harness subscribe `phux watch` to this pane before the first signal.
     time.sleep(2)
     if mode == "integration":
