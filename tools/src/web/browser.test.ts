@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   boundPort,
+  DEMO_SERVER_LOG,
   isolatedEnvironment,
   poll,
   REQUIRED_TESTS,
@@ -19,6 +20,7 @@ import {
   websocketReady,
 } from "./browser.ts";
 import { AgentFixture } from "./fixture.ts";
+import { repoPath } from "../lib/repo.ts";
 
 let scratch: string;
 beforeEach(() => {
@@ -26,6 +28,16 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
+});
+
+test("the demo server log filter names the target the server logs to", () => {
+  const target = DEMO_SERVER_LOG.split("=", 1)[0] ?? "";
+  const source = readFileSync(
+    repoPath("crates/phux-server/src/runtime/apps/terminal/attach/output_pump_resync.rs"),
+    "utf8",
+  );
+  expect(source).toContain(`const LOG_TARGET: &str = "${target}";`);
+  expect(source).toMatch(/target: LOG_TARGET,[^;]*fell behind; skipping to a fresh checkpoint/);
 });
 
 const running = { exitCode: null, signalCode: null };
