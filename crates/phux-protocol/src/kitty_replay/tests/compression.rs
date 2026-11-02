@@ -59,7 +59,10 @@ fn a_compressed_payload_spanning_chunks_round_trips_pixels() {
     let mut out = Vec::new();
     assert!(emit_kitty_graphics_snapshot(&source, &mut iter, &mut out).unwrap());
     assert_eq!(contains(&out, b"o=z,"), 1);
-    assert!(contains(&out, b"m=1") >= 2, "expected a multi-chunk payload");
+    assert!(
+        contains(&out, b"m=1") >= 2,
+        "expected a multi-chunk payload"
+    );
 
     let mut target = terminal();
     target.vt_write(&out);
