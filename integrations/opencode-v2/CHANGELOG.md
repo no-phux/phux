@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.7.1...opencode-plugin-v0.8.0) (2026-10-30)
+
+
+### Features
+
+* **opencode:** phux panes, live pane views, and agent attention in OpenCode Desktop ([#1850](https://github.com/no-phux/phux/issues/1850)) ([cd7b785](https://github.com/no-phux/phux/commit/cd7b78520203473b1a6e4529c0fa27f71350753d))
+
 ## [0.7.1](https://github.com/no-phux/phux/compare/opencode-plugin-v0.7.0...opencode-plugin-v0.7.1) (2026-10-27)
 
 

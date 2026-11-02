@@ -113,7 +113,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
           cache-dependency-path: integrations/*/package-lock.json
 
@@ -127,7 +127,7 @@ jobs:
           npm_config_audit: "false"
           npm_config_fund: "false"
         run: |
-          npm install --global npm@11.19.1
+          npm install --global npm@12.2.1
           npm --prefix integrations/runtime ci
           npm --prefix integrations/runtime run gates
           git diff --exit-code -- integrations/runtime/dist
@@ -140,7 +140,7 @@ jobs:
           npm_config_fund: "false"
           COMPONENT: ${{ needs.prepare.outputs.component }}
         run: |
-          npm install --global npm@11.19.1
+          npm install --global npm@12.2.1
           case "$COMPONENT" in
             opencode-plugin|omp-extension) bun install --frozen-lockfile; bun run gates ;;
             grok-plugin) npm test ;;
@@ -220,7 +220,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           registry-url: https://registry.npmjs.org
 
       - name: Verify downloaded artifact
@@ -254,7 +254,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          npm install --global npm@11.19.1
+          npm install --global npm@12.2.1
           # npm versions are immutable, so a replay compares contents (npm pack
           # does not order files reproducibly) and moves on.
           if npm view "${PACKAGE_NAME}@${VERSION}" dist.shasum >/dev/null 2>&1; then

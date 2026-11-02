@@ -318,6 +318,7 @@ test("a crate with no license file gets the canonical text of a license it offer
     "Apache-2.0": "Apache text",
     MIT: "MIT text\nCopyright (c) {holders}",
     "CC0-1.0": "CC0 text",
+    "MPL-2.0": "MPL text",
   };
   const crate = shippedCrates(metadata(graph())).find((each) => each.name === "derive");
   if (crate === undefined) throw new Error("derive is shipped");

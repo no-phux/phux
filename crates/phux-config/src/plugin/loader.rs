@@ -8,11 +8,11 @@ use super::validate::{
     non_empty, normalize_command, normalize_id, reject_duplicate_ids, trim_optional,
 };
 use super::{
-    PluginAgentAttention, PluginAgentState, PluginManifest, PluginManifestAction,
-    PluginManifestAgent, PluginManifestBuild, PluginManifestError, PluginManifestEvent,
-    PluginManifestLinkHandler, PluginManifestPane, PluginManifestSidebar, PluginManifestTheme,
-    PluginManifestWidget, PluginPanePlacement, PluginPlatform, PluginWidgetSlot,
-    SIDEBAR_SECTION_DEFAULT_ROWS, SIDEBAR_SECTION_MAX_ROWS,
+    MAX_STARTUP_ENTRIES, PluginAgentAttention, PluginAgentState, PluginManifest,
+    PluginManifestAction, PluginManifestAgent, PluginManifestBuild, PluginManifestError,
+    PluginManifestEvent, PluginManifestLinkHandler, PluginManifestPane, PluginManifestSidebar,
+    PluginManifestStartup, PluginManifestTheme, PluginManifestWidget, PluginPanePlacement,
+    PluginPlatform, PluginWidgetSlot, SIDEBAR_SECTION_DEFAULT_ROWS, SIDEBAR_SECTION_MAX_ROWS,
 };
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +48,17 @@ struct RawPluginManifest {
     sidebar: Vec<RawPluginManifestSidebar>,
     #[serde(default)]
     themes: Vec<RawPluginManifestTheme>,
+    #[serde(default)]
+    startup: Vec<RawPluginManifestStartup>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPluginManifestStartup {
+    id: String,
+    #[serde(default)]
+    platforms: Option<Vec<PluginPlatform>>,
+    command: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,6 +231,18 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, PluginManifes
         themes.iter().map(|theme| theme.name.as_str()),
         "plugin theme",
     )?;
+    let startup = normalize_unique_section(
+        raw.startup,
+        normalize_startup,
+        id_of_startup,
+        "plugin startup",
+    )?;
+    if startup.len() > MAX_STARTUP_ENTRIES {
+        return Err(PluginManifestError::Invalid(format!(
+            "plugin {id} declares {} [[startup]] entries; at most {MAX_STARTUP_ENTRIES} are allowed",
+            startup.len()
+        )));
+    }
 
     Ok(PluginManifest {
         id,
@@ -240,6 +263,7 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, PluginManifes
         widgets,
         sidebar,
         themes,
+        startup,
     })
 }
 
@@ -320,6 +344,20 @@ const fn id_of_widget(widget: &PluginManifestWidget) -> &str {
 
 const fn id_of_sidebar(section: &PluginManifestSidebar) -> &str {
     section.id.as_str()
+}
+
+const fn id_of_startup(entry: &PluginManifestStartup) -> &str {
+    entry.id.as_str()
+}
+
+fn normalize_startup(
+    raw: RawPluginManifestStartup,
+) -> Result<PluginManifestStartup, PluginManifestError> {
+    Ok(PluginManifestStartup {
+        id: normalize_id(&raw.id, false, "plugin startup id")?,
+        platforms: raw.platforms,
+        command: normalize_command(&raw.command)?,
+    })
 }
 
 /// Validate one `[[sidebar]]` section: every `{token}` its `format` names is

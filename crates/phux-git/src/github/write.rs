@@ -124,6 +124,10 @@ pub fn merge(pull_id: &str, method: MergeMethod, head_oid: &str) -> Result<()> {
 }
 
 /// Merge once required checks and reviews pass, or stop waiting to.
+///
+/// Enabling follows future eligible revisions too: GitHub offers no expected
+/// head or base input here. Callers must revalidate the reviewed range before
+/// enabling; this is not an atomic SHA-pinned merge.
 pub fn set_auto_merge(pull_id: &str, method: Option<MergeMethod>) -> Result<()> {
     let (document, input) = method.map_or_else(
         || {

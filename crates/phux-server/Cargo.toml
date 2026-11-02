@@ -1,6 +1,6 @@
 [package]
 name = "phux-server"
-description = "phux daemon: owns PTYs, terminal grids, and client IPC."
+description = "phux daemon: hosts resources and serves them to clients."
 publish = false
 autobenches = false
 version.workspace = true
@@ -21,7 +21,7 @@ webtransport = ["dep:wtransport-proto", "dep:httlib-huffman"]
 # tokio-console debugger. Requires `RUSTFLAGS='--cfg tokio_unstable'`.
 tokio-console = ["dep:console-subscriber"]
 # Incremental native checkpoint capture/advertisement.
-native-engine = []
+native-engine = ["phux-terminal/native-engine"]
 # Benchmark/example tooling, opt-in so default test builds skip Criterion
 # and DHAT.
 capture-bench = ["dep:criterion", "dep:dhat"]
@@ -39,8 +39,10 @@ criterion = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
-# Agent manifests and the region matcher the detector evaluates.
-phux-agent-rules.workspace = true
+# The substrate every kind shares.
+phux-resource.workspace = true
+# The Terminal app. The host reaches VT and PTY only through it.
+phux-terminal.workspace = true
 # `GET_SCREEN --format vt` capture encoding and OSC 7501 upgrade replay.
 base64.workspace = true
 # Canonical scrollback bounds and config schema defaults.
@@ -133,9 +135,7 @@ wtransport-proto = { version = "0.7.2", optional = true, features = ["async"] }
 httlib-huffman = { version = "0.3.4", optional = true }
 console-subscriber = { version = "0.5", optional = true }
 # The PTY backend; blocking halves bridge to async via threads.
-portable-pty.workspace = true
 # Re-adopt inherited PTY masters and children after an upgrade re-exec.
-portable-pty-adopt.workspace = true
 # Upgrade handoff: clear FD_CLOEXEC and carry the blob in a temp file.
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
 tempfile.workspace = true
@@ -150,10 +150,15 @@ rusqlite.workspace = true
 # The native terminal engine (needs zig 0.16.x); target-gated to keep its
 # C/Zig library off wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-libghostty-vt.workspace = true
 
 
 [dev-dependencies]
+# Tests and benches drive the VT and PTY layers directly; the host never does.
+libghostty-vt.workspace = true
+portable-pty.workspace = true
+# Terminal fixtures for the host's own tests.
+phux-terminal = { workspace = true, features = ["test-support"] }
+phux-resource = { workspace = true, features = ["test-support"] }
 # The fake loopback service the `SERVICE_HTTP_*` tests answer from.
 hyper = { version = "1", default-features = false, features = ["client", "http1", "server"] }
 http-body-util = { version = "0.1", features = ["channel"] }

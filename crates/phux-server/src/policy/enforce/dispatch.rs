@@ -328,6 +328,6 @@ fn frame_ack_is_current(s: &ServerState, client: ClientId, request: Request<'_>)
     if !terminal_id.is_local() {
         return true;
     }
-    s.terminal_from_wire(terminal_id)
-        .is_some_and(|core| s.subscribers_for_terminal(core).contains(&client))
+    s.resource_from_wire(terminal_id)
+        .is_some_and(|core| s.subscribers_for_resource(core).contains(&client))
 }

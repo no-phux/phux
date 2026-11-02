@@ -95,15 +95,23 @@ DMG are Developer ID signed, Apple-notarized, and stapled. The desktop app
 requires macOS 26.0; the standalone CLI requires macOS 11.0. Expect rough
 edges: the terminal UI is ahead of the desktop.
 
-### Rune alpha
+### Phux Rune
 
 [Phux Rune](../clients/rune/README.md) is an alpha desktop client built on the
 [Rune](https://github.com/anomalyco/rune) UI framework, beside the desktop app
 as a candidate replacement for its GPUI base. It shows every session and
 terminal with each agent's state, a command palette, and splits from the
-session's server-stored arrangement, the same layout the terminal UI shows.
-It ships as `rune-v*` prereleases (ad-hoc signed on macOS, plus a Linux
-tarball) and has no settings or images yet.
+session's server-stored arrangement, the same layout the terminal UI shows,
+with find in history, ⌘-clickable links, an agent inbox with notifications,
+tabs, themes, and remote machines from the same registry as `phux host add`. It
+ships as `rune-v*` releases (Developer ID signed and notarized on macOS, plus
+a Linux tarball) for macOS 14 or later on Apple silicon and x86_64 Linux with
+Vulkan and glibc 2.39, updates itself from 0.1.0-alpha.6, and does not draw
+Kitty images yet. It installs beside the desktop app:
+
+```sh
+curl -fsSL https://phux.sh/install | sh -s -- --rune
+```
 
 ## Browser
 

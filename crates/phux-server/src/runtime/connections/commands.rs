@@ -167,18 +167,18 @@ pub(in crate::runtime) fn route(command: &Command, has_input_lane: bool) -> Rout
 }
 
 pub(super) struct CommandDispatch<'a> {
-    pub(super) state: &'a SharedState,
-    pub(super) client_id: ClientId,
-    pub(super) out_tx: &'a mpsc::Sender<Outbound>,
-    pub(super) input_lane: Option<&'a InputLaneHandle>,
-    pub(super) token: &'a CancellationToken,
+    pub(in crate::runtime) state: &'a SharedState,
+    pub(in crate::runtime) client_id: ClientId,
+    pub(in crate::runtime) out_tx: &'a mpsc::Sender<Outbound>,
+    pub(in crate::runtime) input_lane: Option<&'a InputLaneHandle>,
+    pub(in crate::runtime) token: &'a CancellationToken,
     pub(super) root_token: &'a CancellationToken,
     pub(super) selection: NegotiatedConnection,
     pub(super) command_tasks: &'a mut crate::runtime::command_tasks::CommandTasks,
     pub(super) input_receipts: &'a mut JoinSet<()>,
     pub(super) input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
     /// This connection's pane input credits (ADR-0144).
-    pub(super) input_credits: &'a mut InputCredits,
+    pub(in crate::runtime) input_credits: &'a mut InputCredits,
     /// The waiters of this connection's held commands (ADR-0128). Aborted
     /// with the connection, which withdraws their approvals.
     pub(super) held_commands: &'a mut JoinSet<()>,

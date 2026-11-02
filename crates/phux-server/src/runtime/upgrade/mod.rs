@@ -21,8 +21,8 @@ use tokio::sync::mpsc;
 
 use super::RuntimeFlags;
 use crate::resource::agent_session::BootstrapRequest;
+use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
 use crate::state::{SharedState, UpgradeHandoffs};
-use crate::terminal_actor::{PaneUpgradeHandle, UpgradeHandleRequest};
 use crate::upgrade::blob::StateBlob;
 
 mod handoff;
@@ -32,7 +32,9 @@ pub(super) mod validate;
 
 use handoff::{AgentSessionSeal, collect_agent_session_cuts, collect_pane_handoffs};
 pub(super) use validate::{InheritedUpgradeEnv, cleanup_executable_snapshot};
-use validate::{PinnedExecutable, clear_inherited_cloexec, pin_validated_executable};
+use validate::{
+    PinnedExecutable, clear_inherited_cloexec, pin_validated_executable, preflight_blob,
+};
 
 const PANE_HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
 const AGENT_ROLLBACK_TIMEOUT: Duration = Duration::from_secs(2);
@@ -205,6 +207,20 @@ impl Drop for NativeBrokerSeal {
 /// pane master, and validate the on-disk binary. Returns a [`UpgradePlan`] the
 /// caller execs *after* acking the client.
 pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
+    // Sidecars stop before anything irreversible. A failure below starts
+    // them again; a successful exec replaces the process, and the resumed
+    // image starts them after accept. They are not in the state blob.
+    crate::plugin_startup::pause(state).await;
+    match prepare_upgrade_inner(state).await {
+        Ok(plan) => Ok(plan),
+        Err(err) => {
+            crate::plugin_startup::resume(state);
+            Err(err)
+        }
+    }
+}
+
+async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, UpgradeError> {
     let native_seal = NativeBrokerSeal::new(state)?;
     let UpgradeContext {
         listener_fd,
@@ -232,7 +248,7 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
                 .values()
                 .filter(|binding| !binding.closed)
                 .find(|binding| {
-                    s.terminal_from_wire(&binding.agent)
+                    s.resource_from_wire(&binding.agent)
                         .is_none_or(|id| !handoffs.agent_sessions.contains_key(&id))
                 })
                 .map(|binding| binding.agent.clone())
@@ -248,9 +264,10 @@ pub(super) async fn prepare_upgrade(state: &SharedState) -> Result<UpgradePlan, 
         )?;
         let (blob, delegated_listeners) = super::delegation::carry_delegations(state, blob)?;
 
-        let blob_file = stage_blob_file(&blob)?;
+        let mut blob_file = stage_blob_file(&blob)?;
         let blob_fd = blob_file.as_raw_fd();
         let executable = pin_validated_executable(flags.upgrade_source_exe.as_deref())?;
+        preflight_blob(&executable.path, &mut blob_file)?;
         let fd_flags = clear_inherited_cloexec(blob_fd, listener_fd, &blob)?;
         Ok((
             handoffs,
@@ -304,7 +321,7 @@ fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, Upgrad
                     pane_senders: s
                         .upgrade_handles()
                         .into_iter()
-                        .map(|(pane, handle)| (pane, handle.upgrade))
+                        .filter_map(|(pane, handle)| Some((pane, handle.ops().upgrade_sender()?)))
                         .collect(),
                     agent_session_senders: s.upgrade_agent_sessions(),
                 })

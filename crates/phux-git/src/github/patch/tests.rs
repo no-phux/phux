@@ -131,6 +131,63 @@ fn a_head_the_remote_lacks_is_an_error() {
 }
 
 #[test]
+fn local_patch_paths_ignore_user_diff_prefix_configuration() {
+    let root = fresh("prefixes");
+    sh(&root, &["init", "-q", "-b", "main"]);
+    for path in ["a/nested.txt", "b/nested.txt"] {
+        std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        std::fs::write(root.join(path), "before\n").unwrap();
+    }
+    sh(&root, &["add", "."]);
+    sh(&root, &["commit", "-qm", "base"]);
+    let base = sh(&root, &["rev-parse", "HEAD"]);
+    for path in ["a/nested.txt", "b/nested.txt"] {
+        std::fs::write(root.join(path), "after\n").unwrap();
+    }
+    sh(&root, &["commit", "-qam", "head"]);
+    let head = sh(&root, &["rev-parse", "HEAD"]);
+    let range = Range {
+        number: 7,
+        base_ref: "main",
+        base_oid: &base,
+        head_oid: &head,
+    };
+    for (no_prefix, mnemonic) in [("true", "false"), ("false", "true"), ("true", "true")] {
+        sh(&root, &["config", "diff.noprefix", no_prefix]);
+        sh(&root, &["config", "diff.mnemonicprefix", mnemonic]);
+        let patch = local(&root, "unused", &range, 3).unwrap();
+        assert!(
+            patch
+                .text
+                .contains("diff --git a/a/nested.txt b/a/nested.txt")
+        );
+        assert!(
+            patch
+                .text
+                .contains("diff --git a/b/nested.txt b/b/nested.txt")
+        );
+        assert_eq!(
+            crate::split_files(&patch.text)
+                .iter()
+                .map(|file| file.lines().next().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "diff --git a/a/nested.txt b/a/nested.txt",
+                "diff --git a/b/nested.txt b/b/nested.txt",
+            ],
+            "noprefix={no_prefix}, mnemonicprefix={mnemonic}"
+        );
+        for path in ["a/nested.txt", "b/nested.txt"] {
+            assert!(
+                patch
+                    .text
+                    .contains(&format!("--- a/{path}\n+++ b/{path}\n"))
+            );
+        }
+    }
+}
+
+#[test]
 fn a_merge_fast_forwards_a_clean_base_and_spares_a_dirty_one() {
     let (root, _, _) = hosted("forward");
     let clone = root.join("clone");

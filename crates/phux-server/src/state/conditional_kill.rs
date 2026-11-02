@@ -52,7 +52,7 @@ impl ServerState {
             ));
         }
         let core = self
-            .terminal_from_wire(terminal)
+            .resource_from_wire(terminal)
             .ok_or(KillIfRefusal::NotFound)?;
         if let Some(why) = self.attachment_refusal(core, precondition.conditions) {
             return Err(KillIfRefusal::Precondition(why));
@@ -91,7 +91,7 @@ impl ServerState {
     /// Note that `client` used `terminal` in a verb (ADR-0109, L1 §5.2.1);
     /// satellite or unknown ids are ignored.
     pub fn note_resource_use(&mut self, terminal: &WireResourceId, client: super::ClientId) {
-        if let Some(core) = self.terminal_from_wire(terminal) {
+        if let Some(core) = self.resource_from_wire(terminal) {
             self.resources.note_use(client, core);
         }
     }
@@ -122,7 +122,7 @@ mod tests {
     ) {
         let mut state = ServerState::new();
         let (_, core) = state.seed_session("main");
-        let wire = state.intern_terminal_wire(core);
+        let wire = state.intern_resource_wire(core);
         (state, core, wire)
     }
 
@@ -134,7 +134,7 @@ mod tests {
     fn a_spawned_pane_only_its_spawner_attached_is_killed() {
         let (mut state, core, wire) = state_with_pane();
         state.record_spawn(core, ClientId(1));
-        state.subscribe_terminal(ClientId(1), core, None);
+        state.subscribe_resource(ClientId(1), core, None);
         let precondition = untouched(&state);
         assert_eq!(state.admit_conditional_kill(&wire, &precondition), Ok(core));
     }
@@ -143,14 +143,14 @@ mod tests {
     fn another_connection_attaching_refuses_even_after_it_detaches() {
         let (mut state, core, wire) = state_with_pane();
         state.record_spawn(core, ClientId(1));
-        state.subscribe_terminal(ClientId(2), core, None);
-        state.unsubscribe_terminal(ClientId(2), core);
+        state.subscribe_resource(ClientId(2), core, None);
+        state.unsubscribe_resource(ClientId(2), core);
         let precondition = untouched(&state);
         assert!(matches!(
             state.admit_conditional_kill(&wire, &precondition),
             Err(KillIfRefusal::Precondition(_))
         ));
-        assert_eq!(state.terminal_from_wire(&wire), Some(core), "kept");
+        assert_eq!(state.resource_from_wire(&wire), Some(core), "kept");
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
             state.admit_conditional_kill(&wire, &precondition),
             Err(KillIfRefusal::Precondition(_))
         ));
-        assert_eq!(state.terminal_from_wire(&wire), Some(core));
+        assert_eq!(state.resource_from_wire(&wire), Some(core));
     }
 
     #[test]
@@ -183,7 +183,7 @@ mod tests {
             ),
             "a stale token wins over a missing id"
         );
-        assert_eq!(state.terminal_from_wire(&wire), Some(core));
+        assert_eq!(state.resource_from_wire(&wire), Some(core));
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
             "fresh server reused the numeric resource ID"
         );
         assert_ne!(old.idspace.instance(), replacement.idspace.instance());
-        replacement.subscribe_terminal(ClientId(2), core, None);
+        replacement.subscribe_resource(ClientId(2), core, None);
         let stale = KillPrecondition {
             instance: Some(old.idspace.instance()),
             conditions: KillConditions::NONE,
@@ -207,7 +207,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            replacement.terminal_from_wire(&wire),
+            replacement.resource_from_wire(&wire),
             Some(core),
             "recycled resource survives"
         );
@@ -237,7 +237,7 @@ mod tests {
             state.admit_conditional_kill(&wire, &precondition),
             Err(KillIfRefusal::Precondition(_))
         ));
-        assert_eq!(state.terminal_from_wire(&wire), Some(core));
+        assert_eq!(state.resource_from_wire(&wire), Some(core));
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod tests {
             state.admit_conditional_kill(&wire, &no_token),
             Err(KillIfRefusal::Precondition(_))
         ));
-        assert_eq!(state.terminal_from_wire(&wire), Some(core));
+        assert_eq!(state.resource_from_wire(&wire), Some(core));
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
             state.admit_conditional_kill(&wire, &untouched(&state)),
             Err(KillIfRefusal::Precondition(_))
         ));
-        assert_eq!(state.terminal_from_wire(&wire), Some(core));
+        assert_eq!(state.resource_from_wire(&wire), Some(core));
     }
 
     #[test]
@@ -289,6 +289,6 @@ mod tests {
             state.admit_conditional_kill(&absent, &untouched(&state)),
             Err(KillIfRefusal::NotFound)
         );
-        assert_eq!(state.terminal_from_wire(&wire), Some(core));
+        assert_eq!(state.resource_from_wire(&wire), Some(core));
     }
 }

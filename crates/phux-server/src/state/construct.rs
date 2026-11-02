@@ -31,6 +31,7 @@ impl ServerState {
             hub: HubState::new(),
             uplinks: crate::uplink::Uplinks::default(),
             hook_dispatcher: None,
+            plugin_startup: None,
             push_grants: crate::push::PushGrants::default(),
             // Mints this process's incarnation and starts the idle clock —
             // see `Lifecycle::new`.

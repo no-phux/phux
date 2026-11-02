@@ -293,22 +293,28 @@ linux_desktop_launcher() {
 # Desktop launchers do not inherit an interactive shell's PATH. Rewrite only
 # Exec and Icon to absolute paths, with both desktop-string and Exec quoting.
 register_linux_desktop() {
-  desktop_source="${installed}/share/applications/dev.phux.desktop.desktop"
+  register_desktop_entry "${installed}/share/applications/dev.phux.desktop.desktop" dev.phux.desktop \
+    bin/phux-desktop share/icons/hicolor/scalable/apps/dev.phux.desktop.svg
+}
+
+# SOURCE, the app ID, and the executable and icon relative to $installed.
+register_desktop_entry() {
+  desktop_source="$1"
   [ -f "$desktop_source" ] || return 1
   bundle_path="$(cd "$installed" && pwd -P)" || return 1
   case "$bundle_path" in *'
 '*) return 1 ;; esac
-  executable="$(printf '%s' "${bundle_path}/bin/phux-desktop" | sed 's/%/%%/g; s/[\\"`$]/\\&/g; s/\\/\\\\/g')"
-  icon="$(printf '%s' "${bundle_path}/share/icons/hicolor/scalable/apps/dev.phux.desktop.svg" | sed 's/\\/\\\\/g')"
+  executable="$(printf '%s' "${bundle_path}/$3" | sed 's/%/%%/g; s/[\\"`$]/\\&/g; s/\\/\\\\/g')"
+  icon="$(printf '%s' "${bundle_path}/$4" | sed 's/\\/\\\\/g')"
   entries="$(linux_data_home)/applications"
   mkdir -p "$entries" || return 1
-  [ ! -d "${entries}/dev.phux.desktop.desktop" ] || return 1
+  [ ! -d "${entries}/$2.desktop" ] || return 1
   entry="$(mktemp "${entries}/.phux-desktop.XXXXXX")" || return 1
   if PHUX_DESKTOP_EXEC="\"${executable}\"" PHUX_DESKTOP_ICON="$icon" awk '
     /^Exec=/ { print "Exec=" ENVIRON["PHUX_DESKTOP_EXEC"]; next }
     /^Icon=/ { print "Icon=" ENVIRON["PHUX_DESKTOP_ICON"]; next }
     { print }
-  ' "$desktop_source" > "$entry" && chmod 644 "$entry" && mv -f "$entry" "${entries}/dev.phux.desktop.desktop"; then
+  ' "$desktop_source" > "$entry" && chmod 644 "$entry" && mv -f "$entry" "${entries}/$2.desktop"; then
     return 0
   fi
   rm -f "$entry"

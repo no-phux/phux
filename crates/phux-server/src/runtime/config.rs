@@ -21,7 +21,7 @@ pub struct ServerConfig {
     pub seed_with_pty: bool,
     /// Program for the pre-seeded PTY pane instead of [`Self::shell`].
     /// Ignored unless [`Self::seed_with_pty`].
-    pub seed_command: Option<portable_pty::CommandBuilder>,
+    pub seed_command: Option<crate::runtime::apps::terminal::launch::LaunchCommand>,
     /// Per-pane scrollback bounds (`defaults.history-limit` /
     /// `defaults.history-bytes`, ADR-0094).
     pub scrollback: phux_config::ScrollbackLimits,
@@ -43,7 +43,7 @@ pub struct ServerConfig {
     /// per-spawn `env` entry overrides it.
     pub term: String,
     /// Default shell for command-less spawns: `defaults.shell`, else
-    /// `$SHELL`, else `/bin/sh` ([`crate::terminal_actor::resolve_shell`]).
+    /// `$SHELL`, else `/bin/sh` ([`phux_config::shell::resolve_shell`]).
     pub shell: String,
     /// Run [`Self::shell`] in login mode for command-less spawns. Set only
     /// when a service manager started the server, whose minimal environment
@@ -99,6 +99,11 @@ pub struct ServerConfig {
     /// Direct guardian executable override for isolated fixtures; otherwise
     /// the running server executable, never a PATH-resolved installed phux.
     pub native_host_executable: Option<PathBuf>,
+    /// Plugin `[[startup]]` sidecars. `None` supervises nothing (in-process
+    /// tests and embedders). `phux server` fills it from the config file.
+    /// Boxed so a `ServerConfig` captured by an accept-loop future stays
+    /// under the large-future lint. `None` supervises nothing.
+    pub plugin_startup: Option<Box<crate::plugin_startup::PluginStartupConfig>>,
 }
 
 /// The opt-in flags the running server applied.
@@ -148,7 +153,7 @@ impl ServerConfig {
             retain: crate::state::RetainPolicy::default(),
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
-            shell: crate::terminal_actor::resolve_shell(None),
+            shell: phux_config::shell::resolve_shell(None),
             login_shell: false,
             window_size: phux_config::WindowSize::default(),
             voice: phux_config::VoiceCfg::default(),
@@ -164,6 +169,7 @@ impl ServerConfig {
             org_store: crate::OrgStoreLocation::Memory,
             work_store: None,
             native_host_executable: None,
+            plugin_startup: None,
         }
     }
 }

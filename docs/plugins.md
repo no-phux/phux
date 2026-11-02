@@ -2,8 +2,9 @@
 
 A plugin is a directory with a `phux-plugin.toml` manifest that adds to
 phux: actions for the palette and your keys, panes, status-bar widgets,
-sidebar sections, themes, hooks, and agent declarations. Install one to
-pick up someone else's workflow, or write one to package your own.
+sidebar sections, themes, hooks, agent declarations, and long-running
+startup sidecars. Install one to pick up someone else's workflow, or
+write one to package your own.
 
 ```sh
 phux plugin install someone/phux-plugin
@@ -25,8 +26,10 @@ plugin before you install it.
 ## Managing plugins
 
 Plugins are listed in your [configuration file](./config.md) as
-`[[plugins]]` entries. The `phux plugin` commands edit those entries for
-you and never touch a running server:
+`[[plugins]]` entries. The `phux plugin` commands edit those entries.
+`enable` and `disable` also ring the config-reload doorbell so a running
+server starts or stops that plugin's startup sidecars. The other
+commands only edit the file:
 
 | Command | Does |
 | --- | --- |
@@ -35,11 +38,12 @@ you and never touch a running server:
 | `phux plugin new NAME` | Writes a minimal plugin: a manifest, one action, one hook, a script, and a README |
 | `phux plugin link PATH` | Adds a manifest already on disk, such as one you're writing |
 | `phux plugin unlink ID` | Removes a plugin's entry |
-| `phux plugin enable ID` | Turns a plugin on |
-| `phux plugin disable ID` | Turns a plugin off and keeps its entry |
+| `phux plugin enable ID` | Turns a plugin on and, if a server is running, starts its startup sidecars |
+| `phux plugin disable ID` | Turns a plugin off, keeps its entry, and stops its startup sidecars |
 | `phux plugin list` | Lists configured plugins and whether each is enabled |
 | `phux plugin validate [PATH]` | Checks one manifest, or every configured one |
-| `phux plugin log` | Shows recent plugin action and hook runs |
+| `phux plugin log` | Shows recent plugin action, hook, and startup lifecycle lines |
+| `phux plugin log --startup [ID]` | Prints the tail of a startup sidecar's log |
 
 ```sh
 $ phux plugin list
@@ -146,7 +150,10 @@ A relative `manifest` path is relative to the config file that names it.
 **Hooks need a server restart.** Enabling, disabling, or updating a
 plugin reaches the palette, keys, panes, widgets, and sidebar on
 `phux config reload`. Its `[[events]]` hooks run in the server, which
-reads them at start; run `phux upgrade` to restart it in place.
+reads them at start; run `phux upgrade` to restart it in place. Startup
+sidecars are different: `enable`, `disable`, and `phux config reload`
+reconcile them in the running server. An entry whose manifest has not
+changed is left running.
 
 ## Writing a plugin
 
@@ -212,6 +219,7 @@ like `summarize.py` work.
 | `[[themes]]` | A [theme](./themes.md): a `name` and the `path` of a directory holding `colors.toml`. |
 | `[[agents]]` | An agent the plugin integrates, with a `label`, a declared `state`, and an `attention` level. |
 | `[[build]]` | A `command` that `install` and `update` run to build the plugin. |
+| `[[startup]]` | A long-running sidecar the server supervises. See [Startup sidecars](#startup-sidecars). |
 
 `platforms = ["linux", "macos"]` limits the plugin, or one entry, to those
 systems.
@@ -339,6 +347,93 @@ The optional [first-party plugins](../plugins/README.md) live under `plugins/`:
 For a minimal plugin to copy, see the working
 [theme example](../examples/plugins/theme-pack/README.md).
 
+## Startup sidecars
+
+A `[[startup]]` entry is a process the server keeps running for the life
+of the server. It is not a hook (hooks are killed after 30 seconds) and
+not a pane. One process runs per entry. Use it for a local web server or
+anything else that should come up with phux and go down with it.
+
+```toml
+[[startup]]
+id = "web"
+command = ["bun", "server.ts"]
+platforms = ["linux", "macos"]
+```
+
+`command` is an argument list, never a shell string. Write
+`["sh", "-c", "..."]` when you need a shell. `id` is unique in the
+manifest and uses the same rules as an action id. A plugin id or a
+startup id of `.`, `..`, or `server` is rejected: those names escape
+the startup directory or collide with files the server writes there.
+`platforms` is optional. The entry runs only when both that list and the manifest's
+top-level `platforms` allow this operating system. Leaving a list out
+means every system. A manifest may declare at most 8 startup entries.
+The server starts at most 8 across every enabled plugin, in `[[plugins]]`
+order; the rest are skipped and a `skipped: cap` line is written to the
+run log. `phux plugin validate` checks the per-manifest rules on every
+operating system. It does not apply the platform filter, so one machine
+can validate a multi-platform manifest. There is no `timeout` key.
+
+The server starts sidecars after it is accepting connections, including
+after `phux upgrade`. The child runs as you, with cwd set to the plugin
+directory (`PHUX_PLUGIN_ROOT`) and umask `077`. Its environment is the
+server's, plus:
+
+| Variable | Value |
+| --- | --- |
+| `PHUX_SOCKET` | This server's socket |
+| `PHUX_PLUGIN_ID` | Manifest `id` |
+| `PHUX_PLUGIN_NAME` | Manifest `name` |
+| `PHUX_PLUGIN_VERSION` | Manifest `version` |
+| `PHUX_PLUGIN_ROOT` | Directory containing the manifest |
+| `PHUX_PLUGIN_STATE` | `<state-dir>/plugin-startup/<plugin-id>/<startup-id>/`, mode `0700` |
+
+Pane identity the server may have inherited (`PHUX_TERMINAL_ID`,
+`PHUX_PANE`, `PHUX_SESSION`, and the other per-pane variables) is
+removed. Stdin is `/dev/null`. Stdout and stderr append to
+`<state-dir>/plugin-startup/<plugin-id>/<startup-id>.log`, mode `0600`.
+The server rotates that file at 1 MiB, keeping three older generations,
+by copying it aside and truncating it in place.
+
+A non-zero exit or a signal restarts the process after a backoff of 1,
+2, 4, 8, 16, then 30 seconds. The backoff returns to 1 second after the
+process has been up for at least 60 seconds. Exit 0 is a deliberate
+stop: the run log records `exited 0 (not restarting)` and the process
+is not started again. The sixth failure inside ten minutes gives up
+until the next server start or a disable/enable cycle.
+
+On server exit, upgrade, and plugin disable, every sidecar's process
+group gets `SIGTERM`, then `SIGKILL` after a shared 5 second deadline.
+Upgrade stops them before the new binary runs and starts them again
+once the new process is accepting; they are not restored from the
+upgrade handoff. A server killed with `SIGKILL` cannot do that. The
+next start reads the pidfile, which names the sidecar and the server
+that owned it. It does not signal the group while that server is still
+alive. When the owner is gone, it signals the group if the leader pid
+is still alive and its start time still matches, or if the leader is
+already dead but the process group still has a member that started in
+or after the recorded spawn tick (a grandchild left behind when the
+leader honored `SIGTERM`, including one forked in the same 10ms tick).
+A live pid that started at a different time is left alone. A pidfile
+from a different boot is stale and is not signaled, because start-time
+ticks are not comparable across reboots. On macOS the boot id is
+`kern.boottime`, which moves when the wall clock is set. A changed id
+skips the reap instead of signaling a group. The pidfile is named
+`<startup-id>.<server-pid>.pid` so two servers sharing a state
+directory do not overwrite each other. Pidfiles for sidecars that have
+already exited are removed.
+
+**A sidecar's socket connection keeps the server alive.** Connecting to
+`PHUX_SOCKET` counts as a client connection, the same as any other
+client. While that connection is open, `--exit-after-idle` does not
+fire. A sidecar that never connects does not keep the server alive by
+merely existing.
+
+**The sidecar gets owner-level access to `PHUX_SOCKET`.** It can do
+anything you can do through phux. It is not sandboxed. Narrower
+per-plugin keys come later. Read a plugin before you install it.
+
 ## Debugging
 
 - `phux plugin validate` checks every configured manifest and says what
@@ -346,9 +441,11 @@ For a minimal plugin to copy, see the working
   fire.
 - `phux plugin list` shows which plugins are enabled.
 - `phux config keys` lists plugin keys with `plugin <id>` as their source.
-- `phux plugin log` lists the newest runs of every action and hook, oldest
-  first, with exit status and duration. `--failed` shows only failures,
-  with the end of their output; `-n` sets how many runs.
+- `phux plugin log` lists the newest runs of every action and hook, and
+  startup lifecycle lines, oldest first, with exit status and duration.
+  `--failed` shows only failures, with the end of their output; `-n`
+  sets how many runs. `phux plugin log --startup` prints the tail of
+  each sidecar log; `--startup plugin-id/startup-id` prints one.
 
 ```text
 $ phux plugin log --failed

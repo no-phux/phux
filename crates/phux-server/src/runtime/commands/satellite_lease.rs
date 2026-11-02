@@ -10,11 +10,11 @@ use super::*;
 /// Hub consumers share one identity on the satellite, so exclusion between
 /// them is resolved here before anything touches the link (L1 §9.1).
 pub(super) struct SatelliteLeaseTarget<'a> {
-    pub(super) state: &'a SharedState,
+    pub(in crate::runtime) state: &'a SharedState,
     pub(super) host: &'a phux_protocol::ids::SatelliteHost,
     /// Satellite-local wire terminal id.
     pub(super) terminal: u32,
-    pub(super) client_id: ClientId,
+    pub(in crate::runtime) client_id: ClientId,
 }
 
 impl<'a> SatelliteLeaseTarget<'a> {
@@ -333,7 +333,7 @@ fn notify_satellite_lease_seized(
 /// Forward one fire-and-forget frame (`INPUT_*`, `FRAME_ACK`,
 /// `RESIZE_TERMINAL`) for a satellite terminal over the hub link; `build`
 /// receives the satellite-local id. `false` when there is no route.
-pub(super) fn relay_satellite_frame(
+pub(in crate::runtime) fn relay_satellite_frame(
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
     route: &RelayRoute,

@@ -1,8 +1,8 @@
 diff --git a/gpui-fast-wgpu/src/wgpu_renderer.rs b/gpui-fast-wgpu/src/wgpu_renderer.rs
-index 21dc47a..0b00405 100644
+index e712d12..1734c9f 100644
 --- a/gpui-fast-wgpu/src/wgpu_renderer.rs
 +++ b/gpui-fast-wgpu/src/wgpu_renderer.rs
-@@ -2612,20 +2612,78 @@ impl HeadlessRenderTarget {
+@@ -2607,20 +2607,78 @@ impl HeadlessRenderTarget {
          drop(mapped_data);
          readback_buffer.unmap();
  
@@ -89,7 +89,7 @@ index 21dc47a..0b00405 100644
  #[cfg(not(target_family = "wasm"))]
  fn map_readback_buffer(
      device: &wgpu::Device,
-@@ -2783,6 +2841,154 @@ mod tests {
+@@ -2778,6 +2836,154 @@ mod tests {
          assert!(receiver.recv().is_err());
      }
  

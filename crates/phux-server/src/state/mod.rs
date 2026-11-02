@@ -57,6 +57,7 @@ mod lifecycle_state;
 mod metadata;
 pub(crate) mod native_agent;
 mod org;
+mod plugin_startup;
 mod policy;
 mod reap;
 mod remote_listeners;
@@ -69,7 +70,7 @@ mod session_table;
 mod sessions;
 mod snapshot;
 mod terminals;
-mod upgrade_blob;
+pub(crate) mod upgrade_blob;
 mod viewport;
 mod wire_ids;
 
@@ -94,7 +95,7 @@ pub use retained::{RetainPolicy, close_reason_name, process_exit};
 pub use roles::RoleEffects;
 // The mailbox payloads live in `crate::mailbox` so `state` and the actor
 // share them without depending on each other.
-pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound, TerminalInput};
+pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound};
 use lease_table::LeaseTable;
 pub(crate) use lease_table::SatelliteLease;
 use lifecycle_state::Lifecycle;
@@ -201,6 +202,9 @@ pub struct ServerState {
     /// Event-hook dispatcher; `None` when no hooks are configured (firing
     /// is then a no-op).
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,
+    /// `[[startup]]` supervisor. `None` until the accept loop's neighbor
+    /// task is installed, and on servers that were not given a catalog.
+    plugin_startup: Option<crate::plugin_startup::StartupHandle>,
     /// Who wrote each `phux.push/v1/<device>` grant, and what was last
     /// pushed to it (ADR-0155).
     push_grants: crate::push::PushGrants,

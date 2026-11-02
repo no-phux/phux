@@ -161,7 +161,7 @@ impl HookEvent {
         before: Option<&[u8]>,
         after: Option<&[u8]>,
     ) -> Option<Self> {
-        use crate::agent_detect::record::AgentRecordJson;
+        use phux_resource::agent_record::AgentRecordJson;
         let before = before.and_then(AgentRecordJson::decode);
         let after = after.and_then(AgentRecordJson::decode);
         if before.is_none() && after.is_none() {

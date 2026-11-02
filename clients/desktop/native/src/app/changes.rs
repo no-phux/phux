@@ -412,7 +412,8 @@ impl Desk {
         }
         if let Some(host) = self.remote.as_deref() {
             return Err(format!(
-                "This window is on {host}. Changes are read from folders on this Mac."
+                "This window is on {host}. Changes are read from folders on {}.",
+                crate::platform::this_machine()
             ));
         }
         let placement = self

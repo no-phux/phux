@@ -4,7 +4,7 @@
 use phux_client_runtime::control::{PaneDescriptor, Topology};
 use phux_protocol::ids::ResourceId;
 
-use crate::keys::Shortcut;
+use crate::keys::{COMMANDS, Shortcut};
 
 /// One thing the palette can do.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,30 +33,6 @@ pub struct Hit {
     pub score: i32,
     pub matched: Vec<usize>,
 }
-
-const ACTIONS: &[(Shortcut, &str, &str)] = &[
-    (Shortcut::NewTerminal, "New terminal", "⌘T"),
-    (Shortcut::NewSession, "New session", "⌘N"),
-    (Shortcut::JumpToAttention, "Jump to what needs you", "⌘J"),
-    (Shortcut::SplitRight, "Split right", "⌘D"),
-    (Shortcut::SplitDown, "Split down", "⌘⇧D"),
-    (Shortcut::ZoomPane, "Zoom pane", "⌘⇧↩"),
-    (Shortcut::CloseTerminal, "Close terminal", "⌘W"),
-    (Shortcut::FocusLeft, "Focus pane left", "⌘⌥←"),
-    (Shortcut::FocusRight, "Focus pane right", "⌘⌥→"),
-    (Shortcut::FocusUp, "Focus pane up", "⌘⌥↑"),
-    (Shortcut::FocusDown, "Focus pane down", "⌘⌥↓"),
-    (Shortcut::NextTerminal, "Next terminal", "⌘]"),
-    (Shortcut::PreviousTerminal, "Previous terminal", "⌘["),
-    (Shortcut::ToggleSidebar, "Toggle sidebar", "⌘B"),
-    (Shortcut::Copy, "Copy selection", "⌘C"),
-    (Shortcut::Paste, "Paste", "⌘V"),
-    (Shortcut::ZoomIn, "Bigger text", "⌘="),
-    (Shortcut::ZoomOut, "Smaller text", "⌘-"),
-    (Shortcut::ZoomReset, "Default text size", "⌘0"),
-    (Shortcut::ScrollTop, "Scroll to top of history", "⌘↑"),
-    (Shortcut::ScrollBottom, "Scroll to bottom", "⌘↓"),
-];
 
 /// Everything the palette lists, in its empty-query order: terminals, then
 /// sessions, then actions.
@@ -87,22 +63,38 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
             });
         }
     }
-    for (action, title, keys) in ACTIONS {
+    for command in COMMANDS.iter().filter(|command| command.listed) {
         out.push(Item {
-            title: (*title).to_owned(),
-            detail: keys_for_platform(keys),
+            title: command.title.to_owned(),
+            detail: command.hint(),
             kind: "action",
-            target: Target::Action(*action),
+            target: Target::Action(command.action),
         });
     }
     out
+}
+
+/// Every chord the app answers to, generated from the command table.
+pub fn shortcut_items() -> Vec<Item> {
+    let bound = COMMANDS.iter().filter(|c| !c.chords().is_empty());
+    bound
+        .map(|command| Item {
+            title: command.title.to_owned(),
+            detail: command.hints(),
+            kind: "action",
+            target: Target::Action(command.action),
+        })
+        .collect()
 }
 
 /// A terminal's name, else its title, else its folder.
 pub fn pane_label(pane: &PaneDescriptor) -> String {
     let nonempty = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
     nonempty(&pane.name)
-        .or_else(|| nonempty(&pane.title))
+        // An ask borrows the title to reach the server; it isn't a name.
+        .or_else(|| {
+            nonempty(&pane.title).filter(|t| phux_client_core::ask::parse_ask_title(t).is_none())
+        })
         .or_else(|| {
             nonempty(&pane.cwd).map(|cwd| {
                 let trimmed = cwd.trim_end_matches('/');
@@ -115,14 +107,6 @@ pub fn pane_label(pane: &PaneDescriptor) -> String {
             })
         })
         .unwrap_or_else(|| "terminal".to_owned())
-}
-
-fn keys_for_platform(keys: &str) -> String {
-    if cfg!(target_os = "macos") {
-        keys.to_owned()
-    } else {
-        keys.replace('⌘', "Ctrl+Shift+")
-    }
 }
 
 /// Fuzzy subsequence match of `query` in `text`, case-insensitive. Rewards
@@ -209,8 +193,25 @@ mod tests {
 
     #[test]
     fn ranking_puts_the_best_title_first_and_falls_back_to_details() {
-        let hits = rank(items(None), "new term");
+        let hits = rank(items(None), "new tab");
         assert_eq!(hits[0].item.target, Target::Action(Shortcut::NewTerminal));
+    }
+
+    #[test]
+    fn the_shortcut_list_fits_and_shows_only_bound_commands() {
+        let list = shortcut_items();
+        assert!(list.len() <= ROWS, "{}", list.len());
+        assert!(list.iter().all(|item| !item.detail.is_empty()));
+        let tab = list.iter().find(|i| i.title == "Close Tab");
+        assert!(tab.is_some());
+    }
+
+    #[test]
+    fn close_and_step_tab_are_in_the_palette() {
+        let list = items(None);
+        for action in [Shortcut::CloseTab, Shortcut::NextTab, Shortcut::PreviousTab] {
+            assert!(list.iter().any(|i| i.target == Target::Action(action)));
+        }
     }
 
     #[test]

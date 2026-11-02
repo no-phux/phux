@@ -64,6 +64,34 @@ fn a_failed_store_write_refuses_and_leaves_memory_unchanged() {
 }
 
 #[test]
+fn a_committed_launch_with_no_process_fails_instead_of_completing() {
+    let mut state = ServerState::new();
+    let (_, terminal) = state.seed_session("work");
+    let before = state
+        .registry()
+        .record(terminal)
+        .unwrap()
+        .activation
+        .clone()
+        .unwrap();
+    assert_eq!(before.state, ExecState::Starting);
+    assert!(before.host_proc.is_none());
+    let counts = state.reconcile_with(None, |_| panic!("must not probe"));
+    let after = state
+        .registry()
+        .record(terminal)
+        .unwrap()
+        .activation
+        .clone()
+        .unwrap();
+    assert_eq!(after.state, ExecState::Failed);
+    assert_ne!(after.state, ExecState::Completed);
+    assert_eq!(after.outcome, Some(Outcome::Unobserved));
+    assert_eq!(counts.never_launched, 1);
+    assert_eq!(counts.unobserved, 0);
+}
+
+#[test]
 fn executor_reports_are_refused_from_a_client() {
     let mut state = ServerState::new();
     let (_, terminal) = state.seed_session("work");

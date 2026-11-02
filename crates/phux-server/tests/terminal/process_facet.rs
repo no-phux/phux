@@ -2,6 +2,7 @@
 //! prompt machine, signal-aware exit, and `cwd_changed` events. Children block
 //! on `read` until the test presses Enter, so nothing races the spawn reply.
 
+use phux_terminal::actor::TerminalResource as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -12,11 +13,11 @@ use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, CommandValue, ErrorCode, FrameKind,
     SpawnResult, StateScope, ViewportInfo,
 };
-use phux_server::terminal_actor::{ProcessFacetRequest, TerminalActor};
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, ServerHandles, Spawn, command, recv_until, recv_until_deadline,
     run_local, send_frame, spawn_resource, spawn_server, wait_for_socket,
 };
+use phux_terminal::actor::{ProcessFacetRequest, TerminalActor};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;

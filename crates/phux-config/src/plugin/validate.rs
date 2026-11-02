@@ -25,6 +25,7 @@ pub(super) fn normalize_id(
     let value = value.trim();
     let valid = !value.is_empty()
         && value.len() <= PLUGIN_ID_MAX_CHARS
+        && !reserved_path_id(value, label)
         && value.chars().all(|ch| {
             ch.is_ascii_alphanumeric()
                 || ch == '_'
@@ -37,6 +38,16 @@ pub(super) fn normalize_id(
     } else {
         Err(PluginManifestError::Invalid(format!("invalid {label}")))
     }
+}
+
+/// Plugin ids and startup ids are path components under `plugin-startup/`.
+/// A dot-only id (`.` or `..`) escapes that directory. `server` collides
+/// with files the supervisor writes beside the sidecar.
+fn reserved_path_id(value: &str, label: &str) -> bool {
+    if label != "plugin id" && label != "plugin startup id" {
+        return false;
+    }
+    value.eq_ignore_ascii_case("server") || value.chars().all(|ch| ch == '.')
 }
 
 pub(super) fn non_empty(value: &str, label: &str) -> Result<String, PluginManifestError> {

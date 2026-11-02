@@ -212,11 +212,11 @@ impl ServerState {
     /// The wire id already interned for a local resource, without
     /// allocating one: the dispatch guard reads, it never mints ids.
     #[must_use]
-    pub(crate) fn terminal_wire_of(
+    pub(crate) fn resource_wire_of(
         &self,
         terminal: phux_core::ids::ResourceId,
     ) -> Option<phux_protocol::ids::ResourceId> {
-        self.idspace.terminal_wire(terminal).cloned()
+        self.idspace.resource_wire(terminal).cloned()
     }
 
     /// Record the authorization posture the server started in. Set once at

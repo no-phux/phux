@@ -143,7 +143,7 @@ pub(super) fn smooth_scroll_paints_the_row_below_the_viewport() {
     let wheel = |cx: &mut HeadlessAppContext,
                  rows: f32,
                  geometry: phux_desktop::terminal::geometry::Geometry| {
-        let event = gpui::ScrollWheelEvent {
+        let event = gpui::ScrollEvent {
             position: gpui::point(
                 geometry.bounds.origin.x + geometry.cell_width / 2.,
                 geometry.bounds.origin.y + geometry.cell_height / 2.,
@@ -152,7 +152,7 @@ pub(super) fn smooth_scroll_paints_the_row_below_the_viewport() {
             ..Default::default()
         };
         cx.update_window(window.into(), |_, window, cx| {
-            window.dispatch_event(gpui::PlatformInput::ScrollWheel(event), cx);
+            window.dispatch_event(gpui::PlatformInput::Scroll(event), cx);
         })
         .expect("wheel");
     };
@@ -285,7 +285,7 @@ pub(super) fn wheel_step(
     geometry: phux_desktop::terminal::geometry::Geometry,
     rows: f32,
 ) {
-    let event = gpui::ScrollWheelEvent {
+    let event = gpui::ScrollEvent {
         position: gpui::point(
             geometry.bounds.origin.x + geometry.cell_width / 2.,
             geometry.bounds.origin.y + geometry.cell_height / 2.,
@@ -294,7 +294,7 @@ pub(super) fn wheel_step(
         ..Default::default()
     };
     cx.update_window(window.into(), |_, window, cx| {
-        window.dispatch_event(gpui::PlatformInput::ScrollWheel(event), cx);
+        window.dispatch_event(gpui::PlatformInput::Scroll(event), cx);
     })
     .expect("wheel");
 }

@@ -3,6 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # 26.11 drops Intel Darwin; use the newest maintained stable channel there.
+    nixpkgs-intel-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -14,13 +16,14 @@
     {
       self,
       nixpkgs,
+      nixpkgs-intel-darwin,
       flake-utils,
       rust-overlay,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs {
+        pkgs = import (if system == "x86_64-darwin" then nixpkgs-intel-darwin else nixpkgs) {
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
@@ -43,6 +46,7 @@
         # now also gates this file, so no surface can move alone.
         miseTools = (builtins.fromTOML (builtins.readFile ./mise.toml)).tools;
         darwinSdk = import ./nix/darwin-sdk.nix { inherit pkgs; };
+        toolPins = import ./nix/toolchain-pins.nix { inherit pkgs miseTools; };
 
         # Bun is pinned to an exact release rather than whatever nixpkgs
         # carries. nixpkgs lagged at 1.3.13 while the pin was 1.4.0, so the
@@ -57,19 +61,16 @@
         bunVersion = miseTools.bun;
         bunAssets = {
           aarch64-darwin = "bun-darwin-aarch64";
+          x86_64-darwin = "bun-darwin-x64-baseline";
           x86_64-linux = "bun-linux-x64";
           aarch64-linux = "bun-linux-aarch64";
         };
         bunDigests = {
-          "1.4.0" = {
-            aarch64-darwin = "sha256-xmnpf2Fk4cluBwF0jbmN+ndJKQjL2DlMdVcTSnNd44E=";
-            x86_64-linux = "sha256-LQP7X7g6yLVnrKCigbLOGhoZ1Ij1bClo2Iw/Jekv5FI=";
-            aarch64-linux = "sha256-SxozLuhhmD65O8/m93D/+U4+MbLDiL2uo8jtNeWO7Q4=";
-          };
-          "1.4.2" = {
-            aarch64-darwin = "sha256-kJh6OhbX21VtiGrD1VHnttPt8KHPQ6yu1iLoZ2vh0S8=";
-            x86_64-linux = "sha256-NjaPrvdSeHXV/6UuU81IAhdB8qg+tiCKjdZAaNQiqRM=";
-            aarch64-linux = "sha256-VDKLvC2cjgyfiSxUTWbFeoO4QTnjSQnl7oF1jxrI/ac=";
+          "1.4.4" = {
+            aarch64-darwin = "sha256-wkDX8My5DCY6hJ/NsJt+5iYw2SE0jtaq/ahrnVd7xRA=";
+            x86_64-darwin = "sha256-1KFVrfv9CRVes7oFyeOlRPOSl9emhhbTx3WfZ6tcR9w=";
+            x86_64-linux = "sha256-v4zL+ysLgBWeD5ptFcVTF63YB3U028YTCj7bUvzLOVw=";
+            aarch64-linux = "sha256-uqa7NvUdblhWHgK76oJQOKnfRU9nPW13bou/hvjHhQ4=";
           };
         };
         bunPinned =
@@ -107,23 +108,11 @@
           aarch64-linux = "usage-aarch64-unknown-linux-musl.tar.gz";
         };
         usageDigests = {
-          "6.9.0" = {
-            aarch64-darwin = "sha256-nlMVFJ1aCNfRuGO06UcpqjYkA1PyhHUp0GrCH6x8bAE=";
-            x86_64-darwin = "sha256-nlMVFJ1aCNfRuGO06UcpqjYkA1PyhHUp0GrCH6x8bAE=";
-            x86_64-linux = "sha256-hpPIrev6w2IR6acGbTlMoLCKEK5XlECOh5G/MsEu7OA=";
-            aarch64-linux = "sha256-beGIs56Fy9tIcoGBLCuzsVjYUrxLEiYPGbWpJri3vfc=";
-          };
-          "6.11.1" = {
-            aarch64-darwin = "sha256-46ILlI8mZYYty63fxQ1irHQWVOPN2BUTCm+uALPQiP8=";
-            x86_64-darwin = "sha256-46ILlI8mZYYty63fxQ1irHQWVOPN2BUTCm+uALPQiP8=";
-            x86_64-linux = "sha256-ezfR02sxCFeQjlCIAttsa2cFVc8lzQuZDwnuQMsRJHs=";
-            aarch64-linux = "sha256-uJA+2wrMt2V2qaRUkAOI1inf+aNRhuZTxOW0jmIuYsA=";
-          };
-          "6.12.0" = {
-            aarch64-darwin = "sha256-HkO+dF2y/YElnisOaNaJ1/Vbk9qBX0UsIVRxD23m7FI=";
-            x86_64-darwin = "sha256-HkO+dF2y/YElnisOaNaJ1/Vbk9qBX0UsIVRxD23m7FI=";
-            x86_64-linux = "sha256-XKtp/6zeP3AL10CV+JpIec6lkajAZW8xBHhu0dDfIYo=";
-            aarch64-linux = "sha256-KHKZJORr+tERKn7DUAPN8HTSaGNG3aotD0IGwfZqKCc=";
+          "7.1.4" = {
+            aarch64-darwin = "sha256-yuGGWyu064wiCHOB1PvCk0SDeWDHHb+GXcVSlsGdU10=";
+            x86_64-darwin = "sha256-yuGGWyu064wiCHOB1PvCk0SDeWDHHb+GXcVSlsGdU10=";
+            x86_64-linux = "sha256-Zi/gSiobeUfnO3rU1gj1C5alAOW8LJ0ZYeKIlKjIf10=";
+            aarch64-linux = "sha256-yCVsOOyCooKIMm1I08j8+lbh+xx26C9mxYrV+hiWXhs=";
           };
         };
         usagePinned =
@@ -234,10 +223,10 @@
           aarch64-linux = "mbx-aarch64-unknown-linux-musl.tar.gz";
         };
         mbxDigests = {
-          "1.22.0" = {
-            aarch64-darwin = "sha256-5Ui1dYSYz4IqGAtjKFl+at7Y/puzBGzZGDmRcq4w3eI=";
-            x86_64-linux = "sha256-w3UTXio5FvWNobR1N7apVBWe6s1VUj2aYYtCJZvYkBQ=";
-            aarch64-linux = "sha256-rk1mMIxwb/v5Er60WzFmzxz9pNPv0jJzJieRI10KzPU=";
+          "1.29.0" = {
+            aarch64-darwin = "sha256-VnWyo7FgWXV5M0SLj9cFeXFvNWyuMRdmvs2do4yYOrU=";
+            x86_64-linux = "sha256-jk5vzfmqEtuDzj2uEvy0XdKun05Rg8xb3dUar/AQ48A=";
+            aarch64-linux = "sha256-F7NfXCcGPFafAgFkAIzW89ZESn56QM57+ElUsnJdKys=";
           };
         };
         mbxPinned =
@@ -286,9 +275,9 @@
             zigPinned
             pkgs.pkg-config
             # Developer ergonomics.
-            pkgs.just
+            toolPins.just
             pkgs.cargo-nextest
-            pkgs.cargo-deny
+            toolPins.cargo-deny
             pkgs.cargo-watch
             pkgs.cargo-insta
             pkgs.cargo-mutants
@@ -302,15 +291,15 @@
             pkgs.cargo-bloat
             # Web client (clients/phux-web, clients/phux-vt-web) toolchain.
             # wasm-bindgen-cli MUST match the `wasm-bindgen` crate version
-            # pinned in the client manifests (=0.2.128); the test harness
+            # pinned in the client manifests (=0.2.130); the test harness
             # rejects a schema mismatch.
-            pkgs.wasm-pack
-            pkgs.wasm-bindgen-cli
+            toolPins.wasm-pack
+            toolPins.wasm-bindgen-cli
             pkgs.binaryen
             pkgs.trunk
             pkgs.chromedriver
             # npm integration gates and workflow contracts use Node too.
-            pkgs.nodejs_24
+            pkgs.nodejs_26
             # Documentation site builds use Bun, at the exact release pinned
             # in mise.toml (see bunPinned above) so this shell, the Mise path
             # and the site's production builder all agree.
@@ -338,7 +327,7 @@
             # The demo setup scripts and their test (just guards), Rust
             # test fixtures, examples and benchmarks. Python is a TOOLING
             # dependency only: no `cargo build` or CI decision needs it.
-            pkgs.python3
+            toolPins.python
             # Debugging.
             pkgs.lldb
           ]

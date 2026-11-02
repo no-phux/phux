@@ -46,6 +46,9 @@ pub enum RunKind {
     Action,
     /// A config `[[hooks.*]]` entry or a plugin `[[events]]` hook.
     Hook,
+    /// A lifecycle line for a `[[startup]]` sidecar (start, restart,
+    /// give-up, stop, clean exit, cap skip). The text lives in [`RunRecord::note`].
+    Startup,
 }
 
 /// One recorded run.
@@ -74,6 +77,10 @@ pub struct RunRecord {
     pub stderr: String,
     /// Why the run never produced output (config, manifest, or spawn error).
     pub error: Option<String>,
+    /// Lifecycle text for a [`RunKind::Startup`] record. Absent on action
+    /// and hook records, and on logs written before startup sidecars existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl RunRecord {
@@ -150,7 +157,22 @@ impl RunRecord {
             stdout: String::new(),
             stderr: String::new(),
             error: None,
+            note: None,
         }
+    }
+
+    /// One sidecar lifecycle line. The ring stays a record of events; the
+    /// sidecar's own stdout and stderr live in its log file, not here.
+    #[must_use]
+    pub fn startup(plugin_id: &str, startup_id: &str, command: &[String], note: &str) -> Self {
+        let mut record = Self::empty(
+            RunKind::Startup,
+            Some(plugin_id.to_owned()),
+            startup_id.to_owned(),
+        );
+        record.command = command.to_vec();
+        record.note = Some(note.to_owned());
+        record
     }
 
     fn fill_output(

@@ -116,9 +116,9 @@ node_tools() {
     local version
     version="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
     if [[ "$version" =~ ^[0-9]+$ ]] && [[ "$version" -ge 24 ]]; then ok "Node $version"; else
-        fail 'Node 24+ (CI uses 24)' "$(env_remedy 'Install Node 24 LTS from https://nodejs.org or brew install node@24; put its bin directory on PATH')"
+        fail 'Node 24+ (CI uses 26)' "$(env_remedy 'Install Node 26 LTS from https://nodejs.org or brew install node@26; put its bin directory on PATH')"
     fi
-    need npm 'Install npm with Node 24; see docs/development.md'
+    need npm 'Install npm with Node 26; see docs/development.md'
 }
 
 desktop_tools() {
@@ -179,7 +179,7 @@ case "$scope" in
         rust_tools web
         node_tools
         need bun 'mise install; or: nix develop'
-        need wasm-pack "$(env_remedy 'cargo install --locked wasm-pack --version 0.15.0')"
+        need wasm-pack "$(env_remedy 'cargo install --locked wasm-pack --version 0.15.1')"
         need wasm-opt 'brew install binaryen; or sudo apt-get install -y binaryen; Nix: nix develop'
         bindgen="$(sed -n 's/^wasm-bindgen = "=\([^"]*\)"/\1/p' clients/phux-web/Cargo.toml)"
         if [[ -n "$bindgen" && "$(wasm-bindgen --version 2>/dev/null || true)" == "wasm-bindgen $bindgen" ]]; then

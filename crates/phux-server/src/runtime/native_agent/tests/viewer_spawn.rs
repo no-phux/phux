@@ -54,9 +54,9 @@ async fn viewer_native_spawn_cannot_acquire_input_authority() {
             }));
             let parent = fx
                 .state
-                .with(|s| s.terminal_from_wire(&spawned.parent).unwrap());
+                .with(|s| s.resource_from_wire(&spawned.parent).unwrap());
             fx.state.with_mut(|s| {
-                s.reap_terminal(parent);
+                s.reap_resource(parent);
             });
         })
         .await;

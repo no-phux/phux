@@ -12,7 +12,7 @@ impl ServerState {
                 panes.push(AttachSnapshotPane {
                     terminal_id: pid,
                     handle,
-                    wire_terminal_id: self.intern_terminal_wire(pid),
+                    wire_terminal_id: self.intern_resource_wire(pid),
                 });
             }
         }

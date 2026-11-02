@@ -1,8 +1,8 @@
 diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
-index a1b4f33..e518863 100644
+index fe96eb5..5d491e0 100644
 --- a/gpui-fast-macos/src/window.rs
 +++ b/gpui-fast-macos/src/window.rs
-@@ -1965,6 +1965,11 @@ impl PlatformWindow for MacWindow {
+@@ -1945,6 +1945,11 @@ impl PlatformWindow for MacWindow {
              };
              let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: ns_string(name)];
              let _: () = msg_send![native_window, setAppearance: appearance];
@@ -14,7 +14,7 @@ index a1b4f33..e518863 100644
              // Calling again restyles the installed material instead of stacking another.
              if let Some(glass) = existing {
                  let _: () = msg_send![glass, setCornerRadius: corner_radius.as_f32() as f64];
-@@ -2041,6 +2046,7 @@ impl PlatformWindow for MacWindow {
+@@ -2021,6 +2026,7 @@ impl PlatformWindow for MacWindow {
              let _: () = msg_send![native, release];
              NSView::removeFromSuperview(glass);
              let _: () = msg_send![native_window, setAppearance: nil];
@@ -23,10 +23,10 @@ index a1b4f33..e518863 100644
          // Restore what the recorded background appearance implies, blur included.
          self.set_background_appearance(self.background_appearance());
 diff --git a/gpui-fast/src/window.rs b/gpui-fast/src/window.rs
-index 52a5e8d..946fe95 100644
+index 0dd5904..6062721 100644
 --- a/gpui-fast/src/window.rs
 +++ b/gpui-fast/src/window.rs
-@@ -3177,6 +3177,8 @@ impl Window {
+@@ -3194,6 +3194,8 @@ impl Window {
      }
  
      /// Installs a native compositor glass surface, returning whether it is supported.

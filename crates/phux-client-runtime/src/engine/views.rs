@@ -2,7 +2,7 @@
 
 use super::{
     BoundedSelectionText, Command, EngineDocumentPoint, EngineError, EngineHandle, EngineOutcome,
-    Query, ReplicaInfo, ResourceId, Scroll, SearchMatch, SelectionGestureEvent,
+    Query, ReplicaInfo, ResourceId, Scroll, SearchMatch, SearchResults, SelectionGestureEvent,
     SelectionGestureResult, Sender, TextRegion, ViewPresentation,
 };
 use crate::ViewId;
@@ -157,10 +157,26 @@ impl EngineHandle {
         query: String,
         case_sensitive: bool,
     ) -> Result<Vec<SearchMatch>, EngineError> {
+        self.search_view_bounded(view, query, case_sensitive)
+            .map(|found| found.matches)
+    }
+
+    /// [`Self::search_view`] that also says whether a bound hid more matches.
+    pub fn search_view_bounded(
+        &self,
+        view: ViewId,
+        query: String,
+        case_sensitive: bool,
+    ) -> Result<SearchResults, EngineError> {
         self.request_view(view, move |id, reply| {
             Query::Search(id, query, case_sensitive, super::SEARCH_MATCH_LIMIT, reply)
         })?
-        .map(|found| found.matches)
+    }
+
+    /// Release this view's search handles without moving its viewport.
+    /// Endpoints its active selection uses stay valid.
+    pub fn clear_view_search(&self, view: ViewId) -> Result<(), EngineError> {
+        self.request_view(view, Query::ClearSearch)?
     }
 
     /// Apply a gesture whose handle and coordinates belong to this view.

@@ -44,7 +44,7 @@ you start another conversation. Mission state and Crew homes survive switches.
 | --- | --- |
 | `starter` | Workspace autosave/restore, agent launch integrations, usage hooks. |
 | `crew` | Starter plus a lead-agent home, ship/scout/pulse skills, fleet board and Crew palette entries. |
-| `herdr` | Compatibility name for the starter layer. |
+| `herdr` | `herdr` is the former name of phux's `starter` config layer, kept as an alias so existing configs keep loading. It is not [Herdr](https://herdr.dev), a separate project. |
 
 [Crew's guide](../distros/crew/README.md) covers launching a lead, choosing a
 harness, personal policy, recovery and the limits of unattended supervision.

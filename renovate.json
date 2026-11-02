@@ -28,12 +28,6 @@
       "matchManagers": ["mise"],
       "matchDepNames": ["rust", "zig"],
       "enabled": false
-    },
-    {
-      "matchManagers": ["npm", "bun"],
-      "matchPackageNames": ["typescript"],
-      "matchFileNames": ["integrations/opencode-v2/package.json"],
-      "allowedVersions": "/^6\\./"
     }
   ]
 }

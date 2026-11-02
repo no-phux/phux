@@ -380,4 +380,12 @@ if (( VIOLATIONS > 0 )); then
     phux_error "docs: $VIOLATIONS problem(s) in ${#FILES[@]} files"
     exit 1
 fi
+
+# The builder index is part of the full docs gate. The fixture tree used by
+# check-docs_test.sh has no docs/protocol.md, so it does not run this.
+if [[ -z "$ONLY" && -f "$ROOT/docs/protocol.md" ]]; then
+    bash "$ROOT/scripts/check-llms-txt.sh"
+    bash "$ROOT/scripts/check-llms-txt.sh" --self-test
+fi
+
 phux_ok "docs: ${#FILES[@]} files, no dead links or stale commands"

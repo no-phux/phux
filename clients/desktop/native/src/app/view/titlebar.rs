@@ -372,7 +372,7 @@ fn main_menu(desk: &Desk, look: &Look, cx: &mut Context<Desk>) -> AnyElement {
         "{session} on {}",
         match desk.remote.as_deref() {
             Some(host) => machine_name::display(host),
-            None => "this Mac".to_owned(),
+            None => crate::platform::this_machine().to_owned(),
         }
     );
     let muted = from_hex(&look.chrome.muted);

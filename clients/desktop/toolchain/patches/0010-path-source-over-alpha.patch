@@ -1,8 +1,8 @@
 diff --git a/gpui-fast-wgpu/src/wgpu_renderer.rs b/gpui-fast-wgpu/src/wgpu_renderer.rs
-index 0b00405..97fe84d 100644
+index 1734c9f..dcc2b5a 100644
 --- a/gpui-fast-wgpu/src/wgpu_renderer.rs
 +++ b/gpui-fast-wgpu/src/wgpu_renderer.rs
-@@ -19,6 +19,11 @@ use std::sync::Arc;
+@@ -20,6 +20,11 @@ use std::sync::Arc;
  
  const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
  
@@ -14,36 +14,16 @@ index 0b00405..97fe84d 100644
  /// A submission receipt, never a display-presentation receipt. Ids remain
  /// unique across windows and GPU recovery; exhaustion drops the receipt.
  fn report_submission(
-@@ -841,19 +846,6 @@ impl WgpuRendererCore {
-             &shader_module,
-         );
- 
--        let paths_blend = wgpu::BlendState {
--            color: wgpu::BlendComponent {
--                src_factor: wgpu::BlendFactor::One,
--                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
--                operation: wgpu::BlendOperation::Add,
--            },
--            alpha: wgpu::BlendComponent {
--                src_factor: wgpu::BlendFactor::One,
--                dst_factor: wgpu::BlendFactor::One,
--                operation: wgpu::BlendOperation::Add,
--            },
--        };
--
-         let paths = create_pipeline(
-             "paths",
-             "vs_path",
-@@ -864,7 +856,7 @@ impl WgpuRendererCore {
+@@ -859,7 +864,7 @@ impl WgpuRendererCore {
              wgpu::PrimitiveTopology::TriangleStrip,
              &[Some(wgpu::ColorTargetState {
                  format: surface_format,
--                blend: Some(paths_blend),
+-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
 +                blend: Some(PATHS_BLEND),
                  write_mask: wgpu::ColorWrites::ALL,
              })],
              1,
-@@ -2841,6 +2833,23 @@ mod tests {
+@@ -2836,6 +2841,23 @@ mod tests {
          assert!(receiver.recv().is_err());
      }
  
@@ -67,7 +47,7 @@ index 0b00405..97fe84d 100644
      #[cfg(not(target_family = "wasm"))]
      const CAPTURE_FORMATS: [wgpu::TextureFormat; 4] = [
          wgpu::TextureFormat::Rgba8Unorm,
-@@ -2885,10 +2894,42 @@ mod tests {
+@@ -2880,10 +2902,42 @@ mod tests {
      #[cfg(not(target_family = "wasm"))]
      #[test]
      fn translucent_capture_png_composites_without_double_darkening() -> anyhow::Result<()> {
@@ -75,8 +55,10 @@ index 0b00405..97fe84d 100644
 +        scene.insert_primitive(solid_quad(1.0, 1.0, 6.0, 4.0, gpui::red().alpha(0.5)));
 +        scene.insert_primitive(solid_quad(4.0, 1.0, 6.0, 4.0, gpui::blue().alpha(0.5)));
 +        scene.finish();
-+        for format in CAPTURE_FORMATS {
-+            for premultiplied in [false, true] {
+         for format in CAPTURE_FORMATS {
+             for premultiplied in [false, true] {
+-                assert_translucent_capture(format, premultiplied, 13)?;
+-                assert_translucent_capture(format, premultiplied, 17)?;
 +                assert_translucent_capture(&scene, format, premultiplied, 13)?;
 +                assert_translucent_capture(&scene, format, premultiplied, 17)?;
 +            }
@@ -103,16 +85,14 @@ index 0b00405..97fe84d 100644
 +        };
 +        scene.insert_primitive(path.scale(1.0));
 +        scene.finish();
-         for format in CAPTURE_FORMATS {
-             for premultiplied in [false, true] {
--                assert_translucent_capture(format, premultiplied, 13)?;
--                assert_translucent_capture(format, premultiplied, 17)?;
++        for format in CAPTURE_FORMATS {
++            for premultiplied in [false, true] {
 +                assert_translucent_capture(&scene, format, premultiplied, 13)?;
 +                assert_translucent_capture(&scene, format, premultiplied, 17)?;
              }
          }
          Ok(())
-@@ -2896,6 +2937,7 @@ mod tests {
+@@ -2891,6 +2945,7 @@ mod tests {
  
      #[cfg(not(target_family = "wasm"))]
      fn assert_translucent_capture(
@@ -120,7 +100,7 @@ index 0b00405..97fe84d 100644
          format: wgpu::TextureFormat,
          premultiplied: bool,
          width: i32,
-@@ -2913,11 +2955,7 @@ mod tests {
+@@ -2908,11 +2963,7 @@ mod tests {
              format,
              alpha_mode,
          );
@@ -133,7 +113,7 @@ index 0b00405..97fe84d 100644
          check_capture_gpu_errors(renderer.context.errors(), &mut generation)?;
  
          let mut png = std::io::Cursor::new(Vec::new());
-@@ -2925,7 +2963,26 @@ mod tests {
+@@ -2920,7 +2971,26 @@ mod tests {
          let image = image::load_from_memory(png.get_ref())?.into_rgba8();
          assert_eq!(image.dimensions(), (width as u32, 7));
          assert_straight_capture_pixels(&image, format.is_srgb());
@@ -161,7 +141,7 @@ index 0b00405..97fe84d 100644
          Ok(())
      }
  
-@@ -2943,8 +3000,7 @@ mod tests {
+@@ -2938,8 +3008,7 @@ mod tests {
      }
  
      #[cfg(not(target_family = "wasm"))]
@@ -171,7 +151,7 @@ index 0b00405..97fe84d 100644
          let red = if srgb {
              [255, 187, 187, 255]
          } else {
-@@ -2960,9 +3016,9 @@ mod tests {
+@@ -2955,9 +3024,9 @@ mod tests {
          } else {
              [127, 63, 191, 255]
          };

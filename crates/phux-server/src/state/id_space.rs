@@ -10,7 +10,7 @@
 //! All three are an [`IdBridge`] with one exhaustion rule: fail fast rather
 //! than alias (see [`crate::id_bridge`]), so ids run `1..=u32::MAX - 1`.
 //! Only `ResourceId::Local` is minted; satellite terminals never enter
-//! these tables, so [`Self::terminal_from_wire`] returns `None` for them.
+//! these tables, so [`Self::resource_from_wire`] returns `None` for them.
 
 use phux_core::ids::{ResourceId, SessionId};
 use phux_protocol::ids::{
@@ -131,25 +131,25 @@ impl IdSpace {
     /// # Panics
     ///
     /// If the space is exhausted.
-    pub(super) fn intern_terminal(&mut self, terminal: ResourceId) -> WireResourceId {
+    pub(super) fn intern_resource(&mut self, terminal: ResourceId) -> WireResourceId {
         self.terminals.intern(terminal)
     }
 
     /// Reverse lookup; `None` for satellite ids by design.
     #[must_use]
-    pub(super) fn terminal_from_wire(&self, wire: &WireResourceId) -> Option<ResourceId> {
+    pub(super) fn resource_from_wire(&self, wire: &WireResourceId) -> Option<ResourceId> {
         self.terminals.resolve(wire)
     }
 
     /// Forward lookup without allocating.
     #[must_use]
-    pub(super) fn terminal_wire(&self, terminal: ResourceId) -> Option<&WireResourceId> {
+    pub(super) fn resource_wire(&self, terminal: ResourceId) -> Option<&WireResourceId> {
         self.terminals.wire(terminal)
     }
 
     /// Bind a terminal mapping from an upgrade blob so the later intern is a
     /// no-op.
-    pub(super) fn bind_terminal(&mut self, terminal: ResourceId, wire: WireResourceId) {
+    pub(super) fn bind_resource(&mut self, terminal: ResourceId, wire: WireResourceId) {
         self.terminals.bind(terminal, wire);
     }
 
@@ -238,8 +238,8 @@ mod tests {
         let (_reg, _, terminals) = two_of_each();
         let mut space = IdSpace::new();
         space.set_next_terminal_wire(u32::MAX - 1);
-        let _ = space.intern_terminal(terminals[0]);
-        let _ = space.intern_terminal(terminals[1]);
+        let _ = space.intern_resource(terminals[0]);
+        let _ = space.intern_resource(terminals[1]);
     }
 
     // -- the ResourceId-is-an-enum invariant --------------------------
@@ -248,14 +248,14 @@ mod tests {
     fn terminal_from_wire_is_none_for_a_satellite_id() {
         let (_reg, _, terminals) = two_of_each();
         let mut space = IdSpace::new();
-        let wire = space.intern_terminal(terminals[0]);
+        let wire = space.intern_resource(terminals[0]);
         let raw = wire.local_id().expect("minted id is Local");
         let satellite = WireResourceId::satellite("peer", raw);
         assert!(
-            space.terminal_from_wire(&satellite).is_none(),
+            space.resource_from_wire(&satellite).is_none(),
             "satellite terminals are routed by federation and never interned"
         );
-        assert_eq!(space.terminal_from_wire(&wire), Some(terminals[0]));
+        assert_eq!(space.resource_from_wire(&wire), Some(terminals[0]));
     }
 
     // -- shape parity across the three spaces -------------------------
@@ -269,11 +269,11 @@ mod tests {
         assert_eq!(space.intern_window(sessions[0]), WireWindowId(1));
         assert_eq!(space.intern_window(sessions[1]), WireWindowId(2));
         assert_eq!(
-            space.intern_terminal(terminals[0]),
+            space.intern_resource(terminals[0]),
             WireResourceId::local(1)
         );
         assert_eq!(
-            space.intern_terminal(terminals[1]),
+            space.intern_resource(terminals[1]),
             WireResourceId::local(2)
         );
     }
@@ -292,11 +292,11 @@ mod tests {
         assert_eq!(space.intern_session(sessions[1]), WireSessionId(2));
         assert_eq!(space.intern_window(sessions[1]), WireWindowId(2));
 
-        let t0 = space.intern_terminal(terminals[0]);
+        let t0 = space.intern_resource(terminals[0]);
         assert_eq!(space.retire_terminal(terminals[0]), Some(t0.clone()));
-        assert!(space.terminal_from_wire(&t0).is_none());
+        assert!(space.resource_from_wire(&t0).is_none());
         assert_eq!(
-            space.intern_terminal(terminals[1]),
+            space.intern_resource(terminals[1]),
             WireResourceId::local(2)
         );
     }

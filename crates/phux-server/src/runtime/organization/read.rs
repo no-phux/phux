@@ -268,7 +268,7 @@ fn resource_record(s: &mut ServerState, id: phux_core::ids::ResourceId) -> Optio
     let live: Option<WireResourceId> = s
         .resource_handle(id)
         .is_some()
-        .then(|| s.intern_terminal_wire(id));
+        .then(|| s.intern_resource_wire(id));
     let activation = record
         .activation
         .as_ref()

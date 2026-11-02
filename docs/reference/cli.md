@@ -339,9 +339,15 @@ or why its record name is listed but not `%`-addressable (a name outside
 `[a-z][a-z0-9_-]`, a per-kind constant like `claude`, or one several panes
 share). JSON carries `address` and `address_refusal`.
 
-Usage: phux agent list [--json]
+Usage: phux agent list [FLAGS]
 
 Flags:
+      --state <STATE>  Lifecycle state to include; repeat to OR several. Omit
+                       for all states.
+                       [possible values: unknown, idle, working, blocked, done]
+      --query <TEXT>   Case-insensitive words matched across pane, session,
+                       agent, title and cwd. Every word must match; terminal
+                       contents are not searched.
       --json           Emit machine-readable JSON instead of the table.
   -h, --help           Print help
 
@@ -3791,9 +3797,10 @@ Global flags:
 ```text
 Manage plugin manifests in the config
 
-This is a client-local config operation: it validates `phux-plugin.toml`
-manifests and edits `[[plugins]]` entries in the user's config without
-contacting a running server.
+Validates `phux-plugin.toml` and edits `[[plugins]]` entries. `enable` and
+`disable` also ring the config-reload doorbell so a running server starts or
+stops that plugin's `[[startup]]` sidecars. The other subcommands only edit the
+file.
 
 Usage: phux plugin <SUBCOMMAND>
 
@@ -3957,14 +3964,23 @@ Every plugin action run (a TUI keybinding, `phux config run`, the MCP tool) and
 every server hook run appends one record to a bounded log in the state directory
 (`plugin-runs.jsonl`): the newest 100 runs, each with its exit status, duration,
 and the last 4 KiB of stdout and stderr. Failed runs show the tail of their
-output.
+output. Sidecar lifecycle lines (start, restart, give-up, stop) are in that same
+file. `--startup` prints the sidecar's own log file instead.
 
 Usage: phux plugin log [FLAGS]
 
 Flags:
   -n, --limit <NUM>    How many of the newest runs to show; 20 when omitted.
+                       With `--startup`, how many log lines to print; 200 when
+                       omitted.
       --failed         Show only runs that did not exit 0.
       --json           Emit a stable JSON document instead of human text.
+      --startup [ID]   Print a `[[startup]]` sidecar log instead of the run
+                       ring.
+
+                       Bare `--startup` prints every sidecar log. `--startup ID`
+                       selects one: a plugin id, a startup id, or
+                       `plugin-id/startup-id`.
   -h, --help           Print help
 
 Global flags:

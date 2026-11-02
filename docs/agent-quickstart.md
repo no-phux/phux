@@ -295,7 +295,7 @@ an attaching `phux new` refuse to attach back to that same server unless
 Put flags for `send-keys` and `run` before the target: words after it
 are keys or the command. `phux wait` accepts flags before or after the
 target; spell a bare `--tail` out (`--tail 80`) when the target follows
-it. `send-keys`, `paste`, `detach`, and `kill` support `--json`; `attach`
+it. `send-keys`, `paste`, `detach`, and `kill` take `--json`. `attach`
 does not. Input receipts acknowledge delivery, not execution. `phux ls`
 and `phux spawn` leave the server unstarted.
 `phux server --ensure` and `phux new` start one.

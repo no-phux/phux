@@ -189,6 +189,7 @@ mod tests {
             widgets: Vec::new(),
             sidebar: Vec::new(),
             themes: Vec::new(),
+            startup: Vec::new(),
         }
     }
 

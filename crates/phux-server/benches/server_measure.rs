@@ -18,7 +18,7 @@ use libghostty_vt::{
     Terminal as GhosttyTerminal,
     snapshot::{CaptureEvent, CaptureOptions},
 };
-use phux_server::grid::{SCROLLBACK_ALL, SnapshotSynthesizer};
+use phux_terminal::grid::{SCROLLBACK_ALL, SnapshotSynthesizer};
 
 use crate::support::{Corpus, deterministic_line};
 

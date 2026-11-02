@@ -2,7 +2,7 @@ use super::{InputError, TerminalInput, engine_error, input_ready, keys, queued};
 use crate::terminal::geometry::{self, Geometry, SurfacePoint};
 use gpui::{
     Bounds, Context, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, ScrollWheelEvent, TouchPhase, Window, px,
+    Point, ScrollEvent, TouchPhase, Window, px,
 };
 use phux_client_runtime::{
     Client,

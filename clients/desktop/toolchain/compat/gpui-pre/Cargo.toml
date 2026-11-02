@@ -2,7 +2,7 @@
 # version GPUI Kit pins, re-exporting the published gpui-fast crate.
 [package]
 name = "gpui-pre"
-version = "0.3.9"
+version = "0.3.10"
 description = "gpui-fast's `gpui` under the gpui-pre name GPUI Kit pins."
 license = "Apache-2.0"
 edition = "2024"
@@ -28,4 +28,4 @@ windows-manifest = ["gpui_fast/windows-manifest"]
 x11 = ["gpui_fast/x11"]
 
 [dependencies]
-gpui_fast = { package = "gpui-fast", version = "=0.1.9", default-features = false }
+gpui_fast = { package = "gpui-fast", version = "=0.1.12", default-features = false }

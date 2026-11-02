@@ -6,7 +6,7 @@ use phux_protocol::ResourceId;
 
 use super::{Target, goto_facts, rank_sections};
 use crate::app::desk::{self, Desk};
-use crate::connection::AgentInfo;
+use crate::connection::{AgentInfo, AgentState};
 
 /// One palette section: an optional heading and its rows.
 #[derive(Clone)]
@@ -135,9 +135,46 @@ pub(super) fn work_rows(desk: &Desk) -> Vec<Row> {
             if let Some((id, name)) = work.project {
                 row.keywords.push_str(&format!(" {id} {name}"));
             }
+            row.keywords.push(' ');
+            row.keywords.push_str(&work_pane_keywords(&work.panes));
             row
         })
         .collect()
+}
+
+/// Work rows aggregate panes across hosts. Bound this extra text before the
+/// prepared search index applies its own field budget; never copy whole CWDs
+/// or agent names from a large session into the palette.
+fn work_pane_keywords(panes: &[crate::app::fleet::WorkPane]) -> String {
+    panes
+        .iter()
+        .flat_map(|pane| {
+            let agent = pane.agent.as_ref();
+            [
+                Some(pane.label.as_str()),
+                pane.descriptor.cwd.as_deref(),
+                agent.map(|agent| agent.name.as_str()),
+                agent.and_then(|agent| agent.kind.as_deref()),
+                agent.map(AgentInfo::word),
+                agent.map(|agent| agent_state_keyword(agent.state)),
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .flat_map(|part| part.chars().chain(std::iter::once(' ')))
+        .take(super::goto_search::MAX_HAYSTACK_GRAPHEMES)
+        .collect()
+}
+
+/// Keep lifecycle words searchable alongside the badge's human wording.
+fn agent_state_keyword(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Unknown => "unknown",
+        AgentState::Idle => "idle",
+        AgentState::Working => "working",
+        AgentState::Blocked => "blocked",
+        AgentState::Done => "done",
+    }
 }
 
 /// The session switcher: sessions on every machine, this window's machine
@@ -288,7 +325,11 @@ pub(super) fn goto_sections(desk: &Desk) -> Vec<Section> {
         let agent = link.connection.agents.get(&pane.terminal_id);
         let title = desk.pane_title(Some(&pane.terminal_id));
         let directory = desk::short_path(pane.cwd.clone());
-        let detail = format!("{} · {directory}", pane.session_name);
+        let detail = format!(
+            "{} · {} · {directory}",
+            desk.remote.as_deref().unwrap_or("Local"),
+            pane.session_name
+        );
         let card_title = agent
             .map(|info| info.name.clone())
             .filter(|name| !name.is_empty())
@@ -306,7 +347,13 @@ pub(super) fn goto_sections(desk: &Desk) -> Vec<Section> {
                 .unwrap_or(title)
                 .into(),
             keywords: agent
-                .map(|info| format!("{detail} {}", info.word()))
+                .map(|info| {
+                    format!(
+                        "{detail} {} {}",
+                        info.word(),
+                        agent_state_keyword(info.state)
+                    )
+                })
                 .unwrap_or_else(|| detail.clone()),
             detail: Some(
                 (match agent.map(|info| info.word()) {

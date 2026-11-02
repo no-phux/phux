@@ -10,20 +10,16 @@
     reason = "private implementation modules re-export crate-scoped operations through this facade; pub would violate unreachable_pub"
 )]
 
-mod agent_state;
 mod commands;
-mod dispatch;
+pub(in crate::runtime) mod dispatch;
 mod frames;
-mod hello;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-mod history;
+pub(in crate::runtime) mod hello;
 mod lifecycle;
 mod metadata_mutation;
 mod metadata_read;
-mod metadata_subscriptions;
-mod plumbing;
+pub(in crate::runtime) mod metadata_subscriptions;
+pub(in crate::runtime) mod plumbing;
 mod session_create;
-mod terminal_streams;
 mod unsupported;
 mod writer;
 
@@ -31,7 +27,8 @@ pub mod pane_events;
 pub mod pane_exit;
 pub mod socket;
 
-pub(crate) use agent_state::spawn_agent_state_drain;
+pub(crate) use crate::runtime::apps::terminal::agent_state::spawn_agent_state_drain;
+pub(crate) use crate::runtime::apps::terminal::terminal_streams::abort_output_pumps;
 pub(super) use commands::{Route, route};
 #[cfg(test)]
 pub(super) use dispatch::handle_client;
@@ -42,10 +39,9 @@ pub(crate) use lifecycle::{
 pub(crate) use metadata_subscriptions::broadcast_event;
 pub(crate) use pane_events::{PaneEvents, ensure_event_pump, reap_pane_journaling_close};
 pub(super) use pane_exit::journal_pane_closed;
-pub(crate) use pane_exit::{broadcast_terminal_closed, spawn_terminal_exit_watcher};
+pub(crate) use pane_exit::{broadcast_resource_closed, spawn_resource_exit_watcher};
 pub(super) use session_create::detach_clients_of_killed_session;
 pub(crate) use socket::{handle_existing_socket, prepare_socket_dir, secure_socket_file};
-pub(crate) use terminal_streams::abort_output_pumps;
 
 #[cfg(all(test, feature = "native-engine", not(target_arch = "wasm32")))]
 #[allow(

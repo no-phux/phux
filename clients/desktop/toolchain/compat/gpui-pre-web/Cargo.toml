@@ -2,7 +2,7 @@
 # version GPUI Kit pins, re-exporting the published gpui-fast crate.
 [package]
 name = "gpui-pre-web"
-version = "0.3.9"
+version = "0.3.10"
 description = "gpui-fast's `gpui_web` under the gpui-pre name GPUI Kit pins."
 license = "Apache-2.0"
 edition = "2024"
@@ -18,4 +18,4 @@ default = ["gpui_fast/default"]
 multithreaded = ["gpui_fast/multithreaded"]
 
 [dependencies]
-gpui_fast = { package = "gpui-fast-web", version = "=0.1.9", default-features = false }
+gpui_fast = { package = "gpui-fast-web", version = "=0.1.12", default-features = false }

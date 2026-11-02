@@ -412,16 +412,7 @@ fn event_body_bytes(event: &AgentEvent) -> usize {
     16 + variable
 }
 
-/// The server's wall clock in Unix milliseconds, `0` if it reads before the
-/// epoch.
-#[must_use]
-pub(crate) fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
+pub(crate) use phux_resource::now_unix_ms;
 
 #[cfg(test)]
 mod tests {

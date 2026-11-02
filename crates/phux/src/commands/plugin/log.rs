@@ -13,7 +13,15 @@ const DEFAULT_LIMIT: usize = 20;
 /// Captured-output lines shown under a failed run in text mode.
 const FAILURE_TAIL_LINES: usize = 5;
 
-pub(super) fn run_log(limit: Option<u32>, failed: bool, json: bool) -> ExitCode {
+pub(super) fn run_log(
+    limit: Option<u32>,
+    failed: bool,
+    json: bool,
+    startup: Option<&str>,
+) -> ExitCode {
+    if let Some(id) = startup {
+        return run_startup_log(id, limit, json);
+    }
     let path = run_log::default_path();
     let records = match run_log::read(&path) {
         Ok(records) => records,
@@ -55,6 +63,16 @@ fn select(records: Vec<RunRecord>, limit: usize, failed: bool) -> Vec<RunRecord>
 }
 
 fn print_run(run: &RunRecord) {
+    if run.kind == RunKind::Startup {
+        outln!(
+            "{}  {:<6}  {}  {}",
+            timestamp(run.at_unix_ms),
+            kind_label(run.kind),
+            display_name(run),
+            run.note.as_deref().unwrap_or(""),
+        );
+        return;
+    }
     outln!(
         "{}  {:<6}  {}  {}  {}ms",
         timestamp(run.at_unix_ms),
@@ -85,13 +103,14 @@ const fn kind_label(kind: RunKind) -> &'static str {
     match kind {
         RunKind::Action => "action",
         RunKind::Hook => "hook",
+        RunKind::Startup => "startup",
     }
 }
 
 /// `plugin/action` for an action; the hook label for a hook.
 fn display_name(run: &RunRecord) -> String {
     match (run.kind, &run.plugin_id) {
-        (RunKind::Action, Some(plugin)) => format!("{plugin}/{}", run.name),
+        (RunKind::Action | RunKind::Startup, Some(plugin)) => format!("{plugin}/{}", run.name),
         _ => run.name.clone(),
     }
 }
@@ -123,6 +142,99 @@ fn failure_detail(run: &RunRecord) -> Vec<String> {
         .collect()
 }
 
+fn run_startup_log(id: &str, limit: Option<u32>, json: bool) -> ExitCode {
+    let state = phux_config::instance::state_dir();
+    let logs = match phux_plugin::startup_log::list_logs(&state) {
+        Ok(logs) => logs,
+        Err(err) => {
+            return super::fail(
+                json,
+                &format!(
+                    "could not read startup logs under {}: {err}",
+                    state.display()
+                ),
+            );
+        }
+    };
+    let selected = select_startup(&logs, id);
+    if selected.is_empty() {
+        if id.is_empty() {
+            if json {
+                return crate::output::json(&serde_json::json!({
+                    "schema_version": 1,
+                    "logs": [],
+                }));
+            }
+            outln!("No startup logs.");
+            return ExitCode::SUCCESS;
+        }
+        return super::fail(json, &format!("no startup log matches {id:?}"));
+    }
+    let lines = limit.map_or(200, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let mut rendered = Vec::new();
+    for log in selected {
+        let tail = match phux_plugin::startup_log::tail(&log.path, lines) {
+            Ok(tail) => tail,
+            Err(err) => {
+                return super::fail(
+                    json,
+                    &format!("could not read {}: {err}", log.path.display()),
+                );
+            }
+        };
+        rendered.push((log, tail));
+    }
+    if json {
+        let logs = rendered
+            .iter()
+            .map(|(log, tail)| {
+                serde_json::json!({
+                    "plugin_id": log.plugin_id,
+                    "startup_id": log.startup_id,
+                    "path": log.path,
+                    "tail": tail,
+                })
+            })
+            .collect::<Vec<_>>();
+        return crate::output::json(&serde_json::json!({
+            "schema_version": 1,
+            "logs": logs,
+        }));
+    }
+    for (log, tail) in &rendered {
+        outln!(
+            "== {}/{} {}",
+            log.plugin_id,
+            log.startup_id,
+            log.path.display()
+        );
+        if tail.is_empty() {
+            outln!("(empty)");
+        } else {
+            outln!("{tail}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn select_startup<'a>(
+    logs: &'a [phux_plugin::startup_log::StartupLog],
+    id: &str,
+) -> Vec<&'a phux_plugin::startup_log::StartupLog> {
+    if id.is_empty() {
+        return logs.iter().collect();
+    }
+    if let Some((plugin, startup)) = id.split_once('/') {
+        return logs
+            .iter()
+            .filter(|log| log.plugin_id == plugin && log.startup_id == startup)
+            .collect();
+    }
+    logs.iter()
+        .filter(|log| log.plugin_id == id || log.startup_id == id)
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
@@ -141,6 +253,7 @@ mod tests {
             stdout: "out\n".to_owned(),
             stderr: String::new(),
             error: None,
+            note: None,
         }
     }
 

@@ -1,0 +1,256 @@
+//! Updates on screen: a corner card that never takes the keyboard, the
+//! status-line pill that reopens it, and the section in settings.
+
+use rune::{Color, El, Transition, col, el, row, text};
+
+use super::settings::{section, toggle};
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, pressable};
+use crate::desk::Desk;
+use crate::desk::updates::{Action, Updater, Work};
+use crate::updates::VERSION;
+
+const CARD_W: f32 = 320.0;
+
+fn act_button(action: Action, key: &'static str, ink: &Ink) -> El {
+    el().key(key)
+        .px(12.0)
+        .py(6.0)
+        .radius(6.0)
+        .fill(ink.accent)
+        .cursor(rune::Cursor::Pointer)
+        .on_press_tx(|d: &mut Desk, tx| d.update_act(tx))
+        .child(text(action.label()).font(CAPTION).color(ink.on_accent))
+}
+
+fn quiet_button(label: &'static str, key: &'static str, press: fn(&mut Desk), ink: &Ink) -> El {
+    pressable(key, ink)
+        .px(12.0)
+        .py(6.0)
+        .radius(6.0)
+        .border(1.0, ink.separator)
+        .on_press(press)
+        .child(text(label).font(CAPTION).color(ink.text))
+}
+
+/// Real transfer progress only; verifying has no percentage to show.
+fn progress(percent: u8, width: f32, ink: &Ink) -> El {
+    el().w(width).h(3.0).radius(1.5).fill(ink.separator).child(
+        el().w(width * f32::from(percent) / 100.0)
+            .h(3.0)
+            .radius(1.5)
+            .fill(ink.accent),
+    )
+}
+
+fn headline(updater: &Updater) -> String {
+    let incoming = updater.staged.as_ref().or(updater
+        .release
+        .as_ref()
+        .filter(|_| updater.app_due())
+        .map(|release| &release.version));
+    match (updater.work, updater.action(), incoming) {
+        (Work::Downloading(percent), ..) => format!("Downloading… {percent}%"),
+        (Work::Verifying, ..) => "Verifying…".to_owned(),
+        (Work::Server, ..) => "Updating phux and handing the server off…".to_owned(),
+        (Work::Checking, ..) => "Checking…".to_owned(),
+        (_, Some(Action::UpdateServer { .. }), _) => "A phux update is ready".to_owned(),
+        // Never "up to date" over an error: the lines below say what failed.
+        (_, None, _) if updater.message.is_some() => "Couldn't check for updates".to_owned(),
+        (_, _, Some(version)) if updater.staged.is_some() => {
+            format!("Phux Rune {version} installs on restart")
+        }
+        (_, _, Some(version)) => format!("Phux Rune {version} is available"),
+        _ if updater.release.is_some() => "You're up to date".to_owned(),
+        _ => "Not checked yet".to_owned(),
+    }
+}
+
+/// What the update means for the sessions and the server. The window's own
+/// machine may be `remote`, and phux here is always this computer's.
+fn detail(updater: &Updater, remote: Option<&str>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(machine) = remote.filter(|_| updater.phux_due()) {
+        lines.push(format!(
+            "This updates phux on this computer, not on {machine}."
+        ));
+    }
+    if let Some(cli) = updater.cli.as_ref().filter(|cli| cli.available) {
+        lines.push(match &cli.native_command {
+            Some(command) if !cli.mutable => {
+                format!("phux {} is out. Update it with: {command}", cli.target)
+            }
+            _ => format!("phux {} → {}", cli.current, cli.target),
+        });
+    }
+    if let Some((now, incoming)) = updater.protocol_warning() {
+        lines.push(format!(
+            "This changes the protocol from {now} to {incoming}; the server needs updating too."
+        ));
+    }
+    lines.extend(updater.message.clone());
+    lines
+}
+
+fn lines(desk: &Desk, ink: &Ink) -> El {
+    let remote = desk.machines.current.as_deref();
+    let mut list = col().w_full().gap(2.0);
+    for line in detail(&desk.updater, remote) {
+        list = list.child(text(line).font(CAPTION).color(ink.dim).wrap());
+    }
+    list
+}
+
+pub fn card(desk: &Desk, ink: &Ink, top: f32) -> Option<El> {
+    let updater = &desk.updater;
+    if !updater.card_open() {
+        return None;
+    }
+    let inner = CARD_W - 28.0;
+    let percent = match updater.work {
+        Work::Downloading(percent) => Some(percent),
+        _ => None,
+    };
+    let body = col()
+        .key("update-card")
+        .w(CARD_W)
+        .padding(14.0)
+        .gap(8.0)
+        .radius(12.0)
+        .fill(ink.raised)
+        .border(1.0, ink.separator)
+        .shadow(10.0, 32.0, Color::BLACK.alpha(0.35))
+        .transition(Transition::opacity())
+        .child(
+            row()
+                .w_full()
+                .gap(8.0)
+                .child(
+                    text(headline(updater))
+                        .font(LABEL_STRONG)
+                        .color(ink.text)
+                        .wrap()
+                        .grow(1.0),
+                )
+                .child(
+                    el().key("update-dismiss")
+                        .cursor(rune::Cursor::Pointer)
+                        .on_press(|d: &mut Desk| d.updater.dismiss())
+                        .child(text("✕").font(CAPTION).color(ink.dim)),
+                ),
+        )
+        .child(lines(desk, ink))
+        .children(percent.map(|percent| progress(percent, inner, ink)))
+        .children(
+            updater
+                .action()
+                .map(|action| row().child(act_button(action, "update-act", ink))),
+        );
+    Some(
+        row()
+            .key("update-corner")
+            .absolute(0.0, top + 8.0)
+            .w_full()
+            .pr(14.0)
+            .justify_end()
+            .child(body),
+    )
+}
+
+/// Reopens a closed card, so closing it never loses the update.
+pub fn pill(desk: &Desk, ink: &Ink) -> Option<El> {
+    let updater = &desk.updater;
+    let due = updater.action().is_some() || !matches!(updater.work, Work::Idle | Work::Checking);
+    (due && !updater.card_open()).then(|| {
+        el().key("update-pill")
+            .cursor(rune::Cursor::Pointer)
+            .on_press(|d: &mut Desk| d.updater.reopen())
+            .child(text("Update ready").font(CAPTION).color(ink.accent))
+    })
+}
+
+pub fn settings(desk: &Desk, ink: &Ink) -> El {
+    let updater = &desk.updater;
+    let mut buttons = row().gap(8.0);
+    if let Some(action) = updater.action() {
+        buttons = buttons.child(act_button(action, "update-act-settings", ink));
+    }
+    if !updater.busy() {
+        buttons = buttons.child(quiet_button(
+            "Check now",
+            "update-check",
+            |d| d.updater.check_now(),
+            ink,
+        ));
+    }
+    let copy_label = if updater.copied {
+        "Copied"
+    } else {
+        "Copy diagnostics"
+    };
+    let diagnostics = pressable("copy-diagnostics", ink)
+        .px(12.0)
+        .py(6.0)
+        .radius(6.0)
+        .border(1.0, ink.separator)
+        .on_press_tx(|d: &mut Desk, tx| d.copy_diagnostics(tx))
+        .child(text(copy_label).font(CAPTION).color(ink.text));
+    let installed = updater
+        .cli
+        .as_ref()
+        .map_or(String::new(), |cli| format!(" · phux {}", cli.current));
+    let mut section = col()
+        .w_full()
+        .gap(8.0)
+        .child(section("Updates", ink))
+        .child(
+            col()
+                .w_full()
+                .gap(1.0)
+                .child(text(headline(updater)).font(LABEL).color(ink.text))
+                .child(
+                    text(format!("Phux Rune {VERSION}{installed}"))
+                        .font(CAPTION)
+                        .color(ink.dim),
+                ),
+        )
+        .child(lines(desk, ink));
+    if let Work::Downloading(percent) = updater.work {
+        section = section.child(progress(percent, 524.0, ink));
+    }
+    if let Err(reason) = updater.install {
+        return section
+            .child(text(reason).font(CAPTION).color(ink.dim))
+            .child(row().child(diagnostics));
+    }
+    section = section.child(buttons.child(diagnostics)).child(toggle(
+        "set-update-auto",
+        "Check automatically",
+        "At launch and every six hours. Nothing installs without a click.",
+        updater.automatic,
+        Desk::toggle_update_automatic,
+        ink,
+    ));
+    if updater.can_manage_phux() {
+        section = section.child(toggle(
+            "set-update-phux",
+            "Update phux with Phux Rune",
+            "Installs the CLI and hands the live server off; sessions keep running.",
+            updater.manage_phux,
+            Desk::toggle_update_phux,
+            ink,
+        ));
+    }
+    section
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::launch::Resolved;
+
+    #[test]
+    fn nothing_extra_is_said_with_no_server_update_due() {
+        let desk = Desk::new(&Resolved::offline("not launched"));
+        assert!(detail(&desk.updater, Some("mini")).is_empty());
+    }
+}

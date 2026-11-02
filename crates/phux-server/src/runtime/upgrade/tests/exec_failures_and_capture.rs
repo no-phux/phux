@@ -4,6 +4,7 @@ use super::super::handoff::*;
 use super::super::*;
 use super::support::*;
 use crate::state::request_agent_session_cut;
+use phux_resource::agent_session::AgentSessionResource as _;
 
 #[tokio::test(flavor = "current_thread")]
 async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {
@@ -95,7 +96,9 @@ async fn upgrade_carries_agent_sessions_with_their_id_and_log_tail() {
             let blob = StateBlob::from_bytes(&blob.to_bytes().unwrap()).unwrap();
             let resumed = SharedState::new();
             let watchers = resumed
-                .with_mut(|s| s.rebuild_from_blob(&blob, |_, _| ()))
+                .with_mut(|s| {
+                    s.rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
+                })
                 .expect("rebuild")
                 .exit_watchers;
             assert_eq!(
@@ -105,9 +108,9 @@ async fn upgrade_carries_agent_sessions_with_their_id_and_log_tail() {
             );
 
             let (session, handle, parent) = resumed.with(|s| {
-                let session = s.terminal_from_wire(&agent_wire).expect("same `@N`");
+                let session = s.resource_from_wire(&agent_wire).expect("same `@N`");
                 let handle = s.resource_handle(session).expect("engine").clone();
-                let parent = s.terminal_from_wire(&pane_wire).expect("pane");
+                let parent = s.resource_from_wire(&pane_wire).expect("pane");
                 (session, handle, parent)
             });
             assert_eq!(handle.parent, Some(parent), "rebound to its rebuilt pane");

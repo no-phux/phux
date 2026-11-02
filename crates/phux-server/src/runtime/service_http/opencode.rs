@@ -73,7 +73,7 @@ impl std::fmt::Debug for Token {
 #[derive(Debug, Clone)]
 pub(super) struct Credentials {
     pub(super) origin: Origin,
-    pub(super) token: Token,
+    pub(in crate::runtime) token: Token,
     pub(super) host: HeaderValue,
     pub(super) authorization: HeaderValue,
 }

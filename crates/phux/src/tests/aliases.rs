@@ -127,6 +127,7 @@ fn plugin_log_parses_flags_and_documents_the_run_log() {
                 limit: None,
                 failed: false,
                 json: false,
+                startup: None,
             }
         })
     ));
@@ -143,6 +144,7 @@ fn plugin_log_parses_flags_and_documents_the_run_log() {
                     limit: Some(5),
                     failed: true,
                     json: true,
+                    startup: None,
                 }
             })
         ));
@@ -161,7 +163,14 @@ fn plugin_log_parses_flags_and_documents_the_run_log() {
         .expect("plugin log verb");
     let page =
         crate::render_help_page(log, true, usage::help::Style::PLAIN).expect("plugin log help");
-    for needle in ["plugin-runs.jsonl", "--failed", "--limit", "--json", "hook"] {
+    for needle in [
+        "plugin-runs.jsonl",
+        "--failed",
+        "--limit",
+        "--json",
+        "hook",
+        "--startup",
+    ] {
         assert!(page.contains(needle), "{needle} missing from:\n{page}");
     }
 }

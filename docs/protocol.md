@@ -185,7 +185,7 @@ generate escape sequences.
 
 The canonical server terminal answers each child query once. Replica
 emulator replies are not another source of PTY input. `INPUT_TERMINAL_REPLY`
-remains for compatibility but the server [discards it](../crates/phux-server/src/runtime/commands/terminal_input.rs).
+remains for compatibility but the server [discards it](../crates/phux-server/src/runtime/apps/terminal/commands/terminal_input.rs).
 New clients suppress replica replies; never resend them as paste or raw input.
 [Engine tests](../crates/phux-client-core/src/engine/ghostty/tests/synthesized.rs)
 pin this single reply.
@@ -212,7 +212,7 @@ execute it again. Legacy `INPUT_*`/`ROUTE_INPUT` are ordered and bounded by
 connected backpressure, not reconnect receipts. Do not fragment one logical
 command into fire-and-forget paste events. See the shared
 [dedupe store](../crates/phux-server/src/runtime/operation_dedupe.rs),
-[acknowledged lane](../crates/phux-server/src/runtime/input_lane/acknowledged.rs)
+[acknowledged lane](../crates/phux-server/src/runtime/apps/terminal/input_lane/acknowledged.rs)
 and [incarnation recovery tests](../crates/phux-client-runtime/tests/it/control_plane/recovery.rs).
 
 Events are bounded in-memory wakeups over level state. On a journal gap,
@@ -298,19 +298,7 @@ bit before sending; older requests/filters are unchanged. CLI/MCP expose this
 through the existing resource inspection noun; its durable-key JSON document
 is schema 2, while live-engine inspection remains schema 1.
 
-### File transfer
-
-`PUT_FILE` is a principal-fenced sandboxed upload; `GET_FILE` is a host read
-with the serving Unix user's filesystem reach, not a sandbox. The complete
-[transfer contract](./protocol/host-operations.md#file-transfer) owns integrity,
-retention, grants, chunk limits and satellite routing.
-
-### Checkout methods
-
-`CHECKOUT` resolves the checkout from a Terminal's live cwd and requires
-`INPUT` there. Its reach is the whole checkout, not just the cwd subtree.
-The complete [checkout contract](./protocol/host-operations.md#checkout-methods)
-owns path restrictions, deadlines, bounded JSON and refusal semantics.
+[File transfer and checkout methods](./protocol-files.md) have their own page.
 
 ## Minimal client
 

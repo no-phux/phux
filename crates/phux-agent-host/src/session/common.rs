@@ -196,8 +196,11 @@ pub(super) fn summarize_args(args: &Value) -> String {
             return line(text, 512);
         }
     }
+    // Match the stable summary even when the SDK enables preserve_order.
+    let mut fields: Vec<_> = args.iter().collect();
+    fields.sort_unstable_by_key(|(key, _)| *key);
     let mut pairs = String::new();
-    for (key, value) in args {
+    for (key, value) in fields {
         if matches!(
             key.as_str(),
             "content"

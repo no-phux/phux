@@ -1,5 +1,5 @@
 diff --git a/gpui-fast-windows/src/directx_renderer.rs b/gpui-fast-windows/src/directx_renderer.rs
-index 6a414fc..d85ce54 100644
+index b2945ac..b2c1def 100644
 --- a/gpui-fast-windows/src/directx_renderer.rs
 +++ b/gpui-fast-windows/src/directx_renderer.rs
 @@ -1,5 +1,7 @@
@@ -34,7 +34,7 @@ index 6a414fc..d85ce54 100644
          self.present_status()
              .ok()
              .context("Presenting swap chain failed")
-@@ -435,6 +440,7 @@ impl DirectXRenderer {
+@@ -438,6 +443,7 @@ impl DirectXRenderer {
      }
  
      fn handle_device_lost_impl(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
@@ -42,7 +42,7 @@ index 6a414fc..d85ce54 100644
          crate::fast::layers::release_tiles(self);
          crate::fast::composition::release(self);
          let disable_direct_composition = self.direct_composition.is_none();
-@@ -517,15 +523,37 @@ impl DirectXRenderer {
+@@ -520,15 +526,37 @@ impl DirectXRenderer {
          &mut self,
          scene: &Scene,
          background_appearance: WindowBackgroundAppearance,
@@ -82,7 +82,7 @@ index 6a414fc..d85ce54 100644
      }
  
      /// Clear the render target for `background_appearance` and encode every
-@@ -700,6 +728,7 @@ impl DirectXRenderer {
+@@ -703,6 +731,7 @@ impl DirectXRenderer {
          if self.width == width && self.height == height {
              return Ok(());
          }
@@ -90,7 +90,7 @@ index 6a414fc..d85ce54 100644
          self.width = width;
          self.height = height;
          crate::fast::layers::release_tiles(self);
-@@ -1497,6 +1526,7 @@ pub(crate) struct PathSprite {
+@@ -1500,6 +1529,7 @@ pub(crate) struct PathSprite {
  
  impl Drop for DirectXRenderer {
      fn drop(&mut self) {
@@ -403,10 +403,10 @@ index 0000000..399b30e
 +    }
 +}
 diff --git a/gpui-fast-windows/src/window.rs b/gpui-fast-windows/src/window.rs
-index 87b6d8c..ab50e9f 100644
+index 4e5ab9b..f9fa88f 100644
 --- a/gpui-fast-windows/src/window.rs
 +++ b/gpui-fast-windows/src/window.rs
-@@ -632,6 +632,24 @@ impl Drop for WindowsWindow {
+@@ -636,6 +636,24 @@ impl Drop for WindowsWindow {
      }
  }
  
@@ -431,7 +431,7 @@ index 87b6d8c..ab50e9f 100644
  impl PlatformWindow for WindowsWindow {
      fn bounds(&self) -> Bounds<Pixels> {
          self.state.bounds()
-@@ -1039,23 +1057,7 @@ impl PlatformWindow for WindowsWindow {
+@@ -1051,23 +1069,7 @@ impl PlatformWindow for WindowsWindow {
      }
  
      fn native_visibility(&self) -> NativeVisibility {
@@ -456,7 +456,7 @@ index 87b6d8c..ab50e9f 100644
      }
  
      fn draw_for_presentation(
-@@ -1063,10 +1065,14 @@ impl PlatformWindow for WindowsWindow {
+@@ -1075,10 +1077,14 @@ impl PlatformWindow for WindowsWindow {
          scene: &Scene,
          on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
      ) -> Option<u64> {
@@ -464,15 +464,15 @@ index 87b6d8c..ab50e9f 100644
 +            executor: self.executor.clone(),
 +            callback,
 +        });
-         self.state
+         let submitted = self.state
              .renderer
              .borrow_mut()
 -            .draw_for_presentation(scene, self.state.background_appearance.get(), on_presented)
 +            .draw_for_presentation(scene, self.state.background_appearance.get(), observer)
              .log_err()
-             .flatten()
-     }
-@@ -1097,7 +1103,6 @@ impl PlatformWindow for WindowsWindow {
+             .flatten();
+         crate::fast::frame_schedule::schedule_frame(self);
+@@ -1112,7 +1118,6 @@ impl PlatformWindow for WindowsWindow {
      fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
          self.state.renderer.borrow().sprite_atlas()
      }

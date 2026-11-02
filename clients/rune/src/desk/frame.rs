@@ -51,6 +51,21 @@ impl Desk {
         self.blink_on = true;
     }
 
+    /// A pane's grid area in points, from its last layout.
+    pub fn pane_area(&self, terminal: &ResourceId) -> Option<[f32; 2]> {
+        self.areas.get(terminal).copied()
+    }
+
+    /// Output that arrived below a pane scrolled into history.
+    pub fn unread_rows(&self, terminal: &ResourceId) -> u64 {
+        let info = self
+            .client
+            .as_ref()
+            .and_then(|c| c.engine().zip(self.view_of(terminal)))
+            .and_then(|(engine, view)| engine.view_replica_info(view).ok());
+        info.and_then(|i| i.history).map_or(0, |h| h.unread_rows)
+    }
+
     /// A pane's grid area moved or resized.
     pub fn laid_out(&mut self, terminal: ResourceId, area: [f32; 2]) {
         self.areas.insert(terminal, area);
