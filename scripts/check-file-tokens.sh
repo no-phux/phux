@@ -7,13 +7,29 @@
 # or `linguist-vendored=true`) to exempt them; files whose header says
 # "@generated", "Code generated", or "DO NOT EDIT" are exempt automatically.
 #
-# A merge may carry an oversized blob unchanged at the same path from either
-# parent. New content, including manual resolutions and automatic combinations,
-# must meet the limit; ordinary commits keep the same ratchet.
+# The limit is a ratchet on growth. An oversized file that already existed may
+# change as long as it does not get bigger, under its old path or after a
+# rename, so a link fix or a module move is not an unplanned split. A new
+# oversized file, or any growth of one, fails. A merge may also carry an
+# oversized blob unchanged at the same path from either parent. New content,
+# including manual resolutions and automatic combinations, must meet the limit.
+#
+# `--base <commit>` checks HEAD against that commit instead of the index, which
+# is how CI enforces this on a pull request whose hooks never ran.
 set -euo pipefail
 
 max_tokens=5000
 max_bytes=$((max_tokens * 4))
+
+base=HEAD
+if [[ "${1:-}" == --base ]]; then
+    base="${2:?--base needs a commit}"
+    GIT_INDEX_FILE="$(mktemp "${TMPDIR:-/tmp}/check-file-tokens.XXXXXX")"
+    export GIT_INDEX_FILE
+    trap 'rm -f -- "$GIT_INDEX_FILE"' EXIT
+    rm -f -- "$GIT_INDEX_FILE"
+    git read-tree HEAD
+fi
 
 # MERGE_HEAD contains full commit object IDs, not refs or abbreviated IDs.
 is_commit_oid() {
@@ -84,10 +100,51 @@ inherited_from_a_parent() {
     return 1
 }
 
+# Renames in the staged change, as parallel source and destination lists.
+rename_sources=()
+rename_destinations=()
+load_renames() {
+    local _status source destination
+    while IFS= read -r -d '' _status && IFS= read -r -d '' source &&
+        IFS= read -r -d '' destination; do
+        rename_sources+=("$source")
+        rename_destinations+=("$destination")
+    done < <(git diff --cached --name-status -M --diff-filter=R -z "$base")
+}
+
+# The path this file had at the base, following a rename; empty when it is new.
+base_path() {
+    local i
+    if git cat-file -e "$base:$1" 2>/dev/null; then
+        printf '%s' "$1"
+        return
+    fi
+    for i in "${!rename_destinations[@]}"; do
+        if [[ "${rename_destinations[$i]}" == "$1" ]]; then
+            printf '%s' "${rename_sources[$i]}"
+            return
+        fi
+    done
+}
+
+did_not_grow() {
+    local path="$1" bytes="$2" previous
+    previous="$(base_path "$path")"
+    [[ -n "$previous" ]] || return 1
+    ((bytes <= $(git cat-file -s "$base:$previous")))
+}
+
 is_exempt() {
     is_lockfile "$1" || has_exempt_attribute "$1" || has_generated_header "$1" ||
         inherited_from_a_parent "$1"
 }
+
+if git rev-parse --verify --quiet "$base" >/dev/null; then
+    load_renames
+else
+    # A repository's first commit has nothing to compare against.
+    base="$(git hash-object -t tree /dev/null)"
+fi
 
 oversized=()
 while IFS=$'\t' read -r -d '' added _deleted path; do
@@ -95,14 +152,15 @@ while IFS=$'\t' read -r -d '' added _deleted path; do
     [[ "$added" == "-" ]] && continue
     bytes=$(git cat-file -s ":$path")
     ((bytes > max_bytes)) || continue
+    did_not_grow "$path" "$bytes" && continue
     is_exempt "$path" && continue
     oversized+=("$(printf '  %s  ~%d tokens (%d bytes)' "$path" $((bytes / 4)) "$bytes")")
-done < <(git diff --cached --numstat --no-renames -z --diff-filter=ACMR)
+done < <(git diff --cached --numstat --no-renames -z --diff-filter=ACMR "$base")
 
 ((${#oversized[@]} == 0)) && exit 0
 
 cat >&2 <<EOF
-pre-commit: ${#oversized[@]} staged file(s) exceed the ${max_tokens}-token limit (tokens = bytes/4, so ${max_bytes} bytes):
+pre-commit: ${#oversized[@]} staged file(s) are new or grew past the ${max_tokens}-token limit (tokens = bytes/4, so ${max_bytes} bytes):
 $(printf '%s\n' "${oversized[@]}")
 
 Split each file listed above before committing:
