@@ -310,7 +310,10 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
 /// pane out of the live server under a single lock.
 fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, UpgradeError> {
     state
-        .with(|s| {
+        .with_mut(|s| {
+            // Wire ids are interned on first read, and the blob carries only
+            // what has one.
+            s.intern_upgrade_wires();
             s.upgrade_context()
                 .map(|(listener_fd, path, flags)| UpgradeContext {
                     listener_fd,
@@ -376,7 +379,10 @@ fn reassemble_unchanged_tree(
     handoffs: &UpgradeHandoffs,
 ) -> Result<StateBlob, UpgradeError> {
     state
-        .with(|s| {
+        .with_mut(|s| {
+            // Without this, anything new since the capture would be missing
+            // from both blobs and look unchanged.
+            s.intern_upgrade_wires();
             let current = s.assemble_upgrade_blob(listener_fd, &UpgradeHandoffs::default());
             (current == *tree_identity)
                 .then(|| s.with_upgrade_metadata(s.assemble_upgrade_blob(inherited_fd, handoffs)))
