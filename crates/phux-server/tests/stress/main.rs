@@ -8,7 +8,6 @@
 )]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
-mod perf_bursty_output;
 mod stress_churn;
 mod stress_output_extremes;
 mod stress_resize;

@@ -2,11 +2,10 @@
 //! prompt machine, signal-aware exit, and `cwd_changed` events. Children block
 //! on `read` until the test presses Enter, so nothing races the spawn reply.
 
-use phux_terminal::actor::TerminalResource as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use phux_core::process::{ExitOutcome, PromptState, TerminalProcessState};
+use phux_core::process::{PromptState, TerminalProcessState};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::{
@@ -17,13 +16,11 @@ use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, ServerHandles, Spawn, command, recv_until, recv_until_deadline,
     run_local, send_frame, spawn_resource, spawn_server, wait_for_socket,
 };
-use phux_terminal::actor::{ProcessFacetRequest, TerminalActor};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-use super::common::{named_key, sh};
+use super::common::named_key;
 
 /// Hang guard only.
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -226,41 +223,6 @@ fn exits_are_reported_on_resource_closed_and_reap_the_facet() {
             CommandResult::Error { code, .. } => assert_eq!(code, ErrorCode::TerminalNotFound),
             other => panic!("expected TERMINAL_NOT_FOUND after the reap, got {other:?}"),
         }
-    });
-}
-
-/// The actor-level exit facet (the only way to read it for a non-retained
-/// pane): the engine outcome and the facet both name the signal.
-#[test]
-fn signal_death_is_reported_in_the_exit_facet_not_flattened() {
-    run_local(async {
-        let mut bundle = TerminalActor::new_with_command(sh("kill -9 $$"), 40, 5).unwrap();
-        let exit_rx = bundle.exit_notify.take().unwrap();
-        let terminal = bundle.handle.terminal().unwrap().clone();
-        let token = bundle.token.clone();
-        tokio::task::spawn_local(bundle.actor.run());
-
-        let outcome = timeout(DEADLINE, exit_rx).await.unwrap().unwrap();
-        assert_eq!(outcome, ExitOutcome::signaled(9));
-        let (reply, reply_rx) = oneshot::channel();
-        terminal
-            .process
-            .send(ProcessFacetRequest { reply })
-            .await
-            .unwrap();
-        let facet = timeout(DEADLINE, reply_rx).await.unwrap().unwrap();
-        let exit = facet.exit.expect("exit facet recorded at EOF");
-        assert_eq!(
-            (exit.signal, exit.status, exit.reason.as_str()),
-            (Some(9), None, "exited")
-        );
-        assert!(exit.exited_at_ms.is_some());
-        assert!(facet.child.is_some());
-        assert!(
-            facet.foreground.is_none() && facet.cwd.is_none(),
-            "no live query after exit"
-        );
-        token.cancel();
     });
 }
 

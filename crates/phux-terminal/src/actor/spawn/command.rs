@@ -15,7 +15,7 @@ use tracing::warn;
 /// Unknown shells get no flag because an unrecognized flag can fail the exec
 /// (ADR-0073).
 #[must_use]
-pub fn login_flag_for_shell(shell: &str) -> Option<&'static str> {
+pub(crate) fn login_flag_for_shell(shell: &str) -> Option<&'static str> {
     let name = std::path::Path::new(shell)
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
@@ -43,7 +43,7 @@ fn apply_login_mode(cmd: &mut CommandBuilder, shell: &str, login: bool) {
 /// otherwise lack profile-provided `PATH`); a terminal-launched server
 /// passes `false` because re-sourcing profiles is not idempotent.
 ///
-/// `TERM` is [`DEFAULT_TERM`]: ghostty's terminfo advertises kitty keyboard
+/// `TERM` is `DEFAULT_TERM`: ghostty's terminfo advertises kitty keyboard
 /// support, which breaks ncurses apps such as htop. `defaults.term` and
 /// `SPAWN_RESOURCE.term` opt back in.
 #[must_use]
@@ -57,7 +57,7 @@ pub fn default_shell_command(shell: &str, login: bool) -> CommandBuilder {
 /// Baseline `TERM` for [`default_shell_command`] and [`shell_command`];
 /// matches the `defaults.term` schema default, which [`apply_term`]
 /// overrides at runtime.
-pub const DEFAULT_TERM: &str = "xterm-256color";
+pub(crate) const DEFAULT_TERM: &str = "xterm-256color";
 
 /// Override `TERM` on `cmd` with the server's configured `defaults.term`.
 pub fn apply_term(cmd: &mut CommandBuilder, term: &str) {

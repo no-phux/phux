@@ -1,6 +1,10 @@
 //! Natural-close wire ordering, using real terminal actors and tracked pumps.
 
 use super::*;
+use crate::runtime::apps::terminal::test_support::{
+    PaneOutput, ResyncAudience, ResyncReason, TerminalHandle, TerminalResource as _,
+    seeded_terminal, snapshot_bytes, vt,
+};
 use crate::runtime::attach::{OutputPumpContext, OutputPumpStart, run_started_output_pump};
 use crate::runtime::handle_detach_terminal;
 use phux_protocol::caps::BootstrapStreamProfile;
@@ -8,8 +12,6 @@ use phux_protocol::caps::{BootstrapLimits, ClientCapabilities};
 use phux_protocol::ids::BootstrapId;
 use phux_protocol::ids::StreamId;
 use phux_protocol::wire::frame::CommandResult;
-use phux_terminal::actor::TerminalResource as _;
-use phux_terminal::actor::{PaneOutput, ResyncAudience, ResyncReason};
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::Poll;
@@ -33,7 +35,7 @@ struct Fixture {
     state: SharedState,
     pane: phux_core::ResourceId,
     wire: WireResourceId,
-    terminal: phux_terminal::actor::TerminalHandle,
+    terminal: TerminalHandle,
     output: tokio::sync::broadcast::Sender<PaneOutput>,
 }
 
@@ -44,7 +46,7 @@ impl Fixture {
 
     fn with_seed(seed: &[u8]) -> Self {
         let state = SharedState::new();
-        let actor = phux_terminal::actor::TerminalActor::new_with_seed(80, 24, seed).unwrap();
+        let actor = seeded_terminal(80, 24, seed);
         let output = actor.handle.output.clone();
         let terminal = actor.handle.terminal().unwrap().clone();
         let (pane, wire) = state.with_mut(|s| {
@@ -352,15 +354,7 @@ async fn detaching_a_reaped_wire_aborts_final_publication_before_ack() {
             assert_eq!(request.scrollback, None);
             request
                 .reply
-                .send(Ok((
-                    phux_terminal::grid::SnapshotBytes {
-                        cols: 80,
-                        rows: 24,
-                        bytes: FINAL_SCREEN.to_vec(),
-                        scrollback: Vec::new(),
-                    },
-                    0,
-                )))
+                .send(Ok((snapshot_bytes(FINAL_SCREEN), 0)))
                 .unwrap();
             // With a supplied capture, the only remaining wait is publishing
             // into the full mailbox: DETACH must stop that actual operation.
@@ -452,7 +446,7 @@ async fn a_native_final_checkpoint_is_decodable_before_close() {
                         FrameKind::BootstrapReady { .. } => {
                             assert!(!payload.is_empty(), "native READY had no checkpoint");
                             let mut input = std::io::Cursor::new(&payload);
-                            let decoder = libghostty_vt::snapshot::Decoder::new(&mut input)
+                            let decoder = vt::snapshot::Decoder::new(&mut input)
                                 .expect("valid native envelope");
                             let checkpoint = decoder.ready().expect("validated native READY");
                             assert_eq!(checkpoint.terminal().title().unwrap(), "final-close-title");

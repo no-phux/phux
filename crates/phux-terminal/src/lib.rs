@@ -24,6 +24,10 @@ pub mod pty {
     pub use portable_pty::CommandBuilder;
 }
 
+/// The terminal library, for the host's tests to replay what it sends.
+#[cfg(feature = "test-support")]
+pub use libghostty_vt as vt;
+
 /// The terminal library's error, carried by input encoding.
 pub use libghostty_vt::Error as VtError;
 

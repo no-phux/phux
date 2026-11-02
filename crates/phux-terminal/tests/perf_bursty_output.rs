@@ -12,6 +12,7 @@
 //! re-rendered regardless); the ratio gate trips if that comes back.
 
 #![allow(clippy::print_stderr, reason = "prints the measured figure for triage")]
+#![allow(clippy::expect_used, reason = "tests")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};

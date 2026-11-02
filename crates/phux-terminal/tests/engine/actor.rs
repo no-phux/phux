@@ -1,21 +1,23 @@
 //! `TerminalActor` driven directly over its channels: the tick scheduler and
 //! `FRAME_ACK` routing (ADR-0018), PTY output fanout and replay totality, and
 //! child teardown. Field-level ack and tick-emit semantics are unit-tested in
-//! `resource/terminal/tests_state_sync.rs`; these pin the channel plumbing.
+//! `src/actor/tests_state_sync.rs`; these pin the channel plumbing.
 
 use phux_terminal::actor::TerminalResource as _;
 use std::time::Duration;
 
+use phux_core::process::ExitOutcome;
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::{BootstrapId, ClientId, StreamId};
-use phux_server::state::Outbound;
-use phux_terminal::TerminalInput;
+use phux_resource::ResourceHandle;
 use phux_terminal::actor::{
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_TICK_INTERVAL,
-    PaneOutput, ResizeRequest, SnapshotRequest, TerminalActor,
+    PaneOutput, ProcessFacetRequest, ResizeRequest, SnapshotRequest, TerminalActor,
+    default_shell_command,
 };
 use phux_terminal::grid::SnapshotBytes;
+use phux_terminal::{Outbound, TerminalInput};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::timeout;
 
@@ -34,7 +36,7 @@ fn run_local_paused<F: Future<Output = ()>>(fut: F) {
     tokio::task::LocalSet::new().block_on(&rt, fut);
 }
 
-async fn attach(handle: &phux_server::ResourceHandle, id: u32) -> mpsc::Receiver<Outbound> {
+async fn attach(handle: &ResourceHandle, id: u32) -> mpsc::Receiver<Outbound> {
     let (outbound, rx) = mpsc::channel(32);
     let (reply, reply_rx) = oneshot::channel();
     handle
@@ -63,7 +65,7 @@ async fn attach(handle: &phux_server::ResourceHandle, id: u32) -> mpsc::Receiver
     rx
 }
 
-async fn ack(handle: &phux_server::ResourceHandle, id: u32, seq: u64) {
+async fn ack(handle: &ResourceHandle, id: u32, seq: u64) {
     let request = ConsumerAckRequest {
         client_id: ClientId(id),
         stream_id: StreamId::new(u64::from(id)).unwrap(),
@@ -155,7 +157,7 @@ fn tick_and_ack_routing_survive_every_consumer_lifecycle_edge() {
     });
 }
 
-async fn snapshot(handle: &phux_server::ResourceHandle) -> SnapshotBytes {
+async fn snapshot(handle: &ResourceHandle) -> SnapshotBytes {
     let (reply, rx) = oneshot::channel();
     let request = SnapshotRequest {
         image_protocols: phux_protocol::caps::ImageProtocolSet::all(),
@@ -291,4 +293,56 @@ fn shutdown_signal_terminates_long_running_child() {
             .expect("actor exits (zombie?)")
             .unwrap();
     });
+}
+
+/// The actor-level exit facet (the only way to read it for a non-retained
+/// pane): the engine outcome and the facet both name the signal.
+#[test]
+fn signal_death_is_reported_in_the_exit_facet_not_flattened() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    tokio::task::LocalSet::new().block_on(&rt, async {
+        let mut bundle = TerminalActor::new_with_command(sh("kill -9 $$"), 40, 5).unwrap();
+        let exit_rx = bundle.exit_notify.take().unwrap();
+        let terminal = bundle.handle.terminal().unwrap().clone();
+        let token = bundle.token.clone();
+        tokio::task::spawn_local(bundle.actor.run());
+
+        let outcome = timeout(DEADLINE, exit_rx).await.unwrap().unwrap();
+        assert_eq!(outcome, ExitOutcome::signaled(9));
+        let (reply, reply_rx) = oneshot::channel();
+        terminal
+            .process
+            .send(ProcessFacetRequest { reply })
+            .await
+            .unwrap();
+        let facet = timeout(DEADLINE, reply_rx).await.unwrap().unwrap();
+        let exit = facet.exit.expect("exit facet recorded at EOF");
+        assert_eq!(
+            (exit.signal, exit.status, exit.reason.as_str()),
+            (Some(9), None, "exited")
+        );
+        assert!(exit.exited_at_ms.is_some());
+        assert!(facet.child.is_some());
+        assert!(
+            facet.foreground.is_none() && facet.cwd.is_none(),
+            "no live query after exit"
+        );
+        token.cancel();
+    });
+}
+
+/// phux-7vx: ghostty's terminfo advertises `fullkbd`, which makes ncurses apps
+/// (htop) push kitty flags they cannot parse back. The default shell must
+/// stay on `xterm-256color` until that is proven safe.
+#[test]
+fn default_shell_command_advertises_xterm_256color() {
+    let shell = phux_config::shell::resolve_shell(None);
+    let cmd = default_shell_command(&shell, false);
+    assert_eq!(
+        cmd.get_env("TERM").and_then(|t| t.to_str()),
+        Some("xterm-256color")
+    );
 }

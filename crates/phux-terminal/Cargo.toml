@@ -2,6 +2,7 @@
 name = "phux-terminal"
 description = "The Terminal app: a PTY child behind a libghostty terminal, its grid, input encoding, and agent detection."
 publish = false
+autobenches = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,8 +20,18 @@ native-engine = []
 # Fixtures for the host's own tests. A dependency's `cfg(test)` is invisible
 # to its dependents, so these are opt-in and enabled only as a dev-dependency.
 test-support = []
+# Benchmark/example tooling, opt-in so default test builds skip Criterion
+# and DHAT.
+capture-bench = ["dep:criterion", "dep:dhat"]
+ack-allocations-example = ["dep:dhat"]
+# Builds the `#[ignore]`d `perf_bursty_output` gates. Only `just stress` runs
+# them, so the default test build skips compiling and linking that binary.
+stress = []
 
 [dependencies]
+# Optional (not dev-dependencies) so default test builds do not compile them.
+criterion = { workspace = true, optional = true }
+dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 phux-resource.workspace = true
@@ -65,3 +76,32 @@ tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true
 # Tests drive the native engine the client kernel uses.
 phux-client-core = { workspace = true, features = ["native-engine"] }
+# Instruction-count guard. Not a default feature: `cargo test` does not build benches.
+iai-callgrind.workspace = true
+
+[[test]]
+name = "perf_bursty_output"
+path = "tests/perf_bursty_output.rs"
+required-features = ["stress"]
+
+[[example]]
+name = "ack_allocations"
+required-features = ["ack-allocations-example"]
+
+[[bench]]
+name = "capture"
+harness = false
+required-features = ["native-engine", "capture-bench"]
+
+# State-sync tick and wire-copy stages (phux-69pq.5): allocation table plus
+# Criterion timings.
+[[bench]]
+name = "live_path"
+harness = false
+required-features = ["capture-bench"]
+
+# Callgrind instruction counts for the engine hot paths; see `phux-server`'s
+# `icount` bench for the rest of the guarded set.
+[[bench]]
+name = "terminal_icount"
+harness = false
