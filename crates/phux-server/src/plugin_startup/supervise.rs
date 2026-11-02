@@ -107,7 +107,6 @@ pub(super) async fn run(
 impl Supervisor {
     async fn serve(&mut self, rx: &mut mpsc::UnboundedReceiver<Cmd>) {
         loop {
-            note_iteration();
             if self.root.is_cancelled() {
                 self.stop_all().await;
                 break;
@@ -451,20 +450,6 @@ async fn wait_until(deadline: Option<Instant>) {
         None => std::future::pending().await,
     }
 }
-
-#[cfg(test)]
-fn serve_iterations() -> &'static std::sync::atomic::AtomicU64 {
-    static ITERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    &ITERATIONS
-}
-
-#[cfg(test)]
-fn note_iteration() {
-    serve_iterations().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[cfg(not(test))]
-const fn note_iteration() {}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]

@@ -7,7 +7,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::{Supervisor, serve_iterations};
+use super::Supervisor;
 use crate::plugin_startup::rotate::CHECK_INTERVAL;
 
 struct ClearDefer;
@@ -58,25 +58,14 @@ fn empty_catalog_arms_no_timer() {
             blocked: false,
             notify: Arc::new(Notify::new()),
         };
-        serve_iterations().store(0, Ordering::Relaxed);
+        assert_eq!(supervisor.next_deadline(), None);
         let task = tokio::task::spawn_local(async move {
             let mut supervisor = supervisor;
             supervisor.serve(&mut rx).await;
         });
-        for _ in 0..20 {
-            tokio::task::yield_now().await;
-        }
-        let parked = serve_iterations().load(Ordering::Relaxed);
-        assert!(parked >= 1, "the supervisor should enter its loop");
         tokio::time::advance(std::time::Duration::from_secs(2)).await;
-        for _ in 0..20 {
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(
-            serve_iterations().load(Ordering::Relaxed),
-            parked,
-            "an empty catalog must not arm a timer"
-        );
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "the supervisor stays parked");
         root.cancel();
         task.await.unwrap();
     });
