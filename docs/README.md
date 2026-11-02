@@ -15,7 +15,6 @@ unshipped experiment, and phone apps are not available yet. See
 - [Getting started](./getting-started.md): your first session, the keys that matter, detaching, and coming from tmux.
 - [Concepts](./concepts.md): the server, sessions, tabs, panes, clients, hosts, targets, and what survives a restart.
 - [phux vs tmux, Herdr, and cmux](./compare.md): which one fits the job.
-- [phux vs Rex (Superlogical)](./phux-vs-rex.md): Rex's public pages beside what phux does today.
 
 ## Customize
 
