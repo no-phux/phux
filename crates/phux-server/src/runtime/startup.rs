@@ -180,6 +180,7 @@ pub(in crate::runtime) fn open_org_store(
                 store.import(&org, None, crate::state::now_stamp())?;
             }
             s.install_org(store, org, true);
+            s.claim_unreadable_receipts(&stored.unreadable_receipts);
         } else {
             let org = crate::state::fresh_org(instance, crate::state::now_stamp());
             s.install_org(store, org, false);

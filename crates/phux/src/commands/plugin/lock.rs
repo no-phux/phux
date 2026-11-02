@@ -140,6 +140,10 @@ pub(super) fn lockfile_path(plugins_dir: &Path) -> PathBuf {
 }
 
 /// Read the lockfile, treating a missing file as an empty lock.
+///
+/// A lockfile from a newer format is refused. Every caller writes the file
+/// back, which would drop what this binary does not understand, and the file
+/// records which build steps were approved.
 pub(super) fn read_lockfile(plugins_dir: &Path) -> Result<PluginLockFile, String> {
     let path = lockfile_path(plugins_dir);
     let input = match std::fs::read_to_string(&path) {
@@ -149,7 +153,16 @@ pub(super) fn read_lockfile(plugins_dir: &Path) -> Result<PluginLockFile, String
         }
         Err(err) => return Err(format!("could not read {}: {err}", path.display())),
     };
-    toml::from_str(&input).map_err(|err| format!("could not parse {}: {err}", path.display()))
+    let lock: PluginLockFile = toml::from_str(&input)
+        .map_err(|err| format!("could not parse {}: {err}", path.display()))?;
+    if lock.version > LOCKFILE_VERSION {
+        return Err(format!(
+            "{} is version {}, newer than this phux reads ({LOCKFILE_VERSION}); upgrade phux",
+            path.display(),
+            lock.version
+        ));
+    }
+    Ok(lock)
 }
 
 /// Write the lockfile (entries sorted by id for stable diffs).
@@ -278,6 +291,18 @@ mod tests {
         let err = read_lockfile(dir.path()).unwrap_err();
 
         assert!(err.contains("plugins.lock"), "{err}");
+    }
+
+    /// A lockfile from a newer format is refused, not rewritten at this one.
+    #[test]
+    fn a_newer_lockfile_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let newer = format!("version = {}\n", super::LOCKFILE_VERSION + 1);
+        std::fs::write(dir.path().join(super::LOCKFILE_NAME), newer).unwrap();
+
+        let err = read_lockfile(dir.path()).unwrap_err();
+
+        assert!(err.contains("newer than this phux reads"), "{err}");
     }
 
     fn step(argv: &[&str]) -> phux_config::plugin::PluginManifestBuild {

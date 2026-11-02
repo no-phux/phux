@@ -46,9 +46,20 @@ fn the_registry_instance_is_minted_once_and_stamped_on_credentials() {
 fn a_transient_read_failure_is_not_cached() {
     let fx = fixture();
     enroll(&fx.paths, &["observe@global"]);
-    let reloading = ReloadingWorkloadRegistry::load(fx.paths.registry.clone()).unwrap();
+    let fail_next_read = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let armed = std::sync::Arc::clone(&fail_next_read);
+    let reloading = ReloadingWorkloadRegistry::load_with(
+        fx.paths.registry.clone(),
+        Box::new(move |path| {
+            if armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return Err(std::io::Error::from_raw_os_error(nix::libc::EMFILE).into());
+            }
+            super::reload::read_snapshot(path)
+        }),
+    )
+    .unwrap();
     let (second, _) = enroll(&fx.paths, &["input@host:devbox"]);
-    store::fault::fail_next_read();
+    fail_next_read.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(
         reloading.current().is_empty(),
         "the lookup that failed admits no one"

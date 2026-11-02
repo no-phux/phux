@@ -269,11 +269,11 @@ async function chrome(
 /**
  * Warnings, plus the stale-output resync target. That line is `debug!` only
  * (`fell behind; skipping to a fresh checkpoint`). `phux=info` would also
- * match every `phux_server` info span, so this stays narrow. An inherited
- * `RUST_LOG` is left alone.
+ * match every `phux_server` info span, so this stays narrow. The target is
+ * the stable `LOG_TARGET` in output_pump_resync.rs, not a module path, and
+ * browser.test.ts ties the two together. An inherited `RUST_LOG` is left alone.
  */
-const DEMO_SERVER_LOG =
-  "phux_server::runtime::apps::terminal::attach::output_pump_resync=debug,warn";
+export const DEMO_SERVER_LOG = "phux_server::output_resync=debug,warn";
 
 /** The demo server in its own group, ready on its bound port for `body`. */
 function demoServer(

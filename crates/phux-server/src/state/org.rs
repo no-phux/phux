@@ -11,7 +11,7 @@
 //! `ActivationLost`) commit as [`Actor::system`]; core refuses them from
 //! anyone else.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use phux_core::ids::{ResourceId, SessionId};
 use phux_core::{
@@ -21,7 +21,9 @@ use phux_core::{
 };
 
 use super::{ClientId, ServerState};
-use crate::org_store::{MemOrgStore, OrgStore, RECEIPT_CAP, RECEIPT_HORIZON_MS, StoreError};
+use crate::org_store::{
+    MemOrgStore, OrgStore, RECEIPT_CAP, RECEIPT_HORIZON_MS, StoreError, UnreadableReceipt,
+};
 
 mod activation;
 mod create;
@@ -69,6 +71,11 @@ pub(super) struct OrgSide {
     /// their engines must not write another transition: memory still has the
     /// records, and that write would put the rows back.
     retirement_suppressed: HashSet<ResourceKey>,
+    /// Operations with a stored receipt this binary could not decode, and
+    /// when they committed. Whether a retry would repeat their effects is
+    /// unknown, so [`ServerState::persist_command_from`] refuses their ids
+    /// until the receipts would have expired.
+    unreadable_receipts: BTreeMap<OperationId, Stamp>,
 }
 
 impl OrgSide {
@@ -80,6 +87,7 @@ impl OrgSide {
             loaded: false,
             terminating: std::collections::HashSet::new(),
             retirement_suppressed: HashSet::new(),
+            unreadable_receipts: BTreeMap::new(),
         }
     }
 }
@@ -162,6 +170,11 @@ impl ServerState {
         self.sessions.registry = phux_core::Registry::new(org);
         self.org.store = store;
         self.org.loaded = loaded;
+    }
+
+    /// Refuse the ids of `receipts`, loaded from the store just installed.
+    pub fn claim_unreadable_receipts(&mut self, receipts: &[UnreadableReceipt]) {
+        self.org.unreadable_receipts = receipts.iter().map(|r| (r.operation, r.at)).collect();
     }
 
     /// Write the in-memory organization to a store that has never held one
@@ -282,6 +295,9 @@ impl ServerState {
         actor: &Actor,
         leading_journal: u64,
     ) -> Result<PersistedCommit, Refusal> {
+        if self.org.unreadable_receipts.contains_key(&cmd.operation) {
+            return Err(Refusal::DuplicateOperation);
+        }
         let now = now_stamp();
         let applied = phux_core::apply(
             self.sessions.registry.org(),
@@ -352,6 +368,7 @@ impl ServerState {
         if applied.transition.receipt.is_some() {
             let floor = Stamp(now.as_millis().saturating_sub(RECEIPT_HORIZON_MS));
             let _ = self.sessions.registry.prune_receipts(floor, RECEIPT_CAP);
+            self.org.unreadable_receipts.retain(|_, at| *at >= floor);
         }
         self.after_commit(&applied.transition, &handles);
         self.journal_org_events(&applied, actor, client);

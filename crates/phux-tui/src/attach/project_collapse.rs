@@ -1,7 +1,7 @@
 //! Which project groups this client keeps collapsed in the sidebar
 //! (ADR-0168): per-user client state under the profile's state dir, never
-//! on the server. Best effort: an unreadable file reads as nothing
-//! collapsed and a failed write is logged.
+//! on the server. Best effort: an unreadable file or one from a newer format
+//! reads as nothing collapsed and a failed write is logged.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -38,6 +38,7 @@ fn load_from(path: &Path) -> BTreeSet<String> {
     std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<State>(&bytes).ok())
+        .filter(|state| state.version <= STATE_VERSION)
         .map(|state| state.collapsed)
         .unwrap_or_default()
 }
@@ -62,6 +63,15 @@ fn save_to(path: &Path, collapsed: &BTreeSet<String>) -> std::io::Result<()> {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_newer_format_reads_as_nothing_collapsed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(STATE_FILE);
+        let newer = format!(r#"{{"version":{},"collapsed":["a"]}}"#, STATE_VERSION + 1);
+        std::fs::write(&path, newer).expect("write");
+        assert!(load_from(&path).is_empty());
+    }
 
     #[test]
     fn collapsed_groups_round_trip_and_bad_files_read_as_none() {
