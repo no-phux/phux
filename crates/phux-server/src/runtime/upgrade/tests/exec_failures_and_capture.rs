@@ -61,6 +61,55 @@ async fn real_prepare_failure_resumes_the_next_append_without_a_barrier() {
         .await;
 }
 
+/// Wire ids are interned lazily, so a session or pane no client has read yet
+/// has none. The upgrade must still carry it: dropping it loses the PTY.
+#[tokio::test(flavor = "current_thread")]
+async fn upgrade_capture_names_what_no_client_has_read() {
+    let state = SharedState::new();
+    state.with_mut(|s| {
+        let (_session, pane) = s.seed_session("quiet");
+        let bundle = phux_terminal::actor::TerminalActor::new(80, 24).expect("actor");
+        let _ = s.register_resource_handle(pane, bundle.handle, bundle.token);
+        let _ = s.seed_empty_session("empty").expect("seed");
+        s.set_upgrade_context(
+            7,
+            PathBuf::from("/nonexistent/phux.sock"),
+            RuntimeFlags::default(),
+        );
+    });
+    let identity = capture_upgrade_context(&state).unwrap().tree_identity;
+    let names: Vec<&str> = identity.sessions.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"quiet"), "sessions: {names:?}");
+    assert!(names.contains(&"empty"), "sessions: {names:?}");
+    assert_eq!(identity.panes.len(), 1, "the live pane crosses the exec");
+}
+
+/// A session created after the capture has no wire id yet. It must still
+/// count as a change, or the exec would silently drop it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_session_created_after_capture_aborts_the_upgrade() {
+    let state = SharedState::new();
+    state.with_mut(|s| {
+        s.set_upgrade_context(
+            7,
+            PathBuf::from("/nonexistent/phux.sock"),
+            RuntimeFlags::default(),
+        );
+    });
+    let context = capture_upgrade_context(&state).unwrap();
+    state.with_mut(|s| {
+        let _ = s.seed_empty_session("late").expect("seed");
+    });
+    let outcome = reassemble_unchanged_tree(
+        &state,
+        context.listener_fd,
+        context.listener_fd,
+        &context.tree_identity,
+        &UpgradeHandoffs::default(),
+    );
+    assert!(matches!(outcome, Err(UpgradeError::TreeChanged)));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn upgrade_carries_agent_sessions_with_their_id_and_log_tail() {
     let local = tokio::task::LocalSet::new();

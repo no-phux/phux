@@ -206,7 +206,6 @@ pub(super) fn old_image_with_agent_sessions(
         .unwrap();
 
     let _ = s.build_session_snapshot(sid);
-    let _ = s.intern_window_wire(sid);
     s.set_upgrade_context(
         7,
         PathBuf::from("/nonexistent/phux.sock"),
