@@ -69,7 +69,7 @@ pub(super) async fn handle_shutdown(
     info!(?client_id, "SHUTDOWN requested; stopping the server");
     // ADR-0104 §4: record the close reason before the exit watchers run.
     state.with_mut(|s| {
-        s.begin_shutdown();
+        s.flush_reports_before_shutdown();
         for resource in s.resource_ids() {
             s.mark_resource_closing(
                 resource,
@@ -201,4 +201,117 @@ pub(crate) fn create_empty_session(
             .map(|_| ())
             .map_err(|refusal| format!("failed to create session {name:?}: {refusal}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
+
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
+
+    use phux_core::{Actor, ExitOutcome, ExitPolicy, SessionLifetime, TerminalLaunch};
+    use phux_protocol::policy::{PeerIdentity, TransportType};
+    use phux_protocol::wire::frame::Command;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    use super::super::routing::{CommandContext, handle_command};
+    use crate::org_store::MemOrgStore;
+    use crate::state::{ServerState, TerminalTarget};
+
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Buf {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Buf {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// `SHUTDOWN` offers a still-pending activation report once more, then
+    /// warns, before `shutting_down` makes later reports a silent no-op.
+    #[test]
+    fn shutdown_retries_a_pending_activation_report_and_warns() {
+        let state = crate::state::SharedState::new();
+        let client = state.with_mut(|s| {
+            let store = MemOrgStore::default();
+            let fail = store.fail_commits();
+            s.set_org_store(Box::new(store));
+            let (_, id) = s
+                .create_terminal(
+                    TerminalTarget::NewSession {
+                        name: "kept",
+                        lifetime: SessionLifetime::Persistent,
+                    },
+                    TerminalLaunch::default(),
+                    ExitPolicy::Retain,
+                    &Actor::owner(),
+                )
+                .expect("create");
+            fail.store(true, Ordering::Relaxed);
+            s.activation_ended(id, ExitOutcome::UNKNOWN, true);
+            assert!(
+                s.has_pending_activation_reports(),
+                "the refused end stays pending"
+            );
+            ServerState::reset_executor_persist_attempts();
+            let client = s.new_client_id();
+            s.set_peer_identity(
+                client,
+                PeerIdentity {
+                    uid: 1,
+                    pid: None,
+                    exe_path: None,
+                    mcp_host_key: None,
+                    transport: TransportType::UnixSocket,
+                    source_addr: None,
+                },
+            );
+            client
+        });
+
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(4);
+        let ctx = CommandContext::for_test(&state, client, &out_tx);
+        let buf = Buf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(buf.clone())
+            .finish();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
+            runtime.block_on(handle_command(&ctx, 1, Command::Shutdown));
+        });
+        out_rx.try_recv().expect("SHUTDOWN acks");
+
+        assert_eq!(
+            ServerState::executor_persist_attempts(),
+            1,
+            "SHUTDOWN must offer the pending report once more"
+        );
+        let log = String::from_utf8(buf.0.lock().expect("log").clone()).unwrap();
+        assert!(
+            log.contains(
+                "shutdown with undurable executor evidence; restart can only reconcile committed state"
+            ),
+            "{log}"
+        );
+        assert!(state.with(ServerState::shutting_down));
+        assert!(state.with(ServerState::has_pending_activation_reports));
+    }
 }
