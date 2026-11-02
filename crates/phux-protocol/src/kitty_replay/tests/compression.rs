@@ -36,3 +36,32 @@ fn incompressible_payloads_travel_raw() {
     target.vt_write(&out);
     assert_eq!(pixels(&target, 7), Some(vec![0, 1, 2, 3]));
 }
+
+#[test]
+fn a_compressed_payload_spanning_chunks_round_trips_pixels() {
+    let mut source = terminal();
+    // Four bits of noise per byte: deflate halves it, still many chunks.
+    let mut state = 0x2545_f491_u32;
+    let noise: Vec<u8> = (0..96 * 96 * 3)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state & 0x0f) as u8
+        })
+        .collect();
+    let mut command = b"\x1b_Ga=t,f=24,s=96,v=96,i=7,q=2;".to_vec();
+    write_base64(&mut command, &noise).expect("pixels");
+    command.extend_from_slice(b"\x1b\\");
+    source.vt_write(&command);
+
+    let mut iter = PlacementIterator::new().unwrap();
+    let mut out = Vec::new();
+    assert!(emit_kitty_graphics_snapshot(&source, &mut iter, &mut out).unwrap());
+    assert_eq!(contains(&out, b"o=z,"), 1);
+    assert!(contains(&out, b"m=1") >= 2, "expected a multi-chunk payload");
+
+    let mut target = terminal();
+    target.vt_write(&out);
+    assert_eq!(pixels(&target, 7), Some(noise));
+}
