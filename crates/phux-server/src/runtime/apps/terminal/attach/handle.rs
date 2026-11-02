@@ -204,8 +204,12 @@ pub(crate) async fn handle_attach(
 
     // Only now, with every bootstrap staged, retire the prior generation.
     if same_session_reattach {
-        crate::runtime::client::abort_output_pumps(output_pumps, client_id, "replacement ATTACH")
-            .await;
+        crate::runtime::connections::abort_output_pumps(
+            output_pumps,
+            client_id,
+            "replacement ATTACH",
+        )
+        .await;
     }
     let mut committed_output_pumps = staging.pumps;
     output_pumps

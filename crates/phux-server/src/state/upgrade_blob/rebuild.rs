@@ -63,6 +63,13 @@ impl ServerState {
             &PaneBlob,
             phux_config::ScrollbackLimits,
         ) -> Result<RebuiltPane<W>, RebuildError>,
+        build_session: impl FnMut(
+            &AgentSessionBlob,
+            ResourceId,
+            Option<&ResourceHandle>,
+            u32,
+            CancellationToken,
+        ) -> RebuiltSession,
     ) -> Result<RebuiltTree<W>, RebuildError> {
         validate_upgrade_blob(blob)?;
         let mut fresh = Self::new();
@@ -79,7 +86,7 @@ impl ServerState {
             arranged_now,
         } = fresh.rebuild_records(self.org(), self.org.loaded, blob)?;
         let mut panes = fresh.rebuild_panes(blob, &keyed, build_pane)?;
-        fresh.rebuild_agent_sessions(blob, &keyed, &mut panes);
+        fresh.rebuild_agent_sessions(blob, &keyed, &mut panes, build_session);
         if imported {
             self.org.store.import(
                 fresh.org(),
@@ -245,6 +252,13 @@ impl ServerState {
         blob: &StateBlob,
         keyed: &Keyed,
         panes: &mut RebuiltPanes<W>,
+        mut build_session: impl FnMut(
+            &AgentSessionBlob,
+            ResourceId,
+            Option<&ResourceHandle>,
+            u32,
+            CancellationToken,
+        ) -> RebuiltSession,
     ) {
         let log_bytes = self.config.agent_log_bytes;
         for carried in &blob.agent_sessions {
@@ -276,29 +290,18 @@ impl ServerState {
                 facet.state.clone_from(&carried.state);
             }
             let token = CancellationToken::new();
-            let bundle = AgentSessionActor::restore(
+            let rebuilt = build_session(
+                carried,
                 parent,
-                &carried.provider,
-                carried.native_id.as_deref(),
-                token.clone(),
+                self.resource_handle(parent),
                 log_bytes,
-                agent_session_cut(carried),
+                token.clone(),
             );
-            if let (Some(parent_handle), Ok(session)) =
-                (self.resource_handle(parent), bundle.handle.agent_session())
-            {
-                // The parent's mailbox is fresh, so this cannot be full.
-                let _ = parent_handle.control.try_send(
-                    crate::resource::ControlRequest::BindAgentSession {
-                        append: session.append.clone(),
-                    },
-                );
-            }
             // Pre-bind so the registration's intern returns the blob's id.
             self.idspace
                 .bind_resource(core, WireResourceId::local(carried.wire_id));
-            self.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
-            panes.exit_watchers.push((core, bundle.exit_notify));
+            self.spawn_resource_actor(core, rebuilt.handle, token, rebuilt.engine);
+            panes.exit_watchers.push((core, rebuilt.exit_notify));
         }
     }
 

@@ -1,7 +1,7 @@
 use super::dispatch::handle_client;
 use crate::hooks::HookEvent;
 use crate::runtime::ServerError;
-use crate::runtime::input_lane::InputLaneHandle;
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 use crate::transport::{AcceptErrorDisposition, Incoming, WS_REJECTION_WARN_INTERVAL};
 use phux_protocol::PROTOCOL_VERSION;

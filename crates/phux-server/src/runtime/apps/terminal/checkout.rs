@@ -54,10 +54,13 @@ pub(in crate::runtime) async fn handle(
     if let Err(error) = handle.terminal() {
         return crate::runtime::commands::wrong_resource_kind(error);
     }
-    let cwd = tokio::time::timeout(CWD_DEADLINE, crate::runtime::attach::query_pane_cwd(handle))
-        .await
-        .ok()
-        .flatten();
+    let cwd = tokio::time::timeout(
+        CWD_DEADLINE,
+        crate::runtime::apps::terminal::attach::query_pane_cwd(handle),
+    )
+    .await
+    .ok()
+    .flatten();
     let answer = match cwd {
         None => refused(
             CheckoutRefusalCode::CwdUnknown,

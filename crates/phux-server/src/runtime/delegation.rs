@@ -38,12 +38,12 @@ use phux_protocol::wire::frame::{CommandResult, CommandValue, Delegation, ErrorC
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::input_lane::InputLaneHandle;
 use crate::auth::AuthenticatedCredential;
 #[cfg(test)]
 use crate::auth::ConnectionIdentity;
 use crate::delegation::{DelegatedCredential, DelegationError, DelegationRequest};
 use crate::policy::Revocation;
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 use crate::state::{ClientId, SharedState};
 
 mod sockets;

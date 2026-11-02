@@ -111,7 +111,7 @@ pub(super) fn mutate(
             return CommandResult::Refused(ow::refusal(&refusal));
         }
     };
-    super::super::client::detach_clients_of_killed_session(state, detached);
+    crate::runtime::connections::detach_clients_of_killed_session(state, detached);
     for effect in std::mem::take(&mut applied.effects) {
         run_effect(state, effect, root_token);
     }

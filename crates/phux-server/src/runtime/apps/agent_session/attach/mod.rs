@@ -3,7 +3,7 @@
 
 #![allow(
     clippy::redundant_pub_crate,
-    reason = "private submodule re-exported by resource_commands at crate visibility"
+    reason = "private module of the agent session app"
 )]
 
 use bytes::Bytes;
@@ -51,7 +51,7 @@ pub(crate) async fn attach_agent_session(
             message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
         };
     };
-    let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
+    let stream_id = crate::runtime::stream_id_from(client_id.0);
     let live = handle.output.subscribe();
     // Await the old task's exit before BEGIN: no prior generation may leak
     // output between this replacement's bootstrap frames.

@@ -24,7 +24,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::resource::{ResourceHandle, WrongResourceKind};
-use crate::runtime::client::PaneEvents;
+use crate::runtime::apps::terminal::attach::AttachPrepared;
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use crate::runtime::commands::attach_terminal::native_checkpoint_profile;
 use crate::runtime::commands::satellite_lease::relay_satellite_frame;
@@ -33,9 +34,9 @@ use crate::runtime::commands::satellite_lease::relay_satellite_frame;
     reason = "shared with the host's command namespace"
 )]
 use crate::runtime::commands::*;
-use crate::runtime::input_lane::InputLaneHandle;
+use crate::runtime::connections::PaneEvents;
 use crate::runtime::pump;
-use crate::runtime::{AttachPrepared, spawn_agent_state_drain, spawn_resource_exit_watcher};
+use crate::runtime::{spawn_agent_state_drain, spawn_resource_exit_watcher};
 use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,

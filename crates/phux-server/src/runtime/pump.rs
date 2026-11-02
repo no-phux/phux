@@ -1,5 +1,5 @@
 //! Shared per-generation state for the pane output pumps (the ATTACH pump in
-//! [`crate::runtime::attach`] and the `ATTACH_RESOURCE` pump in
+//! [`crate::runtime::apps::terminal::attach`] and the `ATTACH_RESOURCE` pump in
 //! [`crate::runtime::commands`]).
 //!
 //! [`PumpGeneration`] keeps its flags private so no pump can put a live delta

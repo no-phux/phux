@@ -156,21 +156,11 @@ async fn route_command(
             resource,
             expected,
         } = &command
+            && let Some(result) =
+                crate::runtime::apps::claim_relaunch(ctx, *operation, resource, *expected)
         {
-            match state
-                .with(|s| super::super::organization::native_relaunch_spec(s, resource, *expected))
-            {
-                Ok(Some(spec)) => {
-                    let result = super::super::native_agent::spawn_relaunch(ctx, spec, *operation);
-                    send_result(out_tx, request_id, result).await;
-                    return None;
-                }
-                Err(result) => {
-                    send_result(out_tx, request_id, result).await;
-                    return None;
-                }
-                Ok(None) => {}
-            }
+            send_result(out_tx, request_id, result).await;
+            return None;
         }
         let result = super::super::organization::handle(state, client_id, command, root_token);
         send_result(out_tx, request_id, result).await;

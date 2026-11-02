@@ -1,3 +1,25 @@
+use super::controller::{denied, json, refusal};
+use crate::resource::agent_session::AgentSessionActor;
+use crate::runtime::commands::CommandContext;
+use crate::state::SharedState;
+use crate::state::native_agent::NativeBinding;
+use phux_protocol::ids::ResourceId;
+use phux_protocol::native_agent::NATIVE_HOST_SPEC_ENV;
+use phux_protocol::native_agent::NativeCapabilities;
+use phux_protocol::native_agent::NativeRequest;
+use phux_protocol::native_agent::NativeRequestPayload;
+use phux_protocol::native_agent::NativeView;
+use phux_protocol::native_agent::SpawnNativeAgent;
+use phux_protocol::native_agent::SpawnedNativeAgent;
+use phux_protocol::native_agent::validate_payload;
+use phux_protocol::wire::frame::AgentEvent;
+use phux_protocol::wire::frame::CommandResult;
+use phux_protocol::wire::frame::ErrorCode;
+use std::collections::BTreeMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use tokio::sync::Notify;
+
 /// An explicit saved native recipe uses the same transaction as new native
 /// launches, while preserving the ordinary relaunch receipt/operation.
 pub(super) fn spawn_relaunch(
@@ -78,7 +100,7 @@ fn spawn_transaction(
     ) {
         Ok(resources) => resources,
         Err(error) => {
-            super::delegation::revoke_delegated_agent(state, &delegation.credential.id);
+            crate::runtime::delegation::revoke_delegated_agent(state, &delegation.credential.id);
             return Err(error);
         }
     };
@@ -253,7 +275,7 @@ fn prepare_native_host(
     recipe.guardian_expected = None;
     recipe.env.clear();
     let public_spec = serde_json::to_string(&recipe).map_err(|error| refusal(error.to_string()))?;
-    let mut launch = super::commands::launch_of(Some(&command));
+    let mut launch = crate::runtime::commands::launch_of(Some(&command));
     launch
         .env
         .push((NATIVE_HOST_SPEC_ENV.into(), public_spec.clone()));
@@ -268,7 +290,7 @@ fn prepare_native_host(
 fn delegate_native_host(
     ctx: &CommandContext,
     session: phux_core::ids::SessionId,
-) -> Result<super::delegation::DelegatedAgent, CommandResult> {
+) -> Result<crate::runtime::delegation::DelegatedAgent, CommandResult> {
     // Bind is mandatory. Optional model-tool verbs only narrow what the
     // original launcher actually holds; a Create+Bind launcher is sufficient.
     let delegated_verbs = ctx.state.with(|s| {
@@ -285,7 +307,7 @@ fn delegate_native_host(
         }
         verbs
     });
-    super::delegation::delegate_agent(
+    crate::runtime::delegation::delegate_agent(
         &ctx.state,
         ctx.client_id,
         session,
@@ -346,7 +368,7 @@ fn create_native_resources(
                 return Err(CommandResult::Refused(crate::org_wire::refusal(&error)));
             }
         };
-        let parent_wire = super::commands::register_pty_command(s, parent, command);
+        let parent_wire = crate::runtime::commands::register_pty_command(s, parent, command);
         let agent_wire = s.intern_resource_wire(agent);
         s.metadata_set(
             &phux_protocol::wire::frame::Scope::Resource(parent_wire.clone()),
@@ -445,7 +467,7 @@ fn install_native_session(
         .with_operation_id(operation);
         s.record_and_fanout(announcement);
     });
-    super::client::spawn_resource_exit_watcher(
+    crate::runtime::connections::spawn_resource_exit_watcher(
         state.clone(),
         resources.agent,
         Some(bundle.exit_notify),
@@ -463,15 +485,15 @@ fn launch_native_guardian(
     credential: &str,
 ) -> Result<(), CommandResult> {
     let state = &ctx.state;
-    let launched = super::commands::launch_pane_actor_with_failure_policy(
+    let launched = crate::runtime::commands::launch_pane_actor_with_failure_policy(
         state,
         resources.parent,
         Some(command),
-        super::commands::DEFAULT_SPAWN_DIMS,
+        crate::runtime::commands::DEFAULT_SPAWN_DIMS,
         state.with(crate::state::ServerState::scrollback_limits),
         &ctx.root_token,
         None,
-        super::commands::SpawnAttribution {
+        crate::runtime::commands::SpawnAttribution {
             actor: Some(ctx.client_id),
             operation_id: operation,
             // Keep failed startup diagnostics on the durable guardian.
@@ -480,7 +502,7 @@ fn launch_native_guardian(
         reused,
     );
     if let Err(error) = launched {
-        super::delegation::revoke_delegated_agent(state, credential);
+        crate::runtime::delegation::revoke_delegated_agent(state, credential);
         state.with_mut(|s| {
             s.reap_resource(resources.agent);
             if !reused {
@@ -494,4 +516,8 @@ fn launch_native_guardian(
         return Err(refusal(error.to_string()));
     }
     Ok(())
+}
+
+pub(super) fn spawn(ctx: &CommandContext, spec: &SpawnNativeAgent) -> CommandResult {
+    spawn_transaction(ctx, spec, None).map_or_else(|error| error, |spawned| json(&spawned))
 }

@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 use super::stamp;
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
 use crate::delegation::DelegatedCredential;
-use crate::runtime::input_lane::InputLaneHandle;
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 use crate::state::SharedState;
 use crate::transport::{Incoming, UdsListener};
 use crate::upgrade::blob::{DelegationBlob, StateBlob};
@@ -244,7 +244,7 @@ pub(super) fn open_socket(
     super::super::validate_socket_path_len(&path)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let listener = tokio::net::UnixListener::bind(&path)?;
-    if let Err(error) = super::super::client::secure_socket_file(&path) {
+    if let Err(error) = crate::runtime::connections::secure_socket_file(&path) {
         remove_socket_file(&path);
         return Err(io::Error::other(error.to_string()));
     }
@@ -270,8 +270,12 @@ pub(super) fn spawn_listener(
         .unwrap_or_default();
     tokio::task::spawn_local(async move {
         let expiry = tokio::time::sleep(lifetime);
-        let accept =
-            super::super::client::accept_loop(&listener, state.clone(), close.clone(), input_lane);
+        let accept = crate::runtime::connections::accept_loop(
+            &listener,
+            state.clone(),
+            close.clone(),
+            input_lane,
+        );
         tokio::select! {
             result = accept => {
                 if let Err(error) = result {

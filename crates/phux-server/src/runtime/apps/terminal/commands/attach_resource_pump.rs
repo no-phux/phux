@@ -16,7 +16,7 @@ impl AttachResourceSession<'_> {
         generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
         pump_done_guard: tokio_util::sync::DropGuard,
     ) {
-        let ctx = crate::runtime::attach::OutputPumpContext {
+        let ctx = crate::runtime::apps::terminal::attach::OutputPumpContext {
             out_tx: self.out_tx.clone(),
             resize: self.terminal.resize.clone(),
             wire_terminal_id: self.terminal_id.clone(),
@@ -50,9 +50,12 @@ impl AttachResourceSession<'_> {
                     return;
                 };
                 if let Some(fault) =
-                    crate::runtime::attach::run_started_output_pump(&ctx, start, output_rx).await
+                    crate::runtime::apps::terminal::attach::run_started_output_pump(
+                        &ctx, start, output_rx,
+                    )
+                    .await
                 {
-                    crate::runtime::attach::release_after_pump_fault(
+                    crate::runtime::apps::terminal::attach::release_after_pump_fault(
                         fault,
                         &state,
                         client_id,
@@ -97,8 +100,8 @@ impl AttachResourceSession<'_> {
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> Result<phux_terminal::actor::NativeBootstrapReply, AttachResourceFailure> {
-        use crate::runtime::attach::NativeRequestFailure;
-        crate::runtime::attach::request_native_checkpoint(&self.terminal, |reply| {
+        use crate::runtime::apps::terminal::attach::NativeRequestFailure;
+        crate::runtime::apps::terminal::attach::request_native_checkpoint(&self.terminal, |reply| {
             phux_terminal::actor::NativeBootstrapRequest::full_budget(
                 self.client_id.0,
                 self.terminal_id.clone(),
@@ -133,12 +136,15 @@ impl AttachResourceSession<'_> {
         let reply = self
             .capture_native_bootstrap(generation.bootstrap_id)
             .await?;
-        let (cut, cursor) = crate::runtime::attach::publish_native_bootstrap(self.out_tx, reply)
-            .await
-            .map_err(|()| {
-                AttachResourceFailure::internal("consumer went away during native ATTACH_RESOURCE")
-            })?;
-        let publication = crate::runtime::attach::activate_native_publication(
+        let (cut, cursor) =
+            crate::runtime::apps::terminal::attach::publish_native_bootstrap(self.out_tx, reply)
+                .await
+                .map_err(|()| {
+                    AttachResourceFailure::internal(
+                        "consumer went away during native ATTACH_RESOURCE",
+                    )
+                })?;
+        let publication = crate::runtime::apps::terminal::attach::activate_native_publication(
             &self.terminal,
             self.client_id.0,
             self.terminal_id.clone(),
@@ -184,15 +190,15 @@ impl AttachResourceSession<'_> {
         cut: u64,
     ) -> Result<(), AttachResourceFailure> {
         let (cols, rows) = (snapshot.cols, snapshot.rows);
-        let adapted = crate::runtime::attach::adapt_bootstrap_snapshot(
+        let adapted = crate::runtime::apps::terminal::attach::adapt_bootstrap_snapshot(
             snapshot,
             self.client_caps,
-            crate::runtime::attach::MAX_STAGED_BOOTSTRAP_BYTES,
+            crate::runtime::apps::terminal::attach::MAX_STAGED_BOOTSTRAP_BYTES,
         )
         .map_err(|()| {
             AttachResourceFailure::internal("resource snapshot exceeds bootstrap budget")
         })?;
-        crate::runtime::attach::send_synthesized_bootstrap(
+        crate::runtime::apps::terminal::attach::send_synthesized_bootstrap(
             self.out_tx,
             self.terminal_id.clone(),
             self.stream_id,
@@ -224,11 +230,11 @@ impl AttachResourceSession<'_> {
             .send(SnapshotRequest {
                 scrollback: Some(phux_terminal::actor::DEFAULT_REPLAY_SCROLLBACK_LINES),
                 image_protocols: self.client_caps.image_protocols,
-                max_bytes: crate::runtime::attach::bootstrap_source_ceiling(
-                    crate::runtime::attach::MAX_STAGED_BOOTSTRAP_BYTES,
+                max_bytes: crate::runtime::apps::terminal::attach::bootstrap_source_ceiling(
+                    crate::runtime::apps::terminal::attach::MAX_STAGED_BOOTSTRAP_BYTES,
                     self.client_caps,
                 ),
-                max_frames: crate::runtime::attach::MAX_STAGED_BOOTSTRAP_FRAMES,
+                max_frames: crate::runtime::apps::terminal::attach::MAX_STAGED_BOOTSTRAP_FRAMES,
                 chunk_bytes: usize::try_from(self.bootstrap_limits.max_chunk_bytes()).map_err(
                     |_| AttachResourceFailure::internal("bootstrap chunk bound cannot fit host"),
                 )?,

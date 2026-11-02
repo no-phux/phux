@@ -9,7 +9,7 @@ use phux_protocol::wire::frame::{
 };
 use tokio::task::LocalSet;
 
-use crate::runtime::input_lane::spawn_input_lane;
+use crate::runtime::apps::terminal::input_lane::spawn_input_lane;
 use crate::runtime::test_support::hello;
 
 use super::{

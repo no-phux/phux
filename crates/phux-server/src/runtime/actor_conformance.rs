@@ -33,12 +33,12 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, LocalSet};
 use tokio_util::sync::CancellationToken;
 
-use super::client::handle_client;
 use super::delegation::{delegate_agent, revoke_delegated_agent, stamped_identity};
 use super::test_support::{Feed, Wire, encode, hello, owner_peer, workload_identity};
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
 use crate::delegation::{DelegatedCredential, DelegationRequest};
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError};
+use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, ServerState, SharedState};
 
 /// How long any one expectation may take before the case fails.

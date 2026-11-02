@@ -1,6 +1,7 @@
 //! The graceful-upgrade state blob's producer and consumer (ADR-0032):
-//! [`ServerState::build_upgrade_blob`] walks the live tree into a
-//! [`StateBlob`](crate::upgrade::blob::StateBlob), and
+//! [`ServerState::assemble_upgrade_blob`] walks the live tree into a
+//! [`StateBlob`](crate::upgrade::blob::StateBlob) from the handoffs
+//! `runtime::upgrade` collected (`build_upgrade_blob` is a test helper), and
 //! [`ServerState::rebuild_from_blob`] reconstructs the tree from one in the
 //! re-exec'd image.
 //!
@@ -13,7 +14,6 @@
 //! each window becomes a group of the session's arrangement, and each live
 //! pane becomes a resource bound to its running process as activation 1.
 
-use phux_resource::agent_session::AgentSessionResource as _;
 use std::collections::{HashMap, HashSet};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
@@ -29,16 +29,17 @@ use phux_core::{
 use phux_protocol::ids::{
     ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::ServerState;
 use crate::resource::ResourceHandle;
-use crate::resource::agent_session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
-use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
+use crate::resource::handoff::PaneUpgradeHandle;
+#[cfg(test)]
+use crate::resource::handoff::UpgradeHandleRequest;
 use crate::upgrade::blob::{
-    AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, MetadataBlob, OrgBlob, PaneBlob,
-    RetainedExitBlob, SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
+    AgentSessionBlob, AgentStreamCut, BLOB_VERSION, Counters, LayoutBlob, MetadataBlob, OrgBlob,
+    PaneBlob, RetainedExitBlob, SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
 };
 
 /// What the reversible half of an upgrade collected from live engines: each
@@ -49,7 +50,7 @@ pub(crate) struct UpgradeHandoffs {
     pub(crate) panes: HashMap<ResourceId, PaneUpgradeHandle>,
     /// Record-stream cut per carried `AgentSession`. A session without one
     /// is not carried.
-    pub(crate) agent_sessions: HashMap<ResourceId, AgentSessionBootstrap>,
+    pub(crate) agent_sessions: HashMap<ResourceId, AgentStreamCut>,
 }
 
 /// One pane an app rebuilt around its inherited state, ready to register.
@@ -64,6 +65,16 @@ pub(crate) struct RebuiltPane<W> {
     pub(crate) exit_notify: Option<tokio::sync::oneshot::Receiver<phux_core::ExitOutcome>>,
     /// What the caller's wiring returned.
     pub(crate) wired: W,
+}
+
+/// One agent session its app rebuilt from the blob, ready to register.
+pub(crate) struct RebuiltSession {
+    /// The engine's handle.
+    pub(crate) handle: ResourceHandle,
+    /// The engine, not yet running.
+    pub(crate) engine: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+    /// Fires when the session ends.
+    pub(crate) exit_notify: oneshot::Receiver<phux_core::ExitOutcome>,
 }
 
 /// Errors rebuilding a [`ServerState`] from a [`StateBlob`].
@@ -104,37 +115,6 @@ pub enum RebuildError {
 }
 
 impl ServerState {
-    /// Assemble a [`StateBlob`] from the live tree for a graceful upgrade,
-    /// asking each pane actor for its PTY descriptors and replay snapshot.
-    /// Runs inside the actors' `LocalSet`; an unreachable pane is recorded
-    /// without a handoff.
-    #[allow(
-        clippy::future_not_send,
-        reason = "ADR-0014: the server runs on a LocalSet; pane actors are reached through !Send local futures"
-    )]
-    pub async fn build_upgrade_blob(&mut self, listener_fd: RawFd) -> StateBlob {
-        self.intern_upgrade_wires();
-        let mut handoffs = UpgradeHandoffs::default();
-        let tids: Vec<ResourceId> = self
-            .upgrade_handles()
-            .into_iter()
-            .map(|(tid, _)| tid)
-            .collect();
-        for tid in tids {
-            if let Some(handoff) = self.request_pane_handoff(tid).await {
-                handoffs.panes.insert(tid, handoff);
-            }
-        }
-        for (session, bootstrap) in self.upgrade_agent_sessions() {
-            // Not sealed: this walk re-execs nothing, so the old image
-            // must keep accepting appends.
-            if let Some(cut) = request_agent_session_cut(&bootstrap, false).await {
-                handoffs.agent_sessions.insert(session, cut);
-            }
-        }
-        self.with_upgrade_metadata(self.assemble_upgrade_blob(listener_fd, &handoffs))
-    }
-
     /// Attach the carried L3 metadata to an assembled blob. Kept out of
     /// [`Self::assemble_upgrade_blob`] so a layout write during the handoff
     /// does not read as a tree change and abort the upgrade.
@@ -157,6 +137,7 @@ impl ServerState {
     /// Intern a wire id for every session, synthetic window, and live
     /// resource, so the blob names each one. Run under the lock that
     /// captures the tree identity.
+    #[cfg(test)]
     pub(crate) fn intern_upgrade_wires(&mut self) {
         let sessions: Vec<SessionId> = self
             .sessions
@@ -200,7 +181,7 @@ impl ServerState {
     /// Terminals with wire ids (the same walk as
     /// [`Self::assemble_upgrade_blob`]). Everything else in the resource
     /// table is left alone: an `AgentSession` has no PTY and no upgrade
-    /// mailbox (it crosses through [`Self::upgrade_agent_sessions`]), and a
+    /// mailbox (its app carries it across), and a
     /// retained pane's PTY does not cross (ADR-0124 §6). Asking those would
     /// only let an engine with nothing to hand off abort the upgrade.
     pub(crate) fn upgrade_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
@@ -209,38 +190,9 @@ impl ServerState {
         carried
     }
 
-    /// The `AgentSession`s a re-exec carries, each with its bootstrap
-    /// mailbox: every session whose parent is a pane
-    /// [`Self::upgrade_handles`] carries. A session under a retained or
-    /// uncarried pane is dropped, as its parent is.
-    pub(crate) fn upgrade_agent_sessions(
-        &self,
-    ) -> Vec<(ResourceId, mpsc::Sender<BootstrapRequest>)> {
-        let parents: HashSet<ResourceId> = self
-            .carried_panes()
-            .into_iter()
-            .map(|(tid, _)| tid)
-            .collect();
-        let mut carried: Vec<(ResourceId, mpsc::Sender<BootstrapRequest>)> = self
-            .resource_ids()
-            .into_iter()
-            .filter(|id| self.sessions.registry.resource(*id).is_some())
-            .filter_map(|id| {
-                let handle = self.resource_handle(id)?;
-                let session = handle.agent_session().ok()?;
-                handle
-                    .parent
-                    .filter(|parent| parents.contains(parent))
-                    .map(|_| (id, session.bootstrap.clone()))
-            })
-            .collect();
-        carried.sort_by_key(|(id, _)| self.resource_wire(*id));
-        carried
-    }
-
     /// Live Terminals with wire ids, in session then membership order,
     /// with their handles.
-    fn carried_panes(&self) -> Vec<(ResourceId, ResourceHandle)> {
+    pub(crate) fn carried_panes(&self) -> Vec<(ResourceId, ResourceHandle)> {
         let mut sessions: Vec<SessionId> = self
             .sessions
             .registry
@@ -315,40 +267,6 @@ fn pane_blob(
         retained_exit,
         retain_secs,
         key: None,
-    }
-}
-
-/// Cut one agent session's record stream for the upgrade, sealing it there
-/// when `seal` (see [`BootstrapRequest::seal`]). `None` when the engine is
-/// gone: the session is then simply not carried.
-pub(crate) async fn request_agent_session_cut(
-    bootstrap: &mpsc::Sender<BootstrapRequest>,
-    seal: bool,
-) -> Option<AgentSessionBootstrap> {
-    let (reply, rx) = oneshot::channel();
-    let request = BootstrapRequest {
-        reply,
-        seal: seal.then_some(true),
-        after_seq: None,
-    };
-    bootstrap.send(request).await.ok()?;
-    rx.await.ok()
-}
-
-/// The stream cut a resumed engine continues from, as the blob carried it.
-fn agent_session_cut(carried: &AgentSessionBlob) -> AgentSessionBootstrap {
-    AgentSessionBootstrap {
-        base_seq: carried.base_seq,
-        resume_after_seq: None,
-        records: carried
-            .records
-            .iter()
-            .map(|record| bytes::Bytes::from(record.clone()))
-            .collect(),
-        dropped: carried.dropped,
-        ended: carried.ended,
-        native_publications: carried.native_publications.clone(),
-        native_publication_high_water: carried.native_publication_high_water,
     }
 }
 

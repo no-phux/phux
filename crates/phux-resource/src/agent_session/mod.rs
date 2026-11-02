@@ -64,6 +64,10 @@ impl crate::ResourceOps for AgentSessionHandle {
     fn upgrade_sender(&self) -> Option<mpsc::Sender<crate::handoff::UpgradeHandleRequest>> {
         None
     }
+
+    fn is_live_stream(&self) -> bool {
+        !self.ended.load(Ordering::Relaxed)
+    }
 }
 
 /// The `AgentSession` facet of a [`ResourceHandle`].
