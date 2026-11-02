@@ -219,6 +219,11 @@ pub struct TerminalRenderer<'alloc> {
     /// Pooled render state + row/cell iterators.
     pool: RenderPool<'alloc>,
     kitty_placements: libghostty_vt::kitty::graphics::PlacementIterator<'alloc>,
+    /// The kitty images and placements the outer terminal holds for this
+    /// pane, so a paint re-sends only what changed. Forgotten with the front
+    /// buffer as a whole: on a forced paint and on every outside
+    /// [`Self::invalidate_front`].
+    kitty_residency: kitty_replay::KittyResidency,
     /// Last-seen authoritative cursor position (outer-viewport coords:
     /// pane-local cursor plus [`Self::last_origin`]). Updated at the end of
     /// [`Self::render`]. The host-cursor restore paths read this. `None`
@@ -255,7 +260,8 @@ pub struct TerminalRenderer<'alloc> {
 ///
 /// The renderer invalidates itself on a forced paint, a moved origin or
 /// extent, a generation change, a primary/alternate screen switch, a
-/// selection change, and a kitty-graphics replay. Outside writers call
+/// selection change, and a kitty-graphics replay that wrote or removed a
+/// classic placement. Outside writers call
 /// [`TerminalRenderer::invalidate_front`] / `invalidate_front_rows`: the
 /// predictive-echo overlay, the full-frame and SIGWINCH clears, a stdout
 /// resync, an unshipped frame, modal overlays, and the copy-mode strip.
@@ -398,6 +404,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
         Ok(Self {
             pool: RenderPool::new()?,
             kitty_placements: libghostty_vt::kitty::graphics::PlacementIterator::new()?,
+            kitty_residency: kitty_replay::KittyResidency::default(),
             last_cursor: None,
             last_cursor_local: None,
             last_origin: (0, 0),
@@ -423,10 +430,12 @@ impl<'alloc> TerminalRenderer<'alloc> {
     }
 
     /// Forget what this pane last emitted, so each row's next paint rewrites
-    /// it whole. Call after writing over the pane's cells outside the renderer
-    /// without a following forced repaint.
+    /// it whole and its kitty images are re-sent. Call after writing over the
+    /// pane's cells outside the renderer without a following forced repaint,
+    /// or when emitted bytes may not have reached the terminal.
     pub fn invalidate_front(&mut self) {
         self.front.invalidate_all();
+        self.kitty_residency.forget();
     }
 
     /// Forget the pane-local `rows` only (the predictive-echo overlay knows
@@ -662,11 +671,17 @@ impl<'alloc> TerminalRenderer<'alloc> {
             cells,
         } = projected?;
         let dirty = frame_dirty(&snapshot, force_full)?;
+        if force_full {
+            // The full-frame `ED2` may have deleted the outer terminal's
+            // images, and the in-place path paints over them.
+            self.kitty_residency.forget();
+        }
 
         if matches!(dirty, Dirty::Clean) {
             let emitted_kitty = replay_kitty(
                 walk.terminal,
                 &mut self.kitty_placements,
+                &mut self.kitty_residency,
                 &mut self.front,
                 out,
                 (origin, clip),
@@ -715,6 +730,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
         let _ = replay_kitty(
             walk.terminal,
             &mut self.kitty_placements,
+            &mut self.kitty_residency,
             &mut self.front,
             out,
             (origin, clip),
@@ -732,22 +748,27 @@ impl<'alloc> TerminalRenderer<'alloc> {
     }
 }
 
-/// Replay the pane's kitty graphics over its cells, returning whether any
-/// placement was emitted (which forgets the front buffer).
+/// Bring the outer terminal's copy of the pane's kitty graphics up to date,
+/// emitting only what `residency` says it lacks. Returns whether a classic
+/// placement was written or removed: that moved the cursor and drew over
+/// cells, so it forgets the front buffer. Unchanged images, payload uploads
+/// and Unicode-placeholder placements leave cells and front alone.
 fn replay_kitty<'alloc>(
     terminal: &GhosttyTerminal<'alloc, '_>,
     placements: &mut libghostty_vt::kitty::graphics::PlacementIterator<'alloc>,
+    residency: &mut kitty_replay::KittyResidency,
     front: &mut FrontBuffer,
     out: &mut impl Write,
     at: ((u16, u16), (u16, u16)),
 ) -> Result<bool, RenderError> {
     let (origin, clip) = at;
-    let emitted =
-        kitty_replay::emit_kitty_graphics_replay(terminal, placements, out, origin, clip)?;
-    if emitted {
+    let touched_cells = kitty_replay::emit_kitty_graphics_replay(
+        terminal, placements, residency, out, origin, clip,
+    )?;
+    if touched_cells {
         front.invalidate_all();
     }
-    Ok(emitted)
+    Ok(touched_cells)
 }
 
 /// The frame-level dirty verdict this paint acts on.
