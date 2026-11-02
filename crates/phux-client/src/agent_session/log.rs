@@ -100,6 +100,14 @@ pub(super) async fn read_retained(
             // A session closed mid-bootstrap still answers with complete lines.
             Absorbed::Ready => return Ok((retained, false)),
             Absorbed::Closed => return Ok((retained, true)),
+            Absorbed::Gap {
+                after_seq,
+                next_seq,
+            } => {
+                return Err(reader.protocol_error(format!(
+                    "retained records jump from seq {after_seq} to {next_seq}"
+                )));
+            }
             Absorbed::Nothing => {}
         }
     }
@@ -146,6 +154,15 @@ pub(super) async fn follow(
                 }
             }
             Absorbed::Closed => break LogEnd::SessionClosed,
+            Absorbed::Gap {
+                after_seq,
+                next_seq,
+            } => {
+                break LogEnd::RecordsLost {
+                    after_seq,
+                    next_seq,
+                };
+            }
             Absorbed::Ready | Absorbed::Nothing => {}
         }
     })
@@ -173,6 +190,14 @@ pub(super) enum Absorbed {
     Ready,
     /// The session closed.
     Closed,
+    /// The stream resumed at `next_seq` after evicting records this read
+    /// never saw; nothing past `after_seq` was delivered.
+    Gap {
+        /// The last record this read holds.
+        after_seq: u64,
+        /// The first record the stream still has.
+        next_seq: u64,
+    },
     /// A frame that carries nothing for this read.
     Nothing,
 }
@@ -182,6 +207,8 @@ pub(super) enum Absorbed {
 pub(super) struct Reader {
     resource: ResourceId,
     pub(super) buffer: Vec<u8>,
+    /// The last record this read has absorbed.
+    last_seq: Option<u64>,
 }
 
 impl Reader {
@@ -189,7 +216,30 @@ impl Reader {
         Self {
             resource,
             buffer: Vec::new(),
+            last_seq: None,
         }
+    }
+
+    /// Drop records this read already holds and refuse to bridge a hole. A
+    /// server replaces a lagged generation with its full retained ring, which
+    /// either overlaps what was delivered or starts after evicted records.
+    fn admit(&mut self, records: Vec<AgentEventRecord>) -> Absorbed {
+        let fresh: Vec<_> = match self.last_seq {
+            Some(last) => records.into_iter().filter(|r| r.seq > last).collect(),
+            None => records,
+        };
+        if let (Some(after_seq), Some(first)) = (self.last_seq, fresh.first())
+            && first.seq > after_seq.saturating_add(1)
+        {
+            return Absorbed::Gap {
+                after_seq,
+                next_seq: first.seq,
+            };
+        }
+        if let Some(last) = fresh.last() {
+            self.last_seq = Some(last.seq);
+        }
+        Absorbed::Records(fresh)
     }
 
     pub(super) fn absorb(&mut self, frame: FrameKind) -> Result<Absorbed, AgentSessionError> {
@@ -199,7 +249,10 @@ impl Reader {
             | FrameKind::BootstrapReady { .. }) => self.absorb_bootstrap(bootstrap),
             FrameKind::ResourceOutput {
                 terminal_id, bytes, ..
-            } if terminal_id == self.resource => self.decode_live(&bytes).map(Absorbed::Records),
+            } if terminal_id == self.resource => {
+                let records = self.decode_live(&bytes)?;
+                Ok(self.admit(records))
+            }
             FrameKind::ResourceClosed {
                 terminal_id: terminal,
                 ..
@@ -243,7 +296,10 @@ impl Reader {
                 terminal_id,
                 payload,
                 ..
-            } if terminal_id == self.resource => self.decode(&payload).map(Absorbed::Records),
+            } if terminal_id == self.resource => {
+                let records = self.decode(&payload)?;
+                Ok(self.admit(records))
+            }
             FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == self.resource => {
                 self.finish()?;
                 Ok(Absorbed::Ready)

@@ -169,6 +169,15 @@ pub enum LogEnd {
     Disconnected,
     /// The sink returned `false`.
     Stopped,
+    /// While following, the server could not replay records this read missed:
+    /// they were evicted from the session's ring. Records after `after_seq`
+    /// were not delivered; read the log again for what is still retained.
+    RecordsLost {
+        /// The last record delivered.
+        after_seq: u64,
+        /// The oldest record the session still retains.
+        next_seq: u64,
+    },
 }
 
 /// What [`log`] returns.

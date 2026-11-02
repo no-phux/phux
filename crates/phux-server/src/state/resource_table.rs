@@ -430,6 +430,29 @@ impl ResourceTable {
         (cancel, done, last_valid_seq, prior)
     }
 
+    /// Move a still-current pump onto a fresh bootstrap id before it publishes
+    /// a replacement generation, so a later re-attach tombstones the right
+    /// one. `None` when the pump was displaced or ids are exhausted.
+    pub(super) fn advance_pump_generation(
+        &mut self,
+        client: ClientId,
+        terminal: ResourceId,
+        last_valid_seq: &LastValidAttachSequence,
+    ) -> Option<BootstrapId> {
+        let current = self
+            .pumps
+            .get(&(client, terminal))
+            .is_some_and(|generation| Arc::ptr_eq(&generation.last_valid_seq, last_valid_seq));
+        if !current {
+            return None;
+        }
+        let bootstrap_id = self.next_bootstrap_id(client)?;
+        if let Some(generation) = self.pumps.get_mut(&(client, terminal)) {
+            generation.bootstrap_id = bootstrap_id;
+        }
+        Some(bootstrap_id)
+    }
+
     /// Next per-terminal bootstrap id for `client`; `None` on overflow (the
     /// connection must reconnect).
     pub(super) fn next_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {

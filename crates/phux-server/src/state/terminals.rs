@@ -128,6 +128,19 @@ impl ServerState {
         self.resources.replace_pump(client, terminal, bootstrap_id)
     }
 
+    /// Relabel the current `ATTACH_RESOURCE` pump that owns `last_valid_seq`
+    /// for a replacement generation (see
+    /// `ResourceTable::advance_pump_generation`).
+    pub(crate) fn advance_attach_terminal_pump(
+        &mut self,
+        client: ClientId,
+        terminal: ResourceId,
+        last_valid_seq: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Option<BootstrapId> {
+        self.resources
+            .advance_pump_generation(client, terminal, last_valid_seq)
+    }
+
     /// The next per-terminal bootstrap id for `client`; `None` when
     /// exhausted.
     pub fn next_attach_terminal_bootstrap_id(&mut self, client: ClientId) -> Option<BootstrapId> {

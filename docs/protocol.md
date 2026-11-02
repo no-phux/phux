@@ -138,6 +138,10 @@ On gaps, overflow, resize or codec discontinuity, fence and recut; never
 silently skip bytes or replay them into an obsolete replica. Consumer
 mailboxes, stale-output recovery and resync attempts are bounded; failure
 ends in an explicit error rather than unbounded backlog or a frozen view.
+An `AgentSession` consumer that lags is replayed the skipped records from
+the session's ring in the same generation. If the ring has evicted any of
+them, the generation is tombstoned with `OUTBOUND_GAP` at the last delivered
+record and replaced by a full retained bootstrap.
 Only StateSync live output gets a cumulative, generation-bound `FRAME_ACK`,
 after application to the replica; raw output and bootstrap never do.
 Normal reliable StateSync advances its server reference on emit: an ACK is
