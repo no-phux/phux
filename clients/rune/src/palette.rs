@@ -9,9 +9,14 @@ use crate::keys::{COMMANDS, Shortcut};
 /// One thing the palette can do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
-    Terminal { id: ResourceId, session: String },
+    Terminal {
+        id: ResourceId,
+        session: String,
+    },
     Session(String),
     Action(Shortcut),
+    /// A theme by id; `None` is System.
+    Theme(Option<&'static str>),
 }
 
 /// The most rows the palette renders; the highlight stays within them.
@@ -35,7 +40,7 @@ pub struct Hit {
 }
 
 /// Everything the palette lists, in its empty-query order: terminals, then
-/// sessions, then actions.
+/// sessions, then actions, then themes.
 pub fn items(topology: Option<&Topology>) -> Vec<Item> {
     let mut out = Vec::new();
     if let Some(topology) = topology {
@@ -69,6 +74,25 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
             detail: command.hint(),
             kind: "action",
             target: Target::Action(command.action),
+        });
+    }
+    out.push(Item {
+        title: "Theme: System".to_owned(),
+        detail: "follows the OS".to_owned(),
+        kind: "theme",
+        target: Target::Theme(None),
+    });
+    for theme in crate::theme::all() {
+        out.push(Item {
+            title: format!("Theme: {}", theme.name),
+            detail: match (theme.id, theme.dark) {
+                ("ghostty", _) => "from your Ghostty config",
+                (_, true) => "dark",
+                (_, false) => "light",
+            }
+            .to_owned(),
+            kind: "theme",
+            target: Target::Theme(Some(theme.id)),
         });
     }
     out
@@ -212,6 +236,17 @@ mod tests {
         for action in [Shortcut::CloseTab, Shortcut::NextTab, Shortcut::PreviousTab] {
             assert!(list.iter().any(|i| i.target == Target::Action(action)));
         }
+    }
+
+    #[test]
+    fn every_theme_is_a_row_and_its_name_finds_it() {
+        let hits = rank(items(None), "nord");
+        assert_eq!(hits[0].item.target, Target::Theme(Some("nord")));
+        let themes = items(None)
+            .iter()
+            .filter(|i| matches!(i.target, Target::Theme(_)))
+            .count();
+        assert_eq!(themes, crate::theme::all().count() + 1);
     }
 
     #[test]

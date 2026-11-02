@@ -10,7 +10,7 @@ use super::overlay::key_hint;
 use super::{CAPTION, Ink, LABEL, Sheet, pressable, updates};
 use crate::desk::Desk;
 use crate::grid::{MAX_FONT_SIZE, MIN_FONT_SIZE};
-use crate::theme::{THEMES, Theme, color};
+use crate::theme::{self, Theme, color};
 
 const WIDTH: f32 = 560.0;
 const TILE_W: f32 = 120.0;
@@ -73,7 +73,7 @@ fn themes(desk: &Desk, ink: &Ink) -> El {
         .label("Theme")
         .focus_group();
     grid = grid.child(tile(None, desk.settings.theme.is_none(), ink));
-    for theme in THEMES {
+    for theme in theme::all() {
         grid = grid.child(tile(Some(theme), desk.settings.theme == Some(theme), ink));
     }
     grid

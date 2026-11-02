@@ -55,6 +55,12 @@ impl Desk {
         self.settings_open = false;
     }
 
+    /// Settings, whatever was open; the theme grid is its first section.
+    pub fn show_settings(&mut self) {
+        self.close_inbox();
+        self.settings_open = true;
+    }
+
     /// Install the chosen palette on the runtime. Live panes repaint with it.
     pub(super) fn apply_theme(&mut self) {
         if let Some(client) = &self.client {
@@ -105,12 +111,13 @@ impl Desk {
         if tx.focused().is_some() {
             return;
         }
+        let themes: Vec<_> = theme::all().collect();
         let at = self
             .settings
             .theme
-            .and_then(|t| theme::THEMES.iter().position(|x| x == t))
+            .and_then(|t| themes.iter().position(|x| *x == t))
             .map_or(0, |i| i + 1);
-        let count = theme::THEMES.len() + 1;
+        let count = themes.len() + 1;
         let step = match event.key {
             Key::Escape => return self.close_settings(),
             Key::Right | Key::Down => 1,
@@ -118,7 +125,7 @@ impl Desk {
             _ => return,
         };
         let next = (at + step) % count;
-        self.choose_theme(next.checked_sub(1).map(|i| &theme::THEMES[i]));
+        self.choose_theme(next.checked_sub(1).map(|i| themes[i]));
     }
 
     /// Selection finished: hand it to the clipboard when asked to.

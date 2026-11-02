@@ -1,0 +1,27 @@
+[
+  {"t": 1.2, "type": "type", "text": "showcase"},
+  {"t": 1.8, "type": "key", "name": "Enter"},
+
+  {"t": 4.0, "type": "mark", "name": "palette"},
+  {"t": 4.0, "type": "key", "name": "k", "cmd": true},
+  {"t": 4.6, "type": "type", "text": "change theme"},
+  {"t": 5.6, "type": "key", "name": "Enter"},
+
+  {"t": 6.6, "type": "mark", "name": "settings"},
+  {"t": 6.6, "type": "tap", "key": "theme-Tokyo Night"},
+  {"t": 7.6, "type": "tap", "key": "theme-Rosé Pine"},
+  {"t": 8.6, "type": "tap", "key": "theme-Gruvbox Dark"},
+  {"t": 9.6, "type": "tap", "key": "theme-Nord"},
+  {"t": 10.6, "type": "tap", "key": "theme-Catppuccin Latte"},
+  {"t": 11.6, "type": "tap", "key": "theme-GitHub Light"},
+  {"t": 12.6, "type": "tap", "key": "theme-Ghostty"},
+  {"t": 13.8, "type": "tap", "key": "theme-Dracula"},
+  {"t": 15.0, "type": "key", "name": "Escape"},
+
+  {"t": 16.0, "type": "mark", "name": "palette-theme"},
+  {"t": 16.0, "type": "key", "name": "k", "cmd": true},
+  {"t": 16.6, "type": "type", "text": "midnight"},
+  {"t": 17.6, "type": "key", "name": "Enter"},
+
+  {"t": 19.6, "type": "mark", "name": "end"}
+]

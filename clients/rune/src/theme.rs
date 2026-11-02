@@ -2,11 +2,15 @@
 //! window's chrome drawn from the same colours.
 //!
 //! "System" installs nothing: programs keep the engine's defaults and the
-//! chrome follows the OS. A program's own OSC colours beat any theme.
+//! chrome follows the OS. A program's own OSC colours beat any theme. A
+//! Ghostty config on this machine adds one more theme, read at launch.
 
 use phux_client_runtime::engine::TerminalTheme;
 use phux_client_runtime::publication::Rgb;
 use rune::Color;
+
+mod ghostty;
+pub use ghostty::ghostty;
 
 /// What a readable role must clear against the surfaces it sits on: WCAG AA
 /// for body text.
@@ -207,10 +211,51 @@ impl Theme {
 }
 
 /// Where the Catppuccin pair sits in `THEMES`.
-const MOCHA: usize = 0;
-const LATTE: usize = 6;
+const MOCHA: usize = 3;
+const LATTE: usize = 18;
 
+/// Built in, in picker order: dark themes, then light, as the GPUI desktop
+/// lists them.
 pub const THEMES: &[Theme] = &[
+    Theme {
+        id: "midnight",
+        name: "phux Midnight",
+        dark: true,
+        ansi: [
+            0x15161e, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xa9b1d6,
+            0x414868, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xc0caf5,
+        ],
+        foreground: 0xd8dee9,
+        background: 0x0d1017,
+        cursor: 0xc0caf5,
+        accent: 0x7aa2f7,
+    },
+    Theme {
+        id: "nord",
+        name: "Nord",
+        dark: true,
+        ansi: [
+            0x3b4252, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x88c0d0, 0xe5e9f0,
+            0x4c566a, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x8fbcbb, 0xeceff4,
+        ],
+        foreground: 0xd8dee9,
+        background: 0x2e3440,
+        cursor: 0xd8dee9,
+        accent: 0x88c0d0,
+    },
+    Theme {
+        id: "dracula",
+        name: "Dracula",
+        dark: true,
+        ansi: [
+            0x21222c, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0xff79c6, 0x8be9fd, 0xf8f8f2,
+            0x6272a4, 0xff6e6e, 0x69ff94, 0xffffa5, 0xd6acff, 0xff92df, 0xa4ffff, 0xffffff,
+        ],
+        foreground: 0xf8f8f2,
+        background: 0x282a36,
+        cursor: 0xf8f8f2,
+        accent: 0xbd93f9,
+    },
     Theme {
         id: "catppuccin-mocha",
         name: "Catppuccin Mocha",
@@ -238,30 +283,43 @@ pub const THEMES: &[Theme] = &[
         accent: 0x7aa2f7,
     },
     Theme {
-        id: "rose-pine",
-        name: "Rosé Pine",
+        id: "catppuccin-frappe",
+        name: "Catppuccin Frappé",
         dark: true,
         ansi: [
-            0x26233a, 0xeb6f92, 0x31748f, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xebbcba, 0xe0def4,
-            0x6e6a86, 0xeb6f92, 0x31748f, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xebbcba, 0xe0def4,
+            0x51576d, 0xe78284, 0xa6d189, 0xe5c890, 0x8caaee, 0xf4b8e4, 0x81c8be, 0xb5bfe2,
+            0x626880, 0xe78284, 0xa6d189, 0xe5c890, 0x8caaee, 0xf4b8e4, 0x81c8be, 0xa5adce,
         ],
-        foreground: 0xe0def4,
-        background: 0x191724,
-        cursor: 0xe0def4,
-        accent: 0xc4a7e7,
+        foreground: 0xc6d0f5,
+        background: 0x303446,
+        cursor: 0xf2d5cf,
+        accent: 0xca9ee6,
     },
     Theme {
-        id: "dracula",
-        name: "Dracula",
+        id: "catppuccin-macchiato",
+        name: "Catppuccin Macchiato",
         dark: true,
         ansi: [
-            0x21222c, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0xff79c6, 0x8be9fd, 0xf8f8f2,
-            0x6272a4, 0xff6e6e, 0x69ff94, 0xffffa5, 0xd6acff, 0xff92df, 0xa4ffff, 0xffffff,
+            0x494d64, 0xed8796, 0xa6da95, 0xeed49f, 0x8aadf4, 0xf5bde6, 0x8bd5ca, 0xb8c0e0,
+            0x5b6078, 0xed8796, 0xa6da95, 0xeed49f, 0x8aadf4, 0xf5bde6, 0x8bd5ca, 0xa5adcb,
         ],
-        foreground: 0xf8f8f2,
-        background: 0x282a36,
-        cursor: 0xf8f8f2,
-        accent: 0xbd93f9,
+        foreground: 0xcad3f5,
+        background: 0x24273a,
+        cursor: 0xf4dbd6,
+        accent: 0xc6a0f6,
+    },
+    Theme {
+        id: "tokyo-night-storm",
+        name: "Tokyo Night Storm",
+        dark: true,
+        ansi: [
+            0x1d202f, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xa9b1d6,
+            0x414868, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xc0caf5,
+        ],
+        foreground: 0xc0caf5,
+        background: 0x24283b,
+        cursor: 0xc0caf5,
+        accent: 0x7aa2f7,
     },
     Theme {
         id: "gruvbox-dark",
@@ -277,17 +335,121 @@ pub const THEMES: &[Theme] = &[
         accent: 0xfe8019,
     },
     Theme {
-        id: "nord",
-        name: "Nord",
+        id: "kanagawa",
+        name: "Kanagawa Wave",
         dark: true,
         ansi: [
-            0x3b4252, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x88c0d0, 0xe5e9f0,
-            0x4c566a, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x8fbcbb, 0xeceff4,
+            0x16161d, 0xc34043, 0x76946a, 0xc0a36e, 0x7e9cd8, 0x957fb8, 0x6a9589, 0xc8c093,
+            0x727169, 0xe82424, 0x98bb6c, 0xe6c384, 0x7fb4ca, 0x938aa9, 0x7aa89f, 0xdcd7ba,
         ],
-        foreground: 0xd8dee9,
-        background: 0x2e3440,
-        cursor: 0xd8dee9,
-        accent: 0x88c0d0,
+        foreground: 0xdcd7ba,
+        background: 0x1f1f28,
+        cursor: 0xc8c093,
+        accent: 0x7e9cd8,
+    },
+    Theme {
+        id: "everforest-dark",
+        name: "Everforest Dark",
+        dark: true,
+        ansi: [
+            0x475258, 0xe67e80, 0xa7c080, 0xdbbc7f, 0x7fbbb3, 0xd699b6, 0x83c092, 0xd3c6aa,
+            0x7a8478, 0xe67e80, 0xa7c080, 0xdbbc7f, 0x7fbbb3, 0xd699b6, 0x83c092, 0xd3c6aa,
+        ],
+        foreground: 0xd3c6aa,
+        background: 0x2d353b,
+        cursor: 0xd3c6aa,
+        accent: 0x7fbbb3,
+    },
+    Theme {
+        id: "rose-pine",
+        name: "Rosé Pine",
+        dark: true,
+        ansi: [
+            0x26233a, 0xeb6f92, 0x31748f, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xebbcba, 0xe0def4,
+            0x6e6a86, 0xeb6f92, 0x31748f, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xebbcba, 0xe0def4,
+        ],
+        foreground: 0xe0def4,
+        background: 0x191724,
+        cursor: 0xe0def4,
+        accent: 0xc4a7e7,
+    },
+    Theme {
+        id: "rose-pine-moon",
+        name: "Rosé Pine Moon",
+        dark: true,
+        ansi: [
+            0x393552, 0xeb6f92, 0x3e8fb0, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
+            0x6e6a86, 0xeb6f92, 0x3e8fb0, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
+        ],
+        foreground: 0xe0def4,
+        background: 0x232136,
+        cursor: 0xe0def4,
+        accent: 0xc4a7e7,
+    },
+    Theme {
+        id: "one-dark",
+        name: "One Dark",
+        dark: true,
+        ansi: [
+            0x282c34, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf,
+            0x5c6370, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xffffff,
+        ],
+        foreground: 0xabb2bf,
+        background: 0x282c34,
+        cursor: 0x528bff,
+        accent: 0x61afef,
+    },
+    Theme {
+        id: "github-dark",
+        name: "GitHub Dark",
+        dark: true,
+        ansi: [
+            0x484f58, 0xff7b72, 0x3fb950, 0xd29922, 0x58a6ff, 0xbc8cff, 0x39c5cf, 0xb1bac4,
+            0x6e7681, 0xffa198, 0x56d364, 0xe3b341, 0x79c0ff, 0xd2a8ff, 0x56d4dd, 0xffffff,
+        ],
+        foreground: 0xe6edf3,
+        background: 0x0d1117,
+        cursor: 0x2f81f7,
+        accent: 0x2f81f7,
+    },
+    Theme {
+        id: "solarized-dark",
+        name: "Solarized Dark",
+        dark: true,
+        ansi: [
+            0x073642, 0xdc322f, 0x859900, 0xb58900, 0x268bd2, 0xd33682, 0x2aa198, 0xeee8d5,
+            0x002b36, 0xcb4b16, 0x586e75, 0x657b83, 0x839496, 0x6c71c4, 0x93a1a1, 0xfdf6e3,
+        ],
+        foreground: 0x93a1a1,
+        background: 0x002b36,
+        cursor: 0x93a1a1,
+        accent: 0x268bd2,
+    },
+    Theme {
+        id: "night-owl",
+        name: "Night Owl",
+        dark: true,
+        ansi: [
+            0x011627, 0xef5350, 0x22da6e, 0xaddb67, 0x82aaff, 0xc792ea, 0x21c7a8, 0xffffff,
+            0x575656, 0xef5350, 0x22da6e, 0xffeb95, 0x82aaff, 0xc792ea, 0x7fdbca, 0xffffff,
+        ],
+        foreground: 0xd6deeb,
+        background: 0x011627,
+        cursor: 0x80a4c2,
+        accent: 0x82aaff,
+    },
+    Theme {
+        id: "flexoki-dark",
+        name: "Flexoki Dark",
+        dark: true,
+        ansi: [
+            0x100f0f, 0xd14d41, 0x879a39, 0xd0a215, 0x4385be, 0xce5d97, 0x3aa99f, 0x878580,
+            0x575653, 0xaf3029, 0x66800b, 0xad8301, 0x205ea6, 0xa02f6f, 0x24837b, 0xcecdc3,
+        ],
+        foreground: 0xcecdc3,
+        background: 0x100f0f,
+        cursor: 0xcecdc3,
+        accent: 0x4385be,
     },
     Theme {
         id: "catppuccin-latte",
@@ -303,6 +465,32 @@ pub const THEMES: &[Theme] = &[
         accent: 0x8839ef,
     },
     Theme {
+        id: "gruvbox-light",
+        name: "Gruvbox Light",
+        dark: false,
+        ansi: [
+            0xfbf1c7, 0xcc241d, 0x98971a, 0xd79921, 0x458588, 0xb16286, 0x689d6a, 0x7c6f64,
+            0x928374, 0x9d0006, 0x79740e, 0xb57614, 0x076678, 0x8f3f71, 0x427b58, 0x3c3836,
+        ],
+        foreground: 0x3c3836,
+        background: 0xfbf1c7,
+        cursor: 0x3c3836,
+        accent: 0x076678,
+    },
+    Theme {
+        id: "rose-pine-dawn",
+        name: "Rosé Pine Dawn",
+        dark: false,
+        ansi: [
+            0xf2e9e1, 0xb4637a, 0x286983, 0xea9d34, 0x56949f, 0x907aa9, 0xd7827e, 0x575279,
+            0x9893a5, 0xb4637a, 0x286983, 0xea9d34, 0x56949f, 0x907aa9, 0xd7827e, 0x575279,
+        ],
+        foreground: 0x575279,
+        background: 0xfaf4ed,
+        cursor: 0x575279,
+        accent: 0x907aa9,
+    },
+    Theme {
         id: "solarized-light",
         name: "Solarized Light",
         dark: false,
@@ -315,11 +503,69 @@ pub const THEMES: &[Theme] = &[
         cursor: 0x586e75,
         accent: 0x268bd2,
     },
+    Theme {
+        id: "github-light",
+        name: "GitHub Light",
+        dark: false,
+        ansi: [
+            0x24292f, 0xcf222e, 0x116329, 0x4d2d00, 0x0969da, 0x8250df, 0x1b7c83, 0x6e7781,
+            0x57606a, 0xa40e26, 0x1a7f37, 0x633c01, 0x218bff, 0xa475f9, 0x3192aa, 0x8c959f,
+        ],
+        foreground: 0x1f2328,
+        background: 0xffffff,
+        cursor: 0x0969da,
+        accent: 0x0969da,
+    },
+    Theme {
+        id: "tokyo-night-day",
+        name: "Tokyo Night Day",
+        dark: false,
+        ansi: [
+            0xe9e9ed, 0xf52a65, 0x587539, 0x8c6c3e, 0x2e7de9, 0x9854f1, 0x007197, 0x6172b0,
+            0xa1a6c5, 0xf52a65, 0x587539, 0x8c6c3e, 0x2e7de9, 0x9854f1, 0x007197, 0x3760bf,
+        ],
+        foreground: 0x3058b0,
+        background: 0xe1e2e7,
+        cursor: 0x3058b0,
+        accent: 0x2e7de9,
+    },
+    Theme {
+        id: "flexoki-light",
+        name: "Flexoki Light",
+        dark: false,
+        ansi: [
+            0x100f0f, 0xaf3029, 0x66800b, 0xad8301, 0x205ea6, 0xa02f6f, 0x24837b, 0x6f6e69,
+            0xb7b5ac, 0xd14d41, 0x879a39, 0xd0a215, 0x4385be, 0xce5d97, 0x3aa99f, 0xcecdc3,
+        ],
+        foreground: 0x100f0f,
+        background: 0xfffcf0,
+        cursor: 0x100f0f,
+        accent: 0x205ea6,
+    },
+    Theme {
+        id: "everforest-light",
+        name: "Everforest Light",
+        dark: false,
+        ansi: [
+            0x5c6a72, 0xf85552, 0x8da101, 0xdfa000, 0x3a94c5, 0xdf69ba, 0x35a77c, 0xdfddc8,
+            0x829181, 0xf85552, 0x8da101, 0xdfa000, 0x3a94c5, 0xdf69ba, 0x35a77c, 0xe6e2cc,
+        ],
+        foreground: 0x4f5d65,
+        background: 0xfdf6e3,
+        cursor: 0x4f5d65,
+        accent: 0x3a94c5,
+    },
 ];
 
-/// A remembered id; `None` is System, and so is one no longer built in.
+/// Every theme on offer, in picker order: the Ghostty config's, then the
+/// built-ins.
+pub fn all() -> impl Iterator<Item = &'static Theme> {
+    ghostty().into_iter().chain(THEMES)
+}
+
+/// A remembered id; `None` is System, and so is one no longer on offer.
 pub fn find(id: &str) -> Option<&'static Theme> {
-    THEMES.iter().find(|t| t.id == id)
+    all().find(|t| t.id == id)
 }
 
 #[cfg(test)]
