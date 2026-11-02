@@ -46,6 +46,14 @@ impl ResourceApp for TerminalApp {
         fence_terminal_consumer(handle, client).boxed_local()
     }
 
+    fn frame<'a>(
+        &'a self,
+        request: crate::runtime::apps::ResourceFrame<'a>,
+        frame: phux_protocol::wire::frame::FrameKind,
+    ) -> LocalBoxFuture<'a, crate::runtime::connections::dispatch::FrameFlow> {
+        crate::runtime::apps::terminal::frames::serve(request, frame).boxed_local()
+    }
+
     fn command<'a>(
         &'a self,
         ctx: &'a CommandContext,

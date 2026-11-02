@@ -180,6 +180,45 @@ fn crossings(crossings_in: fn(&str, &str) -> usize) -> BTreeMap<String, usize> {
     found
 }
 
+/// Frames about one resource reach its kind through `ResourceApp::frame`:
+/// `connections/` names no stream helper and branches on no kind.
+#[test]
+fn connections_hand_resource_frames_to_the_app() {
+    const HELPERS: [&str; 7] = [
+        "is_agent_session",
+        "handle_frame_ack",
+        "handle_terminal_resize",
+        "serve_history_request",
+        "route_client_input",
+        "dispatch_terminal_reply",
+        "ResourceKind::",
+    ];
+    fn scan(dir: &Path, root: &Path, hits: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("entry").path();
+            let relative = path.strip_prefix(root).expect("under src");
+            if path.is_dir() {
+                scan(&path, root, hits);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !is_test_source(&relative.to_string_lossy())
+            {
+                let source = std::fs::read_to_string(&path).expect("read source");
+                hits.extend(
+                    HELPERS
+                        .iter()
+                        .filter(|helper| source.contains(**helper))
+                        .map(|helper| format!("{}: {helper}", relative.display())),
+                );
+            }
+        }
+    }
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo and nextest");
+    let src = Path::new(&manifest).join("src");
+    let mut hits = Vec::new();
+    scan(&src.join("runtime/connections"), &src, &mut hits);
+    assert!(hits.is_empty(), "connections routes by kind: {hits:?}");
+}
+
 #[test]
 fn the_host_reaches_the_terminal_engine_only_through_its_app() {
     let found = crossings(terminal_crossings);

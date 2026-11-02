@@ -339,7 +339,7 @@ fn select_hello_profile(
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::runtime) struct NegotiatedConnection {
+pub(crate) struct NegotiatedConnection {
     pub(in crate::runtime) client_caps: ClientCapabilities,
     pub(in crate::runtime) profile: BootstrapProfile,
     pub(in crate::runtime) limits: BootstrapLimits,
@@ -357,7 +357,7 @@ impl NegotiatedConnection {
         self.server_features.contains(ServerFeature::QuicStreams)
     }
 
-    pub(super) const fn accepts_terminal_reply(self) -> bool {
+    pub(in crate::runtime) const fn accepts_terminal_reply(self) -> bool {
         self.server_features.contains(ServerFeature::TerminalReply)
     }
 }

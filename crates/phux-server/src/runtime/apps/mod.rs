@@ -17,11 +17,15 @@ use std::time::Duration;
 
 use futures_util::future::LocalBoxFuture;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
-use phux_protocol::ids::{OperationId, ResourceKey, Revision, SatelliteHost, StreamId};
-use phux_protocol::wire::frame::{Command, CommandResult, SpawnError, SpawnResource};
+use phux_protocol::ids::{OperationId, ResourceId, ResourceKey, Revision, SatelliteHost, StreamId};
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnError, SpawnResource};
 use tokio_util::sync::CancellationToken;
 
+use self::terminal::input_lane::{InputCredits, InputLaneHandle};
 use super::commands::{AttachResourceFailure, CommandContext};
+use super::connections::dispatch::FrameFlow;
+use super::connections::hello::NegotiatedConnection;
+use super::connections::plumbing::ClientPlumbing;
 use super::operation_dedupe::OperationClaim;
 use crate::resource::{ResourceHandle, ResourceKind};
 use crate::state::upgrade_blob::RebuiltSession;
@@ -108,6 +112,24 @@ pub(crate) trait StreamUpgrade {
     fn lift(&mut self) -> LocalBoxFuture<'_, ()>;
 }
 
+/// What serving one client frame about one resource may touch.
+pub(crate) struct ResourceFrame<'a> {
+    /// Server state.
+    pub(crate) state: &'a SharedState,
+    /// The sending connection.
+    pub(crate) client_id: ClientId,
+    /// The connection's cancellation.
+    pub(crate) token: &'a CancellationToken,
+    /// The off-thread input lane, when this server runs one.
+    pub(crate) input_lane: Option<&'a InputLaneHandle>,
+    /// This connection's input credits.
+    pub(crate) input_credits: &'a mut InputCredits,
+    /// This connection's outbound plumbing.
+    pub(crate) plumbing: &'a mut ClientPlumbing,
+    /// What the connection negotiated, once it has.
+    pub(crate) selection: Option<NegotiatedConnection>,
+}
+
 /// What the host asks of the app serving a kind.
 pub(crate) trait ResourceApp: Sync {
     /// The kind this app serves.
@@ -144,6 +166,14 @@ pub(crate) trait ResourceApp: Sync {
         command: Command,
         claim: Option<&'a OperationClaim>,
     ) -> LocalBoxFuture<'a, CommandResult>;
+
+    /// Serve a client frame about one resource of this kind. A kind that
+    /// does not own the frame refuses it with its own typed error.
+    fn frame<'a>(
+        &'a self,
+        request: ResourceFrame<'a>,
+        frame: FrameKind,
+    ) -> LocalBoxFuture<'a, FrameFlow>;
 
     /// Bootstrap one client's stream onto a resource of this kind.
     fn bootstrap<'a>(
@@ -235,6 +265,31 @@ pub(crate) fn rebuild_session(
     token: CancellationToken,
 ) -> RebuiltSession {
     agent_session::upgrade::rebuild(carried, parent, parent_handle, log_bytes, token)
+}
+
+/// The resource a client frame is about; `None` for a frame about none.
+pub(crate) const fn frame_resource(frame: &FrameKind) -> Option<&ResourceId> {
+    match frame {
+        FrameKind::InputKey { terminal_id, .. }
+        | FrameKind::InputMouse { terminal_id, .. }
+        | FrameKind::InputFocus { terminal_id, .. }
+        | FrameKind::InputPaste { terminal_id, .. }
+        | FrameKind::InputTerminalReply { terminal_id, .. }
+        | FrameKind::ResizeTerminal { terminal_id, .. }
+        | FrameKind::FrameAck { terminal_id, .. }
+        | FrameKind::HistoryRequest { terminal_id, .. } => Some(terminal_id),
+        _ => None,
+    }
+}
+
+/// The app serving the resource `frame` is about. An id that resolves to no
+/// local resource is a satellite's or a stale one, and only the Terminal app
+/// relays or drops those.
+pub(crate) fn frame_app(state: &SharedState, frame: &FrameKind) -> &'static dyn ResourceApp {
+    frame_resource(frame)
+        .and_then(|wire| state.with(|s| Some(s.resource_handle(s.resource_from_wire(wire)?)?.kind)))
+        .and_then(app_for)
+        .unwrap_or(&terminal::TerminalApp)
 }
 
 /// The native bootstrap profiles this server can offer at HELLO.

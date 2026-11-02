@@ -13,6 +13,7 @@ use crate::state::SharedState;
 
 mod append;
 mod attach;
+mod frames;
 mod native_agent;
 pub(super) mod spawn;
 pub(crate) mod upgrade;
@@ -44,6 +45,14 @@ impl ResourceApp for AgentSessionApp {
             required: ResourceKind::Terminal,
             actual: ResourceKind::AgentSession,
         })
+    }
+
+    fn frame<'a>(
+        &'a self,
+        request: super::ResourceFrame<'a>,
+        frame: phux_protocol::wire::frame::FrameKind,
+    ) -> LocalBoxFuture<'a, super::FrameFlow> {
+        std::future::ready(frames::serve(&request, &frame)).boxed_local()
     }
 
     fn command<'a>(

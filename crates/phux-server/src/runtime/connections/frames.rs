@@ -3,22 +3,41 @@ mod metadata;
 use super::commands::{CommandDispatch, CommandDispatchOutcome};
 use super::dispatch::{ConnectionEnding, FrameDispatch, FrameFlow};
 use super::hello::{HelloRequest, negotiate_hello};
-use super::metadata_subscriptions::is_agent_session;
 use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
 use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_attach, handle_move_terminal};
-use crate::runtime::apps::terminal::commands::{
-    handle_frame_ack, handle_terminal_resize, handle_viewport_resize,
-};
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-use crate::runtime::apps::terminal::history::{HistoryPageRequest, serve_history_request};
-use crate::runtime::apps::terminal::terminal_streams::{
-    AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,
-};
+use crate::runtime::apps::terminal::commands::handle_viewport_resize;
+use crate::runtime::apps::terminal::terminal_streams::AttachFrame;
+use crate::runtime::apps::{self, ResourceFrame};
+use crate::state::ClientId;
 use crate::transport::FrameReader;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind};
-use tracing::debug;
+use tracing::{debug, warn};
+
+/// End the connection over a frame no client may send in this phase.
+pub(in crate::runtime) fn direction_invalid(client_id: ClientId, other: &FrameKind) -> FrameFlow {
+    warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
+    FrameFlow::Break(ConnectionEnding::Violation(ConnectionClose {
+        attached_reason: Some("direction-invalid frame"),
+        detach_reason: DetachReason::ProtocolError,
+        code: ErrorCode::InvalidCommand,
+        message: format!("frame is not valid from a client in the negotiated phase: {other:?}"),
+    }))
+}
+
+/// L3 metadata and event-subscription frames.
+const fn is_metadata_frame(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::GetMetadata { .. }
+            | FrameKind::SetMetadata { .. }
+            | FrameKind::DeleteMetadata { .. }
+            | FrameKind::ListMetadata { .. }
+            | FrameKind::SubscribeMetadata { .. }
+            | FrameKind::SubscribeEvents { .. }
+    )
+}
 
 impl<R: FrameReader> FrameDispatch<'_, R> {
     /// Dispatch one admitted frame: one arm per client-to-server kind.
@@ -66,8 +85,18 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 request_id,
                 command,
             } => return self.command(request_id, command).await,
-            frame if is_input_frame(&frame) => return self.input(frame).await,
-            frame if is_stream_frame(&frame) => return self.stream_frame(frame).await,
+            FrameKind::ViewportResize { viewport } => {
+                debug!(
+                    client_id = ?self.client_id,
+                    cols = viewport.cols,
+                    rows = viewport.rows,
+                    "VIEWPORT_RESIZE"
+                );
+                handle_viewport_resize(self.state, self.client_id, &viewport);
+            }
+            frame if apps::frame_resource(&frame).is_some() => {
+                return self.resource_frame(frame).await;
+            }
             frame if is_metadata_frame(&frame) => return self.metadata(frame).await,
             frame => return self.resource(frame).await,
         }
@@ -209,104 +238,19 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         FrameFlow::Continue(())
     }
 
-    /// Frames about one attached Terminal's content stream (see
-    /// [`is_stream_frame`]).
-    async fn stream_frame(self, frame: FrameKind) -> FrameFlow {
-        match frame {
-            FrameKind::ViewportResize { viewport } => {
-                debug!(
-                    client_id = ?self.client_id,
-                    cols = viewport.cols,
-                    rows = viewport.rows,
-                    "VIEWPORT_RESIZE"
-                );
-                handle_viewport_resize(self.state, self.client_id, &viewport);
-            }
-            FrameKind::ResizeTerminal {
-                terminal_id,
-                cols,
-                rows,
-                cell_px,
-            } => {
-                handle_terminal_resize(
-                    self.state,
-                    self.client_id,
-                    &terminal_id,
-                    (cols, rows),
-                    cell_px,
-                );
-            }
-            // ADR-0103 §4: an agent-session stream is raw-profile with no
-            // history beyond its bootstrap. Both refusals keep the connection.
-            FrameKind::FrameAck {
-                ref terminal_id, ..
-            } if is_agent_session(self.state, terminal_id) => {
-                crate::runtime::send_error(
-                    &self.plumbing.out_tx,
-                    ErrorCode::MalformedMessage,
-                    "FRAME_ACK is not valid on an agent-session stream",
-                )
-                .await;
-            }
-            FrameKind::HistoryRequest {
-                ref terminal_id, ..
-            } if is_agent_session(self.state, terminal_id) => {
-                crate::runtime::send_error(
-                    &self.plumbing.out_tx,
-                    ErrorCode::WrongResourceKind,
-                    "an agent-session stream retains no history beyond its bootstrap",
-                )
-                .await;
-            }
-            FrameKind::FrameAck {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq,
-            } => {
-                handle_frame_ack(
-                    self.state,
-                    self.client_id,
-                    &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    seq,
-                );
-            }
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            FrameKind::HistoryRequest {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor,
-                max_bytes,
-                max_rows,
-            } => {
-                let Some(selection) = self.negotiated.as_ref() else {
-                    return FrameFlow::Continue(());
-                };
-                // Terminal-content replies ride the bound stream when one
-                // exists (docs/protocol.md#quic-stream-routing); control otherwise.
-                let history_tx = self.plumbing.sender_for(&terminal_id);
-                serve_history_request(
-                    self.state,
-                    self.client_id,
-                    &history_tx,
-                    *selection,
-                    HistoryPageRequest {
-                        terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        cursor,
-                        max_bytes,
-                        max_rows,
-                    },
-                )
-                .await;
-            }
-            other => return direction_invalid(self.client_id, &other),
-        }
-        FrameFlow::Continue(())
+    /// A frame about one resource: the app serving its kind answers.
+    async fn resource_frame(self, frame: FrameKind) -> FrameFlow {
+        let app = apps::frame_app(self.state, &frame);
+        let request = ResourceFrame {
+            state: self.state,
+            client_id: self.client_id,
+            token: self.token,
+            input_lane: self.input_lane,
+            input_credits: self.input_credits,
+            plumbing: self.plumbing,
+            selection: *self.negotiated,
+        };
+        app.frame(request, frame).await
     }
 
     /// Resource and filesystem frames; any other kind is not valid from a
