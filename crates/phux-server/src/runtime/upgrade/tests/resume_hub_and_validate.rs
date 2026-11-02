@@ -329,6 +329,109 @@ fn the_candidate_vets_the_blob_before_the_irreversible_exec() {
     assert_eq!(left, "staged", "the resume must read from the start");
 }
 
+/// A hung candidate costs the deadline, not the server: it is killed and
+/// reaped by its own PID, and the upgrade is refused while the panes are ours.
+#[test]
+fn a_hung_candidate_is_killed_and_reaped_at_the_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pid");
+    let hangs = write_stub_phux(
+        dir.path(),
+        &format!(
+            "#!/bin/sh\necho $$ > {}\nexec sleep 60\n",
+            pid_file.display()
+        ),
+    );
+    let started = std::time::Instant::now();
+    let error = probe_within(
+        std::process::Command::new(&hangs).arg("--version"),
+        None,
+        Duration::from_secs(2),
+    )
+    .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(30));
+    let message = error.to_string();
+    assert!(message.contains("--version"), "{message}");
+    assert!(message.contains("did not answer within 2s"), "{message}");
+
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // A zombie still answers `kill(pid, 0)`; only a reaped child is gone.
+    // SAFETY: signal 0 delivers nothing; it only tests that the PID exists.
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "pid {pid} was not reaped"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+}
+
+/// A child stuck in the kernel ignores `SIGKILL`, so giving up on the reap
+/// must not wait for it, and a child that does die is seen.
+#[test]
+fn the_reap_after_a_kill_gives_up_at_its_grace() {
+    assert!(!reaped_within(Duration::from_millis(20), || false));
+
+    let mut polls = 0;
+    assert!(reaped_within(Duration::from_secs(5), || {
+        polls += 1;
+        polls == 3
+    }));
+}
+
+/// A child that leaves a descendant holding its output does not hold the
+/// probe open, and what it wrote still decides the verdict.
+#[test]
+fn a_descendant_left_behind_does_not_hold_a_probe_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_stub_phux(dir.path(), "#!/bin/sh\nsleep 5 &\necho answered\n");
+    let started = std::time::Instant::now();
+    let output = probe_within(
+        &mut std::process::Command::new(&path),
+        None,
+        Duration::from_secs(4),
+    )
+    .unwrap();
+    assert_eq!(output.stdout, b"answered\n");
+    assert!(started.elapsed() < Duration::from_secs(4));
+}
+
+/// The first `exec` of a fresh copy can be killed by the kernel after the
+/// child already took part of the blob. The retry reads it from the start,
+/// so a healthy candidate is not refused on half a blob.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_retried_probe_reads_the_blob_from_the_start() {
+    use std::io::{Seek as _, Write as _};
+
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("first-attempt");
+    let path = write_stub_phux(
+        dir.path(),
+        &format!(
+            "#!/bin/sh\nseen=$(cat)\nif [ ! -e {0} ]; then\n  : > {0}\n  kill -9 $$\nfi\nprintf %s \"$seen\"\n",
+            marker.display()
+        ),
+    );
+    let mut staged = tempfile::tempfile().unwrap();
+    staged.write_all(b"staged").unwrap();
+    staged.rewind().unwrap();
+    let output = probe_within(
+        &mut std::process::Command::new(&path),
+        Some(&mut staged),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert!(marker.exists(), "the first attempt must have been killed");
+    assert_eq!(output.stdout, b"staged");
+}
+
 /// A tree pane whose engine exited but is not reaped yet aborts as
 /// retryable, never staging a blob that would resurrect it as a blank
 /// pane in the new image.

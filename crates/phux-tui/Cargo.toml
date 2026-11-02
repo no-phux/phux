@@ -107,6 +107,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+phux-frozen.workspace = true
 # phux-h5hj.3: the one scripted server every client-side unit test speaks
 # to, so a fake cannot lie about the server's frame order.
 phux-client = { workspace = true, features = ["testkit"] }

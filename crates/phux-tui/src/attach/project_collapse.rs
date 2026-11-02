@@ -75,3 +75,11 @@ mod tests {
         assert!(load_from(&path).is_empty());
     }
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn collapsed_projects() {
+        phux_frozen::json::<super::State>("collapsed-projects").check();
+    }
+}

@@ -262,3 +262,11 @@ mod tests {
         assert!(trust(dir.path(), &key("/repo"), &digest(b"x")).is_err());
     }
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn trusted_projects() {
+        phux_frozen::toml::<super::Store>("trusted-projects").check();
+    }
+}

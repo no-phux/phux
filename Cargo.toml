@@ -70,6 +70,7 @@ phux-relay = { path = "crates/phux-relay" }
 quictun = { path = "crates/quictun", default-features = false }
 phux-plugin = { path = "crates/phux-plugin" }
 phux-usage = { path = "crates/phux-usage" }
+phux-frozen = { path = "crates/phux-frozen" }
 # Derived code with its own attribution; see crates/phux-crash/NOTICE.
 phux-crash = { path = "crates/phux-crash" }
 # Dev-only scaffolding, compiled once for the server integration tests.

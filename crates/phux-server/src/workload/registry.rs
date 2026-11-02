@@ -276,3 +276,11 @@ fn credential_from_record(record: &RegistryRecord) -> Result<WorkloadCredential,
         satellite: record.satellite.clone(),
     })
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn workload_keys() {
+        phux_frozen::json::<super::RegistryFile>("workload-keys").check();
+    }
+}

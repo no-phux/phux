@@ -89,3 +89,11 @@ mod tests {
         assert_eq!(load_from(&path), AgentFilter::default());
     }
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn agents_filter() {
+        phux_frozen::json::<super::State>("agents-filter").check();
+    }
+}

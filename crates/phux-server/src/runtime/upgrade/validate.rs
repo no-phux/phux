@@ -2,18 +2,31 @@
 //! re-exec (ADR-0032): pin a private snapshot, then probe it with
 //! `--version` / `config check` and refuse a dev/release build-kind change.
 
+use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{Seek as _, SeekFrom};
+use std::io::{Read as _, Seek as _};
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use phux_config::instance::{BuildKind, PROBE_BUILD_KIND_ENV, PROBE_UPGRADE_BLOB_ENV, build_kind};
 
 use super::{FdFlagsGuard, UPGRADE_SNAPSHOT_DIR, UPGRADE_SOURCE_EXE, UpgradeError};
 use crate::runtime::delegation;
 use crate::upgrade::blob::{PREFLIGHT_PASSED, StateBlob};
+
+/// The most one probe may take. The server's runtime waits on it, so a hung
+/// candidate costs this much; a healthy one answers in moments, and only the
+/// blob preflight scales with the server, parsing every pane's scrollback.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+const PROBE_POLL: Duration = Duration::from_millis(5);
+/// How long a killed candidate has to be reaped before it is abandoned.
+const PROBE_REAP_GRACE: Duration = Duration::from_secs(2);
+/// Doubling from 1ms, the delay that ends the transient-failure retries.
+const PROBE_RETRY_LIMIT: Duration = Duration::from_millis(500);
+/// What is kept of each output stream: a build kind, a verdict, a diagnostic.
+const MAX_PROBE_OUTPUT: u64 = 1024 * 1024;
 
 /// A private executable snapshot copied from one opened source inode, so the
 /// installed path cannot be swapped between copy and validation. Re-exec
@@ -183,10 +196,10 @@ pub(super) fn preflight_blob(exe: &Path, blob: &mut File) -> Result<(), UpgradeE
     let output = probe_output(
         Command::new(exe)
             .arg("--version")
-            .env(PROBE_UPGRADE_BLOB_ENV, "1")
-            .stdin(blob.try_clone()?),
+            .env(PROBE_UPGRADE_BLOB_ENV, "1"),
+        Some(blob),
     )?;
-    blob.seek(SeekFrom::Start(0))?;
+    blob.rewind()?;
     if output.status.success() {
         if !String::from_utf8_lossy(&output.stdout).contains(PREFLIGHT_PASSED) {
             tracing::warn!("upgrade candidate predates the blob preflight; resuming unverified");
@@ -211,6 +224,7 @@ fn refuse_build_kind_change(exe: &Path) -> Result<(), UpgradeError> {
         Command::new(exe)
             .arg("--version")
             .env(PROBE_BUILD_KIND_ENV, "1"),
+        None,
     )?;
     let candidate = output
         .status
@@ -249,10 +263,20 @@ pub(super) fn upgrade_kind_refusal(
     })
 }
 
-/// Run a probe of the snapshot. Another thread's `fork` (a pane spawn, a
-/// parallel test) can inherit the snapshot's write descriptor for the
-/// instant before its own `exec`, and executing the file then fails with
-/// ETXTBSY; that window is microseconds, so retry briefly before giving up.
+/// Run a probe of the snapshot, bounded by [`PROBE_TIMEOUT`]. `stdin` is the
+/// file the candidate reads, closed when `None`.
+fn probe_output(command: &mut Command, stdin: Option<&mut File>) -> Result<Output, UpgradeError> {
+    probe_within(command, stdin, PROBE_TIMEOUT)
+}
+
+/// [`probe_output`] with an explicit budget for the whole probe, retries
+/// included. A candidate past it is killed and reaped, and the upgrade is
+/// refused with the panes still ours.
+///
+/// Another thread's `fork` (a pane spawn, a parallel test) can inherit the
+/// snapshot's write descriptor for the instant before its own `exec`, and
+/// executing the file then fails with ETXTBSY; that window is microseconds,
+/// so retry briefly before giving up.
 ///
 /// macOS also has a narrower, kernel-level race: the first `exec` of a file
 /// that was just written or copied can be killed with SIGKILL ("Code
@@ -261,26 +285,124 @@ pub(super) fn upgrade_kind_refusal(
 /// moments after `write`/`copy` returns). A second attempt after a short
 /// delay reliably succeeds, so this is retried the same way as ETXTBSY
 /// rather than surfacing a spurious validation failure.
-fn probe_output(command: &mut Command) -> std::io::Result<std::process::Output> {
+pub(super) fn probe_within(
+    command: &mut Command,
+    mut stdin: Option<&mut File>,
+    timeout: Duration,
+) -> Result<Output, UpgradeError> {
+    let deadline = Instant::now() + timeout;
     let mut delay = Duration::from_millis(1);
     loop {
-        match command.output() {
-            Err(err)
-                if err.kind() == std::io::ErrorKind::ExecutableFileBusy
-                    && delay < Duration::from_millis(500) =>
-            {
-                std::thread::sleep(delay);
-                delay *= 2;
-            }
-            Ok(ref output)
-                if killed_by_signature_race(output) && delay < Duration::from_millis(500) =>
-            {
-                std::thread::sleep(delay);
-                delay *= 2;
-            }
-            result => return result,
+        let attempt = run_probe(command, stdin.as_deref_mut(), deadline);
+        if delay >= PROBE_RETRY_LIMIT || !is_transient_probe_failure(&attempt) {
+            return attempt.map_err(|error| probe_error(command, timeout, error));
+        }
+        std::thread::sleep(delay);
+        delay *= 2;
+    }
+}
+
+/// One attempt. Each starts `stdin` from the top: the descriptor shares its
+/// offset with the child, so a killed attempt leaves it wherever it stopped.
+///
+/// Output goes to unlinked files rather than pipes, so a child that writes
+/// without bound cannot block on a full pipe, and a descendant that inherits
+/// them cannot hold the probe open after the child exits.
+fn run_probe(
+    command: &mut Command,
+    stdin: Option<&mut File>,
+    deadline: Instant,
+) -> std::io::Result<Output> {
+    match stdin {
+        Some(file) => {
+            file.rewind()?;
+            command.stdin(file.try_clone()?);
+        }
+        None => {
+            command.stdin(Stdio::null());
         }
     }
+    let mut stdout = tempfile::tempfile()?;
+    let mut stderr = tempfile::tempfile()?;
+    let mut child = command
+        .stdout(stdout.try_clone()?)
+        .stderr(stderr.try_clone()?)
+        .spawn()?;
+    let status = wait_until(&mut child, deadline)?;
+    Ok(Output {
+        status,
+        stdout: read_probe_output(&mut stdout)?,
+        stderr: read_probe_output(&mut stderr)?,
+    })
+}
+
+/// Wait for `child`, killing it by its own PID at `deadline` (or if it can no
+/// longer be polled) and reaping it so a hung candidate leaves no zombie. Only
+/// the child is killed; a descendant it started survives.
+fn wait_until(child: &mut Child, deadline: Instant) -> std::io::Result<ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(PROBE_POLL),
+            outcome => {
+                let _ = child.kill();
+                let reaped =
+                    reaped_within(PROBE_REAP_GRACE, || !matches!(child.try_wait(), Ok(None)));
+                if !reaped {
+                    tracing::warn!(
+                        pid = child.id(),
+                        "upgrade candidate outlived SIGKILL; leaving it unreaped"
+                    );
+                }
+                return Err(outcome
+                    .err()
+                    .unwrap_or_else(|| std::io::ErrorKind::TimedOut.into()));
+            }
+        }
+    }
+}
+
+/// Poll `gone` for `grace`. A blocking `wait` here would hand the deadline
+/// back: a child stuck in the kernel (an `exec` on a hung filesystem) ignores
+/// `SIGKILL` until it returns, and the server would never lift its seal.
+pub(super) fn reaped_within(grace: Duration, mut gone: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        if gone() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(PROBE_POLL);
+    }
+}
+
+fn read_probe_output(file: &mut File) -> std::io::Result<Vec<u8>> {
+    file.rewind()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PROBE_OUTPUT).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn is_transient_probe_failure(attempt: &std::io::Result<Output>) -> bool {
+    match attempt {
+        Ok(output) => killed_by_signature_race(output),
+        Err(error) => error.kind() == std::io::ErrorKind::ExecutableFileBusy,
+    }
+}
+
+/// A timeout is the candidate's failure, not the host's: name the probe.
+fn probe_error(command: &Command, timeout: Duration, error: std::io::Error) -> UpgradeError {
+    if error.kind() != std::io::ErrorKind::TimedOut {
+        return error.into();
+    }
+    let args: Vec<_> = command.get_args().map(OsStr::to_string_lossy).collect();
+    UpgradeError::Validation(format!(
+        "`{} {}` did not answer within {timeout:?}",
+        command.get_program().to_string_lossy(),
+        args.join(" "),
+    ))
 }
 
 /// Whether `output` looks like the macOS first-exec code-signature race
@@ -297,7 +419,7 @@ const fn killed_by_signature_race(_output: &std::process::Output) -> bool {
 }
 
 fn probe_binary(exe: &Path, args: &[&str]) -> Result<(), UpgradeError> {
-    let output = probe_output(Command::new(exe).args(args))?;
+    let output = probe_output(Command::new(exe).args(args), None)?;
     if output.status.success() {
         return Ok(());
     }
@@ -316,8 +438,6 @@ fn probe_binary(exe: &Path, args: &[&str]) -> Result<(), UpgradeError> {
 }
 
 fn files_have_same_bytes(a: &Path, b: &Path) -> std::io::Result<bool> {
-    use std::io::Read as _;
-
     let mut fa = std::fs::File::open(a)?;
     let mut fb = std::fs::File::open(b)?;
     if fa.metadata()?.len() != fb.metadata()?.len() {

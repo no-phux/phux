@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "instance": "instance-1",
+  "generation": 3,
+  "credentials": [
+    {
+      "id": "workload:1",
+      "public_key": "not-a-real-key",
+      "scopes": [
+        "inventory@global"
+      ],
+      "expires_at": 1793470146,
+      "revoked_at": 1793470100,
+      "principal": "automation",
+      "satellite": "mini"
+    }
+  ]
+}

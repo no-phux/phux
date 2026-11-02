@@ -1,0 +1,6 @@
+schema = 1
+
+[[recipes]]
+identity = "/home/u/proj/.git"
+recipe = "phux.project.toml"
+sha256 = "00"
