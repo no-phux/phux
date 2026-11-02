@@ -1,6 +1,7 @@
 //! The graceful-upgrade state blob's producer and consumer (ADR-0032):
-//! [`ServerState::build_upgrade_blob`] walks the live tree into a
-//! [`StateBlob`](crate::upgrade::blob::StateBlob), and
+//! [`ServerState::assemble_upgrade_blob`] walks the live tree into a
+//! [`StateBlob`](crate::upgrade::blob::StateBlob) from the handoffs
+//! `runtime::upgrade` collected (`build_upgrade_blob` is a test helper), and
 //! [`ServerState::rebuild_from_blob`] reconstructs the tree from one in the
 //! re-exec'd image.
 //!
