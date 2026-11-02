@@ -295,6 +295,38 @@ fn interrupted_rollback_recovers_new_pair_until_the_durable_commit() {
     }
 }
 
+/// Recovery and rollback leave the binaries alone when the manifest is from a
+/// newer format, since they cannot know what it lists.
+#[test]
+fn a_newer_manifest_stops_recovery_and_rollback() {
+    let scratch = tempfile::tempdir().unwrap();
+    let bin = scratch.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    seed_bin_dir(&bin, 0o755);
+    let (_staging, staged) = staged_release(&scratch, &bin);
+    replace_binaries(&bin, &staged, "0.12.1").unwrap();
+    let new_pair = (b"#!/bin/sh\nnew phux\n", b"#!/bin/sh\nnew mcp\n");
+
+    let backup = bin.join(BACKUP_DIR);
+    let manifest_path = backup.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["schema_version"] = serde_json::json!(super::transaction::MANIFEST_SCHEMA + 1);
+    fs::write(&manifest_path, manifest.to_string()).unwrap();
+    let err = rollback(&bin).unwrap_err();
+    assert!(err.to_string().contains("newer phux"), "{err}");
+    assert_pair(&bin, new_pair.0, new_pair.1);
+
+    let journal = bin.join(TRANSACTION_DIR);
+    fs::create_dir(&journal).unwrap();
+    fs::write(journal.join("manifest.json"), manifest.to_string()).unwrap();
+    let Err(err) = UpdateLock::acquire(&bin) else {
+        panic!("recovery ran on a newer journal");
+    };
+    assert!(err.to_string().contains("newer phux"), "{err}");
+    assert_pair(&bin, new_pair.0, new_pair.1);
+}
+
 #[test]
 fn update_lock_serializes_publishers() {
     let scratch = tempfile::tempdir().unwrap();

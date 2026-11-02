@@ -11,6 +11,9 @@ use super::{
     publish_binaries, remove_dir, sync_file,
 };
 
+/// Schema of the backup manifest this binary writes and the newest it reads.
+pub(super) const MANIFEST_SCHEMA: u64 = 1;
+
 /// Save the current binaries into a durable pre-commit journal.
 pub(super) fn prepare_transaction(
     bin_dir: &Path,
@@ -58,7 +61,7 @@ pub(super) fn prepare_transaction(
     }
 
     let manifest = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": MANIFEST_SCHEMA,
         "version": previous_version,
         "binaries": saved,
         "saved_at": chrono::Utc::now().to_rfc3339(),
@@ -104,6 +107,17 @@ pub(super) fn sync_directory(path: &Path) -> Result<(), UpdateError> {
         })
 }
 
+/// Whether this binary reads `manifest`'s format. Recovery and rollback rename
+/// live binaries from what it lists, so a newer format stops them with the
+/// install as it stands.
+fn manifest_schema_supported(manifest: &serde_json::Value) -> bool {
+    manifest.get("schema_version").is_none_or(|schema| {
+        schema
+            .as_u64()
+            .is_some_and(|schema| schema <= MANIFEST_SCHEMA)
+    })
+}
+
 fn manifest_names(directory: &Path) -> Result<Vec<String>, UpdateError> {
     let path = directory.join(BACKUP_MANIFEST);
     let raw = fs::read_to_string(&path).map_err(|err| {
@@ -118,6 +132,12 @@ fn manifest_names(directory: &Path) -> Result<Vec<String>, UpdateError> {
             path.display()
         ))
     })?;
+    if !manifest_schema_supported(&manifest) {
+        return Err(UpdateError::Install(format!(
+            "transaction {} is from a newer phux; finish it with that release",
+            path.display()
+        )));
+    }
     manifest_binaries(&manifest).ok_or_else(|| {
         UpdateError::Install(format!(
             "transaction {} names no valid release binaries",
@@ -290,6 +310,12 @@ fn read_backup_manifest(backup: &Path) -> Result<(String, Vec<String>), UpdateEr
             manifest_path.display()
         ))
     })?;
+    if !manifest_schema_supported(&manifest) {
+        return Err(UpdateError::NoBackup(format!(
+            "{} is from a newer phux; roll back with that release",
+            manifest_path.display()
+        )));
+    }
     let version = manifest
         .get("version")
         .and_then(serde_json::Value::as_str)

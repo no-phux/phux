@@ -22,8 +22,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use phux_client_core::organize::{
-    self as planner, Candidates, Facts, Journal, JudgeKind, NewSession, PaneFacts, Plan, PlanInput,
-    Scope, SessionFacts, Verdict,
+    self as planner, Candidates, Facts, JOURNAL_SCHEMA, Journal, JudgeKind, NewSession, PaneFacts,
+    Plan, PlanInput, Scope, SessionFacts, Verdict,
 };
 use phux_core::project_identity::SessionProject;
 use phux_protocol::ids::{ResourceKey, SessionKey};
@@ -491,19 +491,26 @@ fn save_journal_at(path: &Path, journal: &Journal) -> std::io::Result<()> {
 ///
 /// # Errors
 ///
-/// The file exists but could not be read or parsed.
+/// The file exists but could not be read or parsed, or is from a newer format
+/// than this binary reads: undo must not act on a record it may misread.
 pub fn load_journal() -> std::io::Result<Option<Journal>> {
     load_journal_at(&journal_path())
 }
 
 fn load_journal_at(path: &Path) -> std::io::Result<Option<Journal>> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(std::io::Error::other),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let journal: Journal = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+    if journal.schema_version > JOURNAL_SCHEMA {
+        return Err(std::io::Error::other(format!(
+            "schema {} is newer than this binary reads ({JOURNAL_SCHEMA})",
+            journal.schema_version
+        )));
     }
+    Ok(Some(journal))
 }
 
 /// Forget the kept [`Journal`] after it was undone.

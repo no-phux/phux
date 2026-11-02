@@ -110,3 +110,15 @@ fn journal_persists() {
     clear_journal_at(&path).expect("clear");
     clear_journal_at(&path).expect("clear twice");
 }
+
+/// Undo refuses a record from a newer format instead of acting on it.
+#[test]
+fn a_newer_journal_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("last.json");
+    let mut journal = Journal::new();
+    journal.schema_version = JOURNAL_SCHEMA + 1;
+    save_journal_at(&path, &journal).expect("save");
+    let err = load_journal_at(&path).expect_err("newer");
+    assert!(err.to_string().contains("newer"), "{err}");
+}
