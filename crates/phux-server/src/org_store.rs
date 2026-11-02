@@ -7,7 +7,7 @@
 //! durable store; [`MemOrgStore`] keeps nothing and serves in-process
 //! servers and tests.
 //!
-//! Writes are incremental: each [`Delta`] upserts or deletes one row, so a
+//! Writes are incremental: each [`phux_core::Delta`] upserts or deletes one row, so a
 //! membership move touches a few rows however many records exist. Records
 //! are stored as JSON beside the indexed columns queries need (session
 //! membership, execution state, intake).
