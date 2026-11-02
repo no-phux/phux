@@ -63,8 +63,15 @@ On 2026-09-30, two runs compared the terminal clients of phux 0.46, tmux 3.7c, a
 
 Key echo here is measured in terminal bytes, not from keystroke to pixel, and server memory isn't a whole application's footprint. A native app such as cmux needs its own measurement.
 
+## phux and Rex
+
+Rex is [Superlogical's](https://www.superlogical.com) terminal multiplexer. Their site says they are building "the multiplexer for all work," and that they will begin with a terminal multiplexer.
+
+[phux vs Rex (Superlogical)](./phux-vs-rex.md) is the longer comparison. It keeps to Rex's own pages for Rex, and to this repository for phux.
+
 ## Next
 
 - [Install](./install.md) phux and take the [first-session tour](./getting-started.md).
 - [Coding agents](./agents.md): connect your agent's host.
 - [Remote machines](./remote.md): attach to a server on another machine.
+- [phux vs Rex (Superlogical)](./phux-vs-rex.md).
