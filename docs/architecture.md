@@ -85,7 +85,8 @@ Cargo manifests define the actual edges.
 | `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication |
 | `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
 | `phux-client-ffi` | the one binding crate: a projection with a C ABI encoder and a UniFFI encoder |
-| `phux-resource` | the kind-neutral substrate: output stream, lifecycle, control, opaque facets, and the agent-session record stream; no VT, no PTY |
+| `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
+| `phux-agent-session` | the `AgentSession` record-stream engine, the `phux.agent/v1` state, asked, and record authority, and the mailbox of a resource that hosts an agent |
 | `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
 | `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
@@ -232,7 +233,10 @@ A resource kind is an app. The host reaches one through `ResourceApp` in
 same catalog rows authorization uses, and `app_for` answers per-kind questions
 such as how a stream bootstraps. `state/` sits below the apps and never names
 them; what it asks of any resource is the required `ResourceOps` on its handle.
-A new kind is one `ResourceApp`, one `APPS` row, and its `ResourceOps`. Only
+A new kind is one `ResourceApp`, one `APPS` row, and its `ResourceOps`. A
+surface that is not every kind's, such as the `AgentParent` mailbox of a resource
+that hosts an agent, is a companion on the handle, typed by the crate that owns
+it, so the host can use it without naming an engine. Only
 `runtime/apps/terminal` may name the Terminal engine, and
 `seam_tests.rs` fails if any host module does. The host holds a launch command
 as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.

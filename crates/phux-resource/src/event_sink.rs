@@ -100,7 +100,7 @@ impl EventSource {
     }
 
     /// The next already-queued event, without waiting: how the exit watcher
-    /// journals what a pane emitted before its close.
+    /// journals what a resource emitted before its close.
     pub fn try_recv(&mut self) -> Option<Emitted> {
         self.rx.try_recv().ok()
     }

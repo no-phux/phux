@@ -29,6 +29,7 @@ use std::hint::black_box;
 use bytes::{Bytes, BytesMut};
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use libghostty_vt::Terminal as GhosttyTerminal;
+use phux_agent_session::session::{self, AgentSessionActor};
 use phux_client_core::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
     EngineEffectBuffer, HistoryApplyOutcome,
@@ -41,7 +42,6 @@ use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::framing;
 use phux_protocol::{BootstrapId, ResourceId, StreamId};
 use phux_server::org_scale::{ScaleOrg, ScaleSpec};
-use phux_server::resource::agent_session::{self, AgentSessionActor};
 use phux_terminal::actor::icount_join_pty_burst;
 
 const VT_COLS: u16 = 80;
@@ -294,7 +294,7 @@ fn setup_decode() -> DecodeReady {
 
 fn setup_agent() -> AgentReady {
     AgentReady {
-        actor: agent_session::icount_actor(),
+        actor: session::icount_actor(),
         payload: agent_payload(),
     }
 }
@@ -386,8 +386,7 @@ fn frame_decode(mut ready: DecodeReady) -> usize {
 #[library_benchmark]
 #[bench::append(setup = setup_agent)]
 fn agent_append_replay(mut ready: AgentReady) -> usize {
-    agent_session::icount_append_and_replay(&mut ready.actor, black_box(ready.payload))
-        .expect("append")
+    session::icount_append_and_replay(&mut ready.actor, black_box(ready.payload)).expect("append")
 }
 
 #[library_benchmark]

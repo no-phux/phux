@@ -30,7 +30,7 @@ pub(super) fn spawn_two_pump_consumer(
     client: u64,
     published_cut: u64,
     mailbox: usize,
-    output: &tokio::sync::broadcast::Sender<PaneOutput>,
+    output: &tokio::sync::broadcast::Sender<ResourceOutput>,
     resize: &ResizeSender,
 ) -> TwoPumpConsumer {
     let (out_tx, out_rx) = tokio::sync::mpsc::channel(mailbox);
@@ -178,7 +178,7 @@ pub(super) async fn resync_request_from(
 /// Answer a gap resync the way the actor does: one broadcast `Resync`,
 /// addressed to exactly the pump the request named.
 pub(super) fn answer_gap_resync(
-    output: &tokio::sync::broadcast::Sender<PaneOutput>,
+    output: &tokio::sync::broadcast::Sender<ResourceOutput>,
     request: &ResizeRequest,
     base_seq: u64,
 ) {
@@ -186,7 +186,7 @@ pub(super) fn answer_gap_resync(
         ResyncAudience::Only(vec![pump].into())
     });
     output
-        .send(PaneOutput::Resync {
+        .send(ResourceOutput::Resync {
             cols: 80,
             rows: 24,
             reason: crate::resource::ResyncReason::OutboundGap,
@@ -197,8 +197,8 @@ pub(super) fn answer_gap_resync(
         .expect("pumps subscribed");
 }
 
-pub(super) fn live(seq: u64, at: std::time::Instant) -> PaneOutput {
-    PaneOutput::Live {
+pub(super) fn live(seq: u64, at: std::time::Instant) -> ResourceOutput {
+    ResourceOutput::Live {
         seq,
         bytes: bytes::Bytes::from_static(b"x"),
         at,
@@ -216,7 +216,7 @@ async fn a_stale_consumer_resyncs_without_republishing_its_neighbour() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (output, _seed) = tokio::sync::broadcast::channel::<PaneOutput>(64);
+            let (output, _seed) = tokio::sync::broadcast::channel::<ResourceOutput>(64);
             let (resize_tx, mut resize_rx) = ResizeSender::channel(8);
             let mut fresh = spawn_two_pump_consumer(1, 2, 64, &output, &resize_tx);
             let mut stale = spawn_two_pump_consumer(2, 1, 64, &output, &resize_tx);
@@ -297,7 +297,7 @@ async fn a_stale_consumer_resyncs_without_republishing_its_neighbour() {
 
             // A reflow changes the grid under everyone: still broadcast.
             output
-                .send(PaneOutput::Resync {
+                .send(ResourceOutput::Resync {
                     cols: 100,
                     rows: 30,
                     reason: crate::resource::ResyncReason::Resize,

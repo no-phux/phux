@@ -27,7 +27,7 @@ pub(crate) fn spawn_agent_state_drain(
     tokio::task::spawn_local(async move {
         while let Some(event) = rx.recv().await {
             let _publish_span = tracing::debug_span!("agent_publish", ?wire_terminal_id,).entered();
-            let _timer = crate::perf::AGENT_PUBLISH.timer();
+            let _timer = phux_terminal::perf::AGENT_PUBLISH.timer();
             // Both the ask broadcast and the hook re-take the state lock, so
             // they are resolved under it and fired after it is released.
             let mut asked = None;
@@ -83,9 +83,9 @@ pub(crate) fn spawn_agent_state_drain(
 fn drain_ask_sentinel(
     s: &mut ServerState,
     wire_terminal_id: &WireResourceId,
-    ask: Option<phux_resource::agent_asked::AskedPayload>,
-) -> Option<phux_resource::agent_asked::AskedPayload> {
-    use phux_resource::agent_asked::AskedSource;
+    ask: Option<phux_agent_session::asked::AskedPayload>,
+) -> Option<phux_agent_session::asked::AskedPayload> {
+    use phux_agent_session::asked::AskedSource;
 
     let terminal = s.resource_from_wire(wire_terminal_id)?;
     let emitted = if let Some(payload) = ask {
@@ -130,7 +130,7 @@ pub(in crate::runtime) fn drain_retract(
         return None;
     }
     let withdrawn = if s.agent_records().has_explicit_identity(wire_terminal_id) {
-        phux_resource::agent_state::withdraw_state(existing.as_deref())
+        phux_agent_session::state::withdraw_state(existing.as_deref())
     } else {
         None
     };
@@ -155,7 +155,7 @@ fn withdraw_declared(
     scope: &Scope,
     existing: Option<&[u8]>,
 ) -> Option<()> {
-    let bytes = phux_resource::agent_state::withdraw_state(existing)?;
+    let bytes = phux_agent_session::state::withdraw_state(existing)?;
     s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
     s.agent_records_mut()
         .note_declaration_withdrawn(wire_terminal_id);
@@ -163,7 +163,7 @@ fn withdraw_declared(
 }
 
 /// The drain's `Reidentified` arm: a different occupant now owns the pane.
-/// One write landing on `unknown` (invariant I2 in `phux_resource::agent_state`); a
+/// One write landing on `unknown` (invariant I2 in `phux_agent_session::state`); a
 /// declared record is withdrawn rather than corrected, and a pane with no
 /// record is left without one.
 fn drain_reidentified(
@@ -189,13 +189,8 @@ fn drain_reidentified(
         return retract_hook(wire_terminal_id, prior);
     }
     let owned = s.agent_records().identity_ownership(wire_terminal_id);
-    let bytes = phux_resource::agent_state::compose(
-        Some(&existing),
-        kind,
-        name,
-        AGENT_STATE_UNKNOWN,
-        owned,
-    );
+    let bytes =
+        phux_agent_session::state::compose(Some(&existing), kind, name, AGENT_STATE_UNKNOWN, owned);
     s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
     s.agent_records_mut().note_detector_write(wire_terminal_id);
     state_change_hook(wire_terminal_id, kind, name, prior, AGENT_STATE_UNKNOWN)
@@ -232,23 +227,23 @@ fn drain_state(
         && !s.agent_records().has_explicit_identity(wire_terminal_id)
         && let Some(mut record) = existing
             .as_deref()
-            .and_then(phux_resource::agent_record::AgentRecordJson::decode)
+            .and_then(phux_agent_session::agent_record::AgentRecordJson::decode)
     {
         record.attention = None;
         existing = Some(record.encode());
     }
     let contradicted = owned.kind
-        && phux_resource::agent_state::explicit_kind_is_contradicted(
+        && phux_agent_session::state::explicit_kind_is_contradicted(
             existing.as_deref(),
             &report.kind,
             &phux_terminal::agent_detect::rules::global(),
         );
     let (to, bytes) = if contradicted {
-        let bytes = phux_resource::agent_state::withdraw_state(existing.as_deref())?;
+        let bytes = phux_agent_session::state::withdraw_state(existing.as_deref())?;
         (crate::hooks::AGENT_STATE_UNKNOWN, bytes)
     } else {
         let to = report.state.as_str();
-        let bytes = phux_resource::agent_state::compose(
+        let bytes = phux_agent_session::state::compose(
             existing.as_deref(),
             &report.kind,
             &report.name,
@@ -272,7 +267,7 @@ struct Prior(Option<String>);
 /// The prior state, read only when a hook could fire: `None` means no hook
 /// is owed at all.
 fn prior_state(hooks_live: bool, existing: Option<&[u8]>) -> Option<Prior> {
-    hooks_live.then(|| Prior(phux_resource::agent_state::stored_state(existing)))
+    hooks_live.then(|| Prior(phux_agent_session::state::stored_state(existing)))
 }
 
 /// The `agent-state-changed` event for a detector write, unless hooks are
@@ -316,10 +311,12 @@ pub(in crate::runtime) fn invalidate_agent_detector(state: &SharedState, scope: 
         s.resource_from_wire(wire)
             .and_then(|pane| s.resource_handle(pane).cloned())
     });
-    if let Some(handle) = handle {
-        let _ = handle
-            .control
-            .try_send(crate::resource::ControlRequest::AgentRecordInvalidated);
+    if let Some(handle) = handle
+        && let Some(agent_parent) = handle.companion::<phux_agent_session::parent::AgentParent>()
+    {
+        let _ = agent_parent
+            .mailbox
+            .try_send(phux_agent_session::parent::AgentParentRequest::RecordInvalidated);
     }
 }
 

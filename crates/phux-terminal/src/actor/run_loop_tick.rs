@@ -33,7 +33,7 @@ impl TerminalActor {
         };
         tick_span.record("emitted", walk.emitted);
         tick_span.record("total_out_bytes", walk.total_out_bytes);
-        phux_resource::perf::TICK_EMIT.record_elapsed(walk.started);
+        crate::perf::TICK_EMIT.record_elapsed(walk.started);
         for client_id in walk.closed {
             self.consumer_states.remove(&client_id);
         }
@@ -149,8 +149,8 @@ impl TerminalActor {
                 // Retry next tick without advancing; `behind` keeps the walk
                 // alive even if the grid goes clean meanwhile.
                 state.behind = true;
-                phux_resource::perf::CONSUMER_MAILBOX_FULL.incr();
-                if let Some(suppressed) = phux_resource::perf::MAILBOX_FULL_WARN.admit() {
+                crate::perf::CONSUMER_MAILBOX_FULL.incr();
+                if let Some(suppressed) = crate::perf::MAILBOX_FULL_WARN.admit() {
                     warn!(
                         ?client_id,
                         wire_terminal_id = state.wire_terminal_id,
@@ -162,7 +162,7 @@ impl TerminalActor {
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => {
                 // The detach may have been dropped; reap now.
-                phux_resource::perf::CONSUMER_REAPED.incr();
+                crate::perf::CONSUMER_REAPED.incr();
                 debug!(
                     ?client_id,
                     wire_terminal_id = state.wire_terminal_id,
@@ -187,7 +187,7 @@ impl TerminalActor {
             &state.acked_reference,
             &mut state.reference,
         );
-        phux_resource::perf::TICK_SYNTH.record_elapsed(synth_started);
+        crate::perf::TICK_SYNTH.record_elapsed(synth_started);
         if bytes.is_empty() {
             // Unchanged; the permit drops unused.
             return TickOutcome::Skipped;
@@ -197,7 +197,7 @@ impl TerminalActor {
         }
         let seq = state.next_seq;
         let out_bytes = bytes.len();
-        phux_resource::perf::TICK_OUT_BYTES.record_len(out_bytes);
+        crate::perf::TICK_OUT_BYTES.record_len(out_bytes);
         state.next_seq = state.next_seq.wrapping_add(1);
         let frame = FrameKind::ResourceOutput {
             terminal_id: phux_protocol::ids::ResourceId::local(state.wire_terminal_id),

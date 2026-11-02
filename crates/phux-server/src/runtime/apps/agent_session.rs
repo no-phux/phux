@@ -34,6 +34,10 @@ impl ResourceApp for AgentSessionApp {
         })
     }
 
+    fn metrics(&self) -> &'static [phux_perf::Metric] {
+        &[]
+    }
+
     fn command<'a>(
         &'a self,
         ctx: &'a CommandContext,

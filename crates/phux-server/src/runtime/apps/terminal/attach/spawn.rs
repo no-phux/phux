@@ -167,7 +167,7 @@ pub(crate) async fn handle_spawn_terminal(
                 .resolve(resource.as_ref().and_then(|r| r.retain_secs))
         }),
     };
-    match crate::resource::core_kind(kind) {
+    match crate::id_bridge::core_kind(kind) {
         Some(crate::resource::ResourceKind::Terminal) => {}
         Some(crate::resource::ResourceKind::AgentSession) => {
             let resource = resource.unwrap_or_default();

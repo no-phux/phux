@@ -353,7 +353,7 @@ pub struct AgentSessionBlob {
     pub records: Vec<String>,
     /// Atomic native append receipts independent of record retention.
     #[serde(default)]
-    pub native_publications: Vec<crate::resource::agent_session::NativeAppendAccepted>,
+    pub native_publications: Vec<phux_agent_session::session::NativeAppendAccepted>,
     /// Monotonic native publication cursor, including evicted receipts.
     #[serde(default)]
     pub native_publication_high_water: u64,

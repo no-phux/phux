@@ -222,7 +222,7 @@ pub(in crate::actor) fn spawn_dedicated(file: File, tx: mpsc::Sender<PtyEvent>) 
 }
 
 pub(in crate::actor) fn dedicated_loop(file: &mut File, tx: &mpsc::Sender<PtyEvent>) {
-    phux_resource::perf::promote_helper_thread("phux-pty-reader");
+    crate::perf::promote_helper_thread("phux-pty-reader");
     let mut bufs = CoalesceBufs::new();
     loop {
         match gather_wake(&mut MasterFile { file }, &mut bufs.scratch, &mut bufs.batch) {

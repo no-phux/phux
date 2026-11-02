@@ -148,7 +148,7 @@ async fn saturated_geometry_applies_final_size_before_snapshot() {
             assert!(
                 matches!(
                     resync,
-                    PaneOutput::Resync {
+                    ResourceOutput::Resync {
                         cols: 137,
                         rows: 53,
                         reason: ResyncReason::Resize,
