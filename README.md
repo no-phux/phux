@@ -21,7 +21,13 @@ a coding agent and whether it is waiting on you. Another machine is one
 curl -fsSL https://phux.sh/install | sh
 ```
 
-Or use [Homebrew](./docs/install.md#homebrew). Run `phux` after installing.
+Or install with Homebrew in one command. On Homebrew 6 and later that name trusts only the `phux` formula:
+
+```sh
+brew install no-phux/tap/phux
+```
+
+Run `phux` after installing. [First agent](./docs/getting-started.md#first-agent) is install, start, run Claude Code, Codex, OpenCode, or pi, and read `phux agent list`.
 
 ### Desktop app
 

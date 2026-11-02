@@ -12,7 +12,7 @@ unshipped experiment, and phone apps are not available yet. See
 ## Get started
 
 - [Install](./install.md): the install script, Homebrew, the desktop app, updating, and removing phux.
-- [Getting started](./getting-started.md): your first session, the keys that matter, detaching, and coming from tmux.
+- [Getting started](./getting-started.md): install, a first agent, the keys that matter, detaching, and coming from tmux.
 - [Concepts](./concepts.md): the server, sessions, tabs, panes, clients, hosts, targets, and what survives a restart.
 - [phux vs tmux, Herdr, and cmux](./compare.md): which one fits the job.
 
