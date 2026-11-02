@@ -372,6 +372,19 @@ fn a_hung_candidate_is_killed_and_reaped_at_the_deadline() {
     );
 }
 
+/// A child stuck in the kernel ignores `SIGKILL`, so giving up on the reap
+/// must not wait for it, and a child that does die is seen.
+#[test]
+fn the_reap_after_a_kill_gives_up_at_its_grace() {
+    assert!(!reaped_within(Duration::from_millis(20), || false));
+
+    let mut polls = 0;
+    assert!(reaped_within(Duration::from_secs(5), || {
+        polls += 1;
+        polls == 3
+    }));
+}
+
 /// A child that leaves a descendant holding its output does not hold the
 /// probe open, and what it wrote still decides the verdict.
 #[test]

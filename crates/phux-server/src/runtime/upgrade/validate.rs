@@ -21,6 +21,8 @@ use crate::upgrade::blob::{PREFLIGHT_PASSED, StateBlob};
 /// blob preflight scales with the server, parsing every pane's scrollback.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const PROBE_POLL: Duration = Duration::from_millis(5);
+/// How long a killed candidate has to be reaped before it is abandoned.
+const PROBE_REAP_GRACE: Duration = Duration::from_secs(2);
 /// Doubling from 1ms, the delay that ends the transient-failure retries.
 const PROBE_RETRY_LIMIT: Duration = Duration::from_millis(500);
 /// What is kept of each output stream: a build kind, a verdict, a diagnostic.
@@ -334,8 +336,9 @@ fn run_probe(
     })
 }
 
-/// Wait for `child`, killing and reaping it by its own PID at `deadline` (or
-/// if it can no longer be polled) so a hung candidate leaves no zombie.
+/// Wait for `child`, killing it by its own PID at `deadline` (or if it can no
+/// longer be polled) and reaping it so a hung candidate leaves no zombie. Only
+/// the child is killed; a descendant it started survives.
 fn wait_until(child: &mut Child, deadline: Instant) -> std::io::Result<ExitStatus> {
     loop {
         match child.try_wait() {
@@ -343,12 +346,35 @@ fn wait_until(child: &mut Child, deadline: Instant) -> std::io::Result<ExitStatu
             Ok(None) if Instant::now() < deadline => std::thread::sleep(PROBE_POLL),
             outcome => {
                 let _ = child.kill();
-                let _ = child.wait();
+                let reaped =
+                    reaped_within(PROBE_REAP_GRACE, || !matches!(child.try_wait(), Ok(None)));
+                if !reaped {
+                    tracing::warn!(
+                        pid = child.id(),
+                        "upgrade candidate outlived SIGKILL; leaving it unreaped"
+                    );
+                }
                 return Err(outcome
                     .err()
                     .unwrap_or_else(|| std::io::ErrorKind::TimedOut.into()));
             }
         }
+    }
+}
+
+/// Poll `gone` for `grace`. A blocking `wait` here would hand the deadline
+/// back: a child stuck in the kernel (an `exec` on a hung filesystem) ignores
+/// `SIGKILL` until it returns, and the server would never lift its seal.
+pub(super) fn reaped_within(grace: Duration, mut gone: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        if gone() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(PROBE_POLL);
     }
 }
 
