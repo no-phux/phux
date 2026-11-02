@@ -101,7 +101,7 @@ pub(super) fn translate(
                     }),
                 ));
             }
-            let kind = crate::resource::core_kind(kind);
+            let kind = crate::id_bridge::core_kind(kind);
             let op = kind
                 .ok_or_else(|| Refusal::Unsupported {
                     capability: "this resource kind".to_owned(),

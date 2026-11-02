@@ -12,11 +12,11 @@
 //!
 //! [`Registry::children`]: phux_core::registry::Registry::children
 
+use phux_agent_session::session::AgentSessionResource as _;
 use phux_core::ids::ResourceId;
 use phux_core::resource::ResourceKind;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::CloseReason;
-use phux_resource::agent_session::AgentSessionResource as _;
 
 use super::ServerState;
 

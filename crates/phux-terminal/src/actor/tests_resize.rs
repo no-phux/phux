@@ -41,7 +41,7 @@ async fn resize_rebroadcasts_grid_snapshot_for_phux_8v1() {
             let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
             while tokio::time::Instant::now() < deadline {
                 match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
-                    Ok(Ok(PaneOutput::Resync {
+                    Ok(Ok(ResourceOutput::Resync {
                         cols, rows, bytes, ..
                     })) => {
                         resync_dims = Some((cols, rows));
@@ -52,8 +52,8 @@ async fn resize_rebroadcasts_grid_snapshot_for_phux_8v1() {
                             break;
                         }
                     }
-                    Ok(Ok(PaneOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
-                    Ok(Ok(PaneOutput::Control { .. })) => {}
+                    Ok(Ok(ResourceOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
+                    Ok(Ok(ResourceOutput::Control { .. })) => {}
                     Ok(Err(_)) => break,                      // channel closed
                     Err(_) => tokio::task::yield_now().await, // poll tick
                 }
@@ -96,14 +96,16 @@ async fn settle_past_resync_debounce() {
     }
 }
 
-/// Drain every `PaneOutput::Resync` currently queued on `out`, returning
+/// Drain every `ResourceOutput::Resync` currently queued on `out`, returning
 /// the grid each one carried. Live output and lag drops are not resyncs.
-fn drain_resync_dims(out: &mut tokio::sync::broadcast::Receiver<PaneOutput>) -> Vec<(u16, u16)> {
+fn drain_resync_dims(
+    out: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
+) -> Vec<(u16, u16)> {
     let mut dims = Vec::new();
     loop {
         match out.try_recv() {
-            Ok(PaneOutput::Resync { cols, rows, .. }) => dims.push((cols, rows)),
-            Ok(PaneOutput::Live { .. } | PaneOutput::Control { .. })
+            Ok(ResourceOutput::Resync { cols, rows, .. }) => dims.push((cols, rows)),
+            Ok(ResourceOutput::Live { .. } | ResourceOutput::Control { .. })
             | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
             Err(_) => break,
         }

@@ -6,6 +6,7 @@ use rune::{Color, Cx, El, TextStyle, Transition, col, el, row, text};
 use crate::desk::Desk;
 use crate::theme::{Marks, SELECTED_WASH, Selection, Theme, on_fill};
 
+mod icons;
 mod inbox;
 mod machines;
 mod overlay;
@@ -28,10 +29,15 @@ const SIDEBAR_W: f32 = 236.0;
 /// The band the macOS traffic lights sit in when they draw over content.
 const TITLEBAR_H: f32 = 38.0;
 /// Space between the terminal area's edge and its grid.
-pub(crate) const PAD: f32 = 6.0;
+pub(crate) const PAD: f32 = 10.0;
+/// The gap around the terminal card, and how round it is.
+const CARD_GAP: f32 = 8.0;
+const CARD_RADIUS: f32 = 10.0;
 pub(crate) const LABEL: TextStyle = TextStyle::new(12.0, 400.0);
 pub(crate) const LABEL_STRONG: TextStyle = TextStyle::new(12.0, 600.0);
 pub(crate) const CAPTION: TextStyle = TextStyle::new(11.0, 500.0);
+/// A sidebar row's name.
+pub(crate) const NAME: TextStyle = TextStyle::new(12.5, 500.0);
 
 pub(crate) struct Ink {
     pub(crate) bg: Color,
@@ -41,6 +47,8 @@ pub(crate) struct Ink {
     pub(crate) dim: Color,
     pub(crate) separator: Color,
     pub(crate) selected: Color,
+    /// Where you are in the chrome: a row or tab, without the accent's colour.
+    pub(crate) current: Color,
     pub(crate) hover: Color,
     pub(crate) accent: Color,
     /// Text and marks on an accent fill.
@@ -64,6 +72,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
             dim: roles.dim,
             separator: roles.text.alpha(0.13),
             selected: crate::theme::color(theme.accent).alpha(SELECTED_WASH),
+            current: roles.text.alpha(0.1),
             hover: roles.text.alpha(0.07),
             accent: roles.accent,
             on_accent: roles.on_accent,
@@ -74,19 +83,26 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
         };
     }
     let t = tok::theme(dark);
+    // Neutral, so no chrome tints the terminal's own colours.
+    let (sidebar, raised, edge) = if dark {
+        (0x141517, 0x1e1f22, 0x2b2c30)
+    } else {
+        (0xf1f1f2, 0xfbfbfc, 0xdcdcdf)
+    };
     Ink {
         bg: t.bg,
-        raised: t.card,
-        sidebar: t.card,
+        raised: crate::theme::color(raised),
+        sidebar: crate::theme::color(sidebar),
         text: t.text,
         dim: t.text_secondary,
         separator: t.separator,
         selected: accent.alpha(SELECTED_WASH),
+        current: t.text.alpha(0.1),
         hover: t.hover,
         accent,
         on_accent: on_fill(accent),
         danger: Theme::system_danger(dark),
-        edge: t.separator,
+        edge: crate::theme::color(edge),
         marks: Theme::system_marks(dark),
         selection: Selection::system(),
     }
@@ -98,45 +114,17 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
     // draws its own titlebar.
     let lights = cx.titlebar_inset();
     let band = if lights > 0.0 { TITLEBAR_H } else { 12.0 };
-    // With the sidebar folded, the traffic lights sit over the terminal's
-    // top edge: a draggable titlebar that says what is on screen.
-    let top = (!desk.sidebar_open).then(|| {
-        row()
-            .key("titlebar")
-            .w_full()
-            .h(band)
-            .pl(lights + 8.0)
-            .pr(lights + 8.0)
-            .center()
-            .window_drag()
-            .child(
-                text(desk.window_title())
-                    .font(CAPTION)
-                    .color(p.dim)
-                    .truncate(),
-            )
-    });
     let main = row()
         .key("main")
         .w_full()
         .h_full()
         .child(
             el().key("sidebar-host")
-                .w(if desk.sidebar_open {
-                    SIDEBAR_W + 1.0
-                } else {
-                    0.0
-                })
+                .w(if desk.sidebar_open { SIDEBAR_W } else { 0.0 })
                 .h_full()
                 .clip_rounded(0.0)
                 .motion(tok::motion::SNAPPY)
-                .child(
-                    row()
-                        .w(SIDEBAR_W + 1.0)
-                        .h_full()
-                        .child(sidebar::view(desk, &p, band))
-                        .child(el().w(1.0).h_full().fill(p.edge)),
-                ),
+                .child(sidebar::view(desk, &p, TITLEBAR_H)),
         )
         .child(
             col()
@@ -144,26 +132,36 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                 .h_full()
                 .min_w(0.0)
                 .min_h(0.0)
-                .children(top)
-                .children(tabs::strip(desk, &p))
+                .child(status::title_bar(desk, &p, lights))
                 .child(
-                    // What floats here never takes rows from a terminal.
                     col()
-                        .key("stage")
                         .grow(1.0)
                         .w_full()
                         .min_w(0.0)
                         .min_h(0.0)
-                        .child(panes::view(desk, &p, cx))
-                        .children(status::confirm_bar(desk, &p))
-                        .children(overlay::toast(desk, &p)),
-                )
-                .child(el().w_full().h(1.0).fill(p.edge))
-                .child(status::status_line(desk, &p)),
+                        .pl(if desk.sidebar_open { 0.0 } else { CARD_GAP })
+                        .pr(CARD_GAP)
+                        .pb(CARD_GAP)
+                        .child(
+                            // What floats here never takes rows from a terminal.
+                            col()
+                                .key("stage")
+                                .grow(1.0)
+                                .w_full()
+                                .min_w(0.0)
+                                .min_h(0.0)
+                                .radius(CARD_RADIUS)
+                                .clip_rounded(CARD_RADIUS)
+                                .border(1.0, p.edge)
+                                .child(panes::view(desk, &p, cx))
+                                .children(status::confirm_bar(desk, &p))
+                                .children(overlay::toast(desk, &p)),
+                        ),
+                ),
         );
     el().w_full()
         .h_full()
-        .fill(p.bg)
+        .fill(p.sidebar)
         // No root paste hook: it would read the clipboard before anything
         // here saw the key. ⌘V and Edit ▸ Paste come to `Desk::key` instead,
         // which answers to the modal and keeps the terminal asked for.
@@ -253,6 +251,21 @@ impl Sheet {
             .child(el().grow(1.0).max_h(self.top - MARGIN))
             .child(panel)
     }
+}
+
+/// A quiet square button around an icon.
+pub(crate) fn icon_press(
+    glyph: &'static rune::Icon,
+    key: impl Into<String>,
+    p: &Ink,
+    press: impl Fn(&mut Desk) + 'static,
+) -> El {
+    pressable(key, p)
+        .size(24.0, 24.0)
+        .radius(6.0)
+        .center()
+        .on_press(press)
+        .child(rune::icon(glyph, 14.0).color(p.dim))
 }
 
 /// Something to press: the hover wash and the pointer. Key errors name the

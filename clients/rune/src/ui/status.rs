@@ -4,7 +4,10 @@
 use phux_client_runtime::control::Status;
 use rune::{Color, El, Family, TextStyle, col, el, row, text};
 
-use super::{CAPTION, Ink, LABEL, LABEL_STRONG, button, keep_from_pane, pressable};
+use super::{
+    CAPTION, Ink, LABEL, LABEL_STRONG, TITLEBAR_H, button, icon_press, icons, keep_from_pane,
+    pressable, tabs,
+};
 use crate::desk::link::{Banner, Standing};
 use crate::desk::{Desk, Notice, NoticeKind, Pending};
 use crate::launch::INSTALL;
@@ -294,15 +297,42 @@ pub fn banner(desk: &Desk, p: &Ink) -> Option<El> {
     )
 }
 
-pub fn status_line(desk: &Desk, p: &Ink) -> El {
-    let (word, color) = match desk.status {
-        _ if desk.client.is_none() && desk.link_word() != "connecting" => ("not connected", p.dim),
-        Status::Attached => ("attached", p.accent),
-        Status::Idle | Status::Connecting => ("connecting", p.dim),
-        Status::Negotiated => ("negotiated", p.dim),
-        Status::Closed => ("closed", p.dim),
-        Status::Failed => ("failed", p.danger),
-    };
+/// How the link is, when it isn't simply up: a healthy window says nothing.
+fn link_trouble(desk: &Desk, p: &Ink) -> Option<(&'static str, Color)> {
+    match desk.status {
+        _ if desk.client.is_none() && desk.link_word() != "connecting" => {
+            Some(("not connected", p.dim))
+        }
+        Status::Attached => None,
+        Status::Idle | Status::Connecting => Some(("connecting", p.dim)),
+        Status::Negotiated => Some(("negotiated", p.dim)),
+        Status::Closed => Some(("closed", p.dim)),
+        Status::Failed => Some(("failed", p.danger)),
+    }
+}
+
+/// What is on screen, unless tabs say that already.
+fn place(desk: &Desk, p: &Ink) -> El {
+    let session = desk.selected_session_name().unwrap_or_default();
+    let title = desk.window_title().to_owned();
+    // The window title ends in its session; here that sits in front.
+    let title = title
+        .strip_suffix(&format!(" — {session}"))
+        .map_or(title.clone(), str::to_owned);
+    let terminal = (title != session && !title.is_empty())
+        .then(|| text(title).font(LABEL).color(p.dim).truncate());
+    row()
+        .gap(7.0)
+        .min_w(0.0)
+        .shrink()
+        .items_center()
+        .child(text(session).font(LABEL_STRONG).color(p.text).truncate())
+        .children(terminal)
+}
+
+/// The band over the terminal: draggable, under the traffic lights when the
+/// sidebar is folded, and holding what a status line would.
+pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
     let geometry = desk
         .client
         .as_ref()
@@ -310,15 +340,23 @@ pub fn status_line(desk: &Desk, p: &Ink) -> El {
         .and_then(|(client, shown)| client.acquire_view(shown.view))
         .map(|frame| format!("{}×{}", frame.cols, frame.rows))
         .unwrap_or_default();
-    let session = desk.selected_session_name().unwrap_or_default();
+    let folded = !desk.sidebar_open;
     row()
+        .key("titlebar")
         .w_full()
-        .h(24.0)
-        .px(10.0)
-        .gap(14.0)
+        .h(TITLEBAR_H)
+        .pl(if folded { lights + 8.0 } else { 2.0 })
+        .pr(12.0)
+        .gap(8.0)
         .items_center()
-        .child(text(word).font(CAPTION).color(color))
-        .child(text(session).font(CAPTION).color(p.dim).truncate())
+        .window_drag()
+        .child(icon_press(
+            &icons::SIDEBAR,
+            "sidebar-toggle",
+            p,
+            Desk::toggle_sidebar,
+        ))
+        .children(tabs::strip(desk, p).or_else(|| Some(place(desk, p))))
         .child(el().grow(1.0))
         // Where a ⌘-click goes, as a browser shows it.
         .children(desk.pointer.hover.as_ref().map(|(_, link)| {
@@ -327,15 +365,11 @@ pub fn status_line(desk: &Desk, p: &Ink) -> El {
                 .color(p.accent)
                 .truncate()
         }))
+        .children(link_trouble(desk, p).map(|(word, color)| text(word).font(CAPTION).color(color)))
         .children(super::updates::pill(desk, p))
         .child(
             text(geometry)
                 .font(CAPTION.family(Family::SystemMono))
-                .color(p.dim),
-        )
-        .child(
-            text(format!("{:.0} pt", desk.font_size))
-                .font(CAPTION)
                 .color(p.dim),
         )
 }

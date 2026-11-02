@@ -121,7 +121,7 @@ session (or `--session NAME`). It never creates a session on its own.
   its path, for agents that read images. Files pasted or dropped on a pane
   type as quoted paths.
 - **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
-  see where it goes in the status line; ⌘-click opens it. URLs wrapped
+  see where it goes in the title bar; ⌘-click opens it. URLs wrapped
   across rows count. Only `http`, `https` and `mailto` open.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
@@ -175,7 +175,7 @@ cancels).
   to show (the server keeps only that one is pending); its card opens the
   terminal instead. Title-sentinel asks always show.
 - A URL that fills a row is assumed to continue on the next one (frames
-  carry no soft-wrap flag yet); the status line shows the joined target
+  carry no soft-wrap flag yet); the title bar shows the joined target
   before a ⌘-click.
 - No DMG yet; the ZIP is the macOS download.
 - Wayland is not qualified; see [Install](#install).

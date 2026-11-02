@@ -40,7 +40,7 @@ use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
 };
-use phux_resource::agent_asked::{AskedPayload, AskedSource};
+use phux_agent_session::asked::{AskedPayload, AskedSource};
 use phux_terminal::TerminalInput;
 use phux_terminal::actor::{
     ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalActor,

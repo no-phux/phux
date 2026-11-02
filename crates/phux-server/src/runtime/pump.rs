@@ -11,7 +11,7 @@ use phux_protocol::ids::BootstrapId;
 use phux_protocol::wire::frame::FrameKind;
 use tokio::sync::mpsc::error::TrySendError;
 
-use crate::resource::{PaneOutput, ResyncAudience, ResyncTarget};
+use crate::resource::{ResourceOutput, ResyncAudience, ResyncTarget};
 use crate::state::Outbound;
 
 /// Outcome of offering one live frame to a consumer mailbox without parking.
@@ -248,7 +248,7 @@ impl PumpGeneration {
         self.gap_attempts
     }
 
-    /// Does a [`PaneOutput::Resync`] addressed to `audience` replace this
+    /// Does a [`ResourceOutput::Resync`] addressed to `audience` replace this
     /// pump's generation? One for everyone (a reflow) always does. One naming
     /// pumps replaces only a named pump that is still fenced or retired, so
     /// every other consumer of the pane keeps its generation; a pump retired
@@ -285,7 +285,7 @@ pub(super) enum PumpWait {
     /// Natural close requests a fresh final capture before ending the pump.
     FinalDrain,
     /// Dispatch this broadcast result.
-    Event(Result<PaneOutput, tokio::sync::broadcast::error::RecvError>),
+    Event(Result<ResourceOutput, tokio::sync::broadcast::error::RecvError>),
     /// A fenced pump's backoff elapsed with no replacement generation: ask
     /// again.
     RetryResync,
@@ -297,7 +297,7 @@ pub(super) enum PumpWait {
 /// its retry deadline. `recv` is cancel-safe, so the timeout drops nothing.
 pub(super) async fn next_event(
     generation: &PumpGeneration,
-    output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+    output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) -> PumpWait {
     if !generation.is_fenced() {
         return PumpWait::Event(output_rx.recv().await);

@@ -6,18 +6,18 @@
     reason = "private submodule re-exported by resource_commands at crate visibility"
 )]
 
+use phux_agent_session::session::AgentSessionResource as _;
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::ids::ResourceKind;
 use phux_protocol::wire::frame::{AgentEvent, FrameKind, SpawnError, SpawnResource};
-use phux_resource::agent_session::AgentSessionResource as _;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use super::attach_agent_session;
 use crate::mailbox::Outbound;
-use crate::resource::agent_session::AgentSessionActor;
 use crate::runtime::attach::refuse_spawn;
 use crate::state::{ClientId, SharedState};
+use phux_agent_session::session::AgentSessionActor;
 /// Validate parent ownership and kind in the same state borrow that registers
 /// the child, before allocating any resource or publishing its identity.
 fn validate_agent_parent(
@@ -45,14 +45,21 @@ async fn bind_agent_stream(
     parent: phux_core::ids::ResourceId,
     handle: &crate::resource::ResourceHandle,
 ) {
-    if let Some(parent_handle) = state.with(|s| s.resource_handle(parent).cloned())
+    let agent_parent = state.with(|s| {
+        s.resource_handle(parent)
+            .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>())
+            .cloned()
+    });
+    if let Some(agent_parent) = agent_parent
         && let Ok(facet) = handle.agent_session()
     {
-        let _ = parent_handle
-            .control
-            .send(crate::resource::ControlRequest::BindAgentSession {
-                append: facet.append.clone(),
-            })
+        let _ = agent_parent
+            .mailbox
+            .send(
+                phux_agent_session::parent::AgentParentRequest::BindSession {
+                    append: facet.append.clone(),
+                },
+            )
             .await;
     }
 }

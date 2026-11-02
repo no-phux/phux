@@ -20,10 +20,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::RuntimeFlags;
-use crate::resource::agent_session::BootstrapRequest;
-use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
+use crate::resource::handoff::{ProcessHandoff, UpgradeHandleRequest};
 use crate::state::{SharedState, UpgradeHandoffs};
 use crate::upgrade::blob::StateBlob;
+use phux_agent_session::session::BootstrapRequest;
 
 mod handoff;
 #[cfg(test)]
@@ -149,7 +149,7 @@ pub(super) struct UpgradePlan {
     _listener_fd: OwnedFd,
     /// Each carried delegated socket's duplicated listener (ADR-0163 §5).
     _delegated_listeners: Vec<OwnedFd>,
-    _handoffs: HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>,
+    _handoffs: HashMap<phux_core::ids::ResourceId, ProcessHandoff>,
     /// Lifted only if `exec` returns, so the old image keeps streaming.
     agent_seal: AgentSessionSeal,
     _native_seal: Option<NativeBrokerSeal>,
@@ -310,7 +310,10 @@ async fn prepare_upgrade_inner(state: &SharedState) -> Result<UpgradePlan, Upgra
 /// pane out of the live server under a single lock.
 fn capture_upgrade_context(state: &SharedState) -> Result<UpgradeContext, UpgradeError> {
     state
-        .with(|s| {
+        .with_mut(|s| {
+            // Wire ids are interned on first read, and the blob carries only
+            // what has one.
+            s.intern_upgrade_wires();
             s.upgrade_context()
                 .map(|(listener_fd, path, flags)| UpgradeContext {
                     listener_fd,
@@ -377,6 +380,9 @@ fn reassemble_unchanged_tree(
 ) -> Result<StateBlob, UpgradeError> {
     state
         .with_mut(|s| {
+            // Without this, anything new since the capture would be missing
+            // from both blobs and look unchanged.
+            s.intern_upgrade_wires();
             s.retry_activation_reports();
             if s.has_pending_activation_reports() {
                 return None;

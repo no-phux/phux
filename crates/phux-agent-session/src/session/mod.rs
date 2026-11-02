@@ -13,9 +13,9 @@ use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    ControlRequest, PaneOutput, ResourceCore, ResourceCoreChannels, ResourceFacet, ResourceHandle,
-    ResourceId, ResourceKind,
+use phux_resource::{
+    Delivery, LeaseChange, ResourceCore, ResourceCoreChannels, ResourceFacet, ResourceHandle,
+    ResourceId, ResourceKind, ResourceOps, ResourceOutput, WrongResourceKind,
 };
 
 pub mod record;
@@ -56,13 +56,23 @@ impl ResourceFacet for AgentSessionHandle {
 
 /// A record stream has no grid to size and no process to hand off; an upgrade
 /// carries it through its bootstrap mailbox instead.
-impl crate::ResourceOps for AgentSessionHandle {
+impl ResourceOps for AgentSessionHandle {
     fn resize(&self, _size: (u16, u16), _cell_px: Option<(u16, u16)>) -> bool {
         false
     }
 
-    fn upgrade_sender(&self) -> Option<mpsc::Sender<crate::handoff::UpgradeHandleRequest>> {
+    fn upgrade_sender(&self) -> Option<mpsc::Sender<phux_resource::handoff::UpgradeHandleRequest>> {
         None
+    }
+
+    fn lease_changed(&self, _change: LeaseChange) -> Delivery {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn try_lease_changed(&self, _change: LeaseChange) {}
+
+    fn retire(&self) -> Delivery {
+        Box::pin(std::future::ready(()))
     }
 }
 
@@ -72,13 +82,12 @@ pub trait AgentSessionResource {
     ///
     /// # Errors
     ///
-    /// [`crate::WrongResourceKind`] when this resource is not an agent
-    /// session.
-    fn agent_session(&self) -> Result<&AgentSessionHandle, crate::WrongResourceKind>;
+    /// [`WrongResourceKind`] when this resource is not an agent session.
+    fn agent_session(&self) -> Result<&AgentSessionHandle, WrongResourceKind>;
 }
 
 impl AgentSessionResource for ResourceHandle {
-    fn agent_session(&self) -> Result<&AgentSessionHandle, crate::WrongResourceKind> {
+    fn agent_session(&self) -> Result<&AgentSessionHandle, WrongResourceKind> {
         self.facet::<AgentSessionHandle>()
     }
 }
@@ -97,8 +106,7 @@ pub struct AgentSessionBundle {
 
 /// The producer-fed agent-session engine.
 pub struct AgentSessionActor {
-    /// The generic half: sequence, output broadcast, event subscribers,
-    /// lifecycle, control mailbox.
+    /// The generic half: sequence, output broadcast, lifecycle.
     core: ResourceCore,
     /// Retained records, bounded by `defaults.agent-log-bytes`.
     ring: RecordRing,
@@ -141,11 +149,10 @@ impl AgentSessionActor {
             ResourceKind::AgentSession,
             Some(parent),
             token,
-            crate::output_broadcast_capacity(),
+            phux_resource::output_broadcast_capacity(),
         );
         let ResourceCoreChannels {
             output,
-            control,
             exit_notify,
         } = channels;
         let (append_tx, append_rx) = mpsc::channel(AGENT_SESSION_MAILBOX);
@@ -158,7 +165,7 @@ impl AgentSessionActor {
             bootstrap: bootstrap_tx,
             ended: Arc::clone(&ended),
         };
-        let handle = ResourceHandle::new(Some(parent), output, control, facet);
+        let handle = ResourceHandle::new(Some(parent), output, facet);
         AgentSessionBundle {
             actor: Self {
                 core,
@@ -221,11 +228,6 @@ impl AgentSessionActor {
                     Some(request) => self.handle_append(request),
                     None => break,
                 },
-                request = self.core.control_rx.recv() => {
-                    if let Some(request) = request {
-                        Self::refuse_control(request);
-                    }
-                }
             }
         }
         self.core
@@ -299,7 +301,7 @@ impl AgentSessionActor {
 
     /// Validate, stamp, retain, and broadcast one append, all-or-nothing.
     /// Records share the append's timestamp and ship in one
-    /// [`PaneOutput::Live`] sequenced by the last record.
+    /// [`ResourceOutput::Live`] sequenced by the last record.
     fn handle_append(&mut self, request: AppendRequest) {
         let AppendRequest {
             bytes,
@@ -340,7 +342,7 @@ impl AgentSessionActor {
             )));
             return;
         };
-        let ts_ms = crate::now_unix_ms();
+        let ts_ms = phux_resource::now_unix_ms();
         // Stamping adds server-owned fields and may expand escaped data.
         // One buffer holds the batch. Each retained line is a slice of it,
         // so the broadcast and the ring share the bytes. An evicted line
@@ -373,7 +375,7 @@ impl AgentSessionActor {
                 self.ended.store(true, Ordering::Relaxed);
             }
         }
-        let _ = self.core.output_tx.send(PaneOutput::Live {
+        let _ = self.core.output_tx.send(ResourceOutput::Live {
             seq: last_seq,
             bytes: payload,
             at: std::time::Instant::now(),
@@ -398,27 +400,6 @@ impl AgentSessionActor {
             }
         }
         let _ = reply.send(Ok(accepted));
-    }
-
-    /// Refuse Terminal-only supervisory requests (the runtime already
-    /// refuses them with `WRONG_RESOURCE_KIND`).
-    fn refuse_control(request: ControlRequest) {
-        match request {
-            ControlRequest::ReportAgentState { reply, .. }
-            | ControlRequest::SynthesizeAgentStateRecord { reply, .. }
-            | ControlRequest::ReportStreamState { reply, .. } => {
-                let _ = reply.send(Err(
-                    "an agent session derives its state from its own stream".to_owned(),
-                ));
-            }
-            ControlRequest::Signal { reply, .. } => {
-                let _ = reply.send(Err("an agent session has no process to signal".to_owned()));
-            }
-            ControlRequest::LeaseChanged { .. }
-            | ControlRequest::AgentRecordInvalidated
-            | ControlRequest::BindAgentSession { .. }
-            | ControlRequest::Retire => {}
-        }
     }
 }
 

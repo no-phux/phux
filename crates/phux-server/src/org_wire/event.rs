@@ -1,36 +1,11 @@
-//! Events: extracted from the shared module.
+//! The organization event, as its wire frame.
+
+use phux_protocol::wire::frame;
+
 use super::{
-    activation_id, arrangement_key, exec_state, frame, lifetime, outcome, owner, resource_key,
-    revision, session_key, wire,
+    activation_id, arrangement_key, exec_state, lifetime, outcome, owner, resource_key, revision,
+    session_key,
 };
-
-/// A core actor as the event stamp's `ActorRef`, with its principal.
-#[must_use]
-pub fn actor_ref(actor: &phux_core::Actor, client: Option<wire::ClientId>) -> frame::ActorRef {
-    frame::ActorRef::new(client.unwrap_or(wire::ClientId::new(0)))
-        .with_client_name(actor.client.clone())
-        .with_principal(principal_id(&actor.principal))
-        .with_on_behalf_of(actor.on_behalf_of.as_ref().and_then(principal_id))
-}
-
-/// A principal's stable wire id: the first 16 bytes of the SHA-256 of its
-/// label (`owner`, `system`, or the credential name).
-#[must_use]
-pub fn principal_id(principal: &phux_core::PrincipalId) -> Option<wire::PrincipalId> {
-    match principal {
-        phux_core::PrincipalId::Owner => digest_id(b"owner"),
-        phux_core::PrincipalId::System => digest_id(b"system"),
-        phux_core::PrincipalId::Credential(name) => digest_id(name.as_bytes()),
-    }
-}
-
-pub(super) fn digest_id(label: &[u8]) -> Option<wire::PrincipalId> {
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(label);
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    wire::PrincipalId::new(bytes)
-}
 
 /// A core organization event as the journal's `AgentEvent`; `None` when a
 /// key cannot be carried.
@@ -117,7 +92,7 @@ pub fn event(e: &phux_core::Event, org: &phux_core::Org) -> Option<frame::AgentE
         E::ResourceCreated { key, session, kind } => frame::AgentEvent::ResourceCreated {
             resource: resource_key(*key)?,
             session: session_key(*session)?,
-            kind: crate::resource::wire_kind(*kind),
+            kind: crate::id_bridge::wire_kind(*kind),
         },
         E::ResourceRenamed {
             key,
@@ -131,7 +106,7 @@ pub fn event(e: &phux_core::Event, org: &phux_core::Org) -> Option<frame::AgentE
         E::ResourceRemoved { key, session, kind } => frame::AgentEvent::ResourceRemoved {
             resource: resource_key(*key)?,
             session: session_key(*session)?,
-            kind: crate::resource::wire_kind(*kind),
+            kind: crate::id_bridge::wire_kind(*kind),
         },
         E::ActivationChanged {
             resource,

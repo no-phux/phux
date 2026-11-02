@@ -214,11 +214,11 @@ async fn xtwinops_size_queries_answered_from_resized_geometry() {
                 }
                 round += 1;
                 match tokio::time::timeout(DRAIN_POLL_TICK, out.recv()).await {
-                    Ok(Ok(PaneOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
-                    Ok(Ok(PaneOutput::Resync { bytes, .. })) => {
+                    Ok(Ok(ResourceOutput::Live { bytes, .. })) => acc.extend_from_slice(&bytes),
+                    Ok(Ok(ResourceOutput::Resync { bytes, .. })) => {
                         acc.extend_from_slice(&bytes);
                     }
-                    Ok(Ok(PaneOutput::Control { .. })) | Err(_) => {}
+                    Ok(Ok(ResourceOutput::Control { .. })) | Err(_) => {}
                     Ok(Err(_)) => break, // channel closed
                 }
                 if seen(&acc, b"4;720;900t") && seen(&acc, b"8;40;100t") {
