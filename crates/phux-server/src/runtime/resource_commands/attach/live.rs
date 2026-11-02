@@ -54,7 +54,9 @@ impl LivePump {
             };
             let next = match output {
                 // A batch is cut atomically: at or behind the cursor, every
-                // record in it was already delivered.
+                // record in it was already delivered. This holds because the
+                // session actor serves cuts and appends from one biased
+                // select, so no batch spans a cut's `base_seq`.
                 Ok(PaneOutput::Live { seq, .. }) if seq <= cursor => Some(cursor),
                 Ok(PaneOutput::Live { seq, bytes, .. }) => {
                     self.forward(seq, bytes).await.then_some(seq)
@@ -133,6 +135,9 @@ impl LivePump {
     async fn replay(&self, cursor: u64, records: Vec<Bytes>) -> Option<()> {
         let mut seq = cursor;
         for record in records {
+            if self.cancel.is_cancelled() {
+                return None;
+            }
             seq += 1;
             if !self.forward(seq, record).await {
                 return None;
@@ -165,7 +170,14 @@ impl LivePump {
             cut,
             self.limits,
         ) {
-            if !self.send(frame).await {
+            if self.cancel.is_cancelled() || !self.send(frame).await {
+                // The state table already names `next`; a later attach's
+                // tombstone for it is dropped by the client's fence.
+                warn!(
+                    session = %self.terminal_id,
+                    bootstrap_id = ?next,
+                    "agent session replacement ended before its bootstrap was delivered"
+                );
                 return None;
             }
         }
