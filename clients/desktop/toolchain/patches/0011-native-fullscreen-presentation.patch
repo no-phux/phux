@@ -1,23 +1,19 @@
 diff --git a/gpui-fast-macos/src/window.rs b/gpui-fast-macos/src/window.rs
-index a1b4f33..8a42fca 100644
+index aa3ef69..fe96eb5 100644
 --- a/gpui-fast-macos/src/window.rs
 +++ b/gpui-fast-macos/src/window.rs
-@@ -57,9 +57,9 @@ use objc2::{
-     runtime::{AnyObject as Objc2Object, ProtocolObject},
- };
+@@ -40,7 +40,7 @@ use objc2::{
+ )]
+ use objc2_app_kit::NSFilenamesPboardType;
  use objc2_app_kit::{
--    NSAlert, NSAlertStyle, NSBeep, NSButton as Objc2NSButton, NSDraggingImageComponent,
--    NSDraggingImageComponentIconKey, NSDraggingItem, NSPasteboardWriting, NSTrackingArea,
--    NSTrackingAreaOptions, NSView as Objc2NSView, NSWindow as Objc2NSWindow,
-+    NSAlert, NSAlertStyle, NSApplicationPresentationOptions, NSBeep, NSButton as Objc2NSButton,
-+    NSDraggingImageComponent, NSDraggingImageComponentIconKey, NSDraggingItem, NSPasteboardWriting,
-+    NSTrackingArea, NSTrackingAreaOptions, NSView as Objc2NSView, NSWindow as Objc2NSWindow,
-     NSWindowButton as Objc2NSWindowButton, NSWorkspace,
- };
- use objc2_foundation::{NSPoint as Objc2NSPoint, NSRect as Objc2NSRect, NSURL};
-@@ -451,6 +451,11 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
+-    NSAlert, NSAlertStyle, NSAppearance, NSAutoresizingMaskOptions, NSBackingStoreType, NSBeep,
++    NSAlert, NSAlertStyle, NSAppearance, NSApplicationPresentationOptions, NSAutoresizingMaskOptions, NSBackingStoreType, NSBeep,
+     NSButton, NSColor, NSDragOperation, NSDraggingContext, NSDraggingImageComponent,
+     NSDraggingImageComponentIconKey, NSDraggingItem, NSEventModifierFlags, NSEventType,
+     NSPasteboardWriting, NSRequestUserAttentionType, NSScreen, NSTrackingArea,
+@@ -432,6 +432,11 @@ unsafe fn build_window_class(name: &CStr, superclass: &AnyClass) -> *const AnyCl
              sel!(windowDidChangeOcclusionState:),
-             window_did_change_occlusion_state as extern "C" fn(&Object, Sel, id),
+             window_did_change_occlusion_state as extern "C" fn(_, Sel, *mut AnyObject),
          );
 +        decl.add_method(
 +            sel!(window:willUseFullScreenPresentationOptions:),
@@ -26,15 +22,15 @@ index a1b4f33..8a42fca 100644
 +        );
          decl.add_method(
              sel!(windowWillEnterFullScreen:),
-             window_will_enter_fullscreen as extern "C" fn(&Object, Sel, id),
-@@ -3206,6 +3211,30 @@ extern "C" fn window_did_resize(this: &Object, _: Sel, _: id) {
+             window_will_enter_fullscreen as extern "C" fn(_, Sel, *mut AnyObject),
+@@ -3200,6 +3205,30 @@ extern "C" fn window_did_resize(this: &AnyObject, _: Sel, _: *mut AnyObject) {
      window_state.as_ref().lock().move_traffic_light();
  }
  
 +extern "C" fn window_fullscreen_presentation_options(
-+    _: &Object,
++    _: &AnyObject,
 +    _: Sel,
-+    _: id,
++    _: *mut AnyObject,
 +    options: usize,
 +) -> usize {
 +    fullscreen_presentation_options(options)
@@ -55,12 +51,12 @@ index a1b4f33..8a42fca 100644
 +    options.bits()
 +}
 +
- extern "C" fn window_will_enter_fullscreen(this: &Object, _: Sel, _: id) {
+ extern "C" fn window_will_enter_fullscreen(this: &AnyObject, _: Sel, _: *mut AnyObject) {
      let window_state = unsafe { get_window_state(this) };
      let mut lock = window_state.as_ref().lock();
-@@ -4156,4 +4185,25 @@ mod tests {
-     fn display_id_for_screen_returns_none_for_null_screen() {
-         assert_eq!(display_id_for_screen(nil), None);
+@@ -4245,4 +4274,25 @@ mod tests {
+                 .load::<*mut AnyObject>(screen)
+         }
      }
 +
 +    #[test]

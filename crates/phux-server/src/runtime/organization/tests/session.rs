@@ -98,7 +98,7 @@ fn session_kill_store_failure_closes_nothing() {
         let session = receipt.session.expect("created session");
         let wire = receipt.target.expect("a launched engine").resource;
         let core = state
-            .with(|s| s.terminal_from_wire(&wire))
+            .with(|s| s.resource_from_wire(&wire))
             .expect("live core id");
         assert!(
             state.with(|s| s.resource_handle(core).is_some()),
@@ -157,7 +157,7 @@ fn terminate_is_accepted_and_a_stale_target_refused() {
         let root = CancellationToken::new();
         let (_, pane) = state.with_mut(|s| s.seed_session("work"));
         let target = |activation| LiveTarget {
-            resource: state.with_mut(|s| s.intern_terminal_wire(pane)),
+            resource: state.with_mut(|s| s.intern_resource_wire(pane)),
             instance: state.with(|s| s.idspace.instance()),
             activation: phux_protocol::ids::ActivationId::new(activation),
         };

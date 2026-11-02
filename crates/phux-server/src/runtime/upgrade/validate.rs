@@ -2,16 +2,18 @@
 //! re-exec (ADR-0032): pin a private snapshot, then probe it with
 //! `--version` / `config check` and refuse a dev/release build-kind change.
 
+use std::fs::File;
+use std::io::{Seek as _, SeekFrom};
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use phux_config::instance::{BuildKind, PROBE_BUILD_KIND_ENV, build_kind};
+use phux_config::instance::{BuildKind, PROBE_BUILD_KIND_ENV, PROBE_UPGRADE_BLOB_ENV, build_kind};
 
 use super::{FdFlagsGuard, UPGRADE_SNAPSHOT_DIR, UPGRADE_SOURCE_EXE, UpgradeError};
 use crate::runtime::delegation;
-use crate::upgrade::blob::StateBlob;
+use crate::upgrade::blob::{PREFLIGHT_PASSED, StateBlob};
 
 /// A private executable snapshot copied from one opened source inode, so the
 /// installed path cannot be swapped between copy and validation. Re-exec
@@ -171,6 +173,31 @@ pub(super) fn validate_binary(exe: &Path) -> Result<(), UpgradeError> {
     probe_binary(exe, &["--version"])?;
     probe_binary(exe, &["config", "check"])?;
     refuse_build_kind_change(exe)
+}
+
+/// Ask the candidate to read the staged blob, leaving the file rewound for
+/// the real resume. A resume failure kills every pane, so this is the check
+/// that matters most; a candidate that predates it ignores the variable,
+/// answers `--version`, and proceeds as upgrades always did.
+pub(super) fn preflight_blob(exe: &Path, blob: &mut File) -> Result<(), UpgradeError> {
+    let output = probe_output(
+        Command::new(exe)
+            .arg("--version")
+            .env(PROBE_UPGRADE_BLOB_ENV, "1")
+            .stdin(blob.try_clone()?),
+    )?;
+    blob.seek(SeekFrom::Start(0))?;
+    if output.status.success() {
+        if !String::from_utf8_lossy(&output.stdout).contains(PREFLIGHT_PASSED) {
+            tracing::warn!("upgrade candidate predates the blob preflight; resuming unverified");
+        }
+        return Ok(());
+    }
+    Err(UpgradeError::Validation(format!(
+        "{} cannot resume this server: {}",
+        exe.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
 }
 
 /// Keep a server on its kind of build across a hot swap.

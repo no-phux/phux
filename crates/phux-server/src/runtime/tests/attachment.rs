@@ -48,7 +48,7 @@ async fn handle_attach_bounds_snapshot_sources_sequentially() {
                     .expect("snapshot channel closed");
                 assert!(req.max_bytes <= previous_max_bytes);
                 previous_max_bytes = req.max_bytes;
-                let payload = crate::grid::SnapshotBytes {
+                let payload = phux_terminal::grid::SnapshotBytes {
                     cols: 80,
                     rows: 24,
                     bytes: format!("snap-{i}").into_bytes(),
@@ -171,7 +171,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
         BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, EngineCodec, EngineFeatureSet,
     };
 
-    use crate::terminal_actor::{
+    use phux_terminal::actor::{
         ConsumerAttachOutcome, NativeBootstrapReply, PaneOutput, ResyncReason,
     };
 
@@ -281,7 +281,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
             assert_eq!(publication.cursor, [9; 32]);
             publication
                 .reply
-                .send(Ok(crate::terminal_actor::NativePublicationReply {
+                .send(Ok(phux_terminal::actor::NativePublicationReply {
                     replay: Vec::new(),
                     live: output_tx.subscribe(),
                 }))
@@ -310,7 +310,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
                     rows: 24,
                     bytes: bytes::Bytes::new(),
                     reason: ResyncReason::OutboundGap,
-                    audience: crate::terminal_actor::ResyncAudience::Everyone,
+                    audience: crate::resource::ResyncAudience::Everyone,
                     base_seq: 1,
                 })
                 .expect("resync receiver");
@@ -327,7 +327,9 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
                 .expect("native request sender closed");
             failed
                 .reply
-                .send(Err(crate::native_state::NativeStateError::OutOfMemory))
+                .send(Err(
+                    phux_terminal::native_state::NativeStateError::OutOfMemory,
+                ))
                 .expect("replacement failure reply");
 
             assert!(matches!(

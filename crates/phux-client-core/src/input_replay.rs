@@ -24,7 +24,7 @@
 //!   *unknown* — never a silent replay, never a silent drop.
 //! - **Replay only inside [`INPUT_RETRY_HORIZON`]**, which matches the
 //!   server's dedupe retention (`DEDUPE_RETENTION`,
-//!   `phux-server/src/runtime/input_lane/acknowledged.rs`). Past it the
+//!   `phux-server/src/runtime/apps/terminal/input_lane/acknowledged.rs`). Past it the
 //!   server may have evicted the record, so a resend could write twice.
 //! - **At most one operation per Terminal in flight**, submission order
 //!   preserved independently for each Terminal. Unrelated Terminals may make

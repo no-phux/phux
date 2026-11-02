@@ -3,31 +3,26 @@ mod metadata;
 use super::commands::{CommandDispatch, CommandDispatchOutcome};
 use super::dispatch::{ConnectionEnding, FrameDispatch, FrameFlow};
 use super::hello::{HelloRequest, negotiate_hello};
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-use super::history::{HistoryPageRequest, serve_history_request};
 use super::metadata_subscriptions::is_agent_session;
 use super::plumbing::{
-    AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request,
-    dispatch_terminal_reply, reply_pong,
+    AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
-use super::terminal_streams::{
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+use crate::runtime::apps::terminal::history::{HistoryPageRequest, serve_history_request};
+use crate::runtime::apps::terminal::terminal_streams::{
     AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,
-    route_client_input,
 };
-use crate::runtime::input_lane::InputStalled;
 use crate::runtime::{
     SpawnRequest, handle_attach, handle_frame_ack, handle_move_terminal, handle_terminal_resize,
     handle_viewport_resize,
 };
-use crate::state::TerminalInput;
 use crate::transport::FrameReader;
-use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind};
 use tracing::debug;
 
 impl<R: FrameReader> FrameDispatch<'_, R> {
     /// Dispatch one admitted frame: one arm per client-to-server kind.
-    pub(super) async fn dispatch(self, frame: FrameKind) -> FrameFlow {
+    pub(in crate::runtime) async fn dispatch(self, frame: FrameKind) -> FrameFlow {
         match frame {
             FrameKind::Hello {
                 client_name,
@@ -211,81 +206,6 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 return FrameFlow::Break(ConnectionEnding::Cancelled);
             }
         }
-        FrameFlow::Continue(())
-    }
-
-    /// `INPUT_*`: route the event (see [`is_input_frame`]).
-    async fn input(self, frame: FrameKind) -> FrameFlow {
-        match frame {
-            FrameKind::InputKey { terminal_id, event } => {
-                return self
-                    .route_input(terminal_id, TerminalInput::Key(event))
-                    .await;
-            }
-            FrameKind::InputMouse { terminal_id, event } => {
-                return self
-                    .route_input(terminal_id, TerminalInput::Mouse(event))
-                    .await;
-            }
-            FrameKind::InputFocus { terminal_id, event } => {
-                return self
-                    .route_input(terminal_id, TerminalInput::Focus(event))
-                    .await;
-            }
-            FrameKind::InputPaste { terminal_id, event } => {
-                return self
-                    .route_input(terminal_id, TerminalInput::Paste(event))
-                    .await;
-            }
-            FrameKind::InputTerminalReply { terminal_id, bytes } => {
-                let Some(selection) = self.negotiated.as_ref() else {
-                    return FrameFlow::Continue(());
-                };
-                dispatch_terminal_reply(
-                    self.client_id,
-                    *selection,
-                    &terminal_id,
-                    bytes,
-                    &self.plumbing.out_tx,
-                )
-                .await;
-            }
-            other => return direction_invalid(self.client_id, &other),
-        }
-        FrameFlow::Continue(())
-    }
-
-    /// Route one structured input event. Lane-bound input first takes a
-    /// pane input credit (ADR-0144), and while the pane is saturated this
-    /// connection reads no further frame: the event waits rather than being
-    /// dropped, and the transport pushes back on the sender. A pane that
-    /// stays saturated past the stall limit refuses the event with an
-    /// uncorrelated `ERROR(RESOURCE_EXHAUSTED)`.
-    async fn route_input(self, terminal_id: WireResourceId, input: TerminalInput) -> FrameFlow {
-        let lane = self.input_lane.filter(|_| terminal_id.is_local());
-        let credit = match lane {
-            Some(_) => {
-                let acquired = tokio::select! {
-                    biased;
-                    () = self.token.cancelled() => {
-                        return FrameFlow::Break(ConnectionEnding::Cancelled);
-                    }
-                    acquired = self.input_credits.acquire(self.state, &terminal_id) => acquired,
-                };
-                let Ok(credit) = acquired else {
-                    crate::runtime::send_error(
-                        &self.plumbing.out_tx,
-                        ErrorCode::ResourceExhausted,
-                        &InputStalled::message(&terminal_id),
-                    )
-                    .await;
-                    return FrameFlow::Continue(());
-                };
-                credit
-            }
-            None => None,
-        };
-        route_client_input(self.state, lane, self.client_id, terminal_id, input, credit).await;
         FrameFlow::Continue(())
     }
 

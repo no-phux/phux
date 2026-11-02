@@ -102,7 +102,7 @@ pub(super) struct HelloRequest {
     pub(super) protocol_major: u16,
     pub(super) protocol_minor: u16,
     pub(super) protocol_patch: u16,
-    pub(super) client_caps: ClientCapabilities,
+    pub(in crate::runtime) client_caps: ClientCapabilities,
 }
 
 /// Negotiate the connection: version compatibility, the policy engine's
@@ -316,10 +316,7 @@ fn select_hello_profile(
     client_caps: &ClientCapabilities,
     client_id: ClientId,
 ) -> Result<(BootstrapProfile, BootstrapLimits), ConnectionClose> {
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    let server_bootstrap = crate::native_state::native_bootstrap_capabilities();
-    #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-    let server_bootstrap = BootstrapCapabilities::new();
+    let server_bootstrap = crate::runtime::apps::bootstrap_capabilities();
     let Ok(selection) = select_bootstrap_profile(client_caps, &server_bootstrap) else {
         let message = format!(
             "no common protocol-0.7 bootstrap profile: client profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}; server profiles=0x{:02x} native_codecs=0x{:016x} native_features=0x{:08x}. NativeState requires an exact common codec and every required engine feature; advertise SynthesizedVtRaw/SynthesizedVtStateSync or update the incompatible peer",
@@ -342,10 +339,10 @@ fn select_hello_profile(
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct NegotiatedConnection {
-    pub(super) client_caps: ClientCapabilities,
-    pub(super) profile: BootstrapProfile,
-    pub(super) limits: BootstrapLimits,
+pub(in crate::runtime) struct NegotiatedConnection {
+    pub(in crate::runtime) client_caps: ClientCapabilities,
+    pub(in crate::runtime) profile: BootstrapProfile,
+    pub(in crate::runtime) limits: BootstrapLimits,
     pub(super) server_features: ServerFeatureSet,
     /// The frame compression HELLO selected (`docs/protocol.md#framing`).
     /// [`Compression::None`] for every consumer that offered nothing, which
@@ -356,7 +353,7 @@ pub(super) struct NegotiatedConnection {
 impl NegotiatedConnection {
     /// QUIC multi-stream: Terminal content rides per-Terminal streams, and
     /// subscriptions start at `STREAM_BIND`.
-    pub(super) const fn quic_streams(self) -> bool {
+    pub(in crate::runtime) const fn quic_streams(self) -> bool {
         self.server_features.contains(ServerFeature::QuicStreams)
     }
 

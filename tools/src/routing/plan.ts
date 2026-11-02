@@ -18,6 +18,7 @@ export const LANES = [
   "web",
   "desktop",
   "native",
+  "rune",
 ] as const;
 export type Lane = (typeof LANES)[number];
 export type Trigger = "pull_request" | "push";
@@ -43,6 +44,7 @@ export const LANE_RECIPES: Record<Lane, readonly (readonly [string, ...string[]]
     ["desktop-framework-check", "debug"],
   ],
   native: [["native-smoke"]],
+  rune: [["rune-check"], ["rune-deny"]],
 };
 
 /** Lanes a workstation cannot reproduce: x86_64 valgrind, a clean machine. */
@@ -72,6 +74,7 @@ function needed(c: Classification, trigger: Trigger): Record<Lane, boolean> {
     web: c.needed.has("web"),
     desktop: !push && c.needed.has("desktop"),
     native: c.needed.has("native"),
+    rune: c.needed.has("rune"),
   };
 }
 

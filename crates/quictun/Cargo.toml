@@ -91,6 +91,8 @@ testing = []
 
 [dev-dependencies]
 tempfile.workspace = true
+# The relay fixture observes admission without requiring the optional CLI.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
 # The mock ACME CA in tests/acme.rs signs the client's CSR (the
 # `x509-parser` feature reads it); same version phux-server uses.
 rcgen = { version = "0.14", default-features = false, features = [

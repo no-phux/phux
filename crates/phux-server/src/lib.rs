@@ -1,50 +1,41 @@
 //! phux server: the daemon side.
 //!
-//! Owns the canonical state of every session, window, and terminal for one
-//! user. Hosts an IPC endpoint for clients (see `phux-protocol`), feeds
-//! PTY output into per-terminal `libghostty_vt::Terminal` instances, and
-//! forwards bytes to attached clients as `RESOURCE_OUTPUT` frames per
-//! ADR-0013.
+//! Owns the canonical state of every session and resource for one user.
+//! Hosts an IPC endpoint for clients (see `phux-protocol`) and forwards each
+//! resource's output to attached clients as `RESOURCE_OUTPUT` frames per
+//! ADR-0013. What a resource is lives in the app that serves its kind: the
+//! Terminal kind is `phux-terminal`, over the kind-neutral `phux-resource`
+//! substrate.
 
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
-pub(crate) mod agent_asked;
-pub(crate) mod agent_detect;
-pub(crate) mod agent_state;
 pub mod auth;
 pub mod autosave;
 pub mod connector;
-pub mod cwd_query;
 pub mod daemon;
 pub mod delegation;
 pub mod downsample;
-pub mod grid;
 pub mod health; // phux-zomb.6 (server start history: crash-loop is reportable)
 pub mod hooks;
 pub mod hub;
 pub mod id_bridge;
-pub mod input;
-pub mod mailbox;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-pub mod native_state;
 pub mod org_scale;
 pub mod org_store;
 pub mod org_wire;
-pub mod perf;
 /// Supervised `[[startup]]` sidecars declared by plugins.
 pub mod plugin_startup;
 pub mod policy;
-pub(crate) mod proc_query;
 pub(crate) mod push;
 pub mod reconcile;
-pub mod resource;
 pub mod runtime;
 pub mod state;
 pub mod stream_diagnostics;
 pub mod telemetry;
-/// Alias for [`resource::terminal`], used by tests, examples, and the CLI.
-pub use resource::terminal as terminal_actor;
+pub use phux_resource::{cwd_query, mailbox, perf};
+
+/// The substrate every kind shares.
+pub use phux_resource as resource;
 pub mod transport;
 pub mod upgrade;
 pub mod uplink;
@@ -55,13 +46,9 @@ pub use hub::{HubEntry, HubTable, HubTableError, SatelliteSource, SatelliteTarge
 pub use id_bridge::IdBridge;
 pub use org_store::OrgStoreLocation;
 pub use resource::{
-    ResourceCore, ResourceFacetHandle, ResourceHandle, ResourceId, ResourceKind, WrongResourceKind,
+    ResourceCore, ResourceFacet, ResourceHandle, ResourceId, ResourceKind, WrongResourceKind,
 };
 pub use runtime::{ServerConfig, ServerEnv, ServerError, ServerRuntime, default_socket_path};
 pub use state::{
     AttachError, AttachedClient, ClientId, DEFAULT_GROUP_ID, Outbound, ServerState, SharedState,
-    TerminalInput,
-};
-pub use terminal_actor::{
-    SnapshotRequest, TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle,
 };

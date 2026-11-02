@@ -129,7 +129,7 @@ async fn committed_signal() -> CommittedSignal {
     let key = IdempotencyKey::new([4; 16]);
     let command = Command::SignalTerminal {
         terminal_id: ResourceId::local(3),
-        signal: TerminalSignal::Interrupt,
+        signal: phux_protocol::wire::frame::TerminalSignal::Interrupt,
         operation_id: key,
     };
     let KeyedAdmission::Owner(claim) = admit(&state, &command).await else {
@@ -138,7 +138,7 @@ async fn committed_signal() -> CommittedSignal {
     let (control, actor) = tokio::sync::mpsc::channel(4);
     let (reply, reply_rx) = oneshot::channel();
     let request = ControlRequest::Signal {
-        signal: TerminalSignal::Interrupt,
+        signal: phux_protocol::wire::frame::TerminalSignal::Interrupt,
         input_holder: None,
         by: phux_protocol::ClientId::new(1),
         operation_id: key,

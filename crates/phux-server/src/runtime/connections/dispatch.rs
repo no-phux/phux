@@ -2,7 +2,7 @@ use super::commands::{MAX_PENDING_INPUT_RECEIPTS, admit_frame};
 use super::hello::NegotiatedConnection;
 use super::hello::framing_violation_close;
 use super::plumbing::{ClientPlumbing, ConnectionClose};
-use super::terminal_streams::handle_stream_event;
+use crate::runtime::apps::terminal::terminal_streams::handle_stream_event;
 use crate::runtime::input_lane::{InputCredits, InputLaneHandle};
 use crate::state::{ClientId, SharedState};
 use crate::transport::quic::QuicStreamEvent;
@@ -217,7 +217,7 @@ fn bulk_worker_stopped(client_id: ClientId) -> ConnectionEnding {
 }
 
 /// How one connection's frame loop ended.
-pub(super) enum ConnectionEnding {
+pub(in crate::runtime) enum ConnectionEnding {
     /// EOF or a transport error: nobody is left to tell.
     TransportGone,
     /// The peer broke the protocol; it is owed `ERROR` then `DETACHED`.
@@ -229,28 +229,28 @@ pub(super) enum ConnectionEnding {
 /// One decoded client frame's dispatch context: the connection's state,
 /// borrowed from [`handle_client`] for the length of one frame.
 /// `Break` ends the connection with that [`ConnectionEnding`].
-pub(super) struct FrameDispatch<'a, R> {
+pub(in crate::runtime) struct FrameDispatch<'a, R> {
     pub(super) reader: &'a mut R,
-    pub(super) state: &'a SharedState,
-    pub(super) client_id: ClientId,
-    pub(super) token: &'a CancellationToken,
+    pub(in crate::runtime) state: &'a SharedState,
+    pub(in crate::runtime) client_id: ClientId,
+    pub(in crate::runtime) token: &'a CancellationToken,
     pub(super) root_token: &'a CancellationToken,
-    pub(super) input_lane: Option<&'a InputLaneHandle>,
+    pub(in crate::runtime) input_lane: Option<&'a InputLaneHandle>,
     pub(super) transport: TransportType,
     pub(super) route_supports_quic_streams: bool,
-    pub(super) plumbing: &'a mut ClientPlumbing,
-    pub(super) negotiated: &'a mut Option<NegotiatedConnection>,
+    pub(in crate::runtime) plumbing: &'a mut ClientPlumbing,
+    pub(in crate::runtime) negotiated: &'a mut Option<NegotiatedConnection>,
     pub(super) stream_events: &'a mut Option<tokio::sync::mpsc::Receiver<QuicStreamEvent>>,
     pub(super) used_attach_ids: &'a mut HashSet<u32>,
     pub(super) command_tasks: &'a mut crate::runtime::command_tasks::CommandTasks,
     pub(super) input_receipts: &'a mut JoinSet<()>,
     pub(super) input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
-    pub(super) input_credits: &'a mut InputCredits,
+    pub(in crate::runtime) input_credits: &'a mut InputCredits,
     pub(super) held_commands: &'a mut JoinSet<()>,
     pub(super) service_http: &'a crate::runtime::service_http::Exchanges,
 }
 
-pub(super) type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;
+pub(in crate::runtime) type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;
 
 async fn dispatch_stream_event(
     event: Option<QuicStreamEvent>,

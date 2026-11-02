@@ -31,7 +31,7 @@ Usage: curl -fsSL https://phux.sh/install | sh -s -- [options]
 
 Installs phux and phux-mcp. With --desktop, also installs Phux Desktop
 (Apple silicon macOS 26+, or x86_64/arm64 GNU/Linux), installing
-the CLI only when none is found.
+the CLI only when none is found. --rune does the same for Phux Rune.
 
   --channel <stable|latest|next>  Release channel (default: stable, or $PHUX_CHANNEL).
   --version <X.Y.Z>               Pin a stable release (vX.Y.Z also accepted).
@@ -41,6 +41,8 @@ the CLI only when none is found.
                                   (default: $PHUX_INSTALL_DIR, or ~/.local/bin).
   --no-modify-path                Leave the shell profile alone (also $PHUX_NO_MODIFY_PATH=1).
   --desktop                       Install Phux Desktop.
+  --rune                          Install Phux Rune (Apple silicon macOS 14+, or x86_64
+                                  GNU/Linux), from its own feed; takes no channel or pin.
   --applications-dir <dir>        Desktop destination (default: /Applications if writable,
                                   else ~/Applications on macOS; $XDG_DATA_HOME or
                                   ~/.local/share on Linux; also $PHUX_DESKTOP_APPLICATIONS_DIR).
@@ -145,9 +147,8 @@ manifest_value() {
   awk -v key="$2" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' "$1"
 }
 
-# Fetch, flatten and check CHANNEL's manifest into FLAT, once per run.
-load_manifest() {
-  [ ! -s "$2" ] || return 0
+# Fetch channels/NAME.json and flatten it into FLAT.
+fetch_manifest() {
   url="${RELEASES}/channels/$1.json"
   raw="${2}.json"
   if command -v curl >/dev/null 2>&1; then
@@ -158,6 +159,12 @@ load_manifest() {
   fi
   [ "$(wc -c < "$raw")" -le 1048576 ] || die "the $1 release manifest exceeds 1 MiB"
   manifest_flat "$raw" > "$2" || die "the $1 release manifest is malformed"
+}
+
+# Fetch, flatten and check CHANNEL's manifest into FLAT, once per run.
+load_manifest() {
+  [ ! -s "$2" ] || return 0
+  fetch_manifest "$1" "$2"
   [ "$(manifest_value "$2" schema_version)" = 1 ] \
     || die "the $1 release manifest has an unsupported schema; update this installer"
   [ "$(manifest_value "$2" channel)" = "$1" ] || die "the $1 release manifest names another channel"

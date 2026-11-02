@@ -178,7 +178,7 @@ impl LeaseTable {
     }
 
     /// Forget a pane that closed: no lease change can follow.
-    pub(super) fn forget_terminal(&mut self, terminal: ResourceId) {
+    pub(super) fn forget_resource(&mut self, terminal: ResourceId) {
         Self::abort(self.expiry.remove(&terminal));
         self.input.remove(&terminal);
         self.epochs.remove(&terminal);

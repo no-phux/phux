@@ -14,7 +14,7 @@ None of these crates is on crates.io yet; depend on them by path or git.
 
 | Your app                                               | Depend on                  | You write                                                     |
 | ------------------------------------------------------ | -------------------------- | ------------------------------------------------------------- |
-| GPUI (gpui-fast 0.1.9)                                 | `phux-gpui`                | Wake GPUI from the runtime and place the view.                |
+| GPUI (gpui-fast 0.1.12)                                 | `phux-gpui`                | Wake GPUI from the runtime and place the view.                |
 | Another Rust UI (egui, iced, Slint, a custom renderer) | `phux-client-runtime`      | Map cells to pixels and draw the [draw list](#the-draw-list). |
 | Swift, Objective-C, C, C++, Zig                        | `phux-client-ffi` (C ABI)  | Connect, poll on wake, paint the C draw list.                  |
 | A phone app                                            | `phux-client-ffi` (UniFFI) | See [phones](./clients.md#phones).                            |

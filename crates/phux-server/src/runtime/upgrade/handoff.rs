@@ -9,8 +9,8 @@ use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::resource::agent_session::{AgentSessionBootstrap, BootstrapRequest};
+use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
 use crate::state::request_agent_session_cut;
-use crate::terminal_actor::{PaneUpgradeHandle, UpgradeHandleRequest};
 
 use super::{AGENT_ROLLBACK_TIMEOUT, UpgradeError};
 

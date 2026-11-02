@@ -94,13 +94,13 @@ index 7f7933a..af824c2 100644
          pad: 0,
          grayscale: false.into(),
 diff --git a/gpui-fast-windows/src/shaders.hlsl b/gpui-fast-windows/src/shaders.hlsl
-index b724300..40cee74 100644
+index fc03fcd..ecc485d 100644
 --- a/gpui-fast-windows/src/shaders.hlsl
 +++ b/gpui-fast-windows/src/shaders.hlsl
 @@ -1220,6 +1220,7 @@ struct PolychromeSprite {
+     Bounds bounds;
      Bounds content_mask;
      Corners corner_radii;
-     AtlasTile tile;
 +    Bounds sample_bounds;
  };
  

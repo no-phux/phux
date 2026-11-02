@@ -6,7 +6,7 @@ use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, FrameKind, StateScope,
 };
-use phux_server::grid::SnapshotSynthesizer;
+use phux_terminal::grid::SnapshotSynthesizer;
 use tempfile::TempDir;
 
 use phux_server_testkit::{

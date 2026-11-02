@@ -273,7 +273,7 @@ fn scrolling_transcript(
                 .min_h_0()
                 .overflow_y_scroll()
                 .track_scroll(&scroll)
-                .on_scroll_wheel(cx.listener(move |desk, _, _, cx| {
+                .on_scroll(cx.listener(move |desk, _, _, cx| {
                     if let Some(face) = desk.conversation_faces.get_mut(&scroll_id) {
                         // Explicit reader interaction pauses follow until Jump to latest.
                         face.follow = false;

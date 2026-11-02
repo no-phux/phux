@@ -421,7 +421,7 @@ fn fnv64(seed: u64, bytes: &[u8]) -> u64 {
 fn mint() -> Result<[u8; 16], Error> {
     let mut bytes = [0_u8; 16];
     loop {
-        getrandom::getrandom(&mut bytes).map_err(|err| Error::Random(err.to_string()))?;
+        getrandom::fill(&mut bytes).map_err(|err| Error::Random(err.to_string()))?;
         if bytes.iter().any(|byte| *byte != 0) {
             return Ok(bytes);
         }

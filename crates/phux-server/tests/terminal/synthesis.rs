@@ -2,7 +2,7 @@
 //! server): the per-consumer reference diff, applied to a mirror,
 //! reconstructs the source across churn and resizes (ADR-0018).
 
-use phux_server::grid::{ConsumerReference, SCROLLBACK_ALL, SnapshotSynthesizer, synthesize};
+use phux_terminal::grid::{ConsumerReference, SCROLLBACK_ALL, SnapshotSynthesizer, synthesize};
 
 use super::common::{fresh, render_grid};
 

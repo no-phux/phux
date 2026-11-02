@@ -101,7 +101,7 @@ pub(super) fn encode(frame: &FrameKind) -> BytesMut {
     out
 }
 
-pub(super) fn hello(client_name: &str) -> FrameKind {
+pub(in crate::runtime) fn hello(client_name: &str) -> FrameKind {
     FrameKind::Hello {
         client_name: client_name.to_owned(),
         protocol_major: PROTOCOL_VERSION.major,

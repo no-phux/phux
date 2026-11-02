@@ -107,7 +107,7 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
             },
         )
         .unwrap();
-    let child = world.state.intern_terminal_wire(child);
+    let child = world.state.intern_resource_wire(child);
     let alpha_session = world.state.find_session_by_name("alpha").unwrap();
     let mut whole = world.state.build_session_snapshot(alpha_session).unwrap();
     for resource in &mut whole.resources {
@@ -225,7 +225,7 @@ fn server_wide_bells(scopes: &[&str]) -> Vec<Option<WireResourceId>> {
             },
         )
         .unwrap();
-    let child = world.state.intern_terminal_wire(child);
+    let child = world.state.intern_resource_wire(child);
     world.state.set_connection_grant(CLIENT, scoped(scopes));
     let (tx, mut rx) = tokio::sync::mpsc::channel(32);
     world.state.subscribe_events(CLIENT, None, tx);

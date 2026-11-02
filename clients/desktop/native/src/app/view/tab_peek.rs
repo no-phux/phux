@@ -155,17 +155,14 @@ fn aligned_row(cards: Vec<AnyElement>, scroll: ScrollHandle, cx: &mut Context<De
             )
             .size_full(),
         )
-        .on_scroll_wheel(
-            cx.listener(move |_, event: &gpui::ScrollWheelEvent, _, cx| {
-                let delta = event.delta.pixel_delta(px(20.));
-                let delta = if delta.x == px(0.) { delta.y } else { delta.x };
-                let x =
-                    (wheel_scroll.offset().x + delta).clamp(-wheel_scroll.max_offset().x, px(0.));
-                wheel_scroll.set_offset(point(x, px(0.)));
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
+        .on_scroll(cx.listener(move |_, event: &gpui::ScrollEvent, _, cx| {
+            let delta = event.delta.pixel_delta(px(20.));
+            let delta = if delta.x == px(0.) { delta.y } else { delta.x };
+            let x = (wheel_scroll.offset().x + delta).clamp(-wheel_scroll.max_offset().x, px(0.));
+            wheel_scroll.set_offset(point(x, px(0.)));
+            cx.stop_propagation();
+            cx.notify();
+        }))
         .into_any_element()
 }
 
@@ -317,6 +314,6 @@ pub(super) fn dismiss(cx: &mut Context<Desk>) -> impl IntoElement {
         )
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .on_scroll(|_, _, cx| cx.stop_propagation())
         .block_mouse_except_scroll()
 }

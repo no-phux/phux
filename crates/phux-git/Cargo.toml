@@ -18,7 +18,7 @@ workspace = true
 [dependencies]
 # `kill(2)` on a timed-out child's process group, so hooks and credential
 # helpers it spawned die with it. Already in every consumer's graph.
-libc = "0.2.190"
+libc = "0.2.191"
 # `gh pr view --json` output. Workspace dependencies every consumer already
 # compiles.
 # Line counts for untracked files; already compiled into every consumer.

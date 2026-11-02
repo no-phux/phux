@@ -165,7 +165,7 @@ impl ServerState {
     /// targeting).
     #[must_use]
     pub fn session_of_terminal_owner(&self, owner: &WireResourceId) -> Option<SessionId> {
-        let owner = self.terminal_from_wire(owner)?;
+        let owner = self.resource_from_wire(owner)?;
         self.sessions.registry.session_of(owner)
     }
 

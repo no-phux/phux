@@ -9,6 +9,10 @@ the server. The [starter distro](../distros/starter/README.md) enables this set:
 | [continuum](./continuum/README.md) | Save and restore workspace archives, not running processes. |
 | [usage](./usage/README.md) | Publish vendor plan limits; reads local sign-ins and contacts only their vendors. |
 
+[nvim](./nvim/README.md) is first-party too, but the starter does not enable it:
+one Neovim behind many panes, with `:split` opening a real pane. Install it
+with `phux plugin install no-phux/phux/plugins/nvim`.
+
 Keep `plugins/` beside `distros/` when copying the bundle. Existing configs
 extending the starter layer pick up its manifest paths automatically. Plugin
 IDs are unchanged, including the historical
