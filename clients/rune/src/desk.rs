@@ -378,6 +378,7 @@ impl Desk {
     /// the updater without it.
     pub fn listen(&mut self, waker: Waker) {
         self.machines.listen(waker.clone());
+        crate::theme::watch_omarchy(waker.clone());
         self.watch(waker);
         self.dial();
         if !self.launch.can_ensure() {
@@ -404,6 +405,7 @@ impl Desk {
             | self.pump_machines()
             | self.pump_link()
             | self.pump_links()
+            | self.follow_omarchy()
             | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {
             return updated | self.tend_link(tx);

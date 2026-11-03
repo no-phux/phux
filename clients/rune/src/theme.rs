@@ -3,7 +3,9 @@
 //!
 //! "System" installs nothing: programs keep the engine's defaults and the
 //! chrome follows the OS. A program's own OSC colours beat any theme. A
-//! Ghostty config on this machine adds one more theme, read at launch.
+//! Ghostty config on this machine adds one more theme, read at launch, and
+//! Omarchy another, which follows Omarchy's theme changes and is the
+//! default until the person picks one.
 
 use phux_client_runtime::engine::TerminalTheme;
 use phux_client_runtime::publication::Rgb;
@@ -11,9 +13,11 @@ use rune::Color;
 
 mod builtin;
 mod ghostty;
+mod omarchy;
 pub use builtin::THEMES;
 use builtin::{LATTE, MOCHA};
 pub use ghostty::ghostty;
+pub use omarchy::{omarchy, watch as watch_omarchy};
 
 /// What a readable role must clear against the surfaces it sits on: WCAG AA
 /// for body text.
@@ -213,10 +217,10 @@ impl Theme {
     }
 }
 
-/// Every theme on offer, in picker order: the Ghostty config's, then the
-/// built-ins.
+/// Every theme on offer, in picker order: Omarchy's, the Ghostty config's,
+/// then the built-ins.
 pub fn all() -> impl Iterator<Item = &'static Theme> {
-    ghostty().into_iter().chain(THEMES)
+    omarchy().into_iter().chain(ghostty()).chain(THEMES)
 }
 
 /// A remembered id; `None` is System, and so is one no longer on offer.
