@@ -93,6 +93,28 @@ pub fn default_key_path() -> PathBuf {
     crate::telemetry::state_dir().join("remote-key.pem")
 }
 
+/// The operator's TLS pair from `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`, or
+/// `(None, None)` when neither is set or both name the default paths.
+///
+/// A default path is not an operator choice: `phux service install` once baked
+/// the defaults into the unit, and treating them as operator-supplied meant
+/// the server never provisioned a missing pair and `phux pair` could not
+/// recover without a listener (#1766).
+#[must_use]
+pub fn operator_tls_paths(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let cert = lookup("PHUX_WS_TLS_CERT").map(PathBuf::from);
+    let key = lookup("PHUX_WS_TLS_KEY").map(PathBuf::from);
+    let is_default = cert.as_deref().is_none_or(|c| c == default_cert_path())
+        && key.as_deref().is_none_or(|k| k == default_key_path());
+    if is_default {
+        (None, None)
+    } else {
+        (cert, key)
+    }
+}
+
 /// Provision a self-signed pair naming only the loopback identities, if
 /// either file is missing. Prefer [`ensure_self_signed_for`] when the
 /// routable address is known.

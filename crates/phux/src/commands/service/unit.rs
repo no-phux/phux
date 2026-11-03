@@ -25,9 +25,9 @@ pub(crate) struct ServicePlan {
     /// default the init system's environment may not reproduce.
     pub(crate) tokens: PathBuf,
     /// TLS certificate the server presents on a routable bind.
-    pub(crate) cert: PathBuf,
+    pub(crate) cert: Option<PathBuf>,
     /// TLS private key paired with `cert`.
-    pub(crate) key: PathBuf,
+    pub(crate) key: Option<PathBuf>,
     /// UDS path override. Only this, not [`Self::socket_path`], becomes
     /// `PHUX_SOCKET` in the unit, so a default-socket install stays portable.
     pub(crate) socket: Option<PathBuf>,
@@ -60,8 +60,15 @@ impl ServicePlan {
             env.push(("PHUX_WS_ADDR", listen.clone()));
         }
         env.push(("PHUX_WS_TOKENS", path_string(&self.tokens)));
-        env.push(("PHUX_WS_TLS_CERT", path_string(&self.cert)));
-        env.push(("PHUX_WS_TLS_KEY", path_string(&self.key)));
+        // Only an operator-supplied pair is baked in. The defaults are the
+        // server's to provision, and a unit that names them as if chosen
+        // stops it from doing so (#1766).
+        if let Some(cert) = &self.cert {
+            env.push(("PHUX_WS_TLS_CERT", path_string(cert)));
+        }
+        if let Some(key) = &self.key {
+            env.push(("PHUX_WS_TLS_KEY", path_string(key)));
+        }
         if let Some(socket) = &self.socket {
             env.push(("PHUX_SOCKET", path_string(socket)));
         }

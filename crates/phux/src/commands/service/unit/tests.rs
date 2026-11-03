@@ -16,8 +16,8 @@ pub(in crate::commands::service) fn plan() -> ServicePlan {
         quic: Some("0.0.0.0:8788".to_owned()),
         listen: Some("0.0.0.0:8787".to_owned()),
         tokens: PathBuf::from("/home/u/.local/state/phux/remote-tokens"),
-        cert: PathBuf::from("/home/u/.local/state/phux/remote-cert.pem"),
-        key: PathBuf::from("/home/u/.local/state/phux/remote-key.pem"),
+        cert: None,
+        key: None,
         socket: None,
         hub: false,
         socket_path: PathBuf::from("/run/user/1000/phux/phux.sock"),
@@ -140,6 +140,29 @@ fn omitted_listeners_emit_no_environment_key() {
     let unit = render_systemd_unit(&plan);
     assert!(!unit.contains("PHUX_QUIC_ADDR"));
     assert!(unit.contains("PHUX_WS_TOKENS"));
+}
+
+/// The default certificate pair is the server's to provision. Baking its
+/// paths into the unit made the server treat them as operator-supplied
+/// and never regenerate a missing pair (#1766).
+#[test]
+fn only_an_operator_supplied_tls_pair_is_baked_into_the_unit() {
+    let plan = plan();
+    for unit in [render_launchd_plist(&plan), render_systemd_unit(&plan)] {
+        assert!(
+            !unit.contains("PHUX_WS_TLS_CERT") && !unit.contains("PHUX_WS_TLS_KEY"),
+            "default paths must not be baked in:\n{unit}"
+        );
+    }
+
+    let mut plan = plan;
+    plan.cert = Some(PathBuf::from("/etc/phux/leaf.pem"));
+    plan.key = Some(PathBuf::from("/etc/phux/leaf-key.pem"));
+    let unit = render_systemd_unit(&plan);
+    assert!(unit.contains("Environment=\"PHUX_WS_TLS_CERT=/etc/phux/leaf.pem\""));
+    assert!(unit.contains("Environment=\"PHUX_WS_TLS_KEY=/etc/phux/leaf-key.pem\""));
+    let plist = render_launchd_plist(&plan);
+    assert!(plist.contains("<key>PHUX_WS_TLS_CERT</key>"), "{plist}");
 }
 
 #[test]

@@ -857,6 +857,7 @@ fn resolve_plan(
     let socket_path = socket
         .clone()
         .unwrap_or_else(phux_server::runtime::default_socket_path);
+    let (cert, key) = phux_server::transport::tls::operator_tls_paths(|var| std::env::var_os(var));
 
     Ok(ServicePlan {
         binary,
@@ -864,12 +865,8 @@ fn resolve_plan(
         listen,
         tokens: std::env::var_os("PHUX_WS_TOKENS")
             .map_or_else(phux_server::auth::default_token_store_path, PathBuf::from),
-        cert: std::env::var_os("PHUX_WS_TLS_CERT").map_or_else(
-            phux_server::transport::tls::default_cert_path,
-            PathBuf::from,
-        ),
-        key: std::env::var_os("PHUX_WS_TLS_KEY")
-            .map_or_else(phux_server::transport::tls::default_key_path, PathBuf::from),
+        cert,
+        key,
         socket,
         hub,
         socket_path,
@@ -885,7 +882,11 @@ fn resolve_plan(
 /// `PHUX_WS_TOKENS` / `PHUX_WS_TLS_*` (a production pane exports them) would
 /// otherwise put in its environment.
 fn refuse_dev_on_production_credentials(plan: &ServicePlan) -> Result<(), String> {
-    for path in [&plan.tokens, &plan.cert, &plan.key] {
+    // An unset pair resolves to this build's own state dir, never production's.
+    for path in [Some(&plan.tokens), plan.cert.as_ref(), plan.key.as_ref()]
+        .into_iter()
+        .flatten()
+    {
         phux_config::production::refuse_dev_on_production_state(path)?;
     }
     Ok(())
