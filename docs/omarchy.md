@@ -13,7 +13,7 @@ Then:
 | --- | --- |
 | <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>Return</kbd> | Opens a terminal attached to phux |
 | <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>K</kbd> | Lists phux's keys in Omarchy's menu |
-| <kbd>Super</kbd> <kbd>Alt</kbd> <kbd>Space</kbd>, Install › Terminal › Phux Rune | Installs [Phux Rune](#phux-rune) |
+| <kbd>Super</kbd> <kbd>Space</kbd>, Install › Terminal › Phux Rune | Installs [Phux Rune](#phux-rune) |
 
 Inside phux, the keys are the ones Omarchy's tmux config uses, so your
 hands already know them. Switch Omarchy's theme and phux repaints to match.
@@ -70,9 +70,9 @@ $ phux omarchy status
 
 Phux Rune is the phux desktop client: your sessions and agents in one
 window. After setup, open Omarchy's menu
-(<kbd>Super</kbd> <kbd>Alt</kbd> <kbd>Space</kbd>) and pick
+(<kbd>Super</kbd> <kbd>Space</kbd>) and pick
 Install › Terminal › Phux Rune. Once it's installed, the row goes away and
-Rune is in the app launcher (<kbd>Super</kbd> <kbd>Space</kbd>). It updates
+Rune is in the apps menu (<kbd>Super</kbd> <kbd>Alt</kbd> <kbd>Space</kbd>). It updates
 itself.
 
 The row runs the same installer you can run by hand:

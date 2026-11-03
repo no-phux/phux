@@ -4,7 +4,7 @@
 //! in a handful of places: a key that opens one, a key that lists its
 //! bindings, a server started with the graphical session, keys that match
 //! its tmux config, a hook that repaints them when the theme changes, and
-//! rows in its menu (Super+Alt+Space).
+//! rows in its menu (Super+Space).
 //! `setup` puts phux in each of those places, `remove` takes it out again,
 //! and `status` says which are in place. Every write is a file phux owns
 //! outright or a marked block inside a file it shares with the user.
