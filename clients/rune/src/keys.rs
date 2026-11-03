@@ -54,8 +54,12 @@ pub enum Shortcut {
     FindSelection,
     Inbox,
     Settings,
-    /// Settings, open on its themes.
+    /// The themes, previewed live as the highlight moves.
     ChangeTheme,
+    /// The sessions, to switch to one or create one.
+    SwitchSession,
+    /// A path on the pane's host, inserted at its prompt.
+    InsertPath,
     /// The tab at this index.
     Tab(u8),
     RenameSession,
@@ -223,8 +227,16 @@ pub fn us_char(code: PhysicalKeyCode) -> Option<char> {
 /// `physical` names the key itself, so a shifted chord (Ctrl-Shift-minus
 /// arrives as `_`) and other layouts still match.
 pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Option<Shortcut> {
+    let cap = match key {
+        // An Option chord types a character on macOS (⌥; is …): the key
+        // under it is the chord.
+        Key::Text(_) if mods.alt && !mods.cmd && !mods.ctrl => {
+            Cap::Char(physical.and_then(us_char)?)
+        }
+        _ => cap(key, physical)?,
+    };
     commands::action_of(Chord {
-        cap: cap(key, physical)?,
+        cap,
         // Rune's `cmd` is Ctrl off macOS, which the table names as Ctrl.
         command: if cfg!(target_os = "macos") {
             mods.cmd

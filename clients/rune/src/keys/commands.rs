@@ -105,6 +105,17 @@ impl Chord {
         Self { alt: true, ..self }
     }
 
+    /// The key with Option (Alt) alone.
+    const fn opt(cap: Cap) -> Self {
+        Self {
+            cap,
+            command: false,
+            ctrl: false,
+            alt: true,
+            shift: false,
+        }
+    }
+
     const fn and_ctrl(self) -> Self {
         Self { ctrl: true, ..self }
     }
@@ -261,6 +272,18 @@ pub const COMMANDS: &[Command] = &[
     row!(Shortcut::Inbox, "Open Inbox", [m('i')], [l('i')]),
     row!(Shortcut::Settings, "Settings", [m(',')], [l(',')]),
     row!(Shortcut::ChangeTheme, "Change Theme", [], []),
+    row!(
+        Shortcut::SwitchSession,
+        "Switch Session",
+        [m('s').shift()],
+        [l('s')]
+    ),
+    row!(
+        Shortcut::InsertPath,
+        "Insert Path",
+        [m('i').shift(), Chord::opt(Cap::Char(';'))],
+        [l(';')]
+    ),
     row!(Shortcut::KeyboardShortcuts, "Keyboard Shortcuts", [], []),
     row!(Shortcut::CheckForUpdates, "Check for Updates", [], []),
     row!(Shortcut::InstallUpdate, "Update Now", [], []),
@@ -507,6 +530,8 @@ mod tests {
         Inbox,
         Settings,
         ChangeTheme,
+        SwitchSession,
+        InsertPath,
         RenameSession,
         RenameTab,
         CloseSession,
@@ -528,6 +553,21 @@ mod tests {
         for action in EVERY_SHORTCUT.iter().copied().chain(tabs) {
             assert!(command(action).is_some(), "{action:?}");
         }
+    }
+
+    #[test]
+    fn option_semicolon_inserts_a_path_though_it_types_a_character() {
+        let mods = Mods {
+            alt: true,
+            ..Mods::default()
+        };
+        let typed = Key::Text("…".to_owned());
+        let at = Some(rune::PhysicalKeyCode::Semicolon);
+        if cfg!(target_os = "macos") {
+            assert_eq!(shortcut(&typed, mods, at), Some(Shortcut::InsertPath));
+        }
+        let other = Some(rune::PhysicalKeyCode::KeyA);
+        assert_eq!(shortcut(&Key::Text("å".to_owned()), mods, other), None);
     }
 
     #[test]

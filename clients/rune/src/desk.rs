@@ -146,8 +146,14 @@ pub struct Desk {
     pub palette_open: bool,
     pub palette_query: rune::TextEdit,
     pub palette_picked: usize,
-    /// The palette shows the keyboard shortcuts instead of everything.
-    pub palette_shortcuts: bool,
+    /// What the palette lists.
+    pub palette_mode: crate::palette::Mode,
+    /// The theme a live preview stands in for, restored unless one is chosen.
+    theme_before: Option<Option<&'static crate::theme::Theme>>,
+    /// The path search the palette shows, while it lists paths.
+    pub paths: Option<palette::PathSearch>,
+    /// Each pane's grid origin in window points, from its last layout.
+    origins: HashMap<ResourceId, [f32; 2]>,
     pub sidebar_open: bool,
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
@@ -308,7 +314,10 @@ impl Desk {
             palette_open: false,
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
-            palette_shortcuts: false,
+            palette_mode: crate::palette::Mode::All,
+            theme_before: None,
+            paths: None,
+            origins: HashMap::new(),
             sidebar_open,
             find: None,
             find_query: rune::TextEdit::new(""),
@@ -418,6 +427,7 @@ impl Desk {
             tx.wake_after(Duration::from_millis(250));
         }
         changed |= self.finish_uploads(&client);
+        changed |= self.take_paths(&client);
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
         self.settle_pointer();

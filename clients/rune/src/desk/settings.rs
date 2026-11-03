@@ -55,12 +55,6 @@ impl Desk {
         self.settings_open = false;
     }
 
-    /// Settings, whatever was open; the theme grid is its first section.
-    pub fn show_settings(&mut self) {
-        self.close_inbox();
-        self.settings_open = true;
-    }
-
     /// Install the chosen palette on the runtime. Live panes repaint with it.
     pub(super) fn apply_theme(&mut self) {
         if let Some(client) = &self.client {
