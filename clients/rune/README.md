@@ -205,7 +205,9 @@ cancels).
 ## Develop
 
 Rune is pinned to a `dev` revision in `Cargo.toml`; this crate has its own
-workspace and lock so Rune's graph stays out of the rest of phux.
+workspace and lock so Rune's graph stays out of the rest of phux. The
+[Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
+twice a day.
 
 ```sh
 cd clients/rune

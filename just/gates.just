@@ -142,7 +142,7 @@ deny:
 # nits (sourced libs shellcheck cannot follow) that are correct as written.
 [group('gates')]
 shellcheck:
-    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
+    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh scripts/rune-upstream/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
       plugins/*/scripts/*.sh
