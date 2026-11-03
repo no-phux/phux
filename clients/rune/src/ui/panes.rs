@@ -134,7 +134,11 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .h_full()
         .padding(PAD)
         .on_layout(move |d: &mut Desk, rect| {
-            d.laid_out(laid.clone(), [rect[2] - 2.0 * PAD, rect[3] - 2.0 * PAD])
+            let [x, y, w, h] = rect;
+            d.laid_out(
+                laid.clone(),
+                [x + PAD, y + PAD, w - 2.0 * PAD, h - 2.0 * PAD],
+            )
         });
     let Some((frame, view)) = frame else {
         perf::ACQUIRE_REJECTED.incr();

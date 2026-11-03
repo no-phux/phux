@@ -15,6 +15,7 @@ mod launch;
 mod links;
 mod machines;
 mod palette;
+mod paths;
 mod perf;
 mod theme;
 mod ui;
