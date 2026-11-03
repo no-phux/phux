@@ -55,6 +55,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.54.1](https://github.com/no-phux/phux/compare/desktop-v0.54.0...desktop-v0.54.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **install:** reach a first agent in under 60s without brew trust ([#1879](https://github.com/no-phux/phux/issues/1879)) ([1da1f2e](https://github.com/no-phux/phux/commit/1da1f2e3b05654086f46d2bcf2841dd1fd986d27))
+
 ## [0.54.0](https://github.com/no-phux/phux/compare/desktop-v0.53.0...desktop-v0.54.0) (2026-11-01)
 
 
