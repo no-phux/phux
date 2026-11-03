@@ -22,7 +22,12 @@ pub struct Settings {
 impl Settings {
     pub fn load(prefs: &Prefs) -> Self {
         Self {
-            theme: prefs.get::<String>("theme").and_then(|id| theme::find(&id)),
+            // Never chosen: Omarchy's theme where there is one. An empty id
+            // is System, picked on purpose.
+            theme: match prefs.get::<String>("theme") {
+                None => theme::omarchy(),
+                Some(id) => theme::find(&id),
+            },
             notifications: prefs.get("notifications").unwrap_or(true),
             option_as_meta: prefs.get("option_as_meta").unwrap_or(false),
             copy_on_select: prefs.get("copy_on_select").unwrap_or(false),
@@ -67,6 +72,19 @@ impl Desk {
             client.set_terminal_theme(self.settings.theme.map(Theme::terminal));
         }
         self.generation += 1;
+    }
+
+    /// Omarchy changed its theme: a window following it repaints.
+    pub(super) fn follow_omarchy(&mut self) -> bool {
+        let Some(shown) = self.settings.theme.filter(|t| t.id == "omarchy") else {
+            return false;
+        };
+        let Some(fresh) = theme::omarchy().filter(|fresh| !std::ptr::eq(*fresh, shown)) else {
+            return false;
+        };
+        self.settings.theme = Some(fresh);
+        self.apply_theme();
+        true
     }
 
     pub fn choose_theme(&mut self, theme: Option<&'static Theme>) {

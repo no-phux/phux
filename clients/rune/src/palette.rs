@@ -87,6 +87,7 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
             title: format!("Theme: {}", theme.name),
             detail: match (theme.id, theme.dark) {
                 ("ghostty", _) => "from your Ghostty config",
+                ("omarchy", _) => "follows your Omarchy theme",
                 (_, true) => "dark",
                 (_, false) => "light",
             }

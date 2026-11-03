@@ -133,7 +133,10 @@ session (or `--session NAME`). It never creates a session on its own.
   Theme** opens the grid. A Ghostty config on this machine (`theme`,
   `config-file` includes, `palette`, `background`, `foreground`,
   `cursor-color`) is read at launch and offered as the **Ghostty** theme,
-  the way the GPUI desktop reads it. `just rune-demo` films the themes into
+  the way the GPUI desktop reads it. On Omarchy, the **Omarchy** theme
+  takes the current Omarchy theme's colours and accent, repaints within
+  seconds when you switch Omarchy themes, and is the default until you pick
+  another. `just rune-demo` films the themes into
   `clients/rune/demo/themes.mp4`.
 - **Sessions.** Double-click a session to rename it; the palette also renames
   tabs and ends sessions.
@@ -175,7 +178,7 @@ cancels).
 
 - One window. Tabs can't be dragged to reorder yet, and the server has no
   call to rename a single terminal.
-- No Kitty images or font choice; the only custom theme is Ghostty's. Find covers the history the
+- No Kitty images or font choice; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
