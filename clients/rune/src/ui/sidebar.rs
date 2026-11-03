@@ -20,6 +20,7 @@ pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
         Mark::Bell => ink.marks.bell,
         Mark::Working => ink.marks.working,
         Mark::Running => ink.accent,
+        Mark::Background => ink.accent.alpha(0.55),
         Mark::Succeeded | Mark::Idle => ink.marks.good,
         Mark::None => ink.separator,
     }
@@ -31,7 +32,7 @@ pub(super) fn mark_color(mark: Mark, ink: &Ink) -> Color {
 fn dot(mark: Mark, ink: &Ink) -> El {
     let dot = match mark {
         Mark::None => el().size(4.0, 4.0).radius(2.0).fill(ink.dim.alpha(0.45)),
-        _ if mark.live() => el()
+        _ if mark.live() || mark == Mark::Background => el()
             .size(8.0, 8.0)
             .radius(4.0)
             .border(1.5, mark_color(mark, ink)),
