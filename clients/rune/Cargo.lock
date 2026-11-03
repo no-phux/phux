@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "ciborium",
  "libghostty-vt",
@@ -2172,7 +2172,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "nix",
  "serde",
@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "serde",
  "sha2",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "libc",
  "nix",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2473,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "quictun"
-version = "0.115.0"
+version = "0.116.0"
 dependencies = [
  "quinn",
  "rustls",
