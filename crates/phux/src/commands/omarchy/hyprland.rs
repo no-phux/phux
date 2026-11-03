@@ -41,7 +41,7 @@ impl Hyprland {
     /// Super+Ctrl+Return opens phux, Super+Ctrl+K lists its keys. Omarchy
     /// gives these two keys to its preinstalled multiplexer. Phux Rune's
     /// window is tagged a terminal, so Omarchy's universal Super+C and
-    /// Super+V reach it as Ctrl+Shift+C and Ctrl+Shift+V, as in Alacritty.
+    /// Super+V reach it as Ctrl+Insert and Shift+Insert, as in Ghostty.
     pub(super) fn bindings_block(&self, phux: &str) -> String {
         let menu = format!(
             "sh -c '{phux} omarchy keys | omarchy-menu-select \"Phux keybindings\" -- --width 800'"

@@ -130,6 +130,7 @@ fn named(key: &Key) -> Option<PhysicalKey> {
         Key::End => K::End,
         Key::PageUp => K::PageUp,
         Key::PageDown => K::PageDown,
+        Key::Insert => K::Insert,
         Key::Escape => K::Escape,
         Key::Tab => K::Tab,
         Key::Function(n) => function(*n)?,
@@ -263,6 +264,7 @@ fn cap(key: &Key, physical: Option<PhysicalKeyCode>) -> Option<Cap> {
         Key::End => Cap::End,
         Key::PageUp => Cap::PageUp,
         Key::PageDown => Cap::PageDown,
+        Key::Insert => Cap::Insert,
         _ => return None,
     })
 }
@@ -403,6 +405,15 @@ mod tests {
         assert_eq!(function(12), Some(PhysicalKey::F12));
         assert_eq!(function(0), None);
         assert_eq!(function(13), None);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn omarchy_super_c_and_v_copy_and_paste() {
+        let ctrl = m(|m| m.ctrl = true);
+        let shift = m(|m| m.shift = true);
+        assert_eq!(shortcut(&Key::Insert, ctrl, None), Some(Shortcut::Copy));
+        assert_eq!(shortcut(&Key::Insert, shift, None), Some(Shortcut::Paste));
     }
 
     #[cfg(target_os = "macos")]

@@ -17,6 +17,7 @@ pub enum Cap {
     End,
     PageUp,
     PageDown,
+    Insert,
 }
 
 impl Cap {
@@ -32,6 +33,7 @@ impl Cap {
             Self::End => "end".to_owned(),
             Self::PageUp => "pageup".to_owned(),
             Self::PageDown => "pagedown".to_owned(),
+            Self::Insert => "insert".to_owned(),
         }
     }
 
@@ -47,6 +49,7 @@ impl Cap {
             Self::End => "↘".to_owned(),
             Self::PageUp => "⇞".to_owned(),
             Self::PageDown => "⇟".to_owned(),
+            Self::Insert => "Insert".to_owned(),
         }
     }
 
@@ -98,6 +101,17 @@ impl Chord {
         Self {
             shift: true,
             ..self
+        }
+    }
+
+    /// The key with Shift alone.
+    const fn shifted(cap: Cap) -> Self {
+        Self {
+            cap,
+            command: false,
+            ctrl: false,
+            alt: false,
+            shift: true,
         }
     }
 
@@ -375,8 +389,20 @@ pub const COMMANDS: &[Command] = &[
         [l('b')]
     ),
     row!(mac Shortcut::ToggleFullScreen, "Toggle Full Screen", [m('f').and_ctrl()]),
-    row!(Shortcut::Copy, "Copy Selection", [m('c')], [l('c')]),
-    row!(Shortcut::Paste, "Paste", [m('v')], [l('v')]),
+    // Ctrl+Insert and Shift+Insert are what Omarchy's Super+C and Super+V
+    // send a window tagged a terminal.
+    row!(
+        Shortcut::Copy,
+        "Copy Selection",
+        [m('c')],
+        [l('c'), Chord::ctrl(Cap::Insert)]
+    ),
+    row!(
+        Shortcut::Paste,
+        "Paste",
+        [m('v')],
+        [l('v'), Chord::shifted(Cap::Insert)]
+    ),
     row!(Shortcut::SelectAll, "Select All", [m('a')], [l('a')]),
     // ⌘+ is Shift and the = key on most layouts.
     row!(
@@ -465,6 +491,7 @@ mod tests {
             Cap::End => Key::End,
             Cap::PageUp => Key::PageUp,
             Cap::PageDown => Key::PageDown,
+            Cap::Insert => Key::Insert,
         };
         (key, mods)
     }
