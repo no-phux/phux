@@ -3,7 +3,8 @@
 //! Omarchy (<https://omarchy.org>) wires its multiplexers into the desktop
 //! in a handful of places: a key that opens one, a key that lists its
 //! bindings, a server started with the graphical session, keys that match
-//! its tmux config, and a hook that repaints them when the theme changes.
+//! its tmux config, a hook that repaints them when the theme changes, and
+//! rows in its menu (Super+Alt+Space).
 //! `setup` puts phux in each of those places, `remove` takes it out again,
 //! and `status` says which are in place. Every write is a file phux owns
 //! outright or a marked block inside a file it shares with the user.
@@ -39,6 +40,27 @@ phux={PHUX}\n\
 [[ -x $phux ]] || phux=$(command -v phux) || exit 0\n\
 \"$phux\" config reload >/dev/null 2>&1 || true\n";
 
+/// Rows `setup` adds to Omarchy's menu: Install > Terminal > Phux Rune
+/// until Rune is installed, and Learn > Phux beside Omarchy's own
+/// multiplexers. Each line is one JSONC entry.
+fn menu_block(phux: &str) -> String {
+    let rune = serde_json::json!({
+        "icon": "",
+        "label": "Phux Rune",
+        "description": "phux sessions and agents in one window",
+        "when": "! omarchy-cmd-present phux-rune && [[ ! -x $HOME/.local/bin/phux-rune ]]",
+        "action": "omarchy-launch-floating-terminal-with-presentation 'curl -fsSL https://phux.sh/install | sh -s -- --rune'",
+    });
+    let keys = serde_json::json!({
+        "icon": "",
+        "label": "Phux",
+        "action": format!(
+            "sh -c '{phux} omarchy keys | omarchy-menu-select \"Phux keybindings\" -- --width 800'"
+        ),
+    });
+    format!("\"install.terminal.phux-rune\": {rune},\n\"learn.phux-keybindings\": {keys},")
+}
+
 pub(crate) fn run_omarchy(action: &OmarchyAction, socket: Option<PathBuf>) -> ExitCode {
     let result = match action {
         OmarchyAction::Setup { dry_run } => setup(*dry_run, socket),
@@ -60,6 +82,7 @@ struct Paths {
     layer: PathBuf,
     hook: PathBuf,
     hypr: PathBuf,
+    menu: PathBuf,
 }
 
 impl Paths {
@@ -76,6 +99,7 @@ impl Paths {
             layer: data.join("distros").join("omarchy").join("omarchy.toml"),
             hook: home.join(".config/omarchy/hooks/theme-set.d/phux"),
             hypr: home.join(".config/hypr"),
+            menu: home.join(".config/omarchy/extensions/omarchy-menu.jsonc"),
             home,
         })
     }
@@ -84,6 +108,12 @@ impl Paths {
     fn omarchy_present(&self) -> bool {
         std::env::var_os("OMARCHY_PATH").is_some_and(|path| !path.is_empty())
             || self.home.join(".local/share/omarchy").is_dir()
+    }
+
+    /// Omarchy's menu reads user rows from this directory (Omarchy 4 and
+    /// later; older menus have no extension file).
+    fn menu_extensible(&self) -> bool {
+        self.menu.parent().is_some_and(Path::is_dir)
     }
 
     fn hyprland(&self) -> Option<Hyprland> {
@@ -246,6 +276,13 @@ fn setup(dry_run: bool, socket: Option<PathBuf>) -> Result<ExitCode, String> {
             "start the phux server with the desktop session",
         ));
     }
+    if paths.menu_extensible() {
+        changes.push(Change::write(
+            &paths.menu,
+            blocks::upsert_jsonc(&read(&paths.menu)?, &menu_block(&phux)),
+            "Omarchy menu: Install > Terminal > Phux Rune, Learn > Phux",
+        ));
+    }
     let theme = theme_choice()?;
 
     if dry_run {
@@ -353,6 +390,13 @@ fn removal_changes(paths: &Paths, hyprland: Option<&Hyprland>) -> Result<Vec<Cha
                 changes.push(Change::write(path, contents, what));
             }
         }
+    }
+    if let Some(contents) = blocks::strip(&read(&paths.menu)?, "//") {
+        changes.push(Change::write(
+            &paths.menu,
+            contents,
+            "phux Omarchy menu rows",
+        ));
     }
     for (path, what) in [
         (&paths.hook, "theme-set hook"),
@@ -464,6 +508,10 @@ fn status(json: bool) -> Result<ExitCode, String> {
         ("theme_hook", paths.hook.is_file()),
         ("desktop_keys", has_block(|hypr| &hypr.bindings)),
         ("autostart", has_block(|hypr| &hypr.autostart)),
+        (
+            "menu",
+            read(&paths.menu).is_ok_and(|text| blocks::contains(&text, "//")),
+        ),
     ];
     if json {
         let checks: serde_json::Map<_, _> = checks

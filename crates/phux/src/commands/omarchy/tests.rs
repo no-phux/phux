@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::{HOOK, LAYER, layer_extends, layer_text};
+use super::{HOOK, LAYER, layer_extends, layer_text, menu_block};
 
 #[test]
 fn the_layer_is_valid_config_and_binds_omarchy_keys() {
@@ -39,4 +39,28 @@ fn the_hook_quotes_the_binary_and_tolerates_a_missing_server() {
     assert!(hook.starts_with("#!/bin/bash\n"));
     assert!(hook.contains("\nphux='/home/me/.local/bin/phux'\n"));
     assert!(hook.ends_with("config reload >/dev/null 2>&1 || true\n"));
+}
+
+#[test]
+fn the_menu_rows_are_jsonc_entries_omarchy_can_parse() {
+    let block = menu_block("/home/me/.local/bin/phux");
+    // Omarchy strips trailing commas before parsing.
+    let doc: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&format!("{{{}}}", block.trim_end_matches(','))).expect("valid JSON");
+    let rune = &doc["install.terminal.phux-rune"];
+    assert!(
+        rune["action"]
+            .as_str()
+            .is_some_and(|a| a.contains("phux.sh/install | sh -s -- --rune"))
+    );
+    assert!(
+        rune["when"]
+            .as_str()
+            .is_some_and(|w| w.contains("phux-rune"))
+    );
+    assert!(
+        doc["learn.phux-keybindings"]["action"]
+            .as_str()
+            .is_some_and(|a| a.starts_with("sh -c '/home/me/.local/bin/phux omarchy keys"))
+    );
 }

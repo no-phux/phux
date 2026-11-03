@@ -117,8 +117,9 @@ pub(crate) enum ThemeAction {
 /// keys match Omarchy's tmux config (Ctrl+Space prefix, Alt+Enter splits,
 /// Alt+1..9 tabs), its colours follow the Omarchy theme and repaint when
 /// you switch, Super+Ctrl+Return opens it, Super+Ctrl+K lists its keys,
-/// and its server starts with the desktop session. `remove` undoes all of
-/// it; your own config.toml keeps winning throughout.
+/// its server starts with the desktop session, and Omarchy's menu offers
+/// Install > Terminal > Phux Rune. `remove` undoes all of it; your own
+/// config.toml keeps winning throughout.
 #[derive(Debug, Args)]
 pub(crate) struct OmarchyArgs {
     #[usage(subcommand)]
