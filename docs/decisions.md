@@ -26,6 +26,11 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 - Server to client is VT bytes; client to server is structured input. Both
   sides run libghostty.
+- Stream and input frames (`INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK`,
+  `HISTORY_REQUEST`) reach the kind that owns their resource through its
+  `ResourceApp`, as commands do. A kind owns no frame it did not opt into:
+  one it does not serve is refused with `WRONG_RESOURCE_KIND` and the
+  connection stays.
 - Any 1.x client works with any 1.x server, older or newer. New behavior
   ships as a feature bit or a skippable field or record tail; a server
   answers what it does not know with `UNSUPPORTED` and stays connected. A

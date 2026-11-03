@@ -47,7 +47,28 @@ impl ServerState {
             self.lifecycle.viewport_clock += 1;
             c.viewport = Some(viewport);
             c.viewport_seq = self.lifecycle.viewport_clock;
+            c.active_seq = self.lifecycle.viewport_clock;
         }
+    }
+
+    /// `client` was just used (typed, clicked, pasted, gained focus). True
+    /// when that makes it the most recently used view under the `active`
+    /// policy, so its panes should take its size; false, and nothing
+    /// changes, for any other policy or a client that already was.
+    pub fn note_client_activity(&mut self, client: ClientId) -> bool {
+        if self.config.window_size != phux_config::WindowSize::Active {
+            return false;
+        }
+        let newest = self.clients.attached.values().map(|c| c.active_seq).max();
+        let Some(c) = self.clients.attached.get_mut(&client) else {
+            return false;
+        };
+        if c.active_seq > 0 && Some(c.active_seq) == newest {
+            return false;
+        }
+        self.lifecycle.viewport_clock += 1;
+        c.active_seq = self.lifecycle.viewport_clock;
+        true
     }
 
     /// The authoritative `(cols, rows)` for a Terminal from its subscribers'
@@ -66,6 +87,14 @@ impl ServerState {
             WindowSize::Latest => latest
                 .filter(|v| v.cols > 0 && v.rows > 0)
                 .map(|v| (v.cols, v.rows)),
+            WindowSize::Active => self
+                .subscribers_for_resource(terminal)
+                .iter()
+                .filter_map(|cid| self.clients.attached.get(cid))
+                .filter_map(|c| Some((c.active_seq, c.viewport?)))
+                .filter(|(_, v)| v.cols > 0 && v.rows > 0)
+                .max_by_key(|(seq, _)| *seq)
+                .map(|(_, v)| (v.cols, v.rows)),
             WindowSize::Smallest | WindowSize::Largest => {
                 let viewports = self
                     .subscribers_for_resource(terminal)

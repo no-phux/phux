@@ -51,7 +51,7 @@ fn read_in(home: &Path, config_home: &Path) -> Option<Theme> {
 }
 
 /// `key = value` lines, comments and blanks skipped, values unquoted.
-fn lines(text: &str) -> impl Iterator<Item = (&str, &str)> {
+pub(super) fn lines(text: &str) -> impl Iterator<Item = (&str, &str)> {
     text.lines().filter_map(|line| {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -68,7 +68,7 @@ fn lines(text: &str) -> impl Iterator<Item = (&str, &str)> {
 }
 
 /// `#rrggbb`, `rrggbb` or `#rgb`.
-fn hex(value: &str) -> Option<u32> {
+pub(super) fn hex(value: &str) -> Option<u32> {
     let body = value.trim().trim_start_matches('#');
     let digits = |s: &str| s.bytes().all(|b| b.is_ascii_hexdigit());
     match body.len() {

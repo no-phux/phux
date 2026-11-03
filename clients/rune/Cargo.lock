@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-core"
-version = "0.115.0"
+version = "0.117.0"
 dependencies = [
  "ciborium",
  "libghostty-vt",
@@ -2172,7 +2172,7 @@ dependencies = [
 
 [[package]]
 name = "phux-client-runtime"
-version = "0.115.0"
+version = "0.117.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "phux-config-core"
-version = "0.115.0"
+version = "0.117.0"
 dependencies = [
  "nix",
  "serde",
@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "phux-core"
-version = "0.115.0"
+version = "0.117.0"
 dependencies = [
  "serde",
  "sha2",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "phux-dial"
-version = "0.115.0"
+version = "0.117.0"
 dependencies = [
  "futures-util",
  "hex",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "phux-perf"
-version = "0.115.0"
+version = "0.117.0"
 dependencies = [
  "libc",
  "nix",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.115.0"
+version = "0.117.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2439,7 +2439,7 @@ dependencies = [
 [[package]]
 name = "procwatch"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
+source = "git+https://github.com/anomalyco/rune?rev=61b3b448cb7fdc7d54ec19d4fb02df2f5703815f#61b3b448cb7fdc7d54ec19d4fb02df2f5703815f"
 dependencies = [
  "libc",
 ]
@@ -2473,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "quictun"
-version = "0.115.0"
+version = "0.117.0"
 dependencies = [
  "quinn",
  "rustls",
@@ -2734,7 +2734,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 [[package]]
 name = "rune"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
+source = "git+https://github.com/anomalyco/rune?rev=61b3b448cb7fdc7d54ec19d4fb02df2f5703815f#61b3b448cb7fdc7d54ec19d4fb02df2f5703815f"
 dependencies = [
  "arboard",
  "blake3",
@@ -2805,7 +2805,7 @@ dependencies = [
 [[package]]
 name = "rune-mac"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
+source = "git+https://github.com/anomalyco/rune?rev=61b3b448cb7fdc7d54ec19d4fb02df2f5703815f#61b3b448cb7fdc7d54ec19d4fb02df2f5703815f"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
@@ -2814,12 +2814,12 @@ dependencies = [
 [[package]]
 name = "rune-motion"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
+source = "git+https://github.com/anomalyco/rune?rev=61b3b448cb7fdc7d54ec19d4fb02df2f5703815f#61b3b448cb7fdc7d54ec19d4fb02df2f5703815f"
 
 [[package]]
 name = "rune-perf"
 version = "0.1.0"
-source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
+source = "git+https://github.com/anomalyco/rune?rev=61b3b448cb7fdc7d54ec19d4fb02df2f5703815f#61b3b448cb7fdc7d54ec19d4fb02df2f5703815f"
 dependencies = [
  "procwatch",
  "serde_json",
@@ -2828,7 +2828,7 @@ dependencies = [
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
+source = "git+https://github.com/anomalyco/rune?rev=61b3b448cb7fdc7d54ec19d4fb02df2f5703815f#61b3b448cb7fdc7d54ec19d4fb02df2f5703815f"
 dependencies = [
  "wgpu",
 ]
@@ -2836,7 +2836,7 @@ dependencies = [
 [[package]]
 name = "rune-taffy"
 version = "0.0.1"
-source = "git+https://github.com/anomalyco/rune?rev=8a14dda87f8755fdd4feab73ab4715daae8db83c#8a14dda87f8755fdd4feab73ab4715daae8db83c"
+source = "git+https://github.com/anomalyco/rune?rev=61b3b448cb7fdc7d54ec19d4fb02df2f5703815f#61b3b448cb7fdc7d54ec19d4fb02df2f5703815f"
 dependencies = [
  "taffy",
 ]

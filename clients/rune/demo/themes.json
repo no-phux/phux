@@ -4,7 +4,7 @@
 
   {"t": 4.0, "type": "mark", "name": "palette"},
   {"t": 4.0, "type": "key", "name": "k", "cmd": true},
-  {"t": 4.6, "type": "type", "text": "change theme"},
+  {"t": 4.6, "type": "type", "text": "settings"},
   {"t": 5.6, "type": "key", "name": "Enter"},
 
   {"t": 6.6, "type": "mark", "name": "settings"},

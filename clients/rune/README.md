@@ -105,6 +105,10 @@ session (or `--session NAME`). It never creates a session on its own.
   ⌘B folds the sidebar.
 - **Command palette.** ⌘K (or ⌘P) reaches every terminal, session and
   action by fuzzy search.
+- **Insert Path.** ⌥; (or ⇧⌘I) opens a picker at the cursor that searches
+  the focused pane's folder on the machine it runs on, as the GPUI desktop's
+  does. Return types the path at the prompt as one shell word, relative to
+  that folder and quoted only when it must be.
 - **Splits.** The selected session's arrangement is the server-stored split
   tree the terminal UI uses, so both show the same layout. Split, move
   between panes, zoom one, drag dividers; new splits and ratios are written
@@ -130,13 +134,20 @@ session (or `--session NAME`). It never creates a session on its own.
   notifications, Option as Meta, and copy on select. All of it is remembered
   between launches. A program's own OSC colours beat the theme.
 - **Themes.** The palette switches themes by name (`nord`) and **Change
-  Theme** opens the grid. A Ghostty config on this machine (`theme`,
+  Theme** lists them with each one shown live as the highlight moves:
+  Return keeps it, Escape puts the old one back. A Ghostty config on this machine (`theme`,
   `config-file` includes, `palette`, `background`, `foreground`,
   `cursor-color`) is read at launch and offered as the **Ghostty** theme,
-  the way the GPUI desktop reads it. `just rune-demo` films the themes into
+  the way the GPUI desktop reads it. On Omarchy, the **Omarchy** theme
+  takes the current Omarchy theme's colours and accent, repaints within
+  seconds when you switch Omarchy themes, and is the default until you pick
+  another. `just rune-demo` films the themes into
   `clients/rune/demo/themes.mp4`.
-- **Sessions.** Double-click a session to rename it; the palette also renames
+- **Sessions.** ⇧⌘S switches session by name, or creates one with the name
+  you typed. Double-click a session to rename it; the palette also renames
   tabs and ends sessions.
+- **Typing.** What you type shows as typed while the server confirms it,
+  never underlined.
 - Closing the window detaches; the server and its programs keep running. The
   window title follows the focused terminal.
 
@@ -175,7 +186,7 @@ cancels).
 
 - One window. Tabs can't be dragged to reorder yet, and the server has no
   call to rename a single terminal.
-- No Kitty images or font choice; the only custom theme is Ghostty's. Find covers the history the
+- No Kitty images or font choice; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
@@ -194,7 +205,9 @@ cancels).
 ## Develop
 
 Rune is pinned to a `dev` revision in `Cargo.toml`; this crate has its own
-workspace and lock so Rune's graph stays out of the rest of phux.
+workspace and lock so Rune's graph stays out of the rest of phux. The
+[Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
+twice a day.
 
 ```sh
 cd clients/rune
