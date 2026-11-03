@@ -687,6 +687,12 @@ fn the_terminal_theme_colours_published_frames_and_follows_live_changes() {
         !cleared.colors.has_background,
         "clearing hands defaults back to the renderer"
     );
+    assert_eq!(
+        rgb(cleared.colors.background),
+        [0; 3],
+        "not the last theme's"
+    );
+    assert_eq!(rgb(cleared.colors.foreground), [255; 3]);
 }
 
 #[test]
