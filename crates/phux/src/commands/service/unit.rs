@@ -104,13 +104,20 @@ pub(super) fn launchd_policy_lines() -> Vec<String> {
     ]
 }
 
-/// The systemd spelling of [`launchd_policy_lines`]. The explicit start limit
-/// makes systemd give up on a real crash-loop: its default (5 starts in 10s)
-/// can never trip at a 30s `RestartSec`.
+/// The `[Service]` half of the systemd spelling of [`launchd_policy_lines`].
 pub(super) fn systemd_policy_lines() -> Vec<String> {
     vec![
         "Restart=on-failure".to_owned(),
         format!("RestartSec={RESTART_THROTTLE_SECS}s"),
+    ]
+}
+
+/// The `[Unit]` half: start-rate limits are unit settings, and systemd ignores
+/// them under `[Service]` (`Unknown key StartLimitIntervalSec`). The explicit
+/// limit makes systemd give up on a real crash-loop: its default (5 starts in
+/// 10s) can never trip at a 30s `RestartSec`.
+pub(super) fn systemd_unit_policy_lines() -> Vec<String> {
+    vec![
         format!(
             "StartLimitIntervalSec={}s",
             RESTART_THROTTLE_SECS * (START_LIMIT_BURST + 1)
@@ -122,12 +129,12 @@ pub(super) fn systemd_policy_lines() -> Vec<String> {
 /// The `[Service]` keys [`reconcile_unit`] owns in a systemd unit. Every
 /// assignment of one is replaced by [`systemd_policy_lines`]; nothing else in
 /// the file is touched.
-pub(super) const SYSTEMD_POLICY_KEYS: [&str; 4] = [
-    "Restart",
-    "RestartSec",
-    "StartLimitIntervalSec",
-    "StartLimitBurst",
-];
+pub(super) const SYSTEMD_POLICY_KEYS: [&str; 2] = ["Restart", "RestartSec"];
+
+/// The `[Unit]` keys [`reconcile_unit`] owns, replaced by
+/// [`systemd_unit_policy_lines`]. Older installs wrote them under
+/// `[Service]`; the reconciler moves them.
+pub(super) const SYSTEMD_UNIT_POLICY_KEYS: [&str; 2] = ["StartLimitIntervalSec", "StartLimitBurst"];
 
 /// Render the launchd `LaunchAgent` plist. `ProcessType` is `Interactive`
 /// because the server is on the keystroke path (ADR-0096).
@@ -194,7 +201,11 @@ pub(crate) fn render_systemd_unit(plan: &ServicePlan) -> String {
     out.push_str("[Unit]\n");
     out.push_str("Description=phux terminal control plane server\n");
     out.push_str("Documentation=https://github.com/no-phux/phux\n");
-    out.push_str("After=network-online.target\n\n");
+    out.push_str("After=network-online.target\n");
+    for line in systemd_unit_policy_lines() {
+        let _ = writeln!(out, "{line}");
+    }
+    out.push('\n');
 
     out.push_str("[Service]\n");
     out.push_str("Type=simple\n");

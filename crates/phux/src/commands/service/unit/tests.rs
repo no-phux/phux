@@ -124,6 +124,22 @@ fn both_units_restart_only_on_failure_and_throttle() {
         "a window that does not fit {START_LIMIT_BURST} throttled starts makes the \
          limit unreachable, which is the bug it exists to fix"
     );
+    let (unit_section, service_section) = unit
+        .split_once("[Service]")
+        .expect("rendered unit has a [Service] section");
+    assert!(
+        unit_section.contains("StartLimitBurst=")
+            && unit_section.contains("StartLimitIntervalSec="),
+        "start limits are [Unit] settings; systemd ignores them under [Service].\n{unit}"
+    );
+    assert!(
+        !service_section.contains("StartLimit"),
+        "a start limit under [Service] is silently dropped by systemd.\n{unit}"
+    );
+    assert!(
+        service_section.contains("Restart=") && !unit_section.contains("Restart"),
+        "Restart and RestartSec stay in [Service].\n{unit}"
+    );
 }
 
 #[test]
