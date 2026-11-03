@@ -136,8 +136,10 @@ phux theme set --file ~/.local/state/omarchy/current/theme/colors.toml
 
 Phux Rune follows Omarchy's theme too, with no setup: its **Omarchy**
 theme is the default on an Omarchy desktop and repaints when you switch.
-Pick any other theme in Rune's settings (or type its name in the palette)
-and Rune keeps that one instead; pick **Omarchy** to follow again.
+Pick any other theme in Rune's settings
+(<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>,</kbd>), or type its name in the
+palette (<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd>), and Rune keeps that
+one instead; pick **Omarchy** to follow again.
 
 ## Undo it
 
