@@ -182,6 +182,7 @@ impl Desk {
             Target::Terminal { id, session } => self.show(id, &session),
             Target::Session(name) => self.show_session(&name),
             Target::Action(action) => self.shortcut(action, tx),
+            Target::Theme(id) => self.choose_theme(id.and_then(crate::theme::find)),
         }
     }
 

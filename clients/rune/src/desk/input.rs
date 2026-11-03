@@ -254,6 +254,7 @@ impl Desk {
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::Inbox => self.toggle_inbox(),
             Shortcut::Settings => self.toggle_settings(),
+            Shortcut::ChangeTheme => self.show_settings(),
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),
             Shortcut::Machines => self.toggle_machines(),

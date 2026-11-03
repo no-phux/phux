@@ -2,11 +2,18 @@
 //! window's chrome drawn from the same colours.
 //!
 //! "System" installs nothing: programs keep the engine's defaults and the
-//! chrome follows the OS. A program's own OSC colours beat any theme.
+//! chrome follows the OS. A program's own OSC colours beat any theme. A
+//! Ghostty config on this machine adds one more theme, read at launch.
 
 use phux_client_runtime::engine::TerminalTheme;
 use phux_client_runtime::publication::Rgb;
 use rune::Color;
+
+mod builtin;
+mod ghostty;
+pub use builtin::THEMES;
+use builtin::{LATTE, MOCHA};
+pub use ghostty::ghostty;
 
 /// What a readable role must clear against the surfaces it sits on: WCAG AA
 /// for body text.
@@ -206,120 +213,15 @@ impl Theme {
     }
 }
 
-/// Where the Catppuccin pair sits in `THEMES`.
-const MOCHA: usize = 0;
-const LATTE: usize = 6;
+/// Every theme on offer, in picker order: the Ghostty config's, then the
+/// built-ins.
+pub fn all() -> impl Iterator<Item = &'static Theme> {
+    ghostty().into_iter().chain(THEMES)
+}
 
-pub const THEMES: &[Theme] = &[
-    Theme {
-        id: "catppuccin-mocha",
-        name: "Catppuccin Mocha",
-        dark: true,
-        ansi: [
-            0x45475a, 0xf38ba8, 0xa6e3a1, 0xf9e2af, 0x89b4fa, 0xf5c2e7, 0x94e2d5, 0xbac2de,
-            0x585b70, 0xf38ba8, 0xa6e3a1, 0xf9e2af, 0x89b4fa, 0xf5c2e7, 0x94e2d5, 0xa6adc8,
-        ],
-        foreground: 0xcdd6f4,
-        background: 0x1e1e2e,
-        cursor: 0xf5e0dc,
-        accent: 0xcba6f7,
-    },
-    Theme {
-        id: "tokyo-night",
-        name: "Tokyo Night",
-        dark: true,
-        ansi: [
-            0x15161e, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xa9b1d6,
-            0x414868, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xc0caf5,
-        ],
-        foreground: 0xc0caf5,
-        background: 0x1a1b26,
-        cursor: 0xc0caf5,
-        accent: 0x7aa2f7,
-    },
-    Theme {
-        id: "rose-pine",
-        name: "Rosé Pine",
-        dark: true,
-        ansi: [
-            0x26233a, 0xeb6f92, 0x31748f, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xebbcba, 0xe0def4,
-            0x6e6a86, 0xeb6f92, 0x31748f, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xebbcba, 0xe0def4,
-        ],
-        foreground: 0xe0def4,
-        background: 0x191724,
-        cursor: 0xe0def4,
-        accent: 0xc4a7e7,
-    },
-    Theme {
-        id: "dracula",
-        name: "Dracula",
-        dark: true,
-        ansi: [
-            0x21222c, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0xff79c6, 0x8be9fd, 0xf8f8f2,
-            0x6272a4, 0xff6e6e, 0x69ff94, 0xffffa5, 0xd6acff, 0xff92df, 0xa4ffff, 0xffffff,
-        ],
-        foreground: 0xf8f8f2,
-        background: 0x282a36,
-        cursor: 0xf8f8f2,
-        accent: 0xbd93f9,
-    },
-    Theme {
-        id: "gruvbox-dark",
-        name: "Gruvbox Dark",
-        dark: true,
-        ansi: [
-            0x282828, 0xcc241d, 0x98971a, 0xd79921, 0x458588, 0xb16286, 0x689d6a, 0xa89984,
-            0x928374, 0xfb4934, 0xb8bb26, 0xfabd2f, 0x83a598, 0xd3869b, 0x8ec07c, 0xebdbb2,
-        ],
-        foreground: 0xebdbb2,
-        background: 0x282828,
-        cursor: 0xebdbb2,
-        accent: 0xfe8019,
-    },
-    Theme {
-        id: "nord",
-        name: "Nord",
-        dark: true,
-        ansi: [
-            0x3b4252, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x88c0d0, 0xe5e9f0,
-            0x4c566a, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x8fbcbb, 0xeceff4,
-        ],
-        foreground: 0xd8dee9,
-        background: 0x2e3440,
-        cursor: 0xd8dee9,
-        accent: 0x88c0d0,
-    },
-    Theme {
-        id: "catppuccin-latte",
-        name: "Catppuccin Latte",
-        dark: false,
-        ansi: [
-            0x5c5f77, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0xacb0be,
-            0x6c6f85, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0xbcc0cc,
-        ],
-        foreground: 0x4c4f69,
-        background: 0xeff1f5,
-        cursor: 0xdc8a78,
-        accent: 0x8839ef,
-    },
-    Theme {
-        id: "solarized-light",
-        name: "Solarized Light",
-        dark: false,
-        ansi: [
-            0x073642, 0xdc322f, 0x859900, 0xb58900, 0x268bd2, 0xd33682, 0x2aa198, 0xeee8d5,
-            0x002b36, 0xcb4b16, 0x586e75, 0x657b83, 0x839496, 0x6c71c4, 0x93a1a1, 0xfdf6e3,
-        ],
-        foreground: 0x657b83,
-        background: 0xfdf6e3,
-        cursor: 0x586e75,
-        accent: 0x268bd2,
-    },
-];
-
-/// A remembered id; `None` is System, and so is one no longer built in.
+/// A remembered id; `None` is System, and so is one no longer on offer.
 pub fn find(id: &str) -> Option<&'static Theme> {
-    THEMES.iter().find(|t| t.id == id)
+    all().find(|t| t.id == id)
 }
 
 #[cfg(test)]

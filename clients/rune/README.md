@@ -125,10 +125,16 @@ session (or `--session NAME`). It never creates a session on its own.
   across rows count. Only `http`, `https` and `mailto` open.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
-- **Settings.** ⌘, picks a theme (eight built in, or the OS; arrow keys
-  preview it live on your terminals), text size, notifications, Option as
-  Meta, and copy on select. All of it is remembered between launches. A
-  program's own OSC colours beat the theme.
+- **Settings.** ⌘, picks a theme (the GPUI desktop's twenty-six, or the
+  OS; arrow keys preview it live on your terminals), text size,
+  notifications, Option as Meta, and copy on select. All of it is remembered
+  between launches. A program's own OSC colours beat the theme.
+- **Themes.** The palette switches themes by name (`nord`) and **Change
+  Theme** opens the grid. A Ghostty config on this machine (`theme`,
+  `config-file` includes, `palette`, `background`, `foreground`,
+  `cursor-color`) is read at launch and offered as the **Ghostty** theme,
+  the way the GPUI desktop reads it. `just rune-demo` films the themes into
+  `clients/rune/demo/themes.mp4`.
 - **Sessions.** Double-click a session to rename it; the palette also renames
   tabs and ends sessions.
 - Closing the window detaches; the server and its programs keep running. The
@@ -169,7 +175,7 @@ cancels).
 
 - One window. Tabs can't be dragged to reorder yet, and the server has no
   call to rename a single terminal.
-- No Kitty images, custom themes or font choice. Find covers the history the
+- No Kitty images or font choice; the only custom theme is Ghostty's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the

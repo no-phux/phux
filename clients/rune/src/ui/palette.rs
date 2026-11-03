@@ -7,7 +7,7 @@ use rune::{
 use super::{CAPTION, Ink, LABEL, pressable};
 use crate::desk::{CONTEXT_MENU, Desk};
 use crate::keys::{self, Shortcut};
-use crate::palette::Hit;
+use crate::palette::{Hit, Target};
 
 const WIDTH: f32 = 600.0;
 const MENU_W: f32 = 240.0;
@@ -172,6 +172,24 @@ fn kind_mark(kind: &str) -> &'static str {
     }
 }
 
+/// What a row is: a glyph, or for a theme a swatch of its colours.
+fn mark(hit: &Hit, ink: &Ink) -> El {
+    let Target::Theme(id) = hit.item.target else {
+        return text(kind_mark(hit.item.kind)).font(CAPTION).color(ink.dim);
+    };
+    let theme = id.and_then(crate::theme::find);
+    let (fill, ring) = theme.map_or((ink.bg, ink.separator), |t| {
+        (
+            crate::theme::color(t.background),
+            crate::theme::color(t.accent),
+        )
+    });
+    el().size(14.0, 14.0)
+        .radius(7.0)
+        .fill(fill)
+        .border(2.0, ring)
+}
+
 fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
     let title = &hit.item.title;
     // Matched characters in the accent, at their byte ranges.
@@ -198,11 +216,7 @@ fn hit_row(hit: &Hit, index: usize, picked: bool, ink: &Ink) -> El {
             Color::TRANSPARENT
         })
         .on_press_tx(move |d: &mut Desk, tx| d.palette_run(Some(index), tx))
-        .child(
-            el().w(22.0)
-                .center()
-                .child(text(kind_mark(hit.item.kind)).font(CAPTION).color(ink.dim)),
-        )
+        .child(el().w(22.0).center().child(mark(hit, ink)))
         .child(
             rich(title.clone(), spans)
                 .font(TextStyle::new(13.5, 450.0))

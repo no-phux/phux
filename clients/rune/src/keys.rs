@@ -54,6 +54,8 @@ pub enum Shortcut {
     FindSelection,
     Inbox,
     Settings,
+    /// Settings, open on its themes.
+    ChangeTheme,
     /// The tab at this index.
     Tab(u8),
     RenameSession,
@@ -79,6 +81,7 @@ impl Shortcut {
             self,
             Self::Inbox
                 | Self::Settings
+                | Self::ChangeTheme
                 | Self::ZoomIn
                 | Self::ZoomOut
                 | Self::ZoomReset
