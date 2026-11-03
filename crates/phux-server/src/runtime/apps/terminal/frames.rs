@@ -82,7 +82,26 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             }
             None => None,
         };
+        if is_use(&input) {
+            crate::runtime::apps::terminal::commands::handle_client_activity(
+                self.state,
+                self.client_id,
+            );
+        }
         route_client_input(self.state, lane, self.client_id, terminal_id, input, credit).await;
         FrameFlow::Continue(())
+    }
+}
+
+/// Whether `input` is someone using this view, for the `active` window-size
+/// policy: a key, a paste, a click, or focus arriving. Pointer motion and
+/// focus leaving are not.
+const fn is_use(input: &TerminalInput) -> bool {
+    use phux_protocol::input::focus::FocusEvent;
+    use phux_protocol::input::mouse::MouseAction;
+    match input {
+        TerminalInput::Key(_) | TerminalInput::Paste(_) => true,
+        TerminalInput::Mouse(event) => matches!(event.action, MouseAction::Press),
+        TerminalInput::Focus(event) => matches!(event, FocusEvent::Gained),
     }
 }

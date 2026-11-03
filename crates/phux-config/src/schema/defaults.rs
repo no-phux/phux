@@ -277,6 +277,10 @@ pub enum WindowSize {
     Largest,
     /// The most recently resized view's size.
     Latest,
+    /// The size of the view last used: the one that most recently typed,
+    /// clicked, pasted, gained focus, attached or resized. Lets a phone and
+    /// a desktop share a pane without the idle one shrinking it.
+    Active,
     /// A fixed size set only by an explicit `RESIZE_TERMINAL` (ADR-0062).
     Manual,
 }

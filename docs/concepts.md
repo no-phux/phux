@@ -52,7 +52,7 @@ A client is anything that connects to the server to show or change what's in it:
 
 They all see the same sessions, so you can watch a pane in the terminal UI while a script types into it. **Closing a client changes nothing on the server.**
 
-Several clients can show one session at once. A pane has one size at a time; by default the smallest view wins and larger views get blank margins, like tmux. The `window-size` setting under `[defaults]` changes that.
+Several clients can show one session at once. A pane has one size at a time; by default the smallest view wins and larger views get blank margins, like tmux. The `window-size` setting under `[defaults]` changes that; `"active"` sizes each pane for the client you last typed in, clicked or focused, so a phone and a desktop can share a session and each gets its own size back when you use it.
 
 ## Hosts
 
