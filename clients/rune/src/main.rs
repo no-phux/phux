@@ -23,6 +23,9 @@ mod updates;
 use desk::Desk;
 use rune::{AppSpec, Chrome};
 
+/// The desktop entry's name, and what `phux omarchy setup` tags as a terminal.
+const APP_ID: &str = "sh.phux.rune";
+
 fn main() {
     // The updater asks a new binary this before trusting it can run here.
     if rune::extra_args().iter().any(|arg| arg == "--version") {
@@ -30,6 +33,9 @@ fn main() {
         return;
     }
     diag::install();
+    // The window's Wayland app_id and X11 class: what matches the .desktop
+    // entry, the icon, and a compositor's rules (Omarchy's terminal tag).
+    rune::set_app_id(APP_ID);
     rune::prewarm_gpu();
     // Rune keeps its own flags (`--snap`, `--script`, ...); the rest are ours.
     let options = match launch::Options::parse(rune::extra_args().iter().cloned()) {

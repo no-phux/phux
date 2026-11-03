@@ -28,6 +28,7 @@ and `--dry-run` prints them without writing anything.
 | phux follows Omarchy's current theme, unless your config already selects a theme. | `[theme] file` in your config |
 | A hook that repaints phux after each Omarchy theme change. | `~/.config/omarchy/hooks/theme-set.d/phux` |
 | <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>Return</kbd> and <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>K</kbd> open phux and its key list. | A marked block in `~/.config/hypr/bindings.lua` |
+| Phux Rune's window counts as a terminal, so Omarchy's <kbd>Super</kbd> <kbd>C</kbd> and <kbd>Super</kbd> <kbd>V</kbd> copy and paste in it. | The same block |
 | The phux server starts with your desktop session, so its panes can reach the Wayland clipboard even when you first attach over SSH. | A marked block in `~/.config/hypr/autostart.lua` |
 
 Omarchy gives <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>Return</kbd> and
@@ -42,6 +43,7 @@ setup never edits text outside its marked blocks:
 -- >>> phux: managed by `phux omarchy setup`; `phux omarchy remove` deletes it
 o.rebind("SUPER + CTRL + RETURN", "Phux", "omarchy-launch-terminal /home/you/.local/bin/phux")
 o.rebind("SUPER + CTRL + K", "Phux keybindings", [[sh -c '/home/you/.local/bin/phux omarchy keys | omarchy-menu-select "Phux keybindings" -- --width 800']])
+o.window("sh\\.phux\\.rune", { tag = "+terminal" })
 -- <<< phux
 ```
 
