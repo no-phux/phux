@@ -17,11 +17,13 @@ a terminal:
 - The command plane is already per kind. A kind is a `ResourceApp`, and the
   kind catalog routes and authorizes its commands
   ([architecture](./architecture.md#where-to-look)).
-- The stream plane is not. Input, `FRAME_ACK`, history and resize frames are
-  routed by terminal helpers in `runtime/connections/frames.rs`. `HELLO`
-  refuses a client with no terminal profile. Viewports, layout leaves and
-  windows are cells and Terminals only. The client kernel has one terminal
-  engine plus a hard-coded agent lane.
+- The stream plane is only partly so. Input, `FRAME_ACK`, history and
+  resize frames now reach their resource's app through `ResourceApp::frame`
+  ([decisions](./decisions.md)), but `VIEWPORT_RESIZE` is a
+  per-connection Terminal vote, and `HELLO` refuses a client with no
+  terminal profile. Viewports, layout leaves and windows are cells and
+  Terminals only. The client kernel has one terminal engine plus a
+  hard-coded agent lane.
 - Per-consumer delivery (StateSync: a reference per viewer, deltas against
   it, acknowledgements, RTT-adaptive cadence) lives inside the terminal actor.
 - A producer process is modelled as a Terminal: an `AgentSession` needs a
@@ -83,7 +85,8 @@ Each lands with the code that implements it, as an edit to
   libghostty on both ends."
 - Stream and input frames reach the kind that owns their resource through
   `ResourceApp`, as commands already do. A kind owns no frame it did not
-  opt into (`phux-phiio.1`).
+  opt into (`phux-phiio.1`, landed; the rule is in
+  [decisions](./decisions.md)).
 - Codec negotiation moves from the connection to the stream. A connection
   with no terminal profile is admitted; a Terminal stream it cannot decode
   is refused when it binds (`phux-phiio.3`).

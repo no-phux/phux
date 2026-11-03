@@ -339,7 +339,7 @@ fn select_hello_profile(
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::runtime) struct NegotiatedConnection {
+pub(crate) struct NegotiatedConnection {
     pub(in crate::runtime) client_caps: ClientCapabilities,
     pub(in crate::runtime) profile: BootstrapProfile,
     pub(in crate::runtime) limits: BootstrapLimits,
