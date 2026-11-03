@@ -40,7 +40,7 @@ phux={PHUX}\n\
 [[ -x $phux ]] || phux=$(command -v phux) || exit 0\n\
 \"$phux\" config reload >/dev/null 2>&1 || true\n";
 
-/// Rows `setup` adds to Omarchy's menu: Install > Terminal > Phux Rune
+/// Rows `setup` adds to Omarchy's menu: Install > AI > Phux Rune
 /// until Rune is installed, and Learn > Phux beside Omarchy's own
 /// multiplexers. Each line is one JSONC entry.
 fn menu_block(phux: &str) -> String {
@@ -58,7 +58,7 @@ fn menu_block(phux: &str) -> String {
             "sh -c '{phux} omarchy keys | omarchy-menu-select \"Phux keybindings\" -- --width 800'"
         ),
     });
-    format!("\"install.terminal.phux-rune\": {rune},\n\"learn.phux-keybindings\": {keys},")
+    format!("\"install.ai.phux-rune\": {rune},\n\"learn.phux-keybindings\": {keys},")
 }
 
 pub(crate) fn run_omarchy(action: &OmarchyAction, socket: Option<PathBuf>) -> ExitCode {
@@ -280,7 +280,7 @@ fn setup(dry_run: bool, socket: Option<PathBuf>) -> Result<ExitCode, String> {
         changes.push(Change::write(
             &paths.menu,
             blocks::upsert_jsonc(&read(&paths.menu)?, &menu_block(&phux)),
-            "Omarchy menu: Install > Terminal > Phux Rune, Learn > Phux",
+            "Omarchy menu: Install > AI > Phux Rune, Learn > Phux",
         ));
     }
     let theme = theme_choice()?;

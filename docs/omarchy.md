@@ -13,7 +13,7 @@ Then:
 | --- | --- |
 | <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>Return</kbd> | Opens a terminal attached to phux |
 | <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>K</kbd> | Lists phux's keys in Omarchy's menu |
-| <kbd>Super</kbd> <kbd>Space</kbd>, Install › Terminal › Phux Rune | Installs [Phux Rune](#phux-rune) |
+| <kbd>Super</kbd> <kbd>Space</kbd>, Install › AI › Phux Rune | Installs [Phux Rune](#phux-rune) |
 
 Inside phux, the keys are the ones Omarchy's tmux config uses, so your
 hands already know them. Switch Omarchy's theme and phux repaints to match.
@@ -30,7 +30,7 @@ and `--dry-run` prints them without writing anything.
 | A hook that repaints phux after each Omarchy theme change. | `~/.config/omarchy/hooks/theme-set.d/phux` |
 | <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>Return</kbd> and <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>K</kbd> open phux and its key list. | A marked block in `~/.config/hypr/bindings.lua` |
 | The phux server starts with your desktop session, so its panes can reach the Wayland clipboard even when you first attach over SSH. | A marked block in `~/.config/hypr/autostart.lua` |
-| Install › Terminal › Phux Rune (until Rune is installed) and Learn › Phux in Omarchy's menu. Omarchy 4 and later. | A marked block in `~/.config/omarchy/extensions/omarchy-menu.jsonc` |
+| Install › AI › Phux Rune (until Rune is installed) and Learn › Phux in Omarchy's menu. Omarchy 4 and later. | A marked block in `~/.config/omarchy/extensions/omarchy-menu.jsonc` |
 
 Omarchy gives <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>Return</kbd> and
 <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>K</kbd> to Herdr out of the box;
@@ -71,7 +71,7 @@ $ phux omarchy status
 Phux Rune is the phux desktop client: your sessions and agents in one
 window. After setup, open Omarchy's menu
 (<kbd>Super</kbd> <kbd>Space</kbd>) and pick
-Install › Terminal › Phux Rune. Once it's installed, the row goes away and
+Install › AI › Phux Rune. Once it's installed, the row goes away and
 Rune is in the apps menu (<kbd>Super</kbd> <kbd>Alt</kbd> <kbd>Space</kbd>). It updates
 itself.
 
@@ -85,7 +85,7 @@ To get the menu row before phux is installed, add it to
 `~/.config/omarchy/extensions/omarchy-menu.jsonc` yourself:
 
 ```jsonc
-"install.terminal.phux-rune": {"icon":"","label":"Phux Rune","when":"! omarchy-cmd-present phux-rune","action":"omarchy-launch-floating-terminal-with-presentation 'curl -fsSL https://phux.sh/install | sh -s -- --rune'"},
+"install.ai.phux-rune": {"icon":"","label":"Phux Rune","when":"! omarchy-cmd-present phux-rune","action":"omarchy-launch-floating-terminal-with-presentation 'curl -fsSL https://phux.sh/install | sh -s -- --rune'"},
 ```
 
 ## Keys

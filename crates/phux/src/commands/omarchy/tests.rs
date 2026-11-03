@@ -47,7 +47,7 @@ fn the_menu_rows_are_jsonc_entries_omarchy_can_parse() {
     // Omarchy strips trailing commas before parsing.
     let doc: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&format!("{{{}}}", block.trim_end_matches(','))).expect("valid JSON");
-    let rune = &doc["install.terminal.phux-rune"];
+    let rune = &doc["install.ai.phux-rune"];
     assert!(
         rune["action"]
             .as_str()
