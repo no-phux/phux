@@ -12,6 +12,7 @@ session="${RUNE_UPSTREAM_SESSION:-rune-upstream}"
 max_run_hours="${RUNE_UPSTREAM_MAX_RUN_HOURS:-10}"
 shell="${RUNE_UPSTREAM_SHELL:-${SHELL:-/bin/zsh}}"
 wt="$home/phux"
+changes="$home/worktrees"
 run_tag=rune-upstream-run
 hold_tag=hold
 
@@ -30,15 +31,37 @@ ensure_worktree() {
     log "created worktree $wt"
 }
 
-# A run ends parked on a clean, detached origin/main. A branch whose remote
-# is gone was merged; any other branch, or a dirty tree, is a run's unfinished
-# work, left for the next run to pick up.
-refresh_worktree() {
+# The branch checked out in worktree $1 was merged: clean, and its remote
+# branch deleted (the repo deletes a branch on merge).
+merged_checkout() {
     local branch
+    [[ -z "$(git -C "$1" status --porcelain)" ]] || return 1
+    branch="$(git -C "$1" symbolic-ref -q --short HEAD)" || return 1
+    [[ "$(git -C "$1" for-each-ref --format='%(upstream:track)' "refs/heads/$branch")" == "[gone]" ]]
+}
+
+# The start worktree sits on a clean, detached origin/main; each change has
+# its own worktree under $changes. A merged change's worktree is removed; any
+# other, or a dirty start worktree, is unfinished work left for the next run.
+refresh_worktrees() {
+    local dir branch
     git -C "$wt" fetch -q --prune origin
+    git -C "$wt" worktree prune
+    for dir in "$changes"/*; do
+        [[ -e "$dir/.git" ]] || continue
+        # The previous run is over, so is its lease here.
+        rm -f "$(git -C "$dir" rev-parse --absolute-git-dir)/phux-worktree-owner"
+        merged_checkout "$dir" || continue
+        branch="$(git -C "$dir" symbolic-ref --short HEAD)"
+        if git -C "$wt" worktree remove "$dir" && git -C "$wt" branch -q -D "$branch"; then
+            log "removed merged worktree $dir"
+        else
+            log "could not remove merged worktree $dir"
+        fi
+    done
     [[ -z "$(git -C "$wt" status --porcelain)" ]] || return 0
-    if branch="$(git -C "$wt" symbolic-ref -q --short HEAD)"; then
-        [[ "$(git -C "$wt" for-each-ref --format='%(upstream:track)' "refs/heads/$branch")" == "[gone]" ]] || return 0
+    if git -C "$wt" symbolic-ref -q HEAD >/dev/null; then
+        merged_checkout "$wt" || return 0
     fi
     if [[ "$(git -C "$wt" rev-parse HEAD)" != "$(git -C "$wt" rev-parse origin/main)" ]]; then
         git -C "$wt" switch -q --detach origin/main
@@ -132,12 +155,12 @@ main() {
         return 0
     fi
 
-    # The old run goes before the worktree moves under it, and its lease with it.
+    # The old run goes before its worktrees move under it, and its leases with it.
     if [[ -n "$run" ]] && ! phux kill --yes "$run" >/dev/null; then
         log "could not close the old run $run; it may have exited"
     fi
     rm -f "$(git -C "$wt" rev-parse --absolute-git-dir)/phux-worktree-owner"
-    refresh_worktree
+    refresh_worktrees
 
     any="$(session_panes | jq -r '.terminals[0].terminal // empty')"
     if [[ -z "$any" ]] && session_exists; then
