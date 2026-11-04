@@ -15,7 +15,7 @@ use super::{WorkloadError, WorkloadRegistry};
 
 /// What the last probe of the registry path saw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Observed {
+pub(super) enum Observed {
     /// No file: the empty snapshot.
     Missing,
     /// A file with this stamp (valid or not; the snapshot says which).
@@ -79,10 +79,15 @@ pub enum RegistryObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrokenRegistry(Observed);
 
+/// How a [`ReloadingWorkloadRegistry`] reads its file.
+pub(super) type ReadSnapshot =
+    dyn Fn(&Path) -> Result<(Observed, WorkloadRegistry), WorkloadError> + Send + Sync;
+
 /// A workload registry that observes replacement of its file without a
 /// restart. Transports hold one and consult it on every connection.
 pub struct ReloadingWorkloadRegistry {
     path: PathBuf,
+    read: Box<ReadSnapshot>,
     cached: Mutex<Cached>,
     probes: AtomicU64,
 }
@@ -107,9 +112,15 @@ impl ReloadingWorkloadRegistry {
     ///
     /// Any [`WorkloadError`] reading or validating the registry.
     pub fn load(path: PathBuf) -> Result<Self, WorkloadError> {
-        let (observed, snapshot) = read_snapshot(&path)?;
+        Self::load_with(path, Box::new(read_snapshot))
+    }
+
+    /// [`Self::load`], reading the file through `read`.
+    pub(super) fn load_with(path: PathBuf, read: Box<ReadSnapshot>) -> Result<Self, WorkloadError> {
+        let (observed, snapshot) = read(&path)?;
         Ok(Self {
             path,
+            read,
             cached: Mutex::new(Cached {
                 observed,
                 snapshot: Arc::new(snapshot),
@@ -147,7 +158,7 @@ impl ReloadingWorkloadRegistry {
         if let Some(observation) = self.cached_for(Observed::of(&probed)) {
             return observation;
         }
-        match load_changed(&self.path, probed) {
+        match load_changed(&self.path, probed, &self.read) {
             Loaded::Cache(observed, snapshot, broken) => {
                 self.install(probe, observed, snapshot, broken)
             }
@@ -222,7 +233,11 @@ const fn is_transient(error: &WorkloadError) -> bool {
 }
 
 /// Produce the snapshot for a probe that differed from the cached one.
-fn load_changed(path: &Path, probed: Result<Option<Stamp>, WorkloadError>) -> Loaded {
+fn load_changed(
+    path: &Path,
+    probed: Result<Option<Stamp>, WorkloadError>,
+    read: &ReadSnapshot,
+) -> Loaded {
     let empty = || Arc::new(WorkloadRegistry::empty());
     match probed {
         Ok(None) => Loaded::Cache(Observed::Missing, empty(), true),
@@ -230,7 +245,7 @@ fn load_changed(path: &Path, probed: Result<Option<Stamp>, WorkloadError>) -> Lo
             tracing::warn!(%error, "workload registry failed its integrity check; admitting no workload credential");
             Loaded::Cache(Observed::Refused, empty(), true)
         }
-        Ok(Some(stamp)) => match read_snapshot(path) {
+        Ok(Some(stamp)) => match read(path) {
             Ok((observed, registry)) => {
                 tracing::info!(
                     generation = registry.generation(),
@@ -254,7 +269,7 @@ fn load_changed(path: &Path, probed: Result<Option<Stamp>, WorkloadError>) -> Lo
     }
 }
 
-fn read_snapshot(path: &Path) -> Result<(Observed, WorkloadRegistry), WorkloadError> {
+pub(super) fn read_snapshot(path: &Path) -> Result<(Observed, WorkloadRegistry), WorkloadError> {
     match store::read_stable(path, FileRole::Registry)? {
         None => Ok((Observed::Missing, WorkloadRegistry::empty())),
         Some((stamp, raw)) => Ok((Observed::File(stamp), WorkloadRegistry::from_bytes(&raw)?)),
