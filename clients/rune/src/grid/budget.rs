@@ -12,6 +12,7 @@
 //!
 //! `window_stream` draws the real window (sidebar, tabs, status line, one
 //! pane), so chrome that starts rebuilding a pane shows up there too.
+//! The same embedded fixture checks key delivery through that window.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -382,6 +383,69 @@ fn window_phase() {
 
 /// Set in the child that does the measuring.
 const ALONE: &str = "RUNE_BUDGET_ALONE";
+
+#[test]
+fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
+    use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+    use rune::{Key, KeyEvent, Mods};
+
+    let replica = Replica::new(120, 40, 1);
+    let mut desk = Desk::new(&Resolved::offline("input"));
+    desk.client = Some(Arc::clone(&replica.client));
+    desk.layout = Some(phux_client_core::layout::LayoutNode::Leaf(
+        replica.terminal.clone(),
+    ));
+    desk.shown = Some(Shown {
+        terminal: replica.terminal.clone(),
+        view: replica.views[0],
+    });
+    let mut runtime = Runtime::new(desk, crate::ui::view, SIZE, Env::new(true, SCALE));
+    runtime.on_key = Some(Desk::key);
+    runtime.frame(0.0);
+    for (key, physical) in [
+        (Key::Insert, PhysicalKey::Insert),
+        (Key::PrintScreen, PhysicalKey::PrintScreen),
+        (Key::ScrollLock, PhysicalKey::ScrollLock),
+        (Key::Pause, PhysicalKey::Pause),
+    ] {
+        for sheet_open in [false, true] {
+            runtime.update(|desk, _| desk.settings_open = sheet_open);
+            let _ = replica.client.take_outbound();
+            runtime.key(KeyEvent {
+                key: key.clone(),
+                // Alt, not Shift: Shift+Insert is Paste, what Omarchy's
+                // Super+V sends a terminal.
+                mods: Mods {
+                    alt: true,
+                    ..Mods::default()
+                },
+            });
+            runtime.frame(1.0 / 60.0);
+            let sent: Vec<_> = replica
+                .client
+                .take_outbound()
+                .iter()
+                .filter_map(
+                    |bytes| match FrameKind::decode(bytes).expect("decode input").0 {
+                        FrameKind::InputKey { terminal_id, event } => Some((terminal_id, event)),
+                        _ => None,
+                    },
+                )
+                .collect();
+            if sheet_open {
+                assert!(sent.is_empty(), "{key:?} went through Settings");
+            } else {
+                assert_eq!(sent.len(), 1, "{key:?}");
+                let (terminal, event) = &sent[0];
+                assert_eq!(terminal, &replica.terminal);
+                assert_eq!(event.key, physical);
+                assert_eq!(event.action, KeyAction::Press);
+                assert_eq!(event.mods, ModSet::ALT);
+                assert_eq!(event.text, None);
+            }
+        }
+    }
+}
 
 #[test]
 fn perf_budget() {

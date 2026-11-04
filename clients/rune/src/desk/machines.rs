@@ -2,14 +2,19 @@
 //! server: switching replaces the connection, and every session stays
 //! running where it is.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Duration;
 
 use phux_client_runtime::Target;
 use rune::{Key, KeyEvent, TextEdit, Tx, Waker};
 
 use super::{Desk, NoticeKind};
-use crate::machines::{self, Add, Host, Peer};
+use crate::machines::{self, Add, Glance, Host, Peer};
+
+/// How often an expanded machine's sessions are listed again, in seconds.
+const GLANCE_EVERY: f64 = 30.0;
 
 enum Done {
     /// A listing, tagged with the refresh that started it.
@@ -17,6 +22,8 @@ enum Done {
     Step(String),
     Added(Result<(), String>),
     Removed(String, Result<(), String>),
+    /// Another machine's sessions; `None` is this computer.
+    Glanced(Option<String>, Result<Vec<Glance>, String>),
 }
 
 pub struct Machines {
@@ -35,6 +42,16 @@ pub struct Machines {
     pub outcome: Option<Result<String, String>>,
     /// The row asking whether to really remove its machine.
     pub removing: Option<String>,
+    /// The other machines whose sessions the sidebar shows; `None` is this computer.
+    pub expanded: HashSet<Option<String>>,
+    /// The sidebar hides this window's own sessions under its machine.
+    pub folded: bool,
+    /// What each expanded machine last listed.
+    pub glances: HashMap<Option<String>, Result<Vec<Glance>, String>>,
+    /// When each machine's listing last started, on the app clock, and the
+    /// ones still out.
+    glanced: HashMap<Option<String>, f64>,
+    peeking: HashSet<Option<String>>,
     /// The add in hand, until a listing shows what it made, and the
     /// machines from before it.
     request: Option<Add>,
@@ -63,6 +80,11 @@ impl Machines {
             error: None,
             outcome: None,
             removing: None,
+            expanded: HashSet::new(),
+            folded: false,
+            glances: HashMap::new(),
+            glanced: HashMap::new(),
+            peeking: HashSet::new(),
             request: None,
             before: None,
             refreshes: 0,
@@ -109,6 +131,40 @@ impl Machines {
         refresh
     }
 
+    /// List `host`'s sessions, unless a listing is already out.
+    fn peek(&mut self, host: Option<String>, clock: f64) {
+        let Some(phux) = self.phux.clone() else {
+            return;
+        };
+        if !self.peeking.insert(host.clone()) {
+            return;
+        }
+        self.glanced.insert(host.clone(), clock);
+        self.worker(move |send| {
+            let sessions = machines::sessions(&phux, host.as_deref());
+            send(Done::Glanced(host, sessions));
+        });
+    }
+
+    /// Relist expanded machines whose listing has gone stale, and wake for the next.
+    pub(super) fn tick_glances(&mut self, clock: f64, tx: &mut Tx) {
+        let mut next = None::<f64>;
+        for host in self.expanded.clone() {
+            let due = self
+                .glanced
+                .get(&host)
+                .map_or(0.0, |at| at + GLANCE_EVERY - clock);
+            if due <= 0.0 {
+                self.peek(host, clock);
+            }
+            let wait = if due <= 0.0 { GLANCE_EVERY } else { due };
+            next = Some(next.map_or(wait, |next| next.min(wait)));
+        }
+        if let Some(next) = next {
+            tx.wake_after(Duration::from_secs_f64(next.max(0.5)));
+        }
+    }
+
     fn add(&mut self, request: Add) {
         let Some(phux) = self.phux.clone() else {
             self.error = Some("Install the phux CLI to add a machine.".to_owned());
@@ -150,6 +206,22 @@ impl Machines {
 }
 
 impl Desk {
+    /// Open or close a machine in the sidebar. This window's own machine
+    /// folds its sessions away; another lists its sessions to glance at.
+    pub fn toggle_host(&mut self, host: Option<String>) {
+        if host == self.machines.current {
+            self.machines.folded = !self.machines.folded;
+        } else if !self.machines.expanded.remove(&host) {
+            self.machines.expanded.insert(host.clone());
+            self.machines.peek(host, self.clock);
+        }
+    }
+
+    /// Move this window to `machine` and open `session` there.
+    pub fn open_on(&mut self, machine: Option<String>, session: String) {
+        self.go(machine, Some(session));
+    }
+
     pub fn toggle_machines(&mut self) {
         self.machines.open = !self.machines.open;
         if self.machines.open {
@@ -220,6 +292,10 @@ impl Desk {
     /// Rebuilding drops the old connection and everything it knew. A machine
     /// that can't be dialed leaves the window where it is.
     pub fn switch_machine(&mut self, machine: Option<String>) {
+        self.go(machine, None);
+    }
+
+    fn go(&mut self, machine: Option<String>, session: Option<String>) {
         if machine == self.machines.current {
             self.close_machines();
             return;
@@ -235,7 +311,7 @@ impl Desk {
         }
         self.left_server();
         let mut launch = self.launch.clone();
-        launch.session = None;
+        launch.session = session;
         let mut next = Desk::open(&launch, machine.clone());
         self.carry_into(&mut next);
         next.machines.current = machine;
@@ -278,6 +354,10 @@ impl Desk {
                             self.machines.outcome = Some(Err(error));
                         }
                     }
+                }
+                Done::Glanced(host, sessions) => {
+                    self.machines.peeking.remove(&host);
+                    self.machines.glances.insert(host, sessions);
                 }
                 Done::Removed(name, result) => {
                     if let Err(error) = result {
@@ -343,6 +423,17 @@ mod tests {
 
     fn desk() -> Desk {
         Desk::open(&crate::launch::Resolved::offline("not launched"), None)
+    }
+
+    #[test]
+    fn this_machine_folds_and_the_others_open() {
+        let mut desk = desk();
+        desk.toggle_host(None);
+        assert!(desk.machines.folded);
+        desk.toggle_host(Some("mini".to_owned()));
+        assert!(desk.machines.expanded.contains(&Some("mini".to_owned())));
+        desk.toggle_host(Some("mini".to_owned()));
+        assert!(desk.machines.expanded.is_empty());
     }
 
     #[test]

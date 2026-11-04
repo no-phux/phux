@@ -401,6 +401,7 @@ impl Desk {
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
+        self.machines.tick_glances(clock, tx);
         let updated = self.pump_updates(tx)
             | self.pump_machines()
             | self.pump_link()

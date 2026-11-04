@@ -23,11 +23,11 @@ fn loss_tolerant_reference_advances_only_on_ack() {
     {
         let state = actor.consumer_state(client).expect("state");
         assert!(
-            state.pending_refs.contains_key(&seq),
+            state.sync.pending_refs.contains_key(&seq),
             "the emitted frame's grid snapshot is retained until acked",
         );
         assert_eq!(
-            state.last_acked_seq, 0,
+            state.sync.last_acked_seq, 0,
             "no ack yet: the acked reference has not advanced",
         );
     }
@@ -54,10 +54,10 @@ fn loss_tolerant_reference_advances_only_on_ack() {
     {
         let state = actor.consumer_state(client).expect("state");
         assert!(
-            state.pending_refs.is_empty(),
+            state.sync.pending_refs.is_empty(),
             "ack prunes the covered pending snapshot",
         );
-        assert_eq!(state.last_acked_seq, seq);
+        assert_eq!(state.sync.last_acked_seq, seq);
     }
     // Post-ack idle tick: nothing to send (acked == live).
     actor.tick_emit();
@@ -246,9 +246,9 @@ fn emit_once_default_keeps_no_pending_refs() {
     let frames = drain_outputs(&mut rx);
     assert_eq!(frames.len(), 1);
     let state = actor.consumer_state(client).expect("state");
-    assert!(!state.loss_tolerant, "default consumer is emit-once");
+    assert!(!state.sync.loss_tolerant, "default consumer is emit-once");
     assert!(
-        state.pending_refs.is_empty(),
+        state.sync.pending_refs.is_empty(),
         "emit-once path allocates no pending reference snapshots",
     );
 }

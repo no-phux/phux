@@ -215,3 +215,23 @@ fn a_running_command_shows_and_a_retracted_record_clears() {
     );
     assert_eq!(a.mark(&id(1)), Mark::None);
 }
+
+#[test]
+fn an_idle_agent_with_work_in_the_background_is_told_apart() {
+    let mut a = Activities::default();
+    let background = |running| Event::BackgroundWork {
+        terminal_id: id(1),
+        running,
+    };
+    a.apply(&record("idle"), &[]);
+    assert!(a.apply(&background(true), &[]));
+    assert_eq!(a.mark(&id(1)), Mark::Background);
+    assert!(!a.mark(&id(1)).needs_you() && !a.mark(&id(1)).live());
+    // Working outranks it; it shows again once the agent settles.
+    a.apply(&record("working"), &[]);
+    assert_eq!(a.mark(&id(1)), Mark::Working);
+    a.apply(&record("idle"), &[]);
+    assert_eq!(a.mark(&id(1)), Mark::Background);
+    a.apply(&background(false), &[]);
+    assert_eq!(a.mark(&id(1)), Mark::Idle);
+}

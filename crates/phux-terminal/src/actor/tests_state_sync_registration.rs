@@ -49,15 +49,15 @@ fn register_consumer_initial_state_matches_terminal() {
         .expect("register");
 
     let state = actor.consumer_state(client).expect("state present");
-    assert_eq!(state.last_acked_seq, 0, "no acks yet");
-    assert_eq!(state.next_seq, 1, "first emission gets seq=1");
+    assert_eq!(state.sync.last_acked_seq, 0, "no acks yet");
+    assert_eq!(state.sync.next_seq, 1, "first emission gets seq=1");
     assert_eq!(
         state.wire_terminal_id, 11,
         "wire id stored on the per-consumer entry"
     );
     // Seeded "hello" puts the cursor at (5, 0).
-    assert_eq!(state.reference.cursor_mode.cursor_x, Some(5));
-    assert_eq!(state.reference.cursor_mode.cursor_y, Some(0));
+    assert_eq!(state.sync.reference.cursor_mode.cursor_x, Some(5));
+    assert_eq!(state.sync.reference.cursor_mode.cursor_y, Some(0));
 }
 
 #[test]
@@ -88,9 +88,12 @@ fn aggregate_live_gate_preserves_first_delta_until_activation() {
         "live output must remain behind the aggregate ATTACH barrier"
     );
     let state = actor.consumer_state(client).expect("consumer state");
-    assert_eq!(state.next_seq, 1, "suppression must not advance sequence");
+    assert_eq!(
+        state.sync.next_seq, 1,
+        "suppression must not advance sequence"
+    );
     assert!(
-        state.needs_initial_emit,
+        state.sync.needs_initial_emit,
         "suppression must not consume the diff"
     );
 
@@ -119,8 +122,11 @@ fn register_raw_consumer_skips_priming() {
 
     let state = actor.consumer_state(client).expect("state present");
     // Not primed: no geometry, not the seeded cursor at (5, 0).
-    assert_eq!((state.reference.cols, state.reference.rows), (0, 0));
-    assert_eq!(state.reference.cursor_mode.cursor_x, None);
+    assert_eq!(
+        (state.sync.reference.cols, state.sync.reference.rows),
+        (0, 0)
+    );
+    assert_eq!(state.sync.reference.cursor_mode.cursor_x, None);
 }
 
 /// Attach then detach over the actor's channels on its `LocalSet`.
