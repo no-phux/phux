@@ -1546,12 +1546,13 @@ struct CertificatePaths {
 /// Resolve the certificate and key paths: by default the shared paths the
 /// server itself reads.
 fn resolve_certificate_paths(cert: Option<PathBuf>) -> CertificatePaths {
-    let operator_supplied = cert.is_some() || std::env::var_os("PHUX_WS_TLS_CERT").is_some();
+    let (env_cert, env_key) =
+        phux_server::transport::tls::operator_tls_paths(|var| std::env::var_os(var));
+    let operator_supplied = cert.is_some() || env_cert.is_some();
     let cert = cert
-        .or_else(|| std::env::var_os("PHUX_WS_TLS_CERT").map(PathBuf::from))
+        .or(env_cert)
         .unwrap_or_else(phux_server::transport::tls::default_cert_path);
-    let key = std::env::var_os("PHUX_WS_TLS_KEY")
-        .map_or_else(phux_server::transport::tls::default_key_path, PathBuf::from);
+    let key = env_key.unwrap_or_else(phux_server::transport::tls::default_key_path);
     CertificatePaths {
         operator_supplied,
         cert,

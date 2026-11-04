@@ -78,6 +78,7 @@ impl ServerEnv {
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Self {
         let path = |var: &str| lookup(var).map(PathBuf::from);
         let non_empty = |var: &str| lookup(var).filter(|value| !value.is_empty());
+        let (tls_cert, tls_key) = crate::transport::tls::operator_tls_paths(&lookup);
         Self {
             ws_addr: socket_addr(&lookup, "PHUX_WS_ADDR"),
             quic_addr: socket_addr(&lookup, "PHUX_QUIC_ADDR"),
@@ -86,8 +87,8 @@ impl ServerEnv {
             ws_allowed_origins: non_empty("PHUX_WS_ALLOWED_ORIGINS")
                 .map(|value| value.to_string_lossy().into_owned()),
             ws_tokens: path("PHUX_WS_TOKENS"),
-            tls_cert: path("PHUX_WS_TLS_CERT"),
-            tls_key: path("PHUX_WS_TLS_KEY"),
+            tls_cert,
+            tls_key,
             retired_workload_mtls: lookup("PHUX_WORKLOAD_MTLS").is_some(),
             workload_ca: path("PHUX_WORKLOAD_CA"),
             workload_ca_key: path("PHUX_WORKLOAD_CA_KEY"),
@@ -207,6 +208,30 @@ mod tests {
         assert_eq!(env.tokens_path(), PathBuf::from("/x/PHUX_WS_TOKENS"));
         assert!(env.retired_workload_mtls && env.no_auto_listen);
         assert_eq!(env.ssh_program(), OsString::from("/x/PHUX_SSH"));
+    }
+
+    /// A unit that bakes the default certificate paths has not chosen a
+    /// certificate; the server still provisions a missing pair (#1766).
+    #[test]
+    fn tls_paths_equal_to_the_defaults_are_not_an_operator_certificate() {
+        let env = ServerEnv::from_lookup(|var| match var {
+            "PHUX_WS_TLS_CERT" => Some(crate::transport::tls::default_cert_path().into()),
+            "PHUX_WS_TLS_KEY" => Some(crate::transport::tls::default_key_path().into()),
+            _ => None,
+        });
+        assert_eq!((env.tls_cert, env.tls_key), (None, None));
+
+        let env = ServerEnv::from_lookup(|var| match var {
+            "PHUX_WS_TLS_CERT" => Some("/etc/phux/leaf.pem".into()),
+            "PHUX_WS_TLS_KEY" => Some(crate::transport::tls::default_key_path().into()),
+            _ => None,
+        });
+        assert_eq!(env.tls_cert, Some(PathBuf::from("/etc/phux/leaf.pem")));
+        assert_eq!(
+            env.tls_key,
+            Some(crate::transport::tls::default_key_path()),
+            "one explicit path makes the whole pair the operator's"
+        );
     }
 
     #[test]
