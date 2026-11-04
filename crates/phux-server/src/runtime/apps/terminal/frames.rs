@@ -8,11 +8,14 @@ use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 use super::history::{HistoryPageRequest, serve_history_request};
 use super::terminal_streams::{direction_invalid, route_client_input};
 use crate::runtime::apps::ResourceFrame;
+use crate::runtime::apps::terminal::commands::{handle_frame_ack, handle_terminal_resize};
+use crate::runtime::apps::terminal::input_lane::InputStalled;
 use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow};
-use crate::runtime::connections::plumbing::dispatch_terminal_reply;
-use crate::runtime::input_lane::InputStalled;
-use crate::runtime::{handle_frame_ack, handle_terminal_resize};
+use crate::runtime::connections::hello::NegotiatedConnection;
+use crate::runtime::handle_terminal_reply;
+use crate::state::{ClientId, Outbound};
 use phux_terminal::TerminalInput;
+use tokio::sync::mpsc;
 
 /// Serve one `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` or `HISTORY_REQUEST`
 /// frame about a Terminal.
@@ -160,4 +163,25 @@ const fn is_use(input: &TerminalInput) -> bool {
         TerminalInput::Mouse(event) => matches!(event.action, MouseAction::Press),
         TerminalInput::Focus(event) => matches!(event, FocusEvent::Gained),
     }
+}
+
+/// Hand one `INPUT_TERMINAL_REPLY` to the pane if the connection advertised
+/// it; otherwise report the type without ending the connection.
+async fn dispatch_terminal_reply(
+    client_id: ClientId,
+    selection: NegotiatedConnection,
+    terminal_id: &WireResourceId,
+    bytes: bytes::Bytes,
+    out_tx: &mpsc::Sender<Outbound>,
+) {
+    if !selection.accepts_terminal_reply() {
+        crate::runtime::send_error(
+            out_tx,
+            ErrorCode::UnknownMessageType,
+            "INPUT_TERMINAL_REPLY was not advertised for this connection",
+        )
+        .await;
+        return;
+    }
+    handle_terminal_reply(client_id, terminal_id, &bytes);
 }

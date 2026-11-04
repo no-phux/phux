@@ -21,7 +21,9 @@ async fn receipt_refusal_precedes_operation_cache_admission() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let state = SharedState::new();
-            let lane_owner = crate::runtime::input_lane::spawn_input_lane(state.clone()).unwrap();
+            let lane_owner =
+                crate::runtime::apps::terminal::input_lane::spawn_input_lane(state.clone())
+                    .unwrap();
             let lane = lane_owner.handle();
             let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
             let token = CancellationToken::new();
@@ -105,7 +107,9 @@ async fn aborted_blocked_receipt_releases_completion_capacity() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let state = SharedState::new();
-            let lane_owner = crate::runtime::input_lane::spawn_input_lane(state.clone()).unwrap();
+            let lane_owner =
+                crate::runtime::apps::terminal::input_lane::spawn_input_lane(state.clone())
+                    .unwrap();
             let lane = lane_owner.handle();
             let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
             out_tx

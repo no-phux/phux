@@ -7,6 +7,9 @@ use std::os::fd::AsRawFd;
 use super::super::handoff::*;
 use super::super::validate::*;
 use super::super::*;
+pub(super) use crate::runtime::apps::agent_session::upgrade::{
+    AgentSessionSeal, AgentSessionUpgrade, carried_sessions, collect_agent_session_cuts,
+};
 use phux_agent_session::session::AgentSessionBootstrap;
 use tokio::sync::oneshot;
 
@@ -136,8 +139,7 @@ pub(super) fn unexecutable_plan(
         _listener_fd: dup_listener(listener.as_raw_fd()).unwrap(),
         _delegated_listeners: Vec::new(),
         _handoffs: HashMap::new(),
-        agent_seal: seal,
-        _native_seal: None,
+        streams: AgentSessionUpgrade::holding(seal),
     };
     (plan, listener, original)
 }
@@ -216,16 +218,12 @@ pub(super) fn old_image_with_agent_sessions(
 /// the seal it holds on the captured sessions.
 pub(super) async fn capture_blob(state: &SharedState) -> (StateBlob, AgentSessionSeal) {
     let context = capture_upgrade_context(state).unwrap();
-    assert_eq!(
-        context.agent_session_senders.len(),
-        1,
-        "only the live pane's session is cut"
-    );
+    let sessions = state.with(carried_sessions);
+    assert_eq!(sessions.len(), 1, "only the live pane's session is cut");
     let panes = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
         .await
         .unwrap();
-    let (agent_sessions, seal) =
-        collect_agent_session_cuts(context.agent_session_senders, Duration::from_secs(2)).await;
+    let (agent_sessions, seal) = collect_agent_session_cuts(sessions, Duration::from_secs(2)).await;
     let blob = reassemble_unchanged_tree(
         state,
         context.listener_fd,

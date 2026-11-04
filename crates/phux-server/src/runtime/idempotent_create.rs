@@ -18,10 +18,10 @@ use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use super::attach::{SpawnRequest, handle_spawn_terminal};
 use super::operation_dedupe::{
     Admission, CachedOutcome, Claim, OperationClaim, OperationDomain, OperationKey, join_nothing,
 };
+use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_spawn_terminal};
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 
 /// Handle `SPAWN_RESOURCE`, honoring its idempotency key (field 17).

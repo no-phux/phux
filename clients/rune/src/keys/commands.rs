@@ -299,6 +299,12 @@ pub const COMMANDS: &[Command] = &[
         [l(';')]
     ),
     row!(Shortcut::KeyboardShortcuts, "Keyboard Shortcuts", [], []),
+    row!(
+        Shortcut::EssentialShortcuts,
+        "Keyboard Shortcuts: Essentials",
+        [],
+        []
+    ),
     row!(Shortcut::CheckForUpdates, "Check for Updates", [], []),
     row!(Shortcut::InstallUpdate, "Update Now", [], []),
     row!(Shortcut::Machines, "Switch or Add Machine", [], []),
@@ -452,6 +458,26 @@ pub const COMMANDS: &[Command] = &[
 ];
 
 /// The table's row for `action`.
+/// The keys worth learning first, in teaching order: the ones that make a
+/// terminal, move between terminals, and find what needs you. Every one has
+/// a chord on each platform (tested), so the list never shows a bare title.
+pub const ESSENTIALS: &[Shortcut] = &[
+    Shortcut::NewTerminal,
+    Shortcut::NewSession,
+    Shortcut::Palette,
+    Shortcut::SwitchSession,
+    Shortcut::JumpToAttention,
+    Shortcut::Inbox,
+    Shortcut::SplitRight,
+    Shortcut::SplitDown,
+    Shortcut::NextTab,
+    Shortcut::PreviousTab,
+    Shortcut::CloseTerminal,
+    Shortcut::Find,
+    Shortcut::ToggleSidebar,
+    Shortcut::Settings,
+];
+
 pub fn command(action: Shortcut) -> Option<&'static Command> {
     COMMANDS.iter().find(|command| command.action == action)
 }
@@ -569,10 +595,27 @@ mod tests {
         CopyDiagnostics,
         ToggleFullScreen,
         KeyboardShortcuts,
+        EssentialShortcuts,
         SelectAll,
         PromptUp,
         PromptDown,
     );
+
+    /// An essential with no chord here would teach a key that does nothing.
+    #[test]
+    fn every_essential_has_a_chord_on_both_platforms() {
+        for action in ESSENTIALS {
+            let command = command(*action).unwrap_or_else(|| panic!("{action:?} has no row"));
+            assert!(!command.mac.is_empty(), "{action:?} has no macOS chord");
+            assert!(!command.linux.is_empty(), "{action:?} has no Linux chord");
+        }
+        for (i, action) in ESSENTIALS.iter().enumerate() {
+            assert!(
+                !ESSENTIALS[..i].contains(action),
+                "{action:?} is listed twice"
+            );
+        }
+    }
 
     #[test]
     fn every_shortcut_has_a_row() {

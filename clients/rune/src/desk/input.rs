@@ -267,6 +267,7 @@ impl Desk {
             }
             Shortcut::ToggleFullScreen => rune_mac::toggle_full_screen(),
             Shortcut::KeyboardShortcuts => self.show_shortcuts(),
+            Shortcut::EssentialShortcuts => self.show_essentials(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),

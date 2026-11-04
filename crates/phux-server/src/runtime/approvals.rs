@@ -212,8 +212,8 @@ async fn run_approved(ctx: &CommandContext, request_id: u32, command: Command) {
     // or the bulk worker: the shared route says the handler, as it would
     // for the same command unheld.
     debug_assert_eq!(
-        super::client::route(&command, ctx.input_lane.is_some()),
-        super::client::Route::Handler
+        crate::runtime::connections::route(&command, ctx.input_lane.is_some()),
+        crate::runtime::connections::Route::Handler
     );
     super::commands::handle_command(ctx, request_id, command).await;
 }

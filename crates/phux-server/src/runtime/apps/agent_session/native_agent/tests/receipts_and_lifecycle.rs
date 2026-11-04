@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test(flavor = "current_thread")]
 async fn queued_is_not_admission_and_eventual_receipts_are_truthful() {
     tokio::task::LocalSet::new()
@@ -230,19 +232,22 @@ async fn generic_hooks_cannot_create_another_source_or_self_input_under_native_g
                 s.native_agents_mut().bindings.remove(&fx.agent);
             });
             let (tx, mut rx) = mpsc::channel(4);
-            super::super::resource_commands::spawn_agent_session(
-                &fx.state,
-                fx.owner,
-                900,
-                &phux_protocol::wire::frame::SpawnResource::agent_session(
-                    fx.parent_wire.clone(),
-                    "legacy-reporting-hook",
-                ),
-                None,
-                &tx,
-                &fx.root,
-                fx.context(fx.owner).limits,
-                &fx.root,
+            let resource = phux_protocol::wire::frame::SpawnResource::agent_session(
+                fx.parent_wire.clone(),
+                "legacy-reporting-hook",
+            );
+            crate::runtime::apps::agent_session::spawn::spawn_agent_session(
+                crate::runtime::apps::ResourceSpawn {
+                    state: &fx.state,
+                    client_id: fx.owner,
+                    request_id: 900,
+                    resource: &resource,
+                    satellite: None,
+                    out_tx: &tx,
+                    root_token: &fx.root,
+                    limits: fx.context(fx.owner).limits,
+                    connection_token: &fx.root,
+                },
             )
             .await;
             assert!(matches!(

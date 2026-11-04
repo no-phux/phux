@@ -12,6 +12,7 @@ use rune::{Color, El, col, el, memo, row, text};
 use super::{CAPTION, Ink, LABEL, LABEL_STRONG, NAME, SIDEBAR_W, icons, pressable};
 use crate::activity::Mark;
 use crate::desk::Desk;
+use crate::keys::{self, Shortcut};
 use crate::machines::{Glance, LOCAL};
 use crate::palette::pane_label;
 
@@ -412,8 +413,19 @@ fn other_machines(desk: &Desk, ink: &Ink) -> El {
     list
 }
 
-/// A word to press at the foot of the sidebar.
-fn foot(label: &'static str, key: &'static str, ink: &Ink, press: fn(&mut Desk)) -> El {
+/// A word to press at the foot of the sidebar. Under the pointer it shows
+/// the chord that does the same, so the keys get learned where the mouse
+/// already is.
+fn foot(
+    desk: &Desk,
+    label: &'static str,
+    key: &'static str,
+    action: Shortcut,
+    ink: &Ink,
+    press: fn(&mut Desk),
+) -> El {
+    let hovered = desk.foot_hover == Some(key);
+    let chord = keys::command(action).map(keys::Command::hint);
     pressable(key, ink)
         .h(26.0)
         .px(6.0)
@@ -421,8 +433,19 @@ fn foot(label: &'static str, key: &'static str, ink: &Ink, press: fn(&mut Desk))
         .radius(6.0)
         .items_center()
         .on_press(press)
+        .on_hover_change(move |d: &mut Desk, inside, _| {
+            if inside {
+                d.foot_hover = Some(key);
+            } else if d.foot_hover == Some(key) {
+                d.foot_hover = None;
+            }
+        })
         .child(rune::icon(&icons::PLUS, 12.0).color(ink.dim))
         .child(text(label).font(LABEL).color(ink.dim))
+        .child(match chord.filter(|_| hovered) {
+            Some(chord) => text(chord).font(CAPTION).color(ink.dim),
+            None => text(""),
+        })
 }
 
 pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
@@ -476,7 +499,21 @@ pub fn view(desk: &Desk, ink: &Ink, inset: f32) -> El {
                 .px(8.0)
                 .py(6.0)
                 .gap(2.0)
-                .child(foot("Terminal", "new-terminal", ink, Desk::new_terminal))
-                .child(foot("Session", "new-session", ink, Desk::new_session)),
+                .child(foot(
+                    desk,
+                    "Terminal",
+                    "new-terminal",
+                    Shortcut::NewTerminal,
+                    ink,
+                    Desk::new_terminal,
+                ))
+                .child(foot(
+                    desk,
+                    "Session",
+                    "new-session",
+                    Shortcut::NewSession,
+                    ink,
+                    Desk::new_session,
+                )),
         )
 }

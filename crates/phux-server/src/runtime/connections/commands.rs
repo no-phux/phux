@@ -3,7 +3,7 @@ use super::hello::{
     before_hello_close, decode_client_frame, is_pre_hello_type, reject_frame_before_hello,
 };
 use super::plumbing::ConnectionClose;
-use crate::runtime::input_lane::{InputCredits, InputLaneHandle, InputStalled};
+use crate::runtime::apps::terminal::input_lane::{InputCredits, InputLaneHandle, InputStalled};
 use crate::state::{ClientId, Outbound, SharedState};
 use crate::transport::FrameOrigin;
 use bytes::BytesMut;
@@ -21,7 +21,7 @@ fn spawn_input_receipt(
     slot: tokio::sync::OwnedSemaphorePermit,
     out_tx: mpsc::Sender<Outbound>,
     request_id: u32,
-    receipt: crate::runtime::input_lane::InputReceipt,
+    receipt: crate::runtime::apps::terminal::input_lane::InputReceipt,
 ) {
     receipts.spawn_local(async move {
         let _slot = slot;

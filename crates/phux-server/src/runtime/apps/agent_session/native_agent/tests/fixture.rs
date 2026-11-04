@@ -1,12 +1,14 @@
-struct Fixture {
-    state: SharedState,
-    root: CancellationToken,
-    owner: ClientId,
-    host: ClientId,
-    parent: phux_core::ids::ResourceId,
-    agent: ResourceId,
-    parent_wire: ResourceId,
-    dir: tempfile::TempDir,
+use super::*;
+
+pub(super) struct Fixture {
+    pub(super) state: SharedState,
+    pub(super) root: CancellationToken,
+    pub(super) owner: ClientId,
+    pub(super) host: ClientId,
+    pub(super) parent: phux_core::ids::ResourceId,
+    pub(super) agent: ResourceId,
+    pub(super) parent_wire: ResourceId,
+    pub(super) dir: tempfile::TempDir,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -14,7 +16,7 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let state = SharedState::new();
         let root = CancellationToken::new();
         let dir = tempfile::tempdir().unwrap();
@@ -40,7 +42,7 @@ impl Fixture {
         };
         let (owner, session, parent, parent_wire) =
             Self::create_guardian(&state, &root, dir.path(), &peer, &recipe);
-        let delegation = super::super::delegation::delegate_agent(
+        let delegation = crate::runtime::delegation::delegate_agent(
             &state,
             owner,
             session,
@@ -100,7 +102,7 @@ impl Fixture {
             dir,
         }
     }
-    fn create_guardian(
+    pub(super) fn create_guardian(
         state: &SharedState,
         root: &CancellationToken,
         dir: &std::path::Path,
@@ -137,7 +139,11 @@ impl Fixture {
                 .unwrap();
             (owner, session, parent)
         });
-        let terminal = crate::runtime::apps::terminal::test_support::terminal_under(80, 24, root.child_token());
+        let terminal = crate::runtime::apps::terminal::test_support::terminal_under(
+            80,
+            24,
+            root.child_token(),
+        );
         let parent_wire = state.with_mut(|s| {
             let wire = s.spawn_resource_actor(
                 parent,
@@ -159,7 +165,7 @@ impl Fixture {
         (owner, session, parent, parent_wire)
     }
 
-    fn create_agent(
+    pub(super) fn create_agent(
         state: &SharedState,
         root: &CancellationToken,
         owner: ClientId,
@@ -221,7 +227,7 @@ impl Fixture {
         })
     }
 
-    fn asked_inventory(&self) -> (Option<String>, bool, Option<Vec<u8>>) {
+    pub(super) fn asked_inventory(&self) -> (Option<String>, bool, Option<Vec<u8>>) {
         self.state.with(|s| {
             (
                 s.current_agent_asked(self.parent)
@@ -235,7 +241,7 @@ impl Fixture {
         })
     }
 
-    fn completion(
+    pub(super) fn completion(
         &self,
         generation: u64,
         operation_id: u64,
@@ -253,13 +259,13 @@ impl Fixture {
             },
         }
     }
-    fn context(&self, client: ClientId) -> CommandContext {
+    pub(super) fn context(&self, client: ClientId) -> CommandContext {
         let (tx, _rx) = mpsc::channel(32);
         let mut ctx = CommandContext::for_test(&self.state, client, &tx);
         ctx.root_token = self.root.clone();
         ctx
     }
-    async fn request(&self, client: ClientId, request: NativeRequest) -> CommandResult {
+    pub(super) async fn request(&self, client: ClientId, request: NativeRequest) -> CommandResult {
         let command = Command::NativeAgent {
             request: NativeRequestPayload::new(request.clone()).unwrap(),
         };
@@ -270,7 +276,7 @@ impl Fixture {
         ));
         handle(&self.context(client), request).await
     }
-    async fn register(&self) -> u64 {
+    pub(super) async fn register(&self) -> u64 {
         decode::<serde_json::Value>(
             self.request(
                 self.host,
@@ -285,7 +291,7 @@ impl Fixture {
             .as_u64()
             .unwrap()
     }
-    fn view() -> NativeView {
+    pub(super) fn view() -> NativeView {
         NativeView {
             activation: "activation-A".into(),
             backend: "acp".into(),
@@ -301,7 +307,12 @@ impl Fixture {
             questions: vec![],
         }
     }
-    async fn publish(&self, generation: u64, id: u64, update: NativeUpdate) -> CommandResult {
+    pub(super) async fn publish(
+        &self,
+        generation: u64,
+        id: u64,
+        update: NativeUpdate,
+    ) -> CommandResult {
         self.request(
             self.host,
             NativeRequest::Publish {
@@ -315,7 +326,7 @@ impl Fixture {
         )
         .await
     }
-    async fn ready(&self) -> u64 {
+    pub(super) async fn ready(&self) -> u64 {
         let generation = self.register().await;
         decode::<NativePublicationReceipt>(
             self.publish(generation, 1, NativeUpdate::View { view: Self::view() })
@@ -323,7 +334,7 @@ impl Fixture {
         );
         generation
     }
-    async fn command(
+    pub(super) async fn command(
         &self,
         client: ClientId,
         id: u64,
@@ -344,7 +355,7 @@ impl Fixture {
             .await,
         )
     }
-    async fn receive(&self, generation: u64) -> NativeCommand {
+    pub(super) async fn receive(&self, generation: u64) -> NativeCommand {
         decode(
             self.request(
                 self.host,
@@ -358,7 +369,7 @@ impl Fixture {
             .await,
         )
     }
-    async fn cut(&self) -> phux_agent_session::session::AgentSessionBootstrap {
+    pub(super) async fn cut(&self) -> phux_agent_session::session::AgentSessionBootstrap {
         let bootstrap = self.state.with(|s| {
             s.resource_from_wire(&self.agent)
                 .and_then(|core| s.resource_handle(core))
@@ -380,13 +391,13 @@ impl Fixture {
         rx.await.unwrap()
     }
 }
-fn decode<T: serde::de::DeserializeOwned>(result: CommandResult) -> T {
+pub(super) fn decode<T: serde::de::DeserializeOwned>(result: CommandResult) -> T {
     let CommandResult::OkWith(CommandValue::Json(text)) = result else {
         panic!("expected actual broker JSON receipt: {result:?}");
     };
     serde_json::from_str(&text).unwrap()
 }
-fn question(kind: &str) -> NativeQuestion {
+pub(super) fn question(kind: &str) -> NativeQuestion {
     NativeQuestion {
         id: "question-A".into(),
         kind: kind.into(),
@@ -401,6 +412,6 @@ fn question(kind: &str) -> NativeQuestion {
         fields: serde_json::json!({}),
     }
 }
-fn prompt(text: &str) -> NativeIntent {
+pub(super) fn prompt(text: &str) -> NativeIntent {
     NativeIntent::Prompt { text: text.into() }
 }

@@ -31,7 +31,8 @@ impl SpawnPublication<'_> {
     /// generation for it.
     fn reap(&self) {
         self.state.with_mut(|s| {
-            let _ = crate::runtime::client::reap_pane_journaling_close(s, self.core_terminal_id);
+            let _ =
+                crate::runtime::connections::reap_pane_journaling_close(s, self.core_terminal_id);
             crate::runtime::idempotent_create::unbind_spawned(
                 s,
                 self.idempotency_key,

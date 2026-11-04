@@ -3,7 +3,7 @@
 use super::super::handoff::*;
 use super::super::*;
 use super::support::*;
-use crate::state::request_agent_session_cut;
+use crate::runtime::apps::agent_session::upgrade::request_agent_session_cut;
 use phux_agent_session::session::AgentSessionResource as _;
 
 #[tokio::test(flavor = "current_thread")]
@@ -146,7 +146,11 @@ async fn upgrade_carries_agent_sessions_with_their_id_and_log_tail() {
             let resumed = SharedState::new();
             let watchers = resumed
                 .with_mut(|s| {
-                    s.rebuild_from_blob(&blob, crate::runtime::apps::terminal::upgrade::unwired)
+                    s.rebuild_from_blob(
+                        &blob,
+                        crate::runtime::apps::terminal::upgrade::unwired,
+                        crate::runtime::apps::rebuild_session,
+                    )
                 })
                 .expect("rebuild")
                 .exit_watchers;

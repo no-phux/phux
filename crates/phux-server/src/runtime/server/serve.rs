@@ -1,6 +1,7 @@
 //! Assemble startup in order, drive the listeners, and unwind graceful shutdown.
 
 use super::{ListeningHook, ServerRuntime};
+use crate::runtime::apps::terminal::{input_lane, upload};
 use crate::runtime::config::ServerError;
 #[cfg(feature = "webtransport")]
 use crate::runtime::connections::accept_loop;
@@ -21,7 +22,7 @@ use crate::runtime::startup::{
     mirror_config_into_state, open_org_store, read_resume_blob, resume_session_tree,
     seed_initial_session,
 };
-use crate::runtime::{delegation, input_lane, native_agent, revocation, upload};
+use crate::runtime::{delegation, revocation};
 use crate::state::SharedState;
 use phux_protocol::wire::RemoteListenerTransport;
 use std::future::Future;
@@ -216,7 +217,7 @@ impl ServerRuntime {
                 open_org_store(&state, &org_store)?;
                 if let Some(blob) = &resume_blob {
                     resume_session_tree(&state, blob, &root_token)?;
-                    native_agent::retry_pending_closures(&state);
+                    crate::runtime::apps::resumed(&state);
                     delegation::resume_delegations(
                         &state,
                         &blob.delegations,

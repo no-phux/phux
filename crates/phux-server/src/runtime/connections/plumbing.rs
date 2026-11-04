@@ -1,12 +1,10 @@
 use super::dispatch::ConnectionEnding;
-use super::hello::NegotiatedConnection;
 use super::lifecycle::{
     WRITER_DRAIN_TIMEOUT, close_client_writer, detach_and_release_consumer_state,
 };
 use super::writer::{RevocationWatch, writer_task};
 use crate::policy::Goodbye;
 use crate::runtime::apps::terminal::terminal_streams::abort_output_pumps;
-use crate::runtime::handle_terminal_reply;
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState};
 use crate::transport::FrameWriter;
 use crate::transport::quic::QuicWriter;
@@ -89,27 +87,6 @@ pub(super) fn classify_attach_id(
     } else {
         AttachIdVerdict::Reused
     }
-}
-
-/// Hand one `INPUT_TERMINAL_REPLY` to the pane if the connection advertised
-/// it; otherwise report the type without ending the connection.
-pub(in crate::runtime) async fn dispatch_terminal_reply(
-    client_id: ClientId,
-    selection: NegotiatedConnection,
-    terminal_id: &WireResourceId,
-    bytes: bytes::Bytes,
-    out_tx: &mpsc::Sender<Outbound>,
-) {
-    if !selection.accepts_terminal_reply() {
-        crate::runtime::send_error(
-            out_tx,
-            ErrorCode::UnknownMessageType,
-            "INPUT_TERMINAL_REPLY was not advertised for this connection",
-        )
-        .await;
-        return;
-    }
-    handle_terminal_reply(client_id, terminal_id, &bytes);
 }
 
 /// Why one connection must end, and what the peer is owed on the way out
