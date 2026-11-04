@@ -124,22 +124,23 @@ pub(crate) async fn handle_spawn_terminal(
                 .resolve(resource.as_ref().and_then(|r| r.retain_secs))
         }),
     };
-    match crate::id_bridge::core_kind(kind).and_then(crate::runtime::apps::app_for) {
-        Some(app) if app.kind() == crate::resource::ResourceKind::Terminal => {}
-        Some(app) => {
+    match crate::id_bridge::core_kind(kind) {
+        Some(crate::resource::ResourceKind::Terminal) => {}
+        Some(other) => {
             let resource = resource.unwrap_or_default();
-            app.spawn(crate::runtime::apps::ResourceSpawn {
-                state,
-                client_id,
-                request_id,
-                resource: &resource,
-                satellite: satellite.as_ref(),
-                out_tx,
-                root_token,
-                limits: bootstrap_limits,
-                connection_token,
-            })
-            .await;
+            crate::runtime::apps::app_for(other)
+                .spawn(crate::runtime::apps::ResourceSpawn {
+                    state,
+                    client_id,
+                    request_id,
+                    resource: &resource,
+                    satellite: satellite.as_ref(),
+                    out_tx,
+                    root_token,
+                    limits: bootstrap_limits,
+                    connection_token,
+                })
+                .await;
             return;
         }
         None => {

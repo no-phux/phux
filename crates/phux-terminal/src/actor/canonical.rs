@@ -71,35 +71,32 @@ pub(super) struct NativePublicationGeneration {
     pub(super) waiting: HashSet<NativeCursorKey>,
 }
 
-#[cfg(test)]
-thread_local! {
-    pub(super) static FAIL_NEXT_NATIVE_HOST_ALLOC: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-    pub(super) static PANIC_NEXT_NATIVE_HOST_ALLOC: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
+/// Takes host bytes for a native capture. A test injects one that fails.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-pub(super) fn reserve_native_bytes(
+pub(super) type NativeAlloc =
+    Box<dyn Fn(usize) -> Result<Vec<u8>, crate::native_state::NativeStateError>>;
+
+/// A byte buffer of `capacity`, refusing rather than aborting when the host
+/// is out of memory.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+pub(super) fn try_native_bytes(
     capacity: usize,
 ) -> Result<Vec<u8>, crate::native_state::NativeStateError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        #[cfg(test)]
-        assert!(
-            !PANIC_NEXT_NATIVE_HOST_ALLOC.with(|panic| panic.replace(false)),
-            "injected native host allocation panic"
-        );
-        #[cfg(test)]
-        if FAIL_NEXT_NATIVE_HOST_ALLOC.with(|fail| fail.replace(false)) {
-            return Err(crate::native_state::NativeStateError::OutOfMemory);
-        }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(capacity)
-            .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
-        Ok(bytes)
-    }))
-    .unwrap_or(Err(crate::native_state::NativeStateError::OutOfMemory))
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| crate::native_state::NativeStateError::OutOfMemory)?;
+    Ok(bytes)
+}
+
+/// Run `alloc`, reporting a panic in it as out of memory.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+pub(super) fn reserve_native_bytes(
+    alloc: &NativeAlloc,
+    capacity: usize,
+) -> Result<Vec<u8>, crate::native_state::NativeStateError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| alloc(capacity)))
+        .unwrap_or(Err(crate::native_state::NativeStateError::OutOfMemory))
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

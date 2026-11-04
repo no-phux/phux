@@ -181,9 +181,6 @@ pub const fn wire_kind(
         ResourceKind::Terminal => phux_protocol::ids::ResourceKind::Terminal,
         ResourceKind::AgentSession => phux_protocol::ids::ResourceKind::AgentSession,
         ResourceKind::AccessibilityTree => phux_protocol::ids::ResourceKind::AccessibilityTree,
-        // A domain kind with no tag yet is reported opaque (255 is
-        // unallocated), never mistaken for a Terminal.
-        _ => phux_protocol::ids::ResourceKind::Unknown { tag: u8::MAX },
     }
 }
 
