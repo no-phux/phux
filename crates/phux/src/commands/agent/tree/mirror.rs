@@ -10,6 +10,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// How the mirror was asked to run.
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(dead_code, reason = "only the macOS producer reads the arguments")
+)]
 pub(super) struct MirrorArgs<'a> {
     /// The application, by process name (`pgrep -x`), unless `pid` is given.
     pub(super) app: &'a str,
@@ -27,9 +31,14 @@ pub(super) struct MirrorArgs<'a> {
 
 /// The ceiling on nodes one document carries; a larger tree is cut off at
 /// the deepest levels first, by the walk's budget.
+#[cfg(target_os = "macos")]
 const MAX_NODES: usize = 20_000;
 
 #[cfg(not(target_os = "macos"))]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "one signature for both platforms; the macOS producer consumes the arguments"
+)]
 pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
     use crate::commands::json_err;
     use crate::exit_codes::EXIT_USAGE;
