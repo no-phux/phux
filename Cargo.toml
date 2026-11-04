@@ -162,6 +162,19 @@ codegen-units = 256
 opt-level = 1
 debug = "line-tables-only"
 
+# Test builds (`cargo test`, nextest, CI's test archive) leave workspace
+# crates unoptimized and keep dependencies at the dev level. Every change
+# recompiles its dependent workspace crates, and -O1 made that the bulk of
+# the build: a phux-protocol edit rebuilt the test pool in 118 s at -O1
+# against 64 s here, while the same 7184 tests ran in 248 s and 251 s.
+# Dependencies stay optimized, so their (shared, cached) artifacts and the
+# runtime cost of tokio, serde, rustls and friends do not change.
+[profile.test]
+opt-level = 0
+
+[profile.test.package."*"]
+opt-level = 1
+
 [profile.bench]
 inherits = "release"
 debug = "line-tables-only"
