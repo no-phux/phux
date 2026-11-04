@@ -6,11 +6,12 @@ use super::hello::{HelloRequest, negotiate_hello};
 use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
+use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_attach, handle_move_terminal};
+use crate::runtime::apps::terminal::commands::handle_viewport_resize;
 use crate::runtime::apps::terminal::terminal_streams::{
     AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,
 };
 use crate::runtime::apps::{ResourceFrame, app_serving};
-use crate::runtime::{SpawnRequest, handle_attach, handle_move_terminal, handle_viewport_resize};
 use crate::transport::FrameReader;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind};

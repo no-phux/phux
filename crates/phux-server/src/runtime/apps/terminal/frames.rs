@@ -8,10 +8,10 @@ use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 use super::history::{HistoryPageRequest, serve_history_request};
 use super::terminal_streams::{direction_invalid, route_client_input};
 use crate::runtime::apps::ResourceFrame;
+use crate::runtime::apps::terminal::commands::{handle_frame_ack, handle_terminal_resize};
+use crate::runtime::apps::terminal::input_lane::InputStalled;
 use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow};
 use crate::runtime::connections::plumbing::dispatch_terminal_reply;
-use crate::runtime::input_lane::InputStalled;
-use crate::runtime::{handle_frame_ack, handle_terminal_resize};
 use phux_terminal::TerminalInput;
 
 /// Serve one `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` or `HISTORY_REQUEST`

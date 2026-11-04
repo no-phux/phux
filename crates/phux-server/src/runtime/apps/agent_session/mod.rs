@@ -2,13 +2,25 @@
 
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
+use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
-use super::{ResourceApp, ResourceFrame, StreamBootstrap};
+use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
 use crate::resource::{ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
+use crate::state::SharedState;
+
+mod append;
+mod attach;
+mod native_agent;
+pub(super) mod spawn;
+pub(crate) mod upgrade;
+
+/// Payload budget for one `BOOTSTRAP_CHUNK` when the connection negotiated
+/// none. Records are at most 16 KiB, so this fits several per chunk.
+const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Serves [`ResourceKind::AgentSession`].
 #[derive(Debug)]
@@ -81,10 +93,10 @@ impl ResourceApp for AgentSessionApp {
         async move {
             match command {
                 Command::NativeAgent { request } => {
-                    crate::runtime::native_agent::handle(ctx, request.into_request()).await
+                    native_agent::handle(ctx, request.into_request()).await
                 }
                 Command::AppendResourceOutput { terminal_id, bytes } => {
-                    crate::runtime::resource_commands::handle_append_resource_output(
+                    append::handle_append_resource_output(
                         &ctx.state,
                         ctx.client_id,
                         &terminal_id,
@@ -106,7 +118,7 @@ impl ResourceApp for AgentSessionApp {
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         async move {
-            match crate::runtime::resource_commands::attach_agent_session(
+            match attach::attach_agent_session(
                 stream.state,
                 stream.client_id,
                 stream.wire,
@@ -129,5 +141,31 @@ impl ResourceApp for AgentSessionApp {
             }
         }
         .boxed_local()
+    }
+
+    fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
+        spawn::spawn_agent_session(spawn).boxed_local()
+    }
+
+    fn resumed(&self, state: &SharedState) {
+        native_agent::retry_pending_closures(state);
+    }
+
+    fn resource_exited<'a>(
+        &'a self,
+        state: &'a SharedState,
+        resource: phux_core::ids::ResourceId,
+    ) -> LocalBoxFuture<'a, ()> {
+        native_agent::source_exited(state, resource).boxed_local()
+    }
+
+    fn claim_relaunch(
+        &self,
+        ctx: &CommandContext,
+        operation: OperationId,
+        resource: &ResourceKey,
+        expected: Revision,
+    ) -> Option<CommandResult> {
+        native_agent::claim_relaunch(ctx, operation, resource, expected)
     }
 }

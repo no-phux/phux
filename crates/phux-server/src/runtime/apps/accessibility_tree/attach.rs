@@ -48,7 +48,7 @@ pub(crate) async fn attach_tree(
             message: "ATTACH_RESOURCE bootstrap id space exhausted".to_owned(),
         };
     };
-    let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
+    let stream_id = crate::runtime::stream_id_from(client_id.0);
     // Subscribe before the cut so nothing published between them is lost.
     let live = handle.output.subscribe();
     crate::runtime::pump::stop_output(state, client_id, core).await;

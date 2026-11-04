@@ -28,8 +28,8 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::input_lane::InputLaneHandle;
 use crate::auth::{ConnectionIdentity, ListenerToken};
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 use crate::state::{ClientId, SharedState};
 use crate::transport::quic::{QuicAdmission, QuicBindError, QuicListener};
 use crate::transport::{AcceptErrorDisposition, FrameOrigin, FrameReader, Incoming};
@@ -317,8 +317,13 @@ fn spawn_listener(
     };
     tokio::task::spawn_local(async move {
         let accept = async {
-            let result =
-                super::client::accept_loop(&tracked, state, token.clone(), input_lane).await;
+            let result = crate::runtime::connections::accept_loop(
+                &tracked,
+                state,
+                token.clone(),
+                input_lane,
+            )
+            .await;
             token.cancel();
             result
         };

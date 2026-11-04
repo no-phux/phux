@@ -24,6 +24,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
     let prompt = match mode {
         Mode::All => "Jump to a terminal, session, or action…",
         Mode::Shortcuts => "Filter keyboard shortcuts…",
+        Mode::Essentials => "The keys worth learning first; pick one to try it…",
         Mode::Sessions => "Switch session, or name a new one…",
         Mode::Themes => "Preview a theme…",
         Mode::Paths => "Find a file or folder…",
