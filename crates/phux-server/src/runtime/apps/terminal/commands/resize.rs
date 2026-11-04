@@ -150,7 +150,7 @@ pub(crate) fn prepare_attach(
             .ok_or_else(|| crate::state::AttachError::UnknownSession(format!("{session:?}")))?;
         let session_name = session_name.as_str();
         let pane_count = s.legacy_panes_of(session).len();
-        if pane_count > crate::runtime::attach::MAX_AGGREGATE_BOOTSTRAP_PANES {
+        if pane_count > crate::runtime::apps::terminal::attach::MAX_AGGREGATE_BOOTSTRAP_PANES {
             return Err(crate::state::AttachError::ResourceLimit);
         }
         let sid = s.attach(

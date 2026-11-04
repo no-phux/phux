@@ -1,21 +1,20 @@
-//! Spawning an `AgentSession` under its Terminal parent, locally or relayed
-//! to a satellite.
+//! Spawning an `AgentSession` under its agent-hosting parent, locally or
+//! relayed to a satellite.
 
 #![allow(
     clippy::redundant_pub_crate,
-    reason = "private submodule re-exported by resource_commands at crate visibility"
+    reason = "private module of the agent session app"
 )]
 
 use phux_agent_session::session::AgentSessionResource as _;
-use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::ids::ResourceKind;
 use phux_protocol::wire::frame::{AgentEvent, FrameKind, SpawnError, SpawnResource};
-use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use super::attach_agent_session;
+use super::attach::attach_agent_session;
 use crate::mailbox::Outbound;
-use crate::runtime::attach::refuse_spawn;
+use crate::runtime::apps::ResourceSpawn;
+use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn, spawned_result};
 use crate::state::{ClientId, SharedState};
 use phux_agent_session::session::AgentSessionActor;
 /// Validate parent ownership and fitness in the same state borrow that
@@ -75,18 +74,19 @@ async fn bind_agent_stream(
 /// `AgentSession` parent is `ParentKindMismatch`, ADR-0104 §5); a
 /// satellite-addressed spawn is relayed with the parent reduced to the
 /// satellite's `Local` space (ADR-0104 §6).
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-pub(crate) async fn spawn_agent_session(
-    state: &SharedState,
-    client_id: ClientId,
-    request_id: u32,
-    resource: &SpawnResource,
-    satellite: Option<&phux_protocol::ids::SatelliteHost>,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    root_token: &CancellationToken,
-    bootstrap_limits: BootstrapLimits,
-    connection_token: &CancellationToken,
-) {
+#[allow(clippy::too_many_lines)]
+pub(super) async fn spawn_agent_session(spawn: ResourceSpawn<'_>) {
+    let ResourceSpawn {
+        state,
+        client_id,
+        request_id,
+        resource,
+        satellite,
+        out_tx,
+        root_token,
+        limits: bootstrap_limits,
+        connection_token,
+    } = spawn;
     let Some(provider) = resource.provider.as_deref().filter(|p| !p.is_empty()) else {
         refuse_spawn(
             out_tx,
@@ -177,7 +177,7 @@ pub(crate) async fn spawn_agent_session(
         }
     };
 
-    crate::runtime::client::spawn_resource_exit_watcher(
+    crate::runtime::connections::spawn_resource_exit_watcher(
         state.clone(),
         core_session,
         Some(bundle.exit_notify),
@@ -194,7 +194,7 @@ pub(crate) async fn spawn_agent_session(
     let _ = out_tx
         .send(Outbound::Frame(FrameKind::ResourceSpawned {
             request_id,
-            result: crate::runtime::attach::spawned_result(wire_session.clone(), instance),
+            result: spawned_result(wire_session.clone(), instance),
         }))
         .await;
     // The subscription alone forwards nothing: run the (empty) bootstrap and
@@ -269,13 +269,5 @@ async fn relay_agent_session_spawn(
         initial_size: None,
         resource: Some(Box::new(forwarded)),
     };
-    crate::runtime::attach::dispatch_satellite_spawn(
-        state,
-        client_id,
-        out_tx,
-        request_id,
-        host,
-        Ok(spawn),
-    )
-    .await;
+    dispatch_satellite_spawn(state, client_id, out_tx, request_id, host, Ok(spawn)).await;
 }

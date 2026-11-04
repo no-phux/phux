@@ -12,7 +12,6 @@
 //!
 //! [`Registry::children`]: phux_core::registry::Registry::children
 
-use phux_agent_session::session::AgentSessionResource as _;
 use phux_core::ids::ResourceId;
 use phux_core::resource::ResourceKind;
 use phux_protocol::ids::ResourceId as WireResourceId;
@@ -98,10 +97,7 @@ impl ServerState {
                     .is_some_and(|r| r.kind == ResourceKind::AgentSession)
                     && self
                         .resource_handle(child)
-                        .and_then(|handle| handle.agent_session().ok())
-                        .is_some_and(|session| {
-                            !session.ended.load(std::sync::atomic::Ordering::Relaxed)
-                        })
+                        .is_some_and(|handle| handle.ops().is_live_stream())
             })
     }
 

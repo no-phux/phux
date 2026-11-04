@@ -18,13 +18,13 @@ pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
         (notice.text.clone(), notice.kind)
     });
     let color = match kind {
-        NoticeKind::Info => p.text,
+        NoticeKind::Info | NoticeKind::Tip => p.text,
         NoticeKind::Error => p.danger,
     };
     text(line)
         // A screen reader reads a notice when it comes: an error at once.
         .role(match kind {
-            NoticeKind::Info => "status",
+            NoticeKind::Info | NoticeKind::Tip => "status",
             NoticeKind::Error => "alert",
         })
         .font(CAPTION)

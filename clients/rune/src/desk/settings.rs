@@ -246,6 +246,43 @@ mod tests {
         assert_eq!(runtime.state.font_size, want);
     }
 
+    /// A tip's offer is a named button; pressing it runs the action and
+    /// takes the toast down.
+    #[test]
+    fn an_offer_is_a_button_that_runs_its_action() {
+        let mut desk = Desk::new(&Resolved::offline("a11y"));
+        desk.offer("New here?", "Show me", Desk::show_essentials);
+        let mut runtime = runtime(desk);
+        let tree = runtime.accessibility_json();
+        assert_eq!(find_by(&tree, "role", "status")["name"], "New here?");
+        assert_eq!(find(&tree, "toast-offer")["name"], "Show me");
+        assert!(runtime.accessibility_action("toast-offer", Action::Click, None));
+        runtime.frame(1.0 / 60.0);
+        assert!(runtime.state.palette_open);
+        assert_eq!(runtime.state.palette_mode, crate::palette::Mode::Essentials);
+        assert!(runtime.state.notice.is_none(), "the offer goes once taken");
+    }
+
+    /// The tour is offered once per install, not once per window or connection.
+    #[test]
+    fn the_tour_is_offered_once() {
+        let mut desk = Desk::new(&Resolved::offline("tour"));
+        desk.prefs = Prefs::memory();
+        desk.offer_tour();
+        let first = desk
+            .notice
+            .clone()
+            .expect("a first connection offers the tour");
+        assert_eq!(first.kind, NoticeKind::Tip);
+        assert!(first.action.is_some());
+        desk.notice = None;
+        desk.offer_tour();
+        assert!(
+            desk.notice.is_none(),
+            "an offer already made is not repeated"
+        );
+    }
+
     #[test]
     fn a_notice_is_announced_and_an_error_at_once() {
         for (kind, role) in [(NoticeKind::Info, "status"), (NoticeKind::Error, "alert")] {
@@ -253,6 +290,7 @@ mod tests {
             desk.notice = Some(Notice {
                 kind,
                 text: "Copied".into(),
+                action: None,
                 expires: f64::MAX,
             });
             let tree = runtime(desk).accessibility_json();

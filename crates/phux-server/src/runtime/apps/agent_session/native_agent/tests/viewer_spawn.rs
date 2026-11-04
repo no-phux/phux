@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test(flavor = "current_thread")]
 async fn viewer_native_spawn_cannot_acquire_input_authority() {
     tokio::task::LocalSet::new()

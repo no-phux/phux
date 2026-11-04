@@ -1,7 +1,9 @@
 //! Natural-close wire ordering, using real terminal actors and tracked pumps.
 
 use super::*;
-use crate::runtime::attach::{OutputPumpContext, OutputPumpStart, run_started_output_pump};
+use crate::runtime::apps::terminal::attach::{
+    OutputPumpContext, OutputPumpStart, run_started_output_pump,
+};
 use crate::runtime::handle_detach_terminal;
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::caps::{BootstrapLimits, ClientCapabilities};

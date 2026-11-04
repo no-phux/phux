@@ -95,7 +95,7 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets = s.terminal_fanout_targets(resource);
     let attribution = s.take_close_attribution(resource);
-    super::client::journal_pane_closed(
+    crate::runtime::connections::journal_pane_closed(
         s,
         &wire_terminal_id,
         parent.as_ref(),
@@ -129,7 +129,7 @@ pub(super) fn announce(state: &SharedState, committed: CommittedClose) {
     let state = state.clone();
     tokio::task::spawn_local(async move {
         for closed in &closes {
-            super::client::broadcast_resource_closed(
+            crate::runtime::connections::broadcast_resource_closed(
                 &closed.wire_terminal_id,
                 &closed.targets,
                 closed.exit,
@@ -137,6 +137,6 @@ pub(super) fn announce(state: &SharedState, committed: CommittedClose) {
             )
             .await;
         }
-        super::client::detach_clients_of_killed_session(&state, killed_clients);
+        crate::runtime::connections::detach_clients_of_killed_session(&state, killed_clients);
     });
 }

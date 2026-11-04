@@ -41,7 +41,7 @@ pub(super) async fn handle_attach_terminal(
         ..
     } = subscription;
 
-    let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
+    let stream_id = crate::runtime::stream_id_from(client_id.0);
     match bootstrap_attach_terminal(
         state,
         client_id,

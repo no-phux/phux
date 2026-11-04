@@ -268,7 +268,7 @@ impl PaneWiring {
         if let Some(agent_rx) = self.agent_state {
             spawn_agent_state_drain(state.clone(), wire.clone(), agent_rx);
         }
-        crate::runtime::program_status::spawn_drain(
+        crate::runtime::apps::terminal::program_status::spawn_drain(
             state.clone(),
             wire.clone(),
             self.program_status,
