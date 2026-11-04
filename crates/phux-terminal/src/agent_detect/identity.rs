@@ -5,14 +5,46 @@ use std::time::Instant;
 
 use tracing::trace;
 
-#[cfg(test)]
-use super::IdentitySource;
+use super::rules::RuleSet;
 use super::{
     AgentDetector, DetectOutcome, IDENTIFY_ACQUIRE_POLL, IDENTIFY_ACQUIRE_WINDOW, identify,
     identify_recheck,
 };
 #[cfg(doc)]
 use super::{STARTUP_GRACE, VACANT_CONFIRMATIONS};
+
+/// Who the detector asks about the PTY's foreground process group. A unit
+/// test cannot create a real one, so it injects its own.
+pub(super) trait IdentitySource {
+    /// The cheap half: foreground pgid only.
+    fn pgid(&self, master_fd: Option<RawFd>) -> Option<i32>;
+
+    /// The full answer: pgid, argv, and manifest match.
+    fn observe(
+        &self,
+        master_fd: Option<RawFd>,
+        pane_child_pid: Option<i32>,
+        rules: &RuleSet,
+    ) -> (identify::Occupancy, Option<identify::PaneOccupant>);
+}
+
+/// The kernel's answer.
+pub(super) struct KernelIdentity;
+
+impl IdentitySource for KernelIdentity {
+    fn pgid(&self, master_fd: Option<RawFd>) -> Option<i32> {
+        identify::foreground_pgid(master_fd)
+    }
+
+    fn observe(
+        &self,
+        master_fd: Option<RawFd>,
+        pane_child_pid: Option<i32>,
+        rules: &RuleSet,
+    ) -> (identify::Occupancy, Option<identify::PaneOccupant>) {
+        identify::foreground_observation(master_fd, pane_child_pid, rules)
+    }
+}
 
 impl AgentDetector {
     /// Identity, cheap first: the periodic full recheck runs as always, and
@@ -28,7 +60,7 @@ impl AgentDetector {
         if now >= self.next_identify {
             return self.reidentify(now, master_fd, pane_child_pid);
         }
-        let probed = self.resolve_pgid(master_fd);
+        let probed = self.identity.pgid(master_fd);
         if let Some(pgid) = probed
             && Some(pgid) != self.last_pgid
         {
@@ -46,38 +78,15 @@ impl AgentDetector {
         master_fd: Option<RawFd>,
         pane_child_pid: Option<i32>,
     ) -> Option<DetectOutcome> {
-        let (found, occupant) = self.resolve_identity(master_fd, pane_child_pid);
+        let (found, occupant) = self
+            .identity
+            .observe(master_fd, pane_child_pid, &self.rules);
         if let Some(occupant) = occupant
             && self.published_occupant.as_ref() != Some(&occupant)
         {
             self.pending_occupant = Some(occupant);
         }
         self.apply_identity(now, found)
-    }
-
-    /// Ask the kernel who owns the PTY's foreground process group.
-    #[cfg(not(test))]
-    fn resolve_identity(
-        &self,
-        master_fd: Option<RawFd>,
-        pane_child_pid: Option<i32>,
-    ) -> (identify::Occupancy, Option<identify::PaneOccupant>) {
-        identify::foreground_observation(master_fd, pane_child_pid, &self.rules)
-    }
-
-    /// As above, honouring the [`IdentitySource`] test seam.
-    #[cfg(test)]
-    fn resolve_identity(
-        &self,
-        master_fd: Option<RawFd>,
-        pane_child_pid: Option<i32>,
-    ) -> (identify::Occupancy, Option<identify::PaneOccupant>) {
-        match &self.identity_source {
-            IdentitySource::Kernel => {
-                identify::foreground_observation(master_fd, pane_child_pid, &self.rules)
-            }
-            IdentitySource::Forced(occupancy) => (occupancy.clone(), None),
-        }
     }
 
     /// Take the independently edge-filtered pane-occupant observation.
@@ -93,25 +102,6 @@ impl AgentDetector {
     /// Preserve a failed best-effort enqueue for the next detector tick.
     pub(crate) fn retry_occupant_update(&mut self, occupant: identify::PaneOccupant) {
         self.pending_occupant = Some(occupant);
-    }
-
-    /// The cheap half: foreground pgid only.
-    #[cfg(not(test))]
-    #[allow(
-        clippy::unused_self,
-        reason = "the #[cfg(test)] sibling reads self.identity_source; matching signatures keep the call site uniform across both"
-    )]
-    fn resolve_pgid(&self, master_fd: Option<RawFd>) -> Option<i32> {
-        identify::foreground_pgid(master_fd)
-    }
-
-    /// As above, honouring the [`IdentitySource`] test seam.
-    #[cfg(test)]
-    fn resolve_pgid(&self, master_fd: Option<RawFd>) -> Option<i32> {
-        match &self.identity_source {
-            IdentitySource::Kernel => identify::foreground_pgid(master_fd),
-            IdentitySource::Forced(occupancy) => occupancy.pgid(),
-        }
     }
 
     /// The manifest's name for `kind`, or the slug itself.

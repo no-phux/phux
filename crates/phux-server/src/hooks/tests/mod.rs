@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use phux_config::{Config, HookEntry};
+use phux_config::{Config, HookEntry, vocab};
 
 use super::catalog::offending_config_hooks;
 use super::*;

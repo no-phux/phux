@@ -5,7 +5,6 @@
 )]
 
 use super::*;
-use crate::runtime::apps::ResourceApp;
 
 /// Run a routed command on this server and return its result.
 #[allow(
@@ -140,8 +139,9 @@ async fn dispatch_attach_resource(
     let defers = ctx.state.with(|s| {
         s.resource_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
-            .and_then(|handle| crate::runtime::apps::app_for(handle.kind))
-            .is_some_and(ResourceApp::defers_stream_bootstrap)
+            .is_some_and(|handle| {
+                crate::runtime::apps::app_for(handle.kind).defers_stream_bootstrap()
+            })
     });
     if ctx.defer_subscription && defers {
         subscribe_deferred_attach(&ctx.state, ctx.client_id, terminal_id, &ctx.out_tx, role).await

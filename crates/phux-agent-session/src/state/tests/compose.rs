@@ -263,12 +263,12 @@ fn withdraw_state_has_nothing_to_rewrite_without_a_record() {
     assert!(withdraw_state(Some(b"}{ nonsense")).is_none());
 }
 
-/// `Stream > Hook > Process > Screen`, strictly.
+/// `Stream > Hook > Screen`, strictly.
 #[test]
-fn the_evidence_ladder_runs_stream_hook_process_screen() {
-    use EvidenceSource::{Hook, Process, Screen, Stream};
+fn the_evidence_ladder_runs_stream_hook_screen() {
+    use EvidenceSource::{Hook, Screen, Stream};
 
-    let ladder = [Screen, Process, Hook, Stream];
+    let ladder = [Screen, Hook, Stream];
     for pair in ladder.windows(2) {
         let (lower, upper) = (pair[0], pair[1]);
         assert!(

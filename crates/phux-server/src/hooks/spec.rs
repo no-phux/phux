@@ -1,8 +1,10 @@
 //! The generated reference's view of the hook events.
 
+use phux_config::vocab;
+
 use super::{
     AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED,
-    PANE_EXIT, WORKTREE_CREATED, vocab,
+    PANE_EXIT, WORKTREE_CREATED,
 };
 
 /// One hook event as the generated reference documents it: the vocab's

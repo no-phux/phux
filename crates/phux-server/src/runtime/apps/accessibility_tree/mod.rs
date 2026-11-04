@@ -4,12 +4,13 @@
 use bytes::Bytes;
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
+use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use phux_tree::{PublishRejection, PublishRequest, TreeResource as _};
 use tokio::sync::oneshot;
 
 use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
-use crate::resource::{ResourceKind, WrongResourceKind};
+use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
@@ -26,10 +27,6 @@ pub(crate) use spawn::spawn_tree;
 pub(crate) struct AccessibilityTreeApp;
 
 impl ResourceApp for AccessibilityTreeApp {
-    fn kind(&self) -> ResourceKind {
-        ResourceKind::AccessibilityTree
-    }
-
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -47,6 +44,41 @@ impl ResourceApp for AccessibilityTreeApp {
 
     fn metrics(&self) -> &'static [phux_perf::Metric] {
         &[]
+    }
+
+    fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {
+        // The engine keeps nothing per consumer: every viewer reads the one
+        // newest document, and a client's pump is host-side.
+    }
+
+    fn fence_consumer<'a>(
+        &'a self,
+        _handle: &'a ResourceHandle,
+        _client: ClientId,
+    ) -> LocalBoxFuture<'a, ()> {
+        // Nothing to fence: the engine emits only to the shared watch.
+        Box::pin(std::future::ready(()))
+    }
+
+    fn resumed(&self, _state: &SharedState) {}
+
+    fn resource_exited<'a>(
+        &'a self,
+        _state: &'a SharedState,
+        _resource: phux_core::ids::ResourceId,
+    ) -> LocalBoxFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn claim_relaunch(
+        &self,
+        _ctx: &CommandContext,
+        _operation: OperationId,
+        _resource: &ResourceKey,
+        _expected: Revision,
+    ) -> Option<CommandResult> {
+        // A tree is never relaunched: its producer spawns a fresh one.
+        None
     }
 
     fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
