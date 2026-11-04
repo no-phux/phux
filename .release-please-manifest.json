@@ -1,5 +1,5 @@
 {
-  ".": "0.117.0",
+  ".": "0.118.0",
   "clients/desktop": "0.54.1",
   "integrations/pi": "0.8.1",
   "integrations/opencode-v2": "0.8.0",
