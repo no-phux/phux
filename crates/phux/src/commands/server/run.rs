@@ -69,6 +69,19 @@ fn prepare_process(
         );
     }
 
+    // Panes cost descriptors; a launchd-started server inherits a soft limit
+    // of 256, which a few dozen panes exhaust.
+    if let Some(limit) = phux_server::daemon::raise_descriptor_limit() {
+        tracing::debug!(limit, "raised the open-descriptor soft limit");
+    }
+    // The handoff descriptors arrive with `FD_CLOEXEC` cleared (that is how
+    // they survived the exec). Mark everything close-on-exec again so the
+    // next upgrade carries only what it clears itself; otherwise every
+    // adopted PTY master outlives each later exec as an unowned descriptor.
+    if resume.is_some() {
+        phux_server::daemon::withhold_inherited_descriptors();
+    }
+
     let socket_path = socket.unwrap_or_else(default_socket_path);
     // Fail before the banner when the path cannot fit in a `sockaddr_un`.
     crate::commands::ensure_socket_path_fits(&socket_path)?;
