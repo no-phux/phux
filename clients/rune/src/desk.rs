@@ -80,6 +80,8 @@ type Fitted = ((u16, u16), (u16, u16));
 pub enum NoticeKind {
     Info,
     Error,
+    /// Something worth knowing, with a way to act on it; stays until read.
+    Tip,
 }
 
 impl NoticeKind {
@@ -88,15 +90,21 @@ impl NoticeKind {
         match self {
             Self::Info => 6.0,
             Self::Error => 12.0,
+            Self::Tip => 30.0,
         }
     }
 }
+
+/// A word to press on a tip, and what pressing it does.
+pub type Offer = (&'static str, fn(&mut Desk));
 
 /// Words for the user, in a toast and the inbox's footer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
     pub kind: NoticeKind,
     pub text: String,
+    /// A word to press and what it does; the toast shows it as a button.
+    pub action: Option<Offer>,
     /// When it goes, on the app clock.
     expires: f64,
 }
@@ -155,6 +163,9 @@ pub struct Desk {
     /// Each pane's grid origin in window points, from its last layout.
     origins: HashMap<ResourceId, [f32; 2]>,
     pub sidebar_open: bool,
+    /// The sidebar's foot button under the pointer, by key, so it can show
+    /// its chord.
+    pub foot_hover: Option<&'static str>,
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
     pub find_query: rune::TextEdit,
@@ -243,11 +254,44 @@ pub struct Desk {
 impl Desk {
     /// Put a line in front of the user.
     pub fn say(&mut self, kind: NoticeKind, text: impl Into<String>) {
-        let text = text.into();
+        self.post(kind, text.into(), None);
+    }
+
+    /// A tip with a way to act on it: `label` is the button, `action` what
+    /// pressing it does. Pressing dismisses the tip.
+    pub fn offer(&mut self, text: impl Into<String>, label: &'static str, action: fn(&mut Desk)) {
+        self.post(NoticeKind::Tip, text.into(), Some((label, action)));
+    }
+
+    /// The pressed offer's action, then the toast goes.
+    pub fn take_offer(&mut self) {
+        let Some((_, action)) = self.notice.take().and_then(|notice| notice.action) else {
+            return;
+        };
+        action(self);
+    }
+
+    /// Once per install, on the first connection: point a newcomer at the
+    /// keys worth learning first. The palette lists them; `Keyboard
+    /// Shortcuts: Essentials` reopens the list any time.
+    pub(crate) fn offer_tour(&mut self) {
+        if self.prefs.get::<bool>("tour_offered").unwrap_or(false) {
+            return;
+        }
+        let _ = self.prefs.set("tour_offered", &true);
+        self.offer(
+            "New here? A few keys do most of the work.",
+            "Show me",
+            Self::show_essentials,
+        );
+    }
+
+    fn post(&mut self, kind: NoticeKind, text: String, action: Option<Offer>) {
         let expires = self.clock + kind.lasts();
         self.notice = Some(Notice {
             kind,
             text,
+            action,
             expires,
         });
         // This may come after the frame's `expire_notice`, in a handler or
@@ -319,6 +363,7 @@ impl Desk {
             paths: None,
             origins: HashMap::new(),
             sidebar_open,
+            foot_hover: None,
             find: None,
             find_query: rune::TextEdit::new(""),
             pointer: links::Pointer::default(),

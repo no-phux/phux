@@ -8,7 +8,7 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use rune::{Key, Mods, PhysicalKeyCode};
 
 mod commands;
-pub use commands::{COMMANDS, command};
+pub use commands::{COMMANDS, Command, ESSENTIALS, command};
 use commands::{Cap, Chord};
 
 /// What a key press should do in the terminal.
@@ -72,6 +72,8 @@ pub enum Shortcut {
     CopyDiagnostics,
     ToggleFullScreen,
     KeyboardShortcuts,
+    /// The handful of keys worth learning first, with the full list one row away.
+    EssentialShortcuts,
     SelectAll,
     PromptUp,
     PromptDown,
