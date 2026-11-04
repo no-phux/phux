@@ -6,6 +6,6 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
 cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-features
 python3 -B -m unittest discover -s scripts -p 'test_*.py'

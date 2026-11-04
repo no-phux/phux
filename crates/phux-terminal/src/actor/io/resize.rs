@@ -1,6 +1,6 @@
 use super::{
-    Bytes, PaneOutput, PtySize, ResyncAudience, ResyncReason, SizeReportSize, TerminalActor, debug,
-    warn,
+    Bytes, PtySize, ResourceOutput, ResyncAudience, ResyncReason, SizeReportSize, TerminalActor,
+    debug, warn,
 };
 
 impl TerminalActor {
@@ -108,7 +108,7 @@ impl TerminalActor {
     }
 
     /// Broadcast a text-only synthesized snapshot as an in-band
-    /// [`PaneOutput::Resync`]; image-capable pumps capture their own image replay.
+    /// [`ResourceOutput::Resync`]; image-capable pumps capture their own image replay.
     ///
     /// Used after a reflow (server and client reflow independently and can
     /// diverge, and live output never re-sends history) and for pumps that
@@ -145,7 +145,7 @@ impl TerminalActor {
                 debug!(bytes = replay.len(), "resize resync: snapshot broadcast");
                 // Send errors are benign. `Resync` carries the settled dims
                 // so the mirror resizes before applying the replay.
-                let _ = self.core.output_tx.send(PaneOutput::Resync {
+                let _ = self.core.output_tx.send(ResourceOutput::Resync {
                     cols: self.cols,
                     rows: self.rows,
                     reason,

@@ -95,6 +95,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust installation failed' }
           "RUSTUP_TOOLCHAIN=$rust" >> $env:GITHUB_ENV
           ./scripts/install-zig-windows.ps1 -Directory "$env:RUNNER_TEMP/phux-toolchains" >> $env:GITHUB_PATH
+          $zigInstallDir = (Get-Content -LiteralPath $env:GITHUB_PATH | Select-Object -Last 1)
+          "PHUX_ZIG_INSTALL_DIR=$zigInstallDir" >> $env:GITHUB_ENV
           $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $crt = Get-ChildItem "$vs/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT" -Directory | Sort-Object FullName -Descending | Select-Object -First 1
           $fxc = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe" | Sort-Object FullName -Descending | Select-Object -First 1
@@ -102,6 +104,43 @@ jobs:
           "PHUX_MSVC_RUNTIME_DIR=$($crt.FullName)" >> $env:GITHUB_ENV
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
           "PHUX_BUILD_SHA=$(git rev-parse HEAD)" >> $env:GITHUB_ENV
+      - name: Probe zig version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ready = $false
+          foreach ($attempt in 1..3) {
+            try {
+              & zig version
+              if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+              Write-Output "zig version attempt $attempt exited $LASTEXITCODE"
+            } catch {
+              Write-Output "zig version attempt $attempt failed: $($_.Exception.Message)"
+            }
+            if ($attempt -lt 3) { Start-Sleep -Seconds 3 }
+          }
+          if ($ready) { return }
+          Write-Output 'zig version failed after 3 attempts'
+          Write-Output "PATH=$env:PATH"
+          Write-Output "install step output: $env:PHUX_ZIG_INSTALL_DIR"
+          $dirs = @((Join-Path $env:RUNNER_TEMP 'phux-toolchains'), $env:PHUX_ZIG_INSTALL_DIR) | Where-Object { $_ } | Select-Object -Unique
+          foreach ($dir in $dirs) {
+            Write-Output "install dir ${dir}:"
+            if (Test-Path -LiteralPath $dir) {
+              Get-ChildItem -LiteralPath $dir -Force | ForEach-Object { Write-Output $_.FullName }
+            } else { Write-Output "missing: $dir" }
+          }
+          Write-Output 'where zig:'
+          $where = & where.exe zig 2>&1
+          $whereExit = $LASTEXITCODE
+          $where | ForEach-Object { Write-Output "$_" }
+          Write-Output "where.exe exit code: $whereExit"
+          Write-Output 'Get-Command zig:'
+          $commands = @(Get-Command zig -All -ErrorAction SilentlyContinue)
+          if ($commands.Count -eq 0) { Write-Output 'Get-Command did not find zig' }
+          else { $commands | ForEach-Object { Write-Output "$($_.CommandType) $($_.Name) $($_.Source)" } }
+          throw 'zig version failed after 3 attempts'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: clients/desktop/native -> target

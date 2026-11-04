@@ -1,11 +1,26 @@
 use super::*;
 use phux_protocol::caps::ImageProtocolSet;
 
+/// 1024 base64 characters of noise (768 pixel bytes), so the snapshot's
+/// zlib payload cannot squeeze under a small budget.
+fn noise_base64() -> String {
+    const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut state = 0x9e37_79b9_u32;
+    (0..1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            char::from(BASE64[(state % 64) as usize])
+        })
+        .collect()
+}
+
 fn image_actor() -> TerminalActorBundle {
     let bundle = TerminalActor::new(10, 5).expect("actor");
     let mut canonical = bundle.actor.terminal.borrow_mut();
     canonical.vt_write(b"visible text");
-    let payload = "AAAA".repeat(256);
+    let payload = noise_base64();
     canonical.vt_write(format!("\x1b_Ga=t,f=32,s=16,v=12,i=9,q=2;{payload}\x1b\\").as_bytes());
     assert!(
         canonical

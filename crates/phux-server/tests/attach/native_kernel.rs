@@ -134,10 +134,10 @@ impl Kernel {
             matches!(
                 hello,
                 FrameKind::HelloOk {
-                    selected_profile: BootstrapProfile::NativeState {
+                    selected_profile: Some(BootstrapProfile::NativeState {
                         codec: EngineCodec::LibghosttySnapshotV1,
                         ..
-                    },
+                    }),
                     ..
                 }
             ),

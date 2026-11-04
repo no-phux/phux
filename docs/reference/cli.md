@@ -363,7 +363,9 @@ Read a pane's agent session stream.
 Attaches to the session as an observer, the way `phux rec` attaches to a pane:
 the retained records arrive first and, with `--follow`, live records after them
 until Ctrl-C or the session closes. There is no `--timeout`; run a following log
-under a child-process deadline exactly as you would `phux watch`.
+under a child-process deadline exactly as you would `phux watch`. A follower
+that falls behind records the session has already evicted exits 1 rather than
+skip them.
 
 Usage: phux agent log [FLAGS] <TARGET>
 
@@ -3205,9 +3207,9 @@ Fit phux into an Omarchy desktop
 `setup` makes phux at home on Omarchy (<https://omarchy.org>): its keys match
 Omarchy's tmux config (Ctrl+Space prefix, Alt+Enter splits, Alt+1..9 tabs), its
 colours follow the Omarchy theme and repaint when you switch, Super+Ctrl+Return
-opens it, Super+Ctrl+K lists its keys, and its server starts with the desktop
-session. `remove` undoes all of it; your own config.toml keeps winning
-throughout.
+opens it, Super+Ctrl+K lists its keys, its server starts with the desktop
+session, and Omarchy's menu offers Install > AI > Phux Rune. `remove` undoes all
+of it; your own config.toml keeps winning throughout.
 
 Usage: phux omarchy <SUBCOMMAND>
 

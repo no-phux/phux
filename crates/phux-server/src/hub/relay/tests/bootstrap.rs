@@ -12,7 +12,7 @@ fn post_negotiation_hello_ok_is_fatal_to_relay_session() {
             protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
             server_caps: phux_protocol::caps::ServerCapabilities::new(),
             server_id: Vec::new(),
-            selected_profile: phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         }))
         .expect_err("duplicate HELLO_OK must tear down the relay");

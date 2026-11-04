@@ -33,8 +33,8 @@ use crate::runtime::{
 };
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use phux_terminal::actor::{
-    ConsumerAttachRequest, ConsumerDetachRequest, PaneOutput, PwdRequest, ResizeRequest,
-    ResizeSender, ResyncAudience, ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
+    ConsumerAttachRequest, ConsumerDetachRequest, PwdRequest, ResizeRequest, ResizeSender,
+    ResourceOutput, ResyncAudience, ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
 };
 
 mod bootstrap;

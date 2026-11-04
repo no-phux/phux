@@ -28,7 +28,7 @@ fn tick_emit_is_silent_while_gate_is_off() {
     // only emission is suppressed.
     assert_eq!(actor.consumer_count(), 1);
     assert_eq!(
-        actor.consumer_state(client).expect("state").next_seq,
+        actor.consumer_state(client).expect("state").sync.next_seq,
         1,
         "no emission means the per-consumer seq never advanced",
     );
@@ -72,7 +72,14 @@ fn atomic_state_sync_bootstrap_primes_exact_cut_and_sequence() {
         contains_subslice(&bootstrap.snapshot.bytes, b"before-cut"),
         "snapshot must include the exact pre-registration terminal cut",
     );
-    assert_eq!(actor.consumer_state(client).expect("consumer").next_seq, 8,);
+    assert_eq!(
+        actor
+            .consumer_state(client)
+            .expect("consumer")
+            .sync
+            .next_seq,
+        8,
+    );
 
     actor.tick_emit();
     assert!(
@@ -86,7 +93,11 @@ fn atomic_state_sync_bootstrap_primes_exact_cut_and_sequence() {
         "opening the gate at the exact bootstrap cut must emit no duplicate"
     );
     assert_eq!(
-        actor.consumer_state(client).expect("consumer").next_seq,
+        actor
+            .consumer_state(client)
+            .expect("consumer")
+            .sync
+            .next_seq,
         8,
         "an empty exact-cut tick must not consume the first live sequence"
     );
@@ -105,7 +116,11 @@ fn atomic_state_sync_bootstrap_primes_exact_cut_and_sequence() {
     );
     assert!(contains_subslice(&bytes, b"after-cut"));
     assert_eq!(
-        actor.consumer_state(client).expect("consumer").next_seq,
+        actor
+            .consumer_state(client)
+            .expect("consumer")
+            .sync
+            .next_seq,
         9,
         "one post-cut delta consumes exactly one sequence"
     );

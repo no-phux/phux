@@ -328,10 +328,10 @@ fn input_to_a_stalled_pane_waits_and_arrives_whole() {
 
         // Release the program only once the server has had to wait for the
         // pane to drain: the burst cannot finish writing before that.
-        let waits_before = phux_server::perf::INPUT_CREDIT_WAITS.get();
+        let waits_before = phux_terminal::perf::INPUT_CREDIT_WAITS.get();
         let release = tokio::task::spawn_local(async move {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-            while phux_server::perf::INPUT_CREDIT_WAITS.get() == waits_before {
+            while phux_terminal::perf::INPUT_CREDIT_WAITS.get() == waits_before {
                 assert!(
                     tokio::time::Instant::now() < deadline,
                     "the stalled pane never saturated"

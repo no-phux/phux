@@ -38,7 +38,7 @@ async fn receipt_refusal_precedes_operation_cache_admission() {
                 root_token: &token,
                 selection: NegotiatedConnection {
                     client_caps: ClientCapabilities::default(),
-                    profile: BootstrapProfile::SynthesizedVtRaw,
+                    profile: Some(BootstrapProfile::SynthesizedVtRaw),
                     limits: BootstrapLimits::default(),
                     server_features: ServerFeatureSet::new(),
                     compression: Compression::None,

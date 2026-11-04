@@ -13,6 +13,7 @@ Then:
 | --- | --- |
 | <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>Return</kbd> | Opens a terminal attached to phux |
 | <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>K</kbd> | Lists phux's keys in Omarchy's menu |
+| <kbd>Super</kbd> <kbd>Space</kbd>, Install › AI › Phux Rune | Installs [Phux Rune](#phux-rune) |
 
 Inside phux, the keys are the ones Omarchy's tmux config uses, so your
 hands already know them. Switch Omarchy's theme and phux repaints to match.
@@ -28,7 +29,9 @@ and `--dry-run` prints them without writing anything.
 | phux follows Omarchy's current theme, unless your config already selects a theme. | `[theme] file` in your config |
 | A hook that repaints phux after each Omarchy theme change. | `~/.config/omarchy/hooks/theme-set.d/phux` |
 | <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>Return</kbd> and <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>K</kbd> open phux and its key list. | A marked block in `~/.config/hypr/bindings.lua` |
+| Phux Rune's window counts as a terminal, so Omarchy's <kbd>Super</kbd> <kbd>C</kbd> and <kbd>Super</kbd> <kbd>V</kbd> copy and paste in it. | The same block |
 | The phux server starts with your desktop session, so its panes can reach the Wayland clipboard even when you first attach over SSH. | A marked block in `~/.config/hypr/autostart.lua` |
+| Install › AI › Phux Rune (until Rune is installed) and Learn › Phux in Omarchy's menu. Omarchy 4 and later. | A marked block in `~/.config/omarchy/extensions/omarchy-menu.jsonc` |
 
 Omarchy gives <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>Return</kbd> and
 <kbd>Super</kbd> <kbd>Ctrl</kbd> <kbd>K</kbd> to Herdr out of the box;
@@ -42,6 +45,7 @@ setup never edits text outside its marked blocks:
 -- >>> phux: managed by `phux omarchy setup`; `phux omarchy remove` deletes it
 o.rebind("SUPER + CTRL + RETURN", "Phux", "omarchy-launch-terminal /home/you/.local/bin/phux")
 o.rebind("SUPER + CTRL + K", "Phux keybindings", [[sh -c '/home/you/.local/bin/phux omarchy keys | omarchy-menu-select "Phux keybindings" -- --width 800']])
+o.window("sh\\.phux\\.rune", { tag = "+terminal" })
 -- <<< phux
 ```
 
@@ -61,6 +65,29 @@ $ phux omarchy status
 ✓ theme_hook
 ✓ desktop_keys
 ✓ autostart
+✓ menu
+```
+
+## Phux Rune
+
+Phux Rune is the phux desktop client: your sessions and agents in one
+window. After setup, open Omarchy's menu
+(<kbd>Super</kbd> <kbd>Space</kbd>) and pick
+Install › AI › Phux Rune. Once it's installed, the row goes away and
+Rune is in the apps menu (<kbd>Super</kbd> <kbd>Alt</kbd> <kbd>Space</kbd>). It updates
+itself.
+
+The row runs the same installer you can run by hand:
+
+```sh
+curl -fsSL https://phux.sh/install | sh -s -- --rune
+```
+
+To get the menu row before phux is installed, add it to
+`~/.config/omarchy/extensions/omarchy-menu.jsonc` yourself:
+
+```jsonc
+"install.ai.phux-rune": {"icon":"","label":"Phux Rune","when":"! omarchy-cmd-present phux-rune","action":"omarchy-launch-floating-terminal-with-presentation 'curl -fsSL https://phux.sh/install | sh -s -- --rune'"},
 ```
 
 ## Keys
@@ -134,6 +161,13 @@ tells you. To follow Omarchy's theme afterwards:
 phux theme set --file ~/.local/state/omarchy/current/theme/colors.toml
 ```
 
+Phux Rune follows Omarchy's theme too, with no setup: its **Omarchy**
+theme is the default on an Omarchy desktop and repaints when you switch.
+Pick any other theme in Rune's settings
+(<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>,</kbd>), or type its name in the
+palette (<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd>), and Rune keeps that
+one instead; pick **Omarchy** to follow again.
+
 ## Undo it
 
 ```sh
@@ -141,6 +175,6 @@ phux omarchy remove
 ```
 
 This restores the distro you had selected before setup, stops following
-Omarchy's theme if setup turned that on, and deletes the hook, the layer
-and the marked Hyprland blocks. Everything else in those files is left as
+Omarchy's theme if setup turned that on, and deletes the hook, the layer,
+the marked Hyprland blocks and the menu rows. Phux Rune stays installed. Everything else in those files is left as
 it was. Omarchy's own bindings for Herdr come back when Hyprland reloads.

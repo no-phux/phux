@@ -23,7 +23,7 @@ impl OutputPumpContext {
     async fn republish_native_generation(
         &self,
         generation: &mut PumpGeneration,
-        output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+        output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
         prior_bootstrap_id: BootstrapId,
         reason: crate::resource::ResyncReason,
     ) -> Result<bool, PumpFault> {
@@ -50,7 +50,7 @@ impl OutputPumpContext {
     async fn publish_captured_native_generation(
         &self,
         generation: &mut PumpGeneration,
-        output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+        output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
         bootstrap_id: BootstrapId,
         reply: phux_terminal::actor::NativeBootstrapReply,
     ) -> Result<bool, PumpFault> {
@@ -97,7 +97,7 @@ impl OutputPumpContext {
     pub(super) async fn publish_final_generation(
         &self,
         generation: &mut PumpGeneration,
-        output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+        output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
     ) -> Result<(), PumpFault> {
         const CAPTURE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -241,7 +241,7 @@ impl OutputPumpContext {
     pub(super) async fn republish_generation(
         &self,
         generation: &mut PumpGeneration,
-        output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+        output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

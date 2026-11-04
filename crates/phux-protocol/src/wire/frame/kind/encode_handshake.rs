@@ -102,7 +102,7 @@ impl FrameKind {
         enc: &mut Encoder<'_>,
         server_caps: ServerCapabilities,
         server_id: &[u8],
-        selected_profile: BootstrapProfile,
+        selected_profile: Option<BootstrapProfile>,
         bootstrap_limits: BootstrapLimits,
     ) {
         enc.write_field_with(field::hello_ok::SERVER_CAPS, |e| {
@@ -117,9 +117,12 @@ impl FrameKind {
         // server_id is opaque bytes; the field is already
         // length-delimited so the raw bytes are the value.
         enc.write_field(field::hello_ok::SERVER_ID, server_id);
-        enc.write_field_with(field::hello_ok::SELECTED_PROFILE, |e| {
-            encode_bootstrap_profile(selected_profile, e);
-        });
+        // Absent when the client offered no Terminal profile.
+        if let Some(selected_profile) = selected_profile {
+            enc.write_field_with(field::hello_ok::SELECTED_PROFILE, |e| {
+                encode_bootstrap_profile(selected_profile, e);
+            });
+        }
         u32_field(
             enc,
             field::hello_ok::MAX_CHUNK_BYTES,

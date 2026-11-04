@@ -301,7 +301,7 @@ start_server() {
       local filter=""
       # Handshake accounting needs frame-level server logs; the measured runs
       # stay at the default level so logging never taxes a timing.
-      (( MUX_DEBUG_LOG )) && filter="RUST_LOG=phux_server=debug"
+      (( MUX_DEBUG_LOG )) && filter="RUST_LOG=phux=debug"
       log_cmd "env -i <isolated env> $filter $PHUX_BIN server --socket $MUX_HOME/mux.sock --session bench $listeners --exit-after-idle 900"
       { eval "exec ${BASE_ENV[*]} $(iso_env) $filter \"\$PHUX_BIN\" server --socket \"\$MUX_HOME/mux.sock\" \
         --session bench $listeners --exit-after-idle 900" >"$MUX_HOME/server.log" 2>&1; } &

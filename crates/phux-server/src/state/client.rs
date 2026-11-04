@@ -38,6 +38,9 @@ pub struct AttachedClient {
     /// Viewport-clock stamp of the last `viewport` set, so cell-pixel
     /// resolution can prefer the newest report.
     pub viewport_seq: u64,
+    /// Viewport-clock stamp of the last time this view was used (input,
+    /// focus, attach or resize), for the `active` window-size policy.
+    pub active_seq: u64,
     /// The session attach declared `VIEWER` (ADR-0127); panes it spawns are
     /// observe-only too.
     pub viewer: bool,
@@ -155,6 +158,7 @@ impl ServerState {
                     bootstrap_limits,
                     viewport: None,
                     viewport_seq: 0,
+                    active_seq: 0,
                     viewer: false,
                 },
             );
