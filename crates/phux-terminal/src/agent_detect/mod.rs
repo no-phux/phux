@@ -43,6 +43,7 @@ pub use phux_agent_rules::rules;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use identity::IdentitySource;
 use rules::RuleSet;
 
 /// Tick floor while no agent has been identified.
@@ -227,20 +228,8 @@ pub(crate) struct AgentDetector {
     /// (see [`Self::screen_may_publish`]).
     stream_state: Option<DetectedState>,
     cadence: Cadence,
-    /// Test seam: where [`Self::reidentify`] gets identity from.
-    #[cfg(test)]
-    identity_source: IdentitySource,
-}
-
-/// Where [`AgentDetector::reidentify`] reads identity from in tests (a unit
-/// test cannot create a real foreground process group).
-#[cfg(test)]
-#[derive(Debug, Clone)]
-enum IdentitySource {
-    /// Ask the kernel, as production does.
-    Kernel,
-    /// Report this, with no PTY in sight.
-    Forced(identify::Occupancy),
+    /// Who answers for the foreground group.
+    identity: Box<dyn IdentitySource>,
 }
 
 impl std::fmt::Debug for AgentDetector {

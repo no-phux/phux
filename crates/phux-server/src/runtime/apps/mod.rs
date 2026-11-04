@@ -4,9 +4,10 @@
 //! how a client's stream bootstraps, and the stream and input frames about
 //! its resources. The runtime reaches a kind only
 //! through [`app_for`] and [`app_owning`], so what a kind *is* stays in its
-//! app, and a new kind is one [`ResourceApp`] plus one [`APPS`] row. `state`
-//! sits below this module: what it needs from any resource is
-//! [`crate::resource::ResourceHandle::ops`].
+//! app. A new kind does not compile until [`app_for`] names its app, and
+//! every [`ResourceApp`] method is required, so no kind inherits an answer
+//! by omission. `state` sits below this module: what it needs from any
+//! resource is [`crate::resource::ResourceHandle::ops`].
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -21,7 +22,7 @@ use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities}
 use phux_protocol::ids::{
     OperationId, ResourceId as WireResourceId, ResourceKey, Revision, SatelliteHost, StreamId,
 };
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnError, SpawnResource};
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResource};
 use tokio_util::sync::CancellationToken;
 
 use super::commands::{AttachResourceFailure, CommandContext};
@@ -139,9 +140,6 @@ pub(crate) struct ResourceFrame<'a> {
 
 /// What the host asks of the app serving a kind.
 pub(crate) trait ResourceApp: Sync {
-    /// The kind this app serves.
-    fn kind(&self) -> ResourceKind;
-
     /// Whether a multi-stream connection waits for `STREAM_BIND` before
     /// bootstrapping this kind's content.
     fn defers_stream_bootstrap(&self) -> bool;
@@ -154,17 +152,15 @@ pub(crate) trait ResourceApp: Sync {
 
     /// Drop `client`'s engine-side consumer state now, best effort. Safe under
     /// the state lock.
-    fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {}
+    fn release_consumer(&self, handle: &ResourceHandle, client: ClientId);
 
     /// Drop `client`'s consumer state and wait until the engine has stopped
     /// emitting to it.
     fn fence_consumer<'a>(
         &'a self,
-        _handle: &'a ResourceHandle,
-        _client: ClientId,
-    ) -> LocalBoxFuture<'a, ()> {
-        Box::pin(std::future::ready(()))
-    }
+        handle: &'a ResourceHandle,
+        client: ClientId,
+    ) -> LocalBoxFuture<'a, ()>;
 
     /// Serve a facet command this kind owns in the catalog.
     fn command<'a>(
@@ -181,37 +177,27 @@ pub(crate) trait ResourceApp: Sync {
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>>;
 
     /// Serve a `SPAWN_RESOURCE` of this kind.
-    fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
-        Box::pin(super::spawn_reply::refuse_spawn(
-            spawn.out_tx,
-            spawn.request_id,
-            SpawnError::UnsupportedKind,
-        ))
-    }
+    fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()>;
 
     /// The tree came back from an upgrade blob and no client is connected.
-    fn resumed(&self, _state: &SharedState) {}
+    fn resumed(&self, state: &SharedState);
 
     /// Any resource's engine exited. Runs before the host retires it.
     fn resource_exited<'a>(
         &'a self,
-        _state: &'a SharedState,
-        _resource: phux_core::ids::ResourceId,
-    ) -> LocalBoxFuture<'a, ()> {
-        Box::pin(std::future::ready(()))
-    }
+        state: &'a SharedState,
+        resource: phux_core::ids::ResourceId,
+    ) -> LocalBoxFuture<'a, ()>;
 
     /// Serve a relaunch this kind recognizes as its own, leaving the rest to
     /// the organization path.
     fn claim_relaunch(
         &self,
-        _ctx: &CommandContext,
-        _operation: OperationId,
-        _resource: &ResourceKey,
-        _expected: Revision,
-    ) -> Option<CommandResult> {
-        None
-    }
+        ctx: &CommandContext,
+        operation: OperationId,
+        resource: &ResourceKey,
+        expected: Revision,
+    ) -> Option<CommandResult>;
 
     /// Serve a stream or input frame about a resource of this kind: the
     /// `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` and `HISTORY_REQUEST`
@@ -228,17 +214,33 @@ pub(crate) trait ResourceApp: Sync {
     fn metrics(&self) -> &'static [phux_perf::Metric];
 }
 
-/// Every app this server hosts.
+/// The app serving `kind`. Exhaustive: a kind with no app does not compile.
+pub(crate) const fn app_for(kind: ResourceKind) -> &'static dyn ResourceApp {
+    match kind {
+        ResourceKind::Terminal => &terminal::TerminalApp,
+        ResourceKind::AgentSession => &agent_session::AgentSessionApp,
+        ResourceKind::AccessibilityTree => &accessibility_tree::AccessibilityTreeApp,
+    }
+}
+
+/// Every app this server hosts, for the questions the host asks all of
+/// them. `every_app_is_listed` holds it to [`app_for`].
 static APPS: [&dyn ResourceApp; 3] = [
-    &terminal::TerminalApp,
-    &agent_session::AgentSessionApp,
-    &accessibility_tree::AccessibilityTreeApp,
+    app_for(ResourceKind::Terminal),
+    app_for(ResourceKind::AgentSession),
+    app_for(ResourceKind::AccessibilityTree),
 ];
 
-/// The app serving `kind`, or `None` for a kind this build does not serve.
-pub(crate) fn app_for(kind: ResourceKind) -> Option<&'static dyn ResourceApp> {
-    APPS.iter().copied().find(|app| app.kind() == kind)
-}
+/// The build fails if the catalog lists a kind this server does not serve,
+/// so [`owning_kind`] cannot lose a facet command to the host arm.
+const _: () = {
+    let kinds = &phux_protocol::kinds::KINDS;
+    let mut row = 0;
+    while row < kinds.len() {
+        assert!(crate::id_bridge::core_kind(kinds[row].kind).is_some());
+        row += 1;
+    }
+};
 
 /// Tell every app the tree came back from an upgrade blob.
 pub(crate) fn resumed(state: &SharedState) {
@@ -293,7 +295,7 @@ pub(crate) fn app_serving(state: &SharedState, wire: &WireResourceId) -> &'stati
             .and_then(|core| s.resource_handle(core))
             .map(|handle| handle.kind)
     });
-    kind.and_then(app_for).unwrap_or(&terminal::TerminalApp)
+    kind.map_or(&terminal::TerminalApp, app_for)
 }
 
 /// Every app's rows of the `GET_PERF` report.
@@ -308,9 +310,12 @@ pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabili
 
 /// The app that owns `command` in the catalog; `None` for a host command.
 pub(crate) fn app_owning(command: &Command) -> Option<&'static dyn ResourceApp> {
-    app_for(crate::id_bridge::core_kind(
-        phux_protocol::kinds::command_kind(command)?,
-    )?)
+    owning_kind(command).map(app_for)
+}
+
+/// The kind whose catalog rows carry `command`; `None` for a host command.
+fn owning_kind(command: &Command) -> Option<ResourceKind> {
+    phux_protocol::kinds::command_kind(command).and_then(crate::id_bridge::core_kind)
 }
 
 #[cfg(test)]

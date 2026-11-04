@@ -41,12 +41,14 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             foreground.configure(&mut cmd);
 
             let token = CancellationToken::new();
-            let bundle = TerminalActor::build_with_token(
+            let bundle = TerminalActor::build(
                 20,
                 5,
-                Some(cmd),
+                PtySource::Spawn(cmd),
                 test_scrollback(1000),
                 token.clone(),
+                None,
+                HangupPolicy::stretched(CONTENDED_FLUSH_GRACE),
             )
             .expect("build actor");
             let actor = bundle.actor;
@@ -72,7 +74,6 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
                      get scheduled, which is an environment problem (machine load), not a \
                      failure of the flush-before-death path this test covers",
             );
-            let _grace = stretch_pane_kill_grace(CONTENDED_FLUSH_GRACE);
 
             // Armed, so the foreground group is settled.
             let foreground_group = master
@@ -162,12 +163,14 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             foreground.configure(&mut cmd);
 
             let token = CancellationToken::new();
-            let bundle = TerminalActor::build_with_token(
+            let bundle = TerminalActor::build(
                 80,
                 24,
-                Some(cmd),
+                PtySource::Spawn(cmd),
                 test_scrollback(1000),
                 token.clone(),
+                None,
+                HangupPolicy::gated(CONTENDED_FLUSH_GRACE, &started),
             )
             .expect("build actor");
             let actor = bundle.actor;
@@ -184,7 +187,6 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
                      get scheduled, which is an environment problem (machine load), not a \
                      failure of the flush-before-death path this test covers",
             );
-            let _grace = stretch_pane_kill_grace_after(CONTENDED_FLUSH_GRACE, Some(&started));
 
             let foreground_group = master
                 .lock()

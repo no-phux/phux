@@ -1,12 +1,32 @@
+use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use super::identify::{Occupancy, Occupant};
+use super::IdentitySource;
+use super::identify::{Occupancy, Occupant, PaneOccupant};
 use super::rules::{ManifestSpec, RuleSet};
 use super::{
     AgentDetector, DetectOutcome, DetectedState, HOOK_IDENTITY_GRACE, IDLE_CONFIRMATIONS,
     STARTUP_GRACE, TICK_CONFIRMING, TICK_IDENTIFIED, VACANT_CONFIRMATIONS,
 };
+
+/// Reports this occupancy, with no PTY in sight.
+struct Forced(Occupancy);
+
+impl IdentitySource for Forced {
+    fn pgid(&self, _: Option<RawFd>) -> Option<i32> {
+        self.0.pgid()
+    }
+
+    fn observe(
+        &self,
+        _: Option<RawFd>,
+        _: Option<i32>,
+        _: &RuleSet,
+    ) -> (Occupancy, Option<PaneOccupant>) {
+        (self.0.clone(), None)
+    }
+}
 
 /// A manifest exercising every arm of the hysteresis machine.
 const MANIFEST: &str = r#"
@@ -130,7 +150,7 @@ impl Harness {
 
     /// Set what the kernel reports about the foreground group.
     fn occupy(&mut self, occupancy: Occupancy) {
-        self.detector.identity_source = super::IdentitySource::Forced(occupancy);
+        self.detector.identity = Box::new(Forced(occupancy));
     }
 
     /// Make the next tick's identity poll due.

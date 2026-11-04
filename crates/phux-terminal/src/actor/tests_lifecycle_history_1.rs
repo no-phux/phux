@@ -227,6 +227,14 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
     }
 }
 
+/// What the next native host allocation does in place of allocating.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Clone, Copy)]
+enum AllocFault {
+    Fail,
+    Panic,
+}
+
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 #[allow(
@@ -299,18 +307,29 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
                     .expect("history host")
             }
 
-            let bundle = TerminalActor::new(20, 5).expect("new actor");
+            let fault = Rc::new(Cell::new(None));
+            let mut bundle = TerminalActor::new(20, 5).expect("new actor");
+            bundle.actor.native_alloc = {
+                let fault = Rc::clone(&fault);
+                Box::new(move |capacity| match fault.take() {
+                    Some(AllocFault::Fail) => {
+                        Err(crate::native_state::NativeStateError::OutOfMemory)
+                    }
+                    Some(AllocFault::Panic) => panic!("injected native host allocation panic"),
+                    None => try_native_bytes(capacity),
+                })
+            };
             let handle = bundle.handle.clone();
             let token = bundle.token.clone();
             let (outbound, _outbound_rx) = mpsc::channel(2);
             let run = tokio::task::spawn_local(bundle.actor.run());
 
-            FAIL_NEXT_NATIVE_HOST_ALLOC.with(|fail| fail.set(true));
+            fault.set(Some(AllocFault::Fail));
             assert!(matches!(
                 request_prefix(&handle).await,
                 Err(crate::native_state::NativeStateError::OutOfMemory)
             ));
-            PANIC_NEXT_NATIVE_HOST_ALLOC.with(|panic| panic.set(true));
+            fault.set(Some(AllocFault::Panic));
             assert!(matches!(
                 request_prefix(&handle).await,
                 Err(crate::native_state::NativeStateError::OutOfMemory)
