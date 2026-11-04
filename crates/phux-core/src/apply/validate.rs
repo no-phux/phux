@@ -37,12 +37,14 @@ impl Tx<'_> {
         // terminal (docs/resource-kinds.md).
         if matches!(
             spec.kind,
-            ResourceKind::AgentSession | ResourceKind::AccessibilityTree
+            ResourceKind::AgentSession
+                | ResourceKind::AccessibilityTree
+                | ResourceKind::PixelSurface
         ) && parent_kind != Some(ResourceKind::Terminal)
         {
             return Err(Refusal::invalid(
                 "parent",
-                "an agent conversation or an accessibility tree binds to a terminal",
+                "an agent conversation, an accessibility tree or a pixel surface binds to a terminal",
             ));
         }
         Ok(())

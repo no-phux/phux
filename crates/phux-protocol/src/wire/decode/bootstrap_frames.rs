@@ -336,6 +336,7 @@ pub(super) fn checked_bootstrap_dimensions(
         crate::caps::BootstrapStreamProfile::AgentEventsJsonlV1
             | crate::caps::BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. }
             | crate::caps::BootstrapStreamProfile::AccessibilityTreeJsonV1
+            | crate::caps::BootstrapStreamProfile::PixelSurfacePngV1
     );
     if gridless != (cols == 0 && rows == 0) {
         return Err(DecodeError::InvalidBootstrapProfile);

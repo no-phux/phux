@@ -157,16 +157,17 @@ impl ServerState {
         Ok(id)
     }
 
-    /// Create an `AccessibilityTree` under `parent` (a Terminal), in the
-    /// parent's session, and record it running.
+    /// Create a document resource (an accessibility tree, a pixel surface)
+    /// under `parent` (a Terminal), in the parent's session, and record it
+    /// running. `launch` names the kind and what its producer observes.
     ///
     /// # Errors
     ///
     /// The [`Refusal`]; nothing was created.
-    pub fn create_tree(
+    pub fn create_document(
         &mut self,
         parent: ResourceId,
-        target: &str,
+        launch: LaunchSpec,
         actor: &Actor,
     ) -> Result<ResourceId, Refusal> {
         let parent_key = self
@@ -185,11 +186,9 @@ impl ServerState {
                 placement: None,
                 session: Some(session),
                 resource: NewResource {
-                    kind: ResourceKind::AccessibilityTree,
+                    kind: launch.kind(),
                     name: None,
-                    launch: Some(LaunchSpec::Tree(phux_core::resource::TreeLaunch {
-                        target: target.to_owned(),
-                    })),
+                    launch: Some(launch),
                     on_exit: ExitPolicy::Remove,
                     parent: Some(parent_key),
                     launch_mode: phux_core::LaunchMode::Immediate,

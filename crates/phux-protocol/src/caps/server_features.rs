@@ -381,6 +381,9 @@ pub enum ServerFeatureExt {
     /// The server serves the `AccessibilityTree` resource kind: a
     /// producer-fed, replicated accessibility tree of an application.
     AccessibilityTree = 0x0000_8000,
+    /// The server serves the `PixelSurface` resource kind: a producer-fed,
+    /// replicated image of a window or display.
+    PixelSurface = 0x0001_0000,
 }
 
 impl ServerFeatureExt {
@@ -402,6 +405,7 @@ impl ServerFeatureExt {
         Self::CreatePlacement,
         Self::ApiDescription,
         Self::AccessibilityTree,
+        Self::PixelSurface,
     ];
 
     /// The `docs/protocol.md#handshake` constant, e.g. `"PATH_QUERY"`.
@@ -424,6 +428,7 @@ impl ServerFeatureExt {
             Self::CreatePlacement => "CREATE_PLACEMENT",
             Self::ApiDescription => "API_DESCRIPTION",
             Self::AccessibilityTree => "ACCESSIBILITY_TREE",
+            Self::PixelSurface => "PIXEL_SURFACE",
         }
     }
 
