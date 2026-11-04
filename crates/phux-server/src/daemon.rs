@@ -32,6 +32,37 @@ pub fn withhold_inherited_descriptors() {
     }
 }
 
+/// Raise this process's open-descriptor soft limit as far as the hard limit
+/// allows, returning the new soft limit when it was raised.
+///
+/// A server started by a GUI app inherits launchd's soft limit of 256 on
+/// macOS, which a few dozen panes exhaust: a PTY master costs three
+/// descriptors (master, reader, writer) and a graceful upgrade duplicates each
+/// one more, so new panes fail with `dup of fd 255 failed` and the upgrade
+/// handoff with a half PTY pair. Where the hard limit is unlimited (macOS) the
+/// kernel still refuses an unlimited soft limit, so a finite ceiling is tried
+/// instead.
+#[must_use]
+pub fn raise_descriptor_limit() -> Option<u64> {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+
+    let Rlimit { current, maximum } = getrlimit(Resource::Nofile);
+    [maximum, Some(1 << 20), Some(10_240)]
+        .into_iter()
+        .flatten()
+        .find(|&want| {
+            current.is_some_and(|have| want > have)
+                && setrlimit(
+                    Resource::Nofile,
+                    Rlimit {
+                        current: Some(want),
+                        maximum,
+                    },
+                )
+                .is_ok()
+        })
+}
+
 /// The descriptor a descriptor-table entry names.
 fn descriptor_number(entry: &std::fs::DirEntry) -> Option<RawFd> {
     entry.file_name().to_str()?.parse().ok()
@@ -63,3 +94,22 @@ fn set_cloexec(fd: RawFd) {
 // `the_spawned_daemon_does_not_hold_the_callers_descriptors`. A unit test here
 // would flip descriptor flags process-wide under `cargo test`, racing the
 // upgrade tests that clear `FD_CLOEXEC` and assert on it.
+
+#[cfg(test)]
+mod tests {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+
+    #[test]
+    fn raise_descriptor_limit_lifts_a_launchd_sized_soft_limit() {
+        let before = getrlimit(Resource::Nofile);
+        let low = Rlimit {
+            current: Some(256),
+            maximum: before.maximum,
+        };
+        setrlimit(Resource::Nofile, low).expect("lowering the soft limit needs no privilege");
+        let raised = super::raise_descriptor_limit().expect("256 is raisable");
+        assert!(raised > 256);
+        assert_eq!(getrlimit(Resource::Nofile).current, Some(raised));
+        let _ = setrlimit(Resource::Nofile, before);
+    }
+}
