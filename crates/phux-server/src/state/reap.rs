@@ -98,10 +98,13 @@ impl ServerState {
             self.retire_record(pane, outcome);
         }
         // A removed producer hands its parent back to the remaining sources.
-        if let Some(handle) = parent.and_then(|parent| self.resource_handle(parent)) {
-            let _ = handle
-                .control
-                .try_send(crate::resource::ControlRequest::AgentRecordInvalidated);
+        if let Some(agent_parent) = parent
+            .and_then(|parent| self.resource_handle(parent))
+            .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>())
+        {
+            let _ = agent_parent
+                .mailbox
+                .try_send(phux_agent_session::parent::AgentParentRequest::RecordInvalidated);
         }
         (!self.has_live_activation(), token)
     }

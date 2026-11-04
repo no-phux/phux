@@ -1,8 +1,8 @@
 use super::controller::{denied, json, refusal};
-use crate::resource::agent_session::AgentSessionActor;
 use crate::runtime::commands::CommandContext;
 use crate::state::SharedState;
 use crate::state::native_agent::NativeBinding;
+use phux_agent_session::session::AgentSessionActor;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::NATIVE_HOST_SPEC_ENV;
 use phux_protocol::native_agent::NativeCapabilities;

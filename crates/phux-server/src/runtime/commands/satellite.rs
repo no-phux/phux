@@ -278,7 +278,7 @@ pub(super) async fn relay_stream_establishing(
                 seq: 0,
                 awaits_snapshot: content,
                 resource_kind,
-                bootstrap_profile: content.then_some(ctx.profile),
+                bootstrap_profile: content.then_some(ctx.profile).flatten(),
                 bootstrap_limits: content.then_some(ctx.limits),
             },
         )

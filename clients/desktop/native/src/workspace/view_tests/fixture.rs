@@ -65,7 +65,7 @@ fn attach_home(connection: &mut Connection, others: &[ResourceId]) {
             server_caps: ServerCapabilities::new()
                 .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
             server_id: vec![1; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         })
         .unwrap();

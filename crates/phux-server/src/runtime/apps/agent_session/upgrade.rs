@@ -9,17 +9,17 @@ use std::time::Duration;
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
 use futures_util::stream::{FuturesUnordered, StreamExt as _};
+use phux_agent_session::session::AgentSessionResource as _;
 use phux_core::ids::ResourceId;
-use phux_resource::agent_session::AgentSessionResource as _;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::resource::ResourceHandle;
-use crate::resource::agent_session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
 use crate::runtime::apps::StreamUpgrade;
 use crate::state::upgrade_blob::RebuiltSession;
 use crate::state::{ServerState, SharedState};
 use crate::upgrade::blob::{AgentSessionBlob, AgentStreamCut};
+use phux_agent_session::session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
 
 pub(crate) const AGENT_ROLLBACK_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -207,13 +207,15 @@ pub(crate) fn rebuild(
         log_bytes,
         carried_cut(carried),
     );
-    if let (Some(parent_handle), Ok(session)) = (parent_handle, bundle.handle.agent_session()) {
+    let agent_parent = parent_handle
+        .and_then(|handle| handle.companion::<phux_agent_session::parent::AgentParent>());
+    if let (Some(agent_parent), Ok(session)) = (agent_parent, bundle.handle.agent_session()) {
         // The parent's mailbox is fresh, so this cannot be full.
-        let _ = parent_handle
-            .control
-            .try_send(crate::resource::ControlRequest::BindAgentSession {
+        let _ = agent_parent.mailbox.try_send(
+            phux_agent_session::parent::AgentParentRequest::BindSession {
                 append: session.append.clone(),
-            });
+            },
+        );
     }
     RebuiltSession {
         handle: bundle.handle,

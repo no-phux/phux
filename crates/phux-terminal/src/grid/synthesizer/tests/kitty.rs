@@ -85,12 +85,22 @@ fn image_payload_obeys_the_synthesis_byte_ceiling() {
 
 #[test]
 fn text_only_snapshot_omits_unplaced_images_before_charging_budget() {
+    const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut source = fresh(10, 5);
     phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut source).unwrap();
     source.resize(10, 5, 8, 16).unwrap();
     source.vt_write(b"visible text");
     let text_budget = synthesize(&source).unwrap().bytes.len() + 128;
-    let payload = "AAAA".repeat(256);
+    // Noise, so the snapshot's zlib payload cannot squeeze under the budget.
+    let mut state = 0x9e37_79b9_u32;
+    let payload: String = (0..1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            char::from(BASE64[(state % 64) as usize])
+        })
+        .collect();
     source.vt_write(format!("\x1b_Ga=t,f=32,s=16,v=12,i=9,q=2;{payload}\x1b\\").as_bytes());
     let graphics = source.kitty_graphics().unwrap();
     assert_eq!(
@@ -121,7 +131,14 @@ fn text_only_snapshot_omits_unplaced_images_before_charging_budget() {
             .data()
             .unwrap()
             .unwrap(),
-        &[0; 768],
+        source
+            .kitty_graphics()
+            .unwrap()
+            .image(9)
+            .unwrap()
+            .data()
+            .unwrap()
+            .unwrap(),
     );
     let snapshot = SnapshotSynthesizer::synthesize_bounded(
         &source,

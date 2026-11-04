@@ -217,7 +217,7 @@ fn bulk_worker_stopped(client_id: ClientId) -> ConnectionEnding {
 }
 
 /// How one connection's frame loop ended.
-pub(in crate::runtime) enum ConnectionEnding {
+pub(crate) enum ConnectionEnding {
     /// EOF or a transport error: nobody is left to tell.
     TransportGone,
     /// The peer broke the protocol; it is owed `ERROR` then `DETACHED`.
@@ -250,7 +250,7 @@ pub(in crate::runtime) struct FrameDispatch<'a, R> {
     pub(super) service_http: &'a crate::runtime::service_http::Exchanges,
 }
 
-pub(in crate::runtime) type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;
+pub(crate) type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;
 
 async fn dispatch_stream_event(
     event: Option<QuicStreamEvent>,

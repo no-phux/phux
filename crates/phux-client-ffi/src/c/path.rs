@@ -280,7 +280,7 @@ mod tests {
                     .with_layers(LayerSet::with(&[Layer::L3]))
                     .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery])),
                 server_id: vec![1; 16],
-                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
                 bootstrap_limits: BootstrapLimits::new(1024, 1024).unwrap(),
             })
             .unwrap();

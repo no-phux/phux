@@ -10,7 +10,7 @@ use tokio::sync::watch;
 
 use crate::hooks::HookEvent;
 use crate::state::{ServerState, SharedState};
-use phux_resource::agent_record::AgentRecordJson;
+use phux_agent_session::agent_record::AgentRecordJson;
 use phux_terminal::actor::program_status::Record;
 
 pub(in crate::runtime) fn spawn_drain(
@@ -191,10 +191,11 @@ fn clear_projection(
     }
     if let Some(pane) = s.resource_from_wire(terminal)
         && let Some(handle) = s.resource_handle(pane)
+        && let Some(agent_parent) = handle.companion::<phux_agent_session::parent::AgentParent>()
     {
-        let _ = handle
-            .control
-            .try_send(crate::resource::ControlRequest::AgentRecordInvalidated);
+        let _ = agent_parent
+            .mailbox
+            .try_send(phux_agent_session::parent::AgentParentRequest::RecordInvalidated);
     }
 }
 

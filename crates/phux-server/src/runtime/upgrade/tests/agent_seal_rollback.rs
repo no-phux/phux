@@ -2,8 +2,8 @@
 
 use super::super::*;
 use super::support::*;
-use crate::resource::agent_session::BootstrapRequest;
 use crate::runtime::apps::agent_session::upgrade::AGENT_ROLLBACK_TIMEOUT;
+use phux_agent_session::session::BootstrapRequest;
 use tokio::sync::oneshot;
 
 /// phux-twft regression: the live server refused every upgrade with
@@ -43,7 +43,7 @@ async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
                 };
                 let agent = s.new_agent_session(live_pane, &facet).unwrap();
                 let token = tokio_util::sync::CancellationToken::new();
-                let bundle = crate::resource::agent_session::AgentSessionActor::build(
+                let bundle = phux_agent_session::session::AgentSessionActor::build(
                     live_pane,
                     "opencode",
                     None,
@@ -115,7 +115,7 @@ async fn a_failed_upgrade_unseals_the_streams_it_cut() {
             assert_eq!(blob.agent_sessions[0].base_seq, 1);
             assert!(matches!(
                 try_append(&append, "{\"type\":\"stop\"}").await,
-                Err(crate::resource::agent_session::AppendRejection::Overflow(_))
+                Err(phux_agent_session::session::AppendRejection::Overflow(_))
             ));
             let bootstrap = seal.bootstraps[0].clone();
             drop(seal);
@@ -153,7 +153,7 @@ async fn a_lifted_seal_accepts_the_next_append_with_no_barrier() {
             assert_eq!(blob.agent_sessions[0].base_seq, 1);
             assert!(matches!(
                 try_append(&append, "{\"type\":\"stop\"}").await,
-                Err(crate::resource::agent_session::AppendRejection::Overflow(_))
+                Err(phux_agent_session::session::AppendRejection::Overflow(_))
             ));
 
             seal.lift().await;

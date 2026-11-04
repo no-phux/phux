@@ -3,11 +3,12 @@
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
-use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
-use super::{ResourceApp, ResourceSpawn, StreamBootstrap};
-use crate::resource::ResourceKind;
+use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
+use crate::resource::{ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
+use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
 use crate::state::SharedState;
 
@@ -38,12 +39,49 @@ impl ResourceApp for AgentSessionApp {
         true
     }
 
-    fn check_takeover(&self) -> Result<(), crate::resource::WrongResourceKind> {
+    fn check_takeover(&self) -> Result<(), WrongResourceKind> {
         // The input lease is a Terminal-facet concept (L1 §1.1).
-        Err(crate::resource::WrongResourceKind {
+        Err(WrongResourceKind {
             required: ResourceKind::Terminal,
             actual: ResourceKind::AgentSession,
         })
+    }
+
+    /// An agent session serves no stream or input frame: it is raw-profile
+    /// with no history beyond its bootstrap (ADR-0103 §4), and input and
+    /// geometry are the Terminal facet's. Every refusal keeps the connection.
+    fn frame<'a>(
+        &'a self,
+        ctx: ResourceFrame<'a>,
+        frame: FrameKind,
+    ) -> LocalBoxFuture<'a, FrameFlow> {
+        async move {
+            let (code, message) = match frame {
+                FrameKind::FrameAck { .. } => (
+                    ErrorCode::MalformedMessage,
+                    "FRAME_ACK is not valid on an agent-session stream".to_owned(),
+                ),
+                FrameKind::HistoryRequest { .. } => (
+                    ErrorCode::WrongResourceKind,
+                    "an agent-session stream retains no history beyond its bootstrap".to_owned(),
+                ),
+                _ => (
+                    ErrorCode::WrongResourceKind,
+                    WrongResourceKind {
+                        required: ResourceKind::Terminal,
+                        actual: ResourceKind::AgentSession,
+                    }
+                    .to_string(),
+                ),
+            };
+            crate::runtime::send_error(&ctx.plumbing.out_tx, code, &message).await;
+            FrameFlow::Continue(())
+        }
+        .boxed_local()
+    }
+
+    fn metrics(&self) -> &'static [phux_perf::Metric] {
+        &[]
     }
 
     fn command<'a>(

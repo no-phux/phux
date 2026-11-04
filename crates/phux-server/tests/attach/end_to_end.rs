@@ -122,7 +122,7 @@ fn hello_ok_advertises_the_reference_server_and_one_incarnation() {
                 .contains(ServerFeature::AcknowledgedInput)
         );
         assert!(server_caps.features.contains(ServerFeature::FileUpload));
-        assert_eq!(selected_profile, BootstrapProfile::SynthesizedVtRaw);
+        assert_eq!(selected_profile, Some(BootstrapProfile::SynthesizedVtRaw));
         assert_eq!(bootstrap_limits, BootstrapLimits::default());
         assert_eq!(server_id.len(), 16);
 
@@ -144,7 +144,7 @@ fn hello_ok_advertises_the_reference_server_and_one_incarnation() {
         assert!(matches!(
             recv_typed(&mut synth).await.1,
             FrameKind::HelloOk {
-                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
                 bootstrap_limits,
                 ..
             } if bootstrap_limits == limits
@@ -242,7 +242,7 @@ fn handshake_violations_are_fatal_with_actionable_errors() {
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: phux_protocol::caps::ServerCapabilities::new(),
             server_id: Vec::new(),
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         };
         let oversized_chunk = FrameKind::BootstrapChunk {

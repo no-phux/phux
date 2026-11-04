@@ -355,6 +355,17 @@ pub(super) fn run_log(
                 error!("server closed the connection while following {target}");
                 ExitCode::from(EXIT_FAILURE)
             }
+            LogEnd::RecordsLost {
+                after_seq,
+                next_seq,
+            } => {
+                error!(
+                    "{target} evicted records {}..{next_seq} before this follower read them; \
+                     rerun to read what is retained",
+                    after_seq.saturating_add(1)
+                );
+                ExitCode::from(EXIT_FAILURE)
+            }
         }
     })
 }

@@ -10,7 +10,7 @@ const END: &str = "<<< phux";
 /// appended when there is none. `comment` starts a line comment in the
 /// file's language (`--` for Lua, `#` for hyprlang).
 pub(super) fn upsert(text: &str, comment: &str, body: &str) -> String {
-    let block = format!("{comment} {BEGIN}\n{}\n{comment} {END}\n", body.trim_end());
+    let block = block(comment, body);
     if let Some((start, end)) = span(text, comment) {
         return format!("{}{block}{}", &text[..start], &text[end..]);
     }
@@ -23,6 +23,34 @@ pub(super) fn upsert(text: &str, comment: &str, body: &str) -> String {
     }
     out.push_str(&block);
     out
+}
+
+/// [`upsert`] for a JSONC object, such as Omarchy's menu extension. A new
+/// block goes just inside the opening brace: its entries end in commas,
+/// which Omarchy's parser forgives before `}`, so the user's own last entry
+/// never needs a comma added.
+pub(super) fn upsert_jsonc(text: &str, body: &str) -> String {
+    if contains(text, "//") {
+        return upsert(text, "//", body);
+    }
+    let block = block("//", body);
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if !line.trim_start().starts_with("//")
+            && let Some(brace) = line.find('{')
+        {
+            let at = offset + brace + 1;
+            let rest = &text[at..];
+            let rest = rest.strip_prefix('\n').unwrap_or(rest);
+            return format!("{}\n{block}{rest}", &text[..at]);
+        }
+        offset += line.len();
+    }
+    format!("{{\n{block}}}\n")
+}
+
+fn block(comment: &str, body: &str) -> String {
+    format!("{comment} {BEGIN}\n{}\n{comment} {END}\n", body.trim_end())
 }
 
 /// `text` without the block, or `None` when it has none. The blank line
@@ -97,6 +125,26 @@ mod tests {
         let edited = format!("{with}-- added later\n");
         let without = strip(&edited, "--").expect("block present");
         assert_eq!(without, format!("{USER}-- added later\n"));
+    }
+
+    #[test]
+    fn jsonc_blocks_open_the_object_and_strip_back_out() {
+        let user = "{\n  // a note\n  \"mine\": {\"label\":\"Mine\"}\n}\n";
+        let with = upsert_jsonc(user, "\"x\": {},");
+        assert!(with.starts_with(&format!(
+            "{{\n// {BEGIN}\n\"x\": {{}},\n// {END}\n  // a note"
+        )));
+        assert_eq!(
+            upsert_jsonc(&with, "\"x\": {},"),
+            with,
+            "running setup again changes nothing"
+        );
+        assert_eq!(strip(&with, "//").as_deref(), Some(user));
+        let fresh = upsert_jsonc("", "\"x\": {},");
+        assert_eq!(
+            fresh,
+            format!("{{\n// {BEGIN}\n\"x\": {{}},\n// {END}\n}}\n")
+        );
     }
 
     #[test]

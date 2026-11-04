@@ -38,7 +38,7 @@ pub(crate) async fn handle_spawn_resource(
     request_id: u32,
     request: SpawnRequest,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    bootstrap_profile: BootstrapProfile,
+    bootstrap_profile: Option<BootstrapProfile>,
     bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
     connection_token: &CancellationToken,

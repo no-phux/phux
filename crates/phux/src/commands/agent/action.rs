@@ -316,7 +316,9 @@ pub(crate) enum AgentAction {
     /// to a pane: the retained records arrive first and, with `--follow`,
     /// live records after them until Ctrl-C or the session closes. There is
     /// no `--timeout`; run a following log under a child-process deadline
-    /// exactly as you would `phux watch`.
+    /// exactly as you would `phux watch`. A follower that falls behind
+    /// records the session has already evicted exits 1 rather than skip
+    /// them.
     Log {
         /// The session: its resource id, the pane hosting it, or `%name`.
         target: String,

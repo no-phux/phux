@@ -49,6 +49,10 @@ pub enum HelloOkError {
     /// Selected bootstrap profile is outside the client's offer.
     #[error("HELLO_OK selected bootstrap profile outside the client's offer: {0:?}")]
     UnadvertisedProfile(BootstrapProfile),
+    /// The server selected no bootstrap profile although this client
+    /// offered Terminal profiles.
+    #[error("HELLO_OK selected no bootstrap profile although this client offered one")]
+    NoProfile,
     /// Selected payload limits exceed the client's offer.
     #[error(
         "HELLO_OK selected bootstrap limits outside the client's offer: chunk={chunk} history_page={history_page}"

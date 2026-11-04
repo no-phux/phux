@@ -175,7 +175,7 @@ async fn every_webtransport_pump_exit_closes_and_disables_the_session() {
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: ServerCapabilities::new(),
             server_id: Vec::new(),
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         });
         assert_eq!(hello.send.len(), 2, "subscribe before attach snapshot");
@@ -402,7 +402,7 @@ fn attached_chunk(payload: &'static [u8]) -> Vec<u8> {
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: ServerCapabilities::new(),
             server_id: Vec::new(),
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         },
         FrameKind::Attached {

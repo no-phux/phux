@@ -72,9 +72,9 @@ pub(super) async fn handle_attach_terminal(
                 (released, s.input_lease_holder(core))
             });
             if restore && effects.role_changed {
-                let _ = handle
-                    .control
-                    .send(ControlRequest::LeaseChanged {
+                handle
+                    .ops()
+                    .lease_changed(crate::resource::LeaseChange {
                         input_holder: holder.map(super::super::wire_client),
                         action: ControlAction::RoleChanged,
                         actor: Some(super::super::wire_client(client_id)),
@@ -82,9 +82,9 @@ pub(super) async fn handle_attach_terminal(
                     .await;
             }
             if released {
-                let _ = handle
-                    .control
-                    .send(ControlRequest::LeaseChanged {
+                handle
+                    .ops()
+                    .lease_changed(crate::resource::LeaseChange {
                         input_holder: None,
                         action: ControlAction::Released,
                         actor: Some(super::super::wire_client(client_id)),
@@ -119,7 +119,7 @@ pub(crate) async fn bootstrap_attach_terminal(
     content_tx: &tokio::sync::mpsc::Sender<Outbound>,
     stream_id: phux_protocol::ids::StreamId,
     client_caps: ClientCapabilities,
-    bootstrap_profile: BootstrapProfile,
+    bootstrap_profile: Option<BootstrapProfile>,
     bootstrap_limits: BootstrapLimits,
     connection_token: &CancellationToken,
     agent_after_seq: Option<u64>,
@@ -227,9 +227,9 @@ pub(crate) async fn announce_role_effects_on(
 ) {
     let changed = effects.role_changed.then_some(ControlAction::RoleChanged);
     for action in [changed, effects.lease].into_iter().flatten() {
-        let _ = handle
-            .control
-            .send(ControlRequest::LeaseChanged {
+        handle
+            .ops()
+            .lease_changed(crate::resource::LeaseChange {
                 input_holder: holder.map(super::super::wire_client),
                 action,
                 actor: Some(super::super::wire_client(client_id)),

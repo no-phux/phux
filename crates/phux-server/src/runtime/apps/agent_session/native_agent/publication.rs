@@ -56,7 +56,7 @@ pub(super) async fn publish(
         &ctx.state,
         &agent,
         bytes,
-        crate::resource::agent_session::NativeAppendIdentity { id, fingerprint },
+        phux_agent_session::session::NativeAppendIdentity { id, fingerprint },
     )
     .await;
     let accepted = match accepted {
@@ -317,7 +317,7 @@ pub(super) fn sync_ask_inventory(state: &SharedState, agent: &ResourceId) {
             };
             s.report_stream_ask(
                 core,
-                phux_resource::agent_asked::AskedPayload {
+                phux_agent_session::asked::AskedPayload {
                     id: question.id,
                     question: text,
                     suggestions: question
@@ -330,7 +330,7 @@ pub(super) fn sync_ask_inventory(state: &SharedState, agent: &ResourceId) {
             )
             .emit_payload()
         } else {
-            s.retract_agent_asked(core, phux_resource::agent_asked::AskedSource::Stream);
+            s.retract_agent_asked(core, phux_agent_session::asked::AskedSource::Stream);
             None
         };
         crate::hub::metadata_mirror::publish_asked_flag(s, &parent, s.agent_is_asked(core));

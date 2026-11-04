@@ -66,9 +66,10 @@ impl Desk {
         info.and_then(|i| i.history).map_or(0, |h| h.unread_rows)
     }
 
-    /// A pane's grid area moved or resized.
-    pub fn laid_out(&mut self, terminal: ResourceId, area: [f32; 2]) {
-        self.areas.insert(terminal, area);
+    /// A pane's grid moved or resized: `[x, y, w, h]` in window points.
+    pub fn laid_out(&mut self, terminal: ResourceId, [x, y, w, h]: [f32; 4]) {
+        self.origins.insert(terminal.clone(), [x, y]);
+        self.areas.insert(terminal, [w, h]);
         self.fit();
     }
 

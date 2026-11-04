@@ -17,6 +17,7 @@ pub enum Cap {
     End,
     PageUp,
     PageDown,
+    Insert,
 }
 
 impl Cap {
@@ -32,6 +33,7 @@ impl Cap {
             Self::End => "end".to_owned(),
             Self::PageUp => "pageup".to_owned(),
             Self::PageDown => "pagedown".to_owned(),
+            Self::Insert => "insert".to_owned(),
         }
     }
 
@@ -47,6 +49,7 @@ impl Cap {
             Self::End => "↘".to_owned(),
             Self::PageUp => "⇞".to_owned(),
             Self::PageDown => "⇟".to_owned(),
+            Self::Insert => "Insert".to_owned(),
         }
     }
 
@@ -101,8 +104,30 @@ impl Chord {
         }
     }
 
+    /// The key with Shift alone.
+    const fn shifted(cap: Cap) -> Self {
+        Self {
+            cap,
+            command: false,
+            ctrl: false,
+            alt: false,
+            shift: true,
+        }
+    }
+
     const fn alt(self) -> Self {
         Self { alt: true, ..self }
+    }
+
+    /// The key with Option (Alt) alone.
+    const fn opt(cap: Cap) -> Self {
+        Self {
+            cap,
+            command: false,
+            ctrl: false,
+            alt: true,
+            shift: false,
+        }
     }
 
     const fn and_ctrl(self) -> Self {
@@ -260,6 +285,19 @@ pub const COMMANDS: &[Command] = &[
     ),
     row!(Shortcut::Inbox, "Open Inbox", [m('i')], [l('i')]),
     row!(Shortcut::Settings, "Settings", [m(',')], [l(',')]),
+    row!(Shortcut::ChangeTheme, "Change Theme", [], []),
+    row!(
+        Shortcut::SwitchSession,
+        "Switch Session",
+        [m('s').shift()],
+        [l('s')]
+    ),
+    row!(
+        Shortcut::InsertPath,
+        "Insert Path",
+        [m('i').shift(), Chord::opt(Cap::Char(';'))],
+        [l(';')]
+    ),
     row!(Shortcut::KeyboardShortcuts, "Keyboard Shortcuts", [], []),
     row!(Shortcut::CheckForUpdates, "Check for Updates", [], []),
     row!(Shortcut::InstallUpdate, "Update Now", [], []),
@@ -351,8 +389,20 @@ pub const COMMANDS: &[Command] = &[
         [l('b')]
     ),
     row!(mac Shortcut::ToggleFullScreen, "Toggle Full Screen", [m('f').and_ctrl()]),
-    row!(Shortcut::Copy, "Copy Selection", [m('c')], [l('c')]),
-    row!(Shortcut::Paste, "Paste", [m('v')], [l('v')]),
+    // Ctrl+Insert and Shift+Insert are what Omarchy's Super+C and Super+V
+    // send a window tagged a terminal.
+    row!(
+        Shortcut::Copy,
+        "Copy Selection",
+        [m('c')],
+        [l('c'), Chord::ctrl(Cap::Insert)]
+    ),
+    row!(
+        Shortcut::Paste,
+        "Paste",
+        [m('v')],
+        [l('v'), Chord::shifted(Cap::Insert)]
+    ),
     row!(Shortcut::SelectAll, "Select All", [m('a')], [l('a')]),
     // ⌘+ is Shift and the = key on most layouts.
     row!(
@@ -441,6 +491,7 @@ mod tests {
             Cap::End => Key::End,
             Cap::PageUp => Key::PageUp,
             Cap::PageDown => Key::PageDown,
+            Cap::Insert => Key::Insert,
         };
         (key, mods)
     }
@@ -505,6 +556,9 @@ mod tests {
         FindSelection,
         Inbox,
         Settings,
+        ChangeTheme,
+        SwitchSession,
+        InsertPath,
         RenameSession,
         RenameTab,
         CloseSession,
@@ -526,6 +580,21 @@ mod tests {
         for action in EVERY_SHORTCUT.iter().copied().chain(tabs) {
             assert!(command(action).is_some(), "{action:?}");
         }
+    }
+
+    #[test]
+    fn option_semicolon_inserts_a_path_though_it_types_a_character() {
+        let mods = Mods {
+            alt: true,
+            ..Mods::default()
+        };
+        let typed = Key::Text("…".to_owned());
+        let at = Some(rune::PhysicalKeyCode::Semicolon);
+        if cfg!(target_os = "macos") {
+            assert_eq!(shortcut(&typed, mods, at), Some(Shortcut::InsertPath));
+        }
+        let other = Some(rune::PhysicalKeyCode::KeyA);
+        assert_eq!(shortcut(&Key::Text("å".to_owned()), mods, other), None);
     }
 
     #[test]

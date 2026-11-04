@@ -373,7 +373,7 @@ impl Fixture {
             .await,
         )
     }
-    pub(super) async fn cut(&self) -> crate::resource::agent_session::AgentSessionBootstrap {
+    pub(super) async fn cut(&self) -> phux_agent_session::session::AgentSessionBootstrap {
         let bootstrap = self.state.with(|s| {
             s.resource_from_wire(&self.agent)
                 .and_then(|core| s.resource_handle(core))
@@ -385,7 +385,7 @@ impl Fixture {
         });
         let (reply, rx) = oneshot::channel();
         bootstrap
-            .send(crate::resource::agent_session::BootstrapRequest {
+            .send(phux_agent_session::session::BootstrapRequest {
                 reply,
                 after_seq: None,
                 seal: None,

@@ -353,7 +353,7 @@ pub struct AgentSessionBlob {
     pub records: Vec<String>,
     /// Atomic native append receipts independent of record retention.
     #[serde(default)]
-    pub native_publications: Vec<crate::resource::agent_session::NativeAppendAccepted>,
+    pub native_publications: Vec<phux_agent_session::session::NativeAppendAccepted>,
     /// Monotonic native publication cursor, including evicted receipts.
     #[serde(default)]
     pub native_publication_high_water: u64,
@@ -375,7 +375,7 @@ pub(crate) struct AgentStreamCut {
     /// See [`AgentSessionBlob::records`].
     pub(crate) records: Vec<String>,
     /// See [`AgentSessionBlob::native_publications`].
-    pub(crate) native_publications: Vec<crate::resource::agent_session::NativeAppendAccepted>,
+    pub(crate) native_publications: Vec<phux_agent_session::session::NativeAppendAccepted>,
     /// See [`AgentSessionBlob::native_publication_high_water`].
     pub(crate) native_publication_high_water: u64,
 }

@@ -65,7 +65,7 @@ fn feature_extension_round_trips_in_hello_ok_without_changing_word_zero() {
         protocol_patch: 0,
         server_caps: caps,
         server_id: vec![1],
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     };
     let mut bytes = BytesMut::new();

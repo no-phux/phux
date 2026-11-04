@@ -2,7 +2,7 @@
 //! terminal or session, step through them.
 
 use phux_client_runtime::control::{
-    ControlOptions, SessionRecovery, SpawnRequest, Status, Topology,
+    ControlOptions, PredictionStyle, SessionRecovery, SpawnRequest, Status, Topology,
 };
 use phux_client_runtime::{Client, ClientOptions, Runtime, Target};
 use phux_protocol::ids::ResourceId;
@@ -215,6 +215,8 @@ pub(super) fn connect(target: Target) -> Result<Client, String> {
                 session_recovery: SessionRecovery::CallerValidated,
                 attach_role: Some(RolePolicy::PRIMARY),
                 scrollback_lines: SCROLLBACK_LINES,
+                // Typed text shows as typed, never underlined while unconfirmed.
+                prediction_style: PredictionStyle::Plain,
                 ..ControlOptions::default()
             },
             ..ClientOptions::default()

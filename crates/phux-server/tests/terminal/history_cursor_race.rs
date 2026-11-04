@@ -57,7 +57,7 @@ async fn connect_native(path: &std::path::Path) -> UnixStream {
         matches!(
             reply,
             FrameKind::HelloOk {
-                selected_profile: BootstrapProfile::NativeState { .. },
+                selected_profile: Some(BootstrapProfile::NativeState { .. }),
                 ..
             }
         ),

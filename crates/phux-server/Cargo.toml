@@ -41,6 +41,7 @@ phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 # The substrate every kind shares.
 phux-resource.workspace = true
+phux-agent-session.workspace = true
 # The Terminal app. The host reaches VT and PTY only through it.
 phux-terminal.workspace = true
 # `GET_SCREEN --format vt` capture encoding and OSC 7501 upgrade replay.
@@ -158,7 +159,7 @@ libghostty-vt.workspace = true
 portable-pty.workspace = true
 # Terminal fixtures for the host's own tests.
 phux-terminal = { workspace = true, features = ["test-support"] }
-phux-resource = { workspace = true, features = ["test-support"] }
+phux-agent-session = { workspace = true, features = ["test-support"] }
 # The fake loopback service the `SERVICE_HTTP_*` tests answer from.
 hyper = { version = "1", default-features = false, features = ["client", "http1", "server"] }
 http-body-util = { version = "0.1", features = ["channel"] }

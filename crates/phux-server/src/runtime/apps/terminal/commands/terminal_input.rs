@@ -39,33 +39,49 @@ pub(crate) fn handle_viewport_resize(
         if viewport.cols == 0 || viewport.rows == 0 {
             return;
         }
-        for terminal_id in s.viewport_terminals(client_id) {
-            if s.retained_exit(terminal_id).is_some() {
-                continue;
-            }
-            let Some((cols, rows)) = s.resolve_terminal_geometry(terminal_id, Some(*viewport))
-            else {
-                continue;
-            };
-            let cell_px = s.resolve_terminal_cell_px(terminal_id);
-            let Some(Ok(terminal)) = s
-                .resource_handle(terminal_id)
-                .map(|handle| handle.terminal())
-            else {
-                continue;
-            };
-            if try_resize(
-                terminal,
-                (cols, rows),
-                cell_px,
-                "VIEWPORT_RESIZE",
-                client_id,
-            ) && let Some(pane) = s.registry_mut().terminal_mut(terminal_id)
-            {
-                pane.dims = (cols, rows);
-            }
+        refit_client_terminals(s, client_id, Some(*viewport), "VIEWPORT_RESIZE");
+    });
+}
+
+/// `client_id` used one of its panes. Under the `active` window-size policy
+/// a view that wasn't already the last one used takes its panes back to
+/// its own size; otherwise nothing happens.
+pub(crate) fn handle_client_activity(state: &SharedState, client_id: ClientId) {
+    state.with_mut(|s| {
+        if s.note_client_activity(client_id) {
+            refit_client_terminals(s, client_id, None, "ACTIVE_VIEW");
         }
     });
+}
+
+/// Recompute every Terminal `client_id` sizes under the window-size policy;
+/// `latest` is the viewport that just changed, for the `latest` policy.
+fn refit_client_terminals(
+    s: &mut crate::ServerState,
+    client_id: ClientId,
+    latest: Option<ViewportInfo>,
+    label: &'static str,
+) {
+    for terminal_id in s.viewport_terminals(client_id) {
+        if s.retained_exit(terminal_id).is_some() {
+            continue;
+        }
+        let Some((cols, rows)) = s.resolve_terminal_geometry(terminal_id, latest) else {
+            continue;
+        };
+        let cell_px = s.resolve_terminal_cell_px(terminal_id);
+        let Some(Ok(terminal)) = s
+            .resource_handle(terminal_id)
+            .map(|handle| handle.terminal())
+        else {
+            continue;
+        };
+        if try_resize(terminal, (cols, rows), cell_px, label, client_id)
+            && let Some(pane) = s.registry_mut().terminal_mut(terminal_id)
+        {
+            pane.dims = (cols, rows);
+        }
+    }
 }
 
 /// The satellite branch of [`handle_terminal_input`]: gate on the caller's

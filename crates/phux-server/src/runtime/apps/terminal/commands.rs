@@ -41,7 +41,7 @@ use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
 };
-use phux_resource::agent_asked::{AskedPayload, AskedSource};
+use phux_agent_session::asked::{AskedPayload, AskedSource};
 use phux_terminal::TerminalInput;
 use phux_terminal::actor::{
     ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalActor,
@@ -68,7 +68,7 @@ pub(crate) use signal::*;
 pub(crate) use spawn::*;
 pub(crate) use terminal_input::*;
 
-pub(crate) use app::TerminalApp;
+pub(crate) use app::{NO_TERMINAL_PROFILE, TerminalApp};
 pub(crate) use attach_resource::*;
 use attach_resource::{
     AttachResourceGeneration, AttachResourcePumpChannels, AttachResourceSession,

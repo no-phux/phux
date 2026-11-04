@@ -311,6 +311,7 @@ pub fn view(desk: &Desk, ink: &Ink) -> El {
         .fill(Color::BLACK.alpha(0.16))
         .transition(Transition::opacity())
         .modal(true, |d: &mut Desk| d.close_inbox())
+        .label("Inbox")
         .child(row().w_full().h_full().child(el().grow(1.0)).child(drawer))
 }
 
