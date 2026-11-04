@@ -23,7 +23,11 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 const SCHEMA_VERSION: u8 = 1;
 
 mod mirror;
+mod surface;
 mod surface_mirror;
+
+pub(crate) use surface::SurfaceAction;
+pub(crate) use surface::run_surface;
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum TreeAction {
@@ -86,117 +90,6 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
-}
-
-/// `phux agent surface open|publish|snapshot|follow`: the same verbs over a
-/// `PixelSurface`, whose documents are PNG images and go to files.
-#[derive(Debug, usage::Subcommands)]
-pub(crate) enum SurfaceAction {
-    /// Open a surface under the pane its producer runs in.
-    Open {
-        /// The parent pane.
-        target: String,
-        /// The window or display the surface mirrors.
-        #[usage(long, value_name = "WINDOW")]
-        window: String,
-        #[usage(long)]
-        json: bool,
-    },
-    /// Replace the surface's image from a PNG file, or stdin.
-    Publish {
-        /// The surface.
-        target: String,
-        /// The PNG; stdin when absent.
-        #[usage(long, value_name = "PATH")]
-        file: Option<PathBuf>,
-        #[usage(long)]
-        json: bool,
-    },
-    /// Write the surface's newest image to a file.
-    Snapshot {
-        /// The surface.
-        target: String,
-        /// Where the PNG goes; stdout when absent.
-        #[usage(long, value_name = "PATH")]
-        out: Option<PathBuf>,
-        #[usage(long)]
-        json: bool,
-    },
-    /// Mirror a macOS window, or the main display, into a surface until Ctrl-C.
-    Mirror {
-        /// The window as `App` or `App:title`, or `display` for the main display.
-        window: String,
-        /// The CoreGraphics window id, instead of a name.
-        #[usage(long, value_name = "ID")]
-        window_id: Option<u32>,
-        /// The pane the surface binds to; this process's own pane when absent.
-        #[usage(long, value_name = "PANE")]
-        pane: Option<String>,
-        /// Milliseconds between captures (default 1000).
-        #[usage(long, value_name = "MS")]
-        interval: Option<u64>,
-        #[usage(long)]
-        json: bool,
-    },
-    /// Write every image as it arrives, each replacing the file.
-    Follow {
-        /// The surface.
-        target: String,
-        /// Where each PNG goes; stdout when absent.
-        #[usage(long, value_name = "PATH")]
-        out: Option<PathBuf>,
-        /// Give up after this many seconds.
-        #[usage(long, value_name = "SECS")]
-        timeout: Option<u64>,
-        #[usage(long)]
-        json: bool,
-    },
-}
-
-pub(super) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> ExitCode {
-    match action {
-        SurfaceAction::Open {
-            target,
-            window,
-            json,
-        } => run_open(Kind::Surface, target, window, *json, socket),
-        SurfaceAction::Publish { target, file, json } => {
-            run_publish(Kind::Surface, target, file.as_deref(), *json, socket)
-        }
-        SurfaceAction::Snapshot { target, out, json } => {
-            run_snapshot(Kind::Surface, target, out.as_deref(), *json, socket)
-        }
-        SurfaceAction::Mirror {
-            window,
-            window_id,
-            pane,
-            interval,
-            json,
-        } => surface_mirror::run_mirror(surface_mirror::MirrorArgs {
-            window,
-            window_id: *window_id,
-            pane: pane.as_deref(),
-            interval_ms: interval.unwrap_or(1000),
-            json: *json,
-            socket,
-        }),
-        SurfaceAction::Follow {
-            target,
-            out,
-            timeout,
-            json,
-        } => run_follow(
-            Kind::Surface,
-            target,
-            Sink {
-                until: None,
-                out: out.as_deref(),
-            },
-            *timeout,
-            *json,
-            socket,
-        ),
-    }
 }
 
 pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode {
@@ -314,11 +207,11 @@ pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
 
 /// Where a followed document goes, and what ends the follow.
 #[derive(Clone, Copy)]
-struct Sink<'a> {
+pub(super) struct Sink<'a> {
     /// Stop as soon as a document contains this text (trees).
-    until: Option<&'a str>,
+    pub(super) until: Option<&'a str>,
     /// Write each document to this file instead of stdout (surfaces).
-    out: Option<&'a std::path::Path>,
+    pub(super) out: Option<&'a std::path::Path>,
 }
 
 /// The width and height a PNG's `IHDR` names, when `bytes` starts like one.
@@ -400,7 +293,13 @@ fn print_document(
     ExitCode::SUCCESS
 }
 
-fn run_open(kind: Kind, target: &str, app: &str, json: bool, socket: Option<PathBuf>) -> ExitCode {
+pub(super) fn run_open(
+    kind: Kind,
+    target: &str,
+    app: &str,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
     if app.trim().is_empty() {
         return json_err::emit(
             json,
@@ -444,7 +343,7 @@ fn run_open(kind: Kind, target: &str, app: &str, json: bool, socket: Option<Path
     })
 }
 
-fn run_publish(
+pub(super) fn run_publish(
     kind: Kind,
     target: &str,
     file: Option<&std::path::Path>,
@@ -514,7 +413,7 @@ fn run_publish(
     })
 }
 
-fn run_snapshot(
+pub(super) fn run_snapshot(
     kind: Kind,
     target: &str,
     out: Option<&std::path::Path>,
@@ -538,7 +437,7 @@ fn run_snapshot(
     })
 }
 
-fn run_follow(
+pub(super) fn run_follow(
     kind: Kind,
     target: &str,
     sink: Sink<'_>,
