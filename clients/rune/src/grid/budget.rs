@@ -413,8 +413,10 @@ fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
             let _ = replica.client.take_outbound();
             runtime.key(KeyEvent {
                 key: key.clone(),
+                // Alt, not Shift: Shift+Insert is Paste, what Omarchy's
+                // Super+V sends a terminal.
                 mods: Mods {
-                    shift: true,
+                    alt: true,
                     ..Mods::default()
                 },
             });
@@ -438,7 +440,7 @@ fn non_typing_keys_follow_runtime_input_and_stop_at_settings() {
                 assert_eq!(terminal, &replica.terminal);
                 assert_eq!(event.key, physical);
                 assert_eq!(event.action, KeyAction::Press);
-                assert_eq!(event.mods, ModSet::SHIFT);
+                assert_eq!(event.mods, ModSet::ALT);
                 assert_eq!(event.text, None);
             }
         }

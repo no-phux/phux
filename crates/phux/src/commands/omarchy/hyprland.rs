@@ -4,6 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
+/// Phux Rune's Wayland `app_id`, escaped for the regex both dialects match a
+/// window's class against in full.
+const RUNE_CLASS: &str = "sh\\.phux\\.rune";
+
 pub(super) struct Hyprland {
     lua: bool,
     pub(super) bindings: PathBuf,
@@ -35,22 +39,28 @@ impl Hyprland {
     }
 
     /// Super+Ctrl+Return opens phux, Super+Ctrl+K lists its keys. Omarchy
-    /// gives these two keys to its preinstalled multiplexer.
+    /// gives these two keys to its preinstalled multiplexer. Phux Rune's
+    /// window is tagged a terminal, so Omarchy's universal Super+C and
+    /// Super+V reach it as Ctrl+Insert and Shift+Insert, as in Ghostty.
     pub(super) fn bindings_block(&self, phux: &str) -> String {
         let menu = format!(
             "sh -c '{phux} omarchy keys | omarchy-menu-select \"Phux keybindings\" -- --width 800'"
         );
         if self.lua {
+            // A Lua string spells a regex backslash twice.
+            let class = RUNE_CLASS.replace('\\', "\\\\");
             format!(
                 "o.rebind(\"SUPER + CTRL + RETURN\", \"Phux\", \"omarchy-launch-terminal {phux}\")\n\
-                 o.rebind(\"SUPER + CTRL + K\", \"Phux keybindings\", [[{menu}]])"
+                 o.rebind(\"SUPER + CTRL + K\", \"Phux keybindings\", [[{menu}]])\n\
+                 o.window(\"{class}\", {{ tag = \"+terminal\" }})"
             )
         } else {
             format!(
                 "unbind = SUPER CTRL, RETURN\n\
                  bindd = SUPER CTRL, RETURN, Phux, exec, uwsm-app -- xdg-terminal-exec {phux}\n\
                  unbind = SUPER CTRL, K\n\
-                 bindd = SUPER CTRL, K, Phux keybindings, exec, {menu}"
+                 bindd = SUPER CTRL, K, Phux keybindings, exec, {menu}\n\
+                 windowrule = tag +terminal, class:^({RUNE_CLASS})$"
             )
         }
     }
@@ -87,6 +97,7 @@ mod tests {
             "o.rebind(\"SUPER + CTRL + RETURN\", \"Phux\", \"omarchy-launch-terminal /usr/bin/phux\")"
         ));
         assert!(binds.contains("[[sh -c '/usr/bin/phux omarchy keys | omarchy-menu-select"));
+        assert!(binds.contains("o.window(\"sh\\\\.phux\\\\.rune\", { tag = \"+terminal\" })"));
         assert_eq!(
             lua.autostart_block("phux"),
             "o.launch_on_start(\"phux server --ensure\")"
@@ -95,6 +106,10 @@ mod tests {
         assert!(conf.bindings_block("phux").contains(
             "bindd = SUPER CTRL, RETURN, Phux, exec, uwsm-app -- xdg-terminal-exec phux"
         ));
+        assert!(
+            conf.bindings_block("phux")
+                .contains("windowrule = tag +terminal, class:^(sh\\.phux\\.rune)$")
+        );
         assert_eq!(
             conf.autostart_block("phux"),
             "exec-once = uwsm-app -- phux server --ensure"
