@@ -4,7 +4,8 @@
 //! to empty rows rather than panicking inside an assertion helper.
 
 use libghostty_vt::Terminal as GhosttyTerminal;
-use libghostty_vt::screen::CellWide;
+use libghostty_vt::screen::{Cell, CellWide};
+use libghostty_vt::terminal::{Point, PointCoordinate, ScrollViewport};
 use phux_protocol::render_pool::{RenderPool, RenderWalk};
 
 /// One terminal per `Screen`, so the pool identity never changes.
@@ -15,6 +16,8 @@ const POOL_GENERATION: u128 = 0;
 pub enum ScreenError {
     #[error("libghostty: {0}")]
     Ghostty(#[from] libghostty_vt::Error),
+    #[error("synthesis: {0}")]
+    Synthesis(#[from] phux_terminal::grid::SynthesisError),
 }
 
 /// A self-contained VT oracle (`!Send`: owns a libghostty `Terminal`).
@@ -28,9 +31,14 @@ pub struct Screen {
 impl Screen {
     /// A fresh `cols x rows` screen with the client's live scrollback budget.
     pub fn new(cols: u16, rows: u16) -> Result<Self, ScreenError> {
+        Self::with_scrollback(cols, rows, 100)
+    }
+
+    /// A fresh `cols x rows` screen retaining `lines` of scrollback.
+    pub fn with_scrollback(cols: u16, rows: u16, lines: usize) -> Result<Self, ScreenError> {
         let terminal = {
             let mut terminal = GhosttyTerminal::new(cols, rows)?;
-            terminal.set_scrollback_max_lines(Some(100))?;
+            terminal.set_scrollback_max_lines(Some(lines))?;
             terminal
         };
         Ok(Self {
@@ -68,6 +76,43 @@ impl Screen {
     /// All rows joined with `\n`.
     pub fn snapshot_text(&mut self) -> String {
         self.rows_internal().join("\n")
+    }
+
+    /// The terminal's own `(cols, rows)`.
+    pub fn dims(&self) -> Result<(u16, u16), ScreenError> {
+        Ok((self.terminal.cols()?, self.terminal.rows()?))
+    }
+
+    /// Scrollback rows above the active screen.
+    pub fn scrollback_rows(&self) -> Result<usize, ScreenError> {
+        Ok(self.terminal.scrollback_rows()?)
+    }
+
+    /// Scroll the viewport to the oldest retained row.
+    pub fn scroll_to_top(&mut self) {
+        self.terminal.scroll_viewport(ScrollViewport::Top);
+    }
+
+    /// Scroll the viewport back to the live screen.
+    pub fn scroll_to_bottom(&mut self) {
+        self.terminal.scroll_viewport(ScrollViewport::Bottom);
+    }
+
+    /// Whether the viewport cell at `(col, row)` carries styling.
+    pub fn cell_has_styling(&self, col: u16, row: u16) -> bool {
+        self.terminal
+            .grid_ref(Point::Viewport(PointCoordinate {
+                x: col,
+                y: u32::from(row),
+            }))
+            .and_then(|grid_ref| grid_ref.cell())
+            .and_then(Cell::has_styling)
+            .unwrap_or(false)
+    }
+
+    /// The bytes the server would send to reproduce this viewport.
+    pub fn synthesized(&self) -> Result<Vec<u8>, ScreenError> {
+        Ok(phux_terminal::grid::synthesize(&self.terminal)?.bytes)
     }
 
     fn rows_internal(&mut self) -> Vec<String> {

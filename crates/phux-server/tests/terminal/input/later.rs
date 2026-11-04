@@ -187,16 +187,3 @@ fn routed_paste_honors_dec_2004_and_trust() {
         );
     });
 }
-
-/// phux-7vx: ghostty's terminfo advertises `fullkbd`, which makes ncurses apps
-/// (htop) push kitty flags they cannot parse back. The default shell must
-/// stay on `xterm-256color` until that is proven safe.
-#[test]
-fn default_shell_command_advertises_xterm_256color() {
-    let shell = phux_config::shell::resolve_shell(None);
-    let cmd = phux_terminal::actor::default_shell_command(&shell, false);
-    assert_eq!(
-        cmd.get_env("TERM").and_then(|t| t.to_str()),
-        Some("xterm-256color")
-    );
-}

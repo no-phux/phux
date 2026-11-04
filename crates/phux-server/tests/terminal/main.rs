@@ -1,4 +1,6 @@
-//! Terminal actors, input encoding, synthesis, and replay integration tests.
+//! Terminal behavior over the wire: input routing, output, process facets, and
+//! history against a running server. The engine alone is `phux-terminal`'s
+//! `engine` suite.
 
 #![allow(
     clippy::expect_used,
@@ -8,13 +10,10 @@
 )]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
-mod actor;
 mod common;
 mod history_cursor_race;
 mod input;
-mod key_encode_snapshot;
 mod kip_roundtrip;
 mod lagged_consumer_resync;
 mod live_output;
 mod process_facet;
-mod synthesis;

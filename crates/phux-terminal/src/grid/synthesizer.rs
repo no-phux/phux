@@ -235,7 +235,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     }
 
     /// Synthesize supported image protocols without exceeding `max_bytes`.
-    pub fn synthesize_bounded(
+    pub(crate) fn synthesize_bounded(
         terminal: &GhosttyTerminal<'alloc, '_>,
         max_bytes: usize,
         image_protocols: phux_protocol::caps::ImageProtocolSet,
@@ -288,7 +288,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
 
     /// Synthesize viewport and scrollback within one aggregate byte ceiling,
     /// omitting unsupported image protocols before allocating replay payloads.
-    pub fn synthesize_with_scrollback_bounded(
+    pub(crate) fn synthesize_with_scrollback_bounded(
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         scrollback: Option<u32>,

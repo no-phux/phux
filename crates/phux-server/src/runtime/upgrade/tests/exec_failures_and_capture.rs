@@ -68,7 +68,7 @@ async fn upgrade_capture_names_what_no_client_has_read() {
     let state = SharedState::new();
     state.with_mut(|s| {
         let (_session, pane) = s.seed_session("quiet");
-        let bundle = phux_terminal::actor::TerminalActor::new(80, 24).expect("actor");
+        let bundle = crate::runtime::apps::terminal::test_support::blank_terminal(80, 24);
         let _ = s.register_resource_handle(pane, bundle.handle, bundle.token);
         let _ = s.seed_empty_session("empty").expect("seed");
         s.set_upgrade_context(

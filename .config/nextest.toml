@@ -11,8 +11,8 @@ retries = 0
 # — the root cause behind the route_input / reconnect / attach-churn flakes that
 # previously needed per-test `retries` band-aids and quarantines.
 #
-# Bound how many phux-server integration tests (tests/*.rs) run at once. Each
-# spawns a real PTY, server task and libghostty actor, and running them
+# Bound how many phux-server and phux-terminal integration tests (tests/*.rs)
+# run at once. Each spawns a real PTY, server task or libghostty actor, and running them
 # unbounded starves the timing-sensitive ones past their deadlines
 # (WIRE_RECV_TIMEOUT / poll_for_echo) — the root cause behind the
 # route_input / reconnect / attach-churn flakes that once needed per-test
@@ -29,7 +29,7 @@ pty-serial = { max-threads = 4 }
 pty-ci = { max-threads = 2 }
 
 [[profile.default.overrides]]
-filter = 'package(phux-server) & kind(test)'
+filter = '(package(phux-server) + package(phux-terminal)) & kind(test)'
 test-group = 'pty-serial'
 
 # One LIB test needs the same treatment, and the filter above misses it
@@ -218,14 +218,14 @@ filter = """package(phux) & (
 )"""
 threads-required = 'num-cpus'
 
-# The `ci` profile differs from `default` in one setting: its phux-server
-# integration tests run 2 at a time on the 4-vCPU hosted runners, not 4.
+# The `ci` profile differs from `default` in one setting: its phux-server and
+# phux-terminal integration tests run 2 at a time on the 4-vCPU hosted runners, not 4.
 # nextest consults the selected profile's overrides first and falls back to
 # profile.default, so everything else above (retries, the threads-required
 # clears) still applies. It also emits a junit report. CI lanes opt in with NEXTEST_PROFILE=ci; local
 # runs never select it.
 [[profile.ci.overrides]]
-filter = 'package(phux-server) & kind(test)'
+filter = '(package(phux-server) + package(phux-terminal)) & kind(test)'
 test-group = 'pty-ci'
 
 [profile.ci.junit]
