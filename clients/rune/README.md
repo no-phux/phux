@@ -104,7 +104,14 @@ session (or `--session NAME`). It never creates a session on its own.
   and a bell. Session headers count what needs you; ⌘J jumps to the next.
   ⌘B folds the sidebar.
 - **Command palette.** ⌘K (or ⌘P) reaches every terminal, session and
-  action by fuzzy search.
+  action by fuzzy search. **Keyboard Shortcuts: Essentials** lists the keys
+  worth learning first, each row runnable, with every chord one row further;
+  the first time a window connects, a tip offers it. Hovering **+ Terminal**
+  or **+ Session** at the foot of the sidebar shows the keys that do the same.
+- **Insert Path.** ⌥; (or ⇧⌘I) opens a picker at the cursor that searches
+  the focused pane's folder on the machine it runs on, as the GPUI desktop's
+  does. Return types the path at the prompt as one shell word, relative to
+  that folder and quoted only when it must be.
 - **Splits.** The selected session's arrangement is the server-stored split
   tree the terminal UI uses, so both show the same layout. Split, move
   between panes, zoom one, drag dividers; new splits and ratios are written
@@ -121,16 +128,29 @@ session (or `--session NAME`). It never creates a session on its own.
   its path, for agents that read images. Files pasted or dropped on a pane
   type as quoted paths.
 - **Links.** Hold ⌘ over a URL (or an OSC 8 hyperlink) to underline it and
-  see where it goes in the status line; ⌘-click opens it. URLs wrapped
+  see where it goes in the title bar; ⌘-click opens it. URLs wrapped
   across rows count. Only `http`, `https` and `mailto` open.
 - **History.** Scrolled back, a pane shows where it is in its history and a
   pill back to the live tail that counts the lines that arrived meanwhile.
-- **Settings.** ⌘, picks a theme (eight built in, or the OS; arrow keys
-  preview it live on your terminals), text size, notifications, Option as
-  Meta, and copy on select. All of it is remembered between launches. A
-  program's own OSC colours beat the theme.
-- **Sessions.** Double-click a session to rename it; the palette also renames
+- **Settings.** ⌘, picks a theme (the GPUI desktop's twenty-six, or the
+  OS; arrow keys preview it live on your terminals), text size,
+  notifications, Option as Meta, and copy on select. All of it is remembered
+  between launches. A program's own OSC colours beat the theme.
+- **Themes.** The palette switches themes by name (`nord`) and **Change
+  Theme** lists them with each one shown live as the highlight moves:
+  Return keeps it, Escape puts the old one back. A Ghostty config on this machine (`theme`,
+  `config-file` includes, `palette`, `background`, `foreground`,
+  `cursor-color`) is read at launch and offered as the **Ghostty** theme,
+  the way the GPUI desktop reads it. On Omarchy, the **Omarchy** theme
+  takes the current Omarchy theme's colours and accent, repaints within
+  seconds when you switch Omarchy themes, and is the default until you pick
+  another. `just rune-demo` films the themes into
+  `clients/rune/demo/themes.mp4`.
+- **Sessions.** ⇧⌘S switches session by name, or creates one with the name
+  you typed. Double-click a session to rename it; the palette also renames
   tabs and ends sessions.
+- **Typing.** What you type shows as typed while the server confirms it,
+  never underlined.
 - Closing the window detaches; the server and its programs keep running. The
   window title follows the focused terminal.
 
@@ -169,14 +189,16 @@ cancels).
 
 - One window. Tabs can't be dragged to reorder yet, and the server has no
   call to rename a single terminal.
-- No Kitty images, custom themes or font choice. Find covers the history the
+- No Kitty images or font choice; the only custom themes are Ghostty's and Omarchy's. Find covers the history the
   window has loaded, not the server's whole scrollback.
 - A question raised through a hook before the window connected has no text
   to show (the server keeps only that one is pending); its card opens the
   terminal instead. Title-sentinel asks always show.
 - A URL that fills a row is assumed to continue on the next one (frames
-  carry no soft-wrap flag yet); the status line shows the joined target
+  carry no soft-wrap flag yet); the title bar shows the joined target
   before a ⌘-click.
+- Screen readers get Settings, the buttons and notices, but terminal text,
+  the palette's results, tabs and sidebar rows don't read well yet.
 - No DMG yet; the ZIP is the macOS download.
 - Wayland is not qualified; see [Install](#install).
 - The update check draws off-screen, so a build that only fails when opening a
@@ -188,7 +210,9 @@ cancels).
 ## Develop
 
 Rune is pinned to a `dev` revision in `Cargo.toml`; this crate has its own
-workspace and lock so Rune's graph stays out of the rest of phux.
+workspace and lock so Rune's graph stays out of the rest of phux. The
+[Rune upstream follower](../../scripts/rune-upstream/README.md) moves the pin
+twice a day.
 
 ```sh
 cd clients/rune
@@ -208,6 +232,14 @@ without a window:
 cargo run -- --socket /tmp/phux-test/s --snap out.png --at 3 --size 1100x720
 cargo run -- --socket /tmp/phux-test/s --script typing.json --snap out.png --at 5
 ```
+
+`--tree out.json` writes the element tree, with the accessibility tree that
+screen readers and automation tools see under `"accessibility"`. Every window
+exposes that tree to the OS through Rune's
+[accessibility](https://github.com/anomalyco/rune/tree/dev/crates/rune#accessibility)
+support, which is also how tools drive a real window now that Rune's strobe
+bridge is gone. Headless time does not synchronize phux's server workers;
+wait for the attached terminal before measuring an interaction.
 
 Notifications need the signed bundle (`rune_mac::notify::available`); `cargo
 run` can't post, and Settings says so.

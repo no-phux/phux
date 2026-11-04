@@ -121,6 +121,102 @@ fn a_fresh_input_origin_badges_the_label_until_it_expires() {
     );
 }
 
+fn kitty_commands(bytes: &[u8], action: &[u8]) -> usize {
+    let needle = [b"\x1b_Ga=".as_slice(), action].concat();
+    bytes.windows(needle.len()).filter(|w| *w == needle).count()
+}
+
+fn paint_slot(slot: &mut PaneSlot) -> Vec<u8> {
+    let mut out = Vec::new();
+    slot.renderer
+        .render(ReplicaWalk::for_test(&slot.terminal), &mut out)
+        .expect("render");
+    out
+}
+
+/// An image on screen is sent once: clean repaints and keystrokes that
+/// repaint the prompt under it carry no image bytes and keep the front
+/// buffer, so the keystroke repaints only its own cells.
+#[test]
+fn kitty_images_are_sent_once_not_on_every_repaint() {
+    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
+    slot.terminal
+        .vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;/wAA/w==\x1b\\\r\n\r\n$ ");
+    let first = paint_slot(&mut slot);
+    assert_eq!(kitty_commands(&first, b"t,"), 1);
+    assert_eq!(kitty_commands(&first, b"p,"), 1);
+
+    assert!(paint_slot(&mut slot).is_empty(), "a clean frame is silent");
+    // Two dirty paints: the first may rewrite its row whole (the image's
+    // placement forgot the front), the second must be a cell diff.
+    slot.terminal.vt_write(b"l");
+    let _ = paint_slot(&mut slot);
+    slot.terminal.vt_write(b"s");
+    let typed = paint_slot(&mut slot);
+    assert!(!typed.windows(3).any(|w| w == b"\x1b_G"), "{typed:?}");
+    assert!(
+        !String::from_utf8_lossy(&typed).contains("$ l"),
+        "{typed:?}"
+    );
+}
+
+/// A forced paint and an outside invalidation each assume the outer terminal
+/// lost its images and re-send them once.
+#[test]
+fn kitty_residency_resets_on_forced_paint_and_invalidation() {
+    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
+    slot.terminal
+        .vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;/wAA/w==\x1b\\");
+    let _ = paint_slot(&mut slot);
+
+    let mut forced = Vec::new();
+    slot.renderer
+        .render_at_full(
+            ReplicaWalk::for_test(&slot.terminal),
+            &mut forced,
+            (0, 0),
+            (10, 5),
+        )
+        .expect("forced paint");
+    assert_eq!(kitty_commands(&forced, b"t,"), 1);
+    assert!(paint_slot(&mut slot).is_empty());
+
+    slot.renderer.invalidate_front();
+    assert_eq!(kitty_commands(&paint_slot(&mut slot), b"t,"), 1);
+    assert!(paint_slot(&mut slot).is_empty());
+}
+
+/// An image deleted inside the pane is deleted from the outer terminal.
+#[test]
+fn a_deleted_kitty_image_is_deleted_from_the_outer_terminal() {
+    let mut slot = PaneSlot::new_with_size(10, 5).expect("slot");
+    slot.terminal
+        .vt_write(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,q=2;/wAA/w==\x1b\\");
+    let mut receiver = PaneSlot::new_with_size(10, 5).expect("receiver");
+    receiver.terminal.vt_write(&paint_slot(&mut slot));
+    assert!(
+        receiver
+            .terminal
+            .kitty_graphics()
+            .unwrap()
+            .image(77)
+            .is_some()
+    );
+
+    slot.terminal.vt_write(b"\x1b_Ga=d,d=I,i=77,q=2;\x1b\\");
+    let deleted = paint_slot(&mut slot);
+    assert_eq!(kitty_commands(&deleted, b"d,d=I,i=77,"), 1);
+    receiver.terminal.vt_write(&deleted);
+    assert!(
+        receiver
+            .terminal
+            .kitty_graphics()
+            .unwrap()
+            .image(77)
+            .is_none()
+    );
+}
+
 /// A republish at unchanged geometry must serve fresh rows through an
 /// incremental paint: the kernel's new token reaches the renderer. (The
 /// deterministic guard lives in `phux_protocol::render_pool::tests`.)

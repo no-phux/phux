@@ -1,22 +1,15 @@
-**Phux Rune 0.1.0-alpha.8**: a window that recovers, renders faster, and speaks plainly.
+**Phux Rune 0.1.0-alpha.10**: every machine in the sidebar, and idle that tells you what's still running.
 
-- **Connection recovery.** A dropped connection comes back by itself, and the
-  window says where it stands: starting, connecting, no sessions, or a server
-  that needs updating, each with what to do next.
-- **Faster rendering.** A scrolled row keeps what it already built. Scrolling
-  rebuilds 128 rows where it rebuilt 2,944, and a stream beside an idle split
-  128 where it rebuilt 10,112. Box drawing, shades and Powerline glyphs now
-  line up across cells.
-- **One command table.** The shortcuts, the palette and the native menus run
-  the same commands by the same rules.
-- **⇧⌘W** closes the tab.
-- **Agent attention** shows what needs you without drawing continuously, so an
-  idle window stays idle.
-- **Readable themes and keyboard Settings.** Every theme keeps its text legible,
-  and Settings works without a mouse.
-- **Copy Diagnostics** puts the facts a bug report needs on the clipboard.
-- **Install it** with `curl -fsSL https://phux.sh/install | sh -s -- --rune`.
-
-From alpha.6 this arrives by itself; earlier alphas need one manual download.
-Signed, notarized and stapled. Alpha: one window on one machine. See
-[clients/rune/README.md](https://github.com/no-phux/phux/blob/main/clients/rune/README.md).
+- **Machines in the sidebar.** Your sessions sit under this machine's name,
+  which folds them away. Every other machine follows, folded; open one to see
+  its sessions, and press one to move the window there and open it.
+- **Background work.** A terminal that has gone quiet but still has something
+  running behind it, such as a job sent off with `&` or an agent's background
+  task, shows a hollow ring and the word "background" instead of a plain idle
+  dot. Needs a phux server from 0.118.0 on.
+- **Copy and paste on Omarchy.** Super+C and Super+V copy and paste, as in
+  Omarchy's own terminals, instead of interrupting what's running. Rune now
+  names its window `sh.phux.rune`; `phux omarchy setup` from the next phux release tags it a
+  terminal. Ctrl+Insert and Shift+Insert copy and paste everywhere on Linux.
+- **More keys reach the terminal.** Insert, Print Screen, Scroll Lock and
+  Pause now go through to what runs there.

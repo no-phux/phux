@@ -15,7 +15,7 @@ use phux_protocol::wire::frame::{AttachTarget, DetachReason, ErrorCode, FrameKin
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc};
 
-use phux_terminal::actor::{ConsumerAttachOutcome, PaneOutput};
+use phux_terminal::actor::{ConsumerAttachOutcome, ResourceOutput};
 
 struct DuplexWriter(tokio::io::WriteHalf<tokio::io::DuplexStream>);
 
@@ -56,14 +56,13 @@ fn native_failure_handle() -> (
     mpsc::Receiver<phux_terminal::actor::ConsumerAttachRequest>,
     mpsc::Receiver<phux_terminal::actor::NativeBootstrapRequest>,
 ) {
-    let (output, _output_seed) = broadcast::channel::<PaneOutput>(8);
+    let (output, _output_seed) = broadcast::channel::<ResourceOutput>(8);
     let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
     let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
     (
         crate::resource::ResourceHandle::new(
             None,
             output,
-            mpsc::channel(8).0,
             phux_terminal::actor::TerminalHandle {
                 consumer_attach,
                 consumer_detach: mpsc::channel(8).0,
@@ -162,10 +161,10 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
             assert!(matches!(
                 next_frame(&mut client_read).await,
                 Some(FrameKind::HelloOk {
-                    selected_profile: phux_protocol::caps::BootstrapProfile::NativeState {
+                    selected_profile: Some(phux_protocol::caps::BootstrapProfile::NativeState {
                         codec: EngineCodec::LibghosttySnapshotV1,
                         ..
-                    },
+                    }),
                     ..
                 })
             ));

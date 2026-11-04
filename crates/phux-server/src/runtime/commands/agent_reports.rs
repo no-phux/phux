@@ -37,17 +37,21 @@ pub(crate) async fn handle_report_agent_state(
     };
     let (reply, result) = oneshot::channel();
     let request = if live_session {
-        ControlRequest::SynthesizeAgentStateRecord {
+        phux_agent_session::parent::AgentParentRequest::SynthesizeStateRecord {
             state: reported,
             reply,
         }
     } else {
-        ControlRequest::ReportAgentState {
+        phux_agent_session::parent::AgentParentRequest::ReportState {
             state: reported,
             reply,
         }
     };
-    if handle.control.send(request).await.is_err() {
+    let delivered = match handle.companion::<phux_agent_session::parent::AgentParent>() {
+        Some(agent_parent) => agent_parent.mailbox.send(request).await.is_ok(),
+        None => false,
+    };
+    if !delivered {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor unavailable for REPORT_AGENT_STATE".to_owned(),
@@ -79,7 +83,7 @@ pub(crate) fn handle_subscribe_terminal_events(
     if registered.is_none() {
         return terminal_not_found(terminal_id);
     }
-    super::super::client::ensure_event_pump(state, client_id);
+    crate::runtime::connections::ensure_event_pump(state, client_id);
     debug!(
         ?client_id,
         ?terminal_id,
@@ -125,7 +129,11 @@ pub(crate) fn handle_report_asked(
         transition
     });
     if let Some(payload) = transition.emit_payload() {
-        super::super::client::broadcast_event(state, Some(terminal_id), &payload.into_event());
+        crate::runtime::connections::broadcast_event(
+            state,
+            Some(terminal_id),
+            &payload.into_event(),
+        );
     }
     CommandResult::Ok
 }

@@ -35,6 +35,9 @@ use crate::input::{
 use phux_resource::mailbox::Outbound;
 use phux_resource::{ResourceCore, ResourceHandle, ResourceKind};
 
+/// Depth of the supervisory control mailbox.
+const CONTROL_MAILBOX: usize = 64;
+
 mod ask_marker;
 mod canonical;
 mod construct;
@@ -200,6 +203,10 @@ pub struct TerminalActor {
     set_default_colors_rx: mpsc::Receiver<SetDefaultColorsRequest>,
     screen_rx: mpsc::Receiver<ScreenRequest>,
     upgrade_rx: mpsc::Receiver<UpgradeHandleRequest>,
+    /// Supervisory control (ADR-0033).
+    control_rx: mpsc::Receiver<ControlRequest>,
+    /// Requests addressed to the agent running here.
+    agent_parent_rx: mpsc::Receiver<phux_agent_session::parent::AgentParentRequest>,
     pwd_rx: mpsc::Receiver<PwdRequest>,
     process_rx: mpsc::Receiver<ProcessFacetRequest>,
     resize_rx: ResizeReceiver,
@@ -243,7 +250,7 @@ pub struct TerminalActor {
     /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
     /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,
-    /// Detector output sink, drained by `runtime::client::spawn_agent_state_drain`.
+    /// Detector output sink, drained by `runtime::connections::spawn_agent_state_drain`.
     agent_state_sink: Option<mpsc::Sender<AgentDetectEvent>>,
     /// "Does this pane own a live `AgentSession` child?" (ADR-0103 §5),
     /// handed to the detector when [`Self::run`] builds it.
@@ -251,13 +258,13 @@ pub struct TerminalActor {
     /// The bound `AgentSession` child's producer channel. With one bound, a
     /// hook report is appended to its stream (ADR-0103 §6); a closed channel
     /// behaves like no child.
-    agent_session_append: Option<mpsc::Sender<phux_resource::agent_session::AppendRequest>>,
+    agent_session_append: Option<mpsc::Sender<phux_agent_session::session::AppendRequest>>,
     /// Grid-mutation flag for the detector's slower tick; distinct from
     /// `terminal_dirty_since_tick`, which `tick_emit` clears far more often.
     agent_dirty_since_detect: bool,
     /// Last `phux-ask` title marker, an edge filter so a stable title does
     /// not report per chunk. Changes go out as
-    /// [`AgentDetectEvent::AskSentinel`]; [`phux_resource::agent_asked`] ranks them.
+    /// [`AgentDetectEvent::AskSentinel`]; [`phux_agent_session::asked`] ranks them.
     last_ask: Option<AskMarker>,
     /// An ask edge a full sink refused; retried on the next chunk (parsing
     /// only reruns on a title change).

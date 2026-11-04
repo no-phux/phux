@@ -25,7 +25,7 @@ impl AttachPublication<'_> {
         if self.out_tx.send(Outbound::Frame(frame)).await.is_ok() {
             return true;
         }
-        crate::runtime::client::detach_and_release_consumer_state(self.state, self.client_id);
+        crate::runtime::connections::detach_and_release_consumer_state(self.state, self.client_id);
         false
     }
 
@@ -95,7 +95,7 @@ impl AttachPublication<'_> {
                     // client. The rest of the attach is unaffected.
                     Err(failure) if failure.actor_gone() => continue,
                     Err(_) => {
-                        crate::runtime::client::detach_and_release_consumer_state(
+                        crate::runtime::connections::detach_and_release_consumer_state(
                             self.state,
                             self.client_id,
                         );

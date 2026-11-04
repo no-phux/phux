@@ -112,7 +112,9 @@ pub(crate) fn spawn_pty(
             pixel_width: cols.saturating_mul(cell_w),
             pixel_height: rows.saturating_mul(cell_h),
         })
-        .map_err(|e| TerminalActorError::OpenPty(e.to_string()))?;
+        // The whole chain: portable-pty's top message alone reads `dup of fd
+        // 255 failed`, without the `Too many open files` that explains it.
+        .map_err(|e| TerminalActorError::OpenPty(format!("{e:#}")))?;
 
     clear_upgrade_handoff_env(&mut cmd);
     clear_agent_host_env(&mut cmd);
@@ -218,7 +220,7 @@ pub(super) fn send_pty_chunk(
         Ok(()) => std::ops::ControlFlow::Continue(()),
         Err(TrySendError::Full(event)) => {
             // The actor is behind the child.
-            phux_resource::perf::PTY_READER_BLOCKED.incr();
+            crate::perf::PTY_READER_BLOCKED.incr();
             if tx.blocking_send(event).is_err() {
                 return std::ops::ControlFlow::Break(());
             }

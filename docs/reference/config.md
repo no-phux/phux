@@ -190,6 +190,9 @@ session-name-template = "${cwd-basename}"
 #   "smallest" the smallest view; bigger ones get blank margins (like tmux)
 #   "largest"  the largest view; smaller ones are cropped
 #   "latest"   whichever client resized last
+#   "active"   whichever client you last used (typed, clicked or focused):
+#              pick up the phone and the pane fits it; go back to the
+#              desktop and it fits the desktop again
 #   "manual"   keep the current size
 window-size = "smallest"
 

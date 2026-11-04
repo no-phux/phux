@@ -58,7 +58,9 @@ pub(crate) struct CommandContext {
     pub(crate) client_id: ClientId,
     pub(crate) out_tx: tokio::sync::mpsc::Sender<Outbound>,
     pub(crate) client_caps: ClientCapabilities,
-    pub(crate) profile: BootstrapProfile,
+    /// The Terminal bootstrap profile, or `None` for a connection that
+    /// offered none; a Terminal stream it binds is refused.
+    pub(crate) profile: Option<BootstrapProfile>,
     pub(crate) limits: BootstrapLimits,
     pub(crate) input_lane: Option<InputLaneHandle>,
     /// This connection's cancellation.
@@ -82,7 +84,7 @@ impl CommandContext {
             client_id,
             out_tx: out_tx.clone(),
             client_caps: ClientCapabilities::default(),
-            profile: BootstrapProfile::SynthesizedVtRaw,
+            profile: Some(BootstrapProfile::SynthesizedVtRaw),
             limits: BootstrapLimits::default(),
             input_lane: None,
             token: CancellationToken::new(),
@@ -156,21 +158,11 @@ async fn route_command(
             resource,
             expected,
         } = &command
+            && let Some(result) =
+                crate::runtime::apps::claim_relaunch(ctx, *operation, resource, *expected)
         {
-            match state
-                .with(|s| super::super::organization::native_relaunch_spec(s, resource, *expected))
-            {
-                Ok(Some(spec)) => {
-                    let result = super::super::native_agent::spawn_relaunch(ctx, spec, *operation);
-                    send_result(out_tx, request_id, result).await;
-                    return None;
-                }
-                Err(result) => {
-                    send_result(out_tx, request_id, result).await;
-                    return None;
-                }
-                Ok(None) => {}
-            }
+            send_result(out_tx, request_id, result).await;
+            return None;
         }
         let result = super::super::organization::handle(state, client_id, command, root_token);
         send_result(out_tx, request_id, result).await;

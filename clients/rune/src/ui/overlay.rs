@@ -35,8 +35,10 @@ pub fn link_underline(desk: &Desk, id: &ResourceId, m: &Metrics, ink: &Ink) -> V
         .collect()
 }
 
+/// A glyph to press; `name` is what a screen reader says for it.
 pub(super) fn icon_button(
-    label: &'static str,
+    glyph: &'static str,
+    name: &'static str,
     key: impl Into<String>,
     ink: &Ink,
     press: fn(&mut Desk),
@@ -45,8 +47,9 @@ pub(super) fn icon_button(
         .size(24.0, 24.0)
         .radius(5.0)
         .center()
+        .label(name)
         .on_press(press)
-        .child(text(label).font(CAPTION).color(ink.dim))
+        .child(text(glyph).font(CAPTION).color(ink.dim).a11y_hidden())
 }
 
 /// A key and what it does, as a sheet's footer lists them.
@@ -63,6 +66,7 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
     let notice = desk.notice.as_ref().filter(|_| !desk.inbox.open)?;
     let edge = match notice.kind {
         NoticeKind::Info => ink.separator,
+        NoticeKind::Tip => ink.accent.alpha(0.6),
         NoticeKind::Error => ink.danger.alpha(0.6),
     };
     let toast = row()
@@ -80,8 +84,27 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
         .border(1.0, edge)
         .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
         .transition(Transition::opacity())
-        .child(notice_line(Some(notice), ink))
-        .child(icon_button("✕", "toast-close", ink, Desk::dismiss_notice));
+        .child(notice_line(Some(notice), ink));
+    let toast = match notice.action {
+        Some((label, _)) => toast.child(
+            pressable("toast-offer", ink)
+                .label(label)
+                .px(8.0)
+                .py(3.0)
+                .radius(6.0)
+                .border(1.0, ink.separator)
+                .on_press(Desk::take_offer)
+                .child(text(label).font(CAPTION).color(ink.text)),
+        ),
+        None => toast,
+    };
+    let toast = toast.child(icon_button(
+        "✕",
+        "Dismiss",
+        "toast-close",
+        ink,
+        Desk::dismiss_notice,
+    ));
     // The host gives the words a width to wrap at.
     Some(
         row()
@@ -114,12 +137,20 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
         } else {
             Color::TRANSPARENT
         })
+        .role("switch")
+        .label("Match case")
+        .checked(find.case_sensitive)
         .on_press(Desk::toggle_find_case)
-        .child(text("Aa").font(CAPTION).color(if find.case_sensitive {
-            ink.text
-        } else {
-            ink.dim
-        }));
+        .child(
+            text("Aa")
+                .font(CAPTION)
+                .color(if find.case_sensitive {
+                    ink.text
+                } else {
+                    ink.dim
+                })
+                .a11y_hidden(),
+        );
     let status = find.status(&desk.find_query.text);
     let miss = find.index.is_none() && !desk.find_query.text.is_empty();
     Some(
@@ -152,9 +183,19 @@ pub fn find_bar(desk: &Desk, id: &ResourceId, area: [f32; 2], ink: &Ink) -> Opti
                     .color(if miss { ink.danger } else { ink.dim }),
             )
             .child(case)
-            .child(icon_button("↑", "find-older", ink, |d| d.step_find(-1)))
-            .child(icon_button("↓", "find-newer", ink, |d| d.step_find(1)))
-            .child(icon_button("✕", "find-close", ink, Desk::close_find)),
+            .child(icon_button("↑", "Older match", "find-older", ink, |d| {
+                d.step_find(-1)
+            }))
+            .child(icon_button("↓", "Newer match", "find-newer", ink, |d| {
+                d.step_find(1)
+            }))
+            .child(icon_button(
+                "✕",
+                "Close find",
+                "find-close",
+                ink,
+                Desk::close_find,
+            )),
     )
 }
 

@@ -284,7 +284,7 @@
         {"id":3,"name":"PROTOCOL_PATCH","type":"u16","presence":"required"},
         {"id":4,"name":"SERVER_CAPS","type":"ServerCapabilities","presence":"required"},
         {"id":5,"name":"SERVER_ID","type":"bytes","presence":"required"},
-        {"id":6,"name":"SELECTED_PROFILE","type":"BootstrapProfile","presence":"required"},
+        {"id":6,"name":"SELECTED_PROFILE","type":"BootstrapProfile","presence":"optional"},
         {"id":7,"name":"MAX_CHUNK_BYTES","type":"u32","presence":"required"},
         {"id":8,"name":"MAX_HISTORY_PAGE_BYTES","type":"u32","presence":"required"},
         {"id":9,"name":"COMPRESSION","type":"u8","presence":"optional"}

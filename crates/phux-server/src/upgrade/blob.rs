@@ -353,13 +353,31 @@ pub struct AgentSessionBlob {
     pub records: Vec<String>,
     /// Atomic native append receipts independent of record retention.
     #[serde(default)]
-    pub native_publications: Vec<crate::resource::agent_session::NativeAppendAccepted>,
+    pub native_publications: Vec<phux_agent_session::session::NativeAppendAccepted>,
     /// Monotonic native publication cursor, including evicted receipts.
     #[serde(default)]
     pub native_publication_high_water: u64,
     /// The resource record's key in [`StateBlob::org`]. Additive.
     #[serde(default)]
     pub key: Option<phux_core::ResourceKey>,
+}
+
+/// One agent session's record stream at its upgrade cut: the part of an
+/// [`AgentSessionBlob`] only the engine knows. Not serialized.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentStreamCut {
+    /// See [`AgentSessionBlob::base_seq`].
+    pub(crate) base_seq: u64,
+    /// See [`AgentSessionBlob::dropped`].
+    pub(crate) dropped: u64,
+    /// See [`AgentSessionBlob::ended`].
+    pub(crate) ended: bool,
+    /// See [`AgentSessionBlob::records`].
+    pub(crate) records: Vec<String>,
+    /// See [`AgentSessionBlob::native_publications`].
+    pub(crate) native_publications: Vec<phux_agent_session::session::NativeAppendAccepted>,
+    /// See [`AgentSessionBlob::native_publication_high_water`].
+    pub(crate) native_publication_high_water: u64,
 }
 
 /// A retained pane's exit record (ADR-0124), as the upgrade blob carries it.

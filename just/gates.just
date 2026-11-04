@@ -39,6 +39,7 @@ guards: brand-check shellcheck tools-check docs-check install-surface-check
     bash scripts/check-toolchain-sync.sh
     bash scripts/check-cache-portable.sh
     bash scripts/check-upgrade-fixtures.sh
+    bash scripts/check-upgrade-fixtures_test.sh
     bash scripts/check-e2e-lanes.sh
     bash scripts/check-release-cpu-baselines.sh
     bash scripts/test-demo-pi-setup.sh
@@ -141,7 +142,7 @@ deny:
 # nits (sourced libs shellcheck cannot follow) that are correct as written.
 [group('gates')]
 shellcheck:
-    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh \
+    shellcheck --severity=warning scripts/*.sh scripts/lib/*.sh scripts/ci/*.sh scripts/rune-upstream/*.sh \
       examples/agents/*.sh \
       examples/agents/orchestrate-placed-fleet examples/agents/record-pi-live-fleet examples/agents/tests/*.sh \
       plugins/*/scripts/*.sh

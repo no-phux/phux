@@ -17,7 +17,7 @@ async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
 
     let mut tombstones = Vec::new();
     while let Ok(message) = output.try_recv() {
-        if let PaneOutput::Control {
+        if let ResourceOutput::Control {
             frame: FrameKind::BootstrapTombstone { stream_id, .. },
             ..
         } = message
@@ -83,7 +83,7 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
     let replacement = capture_native_for_pump(&mut actor, owner, stream_a, bootstrap_a2);
     let mut tombstoned = Vec::new();
     while let Ok(message) = output.try_recv() {
-        if let PaneOutput::Control {
+        if let ResourceOutput::Control {
             frame:
                 FrameKind::BootstrapTombstone {
                     stream_id,

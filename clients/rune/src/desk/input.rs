@@ -254,6 +254,9 @@ impl Desk {
             Shortcut::ToggleSidebar => self.toggle_sidebar(),
             Shortcut::Inbox => self.toggle_inbox(),
             Shortcut::Settings => self.toggle_settings(),
+            Shortcut::ChangeTheme => self.open_themes(),
+            Shortcut::SwitchSession => self.open_palette(crate::palette::Mode::Sessions),
+            Shortcut::InsertPath => self.open_paths(),
             Shortcut::CheckForUpdates => self.updater.check_now(),
             Shortcut::InstallUpdate => self.install_update(tx),
             Shortcut::Machines => self.toggle_machines(),
@@ -264,6 +267,7 @@ impl Desk {
             }
             Shortcut::ToggleFullScreen => rune_mac::toggle_full_screen(),
             Shortcut::KeyboardShortcuts => self.show_shortcuts(),
+            Shortcut::EssentialShortcuts => self.show_essentials(),
             Shortcut::JumpToAttention => self.jump_to_attention(),
             Shortcut::SplitRight => self.split(SplitDir::Horizontal),
             Shortcut::SplitDown => self.split(SplitDir::Vertical),

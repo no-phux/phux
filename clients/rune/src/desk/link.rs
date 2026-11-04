@@ -336,7 +336,13 @@ impl Desk {
         next.notice = self.notice.take();
         next.palette_open = self.palette_open;
         next.palette_picked = self.palette_picked;
-        next.palette_shortcuts = self.palette_shortcuts;
+        // A path search belongs to the old connection.
+        next.palette_mode = match self.palette_mode {
+            crate::palette::Mode::Paths => crate::palette::Mode::All,
+            mode => mode,
+        };
+        next.theme_before = self.theme_before;
+        next.settings.theme = self.settings.theme;
         next.settings_open = self.settings_open;
         next.sidebar_open = self.sidebar_open;
         next.wanted = self
@@ -377,6 +383,7 @@ impl Desk {
             self.inbox.relist = true;
         } else {
             self.inbox.alerts.connected();
+            self.offer_tour();
         }
     }
 

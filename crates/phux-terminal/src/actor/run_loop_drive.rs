@@ -155,7 +155,10 @@ impl TerminalActor {
                     self.service_frame_ack(&req, &mut state.tick, &mut state.tick_interval),
 
                 // Supervisory control (ADR-0033): lease broadcasts and signals.
-                Some(req) = self.core.control_rx.recv() => self.handle_control_request(req),
+                Some(req) = self.control_rx.recv() => self.handle_control_request(req),
+
+                // The agent running here: bindings, evidence, invalidation.
+                Some(req) = self.agent_parent_rx.recv() => self.handle_agent_parent_request(req),
 
                 // Disarmed when there is nothing to do (`state_tick_armed`),
                 // so an idle pane has no timer wakeups. Every event that can

@@ -24,6 +24,7 @@ test-support = []
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 phux-resource.workspace = true
+phux-agent-session.workspace = true
 phux-agent-rules.workspace = true
 phux-config.workspace = true
 base64.workspace = true

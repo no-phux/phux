@@ -18,10 +18,10 @@ use sha2::{Digest, Sha256};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use super::attach::{SpawnRequest, handle_spawn_terminal};
 use super::operation_dedupe::{
     Admission, CachedOutcome, Claim, OperationClaim, OperationDomain, OperationKey, join_nothing,
 };
+use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_spawn_terminal};
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 
 /// Handle `SPAWN_RESOURCE`, honoring its idempotency key (field 17).
@@ -38,7 +38,7 @@ pub(crate) async fn handle_spawn_resource(
     request_id: u32,
     request: SpawnRequest,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    bootstrap_profile: BootstrapProfile,
+    bootstrap_profile: Option<BootstrapProfile>,
     bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
     connection_token: &CancellationToken,

@@ -287,3 +287,45 @@ fn closed_resize_delivery_never_advances_registry_geometry() {
         (80, 24)
     );
 }
+
+/// `active`: a phone and a desktop share a pane; the view last used owns
+/// its size, and using the same view again resizes nothing.
+#[test]
+fn active_policy_follows_the_view_last_used() {
+    use phux_config::WindowSize;
+    let state = SharedState::new();
+    let (_, pane) = state.with_mut(|s| s.seed_session("home"));
+    let mut receiver = register_stub(&state, pane);
+    state.with_mut(|s| s.set_window_size(WindowSize::Active));
+    let desk = attach_client(&state, "home");
+    let phone = attach_client(&state, "home");
+    handle_viewport_resize(&state, desk, &ViewportInfo::new(160, 48));
+    handle_viewport_resize(&state, phone, &ViewportInfo::new(44, 30));
+    let size = |receiver: &mut StubRx| {
+        let request = receiver.resize.try_recv().expect("a resize");
+        while receiver.resize.try_recv().is_ok() {}
+        (request.cols, request.rows)
+    };
+    while receiver.resize.try_recv().is_ok() {}
+
+    handle_client_activity(&state, desk);
+    assert_eq!(size(&mut receiver), (160, 48), "typing on the desktop");
+    handle_client_activity(&state, desk);
+    assert!(
+        receiver.resize.try_recv().is_err(),
+        "the view already in use resizes nothing"
+    );
+    handle_client_activity(&state, phone);
+    assert_eq!(size(&mut receiver), (44, 30), "picking up the phone");
+    assert_eq!(
+        state.with(|s| s.registry().terminal(pane).unwrap().dims),
+        (44, 30)
+    );
+
+    state.with_mut(|s| s.set_window_size(WindowSize::Smallest));
+    handle_client_activity(&state, desk);
+    assert!(
+        receiver.resize.try_recv().is_err(),
+        "other policies ignore use"
+    );
+}

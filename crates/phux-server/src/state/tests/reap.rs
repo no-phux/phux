@@ -175,8 +175,8 @@ fn reap_clears_agent_asked_state() {
     let (_sid, pid) = s.seed_session("default");
     s.report_agent_asked(
         pid,
-        phux_resource::agent_asked::AskedSource::Hook,
-        phux_resource::agent_asked::AskedPayload {
+        phux_agent_session::asked::AskedSource::Hook,
+        phux_agent_session::asked::AskedPayload {
             id: "hook".to_owned(),
             question: "Approve?".to_owned(),
             suggestions: Vec::new(),

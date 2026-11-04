@@ -1,5 +1,5 @@
 use super::{
-    CanonicalTerminal, PaneUpgradeHandle, PwdRequest, ScreenReply, ScreenRequest,
+    CanonicalTerminal, ProcessHandoff, PwdRequest, ScreenReply, ScreenRequest,
     SetDefaultColorsRequest, SnapshotBytes, SnapshotRequest, SynthesisError, TerminalActor,
     UpgradeHandleRequest, warn,
 };
@@ -95,7 +95,15 @@ impl TerminalActor {
             // SAFETY: the master guard keeps `fd` open until `dup`
             // returns an independently owned descriptor.
             let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
-            let duplicate = rustix::io::dup(borrowed).ok();
+            let duplicate = rustix::io::dup(borrowed)
+                .inspect_err(|err| {
+                    warn!(
+                        error = %err,
+                        "upgrade: could not duplicate the PTY master; the server may be out of \
+                         file descriptors"
+                    );
+                })
+                .ok();
             drop(master);
             duplicate
         });
@@ -112,7 +120,7 @@ impl TerminalActor {
             });
         let cell_px = (self.cell_px != (0, 0)).then_some(self.cell_px);
         snap.bytes.extend_from_slice(&self.program_status.replay());
-        let _ = req.reply.send(PaneUpgradeHandle {
+        let _ = req.reply.send(ProcessHandoff {
             master_fd,
             child_pid,
             cols: self.cols,

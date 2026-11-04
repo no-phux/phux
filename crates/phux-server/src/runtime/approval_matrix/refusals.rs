@@ -142,7 +142,7 @@ async fn revocation_withdraws_the_requesters_holds() {
             requester.send(&kill(HELD, &world.alpha));
             let id = the_pending_approval(&world.state).await;
             world.state.with_mut(|s| {
-                let _ = crate::runtime::client::release_revoked_consumer_state(s, REQUESTER);
+                let _ = crate::runtime::connections::release_revoked_consumer_state(s, REQUESTER);
             });
             assert!(world.state.with(|s| s.pending_approval_ids().is_empty()));
             assert!(record(&world.state, id).is_none());
@@ -227,7 +227,7 @@ async fn a_reaped_terminal_withdraws_its_holds_before_its_close() {
             requester.send(&kill(HELD, &world.alpha));
             let _ = the_pending_approval(&world.state).await;
             world.state.with_mut(|s| {
-                crate::runtime::client::journal_pane_closed(
+                crate::runtime::connections::journal_pane_closed(
                     s,
                     &world.alpha,
                     None,

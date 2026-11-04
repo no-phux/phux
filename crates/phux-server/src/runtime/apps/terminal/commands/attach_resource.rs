@@ -132,11 +132,13 @@ impl AttachResourceSession<'_> {
                 image_protocols: self.client_caps.image_protocols,
                 live_gate,
                 state_sync_scrollback: Some(phux_terminal::actor::DEFAULT_REPLAY_SCROLLBACK_LINES),
-                bootstrap_max_bytes: crate::runtime::attach::bootstrap_source_ceiling(
-                    crate::runtime::attach::MAX_STAGED_BOOTSTRAP_BYTES,
-                    self.client_caps,
-                ),
-                bootstrap_max_frames: crate::runtime::attach::MAX_STAGED_BOOTSTRAP_FRAMES,
+                bootstrap_max_bytes:
+                    crate::runtime::apps::terminal::attach::bootstrap_source_ceiling(
+                        crate::runtime::apps::terminal::attach::MAX_STAGED_BOOTSTRAP_BYTES,
+                        self.client_caps,
+                    ),
+                bootstrap_max_frames:
+                    crate::runtime::apps::terminal::attach::MAX_STAGED_BOOTSTRAP_FRAMES,
                 bootstrap_chunk_bytes: usize::try_from(self.bootstrap_limits.max_chunk_bytes())
                     .ok()?,
                 // Reliable transport: emit-once is correct (ADR-0042).
@@ -243,7 +245,7 @@ pub(in crate::runtime) struct AttachResourcePumpChannels {
     /// Cancels this generation when a replacement attach supersedes it.
     pub(in crate::runtime) token: CancellationToken,
     /// The pane's broadcast output, subscribed before the prior pump stopped.
-    output_rx: tokio::sync::broadcast::Receiver<crate::resource::PaneOutput>,
+    output_rx: tokio::sync::broadcast::Receiver<crate::resource::ResourceOutput>,
     /// Delivers the published cut, releasing the first forwarded delta.
     pub(in crate::runtime) snapshot_gate: oneshot::Receiver<u64>,
     /// Delivers the post-replay live receiver at the native publication fence.
@@ -264,14 +266,14 @@ impl AttachResourcePumpChannels {
         )]
         profile: phux_protocol::caps::BootstrapStreamProfile,
     ) -> Option<(
-        crate::runtime::attach::OutputPumpStart,
-        tokio::sync::broadcast::Receiver<crate::resource::PaneOutput>,
+        crate::runtime::apps::terminal::attach::OutputPumpStart,
+        tokio::sync::broadcast::Receiver<crate::resource::ResourceOutput>,
     )> {
         let published_cut = tokio::select! {
             () = self.token.cancelled() => return None,
             result = self.snapshot_gate => result.ok()?,
         };
-        let mut start = crate::runtime::attach::OutputPumpStart {
+        let mut start = crate::runtime::apps::terminal::attach::OutputPumpStart {
             published_cut,
             replay: Vec::new(),
             live: None,

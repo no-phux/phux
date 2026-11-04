@@ -28,8 +28,13 @@ async fn bearer_revoke_now_terminates_live_sessions() {
             let accept_state = state.clone();
             let accept_token = root_token.clone();
             let accept_task = tokio::task::spawn_local(async move {
-                crate::runtime::client::accept_loop(&listener, accept_state, accept_token, None)
-                    .await
+                crate::runtime::connections::accept_loop(
+                    &listener,
+                    accept_state,
+                    accept_token,
+                    None,
+                )
+                .await
             });
             crate::runtime::revocation::spawn_revocation_watcher(&state, &root_token);
 

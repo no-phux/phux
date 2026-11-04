@@ -278,7 +278,7 @@ pub(super) async fn relay_stream_establishing(
                 seq: 0,
                 awaits_snapshot: content,
                 resource_kind,
-                bootstrap_profile: content.then_some(ctx.profile),
+                bootstrap_profile: content.then_some(ctx.profile).flatten(),
                 bootstrap_limits: content.then_some(ctx.limits),
             },
         )
@@ -341,7 +341,7 @@ fn settle_satellite_event_filter(
         state.with_mut(|s| s.restore_satellite_scope(client_id, change));
         return;
     }
-    super::super::client::ensure_event_pump(state, client_id);
+    crate::runtime::connections::ensure_event_pump(state, client_id);
 }
 
 /// Install the hub registry scope, with the consumer's filter, that a relayed

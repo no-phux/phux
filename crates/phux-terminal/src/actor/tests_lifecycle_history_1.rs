@@ -170,7 +170,7 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
             actor.expire_native_cursors();
             assert!(matches!(
                 controls.try_recv().expect("expiry control"),
-                PaneOutput::Control {
+                ResourceOutput::Control {
                     frame: FrameKind::HistoryTombstone {
                         reason: HistoryTombstoneReason::Expired,
                         ..

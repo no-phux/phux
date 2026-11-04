@@ -267,6 +267,8 @@ session-name-template = "phux-${cwd-basename}"
 
     let cfg = parse_and_round_trip("[defaults]\nwindow-size = \"largest\"\n");
     assert_eq!(cfg.defaults.window_size, WindowSize::Largest);
+    let cfg = parse_and_round_trip("[defaults]\nwindow-size = \"active\"\n");
+    assert_eq!(cfg.defaults.window_size, WindowSize::Active);
 }
 
 /// Replace the `:COL:` in `path:LINE:COL: message` with `:<col>:` so

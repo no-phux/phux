@@ -23,4 +23,5 @@ include!("agent_record_e2e/identity.rs");
 include!("agent_record_e2e/claude_detector.rs");
 include!("agent_record_e2e/claude_stream.rs");
 include!("agent_record_e2e/live_titles.rs");
+include!("agent_record_e2e/program_status.rs");
 include!("agent_record_e2e/delegation.rs");

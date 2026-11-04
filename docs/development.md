@@ -17,7 +17,7 @@ Two supported environments provide the toolchain. Pick one per shell.
 
 ```sh
 mise install     # or: nix develop
-just doctor      # checks the tools for the native scope; also core, docs, integrations, web, desktop, ci
+just doctor      # checks the tools for the native scope; also core, docs, server, integrations, web, desktop, ci
 ```
 
 `just` is the command runner for this repo, not a third environment. Recipes
@@ -90,7 +90,7 @@ changed under a build: check `rustc -V`, `cargo -V`, `mbx doctor`, then
 | ----------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | docs                          | Git, Bash                                                     | `just docs-check`                                                                  |
 | pure Rust: domain, wire codec | Rust, a linker                                                | `just core-check` or `just crate-check phux-protocol`                              |
-| server, TUI, CLI, FFI         | Rust, Zig, platform packages                                  | `just doctor native`, then `just crate-check phux-server`                          |
+| server, TUI, CLI, FFI         | Rust, Zig, nextest, platform packages                         | `just doctor server`, then `just crate-check phux-server`                          |
 | agent integrations            | Node 26, Bun                                                  | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`, `grok`) |
 | browser client                | Rust wasm target, Node, wasm tools                            | `just doctor web`                                                                  |
 | desktop                       | Apple silicon Mac with Xcode, or Linux with desktop libraries | `just doctor desktop`, then `just desktop-app`                                     |
@@ -217,7 +217,14 @@ just check --preflight            # committed branch vs fetched origin/main; no 
 just check                        # run those lanes: the PR bar
 just crate-check phux-server      # scoped fmt, clippy, rustdoc, tests
 just test                         # cargo nextest run --workspace
+just test-report                  # every test to the end; only unexplained failures
+just test-report --base origin/main   # rerun those on main
 ```
+
+Test processes never inherit `PHUX_*`, so a bare `cargo nextest run` inside a
+pane stays off that pane's server: `scripts/test-env-runner.sh` removes all but
+its listed test knobs, so add a new knob there. Tracked failures on `main` live
+in `scripts/known-failing-tests.txt`.
 
 `just check` uses the same routing and recipes as `ci.yml`. Guards run on
 every change; Rust lint, unit, e2e, browser, desktop and integration lanes

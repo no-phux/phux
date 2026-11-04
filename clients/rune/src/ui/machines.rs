@@ -4,27 +4,26 @@ use rune::{El, TextStyle, col, el, row, text, text_input};
 
 use super::overlay::key_hint;
 use super::settings::section;
-use super::{CAPTION, Ink, LABEL, Sheet, pressable};
+use super::{CAPTION, Ink, LABEL, LABEL_STRONG, Sheet, icons, pressable};
 use crate::desk::Desk;
 use crate::machines::{Host, LOCAL, Peer};
 
 pub fn switch(desk: &Desk, ink: &Ink) -> El {
-    row()
-        .key("machine-switch")
-        .w_full()
-        .px(14.0)
-        .pb(6.0)
-        .gap(4.0)
+    pressable("machine-switch", ink)
+        .h(24.0)
+        .px(6.0)
+        .gap(3.0)
+        .radius(6.0)
+        .min_w(0.0)
         .items_center()
-        .cursor(rune::Cursor::Pointer)
         .on_press(|d: &mut Desk| d.toggle_machines())
         .child(
             text(desk.machines.label().to_owned())
-                .font(CAPTION)
-                .color(ink.dim)
+                .font(LABEL_STRONG)
+                .color(ink.text)
                 .truncate(),
         )
-        .child(text("▾").font(CAPTION).color(ink.dim))
+        .child(rune::icon(&icons::CHEVRON, 12.0).color(ink.dim))
 }
 
 /// A small word to press in a row.

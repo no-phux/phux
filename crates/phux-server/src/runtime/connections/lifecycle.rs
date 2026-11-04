@@ -1,7 +1,7 @@
 use super::dispatch::handle_client;
 use crate::hooks::HookEvent;
 use crate::runtime::ServerError;
-use crate::runtime::input_lane::InputLaneHandle;
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 use crate::transport::{AcceptErrorDisposition, Incoming, WS_REJECTION_WARN_INTERVAL};
 use phux_protocol::PROTOCOL_VERSION;
@@ -99,9 +99,9 @@ fn announce_lease_releases(
         let Some(handle) = s.resource_handle(pane) else {
             continue;
         };
-        let _ = handle
-            .control
-            .try_send(crate::resource::ControlRequest::LeaseChanged {
+        handle
+            .ops()
+            .try_lease_changed(crate::resource::LeaseChange {
                 input_holder: None,
                 action: phux_protocol::wire::frame::ControlAction::Released,
                 actor,

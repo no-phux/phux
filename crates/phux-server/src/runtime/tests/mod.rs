@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::apps::terminal::attach::{self, handle_attach};
 use crate::runtime::config::{
     MAX_SOCKET_PATH_LEN, ServerConfig, ServerError, validate_socket_path_len,
 };
@@ -9,8 +10,8 @@ use crate::runtime::posture::{install_policy_posture, startup_policy};
 use crate::runtime::server::ServerRuntime;
 use crate::runtime::startup::{mirror_config_into_state, open_org_store, resume_session_tree};
 use crate::runtime::{
-    attach, committed_close, handle_attach, handle_terminal_input, handle_terminal_reply,
-    handle_terminal_resize, handle_viewport_resize,
+    committed_close, handle_terminal_input, handle_terminal_reply, handle_terminal_resize,
+    handle_viewport_resize,
 };
 use crate::state::{ClientId, Outbound, SharedState};
 use phux_protocol::caps::ClientCapabilities;
@@ -196,12 +197,8 @@ fn stub_terminal() -> (crate::resource::ResourceHandle, StubRx) {
         resize,
         ..phux_terminal::actor::TerminalHandle::detached_for_test(80, 24)
     };
-    let handle = crate::resource::ResourceHandle::new(
-        None,
-        tokio::sync::broadcast::channel(8).0,
-        channel(8).0,
-        facet,
-    );
+    let handle =
+        crate::resource::ResourceHandle::new(None, tokio::sync::broadcast::channel(8).0, facet);
     let rx = StubRx {
         snapshot: snapshot_rx,
         resize: resize_rx,
@@ -260,7 +257,7 @@ async fn next_frame(out_rx: &mut tokio::sync::mpsc::Receiver<Outbound>) -> Frame
         .expect("outbound closed")
     {
         Outbound::Frame(frame) => frame,
-        other @ Outbound::TerminalError { .. } => {
+        other @ Outbound::FatalError { .. } => {
             panic!("unexpected outbound sentinel: {other:?}")
         }
     }

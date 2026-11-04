@@ -16,7 +16,6 @@ use phux_core::ids::ResourceId;
 use phux_core::resource::ResourceKind;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::CloseReason;
-use phux_resource::agent_session::AgentSessionResource as _;
 
 use super::ServerState;
 
@@ -98,10 +97,7 @@ impl ServerState {
                     .is_some_and(|r| r.kind == ResourceKind::AgentSession)
                     && self
                         .resource_handle(child)
-                        .and_then(|handle| handle.agent_session().ok())
-                        .is_some_and(|session| {
-                            !session.ended.load(std::sync::atomic::Ordering::Relaxed)
-                        })
+                        .is_some_and(|handle| handle.ops().is_live_stream())
             })
     }
 

@@ -24,7 +24,8 @@ macro_rules! connection_frames {
         client_caps: ClientCapabilities,
     },
     /// `HELLO_OK` — server handshake acknowledgement (`docs/protocol.md#handshake`).
-    /// Selects one [`BootstrapProfile`] for the connection's lifetime.
+    /// Selects one [`BootstrapProfile`] for the connection's Terminal
+    /// streams, or none for a client that offered no Terminal profile.
     HelloOk {
         /// Selected major version (wire-breaking axis pre-1.0).
         protocol_major: u16,
@@ -37,8 +38,11 @@ macro_rules! connection_frames {
         server_caps: ServerCapabilities,
         /// Opaque server identity bytes (SPEC §6.1).
         server_id: Vec<u8>,
-        /// Explicit synchronization profile selected for this connection.
-        selected_profile: BootstrapProfile,
+        /// Explicit synchronization profile selected for this connection's
+        /// Terminal streams. `None`, carried as an absent field, when the
+        /// client offered no Terminal profile: the connection is admitted
+        /// and a Terminal stream is refused when it binds.
+        selected_profile: Option<BootstrapProfile>,
         /// Negotiated bootstrap/history payload bounds.
         bootstrap_limits: BootstrapLimits,
     },

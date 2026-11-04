@@ -54,7 +54,7 @@ pub(crate) async fn handle_move_terminal(
                     message: "the session this attach was rooted in was reaped".to_owned(),
                 }))
                 .await;
-            crate::runtime::client::detach_and_release_consumer_state(
+            crate::runtime::connections::detach_and_release_consumer_state(
                 &detached_state,
                 detached_client,
             );

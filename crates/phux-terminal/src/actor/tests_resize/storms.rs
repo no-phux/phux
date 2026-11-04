@@ -35,17 +35,17 @@ async fn rapid_resizes_coalesce_into_one_resync_snapshot() {
             // coalesced snapshot has fired.
             tokio::time::sleep(RESIZE_RESYNC_DEBOUNCE * 4).await;
 
-            // Each resync is one `PaneOutput::Resync`.
+            // Each resync is one `ResourceOutput::Resync`.
             let mut snapshots = 0usize;
             loop {
                 match out.try_recv() {
-                    Ok(PaneOutput::Resync { bytes, .. }) => {
+                    Ok(ResourceOutput::Resync { bytes, .. }) => {
                         debug_assert!(contains_subslice(&bytes, b"\x1b[!p"));
                         snapshots += 1;
                     }
                     // Live output and a lagged drop are both "not a
                     // resync" — skip and keep draining.
-                    Ok(PaneOutput::Live { .. } | PaneOutput::Control { .. })
+                    Ok(ResourceOutput::Live { .. } | ResourceOutput::Control { .. })
                     | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
                     Err(_) => break,
                 }

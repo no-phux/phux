@@ -25,10 +25,10 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, LocalSet};
 use tokio_util::sync::CancellationToken;
 
-use super::client::handle_client;
 use super::test_support::{Feed, Wire, hello, owner_peer, workload_identity};
 use crate::auth::AuthenticatedCredential;
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
+use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, SharedState};
 
 const REQUESTER: ClientId = ClientId(31);

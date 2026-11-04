@@ -85,7 +85,8 @@ Cargo manifests define the actual edges.
 | `phux-client-runtime` | the one client orchestration layer: dial planning, reconnect, relay tunnel, control plane, engine owner thread, grid publication |
 | `phux-client` | headless client: the connection facade and the verbs behind the CLI and MCP |
 | `phux-client-ffi` | the one binding crate: a projection with a C ABI encoder and a UniFFI encoder |
-| `phux-resource` | the kind-neutral substrate: output stream, lifecycle, control, opaque facets, and the agent-session record stream; no VT, no PTY |
+| `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
+| `phux-agent-session` | the `AgentSession` record-stream engine, the `phux.agent/v1` state, asked, and record authority, and the mailbox of a resource that hosts an agent |
 | `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
 | `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |
@@ -233,10 +234,20 @@ same catalog rows authorization uses, and `app_for` answers per-kind questions
 such as how a stream bootstraps. `state/` sits below the apps and never names
 them; what it asks of any resource is the required `ResourceOps` on its handle.
 A new kind does not compile until `app_for` names its app, and neither
-`ResourceApp` nor `ResourceOps` has a default method to inherit. Only
-`runtime/apps/terminal` may name the Terminal engine, and
+`ResourceApp` nor `ResourceOps` has a default method to inherit; a new kind
+also takes one `APPS` row, which a test holds to `app_for`. A surface that is
+not every kind's, such as the `AgentParent` mailbox of a resource that hosts an
+agent, is a companion on the handle, typed by the crate that owns it, so the
+host can use it without naming an engine. Only `runtime/apps/terminal` may name
+the Terminal engine and only `runtime/apps/agent_session` the `AgentSession`
+engine;
 `seam_tests.rs` fails if any host module does. The host holds a launch command
 as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.
+Stream and input frames reach their resource's app through
+`ResourceApp::frame`. Connection negotiation, `VIEWPORT_RESIZE` and client
+engines still assume a Terminal;
+[resource kinds beyond terminals](./resource-kinds.md) is the design that
+removes those assumptions.
 
 The runtime root exports the server interface. Its `server` module assembles
 startup using `startup`, `posture`, `services`, and `listeners`; configuration
@@ -248,8 +259,7 @@ accept and teardown, `hello` authenticates and negotiates, `dispatch` and
 and `writer` owns output ordering and generation fencing. `pane_events`
 journals terminal events; `agent_state` folds detector reports into agent
 metadata. These are server responsibilities; client dialing and reconnect
-remain in `phux-client-runtime`. `runtime::client` is a compatibility alias
-for `runtime::connections`.
+remain in `phux-client-runtime`.
 
 ## Decisions
 

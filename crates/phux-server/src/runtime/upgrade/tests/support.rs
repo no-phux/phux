@@ -1,13 +1,16 @@
 //! Shared test helpers for the upgrade-orchestration test suite.
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use phux_resource::agent_session::AgentSessionResource as _;
+use phux_agent_session::session::AgentSessionResource as _;
 use std::os::fd::AsRawFd;
 
 use super::super::handoff::*;
 use super::super::validate::*;
 use super::super::*;
-use crate::resource::agent_session::AgentSessionBootstrap;
+pub(super) use crate::runtime::apps::agent_session::upgrade::{
+    AgentSessionSeal, AgentSessionUpgrade, carried_sessions, collect_agent_session_cuts,
+};
+use phux_agent_session::session::AgentSessionBootstrap;
 use tokio::sync::oneshot;
 
 pub(super) fn args_as_strings(flags: RuntimeFlags) -> Vec<String> {
@@ -29,8 +32,8 @@ pub(super) fn set_fd_flags(fd: RawFd, flags: rustix::io::FdFlags) {
     rustix::io::fcntl_setfd(borrowed, flags).unwrap();
 }
 
-pub(super) fn no_pty_handoff() -> PaneUpgradeHandle {
-    PaneUpgradeHandle {
+pub(super) fn no_pty_handoff() -> ProcessHandoff {
+    ProcessHandoff {
         master_fd: None,
         child_pid: None,
         cols: 80,
@@ -70,15 +73,13 @@ pub(super) fn write_stub_phux(dir: &Path, body: &str) -> PathBuf {
 /// Append `records` to an agent session's engine, as
 /// `APPEND_RESOURCE_OUTPUT`, returning the engine's verdict.
 pub(super) async fn try_append(
-    append: &mpsc::Sender<crate::resource::agent_session::AppendRequest>,
+    append: &mpsc::Sender<phux_agent_session::session::AppendRequest>,
     records: &str,
-) -> Result<
-    crate::resource::agent_session::AppendAccepted,
-    crate::resource::agent_session::AppendRejection,
-> {
+) -> Result<phux_agent_session::session::AppendAccepted, phux_agent_session::session::AppendRejection>
+{
     let (reply, rx) = oneshot::channel();
     append
-        .send(crate::resource::agent_session::AppendRequest {
+        .send(phux_agent_session::session::AppendRequest {
             bytes: bytes::Bytes::copy_from_slice(records.as_bytes()),
             reply,
             publication: None,
@@ -89,9 +90,9 @@ pub(super) async fn try_append(
 }
 
 pub(super) async fn append_records(
-    append: &mpsc::Sender<crate::resource::agent_session::AppendRequest>,
+    append: &mpsc::Sender<phux_agent_session::session::AppendRequest>,
     records: &str,
-) -> crate::resource::agent_session::AppendAccepted {
+) -> phux_agent_session::session::AppendAccepted {
     try_append(append, records).await.unwrap()
 }
 
@@ -138,8 +139,7 @@ pub(super) fn unexecutable_plan(
         _listener_fd: dup_listener(listener.as_raw_fd()).unwrap(),
         _delegated_listeners: Vec::new(),
         _handoffs: HashMap::new(),
-        agent_seal: seal,
-        _native_seal: None,
+        streams: AgentSessionUpgrade::holding(seal),
     };
     (plan, listener, original)
 }
@@ -153,7 +153,7 @@ pub(super) fn spawn_agent_session(
     native_id: Option<&str>,
 ) -> (
     phux_protocol::ids::ResourceId,
-    mpsc::Sender<crate::resource::agent_session::AppendRequest>,
+    mpsc::Sender<phux_agent_session::session::AppendRequest>,
 ) {
     let facet = phux_core::resource::AgentFacet {
         provider: provider.to_owned(),
@@ -162,7 +162,7 @@ pub(super) fn spawn_agent_session(
     };
     let core = s.new_agent_session(parent, &facet).unwrap();
     let token = tokio_util::sync::CancellationToken::new();
-    let bundle = crate::resource::agent_session::AgentSessionActor::build(
+    let bundle = phux_agent_session::session::AgentSessionActor::build(
         parent,
         provider,
         native_id,
@@ -187,7 +187,7 @@ pub(super) fn old_image_with_agent_sessions(
 ) -> (
     phux_protocol::ids::ResourceId,
     phux_protocol::ids::ResourceId,
-    mpsc::Sender<crate::resource::agent_session::AppendRequest>,
+    mpsc::Sender<phux_agent_session::session::AppendRequest>,
 ) {
     let (sid, live_pane) = s.seed_session("main");
     let live = phux_terminal::actor::TerminalActor::new_with_seed(20, 5, b"live").unwrap();
@@ -206,7 +206,6 @@ pub(super) fn old_image_with_agent_sessions(
         .unwrap();
 
     let _ = s.build_session_snapshot(sid);
-    let _ = s.intern_window_wire(sid);
     s.set_upgrade_context(
         7,
         PathBuf::from("/nonexistent/phux.sock"),
@@ -219,16 +218,12 @@ pub(super) fn old_image_with_agent_sessions(
 /// the seal it holds on the captured sessions.
 pub(super) async fn capture_blob(state: &SharedState) -> (StateBlob, AgentSessionSeal) {
     let context = capture_upgrade_context(state).unwrap();
-    assert_eq!(
-        context.agent_session_senders.len(),
-        1,
-        "only the live pane's session is cut"
-    );
+    let sessions = state.with(carried_sessions);
+    assert_eq!(sessions.len(), 1, "only the live pane's session is cut");
     let panes = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
         .await
         .unwrap();
-    let (agent_sessions, seal) =
-        collect_agent_session_cuts(context.agent_session_senders, Duration::from_secs(2)).await;
+    let (agent_sessions, seal) = collect_agent_session_cuts(sessions, Duration::from_secs(2)).await;
     let blob = reassemble_unchanged_tree(
         state,
         context.listener_fd,
