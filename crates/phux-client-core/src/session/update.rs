@@ -6,6 +6,7 @@ use super::{
     AgentSessionDeclaration, AgentStream, BootstrapId, BootstrapStreamProfile, EffectBuffer,
     EngineAdapter, GenerationId, HistoryPageInput, KernelEffect, KernelError, KernelInput,
     ResourceId, ResourceKind, SessionKernel, StreamId, TombstoneRecord, is_agent_profile,
+    is_tree_profile,
 };
 
 impl<E: EngineAdapter> SessionKernel<E> {
@@ -36,6 +37,11 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 geometry,
                 base_seq,
             } => {
+                if is_tree_profile(profile) {
+                    self.expect_kind(terminal_id, ResourceKind::AccessibilityTree)?;
+                    self.trees.insert(terminal_id.clone());
+                    return Ok(());
+                }
                 if is_agent_profile(profile) {
                     self.agent_bootstrap_begin(
                         terminal_id,
@@ -56,6 +62,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
                         effects,
                     )
                 }
+            }
+            KernelInput::BootstrapChunk { terminal_id, .. }
+            | KernelInput::BootstrapReady { terminal_id, .. }
+            | KernelInput::ResourceOutput { terminal_id, .. }
+            | KernelInput::Tombstone { terminal_id, .. }
+                if self.trees.contains(terminal_id) =>
+            {
+                Ok(())
             }
             KernelInput::BootstrapChunk {
                 terminal_id,

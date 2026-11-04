@@ -66,6 +66,7 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "`phux agent session` internals",
     ),
     ("agent/start.rs", 8, "`phux agent start`"),
+    ("agent/tree.rs", 1, "`phux agent tree`'s connection"),
 ];
 
 /// Literal markers of a hand-rolled wire call, checked with `str::contains`
