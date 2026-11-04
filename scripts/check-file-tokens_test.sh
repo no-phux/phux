@@ -228,7 +228,58 @@ test_head_inheritance() {
     g update-index --chmod=+x big.md
     expect_gate 0 'merge: HEAD blob with staged mode change passes'
     g merge --quit
-    expect_gate 1 'ordinary: same oversized HEAD blob without merge metadata fails'
+    expect_gate 0 'ordinary: oversized HEAD blob with only a mode change did not grow'
+}
+
+test_growth_ratchet() {
+    new_repo ratchet
+    write_bytes "${REPO}/big.md" 25000
+    printf 'keep\n' >>"${REPO}/big.md"
+    expect_gate 0 'ratchet: nothing staged passes'
+    g add big.md
+    expect_gate 1 'ratchet: a new oversized file fails'
+    g commit -q -m oversized-fixture
+    { head -c 25000 "${REPO}/big.md"; printf 'edit\n'; } >"${WORK}/same-size"
+    cp "${WORK}/same-size" "${REPO}/big.md"
+    g add big.md
+    expect_gate 0 'ratchet: a same-size edit of an oversized file passes'
+    write_bytes "${REPO}/big.md" 24000
+    g add big.md
+    expect_gate 0 'ratchet: shrinking an oversized file passes while it stays over the limit'
+    g commit -q -m shrink
+    mkdir "${REPO}/moved"
+    g mv big.md moved/renamed.md
+    expect_gate 0 'ratchet: a pure rename of an oversized file passes'
+    printf 'small edit\n' >>"${REPO}/moved/renamed.md"
+    g add moved/renamed.md
+    expect_gate 1 'ratchet: growing a file through a rename fails'
+    expect_named moved/renamed.md
+    g reset -q --hard
+    write_bytes "${REPO}/unrelated.md" 30000
+    g add unrelated.md
+    expect_gate 1 'ratchet: a similar-sized new file does not borrow a budget'
+    expect_named unrelated.md
+}
+
+test_base_mode() {
+    local start
+    new_repo base-mode
+    start="$(g rev-parse HEAD)"
+    write_bytes "${REPO}/big.md" 25000
+    g add big.md
+    g commit -q --no-verify -m oversized
+    expect_gate 0 'base mode: without --base a clean index has nothing to check'
+    if (cd "$REPO" && "$BASH" "$GATE" --base "$start" 2>"${WORK}/gate.err"); then
+        bad 'base mode: a committed oversized file must fail against its base'
+    else
+        ok 'base mode: a committed oversized file fails against its base'
+    fi
+    expect_named big.md
+    if (cd "$REPO" && "$BASH" "$GATE" --base HEAD 2>"${WORK}/gate.err"); then
+        ok 'base mode: no change against the base passes'
+    else
+        bad "base mode: no change must pass: $(<"${WORK}/gate.err")"
+    fi
 }
 
 test_merge_metadata() {
@@ -343,6 +394,8 @@ test_clean_inheritance
 clean_combination clean-legal 19970 0
 clean_combination clean-oversized 25000 1
 test_head_inheritance
+test_growth_ratchet
+test_base_mode
 test_merge_metadata
 test_linked_worktree
 test_exemptions

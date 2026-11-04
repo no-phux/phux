@@ -163,10 +163,11 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// A `mod tests` body split into its own `tests.rs` file: excluded like an
-/// inline `mod tests` block.
+/// A `mod tests` body split into its own `tests.rs` file, or a submodule
+/// under a `tests/` directory: excluded like an inline `mod tests` block.
 fn is_test_module(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name == "tests.rs")
+        || path.components().any(|part| part.as_os_str() == "tests")
 }
 
 /// Blank out comments and string-literal contents character-for-character,

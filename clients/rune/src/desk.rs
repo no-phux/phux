@@ -146,8 +146,14 @@ pub struct Desk {
     pub palette_open: bool,
     pub palette_query: rune::TextEdit,
     pub palette_picked: usize,
-    /// The palette shows the keyboard shortcuts instead of everything.
-    pub palette_shortcuts: bool,
+    /// What the palette lists.
+    pub palette_mode: crate::palette::Mode,
+    /// The theme a live preview stands in for, restored unless one is chosen.
+    theme_before: Option<Option<&'static crate::theme::Theme>>,
+    /// The path search the palette shows, while it lists paths.
+    pub paths: Option<palette::PathSearch>,
+    /// Each pane's grid origin in window points, from its last layout.
+    origins: HashMap<ResourceId, [f32; 2]>,
     pub sidebar_open: bool,
     /// Find in the focused pane's history, while open.
     pub find: Option<find::Find>,
@@ -308,7 +314,10 @@ impl Desk {
             palette_open: false,
             palette_query: rune::TextEdit::new(""),
             palette_picked: 0,
-            palette_shortcuts: false,
+            palette_mode: crate::palette::Mode::All,
+            theme_before: None,
+            paths: None,
+            origins: HashMap::new(),
             sidebar_open,
             find: None,
             find_query: rune::TextEdit::new(""),
@@ -369,6 +378,7 @@ impl Desk {
     /// the updater without it.
     pub fn listen(&mut self, waker: Waker) {
         self.machines.listen(waker.clone());
+        crate::theme::watch_omarchy(waker.clone());
         self.watch(waker);
         self.dial();
         if !self.launch.can_ensure() {
@@ -391,10 +401,12 @@ impl Desk {
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
+        self.machines.tick_glances(clock, tx);
         let updated = self.pump_updates(tx)
             | self.pump_machines()
             | self.pump_link()
             | self.pump_links()
+            | self.follow_omarchy()
             | self.expire_notice(tx);
         let Some(client) = self.client.clone() else {
             return updated | self.tend_link(tx);
@@ -418,6 +430,7 @@ impl Desk {
             tx.wake_after(Duration::from_millis(250));
         }
         changed |= self.finish_uploads(&client);
+        changed |= self.take_paths(&client);
         changed |= self.sync_alerts();
         changed |= self.tick_inbox(tx);
         self.settle_pointer();

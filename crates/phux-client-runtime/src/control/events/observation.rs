@@ -77,6 +77,7 @@ impl Event {
                 | Self::InputDelivery { .. }
                 | Self::NativeAgentResult { .. }
                 | Self::AgentMetadata { .. }
+                | Self::BackgroundWork { .. }
                 | Self::SessionProject { .. }
                 | Self::ApprovalsChanged
                 | Self::ApprovalDecision { .. }

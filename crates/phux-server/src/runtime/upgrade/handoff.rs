@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::resource::handoff::{PaneUpgradeHandle, UpgradeHandleRequest};
+use crate::resource::handoff::{ProcessHandoff, UpgradeHandleRequest};
 
 use super::UpgradeError;
 
@@ -20,7 +20,7 @@ use super::UpgradeError;
 pub(super) async fn request_pane_handoff(
     pane: phux_core::ids::ResourceId,
     upgrade: &mpsc::Sender<UpgradeHandleRequest>,
-) -> Result<PaneUpgradeHandle, UpgradeError> {
+) -> Result<ProcessHandoff, UpgradeError> {
     let (reply, rx) = oneshot::channel();
     if upgrade.send(UpgradeHandleRequest { reply }).await.is_err() {
         tracing::warn!(
@@ -41,7 +41,7 @@ pub(super) async fn collect_pane_handoffs(
         mpsc::Sender<UpgradeHandleRequest>,
     )>,
     deadline: Duration,
-) -> Result<HashMap<phux_core::ids::ResourceId, PaneUpgradeHandle>, UpgradeError> {
+) -> Result<HashMap<phux_core::ids::ResourceId, ProcessHandoff>, UpgradeError> {
     tokio::time::timeout(deadline, async move {
         let pane_count = handles.len();
         let mut pending = handles

@@ -51,6 +51,11 @@ numbered list, and says that while a pane has an OSC 7501 record and no
 live session, phux ignores hooks, the foreground program, and the screen.
 
 It has not been measured on a live Claude Code, Codex, OpenCode, or pi session, with or without an integration installed.
+The command that records that measurement is
+[scripts/agent-verify](../scripts/agent-verify/README.md). A manual run of
+that command makes billable model calls on the operator's own agent logins.
+CI runs that harness against a stub only. A table of real Mac numbers is
+not checked in.
 
 ## Not shipped
 

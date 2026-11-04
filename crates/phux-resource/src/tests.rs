@@ -16,6 +16,16 @@ impl ResourceOps for StubFacet {
         None
     }
 
+    fn lease_changed(&self, _: LeaseChange) -> Delivery {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn try_lease_changed(&self, _: LeaseChange) {}
+
+    fn retire(&self) -> Delivery {
+        Box::pin(std::future::ready(()))
+    }
+
     fn is_live_stream(&self) -> bool {
         false
     }
@@ -37,6 +47,16 @@ impl ResourceOps for OtherFacet {
         None
     }
 
+    fn lease_changed(&self, _: LeaseChange) -> Delivery {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn try_lease_changed(&self, _: LeaseChange) {}
+
+    fn retire(&self) -> Delivery {
+        Box::pin(std::future::ready(()))
+    }
+
     fn is_live_stream(&self) -> bool {
         false
     }
@@ -50,7 +70,7 @@ fn stub_handle() -> ResourceHandle {
         DEFAULT_OUTPUT_BROADCAST,
     );
     drop(core);
-    ResourceHandle::new(None, channels.output, channels.control, StubFacet(80))
+    ResourceHandle::new(None, channels.output, StubFacet(80))
 }
 
 #[test]
@@ -67,6 +87,19 @@ fn a_facet_resolves_only_for_its_own_kind() {
             actual: ResourceKind::Terminal,
         }
     );
+}
+
+#[test]
+fn a_companion_resolves_by_type_and_the_newest_wins() {
+    let handle = stub_handle();
+    assert_eq!(handle.companion::<u8>(), None);
+    let handle = handle.with_companion(1_u8).with_companion("other");
+    assert_eq!(handle.companion::<u8>(), Some(&1));
+    assert_eq!(
+        handle.clone().with_companion(2_u8).companion::<u8>(),
+        Some(&2)
+    );
+    assert_eq!(handle.companion::<&str>(), Some(&"other"));
 }
 
 #[test]

@@ -8,36 +8,14 @@ use super::plumbing::{
 };
 use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_attach, handle_move_terminal};
 use crate::runtime::apps::terminal::commands::handle_viewport_resize;
-use crate::runtime::apps::terminal::terminal_streams::AttachFrame;
-use crate::runtime::apps::{self, ResourceFrame};
-use crate::state::ClientId;
+use crate::runtime::apps::terminal::terminal_streams::{
+    AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,
+};
+use crate::runtime::apps::{ResourceFrame, app_serving};
 use crate::transport::FrameReader;
+use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind};
-use tracing::{debug, warn};
-
-/// End the connection over a frame no client may send in this phase.
-pub(in crate::runtime) fn direction_invalid(client_id: ClientId, other: &FrameKind) -> FrameFlow {
-    warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
-    FrameFlow::Break(ConnectionEnding::Violation(ConnectionClose {
-        attached_reason: Some("direction-invalid frame"),
-        detach_reason: DetachReason::ProtocolError,
-        code: ErrorCode::InvalidCommand,
-        message: format!("frame is not valid from a client in the negotiated phase: {other:?}"),
-    }))
-}
-
-/// L3 metadata and event-subscription frames.
-const fn is_metadata_frame(frame: &FrameKind) -> bool {
-    matches!(
-        frame,
-        FrameKind::GetMetadata { .. }
-            | FrameKind::SetMetadata { .. }
-            | FrameKind::DeleteMetadata { .. }
-            | FrameKind::ListMetadata { .. }
-            | FrameKind::SubscribeMetadata { .. }
-            | FrameKind::SubscribeEvents { .. }
-    )
-}
+use tracing::debug;
 
 impl<R: FrameReader> FrameDispatch<'_, R> {
     /// Dispatch one admitted frame: one arm per client-to-server kind.
@@ -85,16 +63,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 request_id,
                 command,
             } => return self.command(request_id, command).await,
-            FrameKind::ViewportResize { viewport } => {
-                debug!(
-                    client_id = ?self.client_id,
-                    cols = viewport.cols,
-                    rows = viewport.rows,
-                    "VIEWPORT_RESIZE"
-                );
-                handle_viewport_resize(self.state, self.client_id, &viewport);
-            }
-            frame if apps::frame_resource(&frame).is_some() => {
+            frame if is_input_frame(&frame) || is_stream_frame(&frame) => {
                 return self.resource_frame(frame).await;
             }
             frame if is_metadata_frame(&frame) => return self.metadata(frame).await,
@@ -156,10 +125,21 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         let Some(selection) = self.negotiated.as_ref() else {
             return FrameFlow::Continue(());
         };
+        // A session ATTACH is a Terminal stream: refused, not closed, on a
+        // connection that offered no Terminal profile.
+        let Some(profile) = selection.profile else {
+            crate::runtime::send_error(
+                &self.plumbing.out_tx,
+                ErrorCode::CodecUnavailable,
+                crate::runtime::apps::terminal::commands::NO_TERMINAL_PROFILE,
+            )
+            .await;
+            return FrameFlow::Continue(());
+        };
         debug!(
             client_id = ?self.client_id,
             attach_id,
-            profile = ?selection.profile,
+            ?profile,
             chunk_limit = selection.limits.max_chunk_bytes(),
             history_page_limit = selection.limits.max_history_page_bytes(),
             "ATTACH with immutable bootstrap selection",
@@ -178,7 +158,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             request.role_policy,
             &self.plumbing.out_tx,
             selection.client_caps,
-            selection.profile,
+            profile,
             selection.limits,
             self.root_token,
             &mut self.plumbing.output_pumps,
@@ -238,19 +218,35 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         FrameFlow::Continue(())
     }
 
-    /// A frame about one resource: the app serving its kind answers.
+    /// A frame about one resource's stream or input goes to the app serving
+    /// that resource's kind (see [`is_stream_frame`] and [`is_input_frame`]).
+    /// `VIEWPORT_RESIZE` names no resource: it is the connection's size vote
+    /// for every Terminal it is attached to.
     async fn resource_frame(self, frame: FrameKind) -> FrameFlow {
-        let app = apps::frame_app(self.state, &frame);
-        let request = ResourceFrame {
+        if let FrameKind::ViewportResize { viewport } = frame {
+            debug!(
+                client_id = ?self.client_id,
+                cols = viewport.cols,
+                rows = viewport.rows,
+                "VIEWPORT_RESIZE"
+            );
+            handle_viewport_resize(self.state, self.client_id, &viewport);
+            return FrameFlow::Continue(());
+        }
+        let Some(resource) = frame_resource(&frame) else {
+            return direction_invalid(self.client_id, &frame);
+        };
+        let app = app_serving(self.state, resource);
+        let ctx = ResourceFrame {
             state: self.state,
             client_id: self.client_id,
             token: self.token,
             input_lane: self.input_lane,
-            input_credits: self.input_credits,
             plumbing: self.plumbing,
-            selection: *self.negotiated,
+            negotiated: *self.negotiated,
+            input_credits: self.input_credits,
         };
-        app.frame(request, frame).await
+        app.frame(ctx, frame).await
     }
 
     /// Resource and filesystem frames; any other kind is not valid from a
@@ -357,3 +353,22 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         FrameFlow::Continue(())
     }
 }
+
+/// The resource a stream or input frame is about; `None` for one that
+/// names no resource.
+const fn frame_resource(frame: &FrameKind) -> Option<&WireResourceId> {
+    match frame {
+        FrameKind::InputKey { terminal_id, .. }
+        | FrameKind::InputMouse { terminal_id, .. }
+        | FrameKind::InputFocus { terminal_id, .. }
+        | FrameKind::InputPaste { terminal_id, .. }
+        | FrameKind::InputTerminalReply { terminal_id, .. }
+        | FrameKind::ResizeTerminal { terminal_id, .. }
+        | FrameKind::FrameAck { terminal_id, .. }
+        | FrameKind::HistoryRequest { terminal_id, .. } => Some(terminal_id),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -6,13 +6,14 @@
 //! unchanged.
 
 use bytes::Bytes;
+use phux_agent_session::parent::{AgentParent, AgentParentRequest};
+use phux_agent_session::session::AgentSessionResource as _;
 use phux_protocol::wire::frame::{CommandResult, CommandValue, ErrorCode};
-use phux_resource::agent_session::AgentSessionResource as _;
 use tokio::sync::oneshot;
 use tracing::debug;
 
-use crate::resource::agent_session::{AppendRejection, AppendRequest, StreamEvidence};
 use crate::state::{ClientId, SharedState};
+use phux_agent_session::session::{AppendRejection, AppendRequest, StreamEvidence};
 
 /// Handle `APPEND_RESOURCE_OUTPUT` (ADR-0103 §3), replying with the stamped
 /// `{"seq":…,"ts_ms":…}` header. Only a local owner connection may produce:
@@ -64,7 +65,7 @@ pub(crate) async fn append_native_output(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,
-) -> Result<crate::resource::agent_session::AppendAccepted, CommandResult> {
+) -> Result<phux_agent_session::session::AppendAccepted, CommandResult> {
     append_output(state, terminal_id, bytes, None).await
 }
 
@@ -72,8 +73,8 @@ pub(crate) async fn append_native_publication(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,
-    identity: crate::resource::agent_session::NativeAppendIdentity,
-) -> Result<crate::resource::agent_session::AppendAccepted, CommandResult> {
+    identity: phux_agent_session::session::NativeAppendIdentity,
+) -> Result<phux_agent_session::session::AppendAccepted, CommandResult> {
     append_output(state, terminal_id, bytes, Some(identity)).await
 }
 
@@ -83,8 +84,8 @@ async fn append_output(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     bytes: Bytes,
-    publication: Option<crate::resource::agent_session::NativeAppendIdentity>,
-) -> Result<crate::resource::agent_session::AppendAccepted, CommandResult> {
+    publication: Option<phux_agent_session::session::NativeAppendIdentity>,
+) -> Result<phux_agent_session::session::AppendAccepted, CommandResult> {
     let native_identity = publication.clone();
     let (core, handle) = state
         .with(|s| {
@@ -217,16 +218,15 @@ async fn publish_native_evidence(
     closure: bool,
 ) {
     let (word, reported) = evidence_state(evidence);
-    let parent_handle =
-        state.with(|s| parent.and_then(|parent| s.resource_handle(parent).cloned()));
-    let Some(parent_handle) = parent_handle else {
+    let agent_parent = state.with(|s| agent_parent_of(s, parent));
+    let Some(agent_parent) = agent_parent else {
         state.with_mut(|s| {
             claim_native_evidence(s, agent, session, seq, closure, word);
         });
         return;
     };
     // Waiting for mailbox capacity must not authorize a later stale enqueue.
-    let Ok(permit) = parent_handle.control.reserve().await else {
+    let Ok(permit) = agent_parent.mailbox.reserve().await else {
         return;
     };
     let (reply, rx) = oneshot::channel();
@@ -234,7 +234,7 @@ async fn publish_native_evidence(
         if !claim_native_evidence(s, agent, session, seq, closure, word) {
             return false;
         }
-        permit.send(crate::resource::ControlRequest::ReportStreamState {
+        permit.send(AgentParentRequest::ReportStreamState {
             state: reported,
             reply,
         });
@@ -245,12 +245,23 @@ async fn publish_native_evidence(
     }
 }
 
+/// The agent mailbox of `parent`, if it is live and hosts agents.
+fn agent_parent_of(
+    state: &crate::state::ServerState,
+    parent: Option<phux_core::ids::ResourceId>,
+) -> Option<AgentParent> {
+    state
+        .resource_handle(parent?)?
+        .companion::<AgentParent>()
+        .cloned()
+}
+
 /// Feed a streamed question into the parent's ask ledger (ADR-0036).
 /// Legacy turn completion withdraws asks; SDK questions outlive the turn.
 fn publish_stream_ask(
     state: &SharedState,
     parent: Option<phux_core::ids::ResourceId>,
-    ask: Option<crate::resource::agent_session::StreamAsk>,
+    ask: Option<phux_agent_session::session::StreamAsk>,
     evidence: Option<StreamEvidence>,
     native_publication: bool,
 ) {
@@ -262,7 +273,7 @@ fn publish_stream_ask(
         let payload = if let Some(ask) = ask {
             s.report_stream_ask(
                 parent,
-                phux_resource::agent_asked::AskedPayload {
+                phux_agent_session::asked::AskedPayload {
                     id: ask.id,
                     question: ask.question,
                     suggestions: ask.suggestions,
@@ -274,7 +285,7 @@ fn publish_stream_ask(
             if matches!(evidence, Some(StreamEvidence::Retract))
                 || (!native_publication && matches!(evidence, Some(StreamEvidence::Done)))
             {
-                s.retract_agent_asked(parent, phux_resource::agent_asked::AskedSource::Stream);
+                s.retract_agent_asked(parent, phux_agent_session::asked::AskedSource::Stream);
             }
             None
         };
@@ -305,7 +316,7 @@ async fn publish_stream_evidence(
         StreamEvidence::Done => (Some("done"), Some(ReportedAgentState::Done)),
         StreamEvidence::Retract => (None, None),
     };
-    let parent_handle = state.with_mut(|s| {
+    let agent_parent = state.with_mut(|s| {
         if let Some(facet) = s
             .registry_mut()
             .resource_mut(session)
@@ -313,17 +324,17 @@ async fn publish_stream_evidence(
         {
             facet.state = word.map(str::to_owned);
         }
-        parent.and_then(|parent| s.resource_handle(parent).cloned())
+        agent_parent_of(s, parent)
     });
-    let Some(parent_handle) = parent_handle else {
+    let Some(agent_parent) = agent_parent else {
         return;
     };
     let (reply, rx) = oneshot::channel();
-    let request = crate::resource::ControlRequest::ReportStreamState {
+    let request = AgentParentRequest::ReportStreamState {
         state: reported,
         reply,
     };
-    if parent_handle.control.send(request).await.is_ok() {
+    if agent_parent.mailbox.send(request).await.is_ok() {
         // `Err` means the pane has no detector, not a producer error.
         if let Ok(Err(reason)) = rx.await {
             debug!(%reason, "APPEND_RESOURCE_OUTPUT: parent declined the stream evidence");

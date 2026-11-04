@@ -23,7 +23,7 @@ const TERMINAL_TOKENS: [&str; 12] = [
 
 /// The `AgentSession` engine's API and the app's own modules.
 const AGENT_SESSION_TOKENS: [&str; 6] = [
-    "resource::agent_session",
+    "phux_agent_session::session",
     "AgentSessionActor",
     "AgentSessionResource",
     ".agent_session()",
@@ -33,7 +33,7 @@ const AGENT_SESSION_TOKENS: [&str; 6] = [
 
 /// The one engine type the persisted format names, because its records
 /// serialize as it. Allowed in `upgrade/blob.rs` and nowhere else.
-const PERSISTED_AGENT_TYPE: &str = "crate::resource::agent_session::NativeAppendAccepted";
+const PERSISTED_AGENT_TYPE: &str = "phux_agent_session::session::NativeAppendAccepted";
 
 fn is_test_source(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
@@ -75,12 +75,25 @@ fn braced_agent_session_imports(source: &str) -> usize {
             }
         })
         .filter(|import| {
-            import.contains("agent_session")
+            let host_brace = import.contains("agent_session")
                 && ["resource::{", "apps::{", "runtime::{"]
                     .iter()
-                    .any(|opening| import.contains(opening))
+                    .any(|opening| import.contains(opening));
+            host_brace || braces_the_engine(import)
         })
         .count()
+}
+
+/// `use phux_agent_session::{.., session, ..}`: the engine module inside a
+/// brace. The crate's other modules (records, state, parent) are shared.
+fn braces_the_engine(import: &str) -> bool {
+    import
+        .split_once("phux_agent_session::{")
+        .is_some_and(|(_, inner)| {
+            inner
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|word| word == "session")
+        })
 }
 
 fn terminal_crossings(path: &str, source: &str) -> usize {
@@ -241,6 +254,14 @@ fn the_host_reaches_the_agent_session_engine_only_through_its_app() {
 fn the_agent_session_check_sees_braced_imports() {
     let host = |source| agent_session_crossings("runtime/whoami.rs", source);
     assert_eq!(host("use crate::resource::{Foo, agent_session::Bar};"), 1);
+    assert_eq!(
+        host("use phux_agent_session::{parent::P, session::Bar};"),
+        1
+    );
+    assert_eq!(
+        host("use phux_agent_session::{parent::AgentParent, state};"),
+        0
+    );
     assert_eq!(host("use crate::runtime::apps::{agent_session};"), 1);
     assert_eq!(
         host("pub(crate) use crate::resource::{\n    Foo,\n    agent_session::Bar,\n};"),
@@ -252,25 +273,25 @@ fn the_agent_session_check_sees_braced_imports() {
 
 #[test]
 fn only_the_blob_may_name_only_its_persisted_type() {
-    let field = "pub x: Vec<crate::resource::agent_session::NativeAppendAccepted>,";
+    let field = "pub x: Vec<phux_agent_session::session::NativeAppendAccepted>,";
     assert_eq!(agent_session_crossings("upgrade/blob.rs", field), 0);
     assert_eq!(agent_session_crossings("runtime/whoami.rs", field), 1);
     let other = "let s = handle.agent_session().ok();";
     assert_eq!(agent_session_crossings("upgrade/blob.rs", other), 1);
-    let engine = "use crate::resource::agent_session::AgentSessionActor;";
+    let engine = "use phux_agent_session::session::AgentSessionActor;";
     assert!(agent_session_crossings("upgrade/blob.rs", engine) > 0);
 }
 
 #[test]
 fn the_agent_session_check_reads_code_not_comments() {
     let tokens = &AGENT_SESSION_TOKENS;
-    assert_eq!(count("use crate::resource::agent_session::Foo;", tokens), 1);
+    assert_eq!(count("use phux_agent_session::session::Foo;", tokens), 1);
     assert_eq!(count("let s = handle.agent_session().ok();", tokens), 1);
     assert_eq!(
         count("crate::runtime::apps::agent_session::x();", tokens),
         1
     );
-    assert_eq!(count("/// see resource::agent_session", tokens), 0);
+    assert_eq!(count("/// see phux_agent_session::session", tokens), 0);
     assert_eq!(
         count("phux_protocol::native_agent::NATIVE_SCHEMA", tokens),
         0

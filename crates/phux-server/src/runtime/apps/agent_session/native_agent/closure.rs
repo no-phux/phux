@@ -90,7 +90,7 @@ pub(super) async fn commit_closure(state: &SharedState, agent: &ResourceId) -> C
     bytes.extend_from_slice(
         b"\n{\"type\":\"session_end\",\"data\":{\"reason\":\"native_closed\"}}\n",
     );
-    let identity = crate::resource::agent_session::NativeAppendIdentity {
+    let identity = phux_agent_session::session::NativeAppendIdentity {
         id: CLOSURE_PUBLICATION_ID,
         fingerprint: match fingerprint(&view) {
             Ok(value) => value,

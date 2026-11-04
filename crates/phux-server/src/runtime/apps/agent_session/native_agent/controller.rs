@@ -20,7 +20,7 @@ use phux_protocol::wire::frame::ErrorCode;
 use serde::Serialize;
 use subtle::ConstantTimeEq as _;
 
-use phux_resource::agent_session::AgentSessionResource as _;
+use phux_agent_session::session::AgentSessionResource as _;
 pub(super) fn refusal(message: impl Into<String>) -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::InvalidCommand,

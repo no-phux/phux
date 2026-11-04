@@ -9,9 +9,34 @@ use crate::keys::{COMMANDS, Shortcut};
 /// One thing the palette can do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
-    Terminal { id: ResourceId, session: String },
+    Terminal {
+        id: ResourceId,
+        session: String,
+    },
     Session(String),
     Action(Shortcut),
+    /// A theme by id; `None` is System.
+    Theme(Option<&'static str>),
+    /// A session to create, by the name typed.
+    NewSession(String),
+    /// An absolute path on the pane's host, to insert at its prompt.
+    Path(String),
+}
+
+/// What the palette lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// Terminals, sessions, actions and themes.
+    #[default]
+    All,
+    /// Every chord the app answers to.
+    Shortcuts,
+    /// Sessions, and one to create by name.
+    Sessions,
+    /// Themes, previewed as the highlight moves.
+    Themes,
+    /// Paths on the focused pane's host, in the server's order.
+    Paths,
 }
 
 /// The most rows the palette renders; the highlight stays within them.
@@ -35,7 +60,7 @@ pub struct Hit {
 }
 
 /// Everything the palette lists, in its empty-query order: terminals, then
-/// sessions, then actions.
+/// sessions, then actions, then themes.
 pub fn items(topology: Option<&Topology>) -> Vec<Item> {
     let mut out = Vec::new();
     if let Some(topology) = topology {
@@ -50,19 +75,8 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
                 },
             });
         }
-        for session in &topology.sessions {
-            out.push(Item {
-                title: session.name.clone(),
-                detail: format!(
-                    "{} terminal{}",
-                    session.members,
-                    if session.members == 1 { "" } else { "s" }
-                ),
-                kind: "session",
-                target: Target::Session(session.name.clone()),
-            });
-        }
     }
+    out.extend(session_items(topology));
     for command in COMMANDS.iter().filter(|command| command.listed) {
         out.push(Item {
             title: command.title.to_owned(),
@@ -71,7 +85,83 @@ pub fn items(topology: Option<&Topology>) -> Vec<Item> {
             target: Target::Action(command.action),
         });
     }
+    out.extend(theme_items());
     out
+}
+
+/// Every theme, System first.
+pub fn theme_items() -> Vec<Item> {
+    let mut out = Vec::new();
+    out.push(Item {
+        title: "Theme: System".to_owned(),
+        detail: "follows the OS".to_owned(),
+        kind: "theme",
+        target: Target::Theme(None),
+    });
+    for theme in crate::theme::all() {
+        out.push(Item {
+            title: format!("Theme: {}", theme.name),
+            detail: match (theme.id, theme.dark) {
+                ("ghostty", _) => "from your Ghostty config",
+                ("omarchy", _) => "follows your Omarchy theme",
+                (_, true) => "dark",
+                (_, false) => "light",
+            }
+            .to_owned(),
+            kind: "theme",
+            target: Target::Theme(Some(theme.id)),
+        });
+    }
+    out
+}
+
+/// The sessions, each with its terminal count.
+pub fn session_items(topology: Option<&Topology>) -> Vec<Item> {
+    let sessions = topology.into_iter().flat_map(|t| &t.sessions);
+    sessions
+        .map(|session| Item {
+            title: session.name.clone(),
+            detail: format!(
+                "{} terminal{}",
+                session.members,
+                if session.members == 1 { "" } else { "s" }
+            ),
+            kind: "session",
+            target: Target::Session(session.name.clone()),
+        })
+        .collect()
+}
+
+/// A row creating the session `query` names, unless one has that name.
+pub fn new_session_item(topology: Option<&Topology>, query: &str) -> Option<Item> {
+    let name = query.trim();
+    let taken = topology.is_some_and(|t| t.sessions.iter().any(|s| s.name == name));
+    (!name.is_empty() && !taken).then(|| Item {
+        title: format!("New Session \u{201c}{name}\u{201d}"),
+        detail: "create".to_owned(),
+        kind: "action",
+        target: Target::NewSession(name.to_owned()),
+    })
+}
+
+/// A path row: named below `origin` when it lies there.
+pub fn path_item(path: &str, directory: bool, origin: &str) -> Item {
+    let shown = crate::paths::relative(path, origin).unwrap_or(path);
+    // Control characters never reach the screen raw.
+    let shown: String = shown
+        .chars()
+        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect();
+    Item {
+        title: if directory {
+            format!("{shown}/")
+        } else {
+            shown
+        },
+        detail: if directory { "folder" } else { "file" }.to_owned(),
+        kind: "path",
+        target: Target::Path(path.to_owned()),
+    }
 }
 
 /// Every chord the app answers to, generated from the command table.
@@ -212,6 +302,32 @@ mod tests {
         for action in [Shortcut::CloseTab, Shortcut::NextTab, Shortcut::PreviousTab] {
             assert!(list.iter().any(|i| i.target == Target::Action(action)));
         }
+    }
+
+    #[test]
+    fn every_theme_is_a_row_and_its_name_finds_it() {
+        let hits = rank(items(None), "nord");
+        assert_eq!(hits[0].item.target, Target::Theme(Some("nord")));
+        let themes = items(None)
+            .iter()
+            .filter(|i| matches!(i.target, Target::Theme(_)))
+            .count();
+        assert_eq!(themes, crate::theme::all().count() + 1);
+    }
+
+    #[test]
+    fn a_typed_name_offers_a_new_session_unless_taken() {
+        let item = new_session_item(None, " api ").expect("offered");
+        assert_eq!(item.target, Target::NewSession("api".to_owned()));
+        assert!(new_session_item(None, "  ").is_none());
+    }
+
+    #[test]
+    fn paths_read_below_their_origin() {
+        let row = path_item("/repo/src/main.rs", false, "/repo");
+        assert_eq!(row.title, "src/main.rs");
+        assert_eq!(path_item("/etc", true, "/repo").title, "/etc/");
+        assert_eq!(path_item("/repo/a\nb", false, "/repo").title, "a\u{fffd}b");
     }
 
     #[test]

@@ -11,7 +11,7 @@ async fn seal(fx: &Fixture, value: bool) {
     });
     let (reply, rx) = oneshot::channel();
     bootstrap
-        .send(crate::resource::agent_session::BootstrapRequest {
+        .send(phux_agent_session::session::BootstrapRequest {
             reply,
             after_seq: None,
             seal: Some(value),
@@ -51,7 +51,7 @@ async fn accept_without_ack(
         &fx.state,
         &fx.agent,
         encode_publication(update, &view).unwrap(),
-        crate::resource::agent_session::NativeAppendIdentity {
+        phux_agent_session::session::NativeAppendIdentity {
             id,
             fingerprint: hash,
         },

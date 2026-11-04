@@ -16,7 +16,6 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::resource::ControlRequest;
 use crate::resource::ResourceHandle;
 use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 use crate::runtime::pump;
@@ -24,7 +23,7 @@ use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, ResolvedOwned, ServerInterceptedKey, SharedState,
 };
-use phux_resource::agent_asked::{AskedPayload, AskedSource};
+use phux_agent_session::asked::{AskedPayload, AskedSource};
 
 mod agent_reports;
 pub(crate) mod attach_terminal;

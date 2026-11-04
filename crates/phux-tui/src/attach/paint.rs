@@ -531,8 +531,10 @@ fn write_centered_lines<W: Write>(out: &mut W, rect: crate::layout::Rect, lines:
 
 /// Ship a composited frame and reconcile the bar cache with what actually
 /// reached the sink: a failed frame reports `NotPublished` and invalidates
-/// the painter. Pane fronts need no forgetting: frames sealed here paint
-/// panes forced, which records nothing.
+/// the painter. Pane cell fronts need no forgetting: frames sealed here
+/// paint panes forced, which records no cells. Kitty image residency is
+/// recorded even on a forced paint, so a sink that fails here must also
+/// forget it; `StdoutSink` never fails a write, so none does today.
 fn seal_frame<W: Write>(
     block: FrameBlock<'_, W>,
     painted: StatusBarPaint,

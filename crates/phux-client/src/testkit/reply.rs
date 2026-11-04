@@ -39,7 +39,7 @@ pub(super) fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<F
                     .with_features(spec.server_features)
                     .with_features_ext(spec.server_features_ext),
                 server_id: spec.server_id.clone(),
-                selected_profile,
+                selected_profile: Some(selected_profile),
                 bootstrap_limits,
             }]
         }

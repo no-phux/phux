@@ -99,7 +99,7 @@ pub fn try_send_to_writer(
         tx.try_send(request)
     };
     if matches!(&result, Err(mpsc::error::TrySendError::Full(_))) {
-        phux_resource::perf::INPUT_WRITER_FULL.incr();
+        crate::perf::INPUT_WRITER_FULL.incr();
     }
     result
 }

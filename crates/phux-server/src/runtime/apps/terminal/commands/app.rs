@@ -10,12 +10,17 @@ use phux_terminal::actor::TerminalResource as _;
 
 use super::*;
 use crate::resource::ResourceKind;
-use crate::runtime::apps::{ResourceApp, StreamBootstrap};
+use crate::runtime::apps::{ResourceApp, ResourceFrame, StreamBootstrap};
+use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
 
 /// Serves [`ResourceKind::Terminal`].
 #[derive(Debug)]
 pub(crate) struct TerminalApp;
+
+/// The refusal a Terminal stream gets on a connection whose `HELLO` offered
+/// no Terminal bootstrap profile. The connection stays.
+pub(crate) const NO_TERMINAL_PROFILE: &str = "this connection offered no Terminal bootstrap profile at HELLO, so it cannot consume a Terminal stream";
 
 impl ResourceApp for TerminalApp {
     fn kind(&self) -> ResourceKind {
@@ -34,6 +39,10 @@ impl ResourceApp for TerminalApp {
         Ok(())
     }
 
+    fn metrics(&self) -> &'static [phux_perf::Metric] {
+        phux_terminal::perf::TABLE
+    }
+
     fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
         release_terminal_consumer(handle, client);
     }
@@ -44,14 +53,6 @@ impl ResourceApp for TerminalApp {
         client: ClientId,
     ) -> LocalBoxFuture<'a, ()> {
         fence_terminal_consumer(handle, client).boxed_local()
-    }
-
-    fn frame<'a>(
-        &'a self,
-        request: crate::runtime::apps::ResourceFrame<'a>,
-        frame: phux_protocol::wire::frame::FrameKind,
-    ) -> LocalBoxFuture<'a, crate::runtime::connections::dispatch::FrameFlow> {
-        crate::runtime::apps::terminal::frames::serve(request, frame).boxed_local()
     }
 
     fn command<'a>(
@@ -68,6 +69,14 @@ impl ResourceApp for TerminalApp {
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         bootstrap_stream(stream).boxed_local()
+    }
+
+    fn frame<'a>(
+        &'a self,
+        ctx: ResourceFrame<'a>,
+        frame: FrameKind,
+    ) -> LocalBoxFuture<'a, FrameFlow> {
+        super::super::frames::serve_frame(ctx, frame).boxed_local()
     }
 }
 
@@ -296,6 +305,12 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
         connection_token,
         ..
     } = stream;
+    let Some(bootstrap_profile) = bootstrap_profile else {
+        return Err(AttachResourceFailure {
+            code: ErrorCode::CodecUnavailable,
+            message: NO_TERMINAL_PROFILE.to_owned(),
+        });
+    };
     let Some(stream_profile) =
         crate::runtime::apps::terminal::attach::bootstrap_stream_profile(bootstrap_profile)
     else {

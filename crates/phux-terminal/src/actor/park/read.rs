@@ -242,8 +242,8 @@ pub(in crate::actor) fn detach_drain(mut file: File) {
 }
 
 pub(in crate::actor) fn note_read(n: usize) {
-    phux_resource::perf::PTY_READ_SIZE.record_len(n);
-    phux_resource::perf::PTY_READ_BYTES.add_len(n);
+    crate::perf::PTY_READ_SIZE.record_len(n);
+    crate::perf::PTY_READ_BYTES.add_len(n);
     phux_perf::echo_hop::record("pty_read");
     tracing::debug!(n, "pty read");
 }

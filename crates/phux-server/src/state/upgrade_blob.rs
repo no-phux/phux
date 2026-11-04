@@ -34,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::ServerState;
 use crate::resource::ResourceHandle;
-use crate::resource::handoff::PaneUpgradeHandle;
+use crate::resource::handoff::ProcessHandoff;
 #[cfg(test)]
 use crate::resource::handoff::UpgradeHandleRequest;
 use crate::upgrade::blob::{
@@ -47,7 +47,7 @@ use crate::upgrade::blob::{
 #[derive(Debug, Default)]
 pub(crate) struct UpgradeHandoffs {
     /// PTY handoff + replay snapshot per carried pane.
-    pub(crate) panes: HashMap<ResourceId, PaneUpgradeHandle>,
+    pub(crate) panes: HashMap<ResourceId, ProcessHandoff>,
     /// Record-stream cut per carried `AgentSession`. A session without one
     /// is not carried.
     pub(crate) agent_sessions: HashMap<ResourceId, AgentStreamCut>,
@@ -137,7 +137,6 @@ impl ServerState {
     /// Intern a wire id for every session, synthetic window, and live
     /// resource, so the blob names each one. Run under the lock that
     /// captures the tree identity.
-    #[cfg(test)]
     pub(crate) fn intern_upgrade_wires(&mut self) {
         let sessions: Vec<SessionId> = self
             .sessions
@@ -235,7 +234,7 @@ fn pane_blob(
     window_wire_id: u32,
     desc: &TerminalFacet,
     term: &str,
-    handoff: Option<&PaneUpgradeHandle>,
+    handoff: Option<&ProcessHandoff>,
     retained_exit: Option<RetainedExitBlob>,
     retain_secs: Option<u32>,
 ) -> PaneBlob {

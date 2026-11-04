@@ -7,7 +7,6 @@ use phux_protocol::wire::frame::{ErrorCode, FrameKind};
 use crate::resource::{ResourceKind, WrongResourceKind};
 use crate::runtime::apps::ResourceFrame;
 use crate::runtime::connections::dispatch::FrameFlow;
-use crate::runtime::connections::frames::direction_invalid;
 use crate::state::Outbound;
 
 /// Refuse one client frame about an `AgentSession`. A refusal never waits on
@@ -22,7 +21,6 @@ pub(super) fn serve(request: &ResourceFrame<'_>, frame: &FrameKind) -> FrameFlow
             ErrorCode::WrongResourceKind,
             "an agent-session stream retains no history beyond its bootstrap".to_owned(),
         ),
-        FrameKind::ResizeTerminal { .. } => wrong_kind(),
         FrameKind::InputKey { terminal_id, .. }
         | FrameKind::InputMouse { terminal_id, .. }
         | FrameKind::InputFocus { terminal_id, .. }
@@ -42,7 +40,8 @@ pub(super) fn serve(request: &ResourceFrame<'_>, frame: &FrameKind) -> FrameFlow
             }
             wrong_kind()
         }
-        other => return direction_invalid(request.client_id, other),
+        // RESIZE_TERMINAL; only frames about a resource reach an app.
+        _ => wrong_kind(),
     };
     let _ = request
         .plumbing

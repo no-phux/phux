@@ -30,7 +30,7 @@ async fn fixture(count: u32) -> Client {
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: ServerCapabilities::new(),
             server_id: vec![],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         });
         app.session.on_frame(FrameKind::Attached {

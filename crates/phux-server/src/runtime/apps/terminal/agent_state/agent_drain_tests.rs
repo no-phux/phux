@@ -4,8 +4,8 @@ use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 use super::{Prior, retract_hook, spawn_agent_state_drain, state_change_hook};
 use crate::hooks::AGENT_STATE_UNKNOWN;
 use crate::state::SharedState;
-use phux_resource::agent_asked::AskedPayload;
-use phux_resource::agent_record::AgentRecordJson;
+use phux_agent_session::agent_record::AgentRecordJson;
+use phux_agent_session::asked::AskedPayload;
 use phux_terminal::agent_detect::{AgentDetectEvent, AgentReport, DetectedState};
 
 fn report_of(kind: &str, state: DetectedState) -> AgentDetectEvent {

@@ -21,7 +21,13 @@ a coding agent and whether it is waiting on you. Another machine is one
 curl -fsSL https://phux.sh/install | sh
 ```
 
-Or use [Homebrew](./docs/install.md#homebrew). Run `phux` after installing.
+Or install with Homebrew in one command. On Homebrew 6 and later that name trusts only the `phux` formula:
+
+```sh
+brew install no-phux/tap/phux
+```
+
+Run `phux` after installing. [First agent](./docs/getting-started.md#first-agent) is install, start, run Claude Code, Codex, OpenCode, or pi, and read `phux agent list`.
 
 ### Desktop app
 
@@ -78,6 +84,16 @@ client leaves the shell running; attach to the printed session to take over.
 [coding agents](./docs/agents.md) ·
 [build on phux](./docs/building.md) ·
 [remote machines](./docs/remote.md)
+
+## Common tasks
+
+- [How do I know when Claude Code or Codex is waiting for me?](https://docs.phux.sh/agent-waiting)
+- [How do I run a command in a pane and get its output and exit code?](https://docs.phux.sh/pane-command)
+- [How do I give my agent a terminal over MCP?](https://docs.phux.sh/terminal-mcp)
+- [How do I reach my coding agents over Tailscale and SSH?](https://docs.phux.sh/tailscale)
+- [How do I bring my tmux keys to phux?](https://docs.phux.sh/tmux-import)
+- [How does a program report its status with OSC 7501?](https://docs.phux.sh/program-protocol)
+- [How do I build a program that drives a phux server, or reports status into a pane?](https://docs.phux.sh/building)
 
 ### Find your workflow
 
