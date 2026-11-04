@@ -4,7 +4,7 @@
 use phux_client_runtime::control::{PaneDescriptor, Topology};
 use phux_protocol::ids::ResourceId;
 
-use crate::keys::{COMMANDS, Shortcut};
+use crate::keys::{COMMANDS, ESSENTIALS, Shortcut};
 
 /// One thing the palette can do.
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +31,8 @@ pub enum Mode {
     All,
     /// Every chord the app answers to.
     Shortcuts,
+    /// The keys worth learning first, then a row to the full list.
+    Essentials,
     /// Sessions, and one to create by name.
     Sessions,
     /// Themes, previewed as the highlight moves.
@@ -177,6 +179,29 @@ pub fn shortcut_items() -> Vec<Item> {
         .collect()
 }
 
+/// The essentials in teaching order, ending with the row that opens every
+/// chord. Picking any row runs it, so reading the list is also trying it.
+pub fn essential_items() -> Vec<Item> {
+    let essentials = ESSENTIALS
+        .iter()
+        .filter_map(|action| crate::keys::command(*action));
+    let mut out: Vec<Item> = essentials
+        .map(|command| Item {
+            title: command.title.to_owned(),
+            detail: command.hints(),
+            kind: "action",
+            target: Target::Action(command.action),
+        })
+        .collect();
+    out.push(Item {
+        title: "All Keyboard Shortcuts".to_owned(),
+        detail: "every chord".to_owned(),
+        kind: "action",
+        target: Target::Action(Shortcut::KeyboardShortcuts),
+    });
+    out
+}
+
 /// A terminal's name, else its title, else its folder.
 pub fn pane_label(pane: &PaneDescriptor) -> String {
     let nonempty = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
@@ -260,6 +285,21 @@ pub fn rank(items: Vec<Item>, query: &str) -> Vec<Hit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The essentials read in teaching order and end at the full list, so a
+    /// newcomer who runs out of rows is one Return from every chord.
+    #[test]
+    fn essentials_end_with_the_full_list() {
+        let items = essential_items();
+        assert_eq!(items.len(), ESSENTIALS.len() + 1);
+        for (item, action) in items.iter().zip(ESSENTIALS) {
+            assert_eq!(item.target, Target::Action(*action));
+            assert!(!item.detail.is_empty(), "{} shows no chord", item.title);
+        }
+        let last = items.last().expect("a last row");
+        assert_eq!(last.target, Target::Action(Shortcut::KeyboardShortcuts));
+        assert_eq!(last.title, "All Keyboard Shortcuts");
+    }
 
     #[test]
     fn subsequence_matches_and_misses() {

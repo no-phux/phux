@@ -314,6 +314,10 @@ impl phux_resource::ResourceOps for TerminalHandle {
             let _ = control.send(ControlRequest::Retire).await;
         })
     }
+
+    fn is_live_stream(&self) -> bool {
+        false
+    }
 }
 
 /// The Terminal facet of a [`phux_resource::ResourceHandle`].

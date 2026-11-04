@@ -74,7 +74,7 @@ async fn revoking_the_links_token_on_the_satellite_drops_the_link() {
             let accept_state = satellite.clone();
             let accept_root = satellite_root.clone();
             tokio::task::spawn_local(async move {
-                crate::runtime::client::accept_loop(&listener, accept_state, accept_root, None)
+                crate::runtime::connections::accept_loop(&listener, accept_state, accept_root, None)
                     .await
             });
             crate::runtime::revocation::spawn_revocation_watcher(&satellite, &satellite_root);

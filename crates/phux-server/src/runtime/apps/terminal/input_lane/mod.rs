@@ -49,7 +49,7 @@ pub(crate) use self::credit::{InputCredits, InputStalled, acquire_credit};
 use self::encode::{
     LaneEncoderSet, encode_input, encoder_for, handoff_encoded, prune_closed_encoders,
 };
-pub use self::handle::InputLaneHandle;
+pub(crate) use self::handle::InputLaneHandle;
 pub(crate) use self::handle::arm_pane_lane;
 pub(crate) use self::lane::spawn_input_lane;
 use self::process::{

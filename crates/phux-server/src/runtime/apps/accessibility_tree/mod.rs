@@ -8,7 +8,7 @@ use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode
 use phux_tree::{PublishRejection, PublishRequest, TreeResource as _};
 use tokio::sync::oneshot;
 
-use super::{ResourceApp, ResourceFrame, StreamBootstrap};
+use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
 use crate::resource::{ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
@@ -47,6 +47,10 @@ impl ResourceApp for AccessibilityTreeApp {
 
     fn metrics(&self) -> &'static [phux_perf::Metric] {
         &[]
+    }
+
+    fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
+        spawn_tree(spawn).boxed_local()
     }
 
     fn command<'a>(

@@ -1,3 +1,17 @@
+use super::closure::{begin_closure, commit_closure, schedule_closure};
+use super::publication::sync_ask_inventory;
+use crate::state::ClientId;
+use crate::state::SharedState;
+use phux_protocol::ids::ResourceId;
+use phux_protocol::native_agent::NativeCommand;
+use phux_protocol::native_agent::NativeCommandResult;
+use phux_protocol::native_agent::NativeDisposition;
+use phux_protocol::native_agent::NativeIntent;
+use phux_protocol::native_agent::NativeRequest;
+use phux_protocol::native_agent::NativeRequestPayload;
+use phux_protocol::wire::frame::AgentEvent;
+use phux_protocol::wire::frame::CommandResult;
+
 /// Recheck the original caller at the actual dispatch point. A queued
 /// reservation does not outlive a revoked grant, stolen lease, or question.
 fn dispatch_view_valid(
@@ -26,7 +40,7 @@ fn dispatch_view_valid(
     })
 }
 
-fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &ResourceId) {
+pub(super) fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &ResourceId) {
     let Some(binding) = s.native_agents().bindings.get(agent) else {
         return;
     };
@@ -94,7 +108,7 @@ fn refuse_undeliverable(s: &mut crate::state::ServerState, agent: &ResourceId) {
 
 /// A real executing-host/stream exit is source closure, not an interrupt.
 /// Publish unavailable controls while the readable stream is still alive.
-pub(super) async fn source_exited(state: &SharedState, resource: phux_core::ids::ResourceId) {
+pub(crate) async fn source_exited(state: &SharedState, resource: phux_core::ids::ResourceId) {
     let agents = state.with_mut(|s| {
         let Some(wire) = s.resource_wire_of(resource) else {
             return Vec::new();

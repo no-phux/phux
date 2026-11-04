@@ -37,12 +37,12 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, LocalSet};
 use tokio_util::sync::CancellationToken;
 
-use super::client::handle_client;
-use super::input_lane::InputLaneHandle;
 use super::revocation::Watcher;
 use super::test_support::{Feed, Wire, hello, owner_peer, workload_identity};
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
+use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
+use crate::runtime::connections::handle_client;
 use crate::state::{ClientId, ServerState, SharedState};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
 

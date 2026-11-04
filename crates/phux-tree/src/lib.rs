@@ -99,6 +99,11 @@ impl ResourceOps for TreeHandle {
     fn retire(&self) -> Delivery {
         Box::pin(std::future::ready(()))
     }
+
+    /// A tree is a document, not a record stream.
+    fn is_live_stream(&self) -> bool {
+        false
+    }
 }
 
 /// Reach the tree facet of a handle.
