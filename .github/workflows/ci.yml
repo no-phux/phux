@@ -194,10 +194,16 @@ jobs:
         if: github.event_name == 'push'
         run: bash scripts/ci/mbx-export-headroom.sh
 
+  # The archive runs in count partitions: one 4-vCPU runner took 263 s for
+  # 7185 tests (run 41886342790), most of the critical path after the build.
   tests:
-    name: rust tests
+    name: rust tests (${{ matrix.shard }}/3)
     needs: [plan, test-build]
     if: needs.plan.outputs.tests == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     steps:
@@ -219,12 +225,19 @@ jobs:
           PHUX_UNIT_MODE: ${{ needs.plan.outputs.unit_mode }}
           PHUX_UNIT_TARGETS: ${{ needs.plan.outputs.unit_targets }}
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
+          PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/3
         run: nix develop -c just test
 
+  # Single-threaded by design, so it splits across runners instead: 185 s of
+  # serial e2e on one runner (run 41886342790).
   e2e:
-    name: rust e2e
+    name: rust e2e (${{ matrix.shard }}/2)
     needs: [plan, test-build]
     if: needs.plan.outputs.e2e == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
@@ -243,6 +256,7 @@ jobs:
         env:
           NEXTEST_PROFILE: ci
           PHUX_TEST_ARCHIVE: ${{ runner.temp }}/phux-tests.tar.zst
+          PHUX_NEXTEST_PARTITION: count:${{ matrix.shard }}/2
         run: nix develop -c just e2e
 
   # phux-client-ffi with `uniffi` instead of its defaults shares no artifacts
@@ -339,66 +353,12 @@ jobs:
           PHUX_TOOLCHAIN_DIR: ${{ runner.temp }}/phux-toolchains
         run: nix develop .#browser -c just web-check
 
-  # Pull requests only (plan.ts): on main, release qualification builds the
-  # desktop for every desktop change, and two macOS jobs per merge starved the
-  # 5-slot macOS pool the release lanes share.
+  # Pull requests only (plan.ts). The legs and their caches live in
+  # desktop-lane.yml, which cache-warm.yml also runs on main.
   desktop:
-    name: desktop (${{ matrix.platform }})
     needs: plan
     if: needs.plan.outputs.desktop == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macOS
-            os: xcode-27
-            smoke: --allow-unconfirmed-present
-          - platform: macOS-26
-            os: macos-26
-            smoke: --allow-unconfirmed-present
-          - platform: Linux
-            os: ubuntu-24.04
-            smoke: --require-backend Vulkan
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    env:
-      LIBGHOSTTY_VT_SYS_CPU: baseline
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-macos-desktop
-        if: runner.os == 'macOS'
-      - name: Require the compatibility runner's macOS and Xcode 26
-        if: matrix.platform == 'macOS-26'
-        run: |
-          test "$(sw_vers -productVersion | cut -d. -f1)" = 26
-          xcodebuild -version | grep -E '^Xcode 26[.]'
-      - uses: ./.github/actions/setup-linux-desktop
-        if: runner.os == 'Linux'
-      - uses: ./.github/actions/setup-bun
-      # One step per recipe: Bun leaves a shared stdout non-blocking, and a
-      # Cargo build after it in the same step panics on EAGAIN.
-      - run: just desktop-lint
-      - run: just desktop-tests
-      - run: just desktop-check
-      # PRs qualify production features in the warm debug profile. Optimized
-      # shipping builds remain in desktop-release.yml.
-      # Hosted macOS never confirms a presented drawable; Linux must render
-      # through lavapipe's Vulkan.
-      - name: Packaged debug desktop qualification
-        env:
-          PHUX_DESKTOP_SMOKE_ARGS: --output ${{ runner.temp }}/desktop-evidence ${{ matrix.smoke }}
-        run: just desktop-framework-check debug
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: desktop-${{ matrix.platform }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/desktop-evidence
-            clients/desktop/native/target/perf-headless
-          if-no-files-found: warn
-          retention-days: 14
+    uses: ./.github/workflows/desktop-lane.yml
 
   # A clean contributor machine: rustup, the pinned Zig, no Nix, no cache.
   native:
