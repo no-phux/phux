@@ -261,7 +261,7 @@ fn hello_ok_server_feature_round_trips_and_old_caps_default_empty() {
             .with_layers(LayerSet::all())
             .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
         server_id: vec![],
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     };
     let mut encoded = BytesMut::new();

@@ -214,7 +214,7 @@ impl Decoder<'_> {
             protocol_patch: req(protocol_patch)?,
             server_caps,
             server_id: req(server_id)?,
-            selected_profile: req(selected_profile)?,
+            selected_profile,
             bootstrap_limits,
         })
     }

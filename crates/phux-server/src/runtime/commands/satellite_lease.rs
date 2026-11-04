@@ -127,7 +127,10 @@ pub(super) async fn relay_satellite_attach(
         }
     );
     let mut kind = relay.known_resource_kind(target.terminal);
-    if kind.is_none() && (cursor || relay.needs_kind_for_profile(ctx.profile)) {
+    let needs_kind_for_profile = ctx
+        .profile
+        .is_none_or(|profile| relay.needs_kind_for_profile(profile));
+    if kind.is_none() && (cursor || needs_kind_for_profile) {
         kind = Some(match relay.resource_kind(target.terminal).await {
             Ok(kind) => kind,
             Err(refusal) => return refusal,
@@ -135,6 +138,12 @@ pub(super) async fn relay_satellite_attach(
     }
     if cursor && kind != Some(phux_protocol::ids::ResourceKind::AgentSession) {
         return invalid_agent_cursor();
+    }
+    if ctx.profile.is_none() && kind == Some(phux_protocol::ids::ResourceKind::Terminal) {
+        return CommandResult::Error {
+            code: ErrorCode::CodecUnavailable,
+            message: crate::runtime::apps::terminal::commands::NO_TERMINAL_PROFILE.to_owned(),
+        };
     }
     // Narrow before the relay so no input slips through; widen only once the
     // satellite accepted the attach.

@@ -143,7 +143,7 @@ fn hello_ok(
         protocol_patch: PROTOCOL_VERSION.patch,
         server_caps,
         server_id: b"incarnation-1".to_vec(),
-        selected_profile,
+        selected_profile: Some(selected_profile),
         bootstrap_limits,
     }
 }

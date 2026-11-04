@@ -25,7 +25,7 @@ async fn net_link_preserves_satellite_extended_features_from_hello_ok() {
             protocol_patch: PROTOCOL_VERSION.patch,
             server_caps: caps,
             server_id: vec![0; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         }
         .encode(&mut encoded);
@@ -126,7 +126,7 @@ pub(super) fn synthesized_hello_ok() -> Vec<u8> {
         protocol_patch: PROTOCOL_VERSION.patch,
         server_caps: phux_protocol::caps::ServerCapabilities::default(),
         server_id: vec![0; 16],
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     }
     .encode(&mut encoded);

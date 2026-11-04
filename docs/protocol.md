@@ -64,11 +64,19 @@ more, and never for a frame that settles a request.
    patch is admitted; another major gets `ERROR` with
    `VERSION_INCOMPATIBLE` and a close.
 3. The server authorizes the connection ([owner, delegated, or scoped
-   remote authority](./remote.md#who-can-do-what)) and picks a bootstrap
-   profile the client offered.
+   remote authority](./remote.md#who-can-do-what)) and picks a Terminal
+   bootstrap profile the client offered. A client that offers no Terminal
+   profile is admitted without one; a client whose offered profiles the
+   server cannot serve gets `ERROR` with `CODEC_UNAVAILABLE` and a close.
 4. The server replies `HELLO_OK` (`0x80`): its version, `ServerCapabilities`
    (two words of feature bits, `features` and `features_ext`), a server
-   instance id, the selected profile, and size limits.
+   instance id, the selected profile (absent when none was offered), and
+   size limits.
+
+A connection with no Terminal profile consumes every other kind as usual.
+A Terminal stream it binds (`ATTACH`, `ATTACH_RESOURCE` on a Terminal,
+`STREAM_BIND`, or the stream a `SPAWN_RESOURCE` opens) is refused with
+`CODEC_UNAVAILABLE`, and the connection stays.
 
 Before `HELLO_OK`, only `HELLO` and `PING` are accepted. Clients accept a
 `HELLO_OK` on their own major with any minor or patch, older or newer, and

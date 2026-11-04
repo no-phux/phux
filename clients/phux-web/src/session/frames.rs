@@ -93,6 +93,11 @@ impl Connection {
                 if self.kernel.is_some() {
                     return self.protocol_failure("server sent duplicate HELLO_OK");
                 }
+                // This client offers Terminal profiles, so a server that
+                // selects none broke the offer.
+                let Some(selected_profile) = selected_profile else {
+                    return self.protocol_failure(&HelloOkError::NoProfile.to_string());
+                };
                 if let Err(error) = validate_hello_ok(
                     &self.offered_caps,
                     protocol_major,

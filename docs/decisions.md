@@ -24,8 +24,11 @@ records explain history; [look them up deliberately](./architecture.md#historica
 
 **Wire**
 
-- Server to client is VT bytes; client to server is structured input. Both
-  sides run libghostty.
+- Each kind declares its stream contract; the Terminal's is VT bytes from
+  server to client and structured input back, with libghostty on both
+  ends. The Terminal profile is negotiated per connection at `HELLO`, but
+  a connection that offers none is admitted: it consumes other kinds, and a
+  Terminal stream it binds is refused with `CODEC_UNAVAILABLE`.
 - Stream and input frames (`INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK`,
   `HISTORY_REQUEST`) reach the kind that owns their resource through its
   `ResourceApp`, as commands do. A kind owns no frame it did not opt into:

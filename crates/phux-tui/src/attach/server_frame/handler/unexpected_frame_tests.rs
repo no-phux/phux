@@ -29,7 +29,7 @@ fn client_frames_and_a_second_hello_ok_stay_fatal() {
         protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
         server_caps: ServerCapabilities::new(),
         server_id: Vec::new(),
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     };
     for frame in [FrameKind::Detach, hello_ok] {

@@ -32,7 +32,7 @@ fn negotiate(control: &mut ControlPlane, organization: bool) -> Option<u32> {
                     ServerFeatureExtSet::new()
                 }),
             server_id: vec![0xab; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         })
         .unwrap();

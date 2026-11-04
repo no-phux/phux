@@ -91,41 +91,8 @@ async fn accept_hello(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream
     accept_hello_with_caps(send, recv, ServerCapabilities::new()).await;
 }
 
-#[allow(
-    clippy::panic,
-    reason = "the fixture must reject a non-HELLO first frame"
-)]
-async fn accept_hello_with_caps(
-    send: &mut quinn::SendStream,
-    recv: &mut quinn::RecvStream,
-    server_caps: ServerCapabilities,
-) {
-    let FrameKind::Hello { client_caps, .. } = read_frame(recv).await else {
-        panic!("expected HELLO");
-    };
-    if server_caps.features.contains(ServerFeature::QuicStreams) {
-        assert!(
-            client_caps.quic_streams,
-            "QUIC_STREAMS selection requires an explicit client offer"
-        );
-    }
-    let (selected_profile, bootstrap_limits) =
-        select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new())
-            .expect("fixture profiles intersect");
-    write_frame(
-        send,
-        &FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            server_caps,
-            server_id: Vec::new(),
-            selected_profile,
-            bootstrap_limits,
-        },
-    )
-    .await;
-}
+mod hello;
+use hello::accept_hello_with_caps;
 
 async fn read_stream_bind(
     recv: &mut quinn::RecvStream,

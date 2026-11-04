@@ -18,6 +18,10 @@ use crate::runtime::operation_dedupe::OperationClaim;
 #[derive(Debug)]
 pub(crate) struct TerminalApp;
 
+/// The refusal a Terminal stream gets on a connection whose `HELLO` offered
+/// no Terminal bootstrap profile. The connection stays.
+pub(crate) const NO_TERMINAL_PROFILE: &str = "this connection offered no Terminal bootstrap profile at HELLO, so it cannot consume a Terminal stream";
+
 impl ResourceApp for TerminalApp {
     fn kind(&self) -> ResourceKind {
         ResourceKind::Terminal
@@ -293,6 +297,12 @@ async fn bootstrap_stream(stream: StreamBootstrap<'_>) -> Result<(), AttachResou
         connection_token,
         ..
     } = stream;
+    let Some(bootstrap_profile) = bootstrap_profile else {
+        return Err(AttachResourceFailure {
+            code: ErrorCode::CodecUnavailable,
+            message: NO_TERMINAL_PROFILE.to_owned(),
+        });
+    };
     let Some(stream_profile) = crate::runtime::attach::bootstrap_stream_profile(bootstrap_profile)
     else {
         return Err(AttachResourceFailure {

@@ -43,7 +43,7 @@ async fn answer_hello(listener: UnixListener, protocol: (u16, u16, u16)) {
         protocol_patch: protocol.2,
         server_caps: ServerCapabilities::new(),
         server_id: vec![1; 16],
-        selected_profile,
+        selected_profile: Some(selected_profile),
         bootstrap_limits,
     }
     .encode(&mut encoded);

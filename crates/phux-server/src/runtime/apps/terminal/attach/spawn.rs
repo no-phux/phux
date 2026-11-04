@@ -122,19 +122,25 @@ pub(crate) async fn handle_spawn_terminal(
     request_id: u32,
     request: SpawnRequest,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    bootstrap_profile: BootstrapProfile,
+    bootstrap_profile: Option<BootstrapProfile>,
     bootstrap_limits: BootstrapLimits,
     root_token: &CancellationToken,
     connection_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
     defer_subscription: bool,
 ) {
-    let Some(profile) = bootstrap_stream_profile(bootstrap_profile) else {
+    // The spawner consumes the new Terminal's stream, so it needs a profile.
+    let Some(profile) = bootstrap_profile.and_then(bootstrap_stream_profile) else {
         let _ = out_tx
             .send(Outbound::Frame(FrameKind::Error {
                 request_id: Some(request_id),
                 code: ErrorCode::CodecUnavailable,
-                message: "SPAWN_RESOURCE selected an unsupported bootstrap profile".to_owned(),
+                message: match bootstrap_profile {
+                    None => super::super::commands::NO_TERMINAL_PROFILE.to_owned(),
+                    Some(_) => {
+                        "SPAWN_RESOURCE selected an unsupported bootstrap profile".to_owned()
+                    }
+                },
             }))
             .await;
         return;
