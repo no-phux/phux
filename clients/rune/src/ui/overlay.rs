@@ -80,7 +80,10 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
         .gap(8.0)
         .items_center()
         .radius(9.0)
-        .fill(ink.raised)
+        .continuous_corners()
+        // Frosted: the terminal under it blurs through a tint of the chrome.
+        .backdrop_blur(super::FROST)
+        .fill(ink.raised.alpha(0.82))
         .border(1.0, edge)
         .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
         .transition(Transition::opacity())

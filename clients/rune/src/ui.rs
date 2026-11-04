@@ -30,9 +30,11 @@ const SIDEBAR_W: f32 = 236.0;
 const TITLEBAR_H: f32 = 38.0;
 /// Space between the terminal area's edge and its grid.
 pub(crate) const PAD: f32 = 10.0;
-/// The gap around the terminal card, and how round it is.
+/// The gap around and between the terminal cards, and how round they are.
 const CARD_GAP: f32 = 8.0;
-const CARD_RADIUS: f32 = 10.0;
+const CARD_RADIUS: f32 = 12.0;
+/// How far a frosted surface blurs what it floats over, in points.
+const FROST: f32 = 18.0;
 pub(crate) const LABEL: TextStyle = TextStyle::new(12.0, 400.0);
 pub(crate) const LABEL_STRONG: TextStyle = TextStyle::new(12.0, 600.0);
 pub(crate) const CAPTION: TextStyle = TextStyle::new(11.0, 500.0);
@@ -59,6 +61,14 @@ pub(crate) struct Ink {
     pub(crate) marks: Marks,
     /// The terminal's selection.
     pub(crate) selection: Selection,
+    /// The shadow a floating card casts on the window.
+    pub(crate) shade: Color,
+}
+
+/// A card's shadow: deep on a dark ground, soft on a light one.
+fn shade(ground: Color) -> Color {
+    let dark = on_fill(ground) == Color::WHITE;
+    Color::BLACK.alpha(if dark { 0.38 } else { 0.13 })
 }
 
 fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
@@ -80,6 +90,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
             edge: roles.edge,
             marks: roles.marks,
             selection: roles.selection,
+            shade: shade(crate::theme::color(theme.background)),
         };
     }
     let t = tok::theme(dark);
@@ -105,6 +116,7 @@ fn ink(dark: bool, accent: Color, theme: Option<&Theme>) -> Ink {
         edge: crate::theme::color(edge),
         marks: Theme::system_marks(dark),
         selection: Selection::system(),
+        shade: shade(t.bg),
     }
 }
 
@@ -150,9 +162,6 @@ pub fn view(desk: &Desk, cx: &mut Cx<Desk>) -> El {
                                 .w_full()
                                 .min_w(0.0)
                                 .min_h(0.0)
-                                .radius(CARD_RADIUS)
-                                .clip_rounded(CARD_RADIUS)
-                                .border(1.0, p.edge)
                                 .child(panes::view(desk, &p, cx))
                                 .children(status::confirm_bar(desk, &p))
                                 .children(overlay::toast(desk, &p)),

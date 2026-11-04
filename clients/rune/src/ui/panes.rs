@@ -1,20 +1,20 @@
-//! The terminal area: the split tree, one terminal per leaf, with the
-//! keyboard's pane marked and draggable dividers between them.
+//! The terminal area: the split tree, one floating glass card per leaf, the
+//! keyboard's card lit, and draggable gutters between them.
 
 use std::time::Instant;
 
 use phux_client_core::layout::{LayoutNode, SplitDir};
 use phux_protocol::ids::ResourceId;
-use rune::{Cx, El, Phase, PointerButton, col, el, row};
+use rune::{Color, Cx, El, Phase, PointerButton, Transition, col, el, row};
 
 use super::status::placeholder;
-use super::{Ink, PAD, overlay};
+use super::{CARD_GAP, CARD_RADIUS, Ink, PAD, overlay};
 use crate::desk::mouse::Press;
 use crate::desk::{Desk, SplitPath};
 use crate::{grid, perf};
 
-/// The hit area a divider gives the pointer, around its one-point line.
-pub(crate) const DIVIDER: f32 = 7.0;
+/// The gutter between two cards, all of it the divider's hit area.
+pub(crate) const DIVIDER: f32 = CARD_GAP;
 
 pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
     desk.scale.set(cx.env().scale);
@@ -26,11 +26,15 @@ pub fn view(desk: &Desk, ink: &Ink, cx: &mut Cx<Desk>) -> El {
         .min_h(0.0)
         .min_w(0.0);
     let Some(tree) = desk.layout.clone() else {
-        return area.fill(ink.bg).center().child(placeholder(desk, ink));
+        let waiting = el()
+            .w_full()
+            .h_full()
+            .center()
+            .child(placeholder(desk, ink));
+        return area.child(card(waiting, ink.bg, Lit::Resting, ink));
     };
     let several = matches!(tree, LayoutNode::Split { .. });
-    area.fill(ink.bg)
-        .child(node(desk, &tree, &mut Vec::new(), several, ink))
+    area.child(node(desk, &tree, &mut Vec::new(), several, ink))
         .children(perf::hud(ink.dim))
 }
 
@@ -68,12 +72,15 @@ fn node(desk: &Desk, tree: &LayoutNode, path: &mut SplitPath, several: bool, ink
         .child(share(el().w_full().h_full().child(second), 1.0 - ratio))
 }
 
-/// A divider: drag to move it, live, and the new ratio is written on release.
+/// A divider: the clear gutter between two cards, with a grip that shows
+/// under the pointer. Drag to move it, live, and the new ratio is written on
+/// release.
 fn divider(path: SplitPath, horizontal: bool, ratio: f32, ink: &Ink) -> El {
-    let line = if horizontal {
-        el().w(1.0).h_full()
+    const GRIP: (f32, f32) = (3.0, 36.0);
+    let grip = if horizontal {
+        el().size(GRIP.0, GRIP.1)
     } else {
-        el().w_full().h(1.0)
+        el().size(GRIP.1, GRIP.0)
     };
     let host = if horizontal {
         el().w(DIVIDER).h_full()
@@ -87,7 +94,7 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, ink: &Ink) -> El {
         } else {
             rune::Cursor::ResizeRow
         })
-        .hover(ink.accent.alpha(0.12))
+        .hover_group()
         .on_drag(move |d: &mut Desk, drag, _| {
             if drag.phase == Phase::Down {
                 // The ratio at the press, kept for the whole gesture.
@@ -101,7 +108,66 @@ fn divider(path: SplitPath, horizontal: bool, ratio: f32, ink: &Ink) -> El {
                 drag.phase == Phase::Up,
             );
         })
-        .child(line.fill(ink.separator))
+        .child(
+            grip.radius(GRIP.0 / 2.0)
+                .fill(ink.accent)
+                .group_opacity(0.0, 0.85)
+                .inert(),
+        )
+}
+
+/// How a card is lit: the keyboard's, among several, glows in the accent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lit {
+    Resting,
+    Focused,
+}
+
+/// A floating glass card around `content`: rounded, lifted off the window by
+/// its shadow, and edged with a top-lit hairline rim. `content` is clipped to
+/// the corners; the rim draws over it and never takes the pointer.
+fn card(content: El, ground: Color, lit: Lit, ink: &Ink) -> El {
+    let (top, bottom) = match lit {
+        Lit::Resting => (ink.text.alpha(0.16), ink.text.alpha(0.05)),
+        Lit::Focused => (ink.accent.alpha(0.8), ink.accent.alpha(0.35)),
+    };
+    let lifted = el()
+        .w_full()
+        .h_full()
+        .radius(CARD_RADIUS)
+        .continuous_corners()
+        .fill(ground)
+        .shadow(1.0, 3.0, ink.shade)
+        .shadow(10.0, 30.0, ink.shade);
+    let lifted = match lit {
+        Lit::Resting => lifted,
+        Lit::Focused => lifted.shadow(0.0, 22.0, ink.accent.alpha(0.22)),
+    };
+    lifted
+        .child(
+            content
+                .radius(CARD_RADIUS)
+                .continuous_corners()
+                .clip_rounded(CARD_RADIUS),
+        )
+        .child(
+            el().absolute(0.0, 0.0)
+                .w_full()
+                .h_full()
+                .radius(CARD_RADIUS)
+                .continuous_corners()
+                // A faint sheen from the top, as light catches glass.
+                .gradient(ink.text.alpha(0.035), Color::TRANSPARENT)
+                .border_gradient(1.0, top, bottom)
+                .inert(),
+        )
+}
+
+/// A pane's card, keyed by its terminal so it keeps its place as the tree
+/// changes, and eased in when it opens.
+fn float(id: &ResourceId, card: El) -> El {
+    card.key(format!("pane-{id}"))
+        .transition(Transition::scale(0.98).combined(Transition::opacity()))
 }
 
 fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
@@ -142,10 +208,11 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         });
     let Some((frame, view)) = frame else {
         perf::ACQUIRE_REJECTED.incr();
-        return host
+        let opening = host
             .fill(ink.bg)
             .center()
             .child(rune::text("Opening…").font(super::CAPTION).color(ink.dim));
+        return float(id, card(opening, ink.bg, Lit::Resting, ink));
     };
     if focused {
         // The exact frame this build paints, for the drawn receipt.
@@ -173,7 +240,13 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
     let linked = desk.pointer.hover.as_ref().is_some_and(|(t, _)| t == id);
     let area = desk.pane_area(id).unwrap_or([0.0, 0.0]);
     let ground = grid::background(&frame);
-    host.fill(ground)
+    let lit = if several && focused {
+        Lit::Focused
+    } else {
+        Lit::Resting
+    };
+    let host = host
+        .fill(ground)
         .cursor(if linked { rune::Cursor::Pointer } else { rune::Cursor::Text })
         .on_pointer_move_local(move |d: &mut Desk, event, tx| {
             d.hover(&moved, event.x - PAD, event.y - PAD, tx.mods());
@@ -225,5 +298,6 @@ fn pane(desk: &Desk, id: &ResourceId, several: bool, ink: &Ink) -> El {
         .children(overlay::find_bar(desk, id, area, ink))
         .children(focused.then(|| super::inbox::ask_card(desk, id, area, ink)).flatten())
         // Panes without the keyboard sit back a little.
-        .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(ground.alpha(0.42)).inert()))
+        .children((several && !focused).then(|| el().absolute(0.0, 0.0).w_full().h_full().fill(ground.alpha(0.42)).inert()));
+    float(id, card(host, ground, lit, ink))
 }
