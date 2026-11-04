@@ -130,6 +130,10 @@ fn named(key: &Key) -> Option<PhysicalKey> {
         Key::End => K::End,
         Key::PageUp => K::PageUp,
         Key::PageDown => K::PageDown,
+        Key::Insert => K::Insert,
+        Key::PrintScreen => K::PrintScreen,
+        Key::ScrollLock => K::ScrollLock,
+        Key::Pause => K::Pause,
         Key::Escape => K::Escape,
         Key::Tab => K::Tab,
         Key::Function(n) => function(*n)?,
@@ -395,6 +399,30 @@ mod tests {
         };
         assert_eq!(event.key, PhysicalKey::Tab);
         assert!(event.mods.contains(ModSet::SHIFT));
+    }
+
+    #[test]
+    fn non_typing_keys_reach_the_terminal_with_their_modifiers() {
+        let held = m(|m| {
+            m.shift = true;
+            m.ctrl = true;
+            m.alt = true;
+        });
+        for (key, physical) in [
+            (Key::Insert, PhysicalKey::Insert),
+            (Key::PrintScreen, PhysicalKey::PrintScreen),
+            (Key::ScrollLock, PhysicalKey::ScrollLock),
+            (Key::Pause, PhysicalKey::Pause),
+        ] {
+            for modifiers in [Mods::default(), held] {
+                assert_eq!(shortcut(&key, modifiers, None), None);
+                assert_eq!(
+                    typed(&key, modifiers, None, None, false),
+                    Some(Typed::Key(atom(physical, mods(modifiers), None))),
+                    "{key:?}"
+                );
+            }
+        }
     }
 
     #[test]

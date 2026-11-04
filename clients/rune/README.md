@@ -228,6 +228,15 @@ cargo run -- --socket /tmp/phux-test/s --snap out.png --at 3 --size 1100x720
 cargo run -- --socket /tmp/phux-test/s --script typing.json --snap out.png --at 5
 ```
 
+For strobe-driven input and per-frame timings, build with `--features strobe`.
+Strobe launches the app with `STROBE_BRIDGE` and `STROBE_BRIDGE_TOKEN`; include
+`--socket /tmp/phux-test/s` in its app arguments. Add `--strobe` for Rune's
+headless virtual clock, or omit it to measure a real window. The bridge is
+absent from default builds. See Rune's
+[strobe bridge](https://github.com/anomalyco/rune/tree/dev/crates/rune#strobe-bridge-feature-strobe)
+for the protocol and timing limits. Headless time does not synchronize phux's
+server workers; wait for the attached terminal before measuring an interaction.
+
 Notifications need the signed bundle (`rune_mac::notify::available`); `cargo
 run` can't post, and Settings says so.
 
