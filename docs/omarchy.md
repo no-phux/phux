@@ -43,8 +43,10 @@ setup never edits text outside its marked blocks:
 
 ```lua
 -- >>> phux: managed by `phux omarchy setup`; `phux omarchy remove` deletes it
-o.rebind("SUPER + CTRL + RETURN", "Phux", "omarchy-launch-terminal /home/you/.local/bin/phux")
-o.rebind("SUPER + CTRL + K", "Phux keybindings", [[sh -c '/home/you/.local/bin/phux omarchy keys | omarchy-menu-select "Phux keybindings" -- --width 800']])
+hl.unbind("SUPER + CTRL + RETURN")
+o.bind("SUPER + CTRL + RETURN", "Phux", "omarchy-launch-terminal /home/you/.local/bin/phux")
+hl.unbind("SUPER + CTRL + K")
+o.bind("SUPER + CTRL + K", "Phux keybindings", [[sh -c '/home/you/.local/bin/phux omarchy keys | omarchy-menu-select "Phux keybindings" -- --width 800']])
 o.window("sh\\.phux\\.rune", { tag = "+terminal" })
 -- <<< phux
 ```

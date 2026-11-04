@@ -47,11 +47,15 @@ impl Hyprland {
             "sh -c '{phux} omarchy keys | omarchy-menu-select \"Phux keybindings\" -- --width 800'"
         );
         if self.lua {
-            // A Lua string spells a regex backslash twice.
+            // A Lua string spells a regex backslash twice. Omarchy's helpers
+            // have no rebind: unbind its key, then bind ours, as the
+            // bindings.lua it ships says.
             let class = RUNE_CLASS.replace('\\', "\\\\");
             format!(
-                "o.rebind(\"SUPER + CTRL + RETURN\", \"Phux\", \"omarchy-launch-terminal {phux}\")\n\
-                 o.rebind(\"SUPER + CTRL + K\", \"Phux keybindings\", [[{menu}]])\n\
+                "hl.unbind(\"SUPER + CTRL + RETURN\")\n\
+                 o.bind(\"SUPER + CTRL + RETURN\", \"Phux\", \"omarchy-launch-terminal {phux}\")\n\
+                 hl.unbind(\"SUPER + CTRL + K\")\n\
+                 o.bind(\"SUPER + CTRL + K\", \"Phux keybindings\", [[{menu}]])\n\
                  o.window(\"{class}\", {{ tag = \"+terminal\" }})"
             )
         } else {
@@ -94,8 +98,18 @@ mod tests {
         let lua = hyprland(true);
         let binds = lua.bindings_block("/usr/bin/phux");
         assert!(binds.contains(
-            "o.rebind(\"SUPER + CTRL + RETURN\", \"Phux\", \"omarchy-launch-terminal /usr/bin/phux\")"
+            "hl.unbind(\"SUPER + CTRL + RETURN\")\n\
+             o.bind(\"SUPER + CTRL + RETURN\", \"Phux\", \"omarchy-launch-terminal /usr/bin/phux\")"
         ));
+        // Only helpers Omarchy 4 defines (default/hypr/helpers.lua): a call
+        // to a missing one stops the rest of the user's Hyprland config.
+        for call in binds.lines().chain(lua.autostart_block("phux").lines()) {
+            let name = call.split('(').next().unwrap_or_default();
+            assert!(
+                ["hl.unbind", "o.bind", "o.window", "o.launch_on_start"].contains(&name),
+                "{call}"
+            );
+        }
         assert!(binds.contains("[[sh -c '/usr/bin/phux omarchy keys | omarchy-menu-select"));
         assert!(binds.contains("o.window(\"sh\\\\.phux\\\\.rune\", { tag = \"+terminal\" })"));
         assert_eq!(
