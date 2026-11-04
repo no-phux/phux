@@ -11,6 +11,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// How the mirror was asked to run.
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(dead_code, reason = "only the macOS producer reads the arguments")
+)]
 pub(super) struct MirrorArgs<'a> {
     /// The window, as `App` or `App:title fragment`; `display` for the main
     /// display.
@@ -26,9 +30,9 @@ pub(super) struct MirrorArgs<'a> {
 }
 
 #[cfg(not(target_os = "macos"))]
-#[cfg_attr(
-    not(target_os = "macos"),
-    expect(dead_code, reason = "only the macOS producer reads the arguments")
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the stub keeps the macOS producer's signature"
 )]
 pub(super) fn run_mirror(args: MirrorArgs<'_>) -> ExitCode {
     use crate::commands::json_err;
