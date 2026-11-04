@@ -9,7 +9,7 @@ can watch and steer it.
 | Piece | What it is |
 | --- | --- |
 | [`.opencode/agents/rune-upstream.md`](../../.opencode/agents/rune-upstream.md) | The agent: its mission and rules, loaded from the worktree it runs in. It may run anything except the few commands that would move `main` around a PR |
-| [`tick.sh`](./tick.sh) | One scheduled tick: heal the session and worktree, start a fresh run unless one is busy |
+| [`tick.sh`](./tick.sh) | One scheduled tick: heal the session and worktrees, start a fresh run unless one is busy |
 | [`install.sh`](./install.sh) | The home directory and a LaunchAgent that runs `tick.sh` |
 
 ## Install
@@ -27,8 +27,9 @@ The home defaults to `rune-upstream` beside the primary checkout:
 
 | Path | Holds |
 | --- | --- |
-| `phux/` | The agent's own linked worktree. Between runs it sits on a clean, detached `origin/main` |
-| `opencode.jsonc` | Makes `rune-upstream` the default agent for OpenCode in that worktree only |
+| `phux/` | The worktree a run starts in and loads the agent from, on a clean, detached `origin/main`. Nothing is edited here |
+| `worktrees/` | One linked worktree per change (`rune-upstream-abc1234`, `rune-release-VERSION`), removed once its PR merges |
+| `opencode.jsonc` | Makes `rune-upstream` the default agent for OpenCode under the home only |
 | `STEERING.md` | Standing orders, read first on every run |
 | `JOURNAL.md` | The agent's memory between runs, and the first place a `BLOCKED:` line shows up |
 | `rune.git` | A mirror of upstream for reading ranges |
@@ -47,8 +48,8 @@ Otherwise it closes the old run and opens a new pane running
 `opencode --auto --prompt "Scheduled rune-upstream tick ..."` through your
 login shell, tagged `#rune-upstream-run`. Each run is a fresh OpenCode
 session; earlier ones stay in OpenCode's session list. A pane that crashed,
-a session someone deleted, a worktree that went missing, or a run branch
-whose PR merged is rebuilt or parked on the next tick. A tick that can't
+a session someone deleted, or a start worktree that went missing is rebuilt
+on the next tick, and a change worktree whose PR merged is removed. A tick that can't
 read the session's state leaves everything alone.
 
 ## Steering

@@ -10,6 +10,11 @@ use super::*;
 #[path = "tests_image_resync.rs"]
 mod tests;
 
+/// The tracing target of the stale-output line. Tools filter on it
+/// (`tools/src/web/browser.ts`), so it stays put when this module moves. It
+/// keeps the crate prefix so a `phux_server=debug` filter still shows it.
+const LOG_TARGET: &str = "phux_server::output_resync";
+
 impl OutputPumpContext {
     /// Tombstone the live generation, publish its native replacement, and
     /// adopt the post-cut receiver the actor fenced it behind. `false` means
@@ -348,6 +353,7 @@ impl OutputPumpContext {
             // A slow link goes stale every cycle by design; `pump.lagged`
             // counts it.
             debug!(
+                target: LOG_TARGET,
                 terminal_id = ?self.wire_terminal_id,
                 %cause,
                 "{} fell behind; skipping to a fresh checkpoint",

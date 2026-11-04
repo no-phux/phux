@@ -154,8 +154,6 @@ fn read_owner_file(path: &Path, role: FileRole) -> Result<Option<(Stamp, Vec<u8>
     let Some(before) = probe(path, role)? else {
         return Ok(None);
     };
-    #[cfg(test)]
-    fault::take()?;
     let mut file = match OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW)
@@ -404,29 +402,6 @@ pub(super) fn is_owned_regular_file(path: &Path) -> bool {
         .is_ok_and(|meta| meta.file_type().is_file() && meta.uid() == effective_uid())
 }
 
-/// A test-only fault: make the next file read on this thread fail as a
-/// transient I/O error would (`EMFILE`), before anything is opened.
-#[cfg(test)]
-pub(super) mod fault {
-    use std::cell::Cell;
-
-    thread_local! {
-        static FAIL_NEXT_READ: Cell<bool> = const { Cell::new(false) };
-    }
-
-    /// Arm the fault for the next read on this thread.
-    pub(in crate::workload) fn fail_next_read() {
-        FAIL_NEXT_READ.with(|armed| armed.set(true));
-    }
-
-    pub(super) fn take() -> Result<(), super::WorkloadError> {
-        if FAIL_NEXT_READ.with(|armed| armed.replace(false)) {
-            return Err(std::io::Error::from_raw_os_error(nix::libc::EMFILE).into());
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,18 +526,5 @@ mod tests {
         .unwrap();
         assert!(foreign.exists(), "a temp outside the held lock was swept");
         assert!(!stale.exists(), "the held directory was not swept");
-    }
-
-    #[test]
-    fn the_injected_fault_fails_one_read_as_io() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("workload-keys");
-        owner_only(&path, b"{}");
-        fault::fail_next_read();
-        assert!(matches!(
-            read_stable(&path, FileRole::Registry),
-            Err(WorkloadError::Io(_))
-        ));
-        assert!(read_stable(&path, FileRole::Registry).is_ok());
     }
 }

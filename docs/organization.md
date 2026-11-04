@@ -45,6 +45,10 @@ mirroring memory, acknowledging success or performing its effects. Replaying
 a retained identical operation returns its receipt; changing the payload
 under that id is refused. Do not copy the transient protocol dedupe cache's
 lifetime into this durable receipt model; each store owns its retention.
+A receipt row this binary cannot decode, as after a rollback past a new
+operation kind, does not stop the server. The row stays stored and its id is
+refused as a duplicate until it expires, because a missing receipt would let
+a retry run the operation twice.
 
 The [server commit seam](../crates/phux-server/src/state/org.rs) separates
 `persist_command_from` from `mirror_persisted`; its
