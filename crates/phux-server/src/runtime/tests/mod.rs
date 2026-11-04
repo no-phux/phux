@@ -196,12 +196,8 @@ fn stub_terminal() -> (crate::resource::ResourceHandle, StubRx) {
         resize,
         ..phux_terminal::actor::TerminalHandle::detached_for_test(80, 24)
     };
-    let handle = crate::resource::ResourceHandle::new(
-        None,
-        tokio::sync::broadcast::channel(8).0,
-        channel(8).0,
-        facet,
-    );
+    let handle =
+        crate::resource::ResourceHandle::new(None, tokio::sync::broadcast::channel(8).0, facet);
     let rx = StubRx {
         snapshot: snapshot_rx,
         resize: resize_rx,
@@ -260,7 +256,7 @@ async fn next_frame(out_rx: &mut tokio::sync::mpsc::Receiver<Outbound>) -> Frame
         .expect("outbound closed")
     {
         Outbound::Frame(frame) => frame,
-        other @ Outbound::TerminalError { .. } => {
+        other @ Outbound::FatalError { .. } => {
             panic!("unexpected outbound sentinel: {other:?}")
         }
     }

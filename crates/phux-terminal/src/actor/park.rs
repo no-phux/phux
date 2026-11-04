@@ -190,7 +190,7 @@ impl Park {
             .name("phux-pty-park".to_owned())
             .stack_size(READER_STACK)
             .spawn(move || {
-                phux_resource::perf::promote_helper_thread("phux-pty-park");
+                crate::perf::promote_helper_thread("phux-pty-park");
                 self.poll_loop();
             });
         if let Err(err) = spawned {
@@ -344,7 +344,7 @@ impl Park {
                 while !ready_for_thread.load(Ordering::Acquire) {
                     std::thread::yield_now();
                 }
-                phux_resource::perf::promote_helper_thread("phux-pty-reader");
+                crate::perf::promote_helper_thread("phux-pty-reader");
                 hot_loop(self, id, file, tx, cancel, pending);
             });
         {

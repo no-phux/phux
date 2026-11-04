@@ -37,7 +37,7 @@ pub fn hello_ok(patch: u16) -> FrameKind {
             .with_layers(LayerSet::with(&[Layer::L3]))
             .with_features(ServerFeatureSet::new()),
         server_id: vec![0xAB; 16],
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     }
 }

@@ -115,7 +115,7 @@ fn write_capture(capture: &trace::Capture) -> Result<serde_json::Value, String> 
         .write_chrome_json(
             std::io::BufWriter::new(file),
             PROCESS_NAME,
-            &[crate::perf::TABLE],
+            &crate::perf::tables(),
         )
         .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
     tracing::info!(path = %path.display(), events = capture.event_count(), "perf trace written");

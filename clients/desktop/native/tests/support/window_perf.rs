@@ -82,7 +82,7 @@ fn serve(client: &Client) {
             server_caps: ServerCapabilities::new()
                 .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
             server_id: vec![2; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         })
         .expect("hello");

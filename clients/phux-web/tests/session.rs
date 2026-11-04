@@ -68,7 +68,7 @@ fn hello_ok(profile: BootstrapProfile, limits: BootstrapLimits) -> FrameKind {
         protocol_patch: PROTOCOL_VERSION.patch,
         server_caps: phux_protocol::caps::ServerCapabilities::new(),
         server_id: Vec::new(),
-        selected_profile: profile,
+        selected_profile: Some(profile),
         bootstrap_limits: limits,
     }
 }

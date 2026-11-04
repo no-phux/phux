@@ -11,7 +11,7 @@ use super::*;
 /// (R12).
 ///
 /// `None` when its start time cannot be read. The process group is read
-/// once; a Terminal child leads its own group, and a mismatch is logged and
+/// once; a spawned child leads its own group, and a mismatch is logged and
 /// recorded as found.
 #[must_use]
 pub fn proc_identity(pid: i32) -> Option<phux_core::ProcIdentity> {
@@ -20,7 +20,7 @@ pub fn proc_identity(pid: i32) -> Option<phux_core::ProcIdentity> {
     let group = nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(pid)))
         .map_or(pid, nix::unistd::Pid::as_raw);
     if group != pid {
-        tracing::warn!(pid, group, "terminal child does not lead its process group");
+        tracing::warn!(pid, group, "child does not lead its process group");
     }
     Some(phux_core::ProcIdentity {
         pid,

@@ -97,7 +97,7 @@ fn run_input_lane(
     waiter_handle: &CompletionWaiterHandle,
     completion_timeout: std::time::Duration,
 ) {
-    crate::perf::promote_helper_thread("phux-input-lane");
+    phux_terminal::perf::promote_helper_thread("phux-input-lane");
     let mut encoders = std::collections::HashMap::new();
     let mut tickets = TicketSource::default();
     let mut activity_gate = ActivityGate::default();

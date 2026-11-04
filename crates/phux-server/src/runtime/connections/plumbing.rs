@@ -114,7 +114,7 @@ pub(in crate::runtime) async fn dispatch_terminal_reply(
 
 /// Why one connection must end, and what the peer is owed on the way out
 /// (SPEC §9: `ERROR`, then `DETACHED`, then close).
-pub(in crate::runtime) struct ConnectionClose {
+pub(crate) struct ConnectionClose {
     /// `Some(reason)` when the connection may be attached, so its pumps and
     /// consumer state are torn down first; `None` in the handshake phase.
     pub(in crate::runtime) attached_reason: Option<&'static str>,
@@ -172,7 +172,7 @@ impl Drop for StreamBinding {
 /// One connection's outbound plumbing. The output pumps are separate from
 /// the writer so DETACH can abort them while the writer still emits
 /// DETACHED and serves a later ATTACH.
-pub(in crate::runtime) struct ClientPlumbing {
+pub(crate) struct ClientPlumbing {
     pub(in crate::runtime) out_tx: mpsc::Sender<Outbound>,
     writer_close: tokio::sync::watch::Sender<bool>,
     /// Sibling tasks (today: just the writer).
@@ -230,7 +230,10 @@ impl ClientPlumbing {
 
     /// The mailbox for Terminal-addressed outbound: the bound stream's sender
     /// when this connection bound the Terminal, else the control mailbox.
-    pub(super) fn sender_for(&self, terminal_id: &WireResourceId) -> mpsc::Sender<Outbound> {
+    pub(in crate::runtime) fn sender_for(
+        &self,
+        terminal_id: &WireResourceId,
+    ) -> mpsc::Sender<Outbound> {
         self.stream_bindings
             .get(terminal_id)
             .map_or_else(|| self.out_tx.clone(), |binding| binding.tx.clone())

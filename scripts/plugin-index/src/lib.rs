@@ -28,9 +28,11 @@ pub use render::{render_json, render_markdown};
 /// in a compatible way: an additive field is still a new document.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// GitHub requests one index build will make before later repositories are
-/// skipped. Search pages count, and so does each manifest fetch.
-pub const MAX_HTTP_REQUESTS: u32 = 500;
+/// GitHub requests one index build may make before it fails. Search pages
+/// count, and so do the repository document and the HEAD and GET of each
+/// manifest, about three per repository: room for some 600 repositories
+/// under the topic, well inside the 5000/hour an authenticated token gets.
+pub const MAX_HTTP_REQUESTS: u32 = 2000;
 
 /// The line the index carries about how plugins run.
 pub const NOTICE: &str = "Plugins run as the user and aren't sandboxed (see docs/plugins.md).";

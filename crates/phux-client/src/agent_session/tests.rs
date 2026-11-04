@@ -594,3 +594,5 @@ async fn closed_bootstrap_completes_a_follow_without_waiting_for_another_close()
     drop(conn);
     server.await.unwrap();
 }
+
+mod follow_gaps;

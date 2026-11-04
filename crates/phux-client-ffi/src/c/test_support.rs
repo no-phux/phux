@@ -43,7 +43,7 @@ pub(crate) fn hello_ok(server_caps: ServerCapabilities, profile: BootstrapProfil
         protocol_patch: PROTOCOL_VERSION.patch,
         server_caps,
         server_id: b"server".to_vec(),
-        selected_profile: profile,
+        selected_profile: Some(profile),
         bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("valid test limits"),
     }
 }

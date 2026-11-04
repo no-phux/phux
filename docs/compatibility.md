@@ -165,7 +165,7 @@ are held to a file frozen from a release (`phux-frozen`):
 | `trusted-projects.toml` | `phux`: `trusted-projects` |
 | `organize/last.json` | `phux-client-core`: `organize-journal` |
 | `onboarding.json`, `collapsed-projects.json`, `agents-filter.json` | `phux-tui`: one each |
-| `phux.agent/v1` | `phux-resource`: `agent-record` |
+| `phux.agent/v1` | `phux-agent-session`: `agent-record` |
 
 Fixtures live in `crates/<crate>/tests/fixtures/frozen/<format>/` (the blob's
 in `tests/fixtures/upgrade-blob/`) and are append-only:

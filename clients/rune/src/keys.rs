@@ -54,6 +54,12 @@ pub enum Shortcut {
     FindSelection,
     Inbox,
     Settings,
+    /// The themes, previewed live as the highlight moves.
+    ChangeTheme,
+    /// The sessions, to switch to one or create one.
+    SwitchSession,
+    /// A path on the pane's host, inserted at its prompt.
+    InsertPath,
     /// The tab at this index.
     Tab(u8),
     RenameSession,
@@ -79,6 +85,7 @@ impl Shortcut {
             self,
             Self::Inbox
                 | Self::Settings
+                | Self::ChangeTheme
                 | Self::ZoomIn
                 | Self::ZoomOut
                 | Self::ZoomReset
@@ -123,6 +130,10 @@ fn named(key: &Key) -> Option<PhysicalKey> {
         Key::End => K::End,
         Key::PageUp => K::PageUp,
         Key::PageDown => K::PageDown,
+        Key::Insert => K::Insert,
+        Key::PrintScreen => K::PrintScreen,
+        Key::ScrollLock => K::ScrollLock,
+        Key::Pause => K::Pause,
         Key::Escape => K::Escape,
         Key::Tab => K::Tab,
         Key::Function(n) => function(*n)?,
@@ -220,8 +231,16 @@ pub fn us_char(code: PhysicalKeyCode) -> Option<char> {
 /// `physical` names the key itself, so a shifted chord (Ctrl-Shift-minus
 /// arrives as `_`) and other layouts still match.
 pub fn shortcut(key: &Key, mods: Mods, physical: Option<PhysicalKeyCode>) -> Option<Shortcut> {
+    let cap = match key {
+        // An Option chord types a character on macOS (⌥; is …): the key
+        // under it is the chord.
+        Key::Text(_) if mods.alt && !mods.cmd && !mods.ctrl => {
+            Cap::Char(physical.and_then(us_char)?)
+        }
+        _ => cap(key, physical)?,
+    };
     commands::action_of(Chord {
-        cap: cap(key, physical)?,
+        cap,
         // Rune's `cmd` is Ctrl off macOS, which the table names as Ctrl.
         command: if cfg!(target_os = "macos") {
             mods.cmd
@@ -248,6 +267,7 @@ fn cap(key: &Key, physical: Option<PhysicalKeyCode>) -> Option<Cap> {
         Key::End => Cap::End,
         Key::PageUp => Cap::PageUp,
         Key::PageDown => Cap::PageDown,
+        Key::Insert => Cap::Insert,
         _ => return None,
     })
 }
@@ -383,11 +403,44 @@ mod tests {
     }
 
     #[test]
+    fn non_typing_keys_reach_the_terminal_with_their_modifiers() {
+        let held = m(|m| {
+            m.shift = true;
+            m.ctrl = true;
+            m.alt = true;
+        });
+        for (key, physical) in [
+            (Key::Insert, PhysicalKey::Insert),
+            (Key::PrintScreen, PhysicalKey::PrintScreen),
+            (Key::ScrollLock, PhysicalKey::ScrollLock),
+            (Key::Pause, PhysicalKey::Pause),
+        ] {
+            for modifiers in [Mods::default(), held] {
+                assert_eq!(shortcut(&key, modifiers, None), None);
+                assert_eq!(
+                    typed(&key, modifiers, None, None, false),
+                    Some(Typed::Key(atom(physical, mods(modifiers), None))),
+                    "{key:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn function_keys_map_and_out_of_range_ones_do_not() {
         assert_eq!(function(1), Some(PhysicalKey::F1));
         assert_eq!(function(12), Some(PhysicalKey::F12));
         assert_eq!(function(0), None);
         assert_eq!(function(13), None);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn omarchy_super_c_and_v_copy_and_paste() {
+        let ctrl = m(|m| m.ctrl = true);
+        let shift = m(|m| m.shift = true);
+        assert_eq!(shortcut(&Key::Insert, ctrl, None), Some(Shortcut::Copy));
+        assert_eq!(shortcut(&Key::Insert, shift, None), Some(Shortcut::Paste));
     }
 
     #[cfg(target_os = "macos")]

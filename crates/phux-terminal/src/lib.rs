@@ -18,6 +18,7 @@ pub mod input;
 pub mod mailbox;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub mod native_state;
+pub mod perf;
 
 /// The process spawn vocabulary the host builds a pane's launch from.
 pub mod pty {
@@ -30,5 +31,5 @@ pub use libghostty_vt::Error as VtError;
 pub use actor::{
     SnapshotRequest, TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle,
 };
-pub use mailbox::TerminalInput;
+pub use mailbox::{ControlRequest, TerminalInput};
 pub use phux_resource::mailbox::Outbound;

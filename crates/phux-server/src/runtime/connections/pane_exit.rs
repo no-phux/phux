@@ -53,12 +53,12 @@ pub(crate) fn spawn_resource_exit_watcher(
             retention,
             wire_terminal_id,
             agent_hook,
-            control,
+            handle,
         }) = retained
         {
             // Awaited so a full mailbox delays the retire instead of dropping it.
-            if let Some(control) = control {
-                let _ = control.send(crate::resource::ControlRequest::Retire).await;
+            if let Some(handle) = handle {
+                handle.ops().retire().await;
             }
             fire_retained_exit_hooks(&state, &wire_terminal_id, agent_hook, exit);
             events = hold_until_purge(&state, &retention, events).await;
@@ -124,7 +124,7 @@ struct RetainedExit {
     /// The `agent-state-changed` hook the withdrawn agent record owes.
     agent_hook: Option<HookEvent>,
     /// The engine's control mailbox, for the `Retire` sent off the lock.
-    control: Option<tokio::sync::mpsc::Sender<crate::resource::ControlRequest>>,
+    handle: Option<crate::resource::ResourceHandle>,
 }
 
 /// Keep `pane` as `Exited` when it asked to be retained and nothing is
@@ -158,7 +158,7 @@ fn retain_exited_pane(
         Some(wire_terminal_id.clone()),
         exited,
     ));
-    let control = s.resource_handle(pane).map(|handle| handle.control.clone());
+    let handle = s.resource_handle(pane).cloned();
     let scope = Scope::Resource(wire_terminal_id.clone());
     let hooks_live = s.hook_dispatcher().is_some();
     let agent_hook = drain_retract(s, &wire_terminal_id, &scope, hooks_live);
@@ -166,7 +166,7 @@ fn retain_exited_pane(
         retention,
         wire_terminal_id,
         agent_hook,
-        control,
+        handle,
     })
 }
 

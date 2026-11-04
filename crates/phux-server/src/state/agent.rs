@@ -1,7 +1,7 @@
 use phux_core::ids::ResourceId;
 
 use super::ServerState;
-use phux_resource::agent_asked::{AskedPayload, AskedSource, AskedTransition};
+use phux_agent_session::asked::{AskedPayload, AskedSource, AskedTransition};
 
 impl ServerState {
     pub(crate) fn report_agent_asked(
@@ -47,14 +47,14 @@ impl ServerState {
     }
 
     /// Read the `phux.agent/v1` record arbiter (ADR-0046 §E).
-    pub(crate) const fn agent_records(&self) -> &phux_resource::agent_state::AgentRecordArbiter {
+    pub(crate) const fn agent_records(&self) -> &phux_agent_session::state::AgentRecordArbiter {
         self.agent.records()
     }
 
     /// Mutate the `phux.agent/v1` record arbiter (ADR-0046 §E).
     pub(crate) const fn agent_records_mut(
         &mut self,
-    ) -> &mut phux_resource::agent_state::AgentRecordArbiter {
+    ) -> &mut phux_agent_session::state::AgentRecordArbiter {
         self.agent.records_mut()
     }
 }
