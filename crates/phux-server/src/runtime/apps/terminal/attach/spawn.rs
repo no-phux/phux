@@ -175,6 +175,22 @@ pub(crate) async fn handle_spawn_terminal(
     };
     match crate::id_bridge::core_kind(kind) {
         Some(crate::resource::ResourceKind::Terminal) => {}
+        Some(crate::resource::ResourceKind::AccessibilityTree) => {
+            let resource = resource.unwrap_or_default();
+            crate::runtime::apps::accessibility_tree::spawn_tree(
+                state,
+                client_id,
+                request_id,
+                &resource,
+                satellite.as_ref(),
+                out_tx,
+                root_token,
+                bootstrap_limits,
+                connection_token,
+            )
+            .await;
+            return;
+        }
         Some(crate::resource::ResourceKind::AgentSession) => {
             let resource = resource.unwrap_or_default();
             crate::runtime::resource_commands::spawn_agent_session(

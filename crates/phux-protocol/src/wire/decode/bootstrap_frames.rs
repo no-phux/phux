@@ -322,7 +322,8 @@ pub(super) fn checked_history_cursor(value: &[u8]) -> Result<bytes::Bytes, Decod
 }
 
 /// Validate `BOOTSTRAP_BEGIN` dimensions: a Terminal stream needs a non-zero
-/// grid, and a gridless `AgentEventsJsonlV1` stream must carry `0 x 0`.
+/// grid, and a gridless stream (agent events, an accessibility tree) must
+/// carry `0 x 0`.
 pub(super) fn checked_bootstrap_dimensions(
     profile: crate::caps::BootstrapStreamProfile,
     cols: Option<u16>,
@@ -334,6 +335,7 @@ pub(super) fn checked_bootstrap_dimensions(
         profile,
         crate::caps::BootstrapStreamProfile::AgentEventsJsonlV1
             | crate::caps::BootstrapStreamProfile::AgentEventsJsonlResumeV1 { .. }
+            | crate::caps::BootstrapStreamProfile::AccessibilityTreeJsonV1
     );
     if gridless != (cols == 0 && rows == 0) {
         return Err(DecodeError::InvalidBootstrapProfile);

@@ -252,11 +252,22 @@ enable it. Older servers do not advertise the bit; clients check before
 sending. Reports remain schema 1, with optional `rss_bytes` and `alloc`
 JSON fields that old readers ignore.
 
-Panes are **resources** with a **kind**: `Terminal` or `AgentSession` so
-far, each with its own methods and events. A client tolerates kinds it
-does not know. The kind catalog in `phux-protocol::kinds` lists every
-method with the authorization verb it needs; the generated
+Panes are **resources** with a **kind**: `Terminal`, `AgentSession` or
+`AccessibilityTree` so far, each with its own methods and events. A client
+tolerates kinds it does not know. The kind catalog in `phux-protocol::kinds`
+lists every method with the authorization verb it needs; the generated
 [kinds reference](./reference/kinds.md) renders it.
+
+An `AccessibilityTree` (wire tag 2, gated on `features_ext.ACCESSIBILITY_TREE`)
+is a replicated document: a producer running in the parent Terminal
+replaces the whole document with `PUBLISH_RESOURCE_STATE` (one JSON
+document, at most 4 MiB), and the engine keeps the newest. A viewer's
+`ATTACH_RESOURCE` bootstraps it under the `AccessibilityTreeJsonV1` codec,
+`0 x 0`, with the newest document in the chunks and its sequence as
+`base_seq`; each later document arrives as one `RESOURCE_OUTPUT`. A viewer
+the broadcast laps is tombstoned (`OUTBOUND_GAP`) and recut from the newest
+document, so the only thing a slow viewer skips is intermediate documents.
+The stream takes no input, no acknowledgement and no history request.
 
 `GET_METADATA` / `SET_METADATA` / `SUBSCRIBE_METADATA` (`0x50`-`0x54`)
 attach small keyed values to resources. Some keys are plain storage; some

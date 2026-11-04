@@ -132,6 +132,11 @@ pub enum BootstrapCodec {
     /// codec. Live output carries whole records and is always raw
     /// (`FRAME_ACK` forbidden). Gated on `ServerFeature::ResourceKinds`.
     AgentEventsJsonlV1,
+    /// One JSON document per message, the whole accessibility tree v1: the
+    /// `AccessibilityTree` codec. The bootstrap carries the newest snapshot
+    /// and every live message replaces it. Gated on
+    /// `ServerFeatureExt::AccessibilityTree`.
+    AccessibilityTreeJsonV1,
 }
 
 impl BootstrapCodec {
@@ -143,6 +148,8 @@ impl BootstrapCodec {
     /// space never collides with the `EngineCodec` version byte that follows
     /// [`Self::NATIVE_TAG`] in a hex dump.
     pub const AGENT_EVENTS_JSONL_V1_TAG: u8 = 3;
+    /// Wire tag for accessibility-tree JSON v1.
+    pub const ACCESSIBILITY_TREE_JSON_V1_TAG: u8 = 4;
 }
 
 /// Additive set of exact native engine codecs.
@@ -432,6 +439,9 @@ pub enum BootstrapStreamProfile {
         /// Last record already committed by the consumer.
         after_seq: u64,
     },
+    /// The newest whole accessibility tree as one JSON document, followed
+    /// by raw live replacements, each a whole document.
+    AccessibilityTreeJsonV1,
 }
 
 /// Select one explicit profile and the negotiated payload bounds.

@@ -1,0 +1,126 @@
+//! Spawning an `AccessibilityTree` under the Terminal its producer runs in.
+
+use phux_protocol::caps::BootstrapLimits;
+use phux_protocol::wire::frame::{AgentEvent, FrameKind, SpawnError, SpawnResource};
+use phux_tree::TreeActor;
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+
+use super::attach_tree;
+use crate::mailbox::Outbound;
+use crate::runtime::attach::refuse_spawn;
+use crate::state::{ClientId, SharedState};
+
+/// Handle a `SPAWN_RESOURCE` whose kind is `AccessibilityTree`. The parent
+/// must be a live local Terminal; `provider` names the observed application.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn spawn_tree(
+    state: &SharedState,
+    client_id: ClientId,
+    request_id: u32,
+    resource: &SpawnResource,
+    satellite: Option<&phux_protocol::ids::SatelliteHost>,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    root_token: &CancellationToken,
+    bootstrap_limits: BootstrapLimits,
+    connection_token: &CancellationToken,
+) {
+    let Some(target) = resource.provider.as_deref().filter(|p| !p.is_empty()) else {
+        refuse_spawn(
+            out_tx,
+            request_id,
+            SpawnError::SpawnFailed(
+                "an accessibility tree spawn must name the application it observes".to_owned(),
+            ),
+        )
+        .await;
+        return;
+    };
+    let Some(parent) = resource.parent.clone() else {
+        refuse_spawn(out_tx, request_id, SpawnError::ParentNotFound).await;
+        return;
+    };
+    if satellite.is_some() || !parent.is_local() {
+        refuse_spawn(
+            out_tx,
+            request_id,
+            SpawnError::SpawnFailed(
+                "an accessibility tree is local to the machine its producer runs on".to_owned(),
+            ),
+        )
+        .await;
+        return;
+    }
+    let Some(core_parent) = state.with(|s| s.resource_from_wire(&parent)) else {
+        debug!(?client_id, request_id, %parent, "SPAWN_RESOURCE: tree parent not found");
+        refuse_spawn(out_tx, request_id, SpawnError::ParentNotFound).await;
+        return;
+    };
+
+    let token = root_token.child_token();
+    let bundle = TreeActor::build(core_parent, target, token.clone());
+    let registered = state.with_mut(|s| {
+        if s.resource_handle(core_parent).is_none() {
+            return Err(SpawnError::ParentNotFound);
+        }
+        let actor = s.actor_for(client_id);
+        let core = s
+            .create_tree(core_parent, target, &actor)
+            .map_err(|_| SpawnError::ParentKindMismatch)?;
+        let _ = s.spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run());
+        let wire = s.intern_resource_wire(core);
+        let announcement = crate::state::EventRecord::new(
+            Some(wire.clone()),
+            AgentEvent::ResourceSpawned {
+                kind: phux_protocol::ids::ResourceKind::AccessibilityTree,
+                parent: Some(parent.clone()),
+            },
+        )
+        .with_parent(Some(parent.clone()))
+        .with_actor(Some(client_id))
+        .with_operation_id(resource.idempotency_key);
+        let _ = s.record_and_fanout(announcement);
+        crate::runtime::idempotent_create::bind_spawned(s, resource.idempotency_key, &wire);
+        s.record_spawn(core, client_id);
+        s.subscribe_resource(client_id, core, Some(out_tx.clone()));
+        s.mark_if_viewer_session(client_id, &wire);
+        Ok((core, wire))
+    });
+    let (core_tree, wire_tree) = match registered {
+        Ok(pair) => pair,
+        Err(error) => {
+            refuse_spawn(out_tx, request_id, error).await;
+            return;
+        }
+    };
+    crate::runtime::client::spawn_resource_exit_watcher(
+        state.clone(),
+        core_tree,
+        Some(bundle.exit_notify),
+        root_token.clone(),
+        None,
+    );
+    let instance = resource
+        .bind_instance
+        .then(|| state.with(|s| s.idspace.instance()));
+    let _ = out_tx
+        .send(Outbound::Frame(FrameKind::ResourceSpawned {
+            request_id,
+            result: crate::runtime::attach::spawned_result(wire_tree.clone(), instance),
+        }))
+        .await;
+    // The spawner watches its own tree: run the (empty) bootstrap and the
+    // live pump the `ATTACH_RESOURCE` path runs.
+    let _ = attach_tree(
+        state,
+        client_id,
+        &wire_tree,
+        core_tree,
+        &bundle.handle,
+        out_tx,
+        bootstrap_limits,
+        connection_token,
+    )
+    .await;
+    debug!(?client_id, request_id, tree = %wire_tree, target, "SPAWN_RESOURCE: accessibility tree bound to its parent");
+}

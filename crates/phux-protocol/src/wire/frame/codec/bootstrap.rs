@@ -23,6 +23,9 @@ pub(in crate::wire) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut E
         BootstrapCodec::AgentEventsJsonlV1 => {
             enc.write_u8(BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG);
         }
+        BootstrapCodec::AccessibilityTreeJsonV1 => {
+            enc.write_u8(BootstrapCodec::ACCESSIBILITY_TREE_JSON_V1_TAG);
+        }
     }
 }
 
@@ -38,6 +41,9 @@ pub(in crate::wire) fn decode_bootstrap_codec(
             Ok(BootstrapCodec::Native(codec))
         }
         BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG => Ok(BootstrapCodec::AgentEventsJsonlV1),
+        BootstrapCodec::ACCESSIBILITY_TREE_JSON_V1_TAG => {
+            Ok(BootstrapCodec::AccessibilityTreeJsonV1)
+        }
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }
 }
@@ -98,6 +104,9 @@ pub(in crate::wire) const fn decode_bootstrap_stream_profile(
         }
         (BootstrapCodec::AgentEventsJsonlV1, 0, Some(after_seq)) => {
             Ok(BootstrapStreamProfile::AgentEventsJsonlResumeV1 { after_seq })
+        }
+        (BootstrapCodec::AccessibilityTreeJsonV1, 0, None) => {
+            Ok(BootstrapStreamProfile::AccessibilityTreeJsonV1)
         }
         _ => Err(DecodeError::InvalidBootstrapProfile),
     }

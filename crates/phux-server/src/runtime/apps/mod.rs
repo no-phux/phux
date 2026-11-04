@@ -28,6 +28,7 @@ use super::operation_dedupe::OperationClaim;
 use crate::resource::{ResourceHandle, ResourceKind};
 use crate::state::{ClientId, Outbound, SharedState};
 
+pub(crate) mod accessibility_tree;
 pub(crate) mod agent_session;
 pub(crate) mod terminal;
 
@@ -139,7 +140,11 @@ pub(crate) trait ResourceApp: Sync {
 }
 
 /// Every app this server hosts.
-static APPS: [&dyn ResourceApp; 2] = [&terminal::TerminalApp, &agent_session::AgentSessionApp];
+static APPS: [&dyn ResourceApp; 3] = [
+    &terminal::TerminalApp,
+    &agent_session::AgentSessionApp,
+    &accessibility_tree::AccessibilityTreeApp,
+];
 
 /// The app serving `kind`, or `None` for a kind this build does not serve.
 pub(crate) fn app_for(kind: ResourceKind) -> Option<&'static dyn ResourceApp> {

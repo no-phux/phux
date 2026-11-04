@@ -6,14 +6,15 @@ use super::{
     COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_FILE, COMMAND_TAG_GET_PERF,
     COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
     COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES,
-    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL, COMMAND_TAG_PUT_FILE,
-    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
-    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
-    COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE, ClientId,
-    Command, Encoder, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE,
-    INPUT_EVENT_TAG_PASTE, IdempotencyKey, InputEvent, KillPrecondition, STATE_SCOPE_TAG_SERVER,
-    StateScope, encode_asked_fields, encode_client_id, encode_focus_event, encode_key_event,
-    encode_mouse_event, encode_optional_u32, encode_paste_event, encode_terminal_id,
+    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PERF_CONTROL, COMMAND_TAG_PUBLISH_RESOURCE_STATE,
+    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
+    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
+    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE,
+    COMMAND_TAG_UPGRADE, ClientId, Command, Encoder, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
+    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, IdempotencyKey, InputEvent, KillPrecondition,
+    STATE_SCOPE_TAG_SERVER, StateScope, encode_asked_fields, encode_client_id, encode_focus_event,
+    encode_key_event, encode_mouse_event, encode_optional_u32, encode_paste_event,
+    encode_terminal_id,
 };
 
 #[allow(
@@ -260,6 +261,11 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         }
         Command::AppendResourceOutput { terminal_id, bytes } => {
             enc.write_u8(COMMAND_TAG_APPEND_RESOURCE_OUTPUT);
+            encode_terminal_id(terminal_id, enc);
+            enc.write_bytes(bytes);
+        }
+        Command::PublishResourceState { terminal_id, bytes } => {
+            enc.write_u8(COMMAND_TAG_PUBLISH_RESOURCE_STATE);
             encode_terminal_id(terminal_id, enc);
             enc.write_bytes(bytes);
         }

@@ -3,6 +3,10 @@ const ORGANIZATION: Option<FeatureGate> = Some(FeatureGate::FeaturesExt {
     mask: ServerFeatureExt::Organization.mask(),
     wire_name: ServerFeatureExt::Organization.wire_name(),
 });
+const ACCESSIBILITY_TREE: FeatureGate = FeatureGate::FeaturesExt {
+    mask: ServerFeatureExt::AccessibilityTree.mask(),
+    wire_name: ServerFeatureExt::AccessibilityTree.wire_name(),
+};
 
 /// The substrate every kind shares (L1 §1.1): spawn and close, the output
 /// subscription, kill, events, inventory, and the resource's L3 scope.
@@ -203,7 +207,7 @@ pub static SUBSTRATE_EVENTS: &[EventSpec] = &[
 ];
 
 /// Every resource kind this build serves, in wire-tag order.
-pub static KINDS: [KindSpec; 2] = [
+pub static KINDS: [KindSpec; 3] = [
     KindSpec {
         kind: ResourceKind::Terminal,
         name: "TERMINAL",
@@ -391,6 +395,19 @@ pub static KINDS: [KindSpec; 2] = [
             name: "native_agent_result",
             tag: crate::wire::frame::EVENT_TAG_NATIVE_AGENT_RESULT,
         }],
+        metadata_keys: &[],
+    },
+    KindSpec {
+        kind: ResourceKind::AccessibilityTree,
+        name: "ACCESSIBILITY_TREE",
+        gate: Some(ACCESSIBILITY_TREE),
+        methods: &[method!(
+            "PUBLISH_RESOURCE_STATE",
+            Carrier::Command(COMMAND_TAG_PUBLISH_RESOURCE_STATE),
+            [C_PUBLISH_RESOURCE_STATE],
+            Some(ACCESSIBILITY_TREE)
+        )],
+        events: &[],
         metadata_keys: &[],
     },
 ];

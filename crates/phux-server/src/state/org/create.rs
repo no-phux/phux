@@ -157,5 +157,56 @@ impl ServerState {
         Ok(id)
     }
 
+    /// Create an `AccessibilityTree` under `parent` (a Terminal), in the
+    /// parent's session, and record it running.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refusal`]; nothing was created.
+    pub fn create_tree(
+        &mut self,
+        parent: ResourceId,
+        target: &str,
+        actor: &Actor,
+    ) -> Result<ResourceId, Refusal> {
+        let parent_key = self
+            .sessions
+            .registry
+            .resource_key(parent)
+            .ok_or(Refusal::NotFound)?;
+        let session = self
+            .sessions
+            .registry
+            .record(parent)
+            .map(|r| r.session)
+            .ok_or(Refusal::NotFound)?;
+        let commit = self.commit(
+            Op::ResourceCreate {
+                placement: None,
+                session: Some(session),
+                resource: NewResource {
+                    kind: ResourceKind::AccessibilityTree,
+                    name: None,
+                    launch: Some(LaunchSpec::Tree(phux_core::resource::TreeLaunch {
+                        target: target.to_owned(),
+                    })),
+                    on_exit: ExitPolicy::Remove,
+                    parent: Some(parent_key),
+                    launch_mode: phux_core::LaunchMode::Immediate,
+                },
+            },
+            actor,
+        )?;
+        let phux_core::Reply::Ok { created, .. } = commit.applied.reply else {
+            return Err(Refusal::NotFound);
+        };
+        let id = created
+            .resource
+            .and_then(|k| self.sessions.registry.resource_id(&k))
+            .ok_or(Refusal::NotFound)?;
+        self.activation_started(id, None);
+        Ok(id)
+    }
+
     // ---- executor reports -------------------------------------------------
 }
