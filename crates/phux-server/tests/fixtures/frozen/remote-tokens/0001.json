@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "credentials": [
+    {
+      "id": "cred-1",
+      "verifier": "not-a-real-verifier",
+      "principal": "owner",
+      "scopes": [
+        "inventory@global"
+      ],
+      "issued_at": "2026-10-01T12:00:00Z",
+      "expires_at": "2027-10-01T12:00:00Z",
+      "revoked_at": "2026-10-03T12:00:00Z",
+      "generation": 2,
+      "last_seen": "2026-10-02T12:00:00Z"
+    }
+  ]
+}

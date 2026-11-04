@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Hermetic coverage of the persisted-field guard in check-upgrade-fixtures.sh.
+# Hermetic coverage of the persisted-field guard in check-frozen-fixtures.sh.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/check-upgrade-fixtures-test.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/check-frozen-fixtures-test.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 FAILURES=0
 blob=crates/phux-server/src/upgrade/blob.rs
@@ -11,7 +11,7 @@ blob=crates/phux-server/src/upgrade/blob.rs
 g() { git -C "$WORK" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
 
 mkdir -p "$WORK/scripts/lib" "$WORK/$(dirname "$blob")"
-cp "$ROOT/scripts/check-upgrade-fixtures.sh" "$WORK/scripts/"
+cp "$ROOT/scripts/check-frozen-fixtures.sh" "$WORK/scripts/"
 cp "$ROOT/scripts/lib/output.sh" "$WORK/scripts/lib/"
 cat >"$WORK/$blob" <<'EOF'
 pub struct Pane {
@@ -27,7 +27,7 @@ g commit -q -m base
 
 expect() {
     local want="$1" label="$2" got=0
-    bash "$WORK/scripts/check-upgrade-fixtures.sh" main 2>"$WORK/err" >/dev/null || got=$?
+    bash "$WORK/scripts/check-frozen-fixtures.sh" main 2>"$WORK/err" >/dev/null || got=$?
     if [[ "$got" == "$want" ]]; then
         printf '  ok: %s\n' "$label"
     else
@@ -79,7 +79,7 @@ g commit -q -m reorder
 expect 0 'moving or retyping a field passes'
 
 if ((FAILURES > 0)); then
-    printf 'check-upgrade-fixtures_test: %d failure(s)\n' "$FAILURES" >&2
+    printf 'check-frozen-fixtures_test: %d failure(s)\n' "$FAILURES" >&2
     exit 1
 fi
-printf 'check-upgrade-fixtures_test: ok\n'
+printf 'check-frozen-fixtures_test: ok\n'

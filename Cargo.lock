@@ -2813,6 +2813,7 @@ dependencies = [
  "phux-config",
  "phux-core",
  "phux-dial",
+ "phux-frozen",
  "phux-mission",
  "phux-perf",
  "phux-plugin",
@@ -2879,6 +2880,7 @@ dependencies = [
  "bytes",
  "phux-agent-rules",
  "phux-core",
+ "phux-frozen",
  "phux-protocol",
  "phux-resource",
  "serde",
@@ -2928,6 +2930,7 @@ dependencies = [
  "criterion",
  "insta",
  "libghostty-vt",
+ "phux-frozen",
  "phux-perf",
  "phux-protocol",
  "proptest",
@@ -3034,6 +3037,7 @@ dependencies = [
 name = "phux-core"
 version = "0.118.0"
 dependencies = [
+ "phux-frozen",
  "proptest",
  "serde",
  "serde_json",
@@ -3069,6 +3073,15 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "phux-frozen"
+version = "0.118.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -3123,6 +3136,7 @@ name = "phux-plugin"
 version = "0.118.0"
 dependencies = [
  "phux-config",
+ "phux-frozen",
  "serde",
  "serde_json",
  "tempfile",
@@ -3220,6 +3234,7 @@ dependencies = [
  "phux-config",
  "phux-core",
  "phux-dial",
+ "phux-frozen",
  "phux-git",
  "phux-perf",
  "phux-plugin",
@@ -3329,6 +3344,7 @@ dependencies = [
  "phux-config",
  "phux-core",
  "phux-crash",
+ "phux-frozen",
  "phux-perf",
  "phux-plugin",
  "phux-protocol",
@@ -3367,6 +3383,7 @@ version = "0.118.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
+ "phux-frozen",
  "rusqlite",
  "rustix",
  "serde",

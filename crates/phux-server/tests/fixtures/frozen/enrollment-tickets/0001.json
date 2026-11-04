@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "tickets": [
+    {
+      "id": "ticket-1",
+      "secret_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "scopes": [
+        "inventory@global"
+      ],
+      "credential_seconds": 3600,
+      "expires_at": 1793470146,
+      "used_at": 1793470100,
+      "revoked_at": 1793470120,
+      "satellite": "mini"
+    }
+  ]
+}
