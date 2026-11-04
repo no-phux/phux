@@ -95,8 +95,10 @@ Each lands with the code that implements it, as an edit to
   a surface can be a layout leaf (`phux-phiio.5`). The terminal invariant
   "one PTY, one authoritative geometry" is unchanged. On the server a
   `PixelSurface`'s geometry is its newest image's own size, in pixels, and
-  an arrangement leaf already names any member resource; what remains of
-  this step is the clients drawing such a leaf.
+  an arrangement leaf already names any member resource. The session kernel
+  hands every document on whole (a bootstrap cut at READY, each live frame
+  as a newer document), and the desktop app adopts a session's surfaces as
+  leaves and draws the newest frame letterboxed in the card.
 - Wire fields named `terminal_id` keep their ids. Renaming them in source is
   free because the wire matches field ids, not names.
 

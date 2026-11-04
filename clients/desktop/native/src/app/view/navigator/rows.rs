@@ -42,6 +42,7 @@ pub(super) fn record_row(
     let selected = desk.organization.selected.contains(&key);
     let kind = match resource.kind {
         ResourceKind::Terminal => "Terminal",
+        ResourceKind::PixelSurface => "Surface",
         _ => "Item",
     };
     let label = record_label(resource);
@@ -254,6 +255,7 @@ fn record_label(resource: &ResourceRecord) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| match resource.kind {
             ResourceKind::Terminal => "Terminal".into(),
+            ResourceKind::PixelSurface => "Surface".into(),
             _ => "Item".into(),
         })
 }
