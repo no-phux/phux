@@ -7,5 +7,9 @@
   running behind it, such as a job sent off with `&` or an agent's background
   task, shows a hollow ring and the word "background" instead of a plain idle
   dot. Needs a phux server from 0.118.0 on.
+- **Copy and paste on Omarchy.** Super+C and Super+V copy and paste, as in
+  Omarchy's own terminals, instead of interrupting what's running. Rune now
+  names its window `sh.phux.rune`; `phux omarchy setup` from the next phux release tags it a
+  terminal. Ctrl+Insert and Shift+Insert copy and paste everywhere on Linux.
 - **More keys reach the terminal.** Insert, Print Screen, Scroll Lock and
   Pause now go through to what runs there.
