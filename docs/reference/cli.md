@@ -735,6 +735,7 @@ Usage: phux agent tree <SUBCOMMAND>
 
 Commands:
   follow    Print every document as it arrives.
+  mirror    Mirror a running macOS application into a tree, until Ctrl-C.
   open      Open a tree under the pane its producer runs in.
   publish   Replace the tree's document from a file, or stdin.
   snapshot  Print the tree's newest document.
@@ -765,6 +766,29 @@ Flags:
 
 Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree mirror`
+
+```text
+Mirror a running macOS application into a tree, until Ctrl-C.
+
+Usage: phux agent tree mirror [FLAGS] <APP>
+
+Arguments:
+  <APP>  The application's process name, e.g. `Safari`.
+
+Flags:
+      --pid <PID>      The application's process id, instead of its name.
+      --pane <PANE>    The pane the tree binds to; this process's own pane when
+                       absent.
+      --interval <MS>  Milliseconds between reads (default 500).
+      --depth <N>      Deepest nesting to read (default 24).
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent tree open`
