@@ -105,3 +105,11 @@ mod tests {
         assert!(AgentRecordJson::decode(b"not json").is_none());
     }
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn agent_record() {
+        phux_frozen::json::<super::AgentRecordJson>("agent-record").check();
+    }
+}

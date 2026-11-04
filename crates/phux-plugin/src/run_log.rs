@@ -432,3 +432,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn plugin_runs() {
+        phux_frozen::json::<Vec<super::RunRecord>>("plugin-runs").check();
+    }
+}

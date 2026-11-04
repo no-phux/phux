@@ -63,3 +63,11 @@ pub struct MovedPane {
     /// The session it joined.
     pub to: SessionKey,
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn organize_journal() {
+        phux_frozen::json::<super::Journal>("organize-journal").check();
+    }
+}

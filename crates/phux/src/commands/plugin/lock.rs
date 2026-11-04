@@ -387,3 +387,11 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod frozen {
+    #[test]
+    fn plugins_lock() {
+        phux_frozen::toml::<super::PluginLockFile>("plugins-lock").check();
+    }
+}
