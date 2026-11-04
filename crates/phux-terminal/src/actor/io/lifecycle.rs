@@ -1,3 +1,5 @@
+use crate::actor::HangupPolicy;
+
 use super::{
     PANE_KILL_POLL, PANE_KILL_REAP_BUDGET, PtyOwned, TerminalActor, debug, exit_outcome, trace,
     warn,
@@ -126,7 +128,7 @@ impl TerminalActor {
                     "pty child try_wait failed; assuming alive and terminating"
                 );
             }
-            Self::terminate_child_group(&mut pty).await;
+            Self::terminate_child_group(&mut pty, &self.hangup).await;
         } else {
             trace!("pty child already exited");
         }
@@ -156,13 +158,13 @@ impl TerminalActor {
     /// Gracefully stop a live PTY child on teardown: `SIGHUP` both the
     /// foreground process group (snapshotted first, since the shell may exit
     /// at once) and the shell's group, wait up to
-    /// [`super::super::PANE_KILL_GRACE`] for them to exit, then `SIGKILL` survivors.
+    /// the policy's grace for them to exit, then `SIGKILL` survivors.
     /// The master stays open so the foreground job can flush.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
-    pub(in crate::actor) async fn terminate_child_group(pty: &mut PtyOwned) {
+    pub(in crate::actor) async fn terminate_child_group(pty: &mut PtyOwned, policy: &HangupPolicy) {
         let groups = pane_signal_groups(pty);
         if groups.is_empty() {
             hard_kill_child(pty);
@@ -172,7 +174,7 @@ impl TerminalActor {
             hard_kill_child(pty);
             return;
         }
-        if await_pane_group_exit(pty, &groups).await {
+        if await_pane_group_exit(pty, &groups, policy).await {
             return;
         }
         hard_kill_pane_groups(&groups);
@@ -225,39 +227,42 @@ fn hangup_pane_groups(groups: &[nix::unistd::Pid]) -> bool {
     delivered
 }
 
-/// Wait out [`super::super::pane_kill_grace`], `true` once every group exited.
+/// Wait out `policy`, `true` once every group exited.
+#[allow(
+    clippy::future_not_send,
+    reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+)]
+async fn await_pane_group_exit(
+    pty: &mut PtyOwned,
+    groups: &[nix::unistd::Pid],
+    policy: &HangupPolicy,
+) -> bool {
+    if let Some((gate, wait)) = policy.gate() {
+        let hold = tokio::time::Instant::now() + wait;
+        let gate_open = || gate.exists() || tokio::time::Instant::now() >= hold;
+        if poll_pane_groups(pty, groups, gate_open).await {
+            return true;
+        }
+    }
+    let deadline = tokio::time::Instant::now() + policy.grace();
+    poll_pane_groups(pty, groups, || tokio::time::Instant::now() >= deadline).await
+}
+
+/// Poll until every group exited (`true`) or `stop` says enough (`false`).
 /// Reaps the shell as it goes so its zombie does not keep its group alive.
 #[allow(
     clippy::future_not_send,
     reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
 )]
-async fn await_pane_group_exit(pty: &mut PtyOwned, groups: &[nix::unistd::Pid]) -> bool {
+async fn poll_pane_groups(
+    pty: &mut PtyOwned,
+    groups: &[nix::unistd::Pid],
+    stop: impl Fn() -> bool,
+) -> bool {
     use nix::errno::Errno;
     use nix::sys::signal::killpg;
 
-    // Tests may start the ceiling only once a trap-started marker exists.
-    #[cfg(test)]
-    if let Some(gate) = super::super::pane_kill_grace_gate() {
-        let hold = tokio::time::Instant::now() + super::super::PANE_KILL_GRACE_GATE_WAIT;
-        loop {
-            if let Err(err) = pty.child.try_wait() {
-                debug!(?err, "try_wait during pane-kill grace gate failed");
-            }
-            if groups
-                .iter()
-                .all(|&group| matches!(killpg(group, None), Err(Errno::ESRCH)))
-            {
-                return true;
-            }
-            if gate.exists() || tokio::time::Instant::now() >= hold {
-                break;
-            }
-            tokio::time::sleep(PANE_KILL_POLL).await;
-        }
-    }
-
-    let deadline = tokio::time::Instant::now() + super::super::pane_kill_grace();
-    while tokio::time::Instant::now() < deadline {
+    loop {
         if let Err(err) = pty.child.try_wait() {
             debug!(?err, "try_wait during pane-kill grace failed");
         }
@@ -267,9 +272,11 @@ async fn await_pane_group_exit(pty: &mut PtyOwned, groups: &[nix::unistd::Pid]) 
         {
             return true;
         }
+        if stop() {
+            return false;
+        }
         tokio::time::sleep(PANE_KILL_POLL).await;
     }
-    false
 }
 
 /// Whether a `try_wait` result needs termination: only a confirmed exit

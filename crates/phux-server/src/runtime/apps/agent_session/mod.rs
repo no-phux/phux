@@ -6,11 +6,11 @@ use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 
 use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
-use crate::resource::{ResourceKind, WrongResourceKind};
+use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
-use crate::state::SharedState;
+use crate::state::{ClientId, SharedState};
 
 mod append;
 mod attach;
@@ -28,10 +28,6 @@ const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 pub(crate) struct AgentSessionApp;
 
 impl ResourceApp for AgentSessionApp {
-    fn kind(&self) -> ResourceKind {
-        ResourceKind::AgentSession
-    }
-
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -61,6 +57,20 @@ impl ResourceApp for AgentSessionApp {
 
     fn metrics(&self) -> &'static [phux_perf::Metric] {
         &[]
+    }
+
+    fn release_consumer(&self, _handle: &ResourceHandle, _client: ClientId) {
+        // The record stream keeps nothing per consumer in the engine: a
+        // client's pump is host-side and `pump::stop_output` ends it.
+    }
+
+    fn fence_consumer<'a>(
+        &'a self,
+        _handle: &'a ResourceHandle,
+        _client: ClientId,
+    ) -> LocalBoxFuture<'a, ()> {
+        // Nothing to fence: the engine emits only to the shared broadcast.
+        Box::pin(std::future::ready(()))
     }
 
     fn command<'a>(

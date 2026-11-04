@@ -21,5 +21,8 @@ fn a_stream_frame_names_its_resource_and_a_viewport_vote_names_none() {
 fn an_unknown_resource_is_served_as_a_terminal() {
     let state = SharedState::new();
     let app = app_serving(&state, &WireResourceId::local(999));
-    assert_eq!(app.kind(), crate::resource::ResourceKind::Terminal);
+    assert!(std::ptr::addr_eq(
+        app,
+        crate::runtime::apps::app_for(crate::resource::ResourceKind::Terminal)
+    ));
 }
