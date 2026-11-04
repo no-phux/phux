@@ -36,6 +36,11 @@ jobs:
             name: linux-x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # Debug builds only (clippy, tests, the qualification CLI): fewer bytes to
+    # compile and cache. The packaged release build keeps its own profile.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,6 +59,18 @@ jobs:
         run: |
           bash scripts/setup-rust.sh core
           bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+      # Cold, a leg compiled Rune's graph three ways (clippy, test, release)
+      # plus the root `phux` CLI: 15 to 18 minutes (run 41886269436). The
+      # third-party artifacts of both workspaces are kept; saves come from
+      # main (ci.yml's push lane and cache-warm.yml), never a PR or a tag.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            clients/rune -> target
+            . -> target
+          shared-key: rune-${{ matrix.name }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: "true"
       - uses: ./.github/actions/setup-bun
       # `just rune-check`, without installing just.
       - run: bash clients/rune/scripts/check.sh

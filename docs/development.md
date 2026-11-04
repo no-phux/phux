@@ -296,10 +296,11 @@ tests of its dependents. The required `ci`
 aggregate rejects a failed or cancelled lane. `just tools-check` tests the
 routes.
 
-The test lanes compile once (`just test-archive`) and run the unit halves
-and e2e from that nextest archive. Pull requests restore caches and never
+The test lanes compile once (`just test-archive`) and run the unit and e2e
+shards from that nextest archive. Pull requests restore caches and never
 save them; `main` pushes save one entry per lane under a 10 GB repository
-budget, pruned by `prune-build-cache`. Runners are the free hosted ones:
+budget, pruned by `prune-build-cache`, warmed by `cache-warm.yml`.
+Runners are the free hosted ones:
 Ubuntu x64 and arm64, and macOS 26 plus the `xcode-27` image. Desktop releases
 build on macOS 26 (the supported floor); PRs qualify both Apple toolchains.
 The desktop lane shares a handful of macOS slots with release builds.

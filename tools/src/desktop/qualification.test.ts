@@ -93,7 +93,7 @@ test.each([false, true])(
 test("macOS provisioning is shared but still reads toolchain pins from the selected source", () => {
   const setup = action("setup-macos-desktop");
   expect(steps(setup)[0]?.["working-directory"]).toBe("${{ inputs.source }}");
-  const ciSetup = Object.values(jobs(workflow("ci.yml")))
+  const ciSetup = Object.values(jobs(workflow("desktop-lane.yml")))
     .flatMap(steps)
     .find((step) => uses(step) === "./.github/actions/setup-macos-desktop");
   expect(ciSetup).toBeDefined();
