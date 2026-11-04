@@ -2,7 +2,10 @@
 //! systems.
 
 use super::Manager;
-use super::unit::{SYSTEMD_POLICY_KEYS, launchd_policy_lines, systemd_policy_lines};
+use super::unit::{
+    SYSTEMD_POLICY_KEYS, SYSTEMD_UNIT_POLICY_KEYS, launchd_policy_lines, systemd_policy_lines,
+    systemd_unit_policy_lines,
+};
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -165,44 +168,88 @@ pub(super) fn plist_value_end(lines: &[&str], start: usize) -> Option<usize> {
     None
 }
 
-/// Replace the restart-policy assignments in a systemd unit's `[Service]`
-/// section, preserving every other directive, comment and blank line.
+/// Where a section's owned policy lines go: in place of the first owned key,
+/// else after the section's last directive, else right after its header.
+#[derive(Default)]
+struct SectionSplice {
+    seen: bool,
+    anchor: Option<usize>,
+    tail: Option<usize>,
+    head: Option<usize>,
+}
+
+impl SectionSplice {
+    fn insert_at(&self) -> Option<usize> {
+        self.anchor.or(self.tail).or(self.head)
+    }
+}
+
+/// Replace the restart policy in a systemd unit's `[Service]` section and the
+/// start-rate limit in its `[Unit]` section, preserving every other directive,
+/// comment and blank line. Policy keys in the wrong section (older installs
+/// put the start limit under `[Service]`, where systemd ignores it) are
+/// dropped and re-emitted where they belong.
 fn reconcile_systemd(body: &str) -> Reconcile {
     let lines: Vec<&str> = body.split('\n').collect();
     let mut kept: Vec<String> = Vec::with_capacity(lines.len() + 4);
-    let mut in_service = false;
-    let mut anchor: Option<usize> = None;
-    // Fallbacks for a unit that carries no policy keys yet: the end of the
-    // `[Service]` block's last directive, else just after its header.
-    let mut service_tail: Option<usize> = None;
-    let mut service_head: Option<usize> = None;
+    let mut unit = SectionSplice::default();
+    let mut service = SectionSplice::default();
+    // `Some(true)` inside `[Unit]`, `Some(false)` inside `[Service]`.
+    let mut in_unit: Option<bool> = None;
 
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_service = trimmed == "[Service]";
-            if in_service {
-                service_head = Some(kept.len() + 1);
+            in_unit = match trimmed {
+                "[Unit]" => Some(true),
+                "[Service]" => Some(false),
+                _ => None,
+            };
+            if let Some(is_unit) = in_unit {
+                let section = if is_unit { &mut unit } else { &mut service };
+                if section.seen {
+                    return Reconcile::Unrecognized("it repeats a [Unit] or [Service] header");
+                }
+                section.seen = true;
+                section.head = Some(kept.len() + 1);
             }
-        } else if in_service {
+        } else if let Some(is_unit) = in_unit {
+            let section = if is_unit { &mut unit } else { &mut service };
             let key = trimmed.split('=').next().unwrap_or_default().trim();
-            if trimmed.contains('=') && SYSTEMD_POLICY_KEYS.contains(&key) {
-                let _ = anchor.get_or_insert(kept.len());
+            let unit_key = SYSTEMD_UNIT_POLICY_KEYS.contains(&key);
+            let service_key = SYSTEMD_POLICY_KEYS.contains(&key);
+            if trimmed.contains('=') && (unit_key || service_key) {
+                // Owned here: remember the slot. Misplaced: drop it; it is
+                // re-emitted in the section systemd actually reads it from.
+                if unit_key == is_unit {
+                    let _ = section.anchor.get_or_insert(kept.len());
+                }
                 continue;
             }
             if !trimmed.is_empty() {
-                service_tail = Some(kept.len() + 1);
+                section.tail = Some(kept.len() + 1);
             }
         }
         kept.push((*line).to_owned());
     }
 
-    let Some(anchor) = anchor.or(service_tail).or(service_head) else {
+    let Some(service_at) = service.insert_at() else {
         return Reconcile::Unrecognized("it has no [Service] section to carry the policy");
     };
+    let Some(unit_at) = unit.insert_at() else {
+        return Reconcile::Unrecognized("it has no [Unit] section to carry the start limit");
+    };
 
-    for (offset, line) in systemd_policy_lines().into_iter().enumerate() {
-        kept.insert(anchor + offset, line);
+    // Insert the later block first so the earlier index stays valid.
+    let mut splices = [
+        (service_at, systemd_policy_lines()),
+        (unit_at, systemd_unit_policy_lines()),
+    ];
+    splices.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    for (at, policy) in splices {
+        for (offset, line) in policy.into_iter().enumerate() {
+            kept.insert(at + offset, line);
+        }
     }
     settled(body, &kept)
 }

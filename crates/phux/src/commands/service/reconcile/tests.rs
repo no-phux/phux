@@ -1,5 +1,5 @@
 use super::super::unit::tests::plan;
-use super::super::unit::{launchd_policy_lines, systemd_policy_lines};
+use super::super::unit::{launchd_policy_lines, systemd_policy_lines, systemd_unit_policy_lines};
 use super::super::{Manager, render_unit};
 use super::{Reconcile, reconcile_unit};
 
@@ -173,6 +173,13 @@ fn reconciling_a_legacy_systemd_unit_replaces_only_the_policy() {
         "the corrected policy is not present as a block:\n{body}"
     );
     assert!(
+        body.contains(&format!(
+            "Description=phux terminal control plane server\n{}\n",
+            systemd_unit_policy_lines().join("\n")
+        )),
+        "the start limit was not added to [Unit]:\n{body}"
+    );
+    assert!(
         !body.contains("Restart=always"),
         "the restart-on-any-exit policy survived:\n{body}"
     );
@@ -217,6 +224,23 @@ fn an_unparseable_unit_is_refused_rather_than_rewritten() {
         ),
         "a unit with no [Service] section has nowhere to put the policy"
     );
+    assert!(
+        matches!(
+            reconcile_unit(Manager::Systemd, "[Service]\nExecStart=/bin/true\n"),
+            Reconcile::Unrecognized(_)
+        ),
+        "a unit with no [Unit] section has nowhere to put the start limit"
+    );
+    assert!(
+        matches!(
+            reconcile_unit(
+                Manager::Systemd,
+                "[Unit]\nDescription=x\n[Service]\nExecStart=/bin/true\n[Service]\nType=simple\n"
+            ),
+            Reconcile::Unrecognized(_)
+        ),
+        "a duplicated section header is ambiguous, not guessed at"
+    );
 }
 
 /// A nested `KeepAlive` (an environment variable) is not the restart policy.
@@ -243,5 +267,59 @@ fn a_nested_keepalive_key_is_not_the_restart_policy() {
     assert!(
         body.contains(&launchd_policy_lines().join("\n")),
         "the real policy was not corrected:\n{body}"
+    );
+}
+
+/// Units written before the fix for #1713 carried the start limit under
+/// `[Service]`, where systemd logs "Unknown key" and ignores it. Reconcile
+/// moves it to `[Unit]`, once.
+#[test]
+fn reconciling_moves_a_misplaced_start_limit_into_the_unit_section() {
+    let misplaced = "\
+[Unit]
+Description=phux terminal control plane server
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/phux server
+Restart=on-failure
+RestartSec=30s
+StartLimitIntervalSec=10s
+StartLimitBurst=99
+Environment=\"PHUX_SOCKET=/tmp/custom/phux.sock\"
+
+[Install]
+WantedBy=default.target
+";
+    let body = patched(reconcile_unit(Manager::Systemd, misplaced));
+    let (unit_section, rest) = body.split_once("[Service]").expect("[Service]");
+    let (service_section, _) = rest.split_once("[Install]").expect("[Install]");
+    assert!(
+        unit_section.contains(&systemd_unit_policy_lines().join("\n")),
+        "the start limit did not move under [Unit]:\n{body}"
+    );
+    assert!(
+        !service_section.contains("StartLimit"),
+        "the misplaced start limit survived under [Service]:\n{body}"
+    );
+    assert!(
+        service_section.contains(&systemd_policy_lines().join("\n")),
+        "the restart policy left [Service]:\n{body}"
+    );
+    assert!(
+        body.contains("Environment=\"PHUX_SOCKET=/tmp/custom/phux.sock\"")
+            && body.contains("After=network-online.target"),
+        "unrelated directives were touched:\n{body}"
+    );
+    assert_eq!(
+        reconcile_unit(Manager::Systemd, &body),
+        Reconcile::Current,
+        "a second reconcile must be a no-op"
+    );
+    assert_eq!(
+        reconcile_unit(Manager::Systemd, &render_unit(Manager::Systemd, &plan())),
+        Reconcile::Current,
+        "a freshly rendered unit must already be current"
     );
 }
