@@ -110,7 +110,9 @@ pub(super) fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeErr
         }
         // A projection names its parent and its producer: the agent
         // provider, or the application an accessibility tree observes.
-        ResourceKind::AgentSession | ResourceKind::AccessibilityTree => {
+        ResourceKind::AgentSession
+        | ResourceKind::AccessibilityTree
+        | ResourceKind::PixelSurface => {
             for (field, present) in [
                 (field::spawn_terminal::PARENT, parent.is_some()),
                 (field::spawn_terminal::PROVIDER, provider.is_some()),

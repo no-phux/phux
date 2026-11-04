@@ -18,7 +18,8 @@ impl ServerFeatureExtSet {
         | ServerFeatureExt::HostServiceHttp as u32
         | ServerFeatureExt::CreatePlacement as u32
         | ServerFeatureExt::ApiDescription as u32
-        | ServerFeatureExt::AccessibilityTree as u32;
+        | ServerFeatureExt::AccessibilityTree as u32
+        | ServerFeatureExt::PixelSurface as u32;
 
     /// Known extended features in this set, in bit order.
     pub fn iter(self) -> impl Iterator<Item = ServerFeatureExt> {

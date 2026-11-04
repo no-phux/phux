@@ -93,7 +93,10 @@ Each lands with the code that implements it, as an edit to
   [decisions](./decisions.md) and [protocol](./protocol.md#handshake)).
 - Geometry is per resource in units the kind defines, and any resource with
   a surface can be a layout leaf (`phux-phiio.5`). The terminal invariant
-  "one PTY, one authoritative geometry" is unchanged.
+  "one PTY, one authoritative geometry" is unchanged. On the server a
+  `PixelSurface`'s geometry is its newest image's own size, in pixels, and
+  an arrangement leaf already names any member resource; what remains of
+  this step is the clients drawing such a leaf.
 - Wire fields named `terminal_id` keep their ids. Renaming them in source is
   free because the wire matches field ids, not names.
 

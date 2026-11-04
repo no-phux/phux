@@ -107,6 +107,7 @@ Answered by every resource kind.
 | `DELETE_METADATA` | frame `0x52` | BIND | yes | none | shipped |
 | `LIST_METADATA` | frame `0x53` | INVENTORY | no | none | shipped |
 | `SUBSCRIBE_METADATA` | frame `0x54` | OBSERVE | no | none | shipped |
+| `PUBLISH_RESOURCE_STATE` | command `0x42` | BIND, INPUT | yes | none | shipped |
 
 ## Substrate events
 
@@ -205,7 +206,25 @@ The kind's facet.
 
 | Method | Carrier | Requires | Mutating | Gate | Status |
 |---|---|---|---|---|---|
-| `PUBLISH_RESOURCE_STATE` | command `0x42` | BIND, INPUT | yes | `accessibility_tree` (features_ext) | shipped |
+
+### Events
+
+None.
+
+### Resource metadata keys
+
+None.
+
+## Kind `PIXEL_SURFACE`
+
+Wire tag `3`; gate: `pixel_surface` (features_ext).
+
+### Methods
+
+The kind's facet.
+
+| Method | Carrier | Requires | Mutating | Gate | Status |
+|---|---|---|---|---|---|
 
 ### Events
 

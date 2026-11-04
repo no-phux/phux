@@ -34,6 +34,10 @@ pub enum ResourceKind {
     /// A replicated accessibility tree of an application, produced by a
     /// helper that runs in a Terminal; the newest snapshot wins.
     AccessibilityTree,
+    /// A replicated pixel surface, a window or display mirrored as images by
+    /// a helper that runs in a Terminal; the newest image wins, and its size
+    /// is the surface's geometry.
+    PixelSurface,
 }
 
 impl ResourceKind {
@@ -44,6 +48,7 @@ impl ResourceKind {
             Self::Terminal => "terminal",
             Self::AgentSession => "agent-session",
             Self::AccessibilityTree => "accessibility-tree",
+            Self::PixelSurface => "pixel-surface",
         }
     }
 }
@@ -93,6 +98,8 @@ pub enum LaunchSpec {
     Agent(AgentLaunch),
     /// A [`ResourceKind::AccessibilityTree`] binding.
     Tree(TreeLaunch),
+    /// A [`ResourceKind::PixelSurface`] binding.
+    Surface(SurfaceLaunch),
 }
 
 impl LaunchSpec {
@@ -103,6 +110,7 @@ impl LaunchSpec {
             Self::Terminal(_) => ResourceKind::Terminal,
             Self::Agent(_) => ResourceKind::AgentSession,
             Self::Tree(_) => ResourceKind::AccessibilityTree,
+            Self::Surface(_) => ResourceKind::PixelSurface,
         }
     }
 }
@@ -112,6 +120,14 @@ impl LaunchSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeLaunch {
     /// The observed application, e.g. a bundle id or a window title.
+    pub target: String,
+}
+
+/// What a pixel surface mirrors: the window or display its producer
+/// captures, as the producer names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceLaunch {
+    /// The captured window or display.
     pub target: String,
 }
 

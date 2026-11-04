@@ -1,12 +1,18 @@
-//! The `AccessibilityTree` app: a producer-fed, replicated document whose
-//! newest version is what every viewer wants (`docs/resource-kinds.md`).
+//! The document apps: a producer-fed, replicated document whose newest
+//! version is what every viewer wants (`docs/resource-kinds.md`). One
+//! generic app serves every [`DocumentApi`]: the `AccessibilityTree` (JSON)
+//! and the `PixelSurface` (PNG).
 
 use bytes::Bytes;
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
+use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
-use phux_tree::{PublishRejection, PublishRequest, TreeResource as _};
+use phux_tree::{
+    DocumentKind, DocumentResource as _, PublishRejection, PublishRequest, SurfaceDocument,
+    TreeDocument,
+};
 use tokio::sync::oneshot;
 
 use super::{ResourceApp, ResourceFrame, ResourceSpawn, StreamBootstrap};
@@ -14,19 +20,85 @@ use crate::resource::{ResourceHandle, ResourceKind, WrongResourceKind};
 use crate::runtime::commands::{AttachResourceFailure, CommandContext};
 use crate::runtime::connections::dispatch::FrameFlow;
 use crate::runtime::operation_dedupe::OperationClaim;
-use crate::state::{ClientId, SharedState};
+use crate::state::{ClientId, ServerState, SharedState};
 
 mod attach;
 mod spawn;
 
-pub(crate) use attach::attach_tree;
-pub(crate) use spawn::spawn_tree;
+pub(crate) use attach::attach_document;
+pub(crate) use spawn::spawn_document;
+
+/// What the host needs from a document kind beyond its engine.
+pub(crate) trait DocumentApi: DocumentKind {
+    /// The stream profile a viewer's bootstrap names.
+    const PROFILE: BootstrapStreamProfile;
+    /// The kind on the wire.
+    const WIRE_KIND: phux_protocol::ids::ResourceKind;
+    /// How a message names the kind, e.g. "accessibility tree".
+    const LABEL: &'static str;
+    /// Create the registry record under `parent`, running.
+    fn create(
+        state: &mut ServerState,
+        parent: phux_core::ids::ResourceId,
+        target: &str,
+        actor: &phux_core::actor::Actor,
+    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal>;
+}
+
+impl DocumentApi for TreeDocument {
+    const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::AccessibilityTreeJsonV1;
+    const WIRE_KIND: phux_protocol::ids::ResourceKind =
+        phux_protocol::ids::ResourceKind::AccessibilityTree;
+    const LABEL: &'static str = "accessibility tree";
+
+    fn create(
+        state: &mut ServerState,
+        parent: phux_core::ids::ResourceId,
+        target: &str,
+        actor: &phux_core::actor::Actor,
+    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
+        state.create_document(
+            parent,
+            phux_core::LaunchSpec::Tree(phux_core::resource::TreeLaunch {
+                target: target.to_owned(),
+            }),
+            actor,
+        )
+    }
+}
+
+impl DocumentApi for SurfaceDocument {
+    const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::PixelSurfacePngV1;
+    const WIRE_KIND: phux_protocol::ids::ResourceKind =
+        phux_protocol::ids::ResourceKind::PixelSurface;
+    const LABEL: &'static str = "pixel surface";
+
+    fn create(
+        state: &mut ServerState,
+        parent: phux_core::ids::ResourceId,
+        target: &str,
+        actor: &phux_core::actor::Actor,
+    ) -> Result<phux_core::ids::ResourceId, phux_core::Refusal> {
+        state.create_document(
+            parent,
+            phux_core::LaunchSpec::Surface(phux_core::resource::SurfaceLaunch {
+                target: target.to_owned(),
+            }),
+            actor,
+        )
+    }
+}
+
+/// Serves one document kind.
+#[derive(Debug)]
+pub(crate) struct DocumentApp<A: DocumentApi>(std::marker::PhantomData<A>);
 
 /// Serves [`ResourceKind::AccessibilityTree`].
-#[derive(Debug)]
-pub(crate) struct AccessibilityTreeApp;
+pub(crate) static TREE_APP: DocumentApp<TreeDocument> = DocumentApp(std::marker::PhantomData);
+/// Serves [`ResourceKind::PixelSurface`].
+pub(crate) static SURFACE_APP: DocumentApp<SurfaceDocument> = DocumentApp(std::marker::PhantomData);
 
-impl ResourceApp for AccessibilityTreeApp {
+impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }
@@ -38,7 +110,7 @@ impl ResourceApp for AccessibilityTreeApp {
     fn check_takeover(&self) -> Result<(), WrongResourceKind> {
         Err(WrongResourceKind {
             required: ResourceKind::Terminal,
-            actual: ResourceKind::AccessibilityTree,
+            actual: A::KIND,
         })
     }
 
@@ -77,12 +149,12 @@ impl ResourceApp for AccessibilityTreeApp {
         _resource: &ResourceKey,
         _expected: Revision,
     ) -> Option<CommandResult> {
-        // A tree is never relaunched: its producer spawns a fresh one.
+        // A document is never relaunched: its producer spawns a fresh one.
         None
     }
 
     fn spawn<'a>(&'a self, spawn: ResourceSpawn<'a>) -> LocalBoxFuture<'a, ()> {
-        spawn_tree(spawn).boxed_local()
+        spawn_document::<A>(spawn).boxed_local()
     }
 
     fn command<'a>(
@@ -94,7 +166,7 @@ impl ResourceApp for AccessibilityTreeApp {
         async move {
             match command {
                 Command::PublishResourceState { terminal_id, bytes } => {
-                    publish(&ctx.state, ctx.client_id, &terminal_id, Bytes::from(bytes)).await
+                    publish::<A>(&ctx.state, ctx.client_id, &terminal_id, Bytes::from(bytes)).await
                 }
                 _ => CommandResult::Error {
                     code: ErrorCode::InvalidCommand,
@@ -110,7 +182,7 @@ impl ResourceApp for AccessibilityTreeApp {
         stream: StreamBootstrap<'a>,
     ) -> LocalBoxFuture<'a, Result<(), AttachResourceFailure>> {
         async move {
-            match attach_tree(
+            match attach_document::<A>(
                 stream.state,
                 stream.client_id,
                 stream.wire,
@@ -127,15 +199,16 @@ impl ResourceApp for AccessibilityTreeApp {
                     Err(AttachResourceFailure { code, message })
                 }
                 other => Err(AttachResourceFailure::internal(&format!(
-                    "accessibility tree attach returned an unexpected result: {other:?}"
+                    "{} attach returned an unexpected result: {other:?}",
+                    A::LABEL
                 ))),
             }
         }
         .boxed_local()
     }
 
-    /// A tree serves no stream or input frame: it has no history, no grid,
-    /// and takes no input. Every refusal keeps the connection.
+    /// A document serves no stream or input frame: it has no history, no
+    /// grid, and takes no input. Every refusal keeps the connection.
     fn frame<'a>(
         &'a self,
         ctx: ResourceFrame<'a>,
@@ -144,11 +217,11 @@ impl ResourceApp for AccessibilityTreeApp {
         async move {
             let message = match frame {
                 FrameKind::FrameAck { .. } => {
-                    "FRAME_ACK is not valid on an accessibility-tree stream".to_owned()
+                    format!("FRAME_ACK is not valid on a {} stream", A::LABEL)
                 }
                 _ => WrongResourceKind {
                     required: ResourceKind::Terminal,
-                    actual: ResourceKind::AccessibilityTree,
+                    actual: A::KIND,
                 }
                 .to_string(),
             };
@@ -164,9 +237,9 @@ impl ResourceApp for AccessibilityTreeApp {
     }
 }
 
-/// `PUBLISH_RESOURCE_STATE`: a local owner connection replaces the tree's
+/// `PUBLISH_RESOURCE_STATE`: a local owner connection replaces the
 /// document; the reply names the sequence the document carries.
-async fn publish(
+async fn publish<A: DocumentApi>(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -187,19 +260,19 @@ async fn publish(
             message: format!("no such resource: {terminal_id}"),
         };
     };
-    let tree = match handle.tree() {
-        Ok(tree) => tree,
+    let document = match handle.document::<A>() {
+        Ok(document) => document,
         Err(error) => return crate::runtime::commands::wrong_resource_kind(error),
     };
     let (reply, rx) = oneshot::channel();
-    if tree
+    if document
         .publish
         .try_send(PublishRequest { bytes, reply })
         .is_err()
     {
         return CommandResult::Error {
             code: ErrorCode::Overflow,
-            message: "the tree's publish queue is full".to_owned(),
+            message: format!("the {}'s publish queue is full", A::LABEL),
         };
     }
     match rx.await {
@@ -209,15 +282,15 @@ async fn publish(
         ))),
         Ok(Err(PublishRejection::Invalid(error))) => CommandResult::Error {
             code: ErrorCode::RecordInvalid,
-            message: format!("the document is not JSON: {error}"),
+            message: error,
         },
         Ok(Err(PublishRejection::Overflow)) => CommandResult::Error {
             code: ErrorCode::Overflow,
-            message: "the tree's sequence space is exhausted".to_owned(),
+            message: format!("the {}'s sequence space is exhausted", A::LABEL),
         },
         Err(_) => CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
-            message: "the tree closed before the publish landed".to_owned(),
+            message: format!("the {} closed before the publish landed", A::LABEL),
         },
     }
 }

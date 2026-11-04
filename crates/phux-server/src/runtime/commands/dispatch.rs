@@ -31,6 +31,12 @@ pub(super) async fn dispatch_local(
     if let Some(app) = crate::runtime::apps::app_owning(&command) {
         return app.command(ctx, command, claim).await;
     }
+    // A substrate command addressed to a resource's state goes to the app
+    // serving that resource's kind.
+    if let Command::PublishResourceState { terminal_id, .. } = &command {
+        let app = crate::runtime::apps::app_serving(state, terminal_id);
+        return app.command(ctx, command, claim).await;
+    }
 
     match command {
         Command::AttachResource {

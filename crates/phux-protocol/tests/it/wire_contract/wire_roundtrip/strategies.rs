@@ -103,7 +103,8 @@ pub(super) fn arb_resource_kind() -> impl Strategy<Value = ResourceKind> {
         Just(ResourceKind::Terminal),
         Just(ResourceKind::AgentSession),
         Just(ResourceKind::AccessibilityTree),
-        (3_u8..=u8::MAX).prop_map(|tag| ResourceKind::Unknown { tag }),
+        Just(ResourceKind::PixelSurface),
+        (4_u8..=u8::MAX).prop_map(|tag| ResourceKind::Unknown { tag }),
     ]
 }
 

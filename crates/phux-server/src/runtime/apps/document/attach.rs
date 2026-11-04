@@ -1,4 +1,4 @@
-//! Bootstrapping a viewer onto an `AccessibilityTree`: the newest document
+//! Bootstrapping a viewer onto a document resource: the newest document
 //! as one cut, then every later document live. A viewer that falls behind
 //! is fenced and recut from the newest document: it skips intermediate
 //! documents, never silently.
@@ -10,7 +10,9 @@ use bytes::Bytes;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile};
 use phux_protocol::ids::{BootstrapId, StreamId};
 use phux_protocol::wire::frame::{CommandResult, ErrorCode, FrameKind, TombstoneReason};
-use phux_tree::{SnapshotRequest, TreeResource as _, TreeSnapshot};
+use phux_tree::{DocumentResource as _, SnapshotRequest, TreeSnapshot};
+
+use super::DocumentApi;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -25,7 +27,7 @@ use crate::state::{ClientId, SharedState};
     clippy::too_many_arguments,
     reason = "one ordered subscription/cut/retirement/publication transaction with negotiated context"
 )]
-pub(crate) async fn attach_tree(
+pub(crate) async fn attach_document<A: DocumentApi>(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -35,10 +37,10 @@ pub(crate) async fn attach_tree(
     limits: BootstrapLimits,
     connection_token: &CancellationToken,
 ) -> CommandResult {
-    let Ok(tree) = handle.tree() else {
+    let Ok(document) = handle.document::<A>() else {
         return CommandResult::Error {
             code: ErrorCode::WrongResourceKind,
-            message: "not an accessibility tree".to_owned(),
+            message: format!("not a {}", A::LABEL),
         };
     };
     let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
@@ -52,10 +54,10 @@ pub(crate) async fn attach_tree(
     // Subscribe before the cut so nothing published between them is lost.
     let live = handle.output.subscribe();
     crate::runtime::pump::stop_output(state, client_id, core).await;
-    let Some(cut) = snapshot(&tree.snapshot).await else {
+    let Some(cut) = snapshot(&document.snapshot).await else {
         return CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
-            message: "the tree closed before its snapshot was cut".to_owned(),
+            message: format!("the {} closed before its snapshot was cut", A::LABEL),
         };
     };
 
@@ -78,7 +80,14 @@ pub(crate) async fn attach_tree(
             };
         }
     }
-    for frame in bootstrap_frames(terminal_id, stream_id, bootstrap_id, &cut, limits) {
+    for frame in bootstrap_frames(
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        A::PROFILE,
+        &cut,
+        limits,
+    ) {
         if out_tx.send(Outbound::Frame(frame)).await.is_err() {
             return CommandResult::Error {
                 code: ErrorCode::ResourceExhausted,
@@ -92,7 +101,9 @@ pub(crate) async fn attach_tree(
         state: state.clone(),
         client_id,
         core,
-        snapshot: tree.snapshot.clone(),
+        snapshot: document.snapshot.clone(),
+        profile: A::PROFILE,
+        label: A::LABEL,
         out_tx: out_tx.clone(),
         terminal_id: terminal_id.clone(),
         stream_id,
@@ -128,6 +139,7 @@ fn bootstrap_frames(
     terminal_id: &phux_protocol::ids::ResourceId,
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
+    profile: BootstrapStreamProfile,
     cut: &TreeSnapshot,
     limits: BootstrapLimits,
 ) -> impl Iterator<Item = FrameKind> {
@@ -138,7 +150,7 @@ fn bootstrap_frames(
         terminal_id: terminal_id.clone(),
         stream_id,
         bootstrap_id,
-        profile: BootstrapStreamProfile::AccessibilityTreeJsonV1,
+        profile,
         cols: 0,
         rows: 0,
         base_seq: cut.base_seq,
@@ -166,8 +178,10 @@ fn bootstrap_frames(
         .chain(std::iter::once(ready))
 }
 
-/// One viewer's live subscription to a tree.
+/// One viewer's live subscription to a document.
 struct LivePump {
+    profile: BootstrapStreamProfile,
+    label: &'static str,
     state: SharedState,
     client_id: ClientId,
     core: phux_core::ids::ResourceId,
@@ -234,11 +248,12 @@ impl LivePump {
         }
         let cut = snapshot(&self.snapshot).await?;
         warn!(
-            tree = %self.terminal_id,
+            resource = %self.terminal_id,
+            kind = self.label,
             skipped,
             last_delivered = cursor,
             newest = cut.base_seq,
-            "accessibility tree viewer fell behind; recut from the newest document"
+            "document viewer fell behind; recut from the newest document"
         );
         let next = self.state.with_mut(|s| {
             s.advance_attach_terminal_pump(self.client_id, self.core, &self.last_seq)
@@ -258,6 +273,7 @@ impl LivePump {
             &self.terminal_id,
             self.stream_id,
             self.bootstrap_id,
+            self.profile,
             &cut,
             self.limits,
         ) {

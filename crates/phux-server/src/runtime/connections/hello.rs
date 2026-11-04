@@ -233,6 +233,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::Checkout,
         ServerFeatureExt::HostServiceHttp,
         ServerFeatureExt::AccessibilityTree,
+        ServerFeatureExt::PixelSurface,
     ])
 }
 

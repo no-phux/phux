@@ -225,7 +225,7 @@ proptest! {
     #[test]
     fn roundtrip_spawn_unknown_kind(
         request_id in any::<u32>(),
-        tag in 3_u8..=u8::MAX,
+        tag in 4_u8..=u8::MAX,
         parent in proptest::option::of(arb_terminal_id()),
         cwd in proptest::option::of(".{0,32}"),
     ) {

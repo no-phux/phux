@@ -181,6 +181,7 @@ pub const fn wire_kind(
         ResourceKind::Terminal => phux_protocol::ids::ResourceKind::Terminal,
         ResourceKind::AgentSession => phux_protocol::ids::ResourceKind::AgentSession,
         ResourceKind::AccessibilityTree => phux_protocol::ids::ResourceKind::AccessibilityTree,
+        ResourceKind::PixelSurface => phux_protocol::ids::ResourceKind::PixelSurface,
     }
 }
 
@@ -197,6 +198,7 @@ pub const fn core_kind(
         phux_protocol::ids::ResourceKind::AccessibilityTree => {
             Some(ResourceKind::AccessibilityTree)
         }
+        phux_protocol::ids::ResourceKind::PixelSurface => Some(ResourceKind::PixelSurface),
         _ => None,
     }
 }

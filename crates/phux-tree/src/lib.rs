@@ -1,12 +1,15 @@
-//! The `AccessibilityTree` engine: one document a producer replaces whole,
-//! and viewers that always want the newest (`docs/resource-kinds.md`).
+//! The replicated-document engine behind the `AccessibilityTree` and
+//! `PixelSurface` kinds: one document a producer replaces whole, and viewers
+//! that always want the newest (`docs/resource-kinds.md`).
 //!
 //! The engine keeps the latest document and its sequence. Every publish
 //! takes the next sequence and goes out on the output broadcast as one
 //! [`ResourceOutput::Live`] message; a viewer that falls behind is recut
 //! from the latest document by its pump, so intermediate documents are the
-//! only thing a slow viewer ever skips.
+//! only thing a slow viewer ever skips. A [`DocumentKind`] says which
+//! resource kind an engine serves and what a valid document is.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -21,6 +24,61 @@ use tokio_util::sync::CancellationToken;
 
 /// Depth of the engine's mailboxes.
 pub const TREE_MAILBOX: usize = 64;
+
+/// What one engine replicates: the kind it serves and the documents it
+/// accepts.
+pub trait DocumentKind: std::fmt::Debug + Send + Sync + 'static {
+    /// The resource kind an engine of this document serves.
+    const KIND: ResourceKind;
+    /// Whether `bytes` is one complete document; `Err` says why not.
+    fn validate(bytes: &[u8]) -> Result<(), String>;
+}
+
+/// An accessibility tree: one JSON value.
+#[derive(Debug)]
+pub struct TreeDocument;
+
+impl DocumentKind for TreeDocument {
+    const KIND: ResourceKind = ResourceKind::AccessibilityTree;
+
+    fn validate(bytes: &[u8]) -> Result<(), String> {
+        serde_json::from_slice::<serde_json::Value>(bytes)
+            .map(|_| ())
+            .map_err(|error| format!("the document is not JSON: {error}"))
+    }
+}
+
+/// A pixel surface: one PNG image, whose size is the surface's geometry.
+#[derive(Debug)]
+pub struct SurfaceDocument;
+
+impl DocumentKind for SurfaceDocument {
+    const KIND: ResourceKind = ResourceKind::PixelSurface;
+
+    fn validate(bytes: &[u8]) -> Result<(), String> {
+        png_size(bytes).map(|_| ())
+    }
+}
+
+/// The width and height of a PNG from its signature and `IHDR` chunk, or
+/// why `bytes` is not one.
+///
+/// # Errors
+///
+/// A message naming what is missing or zero.
+pub fn png_size(bytes: &[u8]) -> Result<(u32, u32), String> {
+    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 24 || &bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return Err("the document is not a PNG: no signature and IHDR chunk".to_owned());
+    }
+    let be =
+        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let (width, height) = (be(16), be(20));
+    if width == 0 || height == 0 {
+        return Err(format!("the PNG is {width} x {height}; a surface has area"));
+    }
+    Ok((width, height))
+}
 
 /// A producer's whole-document publish (`PUBLISH_RESOURCE_STATE`).
 #[derive(Debug)]
@@ -65,23 +123,30 @@ pub struct TreeSnapshot {
     pub document: Option<Bytes>,
 }
 
-/// The `AccessibilityTree` facet of a [`ResourceHandle`].
+/// The facet of a document resource's [`ResourceHandle`].
 #[derive(Debug)]
-pub struct TreeHandle {
+pub struct DocumentHandle<K: DocumentKind> {
     /// What the producer observes, as it named it.
     pub target: Arc<str>,
     /// Producer publishes.
     pub publish: mpsc::Sender<PublishRequest>,
     /// Viewer snapshot cuts.
     pub snapshot: mpsc::Sender<SnapshotRequest>,
+    kind: PhantomData<K>,
 }
 
-impl ResourceFacet for TreeHandle {
-    const KIND: ResourceKind = ResourceKind::AccessibilityTree;
+/// The `AccessibilityTree` facet.
+pub type TreeHandle = DocumentHandle<TreeDocument>;
+/// The `PixelSurface` facet.
+pub type SurfaceHandle = DocumentHandle<SurfaceDocument>;
+
+impl<K: DocumentKind> ResourceFacet for DocumentHandle<K> {
+    const KIND: ResourceKind = K::KIND;
 }
 
-/// A tree has no grid to size, no process to hand off and no input lease.
-impl ResourceOps for TreeHandle {
+/// A document has no grid to size, no process to hand off and no input
+/// lease.
+impl<K: DocumentKind> ResourceOps for DocumentHandle<K> {
     fn resize(&self, _size: (u16, u16), _cell_px: Option<(u16, u16)>) -> bool {
         false
     }
@@ -106,49 +171,79 @@ impl ResourceOps for TreeHandle {
     }
 }
 
-/// Reach the tree facet of a handle.
-pub trait TreeResource {
+/// Reach a document facet of a handle.
+pub trait DocumentResource {
+    /// The facet of document kind `K`.
+    ///
+    /// # Errors
+    ///
+    /// [`WrongResourceKind`] when this resource is not of `K::KIND`.
+    fn document<K: DocumentKind>(&self) -> Result<&DocumentHandle<K>, WrongResourceKind>;
+
     /// The `AccessibilityTree` facet.
     ///
     /// # Errors
     ///
     /// [`WrongResourceKind`] when this resource is not an accessibility tree.
-    fn tree(&self) -> Result<&TreeHandle, WrongResourceKind>;
-}
-
-impl TreeResource for ResourceHandle {
     fn tree(&self) -> Result<&TreeHandle, WrongResourceKind> {
-        self.facet::<TreeHandle>()
+        self.document::<TreeDocument>()
+    }
+
+    /// The `PixelSurface` facet.
+    ///
+    /// # Errors
+    ///
+    /// [`WrongResourceKind`] when this resource is not a pixel surface.
+    fn surface(&self) -> Result<&SurfaceHandle, WrongResourceKind> {
+        self.document::<SurfaceDocument>()
     }
 }
 
-/// A [`TreeActor`] and everything the runtime needs to publish it.
+/// The tree facet, by its old name.
+pub use DocumentResource as TreeResource;
+
+impl DocumentResource for ResourceHandle {
+    fn document<K: DocumentKind>(&self) -> Result<&DocumentHandle<K>, WrongResourceKind> {
+        self.facet::<DocumentHandle<K>>()
+    }
+}
+
+/// A [`DocumentActor`] and everything the runtime needs to publish it.
 #[derive(Debug)]
-pub struct TreeBundle {
+pub struct DocumentBundle<K: DocumentKind> {
     /// The engine future's owner; run it on the `LocalSet`.
-    pub actor: TreeActor,
+    pub actor: DocumentActor<K>,
     /// Cross-task handle registered in the resource table.
     pub handle: ResourceHandle,
     /// Fires when the engine's run loop ends.
     pub exit_notify: oneshot::Receiver<phux_core::process::ExitOutcome>,
 }
 
-/// The producer-fed accessibility-tree engine.
+/// A tree engine and its handle.
+pub type TreeBundle = DocumentBundle<TreeDocument>;
+
+/// The producer-fed replicated-document engine.
 #[derive(Debug)]
-pub struct TreeActor {
+pub struct DocumentActor<K: DocumentKind> {
     core: ResourceCore,
     latest: Option<Bytes>,
     publish_rx: mpsc::Receiver<PublishRequest>,
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
+    kind: PhantomData<K>,
 }
 
-impl TreeActor {
-    /// Build a tree of `target` bound to `parent`, whose run loop watches
-    /// `token`.
+/// The accessibility-tree engine.
+pub type TreeActor = DocumentActor<TreeDocument>;
+/// The pixel-surface engine.
+pub type SurfaceActor = DocumentActor<SurfaceDocument>;
+
+impl<K: DocumentKind> DocumentActor<K> {
+    /// Build a document of `target` bound to `parent`, whose run loop
+    /// watches `token`.
     #[must_use]
-    pub fn build(parent: ResourceId, target: &str, token: CancellationToken) -> TreeBundle {
+    pub fn build(parent: ResourceId, target: &str, token: CancellationToken) -> DocumentBundle<K> {
         let (core, channels) = ResourceCore::new(
-            ResourceKind::AccessibilityTree,
+            K::KIND,
             Some(parent),
             token,
             phux_resource::output_broadcast_capacity(),
@@ -159,18 +254,20 @@ impl TreeActor {
         } = channels;
         let (publish_tx, publish_rx) = mpsc::channel(TREE_MAILBOX);
         let (snapshot_tx, snapshot_rx) = mpsc::channel(TREE_MAILBOX);
-        let facet = TreeHandle {
+        let facet = DocumentHandle::<K> {
             target: Arc::from(target),
             publish: publish_tx,
             snapshot: snapshot_tx,
+            kind: PhantomData,
         };
         let handle = ResourceHandle::new(Some(parent), output, facet);
-        TreeBundle {
+        DocumentBundle {
             actor: Self {
                 core,
                 latest: None,
                 publish_rx,
                 snapshot_rx,
+                kind: PhantomData,
             },
             handle,
             exit_notify,
@@ -210,8 +307,8 @@ impl TreeActor {
     /// Validate, sequence, retain and broadcast one document, all or nothing.
     fn handle_publish(&mut self, request: PublishRequest) {
         let PublishRequest { bytes, reply } = request;
-        if let Err(error) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            let _ = reply.send(Err(PublishRejection::Invalid(error.to_string())));
+        if let Err(error) = K::validate(&bytes) {
+            let _ = reply.send(Err(PublishRejection::Invalid(error)));
             return;
         }
         let Some(seq) = self.core.next_seq() else {
@@ -301,5 +398,19 @@ mod tests {
             assert_eq!(seq, 1);
             token.cancel();
         });
+    }
+
+    #[test]
+    fn a_surface_takes_only_a_png_with_area() {
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        png.extend_from_slice(&640u32.to_be_bytes());
+        png.extend_from_slice(&480u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0]);
+        assert_eq!(png_size(&png), Ok((640, 480)));
+        assert!(SurfaceDocument::validate(&png).is_ok());
+        assert!(SurfaceDocument::validate(b"{\"not\":\"png\"}").is_err());
+        let mut flat = png.clone();
+        flat[20..24].copy_from_slice(&0u32.to_be_bytes());
+        assert!(SurfaceDocument::validate(&flat).is_err());
     }
 }
