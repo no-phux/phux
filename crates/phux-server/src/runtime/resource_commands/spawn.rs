@@ -18,8 +18,13 @@ use crate::mailbox::Outbound;
 use crate::runtime::attach::refuse_spawn;
 use crate::state::{ClientId, SharedState};
 use phux_agent_session::session::AgentSessionActor;
-/// Validate parent ownership and kind in the same state borrow that registers
-/// the child, before allocating any resource or publishing its identity.
+/// Validate parent ownership and fitness in the same state borrow that
+/// registers the child, before allocating any resource or publishing its
+/// identity. A parent is fit when it hosts agents, which its handle says by
+/// carrying an [`AgentParent`](phux_agent_session::parent::AgentParent)
+/// companion; no kind is named here. The parent supervises the producer and
+/// carries the activation the producer is checked against
+/// (`verify_guardian_process`).
 fn validate_agent_parent(
     state: &crate::state::ServerState,
     parent: phux_core::ids::ResourceId,
@@ -29,15 +34,16 @@ fn validate_agent_parent(
             "an SDK-owned guardian reserves one native source; external hook sources cannot bind it".into(),
         ));
     }
-    match state
-        .registry()
-        .resource(parent)
-        .map(|resource| resource.kind)
+    let Some(handle) = state.resource_handle(parent) else {
+        return Err(SpawnError::ParentNotFound);
+    };
+    if handle
+        .companion::<phux_agent_session::parent::AgentParent>()
+        .is_none()
     {
-        Some(phux_core::ResourceKind::Terminal) => Ok(()),
-        Some(_) => Err(SpawnError::ParentKindMismatch),
-        None => Err(SpawnError::ParentNotFound),
+        return Err(SpawnError::ParentKindMismatch);
     }
+    Ok(())
 }
 
 async fn bind_agent_stream(
@@ -65,9 +71,10 @@ async fn bind_agent_stream(
 }
 
 /// Handle a `SPAWN_RESOURCE` whose kind is `AgentSession` (ADR-0103 §1).
-/// The parent must be a live local Terminal (an `AgentSession` parent is
-/// `ParentKindMismatch`, ADR-0104 §5); a satellite-addressed spawn is relayed
-/// with the parent reduced to the satellite's `Local` space (ADR-0104 §6).
+/// The parent must be a live local resource that hosts agents (an
+/// `AgentSession` parent is `ParentKindMismatch`, ADR-0104 §5); a
+/// satellite-addressed spawn is relayed with the parent reduced to the
+/// satellite's `Local` space (ADR-0104 §6).
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn spawn_agent_session(
     state: &SharedState,

@@ -257,7 +257,8 @@ are read by the server (`phux.agent/v1` is the agent record).
 `phux.tui.layout/v1` is a legacy layout adapter, not a competing source of
 membership or arrangement authority. See [organization](./organization.md).
 
-An `AgentSession` has an immutable, one-level Terminal parent. Purging the
+An `AgentSession` has an immutable, one-level parent that hosts agents;
+today that is a Terminal. Purging the
 parent closes its children atomically; closing a child never kills its
 parent. Process exit under Retain is not purge: see
 [activations and exit policy](./organization.md#activations-and-reconciliation).

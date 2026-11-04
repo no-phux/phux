@@ -108,17 +108,18 @@ phux failed to keep.
 
 Two parts change (`phux-phiio.4`):
 
-- The producer binding stops naming a kind. Today an `AgentSession` must have
-  a Terminal parent, and the broker authenticates the guardian against that
-  Terminal's activation. The rule that matters is that a projection's parent
-  supervises its producer and carries the activation the producer is checked
-  against. A helper keeps running in a Terminal, as the ACP guardian does, so
+- The producer binding stops naming a kind (landed with `phux-phiio.4`:
+  a parent is fit when its handle carries the `AgentParent` companion, and
+  the guardian is checked against the parent record's activation). The rule
+  that matters is that a projection's parent supervises its producer and
+  carries the activation the producer is checked against. A helper keeps running in a Terminal, as the ACP guardian does, so
   it inherits supervision, logs and upgrade survival; a PTY-less supervised
   process is a later kind, added only if a PTY proves costly.
 - The server relays per-viewer feedback to the producer: acknowledgements,
   viewport and RTT, besides today's typed intents. Encoding happens where the
   state is, so the server stays a fenced relay and its single-threaded
-  runtime does no pixel work.
+  runtime does no pixel work. This half lands with the first producer that
+  consumes feedback, the accessibility helper of `phux-phiio.6`.
 
 A macOS helper holds the Screen Recording and Accessibility grants. The
 system ties those grants to a stable signed binary, so the helper is not the
