@@ -22,6 +22,8 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 
 const SCHEMA_VERSION: u8 = 1;
 
+mod mirror;
+
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum TreeAction {
     /// Open a tree under the pane its producer runs in.
@@ -51,6 +53,25 @@ pub(crate) enum TreeAction {
         #[usage(long)]
         json: bool,
     },
+    /// Mirror a running macOS application into a tree, until Ctrl-C.
+    Mirror {
+        /// The application's process name, e.g. `Safari`.
+        app: String,
+        /// The application's process id, instead of its name.
+        #[usage(long, value_name = "PID")]
+        pid: Option<u32>,
+        /// The pane the tree binds to; this process's own pane when absent.
+        #[usage(long, value_name = "PANE")]
+        pane: Option<String>,
+        /// Milliseconds between reads (default 500).
+        #[usage(long, value_name = "MS")]
+        interval: Option<u64>,
+        /// Deepest nesting to read (default 24).
+        #[usage(long, value_name = "N")]
+        depth: Option<usize>,
+        #[usage(long)]
+        json: bool,
+    },
     /// Print every document as it arrives.
     Follow {
         /// The tree.
@@ -73,6 +94,22 @@ pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode
             run_publish(target, file.as_deref(), *json, socket)
         }
         TreeAction::Snapshot { target, json } => run_snapshot(target, *json, socket),
+        TreeAction::Mirror {
+            app,
+            pid,
+            pane,
+            interval,
+            depth,
+            json,
+        } => mirror::run_mirror(mirror::MirrorArgs {
+            app,
+            pid: *pid,
+            pane: pane.as_deref(),
+            interval_ms: interval.unwrap_or(500),
+            depth: depth.unwrap_or(24),
+            json: *json,
+            socket,
+        }),
         TreeAction::Follow {
             target,
             until,
@@ -82,17 +119,23 @@ pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode
     }
 }
 
-/// Resolve `target` and connect, or report why not.
-async fn connect(
+/// Resolve `target` to a resource, or report why not.
+pub(super) async fn resolve(
+    socket_path: &std::path::Path,
     target: &str,
     verb: &str,
     json: bool,
-    socket: Option<PathBuf>,
-) -> Result<(Connection, phux_protocol::ids::ResourceId), ExitCode> {
+) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
     let selector = parse_selector(Some(target))?;
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    let resource = resolve_target(&socket_path, &selector, verb, json).await?;
-    let conn = Connection::connect(&socket_path).await.map_err(|err| {
+    resolve_target(socket_path, &selector, verb, json).await
+}
+
+/// Connect, or report why not.
+pub(super) async fn dial(
+    socket_path: &std::path::Path,
+    json: bool,
+) -> Result<Connection, ExitCode> {
+    Connection::connect(socket_path).await.map_err(|err| {
         json_err::emit(
             json,
             &json_err::CliError::new(
@@ -102,11 +145,23 @@ async fn connect(
             ),
             EXIT_FAILURE,
         )
-    })?;
+    })
+}
+
+/// Resolve `target` and connect, or report why not.
+async fn connect(
+    target: &str,
+    verb: &str,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> Result<(Connection, phux_protocol::ids::ResourceId), ExitCode> {
+    let socket_path = socket.unwrap_or_else(default_socket_path);
+    let resource = resolve(&socket_path, target, verb, json).await?;
+    let conn = dial(&socket_path, json).await?;
     Ok((conn, resource))
 }
 
-fn report(json: bool, err: &TreeError) -> ExitCode {
+pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
     let (code, hint) = match err {
         TreeError::Unsupported => (
             json_err::codes::SERVER_TOO_OLD,

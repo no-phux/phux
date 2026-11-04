@@ -207,3 +207,8 @@ webtransport = ["phux-server/webtransport"]
 # Warning: the instrumented allocator is significantly slower than the
 # system allocator; do not use in production builds.
 dhat-heap = ["dep:dhat"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+accessibility = "0.2.0"
+accessibility-sys = "0.2.0"
+core-foundation = "0.10"
