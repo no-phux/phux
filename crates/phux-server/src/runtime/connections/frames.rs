@@ -124,10 +124,21 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         let Some(selection) = self.negotiated.as_ref() else {
             return FrameFlow::Continue(());
         };
+        // A session ATTACH is a Terminal stream: refused, not closed, on a
+        // connection that offered no Terminal profile.
+        let Some(profile) = selection.profile else {
+            crate::runtime::send_error(
+                &self.plumbing.out_tx,
+                ErrorCode::CodecUnavailable,
+                crate::runtime::apps::terminal::commands::NO_TERMINAL_PROFILE,
+            )
+            .await;
+            return FrameFlow::Continue(());
+        };
         debug!(
             client_id = ?self.client_id,
             attach_id,
-            profile = ?selection.profile,
+            ?profile,
             chunk_limit = selection.limits.max_chunk_bytes(),
             history_page_limit = selection.limits.max_history_page_bytes(),
             "ATTACH with immutable bootstrap selection",
@@ -146,7 +157,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             request.role_policy,
             &self.plumbing.out_tx,
             selection.client_caps,
-            selection.profile,
+            profile,
             selection.limits,
             self.root_token,
             &mut self.plumbing.output_pumps,

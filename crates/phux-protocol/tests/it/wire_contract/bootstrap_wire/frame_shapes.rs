@@ -71,10 +71,21 @@ fn hello_and_all_three_selected_profiles_round_trip() {
             protocol_patch: 0,
             server_caps: ServerCapabilities::new(),
             server_id: b"server-incarnation".to_vec(),
-            selected_profile,
+            selected_profile: Some(selected_profile),
             bootstrap_limits: BootstrapLimits::new(128 * 1024, 512 * 1024).unwrap(),
         });
     }
+    // No Terminal profile: the field is absent, and an absent field decodes
+    // as `None`.
+    assert_round_trip(&FrameKind::HelloOk {
+        protocol_major: 0,
+        protocol_minor: 7,
+        protocol_patch: 0,
+        server_caps: ServerCapabilities::new(),
+        server_id: b"server-incarnation".to_vec(),
+        selected_profile: None,
+        bootstrap_limits: BootstrapLimits::new(128 * 1024, 512 * 1024).unwrap(),
+    });
 }
 
 #[test]
@@ -103,16 +114,28 @@ fn hello_ok_rejects_each_omitted_required_field() {
         protocol_patch: 0,
         server_caps: ServerCapabilities::new(),
         server_id: Vec::new(),
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     };
-    for omitted_id in 1..=8 {
+    // Field 6, `SELECTED_PROFILE`, is optional: absent means no Terminal
+    // profile was selected.
+    for omitted_id in (1..=8).filter(|id| *id != 6) {
         assert_eq!(
             FrameKind::decode(&encode_without_field(&hello_ok, omitted_id)).unwrap_err(),
             DecodeError::UnexpectedEof,
             "HELLO_OK field {omitted_id} must be required",
         );
     }
+    assert!(matches!(
+        FrameKind::decode(&encode_without_field(&hello_ok, 6)),
+        Ok((
+            FrameKind::HelloOk {
+                selected_profile: None,
+                ..
+            },
+            _
+        ))
+    ));
 }
 
 #[allow(clippy::too_many_lines)]
@@ -129,7 +152,7 @@ fn every_new_frame_encodes_fields_in_allocated_order() {
                 protocol_patch: 0,
                 server_caps: ServerCapabilities::new(),
                 server_id: b"incarnation".to_vec(),
-                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
                 bootstrap_limits: BootstrapLimits::default(),
             },
             vec![1, 2, 3, 4, 5, 6, 7, 8],

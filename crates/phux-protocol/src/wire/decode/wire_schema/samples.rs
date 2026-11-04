@@ -62,7 +62,7 @@ pub(super) fn hello_ok(server_caps: ServerCapabilities) -> FrameKind {
         protocol_patch: 0,
         server_caps,
         server_id: b"server".to_vec(),
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     }
 }

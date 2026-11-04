@@ -119,7 +119,7 @@ pub(crate) async fn bootstrap_attach_terminal(
     content_tx: &tokio::sync::mpsc::Sender<Outbound>,
     stream_id: phux_protocol::ids::StreamId,
     client_caps: ClientCapabilities,
-    bootstrap_profile: BootstrapProfile,
+    bootstrap_profile: Option<BootstrapProfile>,
     bootstrap_limits: BootstrapLimits,
     connection_token: &CancellationToken,
     agent_after_seq: Option<u64>,

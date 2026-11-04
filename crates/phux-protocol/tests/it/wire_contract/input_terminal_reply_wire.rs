@@ -33,7 +33,7 @@ fn hello_ok_explicitly_negotiates_terminal_replies() {
         protocol_patch: 0,
         server_caps: negotiated,
         server_id: b"terminal-reply-server".to_vec(),
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
         bootstrap_limits: BootstrapLimits::default(),
     };
     let mut encoded = BytesMut::new();

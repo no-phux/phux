@@ -382,7 +382,7 @@ fn the_inbox_shows_a_pending_approval_and_clears_it_after_a_decision(cx: &mut Te
                 .with_layers(LayerSet::with(&[Layer::L3]))
                 .with_features(ServerFeatureSet::with(&[ServerFeature::Approvals])),
             server_id: vec![0xAB; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         },
     );

@@ -71,7 +71,7 @@ impl Replica {
                 protocol_patch: PROTOCOL_VERSION.patch,
                 server_caps: ServerCapabilities::new(),
                 server_id: vec![1; 16],
-                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
                 bootstrap_limits: BootstrapLimits::default(),
             })
             .expect("hello");

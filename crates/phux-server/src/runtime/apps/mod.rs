@@ -50,8 +50,9 @@ pub(crate) struct StreamBootstrap<'a> {
     pub(crate) stream_id: StreamId,
     /// What the client negotiated.
     pub(crate) client_caps: ClientCapabilities,
-    /// The negotiated bootstrap profile.
-    pub(crate) profile: BootstrapProfile,
+    /// The negotiated Terminal bootstrap profile; `None` on a connection
+    /// that offered none, which a Terminal refuses and other kinds ignore.
+    pub(crate) profile: Option<BootstrapProfile>,
     /// The negotiated bootstrap limits.
     pub(crate) limits: BootstrapLimits,
     /// The connection's cancellation.

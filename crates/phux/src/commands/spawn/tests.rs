@@ -70,7 +70,7 @@ async fn accept(listener: &tokio::net::UnixListener) -> MockConnection {
         protocol_patch: PROTOCOL_VERSION.patch,
         server_caps: ServerCapabilities::new(),
         server_id: Vec::new(),
-        selected_profile,
+        selected_profile: Some(selected_profile),
         bootstrap_limits,
     })
     .await;

@@ -18,6 +18,7 @@ mod idempotency;
 mod keep_empty;
 mod kill_visibility;
 mod lease_ttl;
+mod no_terminal_profile;
 mod overlay_startup;
 mod plugin_startup;
 mod retain_on_exit;

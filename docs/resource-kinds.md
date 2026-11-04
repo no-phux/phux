@@ -19,10 +19,10 @@ a terminal:
   ([architecture](./architecture.md#where-to-look)).
 - The stream plane is only partly so. Input, `FRAME_ACK`, history and
   resize frames now reach their resource's app through `ResourceApp::frame`
-  ([decisions](./decisions.md)), but `VIEWPORT_RESIZE` is a
-  per-connection Terminal vote, and `HELLO` refuses a client with no
-  terminal profile. Viewports, layout leaves and windows are cells and
-  Terminals only. The client kernel has one terminal engine plus a
+  ([decisions](./decisions.md)), and `HELLO` admits a client with no
+  terminal profile, but `VIEWPORT_RESIZE` is a per-connection Terminal
+  vote. Viewports, layout leaves and windows are cells and Terminals
+  only. The client kernel has one terminal engine plus a
   hard-coded agent lane.
 - Per-consumer delivery (StateSync: a reference per viewer, deltas against
   it, acknowledgements, RTT-adaptive cadence) lives inside the terminal actor.
@@ -82,14 +82,15 @@ Each lands with the code that implements it, as an edit to
 
 - "Server to client is VT bytes; both sides run libghostty" becomes "each
   kind declares its stream contract; the Terminal's is VT bytes and
-  libghostty on both ends."
+  libghostty on both ends" (landed with `phux-phiio.3`).
 - Stream and input frames reach the kind that owns their resource through
   `ResourceApp`, as commands already do. A kind owns no frame it did not
   opt into (`phux-phiio.1`, landed; the rule is in
   [decisions](./decisions.md)).
 - Codec negotiation moves from the connection to the stream. A connection
   with no terminal profile is admitted; a Terminal stream it cannot decode
-  is refused when it binds (`phux-phiio.3`).
+  is refused when it binds (`phux-phiio.3`, landed; the rule is in
+  [decisions](./decisions.md) and [protocol](./protocol.md#handshake)).
 - Geometry is per resource in units the kind defines, and any resource with
   a surface can be a layout leaf (`phux-phiio.5`). The terminal invariant
   "one PTY, one authoritative geometry" is unchanged.

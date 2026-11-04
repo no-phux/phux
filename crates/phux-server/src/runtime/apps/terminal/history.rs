@@ -74,10 +74,10 @@ pub(in crate::runtime) async fn serve_history_request(
     };
     if !matches!(
         selection.profile,
-        BootstrapProfile::NativeState {
+        Some(BootstrapProfile::NativeState {
             codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
             ..
-        }
+        })
     ) {
         warn!(
             ?terminal_id,
