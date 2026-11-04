@@ -80,8 +80,14 @@ pub(super) enum UpgradeError {
         /// The pane whose engine is gone.
         pane: phux_core::ids::ResourceId,
     },
-    /// A pane must carry both sides of a PTY handoff or neither side.
-    #[error("pane {pane:?} returned an invalid PTY handoff (master fd and child pid must match)")]
+    /// A pane must carry both sides of a PTY handoff or neither side. A
+    /// missing master with a live child means its `dup` failed, which is
+    /// the server out of file descriptors.
+    #[error(
+        "pane {pane:?} could not hand off its PTY (master fd and child pid must both be \
+         present; a failed dup usually means the server is out of file descriptors, see the \
+         server log)"
+    )]
     InvalidPaneHandoff {
         /// The pane whose actor returned an inconsistent pair.
         pane: phux_core::ids::ResourceId,

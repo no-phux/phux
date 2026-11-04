@@ -111,7 +111,9 @@ pub(crate) fn spawn_pty(
             pixel_width: cols.saturating_mul(cell_w),
             pixel_height: rows.saturating_mul(cell_h),
         })
-        .map_err(|e| TerminalActorError::OpenPty(e.to_string()))?;
+        // The whole chain: portable-pty's top message alone reads `dup of fd
+        // 255 failed`, without the `Too many open files` that explains it.
+        .map_err(|e| TerminalActorError::OpenPty(format!("{e:#}")))?;
 
     clear_upgrade_handoff_env(&mut cmd);
     clear_agent_host_env(&mut cmd);
