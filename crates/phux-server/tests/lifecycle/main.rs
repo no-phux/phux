@@ -8,6 +8,7 @@
 )]
 #![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 
+mod accessibility_tree;
 mod agent_session;
 mod agent_session_producer;
 mod attach_roles;

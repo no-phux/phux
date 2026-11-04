@@ -180,6 +180,7 @@ pub const fn wire_kind(
     match kind {
         ResourceKind::Terminal => phux_protocol::ids::ResourceKind::Terminal,
         ResourceKind::AgentSession => phux_protocol::ids::ResourceKind::AgentSession,
+        ResourceKind::AccessibilityTree => phux_protocol::ids::ResourceKind::AccessibilityTree,
     }
 }
 
@@ -193,6 +194,9 @@ pub const fn core_kind(
     match kind {
         phux_protocol::ids::ResourceKind::Terminal => Some(ResourceKind::Terminal),
         phux_protocol::ids::ResourceKind::AgentSession => Some(ResourceKind::AgentSession),
+        phux_protocol::ids::ResourceKind::AccessibilityTree => {
+            Some(ResourceKind::AccessibilityTree)
+        }
         _ => None,
     }
 }

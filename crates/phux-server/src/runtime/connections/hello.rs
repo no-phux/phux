@@ -232,6 +232,7 @@ const fn runtime_server_features_ext() -> ServerFeatureExtSet {
         ServerFeatureExt::FileDownload,
         ServerFeatureExt::Checkout,
         ServerFeatureExt::HostServiceHttp,
+        ServerFeatureExt::AccessibilityTree,
     ])
 }
 

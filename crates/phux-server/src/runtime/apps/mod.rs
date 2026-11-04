@@ -35,6 +35,7 @@ use crate::state::upgrade_blob::RebuiltSession;
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 use crate::upgrade::blob::{AgentSessionBlob, AgentStreamCut};
 
+pub(crate) mod accessibility_tree;
 pub(crate) mod agent_session;
 pub(crate) mod terminal;
 
@@ -218,14 +219,16 @@ pub(crate) const fn app_for(kind: ResourceKind) -> &'static dyn ResourceApp {
     match kind {
         ResourceKind::Terminal => &terminal::TerminalApp,
         ResourceKind::AgentSession => &agent_session::AgentSessionApp,
+        ResourceKind::AccessibilityTree => &accessibility_tree::AccessibilityTreeApp,
     }
 }
 
 /// Every app this server hosts, for the questions the host asks all of
 /// them. `every_app_is_listed` holds it to [`app_for`].
-static APPS: [&dyn ResourceApp; 2] = [
+static APPS: [&dyn ResourceApp; 3] = [
     app_for(ResourceKind::Terminal),
     app_for(ResourceKind::AgentSession),
+    app_for(ResourceKind::AccessibilityTree),
 ];
 
 /// The build fails if the catalog lists a kind this server does not serve,

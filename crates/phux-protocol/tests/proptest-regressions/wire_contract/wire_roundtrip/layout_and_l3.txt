@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc e40e8bb0532559f0bada91fe615ac1e31e1c4cc6bcef04b207b4f257d705a48a # shrinks to request_id = 0, scope = Terminal(Local { id: 0 }), key = ""
 cc 4b8d60d352a980d28afaefc66a80e191197f251f024b39e27b31bf05edfaa844 # shrinks to frame = Hello { client_name: "", protocol_major: 0, protocol_minor: 0, protocol_patch: 0, client_caps: ClientCapabilities { color_support: TrueColor, layers: LayerSet(1), image_protocols: ImageProtocolSet(7), kbd_protocols: KeyboardProtocolSet(3), hyperlinks: true, output_mode: Raw } }
+cc 03f5b2355cf7c2b383f780a763135e4e2b56f575c5532c79569ad81b7561f8b6 # shrinks to request_id = 0, tag = 2, parent = None, cwd = None

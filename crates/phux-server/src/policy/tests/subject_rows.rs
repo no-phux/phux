@@ -456,8 +456,16 @@ fn rows(world: &mut World) -> Vec<Row> {
         // Through the parent alone: a grant naming only the child fails.
         row(
             command(Command::AppendResourceOutput {
-                terminal_id: child,
+                terminal_id: child.clone(),
                 bytes: b"{}\n".to_vec(),
+            }),
+            &[&[&s("bind,input", &ta)], &[&s("bind,input", &ga)]],
+            &[&[&s("bind,input", &tc)], &[&s("bind,input", &tb)]],
+        ),
+        row(
+            command(Command::PublishResourceState {
+                terminal_id: child,
+                bytes: b"{}".to_vec(),
             }),
             &[&[&s("bind,input", &ta)], &[&s("bind,input", &ga)]],
             &[&[&s("bind,input", &tc)], &[&s("bind,input", &tb)]],

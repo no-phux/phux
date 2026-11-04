@@ -88,6 +88,7 @@ Cargo manifests define the actual edges.
 | `phux-client-ffi` | the one binding crate: a projection with a C ABI encoder and a UniFFI encoder |
 | `phux-resource` | the kind-neutral substrate: output stream, lifecycle, opaque facets and companions, and per-consumer replicated-state delivery; names no kind's concepts (`tests/substrate_boundary.rs` enforces it) |
 | `phux-agent-session` | the `AgentSession` record-stream engine, the `phux.agent/v1` state, asked, and record authority, and the mailbox of a resource that hosts an agent |
+| `phux-tree` | the `AccessibilityTree` engine: one document a producer replaces whole, and the newest for every viewer |
 | `phux-terminal` | the Terminal kind: PTY child, libghostty engine actor, grid and replay, input encoding, native checkpoints, agent detection; never depends on the host |
 | `phux-server` | the daemon: hosts resources and serves them to clients; links no VT library and no PTY directly |
 | `phux-agent-host` | guardian process for native agent sessions over ACP |

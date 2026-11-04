@@ -3243,6 +3243,7 @@ dependencies = [
  "phux-resource",
  "phux-server-testkit",
  "phux-terminal",
+ "phux-tree",
  "phux-work",
  "portable-pty",
  "quinn",
@@ -3317,6 +3318,18 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "phux-tree"
+version = "0.118.0"
+dependencies = [
+ "bytes",
+ "phux-core",
+ "phux-resource",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

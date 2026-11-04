@@ -42,6 +42,7 @@ phux-core.workspace = true
 # The substrate every kind shares.
 phux-resource.workspace = true
 phux-agent-session.workspace = true
+phux-tree.workspace = true
 # The Terminal app. The host reaches VT and PTY only through it.
 phux-terminal.workspace = true
 # `Authorization: Basic` for the OpenCode host service.

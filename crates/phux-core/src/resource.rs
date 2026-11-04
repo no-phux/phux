@@ -31,6 +31,9 @@ pub enum ResourceKind {
     /// bound to a Terminal parent. The spelling stays for wire
     /// compatibility.
     AgentSession,
+    /// A replicated accessibility tree of an application, produced by a
+    /// helper that runs in a Terminal; the newest snapshot wins.
+    AccessibilityTree,
 }
 
 impl ResourceKind {
@@ -40,6 +43,7 @@ impl ResourceKind {
         match self {
             Self::Terminal => "terminal",
             Self::AgentSession => "agent-session",
+            Self::AccessibilityTree => "accessibility-tree",
         }
     }
 }
@@ -87,6 +91,8 @@ pub enum LaunchSpec {
     Terminal(TerminalLaunch),
     /// A [`ResourceKind::AgentSession`] binding.
     Agent(AgentLaunch),
+    /// A [`ResourceKind::AccessibilityTree`] binding.
+    Tree(TreeLaunch),
 }
 
 impl LaunchSpec {
@@ -96,8 +102,17 @@ impl LaunchSpec {
         match self {
             Self::Terminal(_) => ResourceKind::Terminal,
             Self::Agent(_) => ResourceKind::AgentSession,
+            Self::Tree(_) => ResourceKind::AccessibilityTree,
         }
     }
+}
+
+/// What an accessibility tree mirrors: the application its producer
+/// observes, as the producer names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeLaunch {
+    /// The observed application, e.g. a bundle id or a window title.
+    pub target: String,
 }
 
 /// Where a resource came from.

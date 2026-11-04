@@ -136,6 +136,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::GetPerf { reset: true } => &C_GET_PERF_RESET,
         Command::PerfControl { .. } => &C_PERF_CONTROL,
         Command::AppendResourceOutput { .. } => &C_APPEND_RESOURCE_OUTPUT,
+        Command::PublishResourceState { .. } => &C_PUBLISH_RESOURCE_STATE,
         Command::Transcribe { .. } => &C_TRANSCRIBE,
         Command::GetOrganization { .. } => &C_GET_ORGANIZATION,
         Command::DescribeApi => &C_API_DESCRIBE,

@@ -371,6 +371,8 @@ fn facets(r: &Resource, cwd_default: PathBuf) -> (Option<TerminalFacet>, Option<
                 None,
             )
         }
+        // A tree has no facet of its own: its state lives in its engine.
+        (ResourceKind::AccessibilityTree, _) => (None, None),
         (ResourceKind::AgentSession, launch) => {
             let (provider, native_id) = match launch {
                 Some(LaunchSpec::Agent(a)) => (a.provider.clone(), a.native_id.clone()),

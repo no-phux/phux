@@ -71,6 +71,9 @@ enum CommandTag {
     ServiceHttpClose = 0x3f,
     DescribeApi = 0x40,
     GetCreation = 0x41,
+    /// `PUBLISH_RESOURCE_STATE`: replace a state-replicated resource's whole
+    /// state, e.g. an accessibility tree snapshot.
+    PublishResourceState = 0x42,
 }
 
 // `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
@@ -147,6 +150,8 @@ pub(crate) const COMMAND_TAG_SESSION_SET_PROJECT: u8 = CommandTag::SessionSetPro
 pub(crate) const COMMAND_TAG_TRANSCRIBE: u8 = CommandTag::Transcribe as u8;
 /// Wire tag for [`Command::AppendResourceOutput`].
 pub(crate) const COMMAND_TAG_APPEND_RESOURCE_OUTPUT: u8 = CommandTag::AppendResourceOutput as u8;
+/// Wire tag for [`Command::PublishResourceState`].
+pub(crate) const COMMAND_TAG_PUBLISH_RESOURCE_STATE: u8 = CommandTag::PublishResourceState as u8;
 /// Wire tag for [`Command::KillResourceIf`]: a new tag rather than a field on
 /// `KILL_RESOURCE`, so a peer without `CONDITIONAL_KILL` fails to decode it
 /// instead of killing unconditionally (ADR-0109).

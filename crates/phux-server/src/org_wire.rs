@@ -222,30 +222,33 @@ pub fn launch(spec: &phux_core::LaunchSpec) -> frame::LaunchSpec {
     }
 }
 
-/// A wire launch spec for `kind` in core.
+/// A wire launch spec for `kind` in core, `None` for a kind no launch spec
+/// describes.
 #[must_use]
 pub fn core_launch(
     kind: phux_core::ResourceKind,
     spec: &frame::LaunchSpec,
-) -> phux_core::LaunchSpec {
+) -> Option<phux_core::LaunchSpec> {
     match kind {
         phux_core::ResourceKind::Terminal => {
-            phux_core::LaunchSpec::Terminal(phux_core::TerminalLaunch {
+            Some(phux_core::LaunchSpec::Terminal(phux_core::TerminalLaunch {
                 argv: spec.command.clone(),
                 cwd: spec.cwd.as_ref().map(std::path::PathBuf::from),
                 env: spec.env.clone(),
                 restore: spec.restore.clone(),
-            })
+            }))
         }
         phux_core::ResourceKind::AgentSession => {
-            phux_core::LaunchSpec::Agent(phux_core::AgentLaunch {
+            Some(phux_core::LaunchSpec::Agent(phux_core::AgentLaunch {
                 provider: spec.command.first().cloned().unwrap_or_default(),
                 native_id: spec
                     .restore
                     .as_ref()
                     .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
-            })
+            }))
         }
+        // A tree names its application at SPAWN_RESOURCE, not in a launch.
+        phux_core::ResourceKind::AccessibilityTree => None,
     }
 }
 
