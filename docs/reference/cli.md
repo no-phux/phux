@@ -153,6 +153,11 @@ Commands:
   show              Show inferred state for one pane.
   start             Start an agent INSIDE an existing shell pane, and return
                     when it is ready for input.
+  tree              An accessibility tree is a pane's child resource that a
+                    producer feeds with whole documents of an application's
+                    accessibility tree; `snapshot` reads the newest and `follow
+                    --until TEXT` waits on it. Needs a server that advertises
+                    `ACCESSIBILITY_TREE`.
   uninstall-claude  Remove the claude-in-phux shim and shell activation.
   usage             Show the AI plan limits this host can see.
   wait              Block until a pane's agent TRANSITIONS into a lifecycle
@@ -716,6 +721,106 @@ Flags:
 
 Global flags:
       --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree`
+
+```text
+An accessibility tree is a pane's child resource that a producer feeds with
+whole documents of an application's accessibility tree; `snapshot` reads the
+newest and `follow --until TEXT` waits on it. Needs a server that advertises
+`ACCESSIBILITY_TREE`.
+
+Usage: phux agent tree <SUBCOMMAND>
+
+Commands:
+  follow    Print every document as it arrives.
+  open      Open a tree under the pane its producer runs in.
+  publish   Replace the tree's document from a file, or stdin.
+  snapshot  Print the tree's newest document.
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree follow`
+
+```text
+Print every document as it arrives.
+
+Usage: phux agent tree follow [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  The tree.
+
+Flags:
+      --until <TEXT>    Stop as soon as a document contains this text.
+      --timeout <SECS>  Give up after this many seconds.
+      --json
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree open`
+
+```text
+Open a tree under the pane its producer runs in.
+
+Usage: phux agent tree open <--app <APP>> [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The parent pane.
+
+Flags:
+      --app <APP>      The application the tree mirrors.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree publish`
+
+```text
+Replace the tree's document from a file, or stdin.
+
+Usage: phux agent tree publish [--file <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The tree.
+
+Flags:
+      --file <PATH>    The document; stdin when absent.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent tree snapshot`
+
+```text
+Print the tree's newest document.
+
+Usage: phux agent tree snapshot [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The tree.
+
+Flags:
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent uninstall-claude`

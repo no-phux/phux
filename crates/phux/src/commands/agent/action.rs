@@ -292,6 +292,14 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: resource_session::SessionAction,
     },
+    /// An accessibility tree is a pane's child resource that a producer
+    /// feeds with whole documents of an application's accessibility tree;
+    /// `snapshot` reads the newest and `follow --until TEXT` waits on it.
+    /// Needs a server that advertises `ACCESSIBILITY_TREE`.
+    Tree {
+        #[usage(subcommand)]
+        action: super::tree::TreeAction,
+    },
     /// Append one record to a pane's agent session.
     ///
     /// The record is one `AgentEventsJsonlV1` line: `--type` from the closed
