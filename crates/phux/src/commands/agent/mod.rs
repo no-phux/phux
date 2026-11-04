@@ -180,6 +180,7 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             flags: action_flags::LogFlags { follow, tail, json },
         } => resource_session::run_log(target, *follow, *tail, *json, socket),
         AgentAction::Tree { action } => tree::run_tree(action, socket),
+        AgentAction::Surface { action } => tree::run_surface(action, socket),
         AgentAction::Wait {
             target,
             any,

@@ -300,6 +300,14 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: super::tree::TreeAction,
     },
+    /// A pixel surface is a pane's child resource that a producer feeds
+    /// with PNG images of a window or display; `snapshot` writes the newest
+    /// and `follow` every one. Needs a server that advertises
+    /// `PIXEL_SURFACE`.
+    Surface {
+        #[usage(subcommand)]
+        action: super::tree::SurfaceAction,
+    },
     /// Append one record to a pane's agent session.
     ///
     /// The record is one `AgentEventsJsonlV1` line: `--type` from the closed

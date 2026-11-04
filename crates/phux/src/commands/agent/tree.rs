@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
-use phux_client::tree::{self, Document, FollowEnd, TreeError};
+use phux_client::tree::{self, Document, FollowEnd, Kind, TreeError};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
@@ -87,13 +87,96 @@ pub(crate) enum TreeAction {
     },
 }
 
+/// `phux agent surface open|publish|snapshot|follow`: the same verbs over a
+/// `PixelSurface`, whose documents are PNG images and go to files.
+#[derive(Debug, usage::Subcommands)]
+pub(crate) enum SurfaceAction {
+    /// Open a surface under the pane its producer runs in.
+    Open {
+        /// The parent pane.
+        target: String,
+        /// The window or display the surface mirrors.
+        #[usage(long, value_name = "WINDOW")]
+        window: String,
+        #[usage(long)]
+        json: bool,
+    },
+    /// Replace the surface's image from a PNG file, or stdin.
+    Publish {
+        /// The surface.
+        target: String,
+        /// The PNG; stdin when absent.
+        #[usage(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+        #[usage(long)]
+        json: bool,
+    },
+    /// Write the surface's newest image to a file.
+    Snapshot {
+        /// The surface.
+        target: String,
+        /// Where the PNG goes; stdout when absent.
+        #[usage(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        #[usage(long)]
+        json: bool,
+    },
+    /// Write every image as it arrives, each replacing the file.
+    Follow {
+        /// The surface.
+        target: String,
+        /// Where each PNG goes; stdout when absent.
+        #[usage(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        /// Give up after this many seconds.
+        #[usage(long, value_name = "SECS")]
+        timeout: Option<u64>,
+        #[usage(long)]
+        json: bool,
+    },
+}
+
+pub(super) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> ExitCode {
+    match action {
+        SurfaceAction::Open {
+            target,
+            window,
+            json,
+        } => run_open(Kind::Surface, target, window, *json, socket),
+        SurfaceAction::Publish { target, file, json } => {
+            run_publish(Kind::Surface, target, file.as_deref(), *json, socket)
+        }
+        SurfaceAction::Snapshot { target, out, json } => {
+            run_snapshot(Kind::Surface, target, out.as_deref(), *json, socket)
+        }
+        SurfaceAction::Follow {
+            target,
+            out,
+            timeout,
+            json,
+        } => run_follow(
+            Kind::Surface,
+            target,
+            Sink {
+                until: None,
+                out: out.as_deref(),
+            },
+            *timeout,
+            *json,
+            socket,
+        ),
+    }
+}
+
 pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
-        TreeAction::Open { target, app, json } => run_open(target, app, *json, socket),
+        TreeAction::Open { target, app, json } => run_open(Kind::Tree, target, app, *json, socket),
         TreeAction::Publish { target, file, json } => {
-            run_publish(target, file.as_deref(), *json, socket)
+            run_publish(Kind::Tree, target, file.as_deref(), *json, socket)
         }
-        TreeAction::Snapshot { target, json } => run_snapshot(target, *json, socket),
+        TreeAction::Snapshot { target, json } => {
+            run_snapshot(Kind::Tree, target, None, *json, socket)
+        }
         TreeAction::Mirror {
             app,
             pid,
@@ -115,7 +198,17 @@ pub(super) fn run_tree(action: &TreeAction, socket: Option<PathBuf>) -> ExitCode
             until,
             timeout,
             json,
-        } => run_follow(target, until.as_deref(), *timeout, *json, socket),
+        } => run_follow(
+            Kind::Tree,
+            target,
+            Sink {
+                until: until.as_deref(),
+                out: None,
+            },
+            *timeout,
+            *json,
+            socket,
+        ),
     }
 }
 
@@ -188,33 +281,102 @@ pub(super) fn report(json: bool, err: &TreeError) -> ExitCode {
     )
 }
 
-fn print_document(json: bool, document: &Document) -> ExitCode {
-    if json {
-        let value: serde_json::Value = if document.bytes.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::from_slice(&document.bytes).unwrap_or(serde_json::Value::Null)
-        };
-        let line = serde_json::json!({
-            "schema_version": SCHEMA_VERSION,
-            "seq": document.seq,
-            "document": value,
-        });
-        outln!("{line}");
-    } else if !document.bytes.is_empty() {
-        outln!("{}", String::from_utf8_lossy(&document.bytes));
+/// Where a followed document goes, and what ends the follow.
+#[derive(Clone, Copy)]
+struct Sink<'a> {
+    /// Stop as soon as a document contains this text (trees).
+    until: Option<&'a str>,
+    /// Write each document to this file instead of stdout (surfaces).
+    out: Option<&'a std::path::Path>,
+}
+
+/// The width and height a PNG's `IHDR` names, when `bytes` starts like one.
+fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let be =
+        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    Some((be(16), be(20)))
+}
+
+/// Deliver one document: a tree as text or JSON on stdout, a surface as
+/// bytes to `out` (or stdout) with a JSON line about it when asked.
+fn print_document(
+    kind: Kind,
+    json: bool,
+    out: Option<&std::path::Path>,
+    document: &Document,
+) -> ExitCode {
+    match kind {
+        Kind::Tree if json => {
+            let value: serde_json::Value = if document.bytes.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::from_slice(&document.bytes).unwrap_or(serde_json::Value::Null)
+            };
+            outln!(
+                "{}",
+                serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "seq": document.seq,
+                    "document": value,
+                })
+            );
+        }
+        Kind::Tree => {
+            if !document.bytes.is_empty() {
+                outln!("{}", String::from_utf8_lossy(&document.bytes));
+            }
+        }
+        Kind::Surface => {
+            if !document.bytes.is_empty() {
+                let written = out.map_or_else(
+                    || {
+                        use std::io::Write as _;
+                        std::io::stdout().write_all(&document.bytes)
+                    },
+                    |path| std::fs::write(path, &document.bytes),
+                );
+                if let Err(err) = written {
+                    return json_err::emit(
+                        json,
+                        &json_err::CliError::new(
+                            json_err::codes::USAGE_ERROR,
+                            format!("could not write the image: {err}"),
+                            "pass a writable `--out PATH`",
+                        ),
+                        EXIT_FAILURE,
+                    );
+                }
+            }
+            if json {
+                let size = png_size(&document.bytes);
+                outln!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "seq": document.seq,
+                        "bytes": document.bytes.len(),
+                        "width": size.map(|s| s.0),
+                        "height": size.map(|s| s.1),
+                        "out": out.map(|p| p.display().to_string()),
+                    })
+                );
+            }
+        }
     }
     ExitCode::SUCCESS
 }
 
-fn run_open(target: &str, app: &str, json: bool, socket: Option<PathBuf>) -> ExitCode {
+fn run_open(kind: Kind, target: &str, app: &str, json: bool, socket: Option<PathBuf>) -> ExitCode {
     if app.trim().is_empty() {
         return json_err::emit(
             json,
             &json_err::CliError::new(
                 json_err::codes::RECORD_INVALID,
-                "--app must not be empty",
-                "name the application the tree mirrors, e.g. `--app Safari`",
+                format!("what the {} mirrors must be named", kind.label()),
+                "e.g. `--app Safari` for a tree, `--window Safari` for a surface",
             ),
             EXIT_USAGE,
         );
@@ -228,7 +390,7 @@ fn run_open(target: &str, app: &str, json: bool, socket: Option<PathBuf>) -> Exi
             Ok(pair) => pair,
             Err(code) => return code,
         };
-        match tree::open(&mut conn, &parent, app).await {
+        match tree::open_kind(&mut conn, kind, &parent, app).await {
             Ok(opened) => {
                 let resource = phux_client::selector::format_terminal_id(&opened.resource);
                 if json {
@@ -252,6 +414,7 @@ fn run_open(target: &str, app: &str, json: bool, socket: Option<PathBuf>) -> Exi
 }
 
 fn run_publish(
+    kind: Kind,
     target: &str,
     file: Option<&std::path::Path>,
     json: bool,
@@ -273,13 +436,21 @@ fn run_publish(
             EXIT_USAGE,
         );
     }
-    if let Err(err) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+    let shape = match kind {
+        Kind::Tree => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .map(|_| ())
+            .map_err(|err| format!("the document is not JSON: {err}")),
+        Kind::Surface => png_size(&bytes)
+            .map(|_| ())
+            .ok_or_else(|| "the document is not a PNG".to_owned()),
+    };
+    if let Err(message) = shape {
         return json_err::emit(
             json,
             &json_err::CliError::new(
                 json_err::codes::RECORD_INVALID,
-                format!("the document is not JSON: {err}"),
-                "publish one JSON document",
+                message,
+                "publish one JSON document to a tree, one PNG image to a surface",
             ),
             EXIT_USAGE,
         );
@@ -312,7 +483,13 @@ fn run_publish(
     })
 }
 
-fn run_snapshot(target: &str, json: bool, socket: Option<PathBuf>) -> ExitCode {
+fn run_snapshot(
+    kind: Kind,
+    target: &str,
+    out: Option<&std::path::Path>,
+    json: bool,
+    socket: Option<PathBuf>,
+) -> ExitCode {
     let rt = match cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,
@@ -324,19 +501,21 @@ fn run_snapshot(target: &str, json: bool, socket: Option<PathBuf>) -> ExitCode {
             Err(code) => return code,
         };
         match tree::snapshot(&mut conn, &resource).await {
-            Ok(document) => print_document(json, &document),
+            Ok(document) => print_document(kind, json, out, &document),
             Err(err) => report(json, &err),
         }
     })
 }
 
 fn run_follow(
+    kind: Kind,
     target: &str,
-    until: Option<&str>,
+    sink: Sink<'_>,
     timeout: Option<u64>,
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
+    let Sink { until, out } = sink;
     let rt = match cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,
@@ -351,7 +530,7 @@ fn run_follow(
             let hit =
                 until.is_some_and(|text| String::from_utf8_lossy(&document.bytes).contains(text));
             if until.is_none() || hit {
-                print_document(json, &document);
+                print_document(kind, json, out, &document);
             }
             matched = hit;
             !hit
