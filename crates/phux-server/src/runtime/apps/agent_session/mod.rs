@@ -14,6 +14,7 @@ use crate::state::SharedState;
 
 mod append;
 mod attach;
+mod frames;
 mod native_agent;
 pub(super) mod spawn;
 pub(crate) mod upgrade;
@@ -55,29 +56,7 @@ impl ResourceApp for AgentSessionApp {
         ctx: ResourceFrame<'a>,
         frame: FrameKind,
     ) -> LocalBoxFuture<'a, FrameFlow> {
-        async move {
-            let (code, message) = match frame {
-                FrameKind::FrameAck { .. } => (
-                    ErrorCode::MalformedMessage,
-                    "FRAME_ACK is not valid on an agent-session stream".to_owned(),
-                ),
-                FrameKind::HistoryRequest { .. } => (
-                    ErrorCode::WrongResourceKind,
-                    "an agent-session stream retains no history beyond its bootstrap".to_owned(),
-                ),
-                _ => (
-                    ErrorCode::WrongResourceKind,
-                    WrongResourceKind {
-                        required: ResourceKind::Terminal,
-                        actual: ResourceKind::AgentSession,
-                    }
-                    .to_string(),
-                ),
-            };
-            crate::runtime::send_error(&ctx.plumbing.out_tx, code, &message).await;
-            FrameFlow::Continue(())
-        }
-        .boxed_local()
+        std::future::ready(frames::serve(&ctx, &frame)).boxed_local()
     }
 
     fn metrics(&self) -> &'static [phux_perf::Metric] {

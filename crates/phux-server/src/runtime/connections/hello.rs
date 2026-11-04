@@ -376,7 +376,7 @@ impl NegotiatedConnection {
         self.server_features.contains(ServerFeature::QuicStreams)
     }
 
-    pub(super) const fn accepts_terminal_reply(self) -> bool {
+    pub(in crate::runtime) const fn accepts_terminal_reply(self) -> bool {
         self.server_features.contains(ServerFeature::TerminalReply)
     }
 }
