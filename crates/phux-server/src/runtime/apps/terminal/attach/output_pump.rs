@@ -137,7 +137,7 @@ impl OutputPumpContext {
     pub(super) async fn apply_resync(
         &self,
         generation: &mut PumpGeneration,
-        output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+        output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
         audience: &ResyncAudience,
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {

@@ -136,10 +136,10 @@ async fn native_preflight_failure_flushes_error_then_duplex_eof() {
             assert!(matches!(
                 next_frame(&mut client_read).await,
                 Some(FrameKind::HelloOk {
-                    selected_profile: phux_protocol::caps::BootstrapProfile::NativeState {
+                    selected_profile: Some(phux_protocol::caps::BootstrapProfile::NativeState {
                         codec: EngineCodec::LibghosttySnapshotV1,
                         ..
-                    },
+                    }),
                     ..
                 })
             ));

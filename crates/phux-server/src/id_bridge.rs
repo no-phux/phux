@@ -171,6 +171,35 @@ where
     }
 }
 
+/// The wire tag for a kind the server serves.
+#[must_use]
+pub const fn wire_kind(
+    kind: phux_core::resource::ResourceKind,
+) -> phux_protocol::ids::ResourceKind {
+    use phux_core::resource::ResourceKind;
+    match kind {
+        ResourceKind::Terminal => phux_protocol::ids::ResourceKind::Terminal,
+        ResourceKind::AgentSession => phux_protocol::ids::ResourceKind::AgentSession,
+        // A domain kind with no tag yet is reported opaque (255 is
+        // unallocated), never mistaken for a Terminal.
+        _ => phux_protocol::ids::ResourceKind::Unknown { tag: u8::MAX },
+    }
+}
+
+/// The domain kind a wire tag names, or `None` for one this build does not
+/// serve (a typed refusal, not a decode failure).
+#[must_use]
+pub const fn core_kind(
+    kind: phux_protocol::ids::ResourceKind,
+) -> Option<phux_core::resource::ResourceKind> {
+    use phux_core::resource::ResourceKind;
+    match kind {
+        phux_protocol::ids::ResourceKind::Terminal => Some(ResourceKind::Terminal),
+        phux_protocol::ids::ResourceKind::AgentSession => Some(ResourceKind::AgentSession),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

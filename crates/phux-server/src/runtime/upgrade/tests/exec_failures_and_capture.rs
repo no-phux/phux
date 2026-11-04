@@ -4,7 +4,7 @@ use super::super::handoff::*;
 use super::super::*;
 use super::support::*;
 use crate::state::request_agent_session_cut;
-use phux_resource::agent_session::AgentSessionResource as _;
+use phux_agent_session::session::AgentSessionResource as _;
 
 #[tokio::test(flavor = "current_thread")]
 async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {
@@ -17,7 +17,7 @@ async fn actual_exec_failure_resumes_the_next_append_without_a_barrier() {
             let (_, seal) = capture_blob(&state).await;
             assert!(matches!(
                 try_append(&append, "{\"type\":\"stop\"}").await,
-                Err(crate::resource::agent_session::AppendRejection::Overflow(_))
+                Err(phux_agent_session::session::AppendRejection::Overflow(_))
             ));
             let (plan, _listener, _) = unexecutable_plan(seal);
             assert_eq!(
@@ -59,6 +59,55 @@ async fn real_prepare_failure_resumes_the_next_append_without_a_barrier() {
             assert_eq!(next.first_seq, 2);
         })
         .await;
+}
+
+/// Wire ids are interned lazily, so a session or pane no client has read yet
+/// has none. The upgrade must still carry it: dropping it loses the PTY.
+#[tokio::test(flavor = "current_thread")]
+async fn upgrade_capture_names_what_no_client_has_read() {
+    let state = SharedState::new();
+    state.with_mut(|s| {
+        let (_session, pane) = s.seed_session("quiet");
+        let bundle = crate::runtime::apps::terminal::test_support::blank_terminal(80, 24);
+        let _ = s.register_resource_handle(pane, bundle.handle, bundle.token);
+        let _ = s.seed_empty_session("empty").expect("seed");
+        s.set_upgrade_context(
+            7,
+            PathBuf::from("/nonexistent/phux.sock"),
+            RuntimeFlags::default(),
+        );
+    });
+    let identity = capture_upgrade_context(&state).unwrap().tree_identity;
+    let names: Vec<&str> = identity.sessions.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"quiet"), "sessions: {names:?}");
+    assert!(names.contains(&"empty"), "sessions: {names:?}");
+    assert_eq!(identity.panes.len(), 1, "the live pane crosses the exec");
+}
+
+/// A session created after the capture has no wire id yet. It must still
+/// count as a change, or the exec would silently drop it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_session_created_after_capture_aborts_the_upgrade() {
+    let state = SharedState::new();
+    state.with_mut(|s| {
+        s.set_upgrade_context(
+            7,
+            PathBuf::from("/nonexistent/phux.sock"),
+            RuntimeFlags::default(),
+        );
+    });
+    let context = capture_upgrade_context(&state).unwrap();
+    state.with_mut(|s| {
+        let _ = s.seed_empty_session("late").expect("seed");
+    });
+    let outcome = reassemble_unchanged_tree(
+        &state,
+        context.listener_fd,
+        context.listener_fd,
+        &context.tree_identity,
+        &UpgradeHandoffs::default(),
+    );
+    assert!(matches!(outcome, Err(UpgradeError::TreeChanged)));
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -13,7 +13,7 @@ use phux_protocol::{BootstrapId, ClientId, StreamId};
 use phux_resource::ResourceHandle;
 use phux_terminal::actor::{
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_TICK_INTERVAL,
-    PaneOutput, ProcessFacetRequest, ResizeRequest, SnapshotRequest, TerminalActor,
+    ProcessFacetRequest, ResizeRequest, ResourceOutput, SnapshotRequest, TerminalActor,
     default_shell_command,
 };
 use phux_terminal::grid::SnapshotBytes;
@@ -178,14 +178,14 @@ async fn snapshot(handle: &ResourceHandle) -> SnapshotBytes {
 }
 
 /// Every byte already queued on the broadcast; a lag voids the comparison.
-fn drain_pending(rx: &mut broadcast::Receiver<PaneOutput>) -> Vec<u8> {
+fn drain_pending(rx: &mut broadcast::Receiver<ResourceOutput>) -> Vec<u8> {
     let mut acc = Vec::new();
     loop {
         match rx.try_recv() {
-            Ok(PaneOutput::Live { bytes, .. } | PaneOutput::Resync { bytes, .. }) => {
+            Ok(ResourceOutput::Live { bytes, .. } | ResourceOutput::Resync { bytes, .. }) => {
                 acc.extend_from_slice(&bytes);
             }
-            Ok(PaneOutput::Control { .. }) => {}
+            Ok(ResourceOutput::Control { .. }) => {}
             Err(broadcast::error::TryRecvError::Lagged(n)) => panic!("broadcast lagged by {n}"),
             Err(_) => return acc,
         }

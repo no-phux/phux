@@ -91,6 +91,12 @@ jobs:
       # if that contract breaks.
       - name: website docs catalog fixture
         run: bash scripts/check-website-docs-catalog_test.sh
+      # The pre-commit size ratchet again, for commits whose hooks never ran.
+      - name: file size ratchet
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/check-file-tokens.sh --base "$BASE_SHA"
       - uses: ./.github/actions/setup-bun
       # A docs-only diff needs only the two guards that read docs, with the
       # runner's own bash and no Nix.

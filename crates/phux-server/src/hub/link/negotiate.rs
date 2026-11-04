@@ -48,6 +48,9 @@ pub(super) async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
             server_id,
             ..
         } => {
+            let Some(selected_profile) = selected_profile else {
+                return Err("satellite HELLO_OK selected no bootstrap profile".to_owned());
+            };
             validate_link_hello_ok(
                 &offered,
                 protocol_major,

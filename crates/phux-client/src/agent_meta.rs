@@ -27,6 +27,10 @@ pub struct PaneOccupantRecord {
     pub foreground: String,
     /// Whether it is the pane's original interactive shell.
     pub is_pane_shell: bool,
+    /// Something under the pane runs outside the foreground group. Absent
+    /// from an older server's record.
+    #[serde(default)]
+    pub background: bool,
 }
 
 /// Parse a `phux.pane-occupant/v1` value. Malformed or future-incompatible
@@ -475,10 +479,12 @@ mod tests {
         let shell = PaneOccupantRecord {
             foreground: "zsh".to_owned(),
             is_pane_shell: true,
+            background: false,
         };
         let busy = PaneOccupantRecord {
             foreground: "vim".to_owned(),
             is_pane_shell: false,
+            background: false,
         };
         assert_eq!(
             shell_availability(Some(&shell), ShellCheck::Unanswerable),

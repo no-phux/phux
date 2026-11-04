@@ -65,7 +65,7 @@ async fn negotiate_native_hello(stream: &mut tokio::net::UnixStream) {
     assert!(matches!(
         hello,
         FrameKind::HelloOk {
-            selected_profile: BootstrapProfile::NativeState { .. },
+            selected_profile: Some(BootstrapProfile::NativeState { .. }),
             ..
         }
     ));

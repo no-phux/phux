@@ -33,7 +33,7 @@ impl std::fmt::Display for GapCause {
 pub(super) async fn next_wait(
     ctx: &OutputPumpContext,
     generation: &PumpGeneration,
-    output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+    output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) -> Option<pump::PumpWait> {
     async fn cancelled(token: Option<&CancellationToken>) {
         match token {
@@ -55,7 +55,7 @@ pub(super) async fn next_wait(
 pub(super) async fn run_output_pump(
     ctx: &OutputPumpContext,
     gate_rx: oneshot::Receiver<OutputPumpStart>,
-    output_rx: tokio::sync::broadcast::Receiver<PaneOutput>,
+    output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) -> Option<PumpFault> {
     let start = gate_rx.await.ok()?;
     run_started_output_pump(ctx, start, output_rx).await
@@ -67,7 +67,7 @@ pub(super) async fn run_output_pump(
 pub(crate) async fn run_started_output_pump(
     ctx: &OutputPumpContext,
     start: OutputPumpStart,
-    mut output_rx: tokio::sync::broadcast::Receiver<PaneOutput>,
+    mut output_rx: tokio::sync::broadcast::Receiver<ResourceOutput>,
 ) -> Option<PumpFault> {
     let mut generation = PumpGeneration::opened_at(start.published_cut, ctx.initial_bootstrap_id);
     if let Some(live) = start.live {
@@ -116,11 +116,11 @@ pub(crate) async fn run_started_output_pump(
 async fn dispatch_output(
     ctx: &OutputPumpContext,
     generation: &mut PumpGeneration,
-    output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
-    received: Result<PaneOutput, tokio::sync::broadcast::error::RecvError>,
+    output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
+    received: Result<ResourceOutput, tokio::sync::broadcast::error::RecvError>,
 ) -> ControlFlow<Option<PumpFault>> {
     match received {
-        Ok(PaneOutput::Live { seq, bytes, at }) => {
+        Ok(ResourceOutput::Live { seq, bytes, at }) => {
             let age = generation.chunk_age(at);
             if ctx.stale_skip && pump::is_stale(age) && generation.forwards(seq) {
                 // Skip a slow consumer to a fresh checkpoint rather than
@@ -131,10 +131,10 @@ async fn dispatch_output(
                 ctx.forward_live(generation, seq, &bytes).await
             }
         }
-        Ok(PaneOutput::Control { owner, frame }) => {
+        Ok(ResourceOutput::Control { owner, frame }) => {
             ctx.forward_control(generation, owner, frame).await
         }
-        Ok(PaneOutput::Resync {
+        Ok(ResourceOutput::Resync {
             cols,
             rows,
             bytes,
@@ -248,7 +248,7 @@ pub(super) async fn fail_aggregate_attach_prepublication(
     if !matches!(
         tokio::time::timeout(
             producer_deadline,
-            out_tx.send(Outbound::TerminalError {
+            out_tx.send(Outbound::FatalError {
                 request_id: None,
                 code: ErrorCode::CodecUnavailable,
                 message: format!("ATTACH {attach_id} failed before publication: {reason}"),

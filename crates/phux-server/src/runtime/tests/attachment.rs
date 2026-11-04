@@ -168,7 +168,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
 
     use crate::runtime::apps::terminal::test_support::{
         ConsumerAttachOutcome, NativeBootstrapReply, NativePublicationReply, NativeStateError,
-        PaneOutput, ResyncReason,
+        ResourceOutput, ResyncReason,
     };
 
     let local = LocalSet::new();
@@ -289,7 +289,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
             .await;
 
             output_tx
-                .send(PaneOutput::Live {
+                .send(ResourceOutput::Live {
                     seq: 1,
                     bytes: bytes::Bytes::from_static(b"live"),
                     at: std::time::Instant::now(),
@@ -301,7 +301,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
             ));
 
             output_tx
-                .send(PaneOutput::Resync {
+                .send(ResourceOutput::Resync {
                     cols: 80,
                     rows: 24,
                     bytes: bytes::Bytes::new(),

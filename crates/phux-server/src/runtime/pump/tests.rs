@@ -4,7 +4,7 @@ use super::{
     GAP_RESYNC_MAX_ATTEMPTS, PumpGeneration, PumpWait, STALE_OUTPUT_BUDGET, is_stale, next_event,
 };
 
-use crate::resource::{PaneOutput, ResyncAudience, ResyncTarget};
+use crate::resource::{ResourceOutput, ResyncAudience, ResyncTarget};
 
 fn pump_on(owner: u64, stream: u64) -> ResyncTarget {
     ResyncTarget {
@@ -253,7 +253,7 @@ async fn a_gap_retries_with_backoff_and_republishing_restores_the_budget() {
 /// the life of the process.
 #[tokio::test(start_paused = true)]
 async fn a_fenced_pump_gives_up_once_its_budget_is_spent() {
-    let (tx, mut rx) = tokio::sync::broadcast::channel::<PaneOutput>(8);
+    let (tx, mut rx) = tokio::sync::broadcast::channel::<ResourceOutput>(8);
     let mut generation = opened();
     generation.fence_for_gap();
 
@@ -279,7 +279,7 @@ async fn a_fenced_pump_gives_up_once_its_budget_is_spent() {
 /// An actor that answers late still unfences the pump.
 #[tokio::test(start_paused = true)]
 async fn a_late_resync_still_unfences_the_pump() {
-    let (tx, mut rx) = tokio::sync::broadcast::channel::<PaneOutput>(8);
+    let (tx, mut rx) = tokio::sync::broadcast::channel::<ResourceOutput>(8);
     let mut generation = opened();
     generation.fence_for_gap();
     generation.note_resync_requested();
@@ -288,7 +288,7 @@ async fn a_late_resync_still_unfences_the_pump() {
     // inside the budget.
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(1_600)).await;
-        let _ = tx.send(PaneOutput::Resync {
+        let _ = tx.send(ResourceOutput::Resync {
             cols: 80,
             rows: 24,
             reason: crate::resource::ResyncReason::OutboundGap,
@@ -301,7 +301,7 @@ async fn a_late_resync_still_unfences_the_pump() {
     loop {
         match next_event(&generation, &mut rx).await {
             PumpWait::RetryResync => generation.note_resync_requested(),
-            PumpWait::Event(Ok(PaneOutput::Resync { base_seq, .. })) => {
+            PumpWait::Event(Ok(ResourceOutput::Resync { base_seq, .. })) => {
                 generation.republished_at(base_seq);
                 break;
             }
@@ -320,7 +320,7 @@ async fn a_late_resync_still_unfences_the_pump() {
 
 #[tokio::test(start_paused = true)]
 async fn unrelated_ready_events_do_not_postpone_the_retry_deadline() {
-    let (tx, mut rx) = tokio::sync::broadcast::channel::<PaneOutput>(8);
+    let (tx, mut rx) = tokio::sync::broadcast::channel::<ResourceOutput>(8);
     let mut generation = opened();
     generation.fence_for_gap();
     generation.note_resync_requested();
@@ -347,7 +347,7 @@ async fn unrelated_ready_events_do_not_postpone_the_retry_deadline() {
 
 #[tokio::test(start_paused = true)]
 async fn final_request_has_a_response_window_before_failure() {
-    let (tx, mut rx) = tokio::sync::broadcast::channel::<PaneOutput>(8);
+    let (tx, mut rx) = tokio::sync::broadcast::channel::<ResourceOutput>(8);
     let mut generation = opened();
     generation.fence_for_gap();
     for attempt in 0..GAP_RESYNC_MAX_ATTEMPTS {
@@ -371,8 +371,8 @@ async fn final_request_has_a_response_window_before_failure() {
     ));
 }
 
-fn unrelated_resync() -> PaneOutput {
-    PaneOutput::Resync {
+fn unrelated_resync() -> ResourceOutput {
+    ResourceOutput::Resync {
         cols: 80,
         rows: 24,
         reason: crate::resource::ResyncReason::OutboundGap,

@@ -28,7 +28,7 @@
 
 pub(crate) mod identify;
 pub mod live_session;
-pub use phux_resource::agent_record as record;
+pub use phux_agent_session::agent_record as record;
 
 mod detector;
 mod identity;
@@ -135,7 +135,7 @@ pub enum AgentDetectEvent {
     },
     /// The `phux-ask` title sentinel appeared, changed (`Some`), or cleared
     /// (`None`). Set and clear share this channel so they stay ordered.
-    AskSentinel(Option<phux_resource::agent_asked::AskedPayload>),
+    AskSentinel(Option<phux_agent_session::asked::AskedPayload>),
     /// The agent is gone; withdraw the record.
     Retract,
 }
@@ -216,7 +216,7 @@ pub(crate) struct AgentDetector {
     /// Which evidence rung wrote [`Self::published`]. Only the hook and
     /// stream paths consult it; the screen is ranked by the live-session
     /// probe instead. `Screen` is the floor.
-    published_source: phux_resource::agent_state::EvidenceSource,
+    published_source: phux_agent_session::state::EvidenceSource,
     /// "Does this pane own a live `AgentSession` child?" (ADR-0103 §5).
     /// `None` means no.
     live_session: Option<live_session::LiveSessionProbe>,

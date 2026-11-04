@@ -57,6 +57,9 @@ graphify-out/
 __pycache__/
 *.pyc
 
+# Local agent-verify measurements. Real Mac numbers are not source.
+/agent-verify-results/
+
 # Plugin-local archives and integration records are user data, not source.
 /plugins/*/state/
 /examples/plugins/*/state/

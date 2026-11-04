@@ -24,7 +24,7 @@
 
 #![allow(
     clippy::redundant_pub_crate,
-    reason = "private server module shared by the sibling runtime / state modules"
+    reason = "items shared inside the crate; pub would widen its API"
 )]
 
 use std::collections::HashSet;
@@ -58,7 +58,7 @@ pub enum EvidenceSource {
 
 impl EvidenceSource {
     /// Rank within the ladder: higher wins. Separate from the ask ladder
-    /// ([`crate::agent_asked::AskedSource::priority`]).
+    /// ([`crate::asked::AskedSource::priority`]).
     #[must_use]
     pub(crate) const fn priority(self) -> u8 {
         match self {

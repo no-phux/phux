@@ -139,7 +139,7 @@ pub fn mark_started() {
 #[must_use]
 pub fn report() -> PerfReport {
     let (epoch, baseline) = started();
-    phux_perf::snapshot_since("client", TABLE, epoch.elapsed(), baseline.as_ref())
+    phux_perf::snapshot_since("client", &[TABLE], epoch.elapsed(), baseline.as_ref())
 }
 
 /// One line for the client log when an attach ends: the echo and paint

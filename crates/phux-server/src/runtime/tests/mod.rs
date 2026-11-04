@@ -185,7 +185,7 @@ async fn next_frame(out_rx: &mut tokio::sync::mpsc::Receiver<Outbound>) -> Frame
         .expect("outbound closed")
     {
         Outbound::Frame(frame) => frame,
-        other @ Outbound::TerminalError { .. } => {
+        other @ Outbound::FatalError { .. } => {
             panic!("unexpected outbound sentinel: {other:?}")
         }
     }

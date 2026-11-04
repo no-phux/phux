@@ -1,5 +1,8 @@
 use super::*;
 
+mod compression;
+mod residency;
+
 #[test]
 fn base64_encodes_padding_cases() {
     let mut out = Vec::new();
@@ -27,12 +30,22 @@ fn replay(
     target: &mut GhosttyTerminal<'_, '_>,
     origin: (u16, u16),
 ) {
+    // A fresh residency: the outer terminal is assumed to hold nothing.
+    let out = replay_with(source, &mut KittyResidency::default(), origin);
+    assert!(!out.is_empty());
+    target.vt_write(&out);
+}
+
+fn replay_with(
+    source: &GhosttyTerminal<'_, '_>,
+    residency: &mut KittyResidency,
+    origin: (u16, u16),
+) -> Vec<u8> {
     let mut iter = PlacementIterator::new().expect("placement iterator");
     let mut out = Vec::new();
-    assert!(
-        emit_kitty_graphics_replay(source, &mut iter, &mut out, origin, (10, 5)).expect("replay")
-    );
-    target.vt_write(&out);
+    emit_kitty_graphics_replay(source, &mut iter, residency, &mut out, origin, (10, 5))
+        .expect("replay");
+    out
 }
 
 type ObservedPlacement = (u32, u32, bool, [u32; 8], i32, Option<(i32, i32)>);
@@ -185,17 +198,21 @@ fn viewport_replay_omits_unplaced_and_fully_clipped_payloads() {
     let mut source = terminal();
     transmit(&mut source, 7, 8, 8);
     let mut iter = PlacementIterator::new().unwrap();
+    let mut residency = KittyResidency::default();
     let mut out = Vec::new();
-    assert!(!emit_kitty_graphics_replay(&source, &mut iter, &mut out, (0, 0), (5, 3)).unwrap());
+    let mut emit = |source: &GhosttyTerminal<'_, '_>, out: &mut Vec<u8>| {
+        emit_kitty_graphics_replay(source, &mut iter, &mut residency, out, (0, 0), (5, 3)).unwrap()
+    };
+    assert!(!emit(&source, &mut out));
     assert!(out.is_empty());
 
     source.vt_write(b"\x1b[4;9H\x1b_Ga=p,i=7,p=1,c=1,r=1,C=1,q=2;\x1b\\");
-    assert!(!emit_kitty_graphics_replay(&source, &mut iter, &mut out, (0, 0), (5, 3)).unwrap());
+    assert!(!emit(&source, &mut out));
     assert!(out.is_empty());
 
     transmit(&mut source, 3, 8, 8);
     source.vt_write(b"\x1b[1;1H\x1b_Ga=p,i=3,p=2,c=1,r=1,C=1,q=2;\x1b\\");
-    assert!(emit_kitty_graphics_replay(&source, &mut iter, &mut out, (0, 0), (5, 3)).unwrap());
+    assert!(emit(&source, &mut out));
     let mut target = terminal();
     target.vt_write(&out);
     let graphics = target.kitty_graphics().unwrap();
@@ -344,4 +361,28 @@ fn png_decoder_rejects_oversized_header_before_decoding() {
     let mut source = terminal();
     source.vt_write(&command);
     assert!(source.kitty_graphics().unwrap().image(7).is_none());
+}
+
+fn gradient(len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|i| u8::try_from(i * 7 % 251).unwrap())
+        .collect()
+}
+
+fn transmit_pixels(terminal: &mut GhosttyTerminal<'_, '_>, id: u32, format: u32, size: u32) {
+    let bytes_per_pixel = format as usize / 8;
+    let pixels = gradient(size as usize * size as usize * bytes_per_pixel);
+    let mut command = format!("\x1b_Ga=t,f={format},s={size},v={size},i={id},q=2;").into_bytes();
+    write_base64(&mut command, &pixels).expect("pixels");
+    command.extend_from_slice(b"\x1b\\");
+    terminal.vt_write(&command);
+}
+
+fn contains(hay: &[u8], needle: &[u8]) -> usize {
+    hay.windows(needle.len()).filter(|w| *w == needle).count()
+}
+
+fn pixels(terminal: &GhosttyTerminal<'_, '_>, id: u32) -> Option<Vec<u8>> {
+    let graphics = terminal.kitty_graphics().unwrap();
+    Some(graphics.image(id)?.data().unwrap()?.to_vec())
 }

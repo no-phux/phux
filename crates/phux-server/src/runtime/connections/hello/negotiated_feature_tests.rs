@@ -7,7 +7,7 @@ use super::*;
 fn connection(server_features: ServerFeatureSet) -> NegotiatedConnection {
     NegotiatedConnection {
         client_caps: ClientCapabilities::default(),
-        profile: BootstrapProfile::SynthesizedVtRaw,
+        profile: Some(BootstrapProfile::SynthesizedVtRaw),
         limits: BootstrapLimits::default(),
         server_features,
         compression: Compression::None,

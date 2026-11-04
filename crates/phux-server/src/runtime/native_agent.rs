@@ -1,9 +1,9 @@
 //! Native launch transaction and exclusive authenticated controller broker.
 use super::commands::CommandContext;
-use crate::resource::agent_session::AgentSessionActor;
 use crate::state::native_agent::{NativeBinding, NativePublication, fingerprint};
 use crate::state::{ClientId, SharedState};
 use bytes::Bytes;
+use phux_agent_session::session::AgentSessionActor;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::native_agent::{
     MAX_NATIVE_OPERATIONS, NATIVE_HOST_SPEC_ENV, NATIVE_SCHEMA, NativeCapabilities, NativeCommand,

@@ -238,6 +238,16 @@ async fn bind_terminal_stream(
         .await;
         return;
     }
+    let Some(profile) = selection.profile else {
+        refuse_terminal_stream(send, recv);
+        crate::runtime::send_error(
+            &plumbing.out_tx,
+            ErrorCode::CodecUnavailable,
+            super::commands::NO_TERMINAL_PROFILE,
+        )
+        .await;
+        return;
+    };
     let writer = QuicWriter::from_terminal_stream(send, window);
     let diagnostics = writer.diagnostic_tracker();
     debug!(?client_id, ?stream_id, context = ?diagnostics.context(), "bound QUIC diagnostic stream");
@@ -282,7 +292,7 @@ async fn bind_terminal_stream(
         &stream_tx,
         stream_id,
         selection.client_caps,
-        selection.profile,
+        Some(profile),
         selection.limits,
         token,
         None,

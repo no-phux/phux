@@ -37,8 +37,9 @@ pub struct HelloOk {
     pub server_id: Vec<u8>,
     /// What the server advertised.
     pub server_caps: ServerCapabilities,
-    /// The bootstrap profile the server selected.
-    pub profile: BootstrapProfile,
+    /// The bootstrap profile the server selected. This client offers
+    /// Terminal profiles, so a server that selects none broke the offer.
+    pub profile: Option<BootstrapProfile>,
     /// The payload limits the server selected.
     pub limits: BootstrapLimits,
 }
@@ -51,14 +52,15 @@ impl HelloOk {
     /// The [`HelloOkError`] naming the term the server broke.
     pub fn accept(self, offered: &ClientCapabilities) -> Result<ServerInfo, HelloOkError> {
         let (major, minor, patch) = self.protocol;
-        validate_hello_ok(offered, major, minor, patch, self.profile, self.limits)?;
+        let profile = self.profile.ok_or(HelloOkError::NoProfile)?;
+        validate_hello_ok(offered, major, minor, patch, profile, self.limits)?;
         Ok(ServerInfo {
             id: self.server_id,
             features: self.server_caps.features,
             features_ext: self.server_caps.features_ext,
             layers: self.server_caps.layers,
             protocol: self.protocol,
-            profile: self.profile,
+            profile,
             limits: self.limits,
         })
     }
@@ -137,7 +139,7 @@ mod tests {
             protocol,
             server_id: b"incarnation".to_vec(),
             server_caps: ServerCapabilities::new(),
-            profile,
+            profile: Some(profile),
             limits,
         }
     }

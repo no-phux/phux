@@ -96,7 +96,7 @@ async fn scripted(listener: UnixListener, answer: Answer) -> Vec<FrameKind> {
                         protocol_patch: PROTOCOL_VERSION.patch,
                         server_caps: ServerCapabilities::new().with_features(features),
                         server_id: b"upload-test".to_vec(),
-                        selected_profile,
+                        selected_profile: Some(selected_profile),
                         bootstrap_limits,
                     },
                 )

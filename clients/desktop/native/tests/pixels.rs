@@ -124,7 +124,7 @@ fn publish_at(payload: &[u8], cols: u16, rows: u16) -> (Arc<Client>, ViewId) {
             server_caps: ServerCapabilities::new()
                 .with_features(ServerFeatureSet::with(&[ServerFeature::AcknowledgedInput])),
             server_id: vec![1; 16],
-            selected_profile: BootstrapProfile::SynthesizedVtRaw,
+            selected_profile: Some(BootstrapProfile::SynthesizedVtRaw),
             bootstrap_limits: BootstrapLimits::default(),
         })
         .expect("hello");

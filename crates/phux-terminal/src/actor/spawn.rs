@@ -226,7 +226,7 @@ pub(super) fn send_pty_chunk(
         Ok(()) => std::ops::ControlFlow::Continue(()),
         Err(TrySendError::Full(event)) => {
             // The actor is behind the child.
-            phux_resource::perf::PTY_READER_BLOCKED.incr();
+            crate::perf::PTY_READER_BLOCKED.incr();
             if tx.blocking_send(event).is_err() {
                 return std::ops::ControlFlow::Break(());
             }

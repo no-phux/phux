@@ -9,15 +9,15 @@ use tokio_util::sync::CancellationToken;
 use crate::resource::{ResourceCore, ResourceHandle, ResourceKind};
 
 pub(crate) use phux_terminal::actor::{
-    ConsumerAttachOutcome, PaneOutput, ResyncAudience, ResyncReason, ScreenReply, ScreenRequest,
-    TerminalHandle, TerminalResource,
+    ConsumerAttachOutcome, ResourceOutput, ResyncAudience, ResyncReason, ScreenReply,
+    ScreenRequest, TerminalHandle, TerminalResource,
 };
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) use phux_terminal::actor::{NativeBootstrapReply, NativePublicationReply};
 pub(crate) use phux_terminal::grid::SnapshotBytes;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) use phux_terminal::native_state::NativeStateError;
-pub(crate) use phux_terminal::{TerminalActorBundle, TerminalInput, vt};
+pub(crate) use phux_terminal::{ControlRequest, TerminalActorBundle, TerminalInput, vt};
 
 use phux_terminal::actor::{
     ConsumerAttachRequest, ConsumerDetachRequest, EncodedInputRequest, ResizeReceiver,
@@ -61,7 +61,6 @@ pub(crate) fn detached_terminal() -> ResourceHandle {
     ResourceHandle::new(
         None,
         channels.output,
-        channels.control,
         TerminalHandle::detached_for_test(80, 24),
     )
 }
@@ -122,7 +121,7 @@ pub(crate) fn stub_terminal() -> (ResourceHandle, StubRx) {
         resize,
         ..TerminalHandle::detached_for_test(80, 24)
     };
-    let handle = ResourceHandle::new(None, broadcast::channel(8).0, channel(8).0, facet);
+    let handle = ResourceHandle::new(None, broadcast::channel(8).0, facet);
     let rx = StubRx {
         snapshot: snapshot_rx,
         resize: resize_rx,
