@@ -18,22 +18,16 @@ use tracing::trace;
 mod actor_conformance;
 mod api;
 pub(crate) mod apps;
-pub use apps::terminal::attach;
-pub mod connections;
-/// Compatibility name for the server-side connection handlers.
-pub use connections as client;
 mod command_tasks;
 pub mod commands;
 mod committed_close;
+pub mod connections;
 pub mod delegation;
 mod directory;
 mod download;
 mod ephemeral_listener;
 pub mod idempotent_create;
-pub use apps::terminal::input_lane;
-use apps::terminal::{checkout, program_status, upload, voice};
 pub mod keyed_ops;
-mod native_agent;
 pub mod operation_dedupe;
 mod organization;
 mod path_search;
@@ -41,7 +35,6 @@ pub mod perf_control;
 mod process_env;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
-pub mod resource_commands;
 mod resume;
 pub mod revocation;
 #[cfg(test)]
@@ -62,7 +55,6 @@ mod scope_matrix;
 mod test_support;
 mod workload_auth;
 
-pub(crate) use attach::*;
 pub use commands::*;
 pub(crate) use connections::*;
 pub use process_env::ServerEnv;
@@ -76,6 +68,7 @@ mod listeners;
 mod posture;
 mod server;
 mod services;
+pub(crate) mod spawn_reply;
 mod startup;
 
 pub use config::{
@@ -94,6 +87,14 @@ pub use server::ServerRuntime;
 /// The wire form of a server-local client id, saturating at `u32::MAX`.
 pub(crate) fn wire_client(client_id: crate::state::ClientId) -> phux_protocol::ids::ClientId {
     phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX))
+}
+
+/// The content stream a client's frames ride when it negotiated none.
+pub(crate) const fn stream_id_from(raw: u64) -> phux_protocol::ids::StreamId {
+    match phux_protocol::ids::StreamId::new(raw.saturating_add(1)) {
+        Some(id) => id,
+        None => unreachable!(),
+    }
 }
 
 /// Queue an `ERROR` frame on `out_tx`.

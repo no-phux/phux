@@ -1,3 +1,5 @@
+use super::*;
+
 #[tokio::test(flavor = "current_thread")]
 async fn publication_dedupe_is_stamped_once_and_updates_lifecycle_inventory() {
     tokio::task::LocalSet::new()
@@ -61,13 +63,14 @@ async fn publication_dedupe_is_stamped_once_and_updates_lifecycle_inventory() {
                 .await,
             );
             assert!(!fx.state.with(|s| s.agent_is_asked(fx.parent)));
-            let forged = super::super::resource_commands::handle_append_resource_output(
-                &fx.state,
-                fx.owner,
-                &fx.agent,
-                Bytes::from_static(b"{\"type\":\"stop\"}\n"),
-            )
-            .await;
+            let forged =
+                crate::runtime::apps::agent_session::append::handle_append_resource_output(
+                    &fx.state,
+                    fx.owner,
+                    &fx.agent,
+                    Bytes::from_static(b"{\"type\":\"stop\"}\n"),
+                )
+                .await;
             assert!(matches!(
                 forged,
                 CommandResult::Error {

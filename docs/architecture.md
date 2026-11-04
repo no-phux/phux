@@ -237,7 +237,8 @@ A new kind is one `ResourceApp`, one `APPS` row, and its `ResourceOps`. A
 surface that is not every kind's, such as the `AgentParent` mailbox of a resource
 that hosts an agent, is a companion on the handle, typed by the crate that owns
 it, so the host can use it without naming an engine. Only
-`runtime/apps/terminal` may name the Terminal engine, and
+`runtime/apps/terminal` may name the Terminal engine and only
+`runtime/apps/agent_session` the `AgentSession` engine;
 `seam_tests.rs` fails if any host module does. The host holds a launch command
 as an opaque `LaunchCommand`; deciding what a pane runs is the app's job.
 Stream and input frames reach their resource's app through
@@ -256,8 +257,7 @@ accept and teardown, `hello` authenticates and negotiates, `dispatch` and
 and `writer` owns output ordering and generation fencing. `pane_events`
 journals terminal events; `agent_state` folds detector reports into agent
 metadata. These are server responsibilities; client dialing and reconnect
-remain in `phux-client-runtime`. `runtime::client` is a compatibility alias
-for `runtime::connections`.
+remain in `phux-client-runtime`.
 
 ## Decisions
 

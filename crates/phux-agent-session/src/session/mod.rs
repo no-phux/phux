@@ -74,6 +74,10 @@ impl ResourceOps for AgentSessionHandle {
     fn retire(&self) -> Delivery {
         Box::pin(std::future::ready(()))
     }
+
+    fn is_live_stream(&self) -> bool {
+        !self.ended.load(Ordering::Relaxed)
+    }
 }
 
 /// The `AgentSession` facet of a [`ResourceHandle`].

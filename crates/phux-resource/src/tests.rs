@@ -25,6 +25,10 @@ impl ResourceOps for StubFacet {
     fn retire(&self) -> Delivery {
         Box::pin(std::future::ready(()))
     }
+
+    fn is_live_stream(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug)]
@@ -51,6 +55,10 @@ impl ResourceOps for OtherFacet {
 
     fn retire(&self) -> Delivery {
         Box::pin(std::future::ready(()))
+    }
+
+    fn is_live_stream(&self) -> bool {
+        false
     }
 }
 

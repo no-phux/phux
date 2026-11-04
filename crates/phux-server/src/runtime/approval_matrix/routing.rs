@@ -30,8 +30,8 @@ fn every_signal_class_command_routes_to_the_handler() {
     ] {
         for lane in [false, true] {
             assert_eq!(
-                crate::runtime::client::route(&held, lane),
-                crate::runtime::client::Route::Handler,
+                crate::runtime::connections::route(&held, lane),
+                crate::runtime::connections::Route::Handler,
                 "{held:?}"
             );
         }
