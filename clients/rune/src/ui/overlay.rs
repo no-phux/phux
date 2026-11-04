@@ -66,6 +66,7 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
     let notice = desk.notice.as_ref().filter(|_| !desk.inbox.open)?;
     let edge = match notice.kind {
         NoticeKind::Info => ink.separator,
+        NoticeKind::Tip => ink.accent.alpha(0.6),
         NoticeKind::Error => ink.danger.alpha(0.6),
     };
     let toast = row()
@@ -83,14 +84,27 @@ pub fn toast(desk: &Desk, ink: &Ink) -> Option<El> {
         .border(1.0, edge)
         .shadow(8.0, 24.0, Color::BLACK.alpha(0.35))
         .transition(Transition::opacity())
-        .child(notice_line(Some(notice), ink))
-        .child(icon_button(
-            "✕",
-            "Dismiss",
-            "toast-close",
-            ink,
-            Desk::dismiss_notice,
-        ));
+        .child(notice_line(Some(notice), ink));
+    let toast = match notice.action {
+        Some((label, _)) => toast.child(
+            pressable("toast-offer", ink)
+                .label(label)
+                .px(8.0)
+                .py(3.0)
+                .radius(6.0)
+                .border(1.0, ink.separator)
+                .on_press(Desk::take_offer)
+                .child(text(label).font(CAPTION).color(ink.text)),
+        ),
+        None => toast,
+    };
+    let toast = toast.child(icon_button(
+        "✕",
+        "Dismiss",
+        "toast-close",
+        ink,
+        Desk::dismiss_notice,
+    ));
     // The host gives the words a width to wrap at.
     Some(
         row()

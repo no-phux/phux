@@ -104,7 +104,10 @@ session (or `--session NAME`). It never creates a session on its own.
   and a bell. Session headers count what needs you; ⌘J jumps to the next.
   ⌘B folds the sidebar.
 - **Command palette.** ⌘K (or ⌘P) reaches every terminal, session and
-  action by fuzzy search.
+  action by fuzzy search. **Keyboard Shortcuts: Essentials** lists the keys
+  worth learning first, each row runnable, with every chord one row further;
+  the first time a window connects, a tip offers it. Hovering **+ Terminal**
+  or **+ Session** at the foot of the sidebar shows the keys that do the same.
 - **Insert Path.** ⌥; (or ⇧⌘I) opens a picker at the cursor that searches
   the focused pane's folder on the machine it runs on, as the GPUI desktop's
   does. Return types the path at the prompt as one shell word, relative to

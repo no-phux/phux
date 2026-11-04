@@ -99,6 +99,7 @@ pub fn with_menus(app: App<Desk>) -> App<Desk> {
         item!(VIEW, Inbox),
         item!(VIEW, Palette),
         item!(VIEW, KeyboardShortcuts),
+        item!(VIEW, EssentialShortcuts),
         item!(TERMINAL, SplitRight),
         item!(TERMINAL, SplitDown),
         item!(TERMINAL, Find),
@@ -154,6 +155,11 @@ impl Desk {
     /// The palette listing every chord; picking one runs it.
     pub(super) fn show_shortcuts(&mut self) {
         self.open_palette(Mode::Shortcuts);
+    }
+
+    /// The palette listing the keys worth learning first.
+    pub(super) fn show_essentials(&mut self) {
+        self.open_palette(Mode::Essentials);
     }
 
     /// The palette over everything else, listing `mode`.
@@ -289,6 +295,7 @@ impl Desk {
         match self.palette_mode {
             Mode::All => palette::rank(palette::items(topology), query),
             Mode::Shortcuts => palette::rank(palette::shortcut_items(), query),
+            Mode::Essentials => palette::rank(palette::essential_items(), query),
             Mode::Themes => palette::rank(palette::theme_items(), query),
             Mode::Sessions => {
                 let mut hits = palette::rank(palette::session_items(topology), query);
