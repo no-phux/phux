@@ -23,6 +23,7 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 const SCHEMA_VERSION: u8 = 1;
 
 mod mirror;
+mod surface_mirror;
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum TreeAction {
@@ -121,6 +122,22 @@ pub(crate) enum SurfaceAction {
         #[usage(long)]
         json: bool,
     },
+    /// Mirror a macOS window, or the main display, into a surface until Ctrl-C.
+    Mirror {
+        /// The window as `App` or `App:title`, or `display` for the main display.
+        window: String,
+        /// The CoreGraphics window id, instead of a name.
+        #[usage(long, value_name = "ID")]
+        window_id: Option<u32>,
+        /// The pane the surface binds to; this process's own pane when absent.
+        #[usage(long, value_name = "PANE")]
+        pane: Option<String>,
+        /// Milliseconds between captures (default 1000).
+        #[usage(long, value_name = "MS")]
+        interval: Option<u64>,
+        #[usage(long)]
+        json: bool,
+    },
     /// Write every image as it arrives, each replacing the file.
     Follow {
         /// The surface.
@@ -149,6 +166,20 @@ pub(super) fn run_surface(action: &SurfaceAction, socket: Option<PathBuf>) -> Ex
         SurfaceAction::Snapshot { target, out, json } => {
             run_snapshot(Kind::Surface, target, out.as_deref(), *json, socket)
         }
+        SurfaceAction::Mirror {
+            window,
+            window_id,
+            pane,
+            interval,
+            json,
+        } => surface_mirror::run_mirror(surface_mirror::MirrorArgs {
+            window,
+            window_id: *window_id,
+            pane: pane.as_deref(),
+            interval_ms: interval.unwrap_or(1000),
+            json: *json,
+            socket,
+        }),
         SurfaceAction::Follow {
             target,
             out,
