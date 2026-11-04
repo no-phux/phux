@@ -48,10 +48,14 @@ from evidence, state the assumption in the PR, and keep going.
 
 ## Ground
 
-- **Worktree:** the directory you start in, a linked worktree of
-  `no-phux/phux`. Work only here: never the primary checkout, never another
+- **Worktrees.** The directory you start in is a linked worktree of
+  `no-phux/phux` parked on `origin/main`: read from it, never edit, commit or
+  switch branches in it. **Every change gets its own linked worktree** under
+  `../worktrees/`, named after its branch (`rune-upstream/abc1234` lives in
+  `../worktrees/rune-upstream-abc1234`). Run each command for a change from
+  inside its worktree. Never touch the primary checkout or anyone else's
   worktree.
-- **Home:** its parent directory. `../STEERING.md` holds standing orders; read
+- **Home:** the parent of the start directory. `../STEERING.md` holds standing orders; read
   it first, and newer lines win. `../JOURNAL.md` is your memory across runs:
   read the last entries, append one per run, and trim the oldest past about
   200 lines. `../rune.git` mirrors upstream; refresh it with
@@ -62,8 +66,8 @@ from evidence, state the assumption in the PR, and keep going.
   `PHUX_SOCKET`, so run each dev `phux` or `phux-rune` command under
   `env -u PHUX_SOCKET -u PHUX_TERMINAL_ID -u PHUX_PROFILE` with an explicit
   short `--socket` under `/tmp`, as `clients/rune/README.md` (Develop) shows.
-- Write scratch output (snapshots, logs) under `../scratch/`, never inside the
-  worktree.
+- Write scratch output (snapshots, logs) under `../scratch/` (the home's, not
+  a worktree's), never inside a worktree.
 - `AGENTS.md` applies: conventional commits that pass commitlint, the file
   token budget, `just docs-gen` when a CLI or config surface changes. Your
   scope is `clients/rune` plus what a Rune change mechanically implies (a new
@@ -77,7 +81,10 @@ from evidence, state the assumption in the PR, and keep going.
    `git show origin/main:clients/rune/Cargo.toml`; the head is
    `git -C ../rune.git rev-parse dev`. Open work is
    `gh pr list --repo no-phux/phux --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("rune-"))'`.
-2. **Finish open work first.** If a `rune-upstream/` PR is open, rebase it on
+2. **Finish open work first.** Work on an open PR in its branch's worktree:
+   reuse `../worktrees/NAME` if it exists, else
+   `git worktree add ../worktrees/NAME -B BRANCH origin/BRANCH`. If a
+   `rune-upstream/` PR is open, rebase it on
    `origin/main`, move it to the newest `dev` head if upstream moved, and fix
    red checks until it merges; never open a second one beside it. Drive an
    open `rune-release/` PR to its tag (step 8) before bumping again.
@@ -88,7 +95,8 @@ from evidence, state the assumption in the PR, and keep going.
    written for consumers and lists changes that move an app's output without a
    code change; the public API diff under `crates/`; and how upstream's own
    `examples/` changed for the same commits.
-5. **Bump and adapt.** `git switch -c rune-upstream/HEAD7 origin/main`. Set the
+5. **Bump and adapt.** `git worktree add -b rune-upstream/HEAD7
+   ../worktrees/rune-upstream-HEAD7 origin/main`, and work there. Set the
    new rev on `rune`, `rune-mac` and `rune-perf` in `clients/rune/Cargo.toml`,
    then `cargo update --manifest-path clients/rune/Cargo.toml -p rune` (the
    lock moves all three). Fix every break the way upstream fixed its examples:
@@ -115,14 +123,15 @@ from evidence, state the assumption in the PR, and keep going.
 8. **Release, only when `STEERING.md` says `release: auto`.** After a merge
    that changes what users see or fixes something they hit, cut the next alpha
    exactly as `docs/releasing.md` (Phux Rune) says, on a
-   `rune-release/VERSION` branch: merge it, wait for a green `ci` on
+   `rune-release/VERSION` branch in `../worktrees/rune-release-VERSION`: merge it, wait for a green `ci` on
    that `main` commit, push the tag, and watch `rune-client.yml` to the end. If
    the release turns out bad, put the last good feed back first ("A bad Rune
    release"), then fix forward.
 9. **Close.** Append the journal entry: date, pin before and after, PRs,
-   adoptions, findings, and what is queued. Run `just worktree-release`,
-   fetch, and park the clean worktree on `git switch --detach origin/main`. End with a
-   three-line summary.
+   adoptions, findings, and what is queued. For each merged change, remove
+   its worktree (`git worktree remove ../worktrees/NAME`) and its local
+   branch. In a worktree whose PR is still open, run `just worktree-release`
+   and leave it for the next run. End with a three-line summary.
 
 ## Self-reliance
 
