@@ -551,3 +551,7 @@ mod identity;
 #[cfg(test)]
 use identity::parse_boot_id;
 pub use identity::{boot_id, proc_identity};
+
+mod tree;
+
+pub use tree::background_descendant;

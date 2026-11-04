@@ -34,6 +34,9 @@ pub struct Activity {
     pub finished: Option<Option<i32>>,
     /// Rang its bell off screen; cleared once seen.
     pub bell: bool,
+    /// Something under it runs outside the foreground: a backgrounded job,
+    /// or a command an idle agent left watching.
+    pub background: bool,
     /// An agent finished off screen; cleared once seen.
     pub done_unseen: bool,
     /// When the mark last changed, for ranking what needs you.
@@ -85,6 +88,8 @@ pub enum Mark {
     Working,
     /// A shell command is running.
     Running,
+    /// Idle, with work still running in the background.
+    Background,
     /// A command succeeded off screen.
     Succeeded,
     /// An agent is idle.
@@ -112,6 +117,7 @@ impl Mark {
             Self::Bell => "bell",
             Self::Working => "working",
             Self::Running => "running",
+            Self::Background => "background",
             Self::Succeeded => "finished",
             Self::Idle => "idle",
             Self::None => "",
@@ -132,6 +138,7 @@ const fn subject(event: &Event) -> Option<&ResourceId> {
         | Event::CommandStarted { terminal_id }
         | Event::CommandFinished { terminal_id, .. }
         | Event::Bell { terminal_id }
+        | Event::BackgroundWork { terminal_id, .. }
         | Event::TerminalClosed { terminal_id, .. } => Some(terminal_id),
         _ => None,
     }
@@ -218,6 +225,7 @@ impl Activity {
             }
             Event::CommandFinished { exit_code, .. } => self.command_ended(*exit_code, on_screen),
             Event::Bell { .. } if !on_screen => self.bell = true,
+            Event::BackgroundWork { running, .. } => self.background = *running,
             _ => {}
         }
     }
@@ -253,6 +261,7 @@ impl Activity {
         match self.agent.as_ref().map(|agent| agent.state) {
             Some(AgentState::Working) => Mark::Working,
             _ if self.command_since.is_some() => Mark::Running,
+            _ if self.background => Mark::Background,
             Some(AgentState::Idle | AgentState::Done) => Mark::Idle,
             _ => Mark::None,
         }

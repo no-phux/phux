@@ -80,6 +80,9 @@ pub struct PaneOccupant {
     pub(crate) foreground: String,
     /// The foreground is the pane's original child and a known shell.
     pub(crate) is_pane_shell: bool,
+    /// Something under the pane runs outside the foreground group: a
+    /// backgrounded job, or a command an agent detached.
+    pub(crate) background: bool,
 }
 
 impl Occupancy {
@@ -130,7 +133,11 @@ pub(crate) fn foreground_observation(
     let Some(argv) = proc_query::process_argv(pgid) else {
         return (Occupancy::Unresolved, None);
     };
-    let pane_occupant = pane_occupant(pgid, pane_child_pid, &argv);
+    let mut pane_occupant = pane_occupant(pgid, pane_child_pid, &argv);
+    // ponytail: walks the pane's tree each full recheck (5 s); scope it to
+    // idle panes if that ever shows in the detector's perf budget.
+    pane_occupant.background =
+        proc_query::background_descendant(pane_child_pid.unwrap_or(pgid), pgid);
     let occupancy = kind_from_argv(&argv, rules).map_or(Occupancy::Vacant { pgid }, |kind| {
         Occupancy::Agent {
             kind,
@@ -147,6 +154,7 @@ fn pane_occupant(pgid: i32, pane_child_pid: Option<i32>, argv: &[String]) -> Pan
     PaneOccupant {
         is_pane_shell: pane_child_pid == Some(pgid) && PANE_SHELLS.contains(&foreground.as_str()),
         foreground,
+        background: false,
     }
 }
 

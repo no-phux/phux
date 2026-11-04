@@ -281,6 +281,16 @@ pub enum Event {
         /// The project tag, or `None` when it was removed.
         project: Option<String>,
     },
+    /// Whether something under the terminal runs outside its foreground
+    /// group (a backgrounded job, an agent's detached command), from the
+    /// server-owned `phux.pane-occupant/v1` record. A record without the
+    /// field, from an older server, reads `false`.
+    BackgroundWork {
+        /// The terminal.
+        terminal_id: ResourceId,
+        /// Whether background work is running.
+        running: bool,
+    },
     /// Whether a question is pending in the terminal now: the server-owned
     /// `phux.agent.asked/v1` flag (docs/protocol.md), from a fenced read or a live
     /// change, re-read after every gap and reconnect.
