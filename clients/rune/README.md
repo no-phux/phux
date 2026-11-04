@@ -113,9 +113,10 @@ session (or `--session NAME`). It never creates a session on its own.
   does. Return types the path at the prompt as one shell word, relative to
   that folder and quoted only when it must be.
 - **Splits.** The selected session's arrangement is the server-stored split
-  tree the terminal UI uses, so both show the same layout. Split, move
-  between panes, zoom one, drag dividers; new splits and ratios are written
-  back to the server.
+  tree the terminal UI uses, so both show the same layout. Each pane floats
+  as its own rounded glass card, the one with the keyboard lit in the accent.
+  Split, move between panes, zoom one, drag the gutters between cards; new
+  splits and ratios are written back to the server.
 - **Terminal.** The runtime's draw list: colours, bold and italic,
   underlines, box and block glyphs, wide characters, cursor (with blink) and
   selection, on device-pixel cells. Each pane follows its own size. Programs
