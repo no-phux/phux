@@ -1,8 +1,10 @@
-//! The `AccessibilityTree` resource over a [`Connection`].
+//! The document resources, an `AccessibilityTree` or a `PixelSurface`, over
+//! a [`Connection`].
 //!
 //! Open one under the Terminal its producer runs in, publish whole
 //! documents to it, read its newest document, or follow every document as
-//! it arrives (`docs/resource-kinds.md`).
+//! it arrives (`docs/resource-kinds.md`). A tree's documents are JSON; a
+//! surface's are PNG images.
 
 use phux_protocol::caps::ServerFeatureExt;
 use phux_protocol::ids::{GroupId, ResourceId};
@@ -13,6 +15,42 @@ use phux_protocol::wire::frame::{
 
 use crate::attach::AttachError;
 use crate::attach::connection::{Answer, Connection};
+
+/// Which document kind a call is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// An application's accessibility tree, as JSON.
+    Tree,
+    /// A window or display's pixels, as PNG images.
+    Surface,
+}
+
+impl Kind {
+    /// The server feature bit that says the kind is served.
+    #[must_use]
+    pub const fn feature(self) -> ServerFeatureExt {
+        match self {
+            Self::Tree => ServerFeatureExt::AccessibilityTree,
+            Self::Surface => ServerFeatureExt::PixelSurface,
+        }
+    }
+
+    /// How a message names the kind.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Tree => "accessibility tree",
+            Self::Surface => "pixel surface",
+        }
+    }
+
+    fn spawn(self, parent: ResourceId, target: &str) -> SpawnResource {
+        match self {
+            Self::Tree => SpawnResource::accessibility_tree(parent, target),
+            Self::Surface => SpawnResource::pixel_surface(parent, target),
+        }
+    }
+}
 
 const REQUEST_SPAWN: u32 = 1;
 const REQUEST_PUBLISH: u32 = 3;
@@ -96,15 +134,29 @@ pub enum TreeError {
     Protocol(#[from] AttachError),
 }
 
-/// Whether the server advertises the kind.
+/// Whether the server advertises `kind`.
 ///
 /// # Errors
 ///
 /// [`TreeError::Unsupported`] when it does not.
+pub fn require_kind(conn: &Connection, kind: Kind) -> Result<(), TreeError> {
+    if conn.server_features_ext().contains(kind.feature()) {
+        Ok(())
+    } else {
+        Err(TreeError::Unsupported)
+    }
+}
+
+/// Whether the server advertises any document kind; a call on an existing
+/// resource does not know the kind, and the server refuses a wrong one.
+///
+/// # Errors
+///
+/// [`TreeError::Unsupported`] when it serves none.
 pub fn require_support(conn: &Connection) -> Result<(), TreeError> {
-    if conn
-        .server_features_ext()
-        .contains(ServerFeatureExt::AccessibilityTree)
+    if [Kind::Tree, Kind::Surface]
+        .iter()
+        .any(|kind| require_kind(conn, *kind).is_ok())
     {
         Ok(())
     } else {
@@ -140,7 +192,22 @@ pub async fn open(
     parent: &ResourceId,
     target: &str,
 ) -> Result<Opened, TreeError> {
-    require_support(conn)?;
+    open_kind(conn, Kind::Tree, parent, target).await
+}
+
+/// Open a document of `kind` observing `target` under `parent`; the caller
+/// becomes its producer.
+///
+/// # Errors
+///
+/// The refusal, or a connection failure.
+pub async fn open_kind(
+    conn: &mut Connection,
+    kind: Kind,
+    parent: &ResourceId,
+    target: &str,
+) -> Result<Opened, TreeError> {
+    require_kind(conn, kind)?;
     let frame = FrameKind::SpawnResource {
         request_id: REQUEST_SPAWN,
         group: GroupId::new(1),
@@ -152,10 +219,7 @@ pub async fn open(
         owner_terminal: None,
         agent_session: None,
         initial_size: None,
-        resource: Some(Box::new(SpawnResource::accessibility_tree(
-            parent.clone(),
-            target,
-        ))),
+        resource: Some(Box::new(kind.spawn(parent.clone(), target))),
     };
     let (answer, interleaved) = conn.request_spawn(&frame).await?.into_parts();
     crate::state::report_degradation(&interleaved);

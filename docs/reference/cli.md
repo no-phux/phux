@@ -153,6 +153,10 @@ Commands:
   show              Show inferred state for one pane.
   start             Start an agent INSIDE an existing shell pane, and return
                     when it is ready for input.
+  surface           A pixel surface is a pane's child resource that a producer
+                    feeds with PNG images of a window or display; `snapshot`
+                    writes the newest and `follow` every one. Needs a server
+                    that advertises `PIXEL_SURFACE`.
   tree              An accessibility tree is a pane's child resource that a
                     producer feeds with whole documents of an application's
                     accessibility tree; `snapshot` reads the newest and `follow
@@ -721,6 +725,106 @@ Flags:
 
 Global flags:
       --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface`
+
+```text
+A pixel surface is a pane's child resource that a producer feeds with PNG images
+of a window or display; `snapshot` writes the newest and `follow` every one.
+Needs a server that advertises `PIXEL_SURFACE`.
+
+Usage: phux agent surface <SUBCOMMAND>
+
+Commands:
+  follow    Write every image as it arrives, each replacing the file.
+  open      Open a surface under the pane its producer runs in.
+  publish   Replace the surface's image from a PNG file, or stdin.
+  snapshot  Write the surface's newest image to a file.
+  help      Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface follow`
+
+```text
+Write every image as it arrives, each replacing the file.
+
+Usage: phux agent surface follow [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  The surface.
+
+Flags:
+      --out <PATH>      Where each PNG goes; stdout when absent.
+      --timeout <SECS>  Give up after this many seconds.
+      --json
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface open`
+
+```text
+Open a surface under the pane its producer runs in.
+
+Usage: phux agent surface open <--window <WINDOW>> [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The parent pane.
+
+Flags:
+      --window <WINDOW>  The window or display the surface mirrors.
+      --json
+  -h, --help             Print help
+
+Global flags:
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface publish`
+
+```text
+Replace the surface's image from a PNG file, or stdin.
+
+Usage: phux agent surface publish [--file <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The surface.
+
+Flags:
+      --file <PATH>    The PNG; stdin when absent.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent surface snapshot`
+
+```text
+Write the surface's newest image to a file.
+
+Usage: phux agent surface snapshot [--out <PATH>] [--json] <TARGET>
+
+Arguments:
+  <TARGET>  The surface.
+
+Flags:
+      --out <PATH>     Where the PNG goes; stdout when absent.
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent tree`
