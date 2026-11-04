@@ -30,11 +30,14 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-test("the demo server log filter names a module that exists", () => {
+test("the demo server log filter names the target the server logs to", () => {
   const target = DEMO_SERVER_LOG.split("=", 1)[0] ?? "";
-  const [crate = "", ...modules] = target.split("::");
-  const source = `crates/${crate.replaceAll("_", "-")}/src/${modules.join("/")}.rs`;
-  expect(existsSync(repoPath(source))).toBe(true);
+  const source = readFileSync(
+    repoPath("crates/phux-server/src/runtime/apps/terminal/attach/output_pump_resync.rs"),
+    "utf8",
+  );
+  expect(source).toContain(`const LOG_TARGET: &str = "${target}";`);
+  expect(source).toMatch(/target: LOG_TARGET,[^;]*fell behind; skipping to a fresh checkpoint/);
 });
 
 const running = { exitCode: null, signalCode: null };

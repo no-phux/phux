@@ -1,0 +1,103 @@
+{
+  "schema_version": 3,
+  "sessions": [
+    {
+      "name": "alpha",
+      "active": true,
+      "cwd": "/home/u/proj",
+      "host": "mini",
+      "project": "phux",
+      "project_link": "project-1",
+      "command": [
+        "/bin/sh"
+      ],
+      "windows": [
+        {
+          "name": "main",
+          "active": true,
+          "layout": {
+            "kind": "split",
+            "dir": "horizontal",
+            "ratio": 0.5,
+            "left": {
+              "kind": "pane",
+              "pane": 0
+            },
+            "right": {
+              "kind": "split",
+              "dir": "vertical",
+              "ratio": 0.5,
+              "left": {
+                "kind": "pane",
+                "pane": 1
+              },
+              "right": {
+                "kind": "pane",
+                "pane": 2
+              }
+            }
+          },
+          "panes": [
+            {
+              "active": true,
+              "title": "editor",
+              "cwd": "/home/u/proj",
+              "command": [
+                "nvim"
+              ],
+              "agent_session": {
+                "plugin_id": "claude",
+                "integration_id": "claude-code",
+                "native_id": "provider-session-1"
+              },
+              "env": {
+                "K": "V"
+              },
+              "cols": 80,
+              "rows": 24
+            },
+            {
+              "active": false,
+              "title": "editor",
+              "cwd": "/home/u/proj",
+              "native_launch": {
+                "session": "alpha",
+                "backend": "acp",
+                "provider": "omp",
+                "command": [
+                  "omp"
+                ],
+                "cwd": "/home/u/proj",
+                "env": {
+                  "K": "V"
+                },
+                "native_id": "provider-session-1",
+                "guardian": null,
+                "guardian_key": null,
+                "guardian_expected": null
+              },
+              "env": {
+                "K": "V"
+              },
+              "cols": 80,
+              "rows": 24
+            },
+            {
+              "active": false,
+              "title": "editor",
+              "cwd": "/home/u/proj",
+              "command": [
+                "nvim"
+              ],
+              "env": {
+                "K": "V"
+              },
+              "cols": 80,
+              "rows": 24
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

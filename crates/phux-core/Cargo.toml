@@ -22,5 +22,6 @@ serde.workspace = true
 sha2 = "0.11"
 
 [dev-dependencies]
+phux-frozen.workspace = true
 proptest.workspace = true
 serde_json.workspace = true

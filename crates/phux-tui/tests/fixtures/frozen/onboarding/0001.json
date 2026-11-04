@@ -1,0 +1,22 @@
+[
+  {
+    "version": 1,
+    "stage": "intro-pending"
+  },
+  {
+    "version": 1,
+    "stage": "intro-shown"
+  },
+  {
+    "version": 1,
+    "stage": "detached-once"
+  },
+  {
+    "version": 1,
+    "stage": "return-pending"
+  },
+  {
+    "version": 1,
+    "stage": "complete"
+  }
+]
