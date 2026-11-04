@@ -194,7 +194,7 @@ fn ack_without_emit_instant_produces_no_sample() {
 }
 
 /// A never-acking consumer's `emit_instants` stays capped at
-/// [`MAX_EMIT_INSTANTS`], keeping the newest.
+/// `MAX_EMIT_INSTANTS`, keeping the newest.
 #[test]
 fn emit_instants_is_capped_for_never_acking_consumer() {
     let bundle = TerminalActor::new(20, 5).expect("new");

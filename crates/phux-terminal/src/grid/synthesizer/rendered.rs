@@ -22,7 +22,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
                   with screen_state_with_scrollback, matching its own \
                   intentionally-stateless rationale"
     )]
-    pub fn render_screen(
+    pub(crate) fn render_screen(
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         scrollback: Option<u32>,

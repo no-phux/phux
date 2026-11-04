@@ -139,15 +139,11 @@ impl Fixture {
                 .unwrap();
             (owner, session, parent)
         });
-        let terminal = phux_terminal::actor::TerminalActor::build_with_token_and_colors(
+        let terminal = crate::runtime::apps::terminal::test_support::terminal_under(
             80,
             24,
-            None,
-            phux_config::ScrollbackLimits::default(),
             root.child_token(),
-            None,
-        )
-        .unwrap();
+        );
         let parent_wire = state.with_mut(|s| {
             let wire = s.spawn_resource_actor(
                 parent,

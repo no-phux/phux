@@ -1,13 +1,13 @@
 #![cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #![allow(clippy::expect_used, missing_docs)]
 
-#[path = "../benches/server_measure.rs"]
-pub(crate) mod server_measure;
+#[path = "../benches/measure.rs"]
+pub(crate) mod measure;
 #[path = "../../../benchmarks/support.rs"]
 pub(crate) mod support;
 
 use bytes::Bytes;
-use server_measure::{
+use measure::{
     build_terminal, fanout_measurement, native_progressive_measurement, retained_budget_holds,
     synthesized_measurement,
 };

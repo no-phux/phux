@@ -2,13 +2,12 @@
 //! round-trips the canonical grid, a PTY resized to the client's viewport,
 //! and a session that survives its last shell exiting.
 
-use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, FrameKind, StateScope,
 };
-use phux_terminal::grid::SnapshotSynthesizer;
 use tempfile::TempDir;
 
+use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, command, recv_typed,
     recv_until_deadline, run_local, send_frame, spawn_server_connected, spawn_server_with_seed_cmd,
@@ -17,10 +16,8 @@ use phux_server_testkit::{
 
 use super::common::{attach, attached, output_until, sh};
 
-fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
-    let mut terminal = GhosttyTerminal::new(cols, rows).unwrap();
-    terminal.set_scrollback_max_lines(Some(1000)).unwrap();
-    terminal
+fn fresh(cols: u16, rows: u16) -> Screen {
+    Screen::with_scrollback(cols, rows, 1000).unwrap()
 }
 
 /// `ATTACHED` carries the session graph and a real client id, then one
@@ -72,18 +69,14 @@ fn attach_returns_session_graph_and_round_trip_snapshot() {
         ));
         assert!(payload.starts_with(b"\x1b[!p\x1b[2J\x1b[H"));
 
-        let synth = SnapshotSynthesizer::new().unwrap();
         let mut once = fresh(cols, rows);
-        once.vt_write(&payload);
-        let resynth_1 = synth.synthesize(&once).unwrap();
-        assert_eq!((resynth_1.cols, resynth_1.rows), (cols, rows));
+        once.write(&payload);
+        let resynth_1 = once.synthesized().unwrap();
+        assert_eq!(once.dims().unwrap(), (cols, rows));
         let mut twice = fresh(cols, rows);
-        twice.vt_write(&resynth_1.bytes);
-        let resynth_2 = synth.synthesize(&twice).unwrap();
-        assert_eq!(
-            resynth_1.bytes, resynth_2.bytes,
-            "round trip must be a fixed point"
-        );
+        twice.write(&resynth_1);
+        let resynth_2 = twice.synthesized().unwrap();
+        assert_eq!(resynth_1, resynth_2, "round trip must be a fixed point");
     });
 }
 
@@ -230,16 +223,14 @@ fn resource_attach_replays_existing_scrollback_in_both_synthesized_profiles() {
                 )
                 .await;
                 let mut resized = resource_bootstrap(&mut watcher).await;
-                assert_eq!((resized.cols().unwrap(), resized.rows().unwrap()), (43, 38));
+                assert_eq!(resized.dims().unwrap(), (43, 38));
                 assert_retained_history(&mut resized);
             }
         });
     }
 }
 
-async fn resource_bootstrap(
-    stream: &mut tokio::net::UnixStream,
-) -> GhosttyTerminal<'static, 'static> {
+async fn resource_bootstrap(stream: &mut tokio::net::UnixStream) -> Screen {
     let mut terminal = None;
     loop {
         match recv_typed(stream).await.1 {
@@ -248,7 +239,7 @@ async fn resource_bootstrap(
                 terminal
                     .as_mut()
                     .expect("BEGIN before CHUNK")
-                    .vt_write(&payload);
+                    .write(&payload);
             }
             FrameKind::BootstrapReady { .. } => return terminal.expect("BEGIN before READY"),
             FrameKind::Error { message, .. }
@@ -261,21 +252,18 @@ async fn resource_bootstrap(
     }
 }
 
-fn assert_retained_history(terminal: &mut GhosttyTerminal<'_, '_>) {
-    use libghostty_vt::terminal::ScrollViewport;
+fn assert_retained_history(terminal: &mut Screen) {
     assert!(
         terminal.scrollback_rows().unwrap() >= 100,
         "older shell output was lost"
     );
-    for (position, marker) in [
-        (ScrollViewport::Top, b"HISTORY_ROW_001".as_slice()),
-        (ScrollViewport::Bottom, b"HISTORY_TAIL".as_slice()),
-    ] {
-        terminal.scroll_viewport(position);
-        let screen = SnapshotSynthesizer::new()
-            .unwrap()
-            .synthesize(terminal)
-            .unwrap();
-        assert!(screen.bytes.windows(marker.len()).any(|s| s == marker));
-    }
+    terminal.scroll_to_top();
+    assert_viewport_holds(terminal, b"HISTORY_ROW_001");
+    terminal.scroll_to_bottom();
+    assert_viewport_holds(terminal, b"HISTORY_TAIL");
+}
+
+fn assert_viewport_holds(terminal: &Screen, marker: &[u8]) {
+    let bytes = terminal.synthesized().unwrap();
+    assert!(bytes.windows(marker.len()).any(|s| s == marker));
 }
