@@ -328,6 +328,8 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
             KernelEffect::AgentPublication(publication) => {
                 route.agent_touched.insert(publication.resource_id.clone());
             }
+            // The TUI draws no tree or surface yet.
+            KernelEffect::Document(_) => {}
             // Per-pane and recoverable; the kernel names the pane.
             KernelEffect::Status(phux_client_core::session::KernelStatus::HistoryUnavailable {
                 key,

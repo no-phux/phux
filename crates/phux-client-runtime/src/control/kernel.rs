@@ -130,6 +130,9 @@ impl ControlPlane {
                     self.push_event(event);
                 }
             }
+            KernelEffect::Document(publication) => self.push_event(Event::DocumentPublished {
+                publication: std::sync::Arc::new(publication),
+            }),
         }
     }
 

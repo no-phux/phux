@@ -84,6 +84,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.closed_replicas.remove(terminal_id);
         self.retain_replica_on_close.remove(terminal_id);
         self.agents.remove(terminal_id);
+        self.documents.remove(terminal_id);
         self.closed_native_views.remove(terminal_id);
         self.kinds.remove(terminal_id);
         self.closed.remove(terminal_id);

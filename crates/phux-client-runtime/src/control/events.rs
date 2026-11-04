@@ -6,6 +6,7 @@ use phux_client_core::engine::ClipboardText;
 use phux_client_core::history::HistoryStatus;
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_core::session::AgentStreamInfo;
+pub use phux_client_core::session::DocumentPublication;
 pub use phux_client_core::session::agent_stream::{AgentPublication, AgentRecordMode};
 use phux_client_core::session::{HistoryUnavailableReason, KernelSend};
 use phux_protocol::ClientId;
@@ -356,6 +357,14 @@ pub enum Event {
         publication: Arc<AgentPublication>,
         /// The resource's parent and provider identity.
         session: AgentSessionInfo,
+    },
+    /// A replicated document (`docs/resource-kinds.md`) arrived whole: the
+    /// bootstrap cut of an attached `AccessibilityTree` or `PixelSurface`,
+    /// or a newer publish of it. Live-only: nothing is journaled, and the
+    /// newest document for a resource is the one to show.
+    DocumentPublished {
+        /// The document, its kind, and its publish sequence.
+        publication: Arc<DocumentPublication>,
     },
     /// An `AgentSession` stream the runtime subscribed
     /// (`ControlOptions::subscribe_agent_sessions`) ended: the server
