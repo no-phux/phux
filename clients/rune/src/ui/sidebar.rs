@@ -71,9 +71,15 @@ fn search(ink: &Ink) -> El {
 /// The way into the inbox, loud only when something waits.
 fn inbox_button(waiting: usize, ink: &Ink) -> El {
     if waiting == 0 {
-        return super::icon_press(&icons::INBOX, "inbox-button", ink, |d: &mut Desk| {
-            d.toggle_inbox();
-        });
+        return super::icon_press(
+            &icons::INBOX,
+            "Inbox",
+            "inbox-button",
+            ink,
+            |d: &mut Desk| {
+                d.toggle_inbox();
+            },
+        );
     }
     let tint = mark_color(Mark::Blocked, ink);
     pressable("inbox-button", ink)
@@ -83,8 +89,14 @@ fn inbox_button(waiting: usize, ink: &Ink) -> El {
         .radius(11.0)
         .items_center()
         .fill(tint.alpha(0.18))
+        .label(format!("Inbox, {waiting} waiting"))
         .on_press(|d: &mut Desk| d.toggle_inbox())
-        .child(text(format!("{waiting} waiting")).font(CAPTION).color(tint))
+        .child(
+            text(format!("{waiting} waiting"))
+                .font(CAPTION)
+                .color(tint)
+                .a11y_hidden(),
+        )
 }
 
 /// What a session header draws. Everything its handlers capture is here, so

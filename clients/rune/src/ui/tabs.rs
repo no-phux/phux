@@ -22,6 +22,7 @@ fn tab(desk: &Desk, tab: &Tab, index: usize, ink: &Ink) -> El {
             .size(16.0, 16.0)
             .radius(4.0)
             .center()
+            .label("Close tab")
             .on_press(move |d: &mut Desk| d.close_tab(index))
             .child(rune::icon(&icons::CLOSE, 11.0).color(ink.dim))
     });
@@ -73,11 +74,15 @@ pub fn strip(desk: &Desk, ink: &Ink) -> Option<El> {
     for (index, item) in desk.tabs.list.iter().enumerate() {
         line = line.child(tab(desk, item, index, ink));
     }
-    Some(
-        line.child(icon_press(&icons::PLUS, "tab-new", ink, |d: &mut Desk| {
+    Some(line.child(icon_press(
+        &icons::PLUS,
+        "New tab",
+        "tab-new",
+        ink,
+        |d: &mut Desk| {
             d.new_tab();
-        })),
-    )
+        },
+    )))
 }
 
 pub fn rename_sheet(desk: &Desk, ink: &Ink) -> Option<El> {

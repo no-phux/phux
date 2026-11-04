@@ -22,6 +22,11 @@ pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
         NoticeKind::Error => p.danger,
     };
     text(line)
+        // A screen reader reads a notice when it comes: an error at once.
+        .role(match kind {
+            NoticeKind::Info => "status",
+            NoticeKind::Error => "alert",
+        })
         .font(CAPTION)
         .color(color)
         .wrap()
@@ -350,12 +355,16 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
         .gap(8.0)
         .items_center()
         .window_drag()
-        .child(icon_press(
-            &icons::SIDEBAR,
-            "sidebar-toggle",
-            p,
-            Desk::toggle_sidebar,
-        ))
+        .child(
+            icon_press(
+                &icons::SIDEBAR,
+                "Sidebar",
+                "sidebar-toggle",
+                p,
+                Desk::toggle_sidebar,
+            )
+            .expanded(desk.sidebar_open),
+        )
         .children(tabs::strip(desk, p).or_else(|| Some(place(desk, p))))
         .child(el().grow(1.0))
         // Where a ⌘-click goes, as a browser shows it.

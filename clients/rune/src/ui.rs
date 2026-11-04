@@ -207,6 +207,7 @@ impl Sheet {
             .children(aside)
             .child(overlay::icon_button(
                 "✕",
+                "Close",
                 format!("{}-close", self.key),
                 p,
                 self.close,
@@ -248,14 +249,17 @@ impl Sheet {
             .fill(Color::BLACK.alpha(self.scrim))
             .transition(Transition::opacity())
             .modal(true, self.close)
+            .label(self.title)
             .child(el().grow(1.0).max_h(self.top - MARGIN))
             .child(panel)
     }
 }
 
-/// A quiet square button around an icon.
+/// A quiet square button around an icon; `name` is what a screen reader
+/// says for it.
 pub(crate) fn icon_press(
     glyph: &'static rune::Icon,
+    name: &'static str,
     key: impl Into<String>,
     p: &Ink,
     press: impl Fn(&mut Desk) + 'static,
@@ -264,6 +268,7 @@ pub(crate) fn icon_press(
         .size(24.0, 24.0)
         .radius(6.0)
         .center()
+        .label(name)
         .on_press(press)
         .child(rune::icon(glyph, 14.0).color(p.dim))
 }

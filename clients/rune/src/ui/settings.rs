@@ -36,7 +36,7 @@ fn tile(theme: Option<&'static Theme>, chosen: bool, ink: &Ink) -> El {
     if theme.is_none() {
         strip = strip.child(text("follows the OS").font(CAPTION).color(ink.dim));
     }
-    col()
+    let tile = col()
         .key(format!("theme-{name}"))
         .w(TILE_W)
         .gap(6.0)
@@ -57,9 +57,20 @@ fn tile(theme: Option<&'static Theme>, chosen: bool, ink: &Ink) -> El {
                     if chosen { ink.accent } else { ink.separator },
                 )
                 .items_center()
-                .child(strip),
+                .child(strip)
+                .a11y_hidden(),
         )
-        .child(text(name).font(CAPTION).color(ink.text).truncate())
+        .child(
+            text(name)
+                .font(CAPTION)
+                .color(ink.text)
+                .truncate()
+                .a11y_hidden(),
+        );
+    match theme {
+        None => tile.description("Follows the OS"),
+        Some(_) => tile,
+    }
 }
 
 fn themes(desk: &Desk, ink: &Ink) -> El {
@@ -112,6 +123,8 @@ pub(super) fn toggle(
         .focusable(true)
         .role("switch")
         .label(title)
+        .description(detail)
+        .checked(on)
         .cursor(rune::Cursor::Pointer)
         .on_press(press)
         .child(
@@ -120,21 +133,24 @@ pub(super) fn toggle(
                 .min_w(0.0)
                 .gap(1.0)
                 .child(text(title).font(LABEL).color(ink.text))
-                .child(text(detail).font(CAPTION).color(ink.dim).truncate()),
+                .child(text(detail).font(CAPTION).color(ink.dim).truncate())
+                .a11y_hidden(),
         )
-        .child(switch(on, ink))
+        .child(switch(on, ink).a11y_hidden())
 }
 
 fn stepper(desk: &Desk, ink: &Ink) -> El {
-    let step = |label: &'static str, key: &'static str, press: fn(&mut Desk)| {
+    let step = |glyph: &'static str, name, key: &'static str, press: fn(&mut Desk)| {
         pressable(key, ink)
             .size(26.0, 24.0)
             .radius(6.0)
             .center()
             .border(1.0, ink.separator)
+            .label(name)
             .on_press(press)
-            .child(text(label).font(LABEL).color(ink.text))
+            .child(text(glyph).font(LABEL).color(ink.text).a11y_hidden())
     };
+    let size = format!("{:.0} pt", desk.font_size);
     row()
         .key("text-size")
         .w_full()
@@ -142,23 +158,34 @@ fn stepper(desk: &Desk, ink: &Ink) -> El {
         .gap(8.0)
         .items_center()
         .label("Text size")
+        // A screen reader reads the size and can set it: a step is a point.
+        .range_value(
+            f64::from(desk.font_size),
+            f64::from(MIN_FONT_SIZE),
+            f64::from(MAX_FONT_SIZE),
+        )
+        .range_step(1.0)
+        .a11y_value(size.clone())
         .on_step(|d: &mut Desk, steps, _| d.zoom(Some(d.font_size + steps as f32)))
         .on_step_limit(|d: &mut Desk, max, _| {
             d.zoom(Some(if max { MAX_FONT_SIZE } else { MIN_FONT_SIZE }))
         })
-        .child(text("Text size").font(LABEL).color(ink.text))
+        .child(
+            text("Text size")
+                .font(LABEL)
+                .color(ink.text)
+                .a11y_hidden(),
+        )
         .child(el().grow(1.0))
-        .child(step("−", "text-smaller", |d| {
+        .child(step("−", "Smaller text", "text-smaller", |d| {
             d.zoom(Some(d.font_size - 1.0))
         }))
         .child(
-            el().w(44.0).center().child(
-                text(format!("{:.0} pt", desk.font_size))
-                    .font(CAPTION)
-                    .color(ink.text),
-            ),
+            el().w(44.0)
+                .center()
+                .child(text(size).font(CAPTION).color(ink.text).a11y_hidden()),
         )
-        .child(step("+", "text-bigger", |d| {
+        .child(step("+", "Larger text", "text-bigger", |d| {
             d.zoom(Some(d.font_size + 1.0))
         }))
 }
