@@ -242,6 +242,7 @@ mod tests {
         let mut desk = Desk::new(&Resolved::offline("touch"));
         desk.prefs = Prefs::memory();
         desk.settings_open = true;
+        desk.settings.theme = None;
         let before = desk.settings.theme;
         let mut runtime = runtime(desk);
         let (x, y) = runtime.find("theme-Nord").unwrap();
