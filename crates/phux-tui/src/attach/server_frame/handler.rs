@@ -126,13 +126,10 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
 }
 
 impl<W: crate::attach::RenderSink> FrameCtx<'_, W> {
-    /// Whether the kernel knows `terminal_id` as an `AgentSession` resource:
-    /// a record stream with no grid, no pane slot, and no layout leaf.
-    fn is_agent_session(&self, terminal_id: &ResourceId) -> bool {
-        matches!(
-            self.engine_kernel.resource_kind(terminal_id),
-            Some(ResourceKind::AgentSession)
-        )
+    /// Known non-Terminal resources never acquire a VT slot or a TTY output
+    /// path. Unknown ids still take the strict Terminal validation path.
+    fn is_non_terminal(&self, terminal_id: &ResourceId) -> bool {
+        !self.may_be_layout_leaf(terminal_id)
     }
 
     /// Whether a layout leaf may name `terminal_id`: anything the kernel does
@@ -315,11 +312,11 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             payload,
             ..
         } => Ok(record_bootstrap_chunk(ctx, &terminal_id, payload.len())),
-        // A record stream has nothing to paint: its READY and its live
-        // output only refresh the chrome that projects it.
+        // Non-Terminal streams never paint VT bytes. Agent records refresh
+        // chrome; document bodies are consumed by the kernel but not rendered.
         FrameKind::BootstrapReady { terminal_id, .. }
         | FrameKind::ResourceOutput { terminal_id, .. }
-            if ctx.is_agent_session(&terminal_id) =>
+            if ctx.is_non_terminal(&terminal_id) =>
         {
             Ok(agent_stream_outcome(&terminal_id, route))
         }

@@ -137,23 +137,25 @@ impl SessionStaging {
         pane: &AttachSnapshotPane,
         live: LocalBoxFuture<'static, ()>,
     ) {
+        let drain = tokio_util::sync::CancellationToken::new();
         crate::runtime::pump::spawn_tracked(
             capture.state,
             capture.client_id,
             pane.terminal_id,
             Some(&mut self.pumps),
-            None,
+            Some(drain.clone()),
             after_publication(
                 capture.live_gate.clone(),
                 capture.connection_token.clone(),
+                Some(drain),
                 live,
             ),
         );
     }
 
     /// Own an app's already-tracked pumps without registering their supervisor
-    /// as a second output pump. Otherwise natural-close drain would abort the
-    /// supervisor and its children before their final capture could finish.
+    /// as a second output pump: only real emitters participate in final capture
+    /// and resource-drain accounting.
     pub(crate) fn park_owner(
         &mut self,
         capture: &super::SessionCapture<'_>,
@@ -162,6 +164,7 @@ impl SessionStaging {
         self.pumps.spawn_local(after_publication(
             capture.live_gate.clone(),
             capture.connection_token.clone(),
+            None,
             live,
         ));
     }
@@ -170,14 +173,18 @@ impl SessionStaging {
 async fn after_publication(
     mut gate: tokio::sync::watch::Receiver<bool>,
     token: tokio_util::sync::CancellationToken,
+    drain: Option<tokio_util::sync::CancellationToken>,
     live: LocalBoxFuture<'static, ()>,
 ) {
     tokio::select! {
         () = token.cancelled() => return,
         ready = gate.wait_for(|ready| *ready) => { if ready.is_err() { return; } }
     }
+    let drain = drain.unwrap_or_default();
     tokio::select! {
+        biased;
         () = token.cancelled() => {},
+        () = drain.cancelled() => {},
         () = live => {},
     }
 }

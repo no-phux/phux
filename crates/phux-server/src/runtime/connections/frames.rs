@@ -140,7 +140,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         let attach_started = std::time::Instant::now();
         // QUIC multi-stream: content streams start at STREAM_BIND.
         let defer_subscription = selection.quic_streams();
-        handle_attach(
+        let published = handle_attach(
             self.state,
             self.client_id,
             attach_id,
@@ -159,6 +159,12 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             defer_subscription,
         )
         .await;
+        if published && defer_subscription {
+            // A successful aggregate replacement fences its prior pumps. End
+            // their exact bindings too, so a fresh STREAM_BIND cannot race an
+            // old stream-end event into unsubscribing the new generation.
+            self.plumbing.drop_all_stream_bindings().await;
+        }
         crate::perf::ATTACH_HANDLE.record_elapsed(attach_started);
         FrameFlow::Continue(())
     }

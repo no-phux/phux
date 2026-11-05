@@ -12,6 +12,7 @@ pub(crate) type AttachPrepared = (
     phux_protocol::ids::ClientId,
     Vec<AttachSnapshotPane>,
     Vec<phux_protocol::ids::ResourceId>,
+    tokio_util::sync::DropGuard,
 );
 
 pub(super) fn is_same_session_reattach(
@@ -95,11 +96,13 @@ pub(crate) fn prepare_attach(
             })
             .map(|resource| resource.id.clone())
             .collect();
+        let publication = s.begin_attach_publication(client_id);
         Ok((
             snapshot,
             super::super::wire_client(client_id),
             panes,
             closed,
+            publication,
         ))
     })
 }

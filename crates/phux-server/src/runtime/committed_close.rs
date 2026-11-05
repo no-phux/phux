@@ -23,6 +23,10 @@ use crate::state::{ClientId, CloseAttribution, Outbound, ServerState, SharedStat
 struct ClosedResource {
     wire_terminal_id: WireResourceId,
     targets: Vec<mpsc::Sender<Outbound>>,
+    publication_fences: Vec<(
+        mpsc::Sender<Outbound>,
+        Vec<tokio_util::sync::CancellationToken>,
+    )>,
     reason: CloseReason,
     /// Unknown unless the resource is a retained exited pane: the process
     /// of a live one has not exited yet.
@@ -94,6 +98,7 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
         .map(|parent| s.intern_resource_wire(parent));
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
     let targets = s.terminal_fanout_targets(resource);
+    let publication_fences = s.attach_publication_fences(resource);
     let attribution = s.take_close_attribution(resource);
     crate::runtime::connections::journal_pane_closed(
         s,
@@ -108,6 +113,7 @@ fn close_one(s: &mut ServerState, resource: CoreResourceId) -> Option<ClosedReso
     Some(ClosedResource {
         wire_terminal_id,
         targets,
+        publication_fences,
         reason,
         exit,
     })
@@ -129,11 +135,12 @@ pub(super) fn announce(state: &SharedState, committed: CommittedClose) {
     let state = state.clone();
     tokio::task::spawn_local(async move {
         for closed in &closes {
-            crate::runtime::connections::broadcast_resource_closed(
+            crate::runtime::connections::pane_exit::broadcast_terminal_closed_after_drain(
                 &closed.wire_terminal_id,
                 &closed.targets,
                 closed.exit,
                 closed.reason,
+                &closed.publication_fences,
             )
             .await;
         }

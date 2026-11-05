@@ -210,3 +210,79 @@ fn quic_spawned_pane_publishes_on_its_bound_stream() {
             .expect("real QUIC spawn acceptance timed out");
     });
 }
+
+async fn echo_generation(
+    connection: &mut Connection,
+    terminal: &ResourceId,
+    text: &str,
+    retired: Option<phux_protocol::StreamId>,
+) -> phux_protocol::StreamId {
+    connection
+        .send(&FrameKind::InputPaste {
+            terminal_id: terminal.clone(),
+            event: PasteEvent {
+                trust: PasteTrust::Trusted,
+                data: format!("{text}\n").into_bytes(),
+            },
+        })
+        .await
+        .expect("paste on bound stream");
+    let mut tail = Vec::new();
+    loop {
+        if let FrameKind::ResourceOutput {
+            terminal_id,
+            stream_id,
+            bytes,
+            ..
+        } = recv_step(connection).await
+            && &terminal_id == terminal
+        {
+            assert_ne!(
+                Some(stream_id),
+                retired,
+                "an old bound origin survived ATTACHED"
+            );
+            tail.extend_from_slice(&bytes);
+            if tail.windows(text.len()).any(|part| part == text.as_bytes()) {
+                return stream_id;
+            }
+        }
+    }
+}
+
+#[test]
+fn same_session_quic_reattach_replaces_existing_bindings_and_keeps_output_live() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    tokio::task::LocalSet::new().block_on(&runtime, async {
+        timeout(Duration::from_secs(30), async {
+            let tmp = TempDir::new().unwrap();
+            let mut config = seeded_config(tmp.path().join("phux.sock"), SESSION);
+            config.env = quic_env(
+                &tmp.path().join("cert.pem"),
+                &tmp.path().join("key.pem"),
+                None,
+            );
+            let server = Server::start(config).await;
+            let mut connection = dial(server.quic_addr).await;
+            assert!(connection.multistream_enabled());
+            attach_and_bind(&mut connection).await;
+            let pane = spawn_unbound_pane(&mut connection).await;
+            connection.bind_terminal(&pane).await.expect("initial bind");
+            let old = echo_generation(&mut connection, &pane, "before-reattach", None).await;
+
+            // The old stream is still bound at the fresh ATTACH. In particular,
+            // do not call unbind_terminal: this exercises the production reset.
+            assert!(connection.can_route_terminal(&pane));
+            attach_and_bind(&mut connection).await;
+            let new = echo_generation(&mut connection, &pane, "after-reattach", Some(old)).await;
+            assert_ne!(old, new);
+            connection.shutdown().await;
+            server.stop().await;
+        })
+        .await
+        .expect("QUIC reattach deadline");
+    });
+}

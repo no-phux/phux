@@ -21,6 +21,8 @@ use super::*;
 use crate::resource::{ResourceHandle, ResourceOutput};
 use crate::transport::{FrameReader, FrameWriter};
 
+mod backpressure;
+mod capture_close;
 mod failure;
 
 struct Reader(mpsc::Receiver<BytesMut>);
@@ -54,6 +56,10 @@ struct Connection {
 
 impl Connection {
     async fn start(state: &SharedState, terminal_profile: bool) -> Self {
+        Self::start_bounded(state, terminal_profile, 64).await
+    }
+
+    async fn start_bounded(state: &SharedState, terminal_profile: bool, capacity: usize) -> Self {
         let client = state.with_mut(|s| {
             let client = s.new_client_id();
             s.set_peer_identity(
@@ -70,7 +76,7 @@ impl Connection {
             client
         });
         let (tx, input) = mpsc::channel(64);
-        let (output, rx) = mpsc::channel(64);
+        let (output, rx) = mpsc::channel(capacity);
         let token = CancellationToken::new();
         let task = tokio::task::spawn_local(crate::runtime::connections::dispatch::handle_client(
             Reader(input),

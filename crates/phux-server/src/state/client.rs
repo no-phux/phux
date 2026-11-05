@@ -45,6 +45,8 @@ pub struct AttachedClient {
     /// The session attach declared `VIEWER` (ADR-0127); panes it spawns are
     /// observe-only too.
     pub viewer: bool,
+    /// The connection-local SESSION ATTACH publication, if still in progress.
+    pub(crate) publication_gate: Option<CancellationToken>,
 }
 
 /// One resource target in an ATTACH snapshot pass. The field names retain the
@@ -82,6 +84,44 @@ impl ServerState {
     #[must_use]
     pub const fn attached(&self) -> &HashMap<ClientId, AttachedClient> {
         &self.clients.attached
+    }
+
+    /// Start under the subscription lock; the guard releases on publication,
+    /// rollback, or cancellation of the host's attach future.
+    pub(crate) fn begin_attach_publication(
+        &mut self,
+        client: ClientId,
+    ) -> tokio_util::sync::DropGuard {
+        let gate = CancellationToken::new();
+        if let Some(attached) = self.clients.attached.get_mut(&client)
+            && let Some(prior) = attached.publication_gate.replace(gate.clone())
+        {
+            prior.cancel();
+        }
+        gate.drop_guard()
+    }
+
+    /// Retained by close fanout under the reap lock. A committed kill must not
+    /// abort the host's publication fence along with its resource pumps.
+    pub(crate) fn attach_publication_fences(
+        &self,
+        resource: ResourceId,
+    ) -> Vec<(mpsc::Sender<Outbound>, Vec<CancellationToken>)> {
+        self.subscribers_for_resource(resource)
+            .iter()
+            .filter_map(|client| {
+                let gate = self
+                    .clients
+                    .attached
+                    .get(client)?
+                    .publication_gate
+                    .as_ref()?;
+                if gate.is_cancelled() {
+                    return None;
+                }
+                Some((self.client_mailbox(*client)?, vec![gate.clone()]))
+            })
+            .collect()
     }
 
     /// Record the HELLO layer set (latest wins).
@@ -169,6 +209,7 @@ impl ServerState {
                     viewport_seq: 0,
                     active_seq: 0,
                     viewer: false,
+                    publication_gate: None,
                 },
             );
             // Attaching arms tmux-model last-session self-exit (phux-60s).
@@ -214,7 +255,11 @@ impl ServerState {
             .get(&client_id)
             .is_some_and(|client| client.viewport.is_some_and(|v| v.cols > 0 && v.rows > 0));
         let geometry_targets = self.viewport_terminals(client_id);
-        self.clients.attached.remove(&client_id);
+        if let Some(attached) = self.clients.attached.remove(&client_id)
+            && let Some(gate) = attached.publication_gate
+        {
+            gate.cancel();
+        }
         // Drop local and satellite leases; the runtime already broadcast and
         // relayed the releases. Each local release opens a new epoch.
         self.release_all_input_leases(client_id);

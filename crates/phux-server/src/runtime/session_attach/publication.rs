@@ -1,17 +1,24 @@
 //! The host's one ordered aggregate publication.
 
 use super::{ClientId, FrameKind, Outbound, SharedState};
+use tokio_util::sync::CancellationToken;
 
 pub(super) struct AttachPublication<'a> {
     pub(super) state: &'a SharedState,
     pub(super) out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
+    pub(super) cancellation: &'a CancellationToken,
     pub(super) client_id: ClientId,
     pub(super) attach_id: u32,
 }
 
 impl AttachPublication<'_> {
     async fn queue(&self, frame: FrameKind) -> bool {
-        if self.out_tx.send(Outbound::Frame(frame)).await.is_ok() {
+        let sent = tokio::select! {
+            biased;
+            () = self.cancellation.cancelled() => false,
+            result = self.out_tx.send(Outbound::Frame(frame)) => result.is_ok(),
+        };
+        if sent {
             return true;
         }
         crate::runtime::connections::detach_and_release_consumer_state(self.state, self.client_id);

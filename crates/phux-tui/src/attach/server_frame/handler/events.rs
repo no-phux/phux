@@ -63,7 +63,7 @@ pub(super) fn handle_agent_event<W: crate::attach::RenderSink>(
             terminal: Some(terminal),
             event: AgentEvent::ResourceSpawned { .. } | AgentEvent::ResourceClosed { .. },
             ..
-        } if !ctx.panes.contains_key(&terminal) && !ctx.is_agent_session(&terminal) => {
+        } if !ctx.panes.contains_key(&terminal) && !ctx.is_non_terminal(&terminal) => {
             FrameOutcome {
                 foreign_pane_set_dirty: true,
                 ..FrameOutcome::default()

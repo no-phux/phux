@@ -167,13 +167,13 @@ pub(crate) async fn handle_attach(
     output_pumps: &mut JoinSet<()>,
     connection_token: &CancellationToken,
     defer_subscription: bool,
-) {
+) -> bool {
     let profile = negotiated_profile.into();
     let role = role_policy.unwrap_or_default();
     let pinned = state.with(|s| crate::policy::resolve_attach_session(s, &target));
     if let Some((code, message)) = attach_refusal(state, pinned, role, profile) {
         send_error(out_tx, code, message).await;
-        return;
+        return false;
     }
     let Some(session) = resolve_attach_target(
         state,
@@ -185,22 +185,23 @@ pub(crate) async fn handle_attach(
     )
     .await
     else {
-        return;
+        return false;
     };
     refresh_registry_cwds(state).await;
     let same_session = is_same_session_reattach(state, client_id, session);
-    let Some((snapshot, initial_client_id, panes, closed)) = prepare_attach_or_refuse(
-        state,
-        client_id,
-        session,
-        out_tx,
-        client_caps,
-        profile,
-        bootstrap_limits,
-    )
-    .await
+    let Some((snapshot, initial_client_id, panes, closed, _publication_guard)) =
+        prepare_attach_or_refuse(
+            state,
+            client_id,
+            session,
+            out_tx,
+            client_caps,
+            profile,
+            bootstrap_limits,
+        )
+        .await
     else {
-        return;
+        return false;
     };
     fence_previous(state, client_id, &panes, client_caps, same_session).await;
     apply_client_default_colors(&panes, client_caps.default_colors).await;
@@ -208,6 +209,7 @@ pub(crate) async fn handle_attach(
     let publication = AttachPublication {
         state,
         out_tx,
+        cancellation: connection_token,
         client_id,
         attach_id,
     };
@@ -239,7 +241,11 @@ pub(crate) async fn handle_attach(
         scrollback: request_scrollback.then_some(scrollback_limit_lines),
     };
     let started = std::time::Instant::now();
-    let result = capture.capture(&mut staging, captured_panes, closed).await;
+    let result = tokio::select! {
+        biased;
+        () = connection_token.cancelled() => Err("connection cancelled during ATTACH capture".to_owned()),
+        result = capture.capture(&mut staging, captured_panes, closed) => result,
+    };
     crate::perf::ATTACH_CAPTURE_WALL.record_elapsed(started);
     if let Err(reason) = result {
         fail_aggregate_attach_prepublication(
@@ -254,7 +260,7 @@ pub(crate) async fn handle_attach(
             &reason,
         )
         .await;
-        return;
+        return false;
     }
     if same_session {
         super::connections::abort_output_pumps(output_pumps, client_id, "replacement ATTACH").await;
@@ -270,4 +276,5 @@ pub(crate) async fn handle_attach(
         apply_session_role(state, client_id, &panes, role, same_session).await;
         let _ = release.send(true);
     }
+    published
 }
