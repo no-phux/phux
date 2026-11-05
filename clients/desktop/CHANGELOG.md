@@ -59,6 +59,14 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.55.0](https://github.com/no-phux/phux/compare/desktop-v0.54.1...desktop-v0.55.0) (2026-11-05)
+
+
+### Features
+
+* **client,desktop:** document streams reach clients, and the desktop draws a surface pane ([#1973](https://github.com/no-phux/phux/issues/1973)) ([0496a28](https://github.com/no-phux/phux/commit/0496a280a7e971141d280b9fdbf6dd81ffc23462))
+* **protocol:** admit a client with no Terminal profile; refuse Terminal streams at bind ([#1950](https://github.com/no-phux/phux/issues/1950)) ([db78fc4](https://github.com/no-phux/phux/commit/db78fc43aa3b06dac0f67ee31fddf56863e54bc8))
+
 ## [0.54.1](https://github.com/no-phux/phux/compare/desktop-v0.54.0...desktop-v0.54.1) (2026-11-03)
 
 
