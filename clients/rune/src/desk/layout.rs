@@ -69,14 +69,13 @@ impl Desk {
     /// group when it holds the focused pane, else the focused pane alone.
     pub(super) fn refresh_layout(&mut self, client: &Client) -> bool {
         let Some(shown) = self.shown.as_ref().map(|s| s.terminal.clone()) else {
-            return self.layout.take().is_some();
+            let listed = self.listed_resources();
+            self.sync_tabs(client, &listed);
+            let changed = self.layout.take().is_some();
+            return changed | self.sync_views(client);
         };
         self.place_pending_splits(client);
-        let listed: Vec<ResourceId> = self
-            .topology
-            .iter()
-            .flat_map(|t| t.panes.iter().map(|p| p.terminal_id.clone()))
-            .collect();
+        let listed = self.listed_resources();
         let tree = self
             .arrangement(client)
             .and_then(|(_, doc)| doc.active_group().and_then(|g| g.tree.clone()))
@@ -118,7 +117,9 @@ impl Desk {
         self.others.retain(|id, view| {
             let keep = wanted.contains(id) && Some(id) != shown.as_ref();
             if !keep {
-                let _ = client.destroy_view(*view);
+                if let Some(view) = view {
+                    let _ = client.destroy_view(*view);
+                }
                 changed = true;
             }
             keep
@@ -128,8 +129,11 @@ impl Desk {
                 continue;
             }
             // Not streaming yet: the next drain tries again.
-            if let Ok(view) = client.create_view(&id) {
-                self.others.insert(id, view);
+            if self.is_document(&id) {
+                self.others.insert(id, None);
+                changed = true;
+            } else if let Ok(view) = client.create_view(&id) {
+                self.others.insert(id, Some(view));
                 changed = true;
             }
         }

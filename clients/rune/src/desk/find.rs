@@ -42,7 +42,10 @@ impl Find {
 impl Desk {
     /// Open find on the focused pane, or focus its field again.
     pub fn open_find(&mut self) {
-        let Some((terminal, view)) = self.shown.as_ref().map(|s| (s.terminal.clone(), s.view))
+        let Some((terminal, view)) = self
+            .shown
+            .as_ref()
+            .and_then(|s| Some((s.terminal.clone(), s.view?)))
         else {
             return;
         };

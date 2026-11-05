@@ -293,7 +293,12 @@ impl Desk {
         let topology = self.topology.as_ref();
         let query = &self.palette_query.text;
         match self.palette_mode {
-            Mode::All => palette::rank(palette::items(topology), query),
+            Mode::All => {
+                let mut items = self.resource_items();
+                items.extend(palette::items(topology));
+                palette::rank(items, query)
+            }
+            Mode::Mirror(source) => self.mirror_items(source, query),
             Mode::Shortcuts => palette::rank(palette::shortcut_items(), query),
             Mode::Essentials => palette::rank(palette::essential_items(), query),
             Mode::Themes => palette::rank(palette::theme_items(), query),
@@ -324,7 +329,7 @@ impl Desk {
     /// the path picker opens.
     pub fn cursor_point(&self) -> Option<[f32; 2]> {
         let shown = self.shown.as_ref()?;
-        let frame = self.client.as_ref()?.acquire_view(shown.view)?;
+        let frame = self.client.as_ref()?.acquire_view(shown.view?)?;
         let [x, y] = *self.origins.get(&shown.terminal)?;
         let m = self.metrics();
         let (col, row) = (f32::from(frame.cursor.col), f32::from(frame.cursor.row));
@@ -381,7 +386,13 @@ impl Desk {
         let search = self.paths.take();
         self.close_palette();
         tx.blur();
-        match hit.item.target {
+        self.run_palette_target(hit.item.target, search, tx);
+    }
+
+    fn run_palette_target(&mut self, target: Target, search: Option<PathSearch>, tx: &mut Tx) {
+        match target {
+            Target::Mirror(source) => self.open_palette(Mode::Mirror(source)),
+            Target::StartMirror(source, target) => self.ask_mirror(source, target),
             Target::Terminal { id, session } => self.show(id, &session),
             Target::Session(name) => self.show_session(&name),
             Target::Action(action) => self.shortcut(action, tx),
@@ -404,13 +415,15 @@ impl Desk {
             return;
         };
         let panes = || topology.panes.iter().filter(|p| p.session_id == session.id);
-        let Some(pane) = panes()
+        let pane = panes()
             .find(|p| p.terminal_id == topology.focused_pane)
-            .or_else(|| panes().next())
-        else {
+            .or_else(|| panes().next());
+        let id = pane
+            .map(|p| p.terminal_id.clone())
+            .or_else(|| self.default_document(session.id));
+        let Some(id) = id else {
             return;
         };
-        let (id, session) = (pane.terminal_id.clone(), pane.session_name.clone());
-        self.show(id, &session);
+        self.show(id, name);
     }
 }

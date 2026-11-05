@@ -9,6 +9,8 @@ use crate::keys::{COMMANDS, ESSENTIALS, Shortcut};
 /// One thing the palette can do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
+    Mirror(crate::desk::resources::Source),
+    StartMirror(crate::desk::resources::Source, String),
     Terminal {
         id: ResourceId,
         session: String,
@@ -26,6 +28,7 @@ pub enum Target {
 /// What the palette lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
+    Mirror(crate::desk::resources::Source),
     /// Terminals, sessions, actions and themes.
     #[default]
     All,

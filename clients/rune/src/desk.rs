@@ -34,6 +34,7 @@ pub mod machines;
 pub mod mouse;
 mod palette;
 pub mod phone;
+pub mod resources;
 mod sessions;
 mod settings;
 mod shown;
@@ -113,6 +114,8 @@ pub struct Notice {
 /// What waits on the user's Return or Escape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
+    /// Explicit consent to start a supervised read-only mirror producer.
+    Mirror(resources::Source, String),
     /// A line-breaking paste, and the terminal it was meant for.
     Paste(ResourceId, String),
     /// Closing a terminal that is running a command.
@@ -126,10 +129,10 @@ pub enum Pending {
 /// Where a spawned terminal goes in the arrangement.
 type Placement = Option<(ResourceId, SplitDir)>;
 
-/// The terminal on screen.
+/// Focused resource identity, with a view only for a terminal replica.
 pub struct Shown {
     pub terminal: ResourceId,
-    pub view: ViewId,
+    pub view: Option<ViewId>,
 }
 
 pub struct Desk {
@@ -140,6 +143,7 @@ pub struct Desk {
     pub topology: Option<Topology>,
     pub server: Option<String>,
     pub shown: Option<Shown>,
+    pub resources: resources::Resources,
     /// The terminal the user asked for, and since when, until its view opens.
     pub wanted: Option<(ResourceId, Instant)>,
     /// A session this window created: show its terminal once it is selected.
@@ -213,7 +217,7 @@ pub struct Desk {
     /// focused pane alone.
     pub layout: Option<LayoutNode>,
     /// Views of the panes on screen besides the focused one.
-    pub others: HashMap<ResourceId, ViewId>,
+    pub others: HashMap<ResourceId, Option<ViewId>>,
     /// The pane shown alone, by this window's choice.
     pub zoomed: Option<ResourceId>,
     /// A divider drag's split and ratio, previewed until release.
@@ -354,6 +358,7 @@ impl Desk {
             topology: None,
             server: None,
             shown: None,
+            resources: resources::Resources::default(),
             wanted: None,
             pending_session: None,
             epoch: 0,
@@ -422,37 +427,12 @@ impl Desk {
         Metrics::new(self.font_size, self.scale.get())
     }
 
-    /// Rune's setup hook: the window is about to open, so everything slow
-    /// starts here, on workers. Even on a remote the local server is found,
-    /// because the updater manages it; a run that can't reach one starts
-    /// the updater without it.
-    pub fn listen(&mut self, waker: Waker) {
-        self.machines.listen(waker.clone());
-        crate::theme::watch_omarchy(waker.clone());
-        self.watch(waker);
-        self.dial();
-        if !self.launch.can_ensure() {
-            self.start_updater();
-        } else if self.machines.current.is_some() {
-            self.find_server();
-        }
-    }
-
-    /// Route this connection's wakes and alerts into Rune's loop.
-    fn watch(&mut self, waker: Waker) {
-        self.waker = Some(waker.clone());
-        self.inbox.alerts.listen(waker.clone());
-        if let Some(client) = &self.client {
-            client.set_listener(Arc::new(Wake(waker)));
-            client.watch_approvals();
-        }
-    }
-
     /// Drain the runtime once. True when anything on screen may have changed.
     pub fn poll(&mut self, clock: f64, tx: &mut Tx) -> bool {
         self.clock = clock;
         self.machines.tick_glances(clock, tx);
         let updated = self.pump_updates(tx)
+            | self.finish_document_images()
             | self.pump_machines()
             | self.pump_link()
             | self.pump_links()
@@ -497,6 +477,7 @@ impl Desk {
     fn follow_connection(&mut self, client: &Client, observation: &mut Observation) -> bool {
         let mut changed = observation.status != self.status;
         if observation.connection_epoch != self.epoch {
+            self.retire_documents(client);
             self.first_contact();
             self.epoch = observation.connection_epoch;
             self.focus_told = None;
@@ -518,6 +499,9 @@ impl Desk {
         if self.server.is_none() {
             self.server = client.server().map(|info| format!("{info:?}"));
         }
+        if changed || observation.events.iter().any(events::changes_resources) {
+            changed |= self.refresh_resources(client);
+        }
         changed
     }
 }
@@ -525,10 +509,10 @@ impl Desk {
 impl Drop for Desk {
     fn drop(&mut self) {
         let Some(client) = &self.client else { return };
-        if let Some(shown) = self.shown.take() {
-            let _ = client.destroy_view(shown.view);
+        if let Some(view) = self.shown.take().and_then(|s| s.view) {
+            let _ = client.destroy_view(view);
         }
-        for (_, view) in self.others.drain() {
+        for view in self.others.drain().filter_map(|(_, v)| v) {
             let _ = client.destroy_view(view);
         }
     }

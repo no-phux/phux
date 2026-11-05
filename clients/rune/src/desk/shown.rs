@@ -11,12 +11,18 @@ use super::{Desk, NoticeKind, Shown, WANTED_GRACE, input, sessions};
 
 impl Desk {
     pub(super) fn want(&mut self, terminal: ResourceId) {
+        self.resources.returning = None;
+        if let Some(document) = self.resources.entries.get(&terminal) {
+            self.resources.dismissed.remove(&document.record.key);
+        }
         self.wanted = Some((terminal, Instant::now()));
     }
 
     pub(super) fn drop_shown(&mut self, client: &Client) -> Option<ResourceId> {
         let shown = self.shown.take()?;
-        let _ = client.destroy_view(shown.view);
+        if let Some(view) = shown.view {
+            let _ = client.destroy_view(view);
+        }
         self.fitted.remove(&shown.terminal);
         self.painted.replace(None);
         Some(shown.terminal)
@@ -31,7 +37,7 @@ impl Desk {
     /// A new connection may be a new server incarnation, whose engine forgot
     /// every view: open the shown terminal again on this connection.
     pub(super) fn reopen_after_reconnect(&mut self, client: &Client) -> bool {
-        for (_, view) in self.others.drain() {
+        for view in self.others.drain().filter_map(|(_, v)| v) {
             let _ = client.destroy_view(view);
         }
         self.fetched.clear();
@@ -52,9 +58,10 @@ impl Desk {
     pub(super) fn drop_dead_views(&mut self, client: &Client) -> bool {
         let dead = |view| client.view_generation(view).is_none();
         let before = self.others.len();
-        self.others.retain(|_, view| !dead(*view));
+        self.others
+            .retain(|_, view| view.is_none_or(|view| !dead(view)));
         let mut changed = self.others.len() != before;
-        if self.shown.as_ref().is_some_and(|s| dead(s.view))
+        if self.shown.as_ref().and_then(|s| s.view).is_some_and(dead)
             && let Some(terminal) = self.drop_shown(client)
         {
             if self.wanted.is_none() {
@@ -69,32 +76,43 @@ impl Desk {
     /// asked for, a new session's once it is selected, else the server's
     /// focus. `None` also while waiting on one of those.
     pub(super) fn target(&mut self, client: &Client) -> Option<ResourceId> {
-        let topology = self.topology.as_ref()?;
+        self.topology.as_ref()?;
+        if let Some(target) = self.wanted_target() {
+            return Some(target);
+        }
+        if self.pending_session.is_some() {
+            return self.new_session_target(client);
+        }
+        if self.shown.is_some() {
+            return None;
+        }
+        sessions::default_pane(self.topology.as_ref()?, client.selected_session()?)
+            .or_else(|| self.default_document(client.selected_session()?))
+    }
+
+    fn wanted_target(&mut self) -> Option<ResourceId> {
         if let Some((terminal, since)) = &self.wanted {
-            let listed = topology.panes.iter().any(|p| &p.terminal_id == terminal);
+            let listed = self.lists_resource(terminal);
             if listed || since.elapsed() < WANTED_GRACE {
                 return Some(terminal.clone());
             }
             // Gone (a restarted server, a closed pane): fall back below.
             self.wanted = None;
         }
-        if let Some(name) = &self.pending_session {
-            let session = topology.sessions.iter().find(|s| &s.name == name)?;
-            if client.selected_session() != Some(session.id) {
-                return None;
-            }
-            let panes = || topology.panes.iter().filter(|p| p.session_id == session.id);
-            let pane = panes()
-                .find(|p| p.terminal_id == topology.focused_pane)
-                .or_else(|| panes().next())?;
-            let terminal = pane.terminal_id.clone();
-            self.pending_session = None;
-            return Some(terminal);
-        }
-        if self.shown.is_some() {
+        None
+    }
+
+    fn new_session_target(&mut self, client: &Client) -> Option<ResourceId> {
+        let topology = self.topology.as_ref()?;
+        let name = self.pending_session.as_ref()?;
+        let session = topology.sessions.iter().find(|s| &s.name == name)?;
+        if client.selected_session() != Some(session.id) {
             return None;
         }
-        sessions::default_pane(topology, client.selected_session()?)
+        let target = sessions::default_pane(topology, session.id)
+            .or_else(|| self.default_document(session.id))?;
+        self.pending_session = None;
+        Some(target)
     }
 
     /// Whether `terminal` is in a session this client doesn't stream yet.
@@ -127,15 +145,20 @@ impl Desk {
             self.wanted = None;
             return true;
         }
-        let Ok(view) = client.create_view(&target) else {
-            // Keep the first asking's clock, or the grace never runs out.
-            if self.wanted.is_none() {
-                self.want(target.clone());
-            }
-            if let Some(session) = self.foreign(client, &target) {
-                client.attach_session(AttachTarget::ByName(session));
-            }
-            return false;
+        let view = if self.is_document(&target) {
+            None
+        } else {
+            let Ok(view) = client.create_view(&target) else {
+                // Keep the first asking's clock, or the grace never runs out.
+                if self.wanted.is_none() {
+                    self.want(target.clone());
+                }
+                if let Some(session) = self.foreign(client, &target) {
+                    client.attach_session(AttachTarget::ByName(session));
+                }
+                return false;
+            };
+            Some(view)
         };
         // The old focus stays on screen if the layout still shows it.
         if let Some(old) = self.shown.take() {
@@ -174,9 +197,9 @@ mod tests {
         // Nothing is published for either view: both died with the replica.
         desk.shown = Some(Shown {
             terminal: ResourceId::local(1),
-            view: view(1),
+            view: Some(view(1)),
         });
-        desk.others.insert(ResourceId::local(2), view(2));
+        desk.others.insert(ResourceId::local(2), Some(view(2)));
         assert!(desk.drop_dead_views(&client));
         assert!(desk.shown.is_none());
         assert!(desk.others.is_empty());

@@ -37,6 +37,14 @@ pub fn notice_line(notice: Option<&Notice>, p: &Ink) -> El {
 /// What a held action would do, and the word for doing it.
 fn question(pending: &Pending) -> (String, &'static str) {
     match pending {
+        Pending::Mirror(source, target) => (
+            format!(
+                "Start {} mirror of {target:?} in a new producer terminal? {} Read-only; no browser/app input or process migration.",
+                source.verb(),
+                source.prerequisites()
+            ),
+            "Start",
+        ),
         Pending::Paste(_, held) => {
             let lines = held.lines().count().max(1);
             let plural = if lines == 1 { "" } else { "s" };
@@ -347,7 +355,7 @@ pub fn title_bar(desk: &Desk, p: &Ink, lights: f32) -> El {
         .client
         .as_ref()
         .zip(desk.shown.as_ref())
-        .and_then(|(client, shown)| client.acquire_view(shown.view))
+        .and_then(|(client, shown)| client.acquire_view(shown.view?))
         .map(|frame| format!("{}×{}", frame.cols, frame.rows))
         .unwrap_or_default();
     let folded = !desk.sidebar_open;

@@ -30,55 +30,23 @@ impl Desk {
     }
 
     fn apply_view(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
-        let shown = |id: &ResourceId| self.shown.as_ref().is_some_and(|s| &s.terminal == id);
         match event {
-            Event::TerminalChanged { terminal_id }
-                if shown(&terminal_id) || self.others.contains_key(&terminal_id) =>
-            {
+            Event::DocumentPublished { publication } => self.publish_document(&publication),
+            Event::TerminalChanged { terminal_id } if self.view_of(&terminal_id).is_some() => {
                 self.relink(&terminal_id);
                 self.generation += 1;
                 true
             }
             Event::TerminalSpawned {
                 request_id,
-                terminal_id: Some(new),
-                ..
-            } if self.pending_splits.contains_key(&request_id) => {
-                if let Some(placement) = self.pending_splits.remove(&request_id) {
-                    self.place_split(client, &new, placement);
-                }
-                true
-            }
-            Event::TerminalSpawned {
-                request_id,
                 terminal_id,
                 error,
-            } if self.pending_spawns.contains(&request_id)
-                || self.pending_splits.contains_key(&request_id) =>
-            {
-                self.pending_spawns.retain(|id| *id != request_id);
-                self.pending_splits.remove(&request_id);
-                match (terminal_id, error) {
-                    (Some(id), _) => self.want(id),
-                    (None, error) => self.say(
-                        NoticeKind::Error,
-                        error.unwrap_or_else(|| "spawn failed".to_owned()),
-                    ),
-                }
-                true
-            }
-            Event::TerminalClosed { terminal_id, .. } if shown(&terminal_id) => {
-                // Keep the keyboard in the split: the neighbour takes focus.
-                let next = self
-                    .layout
-                    .as_ref()
-                    .and_then(|t| layout::neighbour(t, &terminal_id));
-                self.close_shown(client);
-                if let Some(next) = next {
-                    self.focus_pane(&next);
-                }
-                true
-            }
+            } => self.spawned(client, request_id, terminal_id, error),
+            Event::TerminalClosed {
+                terminal_id,
+                exit_status,
+                ..
+            } => self.resource_closed(client, &terminal_id, exit_status),
             Event::OrganizationOperation { operation, outcome }
                 if self.layout_ops.remove(&operation) =>
             {
@@ -86,17 +54,36 @@ impl Desk {
                 self.layout_written(client, operation, refused);
                 true
             }
-            Event::TerminalClosed { terminal_id, .. } if self.others.contains_key(&terminal_id) => {
-                if let Some(view) = self.others.remove(&terminal_id) {
-                    let _ = client.destroy_view(view);
-                }
-                true
-            }
             // OSC 52 only from the terminal on screen, while the window has
             // focus; never retained for later.
-            Event::ClipboardWrite { terminal_id, text } if shown(&terminal_id) && self.focused => {
+            Event::ClipboardWrite { terminal_id, text }
+                if self.terminal_has_keyboard(&terminal_id) =>
+            {
                 tx.copy(text.0);
                 false
+            }
+            other => self.apply_connection(client, other),
+        }
+    }
+
+    fn terminal_has_keyboard(&self, id: &ResourceId) -> bool {
+        self.focused
+            && self
+                .shown
+                .as_ref()
+                .is_some_and(|s| &s.terminal == id && s.view.is_some())
+    }
+
+    fn apply_connection(&mut self, client: &Client, event: Event) -> bool {
+        match event {
+            Event::Exited {
+                terminal_id,
+                exit_status,
+                ..
+            } => self.producer_ended(&terminal_id, exit_status),
+            Event::ConnectionLost { .. } => {
+                self.retire_documents(client);
+                true
             }
             Event::Detached { reason, message } => {
                 let said = reason.map(|reason| reason.describe().to_owned());
@@ -123,8 +110,80 @@ impl Desk {
             _ => false,
         }
     }
+
+    fn spawned(
+        &mut self,
+        client: &Client,
+        request: u32,
+        id: Option<ResourceId>,
+        error: Option<String>,
+    ) -> bool {
+        let source = self.resources.starting.remove(&request);
+        if let Some((new, source)) = id.as_ref().zip(source) {
+            self.resources.producers.insert(new.clone(), source);
+        }
+        if let Some(new) = &id
+            && let Some(placement) = self.pending_splits.remove(&request)
+        {
+            self.place_split(client, new, placement);
+            return true;
+        }
+        let ours =
+            self.pending_spawns.contains(&request) || self.pending_splits.contains_key(&request);
+        if !ours {
+            return false;
+        }
+        self.pending_spawns.retain(|id| *id != request);
+        self.pending_splits.remove(&request);
+        match id {
+            Some(id) => self.want(id),
+            None => {
+                let error = error.unwrap_or_else(|| "spawn failed".to_owned());
+                let text = source.map_or_else(
+                    || error.clone(),
+                    |source| format!("Mirror not started: {error}. {}", source.prerequisites()),
+                );
+                self.say(NoticeKind::Error, text);
+            }
+        }
+        true
+    }
+
+    fn resource_closed(&mut self, client: &Client, id: &ResourceId, exit: Option<i32>) -> bool {
+        let producer = self.producer_ended(id, exit);
+        let document = self.forget_document(id);
+        if self.shown.as_ref().is_some_and(|s| &s.terminal == id) {
+            let next = self
+                .layout
+                .as_ref()
+                .and_then(|tree| layout::neighbour(tree, id));
+            self.close_shown(client);
+            if let Some(next) = next {
+                self.want(next);
+            }
+            return true;
+        }
+        let other = self.others.remove(id);
+        if let Some(view) = other.flatten() {
+            let _ = client.destroy_view(view);
+        }
+        producer || document || other.is_some()
+    }
 }
 
 pub(super) const fn moves_layout(event: &Event) -> bool {
-    !matches!(event, Event::TerminalChanged { .. })
+    !matches!(
+        event,
+        Event::TerminalChanged { .. } | Event::DocumentPublished { .. }
+    )
+}
+
+pub(super) const fn changes_resources(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::OrganizationChanged
+            | Event::TopologyChanged
+            | Event::Attached { .. }
+            | Event::ConnectionOpened { .. }
+    )
 }

@@ -208,6 +208,28 @@ cancels).
   and the download is dropped. **Restart & update server** moves both. Linux
   has already replaced the files by then.
 
+## Read-only mirrors
+
+The palette lists live AccessibilityTree and PixelSurface resources alongside
+terminals. Open one directly, switch its tab, or focus it beside a terminal in
+the session's arrangement. Trees use a selectable native JSON inspector; PNG
+surfaces use Rune's image decoder and fit without cropping. These are **Read-only
+mirrors**, not embedded browsers: keys, paste, file drops, and terminal resizing
+never reach a document pane. Closing its view does not stop the producer.
+
+To start a source, choose **Start page/tree/surface mirror…** in the palette,
+name the existing source, then confirm. Rune starts a dedicated producer
+terminal using the selected local CLI and socket, never the focused shell.
+Page capture needs Chrome debugging on localhost:9222 with a separate profile.
+Tree and surface capture require macOS Accessibility or Screen Recording
+permission respectively. The confirmation explains the prerequisite; producer
+exit produces an actionable notice. Ctrl-C in its terminal stops it.
+
+Starting a producer remotely is refused rather than guessing that host's
+platform, CLI, or permissions. Run the producer on the source host and reopen
+its published resource here. Opening or moving its view is not process or
+application migration.
+
 ## Develop
 
 `--phone` opens the phone form, where the phone app is growing ahead of
@@ -245,6 +267,18 @@ exposes that tree to the OS through Rune's
 support, which is also how tools drive a real window now that Rune's strobe
 bridge is gone. Headless time does not synchronize phux's server workers;
 wait for the attached terminal before measuring an interaction.
+
+The resource smoke test also reads back a genuine Rune GPU frame containing
+PNG and JSON panes together. Export that frame and its native accessibility
+tree without starting any server or touching installed phux:
+
+```sh
+RUNE_RESOURCE_SNAP="$PWD/target/resource-native.png" \
+  cargo test --locked native_png_headless_renderer_smoke -- --nocapture
+```
+
+The test checks decoded PNG pixels, native image draw commands, JSON text,
+and the Read-only mirror label; `target/resource-native.json` is the tree.
 
 Notifications need the signed bundle (`rune_mac::notify::available`); `cargo
 run` can't post, and Settings says so.

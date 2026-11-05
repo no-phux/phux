@@ -152,6 +152,33 @@ fn incompatible(error: &str) -> Option<String> {
 }
 
 impl Desk {
+    /// Rune's setup hook: the window is about to open, so everything slow
+    /// starts here, on workers. Even on a remote the local server is found,
+    /// because the updater manages it; a run that can't reach one starts
+    /// the updater without it.
+    pub fn listen(&mut self, waker: rune::Waker) {
+        self.resources.images = Some(rune::ImageCache::new(waker.clone()));
+        self.machines.listen(waker.clone());
+        crate::theme::watch_omarchy(waker.clone());
+        self.watch(waker);
+        self.dial();
+        if !self.launch.can_ensure() {
+            self.start_updater();
+        } else if self.machines.current.is_some() {
+            self.find_server();
+        }
+    }
+
+    /// Route this connection's wakes and alerts into Rune's loop.
+    pub(super) fn watch(&mut self, waker: rune::Waker) {
+        self.waker = Some(waker.clone());
+        self.inbox.alerts.listen(waker.clone());
+        if let Some(client) = &self.client {
+            client.set_listener(std::sync::Arc::new(super::Wake(waker)));
+            client.watch_approvals();
+        }
+    }
+
     /// Route a new attempt: a remote dials at once, a named socket too, and
     /// this computer's server is found on a worker first.
     pub(super) fn dial(&mut self) {
@@ -277,6 +304,7 @@ impl Desk {
     /// The local server is up at `socket`: use it, by the client that's
     /// still dialing when that client can get there.
     fn reach(&mut self, socket: std::path::PathBuf, moved: bool) {
+        self.launch.socket = Ok(socket.clone());
         let keeps = |client: &Client| !moved && !client.status().is_terminal();
         if let Some(client) = self.client.as_ref().filter(|client| keeps(client)) {
             return client.nudge();
@@ -348,7 +376,9 @@ impl Desk {
         next.wanted = self
             .shown
             .as_ref()
+            .filter(|s| s.view.is_some())
             .map(|shown| (shown.terminal.clone(), Instant::now()));
+        self.carry_document_focus(&mut next);
         *self = next;
     }
 
@@ -362,6 +392,11 @@ impl Desk {
         next.clock = self.clock;
         next.focused = self.focused;
         next.waker = self.waker.clone();
+        next.resources.images = self.resources.images.take().or_else(|| {
+            next.waker
+                .as_ref()
+                .map(|waker| rune::ImageCache::new(waker.clone()))
+        });
     }
 
     /// Whether the connection is working: anything else waits on this module.
