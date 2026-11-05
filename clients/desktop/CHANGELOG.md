@@ -59,6 +59,13 @@
 - Reject raw terminal input and file drops for pending or retained ACP owners
   before filesystem access or remote upload, including during reconnects.
 
+## [0.56.1](https://github.com/no-phux/phux/compare/desktop-v0.56.0...desktop-v0.56.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **desktop:** decode surface frames off the UI thread and free replaced ones ([#1990](https://github.com/no-phux/phux/issues/1990)) ([da0170d](https://github.com/no-phux/phux/commit/da0170db8c13fdbc83f72a64ed4ac9f8573733c7))
+
 ## [0.56.0](https://github.com/no-phux/phux/compare/desktop-v0.55.0...desktop-v0.56.0) (2026-11-05)
 
 
