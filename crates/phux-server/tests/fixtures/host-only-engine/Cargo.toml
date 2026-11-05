@@ -1,0 +1,16 @@
+[package]
+name = "phux-host-only-engine-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+phux-server = { path = "../../..", default-features = false }
+phux-terminal-api = { path = "../../../../phux-terminal-api", features = ["test-support"] }
+phux-resource = { path = "../../../../phux-resource" }
+phux-core = { path = "../../../../phux-core" }
+phux-protocol = { path = "../../../../phux-protocol" }
+phux-perf = { path = "../../../../phux-perf" }
+tokio = { version = "1", features = ["sync"] }

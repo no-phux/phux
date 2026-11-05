@@ -10,7 +10,7 @@ use phux_protocol::input::key::{ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{Command, CommandResult, FrameKind};
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand as CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;

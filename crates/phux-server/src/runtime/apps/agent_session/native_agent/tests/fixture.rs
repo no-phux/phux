@@ -17,7 +17,7 @@ impl Drop for Fixture {
 }
 impl Fixture {
     pub(super) fn new() -> Self {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let dir = tempfile::tempdir().unwrap();
         let peer = PeerIdentity {

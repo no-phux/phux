@@ -370,7 +370,7 @@ async fn eof_returns_a_loan_before_final_output_and_resumes_queued_capture() {
 
             assert!(matches!(
                 first.await.expect("interrupted capture is answered"),
-                Err(crate::native_state::NativeStateError::Resize)
+                Err(phux_terminal_api::native_state::NativeStateError::Resize)
             ));
             tokio::time::timeout(ACTOR_EXIT_DEADLINE, exited)
                 .await

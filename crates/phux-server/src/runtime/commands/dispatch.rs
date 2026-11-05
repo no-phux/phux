@@ -65,7 +65,7 @@ pub(super) async fn dispatch_local(
         }
         Command::GetPerf { reset } => handle_get_perf(state, reset),
         Command::DescribeApi => super::super::api::describe(state),
-        Command::PerfControl { op } => super::super::perf_control::handle(op).await,
+        Command::PerfControl { op } => super::super::perf_control::handle(state, op).await,
         Command::KillResources { ids, operation_id } => {
             handle_kill_terminals(state, client_id, &ids, operation_id).await
         }

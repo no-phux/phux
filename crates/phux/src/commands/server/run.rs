@@ -145,7 +145,7 @@ pub(super) fn build_server_config(
 
     // `--seed-command` runs via `<shell> -c` as the seeded session's program.
     let seed_command = seed_command
-        .map(|command| phux_terminal::actor::shell_command(&shell, command, login_shell));
+        .map(|command| phux_terminal_api::launch::shell_command(&shell, command, login_shell));
 
     ServerConfig {
         socket_path: socket_path.to_path_buf(),
@@ -388,14 +388,19 @@ pub(crate) fn run_server(
     // to be listening.
     let banner_session = session.unwrap_or("none").to_owned();
     let connector_count = connector_entries.len();
-    let mut server = with_network_listeners(ServerRuntime::new(cfg), listen, quic, webtransport)
-        .on_listening(move |listeners| {
-            let extra = listener_summary(listeners, hub, connector_count, exit_after_idle);
-            info!(
-                "server listening on {}{extra} (session={banner_session}; Ctrl-C to stop)",
-                socket_path.display(),
-            );
-        });
+    let mut server = with_network_listeners(
+        ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine)),
+        listen,
+        quic,
+        webtransport,
+    )
+    .on_listening(move |listeners| {
+        let extra = listener_summary(listeners, hub, connector_count, exit_after_idle);
+        info!(
+            "server listening on {}{extra} (session={banner_session}; Ctrl-C to stop)",
+            socket_path.display(),
+        );
+    });
     if !connector_entries.is_empty() {
         server = server.connectors(connector_entries, connect);
     }

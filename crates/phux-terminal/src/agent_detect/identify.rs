@@ -73,17 +73,7 @@ pub(crate) enum Occupancy {
     },
 }
 
-/// Privacy-bounded description of the pane's foreground process.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct PaneOccupant {
-    /// Login-dash-stripped basename of `argv[0]`.
-    pub(crate) foreground: String,
-    /// The foreground is the pane's original child and a known shell.
-    pub(crate) is_pane_shell: bool,
-    /// Something under the pane runs outside the foreground group: a
-    /// backgrounded job, or a command an agent detached.
-    pub(crate) background: bool,
-}
+pub(crate) use phux_terminal_api::agent_detect::PaneOccupant;
 
 impl Occupancy {
     /// The pgid this answer is about; `None` when unresolved (the cheap

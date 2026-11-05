@@ -341,8 +341,10 @@ pub(crate) fn metric_tables() -> Vec<&'static [phux_perf::Metric]> {
 }
 
 /// The native bootstrap profiles this server can offer at HELLO.
-pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabilities {
-    terminal::bootstrap_capabilities()
+pub(crate) fn bootstrap_capabilities(
+    state: &SharedState,
+) -> phux_protocol::caps::BootstrapCapabilities {
+    terminal::bootstrap_capabilities(state)
 }
 
 /// The app that owns `command` in the catalog; `None` for a host command.

@@ -12,13 +12,13 @@ use std::time::{Duration, Instant};
 
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::FrameKind;
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::tracing_capture::TracingCapture;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_server_screen_text, wait_for_socket,
 };
-use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 
 /// Last line the pane prints; converging on it proves the screen is current.

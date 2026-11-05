@@ -6,7 +6,7 @@
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ImageProtocolSet};
 use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand as CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 

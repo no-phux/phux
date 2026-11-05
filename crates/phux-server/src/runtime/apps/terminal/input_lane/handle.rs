@@ -7,12 +7,12 @@
 use phux_protocol::ids::InputOperationId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{CommandResult, ErrorCode};
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::state::{ClientId, SharedState};
-use phux_terminal::actor::{InputCredit, LaneAhead};
+use phux_terminal_api::actor::{InputCredit, LaneAhead};
 
 use super::{
     AcknowledgedAdmission, AcknowledgedReservation, CacheClaim, InputReceipt, ReceiptFailure,
@@ -44,14 +44,7 @@ pub(crate) fn arm_pane_lane(
         let crate::state::Resolved::Local(local) = server.resolve_resource(terminal_id) else {
             return None;
         };
-        local
-            .handle
-            .terminal()
-            .ok()?
-            .fast_pty
-            .as_ref()?
-            .upgrade()
-            .map(|fast| LaneAhead::arm(&fast))
+        local.handle.terminal().ok()?.ordered_input.arm_lane()
     })
 }
 

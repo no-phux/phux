@@ -16,6 +16,7 @@ mod serve;
 /// Server runtime owning the listener loop and per-client task scaffolding.
 #[derive(Debug)]
 pub struct ServerRuntime {
+    terminal_engine: std::sync::Arc<dyn phux_terminal_api::TerminalEngineFactory>,
     cfg: ServerConfig,
     /// WebSocket listen address; `None` falls back to [`crate::runtime::ServerEnv::ws_addr`].
     ws_addr: Option<SocketAddr>,
@@ -72,8 +73,12 @@ impl std::fmt::Debug for ListeningHook {
 impl ServerRuntime {
     /// Create a runtime ready to be `run`. Does not perform I/O.
     #[must_use]
-    pub const fn new(cfg: ServerConfig) -> Self {
+    pub fn new(
+        cfg: ServerConfig,
+        terminal_engine: std::sync::Arc<dyn phux_terminal_api::TerminalEngineFactory>,
+    ) -> Self {
         Self {
+            terminal_engine,
             cfg,
             ws_addr: None,
             quic_addr: None,

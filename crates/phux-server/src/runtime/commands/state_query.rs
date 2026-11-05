@@ -22,10 +22,10 @@ pub(crate) fn handle_get_perf(state: &SharedState, reset: bool) -> CommandResult
     crate::perf::SESSIONS.set(u64::try_from(sessions).unwrap_or(u64::MAX));
     crate::perf::PANES.set(u64::try_from(panes).unwrap_or(u64::MAX));
     crate::perf::CLIENTS.set(clients);
-    let mut report = crate::perf::report();
+    let mut report = crate::perf::engine_report(state);
     report.stream_diagnostics = serde_json::to_value(crate::stream_diagnostics::snapshot()).ok();
     if reset {
-        crate::perf::reset();
+        crate::perf::engine_reset(state);
         crate::stream_diagnostics::reset();
     }
     CommandResult::OkWith(CommandValue::Json(report.to_json()))

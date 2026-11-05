@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 /// Why a pump gave up on its generation and asked for a resync.
 #[derive(Debug, Clone, Copy)]
@@ -220,7 +220,7 @@ pub(super) async fn fail_aggregate_attach_prepublication(
                 producer_deadline,
                 terminal
                     .native_release
-                    .send(phux_terminal::actor::NativeReleaseRequest { owner: client_id.0 }),
+                    .send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 }),
             )
             .await;
         }

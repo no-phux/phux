@@ -16,10 +16,10 @@ workspace = true
 [features]
 default = ["native-engine"]
 # Incremental native checkpoint capture/advertisement.
-native-engine = []
+native-engine = ["phux-terminal-api/native-engine"]
 # Fixtures for the host's own tests. A dependency's `cfg(test)` is invisible
 # to its dependents, so these are opt-in and enabled only as a dev-dependency.
-test-support = []
+test-support = ["phux-terminal-api/test-support"]
 # Benchmark/example tooling, opt-in so default test builds skip Criterion
 # and DHAT.
 capture-bench = ["dep:criterion", "dep:dhat"]
@@ -35,6 +35,7 @@ dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 phux-resource.workspace = true
+phux-terminal-api.workspace = true
 phux-agent-session.workspace = true
 phux-agent-rules.workspace = true
 phux-config.workspace = true
@@ -58,6 +59,7 @@ nix = { version = "0.31", default-features = false, features = [
 ] }
 libc = "0.2"
 bytes.workspace = true
+memchr.workspace = true
 phux-perf.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 portable-pty.workspace = true
@@ -69,6 +71,7 @@ libghostty-vt.workspace = true
 sha2 = "0.11"
 
 [dev-dependencies]
+phux-terminal-api = { workspace = true, features = ["test-support"] }
 # `test-util`: paused time for tick and deadline tests.
 tokio = { workspace = true, features = ["test-util"] }
 # Manifests under test are inline TOML.

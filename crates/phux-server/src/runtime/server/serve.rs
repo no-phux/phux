@@ -65,6 +65,7 @@ impl ServerRuntime {
         let socket_path = self.cfg.socket_path.clone();
 
         let state = SharedState::new();
+        state.set_terminal_engine(self.terminal_engine.clone());
 
         let hub_table = install_hub_table(&state, self.hub, &self.satellites)?;
 

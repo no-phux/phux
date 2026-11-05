@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 const TERMINAL_TOKENS: [&str; 12] = [
-    "phux_terminal",
+    "phux_terminal::",
     "terminal_actor",
     "resource::terminal",
     "TerminalResource",

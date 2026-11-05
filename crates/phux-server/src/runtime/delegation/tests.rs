@@ -21,7 +21,7 @@ const PATIENCE: Duration = Duration::from_secs(5);
 /// A server with one session, `alpha`, its socket in `dir`, and the
 /// owner connected as [`LAUNCHER`].
 fn server(dir: &Path, root: &CancellationToken) -> (SharedState, SessionId) {
-    let state = SharedState::new();
+    let state = crate::runtime::apps::terminal::test_support::terminal_state();
     let pane = super::super::commands::seed_session_with_actor(
         &state,
         "alpha",

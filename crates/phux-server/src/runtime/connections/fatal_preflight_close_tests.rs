@@ -1,6 +1,5 @@
 use super::dispatch::handle_client;
 use super::writer_close_tests::Script;
-use crate::state::SharedState;
 use crate::transport::FrameWriter;
 use phux_protocol::PROTOCOL_VERSION;
 use std::io;
@@ -58,7 +57,7 @@ async fn next_frame(
 async fn native_preflight_failure_flushes_error_then_duplex_eof() {
     LocalSet::new()
         .run_until(async {
-            let state = SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             let (_session, terminal) = state.with_mut(|server| server.seed_session("fatal-duplex"));
             let (handle, mut stub) = stub_terminal();
             // Nothing answers a detach here, so teardown must not wait for one.

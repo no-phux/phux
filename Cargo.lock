@@ -2951,6 +2951,7 @@ dependencies = [
  "phux-relay",
  "phux-server",
  "phux-terminal",
+ "phux-terminal-api",
  "phux-tui",
  "phux-usage",
  "phux-work",
@@ -3035,6 +3036,7 @@ dependencies = [
  "phux-protocol",
  "phux-record",
  "phux-server",
+ "phux-terminal",
  "phux-work",
  "quinn",
  "regex",
@@ -3354,6 +3356,7 @@ dependencies = [
  "libc",
  "memchr",
  "nix 0.31.3",
+ "phux-agent-rules",
  "phux-agent-session",
  "phux-client-core",
  "phux-client-ffi",
@@ -3369,6 +3372,7 @@ dependencies = [
  "phux-resource",
  "phux-server-testkit",
  "phux-terminal",
+ "phux-terminal-api",
  "phux-tree",
  "phux-work",
  "portable-pty",
@@ -3427,6 +3431,7 @@ dependencies = [
  "iai-callgrind",
  "libc",
  "libghostty-vt",
+ "memchr",
  "nix 0.31.3",
  "phux-agent-rules",
  "phux-agent-session",
@@ -3436,6 +3441,7 @@ dependencies = [
  "phux-perf",
  "phux-protocol",
  "phux-resource",
+ "phux-terminal-api",
  "portable-pty",
  "portable-pty-adopt",
  "rustix",
@@ -3447,6 +3453,26 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "tracing",
+]
+
+[[package]]
+name = "phux-terminal-api"
+version = "0.120.1"
+dependencies = [
+ "bytes",
+ "phux-agent-rules",
+ "phux-agent-session",
+ "phux-config",
+ "phux-core",
+ "phux-perf",
+ "phux-protocol",
+ "phux-resource",
+ "rustix",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
  "tracing",
 ]
 

@@ -15,13 +15,13 @@ use phux_protocol::wire::frame::{
     RESOURCE_PROGRAM_STATUS_KEY, RESOURCE_PROGRAM_STATUS_RECORD_PREFIX, ResourceLifecycle, Scope,
     StateScope,
 };
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server::state::RetainPolicy;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, ServerHandles, WIRE_RECV_TIMEOUT, attach_by_name, command,
     join_after_shutdown, recv_until, run_local, seed_pty, send_frame, spawn_server_with,
     wait_for_socket,
 };
-use portable_pty::CommandBuilder;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::net::UnixStream;

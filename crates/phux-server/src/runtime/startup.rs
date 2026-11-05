@@ -209,12 +209,11 @@ pub(in crate::runtime) fn resume_session_tree(
     blob: &StateBlob,
     root_token: &CancellationToken,
 ) -> Result<(), ServerError> {
+    // Capture composition before taking the mutable registry lock. A rebuild
+    // invokes the engine factory while that same lock remains held.
+    let build_terminal = crate::runtime::apps::terminal::upgrade::wired(state);
     let rebuilt = state.with_mut(|s| {
-        s.rebuild_from_blob(
-            blob,
-            crate::runtime::apps::terminal::upgrade::wired(state),
-            crate::runtime::apps::rebuild_session,
-        )
+        s.rebuild_from_blob(blob, build_terminal, crate::runtime::apps::rebuild_session)
     })?;
     let mut pane_events: std::collections::HashMap<_, _> = rebuilt
         .wired_panes

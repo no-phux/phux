@@ -16,13 +16,13 @@
 //! event explicitly, and until it drains again refuses at once, so one wedged
 //! pane cannot freeze the rest of the connection.
 //!
-//! [`INPUT_CREDITS`]: phux_terminal::actor::INPUT_CREDITS
+//! [`INPUT_CREDITS`]: phux_terminal_api::actor::INPUT_CREDITS
 #![allow(
     clippy::redundant_pub_crate,
     reason = "the connection read loop and command handlers use these through the lane's re-export"
 )]
 
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 
 use crate::state::SharedState;
-use phux_terminal::actor::{InputCredit, InputCreditPool, TerminalHandle};
+use phux_terminal_api::actor::{InputCredit, InputCreditPool, TerminalHandle};
 
 /// How long an event waits for its pane to drain before it is refused.
 pub(super) const INPUT_STALL_LIMIT: Duration = Duration::from_secs(5);
@@ -90,14 +90,23 @@ impl InputCredits {
         if self.stalled.contains(terminal_id) {
             return Err(InputStalled);
         }
-        phux_terminal::perf::INPUT_CREDIT_WAITS.incr();
+        let metrics = state
+            .terminal_engine()
+            .and_then(|engine| engine.host_metrics());
+        if let Some(metrics) = metrics {
+            metrics.input_credit_waits.incr();
+        }
         let wait_started = std::time::Instant::now();
         let outcome = tokio::time::timeout(INPUT_STALL_LIMIT, pool.take()).await;
-        phux_terminal::perf::INPUT_CREDIT_WAIT.record_elapsed(wait_started);
+        if let Some(metrics) = metrics {
+            metrics.input_credit_wait.record_elapsed(wait_started);
+        }
         match outcome {
             Ok(credit) => Ok(Some(credit)),
             Err(_elapsed) => {
-                phux_terminal::perf::INPUT_CREDIT_TIMEOUTS.incr();
+                if let Some(metrics) = metrics {
+                    metrics.input_credit_timeouts.incr();
+                }
                 tracing::warn!(
                     ?terminal_id,
                     "pane input stalled; refusing input until it drains"
@@ -127,7 +136,7 @@ fn credit_pool(state: &SharedState, terminal_id: &WireResourceId) -> Option<Inpu
     state.with(|s| {
         let core = s.resource_from_wire(terminal_id)?;
         let terminal = s.resource_handle(core)?.terminal().ok()?;
-        Some(terminal.input_credits.clone())
+        Some(terminal.ordered_input.credits())
     })
 }
 
@@ -138,8 +147,8 @@ pub(super) fn credit_for(
     credit: Option<InputCredit>,
 ) -> Option<InputCredit> {
     match credit {
-        Some(credit) if credit.is_from(&handle.input_credits) => Some(credit),
-        _ => handle.input_credits.try_take(),
+        Some(credit) if credit.is_from(&handle.ordered_input.credits()) => Some(credit),
+        _ => handle.ordered_input.credits().try_take(),
     }
 }
 
@@ -155,8 +164,8 @@ mod tests {
             .handle
             .terminal()
             .expect("facet")
-            .input_credits
-            .clone();
+            .ordered_input
+            .credits();
         let wire = state.with_mut(|s| {
             let pane = s.seed_session("s").1;
             s.register_resource_handle(pane, bundle.handle.clone(), bundle.token.clone())

@@ -15,7 +15,11 @@ pub mod autosave;
 pub mod connector;
 pub mod daemon;
 pub mod delegation;
-pub mod downsample;
+#[cfg(test)]
+mod test_support;
+pub use phux_terminal_api::launch::LaunchCommand;
+#[cfg(test)]
+use test_support::downsample;
 pub mod health; // phux-zomb.6 (server start history: crash-loop is reportable)
 pub mod hooks;
 pub mod hub;

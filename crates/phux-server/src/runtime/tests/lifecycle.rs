@@ -7,7 +7,7 @@ fn pane_lifecycle_hooks_fire() {
     let rt = Builder::new_current_thread().enable_all().build().unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let mut hooks = capture_hooks(&state);
         let token = CancellationToken::new();
         seed_session_with_actor(
@@ -53,7 +53,7 @@ fn a_pane_killed_before_its_exit_still_fires_pane_exit_and_holds_self_exit() {
     let rt = Builder::new_current_thread().enable_all().build().unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let mut hooks = capture_hooks(&state);
         let root = CancellationToken::new();
         let (_sid, pane) = state.with_mut(|s| s.seed_session("doomed"));
@@ -104,7 +104,7 @@ fn terminal_replies_are_discarded_and_focus_hooks_fire() {
     let rt = Builder::new_current_thread().enable_all().build().unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let mut hooks = capture_hooks(&state);
         let (_sid, pane) = state.with_mut(|s| s.seed_session("focus"));
         let mut rx = register_stub(&state, pane);
@@ -150,7 +150,7 @@ fn detach_fires_client_detached_hook_only_for_attached_clients() {
     let rt = Builder::new_current_thread().enable_all().build().unwrap();
     let local = LocalSet::new();
     local.block_on(&rt, async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let mut hooks = capture_hooks(&state);
         let _ = state.with_mut(|s| s.seed_session("leaving"));
 

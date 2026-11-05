@@ -26,10 +26,10 @@ use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::input::key::PhysicalKey;
 use phux_protocol::wire::frame::FrameKind;
 use phux_relay::{RelayConfig, cert_fingerprint};
-use phux_server::{ServerConfig, ServerRuntime};
+use phux_server::LaunchCommand as CommandBuilder;
+use phux_server::ServerConfig;
 use phux_server_testkit::relay::RelayHarness;
 use phux_server_testkit::{WIRE_RECV_TIMEOUT, ascii_key, attach_by_name, encode_frame, seed_pty};
-use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
@@ -123,7 +123,7 @@ impl Topology {
         phux_server_testkit::embedder::embed_owner_engine(&mut cfg);
         let (stop_server, server_stopped) = oneshot::channel();
         let server = tokio::task::spawn_local(async move {
-            ServerRuntime::new(cfg)
+            phux_server_testkit::terminal_server(cfg)
                 .connectors(vec![connector], None)
                 .run_async(async move {
                     let _ = server_stopped.await;

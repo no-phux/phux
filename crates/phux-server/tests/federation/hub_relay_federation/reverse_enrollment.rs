@@ -95,7 +95,7 @@ impl PairedHub {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let task = tokio::task::spawn_local(async move {
-            ServerRuntime::new(cfg)
+            phux_server_testkit::terminal_server(cfg)
                 .listen_quic(addr)
                 .hub(vec![inbound_entry("sat")])
                 .run_async(async move {
@@ -128,7 +128,7 @@ fn spawn_uplinked_satellite(
         ..ServerConfig::with_default_socket()
     };
     let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(cfg)
+        phux_server_testkit::terminal_server(cfg)
             .uplinks(vec![uplink])
             .run_async(async move {
                 let _ = rx.await;

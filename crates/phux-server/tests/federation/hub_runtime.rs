@@ -2,7 +2,7 @@
 //! (the parsing matrix is unit-tested in `phux_server::hub`).
 
 use phux_config::SatelliteConfigEntry;
-use phux_server::{ServerConfig, ServerError, ServerRuntime};
+use phux_server::{ServerConfig, ServerError};
 use tempfile::TempDir;
 
 fn entry(name: &str, endpoint: &str, enabled: bool) -> SatelliteConfigEntry {
@@ -28,7 +28,11 @@ fn run_hub(dir: &TempDir, registry: Vec<SatelliteConfigEntry>) -> Result<(), Ser
         .enable_all()
         .build()
         .expect("runtime")
-        .block_on(ServerRuntime::new(cfg).hub(registry).run_async(async {}))
+        .block_on(
+            phux_server_testkit::terminal_server(cfg)
+                .hub(registry)
+                .run_async(async {}),
+        )
 }
 
 #[test]

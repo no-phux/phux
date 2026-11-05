@@ -107,8 +107,7 @@ pub(crate) struct OutputPumpContext {
     /// tombstone this one at the right point.
     pub(crate) last_seq: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     /// Terminal facet used for native checkpoint capture and publication.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    pub(crate) terminal: phux_terminal::actor::TerminalHandle,
+    pub(crate) terminal: phux_terminal_api::actor::TerminalHandle,
 }
 
 impl OutputPumpContext {
@@ -160,7 +159,12 @@ impl OutputPumpContext {
             stream_id: self.stream_id,
             bootstrap_id: generation.bootstrap_id(),
             seq,
-            bytes: live_bytes_for_profile(bytes, self.client_caps, self.profile),
+            bytes: live_bytes_for_profile(
+                &self.terminal.presentation,
+                bytes,
+                self.client_caps,
+                self.profile,
+            ),
         }
     }
 
@@ -278,9 +282,9 @@ impl OutputPumpContext {
     pub(super) async fn capture_native_checkpoint(
         &self,
         bootstrap_id: BootstrapId,
-    ) -> Result<Option<phux_terminal::actor::NativeBootstrapReply>, PumpFault> {
+    ) -> Result<Option<phux_terminal_api::actor::NativeBootstrapReply>, PumpFault> {
         let captured = request_native_checkpoint(&self.terminal, |reply| {
-            phux_terminal::actor::NativeBootstrapRequest::full_budget(
+            phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
                 self.client_id.0,
                 self.wire_terminal_id.clone(),
                 self.stream_id,
@@ -296,7 +300,7 @@ impl OutputPumpContext {
                 return Err(PumpFault::PaneGone);
             }
             Err(NativeRequestFailure::Refused(
-                phux_terminal::native_state::NativeStateError::Resize,
+                phux_terminal_api::native_state::NativeStateError::Resize,
             )) => {
                 debug!(
                     terminal_id = ?self.wire_terminal_id,

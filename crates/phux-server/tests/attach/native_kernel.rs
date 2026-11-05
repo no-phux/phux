@@ -22,7 +22,7 @@ use phux_client_ffi::{
 use phux_protocol::caps::{BootstrapProfile, EngineCodec};
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{FrameKind, TombstoneReason};
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand as CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;

@@ -52,7 +52,7 @@ impl OutputPumpContext {
         generation: &mut PumpGeneration,
         output_rx: &mut tokio::sync::broadcast::Receiver<ResourceOutput>,
         bootstrap_id: BootstrapId,
-        reply: phux_terminal::actor::NativeBootstrapReply,
+        reply: phux_terminal_api::actor::NativeBootstrapReply,
     ) -> Result<bool, PumpFault> {
         let (cut, cursor) = publish_native_bootstrap(&self.out_tx, reply)
             .await
@@ -104,7 +104,7 @@ impl OutputPumpContext {
         if publishes_native_checkpoints(self.profile) {
             let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
             let capture = request_native_checkpoint(&self.terminal, |reply| {
-                phux_terminal::actor::NativeBootstrapRequest::full_budget(
+                phux_terminal_api::actor::NativeBootstrapRequest::full_budget(
                     self.client_id.0,
                     self.wire_terminal_id.clone(),
                     self.stream_id,
@@ -147,6 +147,7 @@ impl OutputPumpContext {
                     scrollback: None,
                     image_protocols: self.client_caps.image_protocols,
                     max_bytes: bootstrap_source_ceiling(
+                        &self.terminal.presentation,
                         MAX_STAGED_BOOTSTRAP_BYTES,
                         self.client_caps,
                     ),
@@ -203,7 +204,8 @@ impl OutputPumpContext {
         generation: &mut PumpGeneration,
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
-        let payload = downsample_for_caps(&resync.bytes, self.client_caps);
+        let payload =
+            downsample_for_caps(&self.terminal.presentation, &resync.bytes, self.client_caps);
         let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
         let Ok(mut frames) = synthesized_bootstrap_frames(
             self.wire_terminal_id.clone(),
@@ -274,9 +276,10 @@ impl OutputPumpContext {
             let (reply, receive) = oneshot::channel();
             if snapshot
                 .send(SnapshotRequest {
-                    scrollback: Some(phux_terminal::actor::DEFAULT_REPLAY_SCROLLBACK_LINES),
+                    scrollback: Some(phux_terminal_api::actor::DEFAULT_REPLAY_SCROLLBACK_LINES),
                     image_protocols: self.client_caps.image_protocols,
                     max_bytes: bootstrap_source_ceiling(
+                        &self.terminal.presentation,
                         MAX_STAGED_BOOTSTRAP_BYTES,
                         self.client_caps,
                     )

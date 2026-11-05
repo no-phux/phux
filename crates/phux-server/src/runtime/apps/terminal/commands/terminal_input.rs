@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::runtime::connections::resource_frames::attached_input_resource;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 /// A `SessionSnapshot` describing a server with no sessions: empty lists,
 /// sentinel focus ids. Used by `GET_STATE` when the registry is empty.

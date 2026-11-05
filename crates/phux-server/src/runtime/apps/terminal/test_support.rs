@@ -8,6 +8,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::resource::{ResourceCore, ResourceHandle, ResourceKind};
 
+/// Unit-test composition is explicit, just like the executable's composition.
+pub(crate) fn terminal_state() -> crate::state::SharedState {
+    let state = crate::state::SharedState::new();
+    state.set_terminal_engine(std::sync::Arc::new(phux_terminal::TerminalEngine));
+    state
+}
+
 pub(crate) use phux_terminal::actor::{
     ConsumerAttachOutcome, ResourceOutput, ResyncAudience, ResyncReason, ScreenReply,
     ScreenRequest, TerminalHandle, TerminalResource,
@@ -15,9 +22,9 @@ pub(crate) use phux_terminal::actor::{
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(crate) use phux_terminal::actor::{NativeBootstrapReply, NativePublicationReply};
 pub(crate) use phux_terminal::grid::SnapshotBytes;
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-pub(crate) use phux_terminal::native_state::NativeStateError;
 pub(crate) use phux_terminal::{ControlRequest, TerminalActorBundle, TerminalInput, vt};
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+pub(crate) use phux_terminal_api::native_state::NativeStateError;
 
 use phux_terminal::actor::{
     ConsumerAttachRequest, ConsumerDetachRequest, EncodedInputRequest, ResizeReceiver,
@@ -97,6 +104,8 @@ pub(crate) fn stub_terminal() -> (ResourceHandle, StubRx) {
     let (snapshot, snapshot_rx) = channel(8);
     let (resize, resize_rx) = ResizeSender::channel(8);
     let (encoded_input, encoded_rx) = channel(8);
+    let (ordered_input, input_modes) = phux_terminal::fixture_input_port(encoded_input);
+    keep.push(Box::new(input_modes));
     let (consumer_attach, attach_rx) = channel(8);
     let (consumer_detach, detach_rx) = channel(8);
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -109,7 +118,10 @@ pub(crate) fn stub_terminal() -> (ResourceHandle, StubRx) {
         consumer_ack,
         upgrade: channel(8).0,
         input,
-        encoded_input,
+        ordered_input,
+        presentation: phux_terminal_api::TerminalEngineFactory::presentation(
+            &phux_terminal::TerminalEngine,
+        ),
         snapshot,
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         native_bootstrap,

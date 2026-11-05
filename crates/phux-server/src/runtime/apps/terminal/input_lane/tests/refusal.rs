@@ -76,8 +76,8 @@ async fn apply_input_reports_mailbox_full_without_handoff() {
     let facet = bundle.handle.terminal().expect("facet");
     for _ in 0..DEFAULT_INPUT_MAILBOX {
         facet
-            .encoded_input
-            .try_send(EncodedInputRequest::legacy(vec![b'x']))
+            .ordered_input
+            .submit(EncodedInputRequest::legacy(vec![b'x']))
             .expect("fill mailbox");
     }
     let state = SharedState::new();

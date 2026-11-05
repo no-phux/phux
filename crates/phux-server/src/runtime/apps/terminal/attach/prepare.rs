@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 /// Is this ATTACH a replacement for the same client's existing attachment to
 /// the same session?
@@ -243,7 +243,7 @@ pub(super) struct ConsumerRegistration {
     /// The actor's tick is this consumer's sole live emitter: no pump.
     pub(super) tick_managed: bool,
     /// Atomic synthesized bootstrap captured in the same actor turn.
-    pub(super) state_sync_bootstrap: Option<phux_terminal::actor::StateSyncBootstrap>,
+    pub(super) state_sync_bootstrap: Option<phux_terminal_api::actor::StateSyncBootstrap>,
     /// The actor was gone: its mailbox was closed or it dropped the reply.
     pub(super) actor_gone: bool,
 }

@@ -102,7 +102,7 @@ pub(super) async fn answer_native_attach(
         native
             .reply
             .send(Err(
-                phux_terminal::native_state::NativeStateError::LimitExceeded,
+                phux_terminal_api::native_state::NativeStateError::LimitExceeded,
             ))
             .expect("continuation-cap failure reply");
         return;

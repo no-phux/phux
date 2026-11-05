@@ -10,11 +10,11 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, SpawnResource, SpawnResult,
 };
+use phux_server::LaunchCommand as CommandBuilder;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, Spawn, attach_by_name, command, recv_typed, send_frame,
     spawn_resource, wait_for_raw_socket,
 };
-use portable_pty::CommandBuilder;
 use tokio::net::UnixStream;
 
 use crate::common::{Server, attach, sh, spawned, wait_frame};

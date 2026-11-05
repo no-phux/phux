@@ -14,7 +14,7 @@ use crate::runtime::connections::dispatch::{ConnectionEnding, FrameFlow};
 use crate::runtime::connections::hello::NegotiatedConnection;
 use crate::runtime::handle_terminal_reply;
 use crate::state::{ClientId, Outbound};
-use phux_terminal::TerminalInput;
+use phux_terminal_api::TerminalInput;
 use tokio::sync::mpsc;
 
 /// Serve one `INPUT_*`, `RESIZE_TERMINAL`, `FRAME_ACK` or `HISTORY_REQUEST`

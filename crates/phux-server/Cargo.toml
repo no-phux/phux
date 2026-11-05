@@ -20,8 +20,8 @@ default = ["webtransport", "native-engine"]
 webtransport = ["dep:wtransport-proto", "dep:httlib-huffman"]
 # tokio-console debugger. Requires `RUSTFLAGS='--cfg tokio_unstable'`.
 tokio-console = ["dep:console-subscriber"]
-# Incremental native checkpoint capture/advertisement.
-native-engine = ["phux-terminal/native-engine"]
+# Opaque native-checkpoint hosting; the executable supplies its implementation.
+native-engine = ["phux-terminal-api/native-engine"]
 # Builds the `#[ignore]`d `stress` storms. Only `just stress` runs them, so
 # the default test build skips compiling and linking that binary.
 stress = []
@@ -30,14 +30,15 @@ measure = []
 
 
 [dependencies]
-phux-protocol = { workspace = true, features = ["server"] }
+phux-protocol.workspace = true
 phux-core.workspace = true
 # The substrate every kind shares.
 phux-resource.workspace = true
 phux-agent-session.workspace = true
+phux-agent-rules.workspace = true
 phux-tree.workspace = true
-# The Terminal app. The host reaches VT and PTY only through it.
-phux-terminal.workspace = true
+# Terminal operations only: this contract cannot link a VT or PTY implementation.
+phux-terminal-api.workspace = true
 # `Authorization: Basic` for the OpenCode host service.
 base64.workspace = true
 # Canonical scrollback bounds and config schema defaults.
@@ -140,7 +141,8 @@ phux-frozen.workspace = true
 # Tests name a seeded pane's launch directly.
 portable-pty.workspace = true
 # Terminal fixtures for the host's own tests.
-phux-terminal = { workspace = true, features = ["test-support"] }
+phux-terminal = { workspace = true, features = ["test-support", "native-engine"] }
+phux-terminal-api = { workspace = true, features = ["test-support", "native-engine"] }
 phux-agent-session = { workspace = true, features = ["test-support"] }
 # The fake loopback service the `SERVICE_HTTP_*` tests answer from.
 hyper = { version = "1", default-features = false, features = ["client", "http1", "server"] }

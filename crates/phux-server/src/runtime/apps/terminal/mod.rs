@@ -26,10 +26,16 @@ pub(crate) mod voice;
 pub(crate) use commands::TerminalApp;
 
 /// The native bootstrap profiles this build can offer.
-pub(crate) fn bootstrap_capabilities() -> phux_protocol::caps::BootstrapCapabilities {
+pub(crate) fn bootstrap_capabilities(
+    state: &crate::state::SharedState,
+) -> phux_protocol::caps::BootstrapCapabilities {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     {
-        phux_terminal::native_state::native_bootstrap_capabilities()
+        state
+            .terminal_engine()
+            .map_or_else(phux_protocol::caps::BootstrapCapabilities::new, |engine| {
+                engine.bootstrap_capabilities()
+            })
     }
     #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
     {

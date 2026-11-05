@@ -41,10 +41,9 @@ use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
 };
 use phux_agent_session::asked::{AskedPayload, AskedSource};
-use phux_terminal::TerminalInput;
-use phux_terminal::actor::{
-    ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalActor,
-    TerminalHandle,
+use phux_terminal_api::TerminalInput;
+use phux_terminal_api::actor::{
+    ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalHandle,
 };
 
 mod app;

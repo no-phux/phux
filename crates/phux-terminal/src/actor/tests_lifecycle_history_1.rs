@@ -247,7 +247,8 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
         .run_until(async {
             async fn request_prefix(
                 handle: &ResourceHandle,
-            ) -> Result<NativeBootstrapReply, crate::native_state::NativeStateError> {
+            ) -> Result<NativeBootstrapReply, phux_terminal_api::native_state::NativeStateError>
+            {
                 let (reply, replied) = oneshot::channel();
                 handle
                     .terminal()
@@ -327,12 +328,12 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
             fault.set(Some(AllocFault::Fail));
             assert!(matches!(
                 request_prefix(&handle).await,
-                Err(crate::native_state::NativeStateError::OutOfMemory)
+                Err(phux_terminal_api::native_state::NativeStateError::OutOfMemory)
             ));
             fault.set(Some(AllocFault::Panic));
             assert!(matches!(
                 request_prefix(&handle).await,
-                Err(crate::native_state::NativeStateError::OutOfMemory)
+                Err(phux_terminal_api::native_state::NativeStateError::OutOfMemory)
             ));
 
             let prefix = request_prefix(&handle).await.expect("bootstrap capture");

@@ -9,7 +9,7 @@ async fn handle_attach_bounds_snapshot_sources_sequentially() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let state = SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             let (wid, first) = state.with_mut(|s| s.seed_session("multi"));
             let mut panes = vec![first];
             state.with_mut(|s| {
@@ -80,7 +80,7 @@ async fn attach_registers_and_detach_unregisters_consumer_lifecycle() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let state = SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             let (_sid, pid) = state.with_mut(|s| s.seed_session("lifecycle"));
             let mut rx = register_stub(&state, pid);
             let (out_tx, mut out_rx) =
@@ -174,7 +174,7 @@ async fn native_resync_capture_failure_closes_connection_and_rolls_back_consumer
     let local = LocalSet::new();
     local
         .run_until(async {
-            let state = SharedState::new();
+            let state = crate::runtime::apps::terminal::test_support::terminal_state();
             let (_sid, terminal) = state.with_mut(|s| s.seed_session("native-fatal"));
             let (handle, mut rx) = stub_terminal();
             let output_tx = handle.output.clone();

@@ -44,7 +44,7 @@ fn perf_control_writes_a_trace_and_switches_heap_accounting() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let cmd = portable_pty::CommandBuilder::new("/bin/sh");
+        let cmd = phux_server::LaunchCommand::new("/bin/sh");
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "perf-control", cmd);
 

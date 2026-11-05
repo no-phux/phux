@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::ViewportInfo;
-use portable_pty::CommandBuilder;
+use phux_server::LaunchCommand as CommandBuilder;
 
 use phux_server_testkit::builder::E2eBuilder;
 use phux_server_testkit::tracing_capture::TracingCapture;

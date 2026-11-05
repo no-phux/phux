@@ -11,7 +11,7 @@ use super::*;
 fn live_session_probe(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
-) -> phux_terminal::agent_detect::live_session::LiveSessionProbe {
+) -> phux_terminal_api::agent_detect::LiveSessionProbe {
     let state = state.clone();
     std::rc::Rc::new(move || state.with(|s| s.has_live_agent_session_child(terminal)))
 }
@@ -107,12 +107,12 @@ pub(in crate::runtime) fn set_agent_session(
 pub(in crate::runtime) fn register_pty_command(
     s: &mut crate::state::ServerState,
     terminal: phux_core::ids::ResourceId,
-    cmd: &mut phux_terminal::pty::CommandBuilder,
+    cmd: &mut phux_terminal_api::launch::LaunchCommand,
 ) -> phux_protocol::ids::ResourceId {
     stamp_spawn_cwd(s, terminal, spawn_cwd_of(cmd));
     let wire = s.intern_resource_wire(terminal);
-    phux_terminal::actor::apply_terminal_id(cmd, &wire);
-    phux_terminal::actor::apply_server_socket(cmd, s.server_socket_path());
+    phux_terminal_api::launch::apply_terminal_id(cmd, &wire);
+    phux_terminal_api::launch::apply_server_socket(cmd, s.server_socket_path());
     wire
 }
 
@@ -126,13 +126,13 @@ pub(in crate::runtime) fn register_pty_command(
 pub(in crate::runtime) fn launch_pane_actor(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
-    cmd: Option<phux_terminal::pty::CommandBuilder>,
+    cmd: Option<phux_terminal_api::launch::LaunchCommand>,
     (cols, rows): (u16, u16),
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     attribution: SpawnAttribution,
-) -> Result<phux_protocol::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
+) -> Result<phux_protocol::ids::ResourceId, phux_terminal_api::actor::TerminalActorError> {
     launch_pane_actor_with_failure_policy(
         state,
         terminal,
@@ -153,24 +153,34 @@ pub(in crate::runtime) fn launch_pane_actor(
 pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
-    cmd: Option<phux_terminal::pty::CommandBuilder>,
+    cmd: Option<phux_terminal_api::launch::LaunchCommand>,
     (cols, rows): (u16, u16),
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     attribution: SpawnAttribution,
     honor_exit_policy_on_failure: bool,
-) -> Result<phux_protocol::ids::ResourceId, phux_terminal::actor::TerminalActorError> {
+) -> Result<phux_protocol::ids::ResourceId, phux_terminal_api::actor::TerminalActorError> {
     let has_pty = cmd.is_some();
     let terminal_token = root_token.child_token();
-    let bundle = match TerminalActor::build_with_token_and_colors(
-        cols,
-        rows,
-        cmd,
-        scrollback,
-        terminal_token.clone(),
-        default_colors,
-    ) {
+    let reports = engine_reports(state, terminal);
+    let built = state
+        .terminal_engine()
+        .ok_or_else(|| {
+            phux_terminal_api::TerminalActorError::Refused("no Terminal engine supplied".into())
+        })
+        .and_then(|engine| {
+            engine.build(phux_terminal_api::EngineBuild {
+                cols,
+                rows,
+                source: phux_terminal_api::EngineSource::Fresh(cmd),
+                scrollback,
+                token: terminal_token.clone(),
+                default_colors,
+                reports,
+            })
+        });
+    let bundle = match built {
         Ok(bundle) => bundle,
         Err(err) => {
             state.with_mut(|s| {
@@ -183,21 +193,21 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
             return Err(err);
         }
     };
-    let phux_terminal::actor::TerminalActorBundle {
-        mut actor,
+    let phux_terminal_api::EngineBundle {
+        run,
         handle,
         exit_notify,
         proc,
+        events,
+        agent_state,
+        program_status,
         ..
     } = bundle;
-    // Sinks go in before `actor.run()` consumes the actor.
-    let wiring = wire_pane_actor(state, terminal, &mut actor);
+    let wiring = PaneWiring::new(events, agent_state, program_status);
     let wire_terminal_id = state.with_mut(|s| {
         let wire = s
-            .spawn_resource_actor(terminal, handle, terminal_token, actor.run())
-            .map_err(|error| {
-                phux_terminal::actor::TerminalActorError::Refused(error.to_string())
-            })?;
+            .spawn_resource_actor(terminal, handle, terminal_token, run)
+            .map_err(|error| phux_terminal_api::actor::TerminalActorError::Refused(error.to_string()))?;
         // The executor report: the activation now holds a live process.
         s.activation_started(terminal, proc);
         if has_pty {
@@ -210,7 +220,7 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
             }
         }
         journal_pane_spawned(s, &wire, attribution);
-        Ok::<_, phux_terminal::actor::TerminalActorError>(wire)
+        Ok::<_, phux_terminal_api::actor::TerminalActorError>(wire)
     })?;
     let events = wiring.start(state, &wire_terminal_id);
     spawn_resource_exit_watcher(
@@ -223,44 +233,46 @@ pub(in crate::runtime) fn launch_pane_actor_with_failure_policy(
     Ok(wire_terminal_id)
 }
 
-/// The runtime ends of the sinks [`wire_pane_actor`] installed on a pane's
-/// actor, held until the pane's wire id is known.
+/// Runtime report channels, held until the pane's wire id is known.
 pub(crate) struct PaneWiring {
     /// The runtime end of the pane's agent-event sink (ADR-0123).
     events: crate::resource::event_sink::EventSource,
     /// The runtime end of the detector's sink (ADR-0046); `None` for a
     /// no-PTY pane, which never gets a detector.
-    agent_state: Option<tokio::sync::mpsc::Receiver<phux_terminal::agent_detect::AgentDetectEvent>>,
+    agent_state:
+        Option<tokio::sync::mpsc::Receiver<phux_terminal_api::agent_detect::AgentDetectEvent>>,
     /// Reliable OSC 7501 snapshots, shared by fresh and resumed panes.
-    program_status: tokio::sync::watch::Receiver<Vec<phux_terminal::actor::program_status::Record>>,
+    program_status:
+        tokio::sync::watch::Receiver<Vec<phux_terminal_api::agent_detect::ProgramStatusRecord>>,
 }
 
-/// Install every runtime sink and probe a pane's actor needs: its event sink
-/// and, with a PTY, the agent detector's sink and live-session probe (the
-/// actor arms its detector at run start only when the sink is present). The
-/// one arming path for a fresh spawn and an ADR-0032 rebuild, so a resumed
-/// pane cannot come back without detection. Call before `actor.run()`.
-pub(crate) fn wire_pane_actor(
+pub(crate) fn engine_reports(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
-    actor: &mut TerminalActor,
-) -> PaneWiring {
-    let (event_sink, events) = crate::resource::event_sink::event_sink(EVENT_SINK_CAPACITY);
-    actor.set_event_sink(event_sink);
-    let agent_state = actor.has_pty().then(|| {
-        let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
-        actor.set_agent_state_sink(agent_tx);
-        actor.set_live_session_probe(live_session_probe(state, terminal));
-        agent_rx
-    });
-    PaneWiring {
-        events,
-        agent_state,
-        program_status: actor.subscribe_program_status(),
+) -> phux_terminal_api::EngineReports {
+    phux_terminal_api::EngineReports {
+        event_capacity: EVENT_SINK_CAPACITY,
+        agent_capacity: AGENT_STATE_SINK_CAPACITY,
+        live_session: Some(live_session_probe(state, terminal)),
     }
 }
 
 impl PaneWiring {
+    pub(crate) const fn new(
+        events: crate::resource::event_sink::EventSource,
+        agent_state: Option<
+            tokio::sync::mpsc::Receiver<phux_terminal_api::agent_detect::AgentDetectEvent>,
+        >,
+        program_status: tokio::sync::watch::Receiver<
+            Vec<phux_terminal_api::agent_detect::ProgramStatusRecord>,
+        >,
+    ) -> Self {
+        Self {
+            events,
+            agent_state,
+            program_status,
+        }
+    }
     /// Start the detector's metadata drain for the pane at `wire`, and hand
     /// back its events for the exit watcher, which is their drain.
     pub(crate) fn start(
@@ -287,7 +299,7 @@ impl PaneWiring {
 /// argv and cwd. The server-applied environment (`TERM`, the pane and
 /// socket variables) is reapplied at every launch, so it is not recorded.
 pub(crate) fn launch_of(
-    cmd: Option<&phux_terminal::pty::CommandBuilder>,
+    cmd: Option<&phux_terminal_api::launch::LaunchCommand>,
 ) -> phux_core::TerminalLaunch {
     let Some(cmd) = cmd else {
         return phux_core::TerminalLaunch::default();

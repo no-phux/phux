@@ -15,10 +15,11 @@ use serde_json::json;
 const PROCESS_NAME: &str = "phux server";
 
 /// Handle one `PERF_CONTROL`.
-pub(super) async fn handle(op: PerfOp) -> CommandResult {
+pub(super) async fn handle(state: &crate::state::SharedState, op: PerfOp) -> CommandResult {
+    let tables = crate::perf::engine_tables(state);
     match op {
-        PerfOp::TraceStart => trace_start(),
-        PerfOp::TraceStop => trace_stop().await,
+        PerfOp::TraceStart => trace_start(tables),
+        PerfOp::TraceStop => trace_stop(tables).await,
         PerfOp::AllocOn => alloc_switch(true),
         PerfOp::AllocOff => alloc_switch(false),
         // The decoder refuses an undefined op first; one built in process
@@ -49,7 +50,7 @@ pub const TRACE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(6
 /// Trace files kept in the traces directory; older ones are removed.
 const KEEP_TRACES: usize = 20;
 
-fn trace_start() -> CommandResult {
+fn trace_start(tables: Vec<&'static [phux_perf::Metric]>) -> CommandResult {
     if !trace::start(trace::DEFAULT_MAX_EVENTS) {
         return refuse(
             ErrorCode::InvalidCommand,
@@ -62,7 +63,7 @@ fn trace_start() -> CommandResult {
         let Some(capture) = trace::stop_generation(generation) else {
             return;
         };
-        match tokio::task::spawn_blocking(move || write_capture(&capture)).await {
+        match tokio::task::spawn_blocking(move || write_capture(&capture, &tables)).await {
             Ok(Ok(reply)) => tracing::warn!(
                 path = %reply["path"],
                 "perf trace was never stopped; stopped it at the deadline and saved it"
@@ -75,7 +76,7 @@ fn trace_start() -> CommandResult {
     ok_json(&json!({ "tracing": true, "deadline_secs": TRACE_DEADLINE.as_secs() }))
 }
 
-async fn trace_stop() -> CommandResult {
+async fn trace_stop(tables: Vec<&'static [phux_perf::Metric]>) -> CommandResult {
     let Some(capture) = trace::stop() else {
         return refuse(
             ErrorCode::InvalidCommand,
@@ -84,7 +85,7 @@ async fn trace_stop() -> CommandResult {
     };
     // Serializing and writing a full capture takes long enough to stall the
     // connection's runtime thread; do it off it.
-    let written = tokio::task::spawn_blocking(move || write_capture(&capture)).await;
+    let written = tokio::task::spawn_blocking(move || write_capture(&capture, &tables)).await;
     match written {
         Ok(Ok(reply)) => ok_json(&reply),
         Ok(Err(message)) => {
@@ -99,7 +100,10 @@ async fn trace_stop() -> CommandResult {
 }
 
 /// Write `capture` to a fresh file under the traces directory and describe it.
-fn write_capture(capture: &trace::Capture) -> Result<serde_json::Value, String> {
+fn write_capture(
+    capture: &trace::Capture,
+    tables: &[&'static [phux_perf::Metric]],
+) -> Result<serde_json::Value, String> {
     static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _writer = WRITER
         .lock()
@@ -112,11 +116,7 @@ fn write_capture(capture: &trace::Capture) -> Result<serde_json::Value, String> 
     let (path, file) = trace::create_trace_file(&dir, "server")
         .map_err(|err| format!("cannot create trace in {}: {err}", dir.display()))?;
     capture
-        .write_chrome_json(
-            std::io::BufWriter::new(file),
-            PROCESS_NAME,
-            &crate::perf::tables(),
-        )
+        .write_chrome_json(std::io::BufWriter::new(file), PROCESS_NAME, tables)
         .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
     tracing::info!(path = %path.display(), events = capture.event_count(), "perf trace written");
     Ok(json!({

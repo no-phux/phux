@@ -28,7 +28,7 @@ fn spawn_reloading_hub(
     let source_registry = Arc::clone(registry);
     let source = SatelliteSource::new(move || Ok(source_registry.lock().unwrap().clone()));
     let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(cfg)
+        phux_server_testkit::terminal_server(cfg)
             .hub(Vec::new())
             .hub_reload(source)
             .run_async(async move {

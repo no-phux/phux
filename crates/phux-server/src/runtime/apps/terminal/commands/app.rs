@@ -8,7 +8,7 @@ use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
 use phux_protocol::ids::{OperationId, ResourceKey, Revision};
 use phux_protocol::wire::frame::SpawnError;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 use super::*;
 use crate::resource::ResourceKind;
@@ -48,7 +48,7 @@ impl ResourceApp for TerminalApp {
     }
 
     fn metrics(&self) -> &'static [phux_perf::Metric] {
-        phux_terminal::perf::TABLE
+        &[] // Engine metrics are supplied explicitly by the runtime composition.
     }
 
     fn release_consumer(&self, handle: &ResourceHandle, client: ClientId) {
@@ -141,7 +141,7 @@ impl ResourceApp for TerminalApp {
 
 /// The Terminal facet of a handle `app_for` routed here. A miss means the
 /// handle's kind and facet disagree, which leaks a consumer: say so.
-fn routed_terminal(handle: &ResourceHandle) -> Option<&phux_terminal::actor::TerminalHandle> {
+fn routed_terminal(handle: &ResourceHandle) -> Option<&phux_terminal_api::actor::TerminalHandle> {
     handle
         .terminal()
         .inspect_err(|error| tracing::error!(%error, "consumer teardown skipped"))
@@ -157,11 +157,11 @@ fn release_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let _ = terminal
         .native_release
-        .try_send(phux_terminal::actor::NativeReleaseRequest { owner: client_id.0 });
+        .try_send(phux_terminal_api::actor::NativeReleaseRequest { owner: client_id.0 });
     let (reply_tx, _reply_rx) = oneshot::channel();
     match terminal
         .consumer_detach
-        .try_send(phux_terminal::actor::ConsumerDetachRequest {
+        .try_send(phux_terminal_api::actor::ConsumerDetachRequest {
             client_id: crate::runtime::wire_client(client_id),
             reply: reply_tx,
         }) {
@@ -190,7 +190,7 @@ async fn fence_terminal_consumer(handle: &ResourceHandle, client_id: ClientId) {
     let (reply_tx, reply_rx) = oneshot::channel();
     let _ = terminal
         .consumer_detach
-        .send(phux_terminal::actor::ConsumerDetachRequest {
+        .send(phux_terminal_api::actor::ConsumerDetachRequest {
             client_id: crate::runtime::wire_client(client_id),
             reply: reply_tx,
         })

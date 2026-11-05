@@ -24,20 +24,20 @@ use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, E
 use thiserror::Error;
 
 /// Opaque manager-local generation identity: SHA-256 of READY bytes and nonce.
-pub const TOKEN_LEN: usize = 32;
+pub use phux_terminal_api::native_state::{OpaqueHistoryCursor, TOKEN_LEN};
 const PROGRESSIVE_CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttySnapshotV1 as u16;
 /// Continuation tracking limit so a frozen capture can include mid-sequence VT.
 const CONTINUATION_LIMIT: usize = 64 * 1024 * 1024;
 
-/// Greatest number of opaque codec records retained before READY publication.
-pub(crate) const MAX_NATIVE_PREFIX_CHUNKS: usize = 4_096;
 /// Greatest aggregate opaque codec payload retained before READY publication.
-pub(crate) const MAX_NATIVE_PREFIX_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) use phux_terminal_api::native_state::MAX_NATIVE_PREFIX_BYTES;
+/// Greatest number of opaque codec records retained before READY publication.
+pub(crate) use phux_terminal_api::native_state::MAX_NATIVE_PREFIX_CHUNKS;
 /// Frames a native bootstrap spends beyond its chunks: one BEGIN and one READY.
 pub(crate) const NATIVE_BOOTSTRAP_FRAMING_FRAMES: usize = 2;
 /// Frame budget of a full native bootstrap: every prefix chunk plus framing.
-pub(crate) const MAX_NATIVE_BOOTSTRAP_FRAMES: usize =
-    MAX_NATIVE_PREFIX_CHUNKS + NATIVE_BOOTSTRAP_FRAMING_FRAMES;
+#[cfg(test)]
+pub(crate) use phux_terminal_api::native_state::MAX_NATIVE_BOOTSTRAP_FRAMES;
 
 /// Failures from native capture, history, and generation management.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -117,8 +117,35 @@ impl From<GhosttyError> for NativeStateError {
     }
 }
 
-/// One authenticated engine token carried opaquely by protocol 0.7.
-pub type OpaqueHistoryCursor = [u8; TOKEN_LEN];
+impl From<NativeStateError> for phux_terminal_api::native_state::NativeStateError {
+    fn from(error: NativeStateError) -> Self {
+        match error {
+            NativeStateError::UnsupportedFeature => Self::UnsupportedFeature,
+            NativeStateError::UnknownVersion => Self::UnknownVersion,
+            NativeStateError::Corruption => Self::Corruption,
+            NativeStateError::Truncated => Self::Truncated,
+            NativeStateError::LimitExceeded => Self::LimitExceeded,
+            NativeStateError::Stale => Self::Stale,
+            NativeStateError::Pruned => Self::Pruned,
+            NativeStateError::WrongGeneration => Self::WrongGeneration,
+            NativeStateError::WrongTerminal => Self::WrongTerminal,
+            NativeStateError::InvalidHandle => Self::InvalidHandle,
+            NativeStateError::ImportBusy => Self::ImportBusy,
+            NativeStateError::OutOfMemory => Self::OutOfMemory,
+            NativeStateError::OutOfSpace {
+                required_bytes,
+                required_rows,
+            } => Self::OutOfSpace {
+                required_bytes,
+                required_rows,
+            },
+            NativeStateError::InvalidState => Self::InvalidState,
+            NativeStateError::ContinuationUnavailable => Self::ContinuationUnavailable,
+            NativeStateError::Reset => Self::Reset,
+            NativeStateError::Resize => Self::Resize,
+        }
+    }
+}
 
 /// Probe the linked engine and advertise official progressive snapshot v1.
 #[must_use]

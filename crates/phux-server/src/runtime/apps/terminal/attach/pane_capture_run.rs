@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 impl PaneCaptureContext<'_> {
     /// Capture one pane's native checkpoint against the remaining aggregate
@@ -16,10 +16,10 @@ impl PaneCaptureContext<'_> {
         staging: &mut AttachStaging,
         terminal_id: ResourceId,
         wire_terminal_id: &phux_protocol::ids::ResourceId,
-        terminal: &phux_terminal::actor::TerminalHandle,
+        terminal: &phux_terminal_api::actor::TerminalHandle,
     ) -> Result<(), CaptureFailure> {
         let captured = request_native_checkpoint(terminal, |reply| {
-            phux_terminal::actor::NativeBootstrapRequest {
+            phux_terminal_api::actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
                 terminal_id: wire_terminal_id.clone(),
                 stream_id: self.stream_id,
@@ -82,11 +82,11 @@ impl PaneCaptureContext<'_> {
     /// cut it was taken at.
     async fn request_pane_snapshot(
         &self,
-        terminal: &phux_terminal::actor::TerminalHandle,
+        terminal: &phux_terminal_api::actor::TerminalHandle,
         terminal_id: ResourceId,
         max_bytes: usize,
         max_frames: usize,
-    ) -> Result<(phux_terminal::grid::SnapshotBytes, u64), CaptureFailure> {
+    ) -> Result<(phux_terminal_api::grid::SnapshotBytes, u64), CaptureFailure> {
         let (reply_tx, reply_rx) = oneshot::channel();
         if terminal
             .snapshot
@@ -137,14 +137,17 @@ impl PaneCaptureContext<'_> {
         staging: &mut AttachStaging,
         pane: AttachSnapshotPane,
     ) -> Result<(), CaptureFailure> {
-        let synthesized_source_max =
-            bootstrap_source_ceiling(staging.budget.remaining_bytes(), self.client_caps);
         let terminal_id = pane.terminal_id;
         let handle = pane.handle;
         let terminal = handle
             .terminal()
             .map_err(|error| error.to_string())?
             .clone();
+        let synthesized_source_max = bootstrap_source_ceiling(
+            &terminal.presentation,
+            staging.budget.remaining_bytes(),
+            self.client_caps,
+        );
         staging.handles.push(handle.clone());
         let wire_terminal_id = pane.wire_terminal_id;
         let registration = self
@@ -175,6 +178,7 @@ impl PaneCaptureContext<'_> {
         }
         if let Some(state_sync) = registration.state_sync_bootstrap {
             return Ok(self.stage_synthesized_frames(
+                &terminal.presentation,
                 staging,
                 wire_terminal_id,
                 state_sync.snapshot,
@@ -197,6 +201,7 @@ impl PaneCaptureContext<'_> {
             )
             .await?;
         self.stage_synthesized_frames(
+            &terminal.presentation,
             staging,
             wire_terminal_id,
             snapshot,

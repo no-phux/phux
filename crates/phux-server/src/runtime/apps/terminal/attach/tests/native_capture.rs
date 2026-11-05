@@ -38,7 +38,9 @@ async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing()
             let invalidated = bootstrap_rx.recv().await.expect("exit capture request");
             invalidated
                 .reply
-                .send(Err(phux_terminal::native_state::NativeStateError::Resize))
+                .send(Err(
+                    phux_terminal_api::native_state::NativeStateError::Resize,
+                ))
                 .expect("pump awaits its capture");
             let request = resync_request_from(&mut resize_rx, &mut consumer).await;
             assert_eq!(

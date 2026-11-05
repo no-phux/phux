@@ -5,7 +5,7 @@
 )]
 
 use super::*;
-use phux_terminal::actor::TerminalResource as _;
+use phux_terminal_api::actor::TerminalResource as _;
 
 /// The negotiated shape shared by every pane capture in one ATTACH.
 pub(super) struct PaneCaptureContext<'a> {
@@ -132,7 +132,7 @@ impl PaneCaptureContext<'_> {
         terminal_id: ResourceId,
         wire_terminal_id: &phux_protocol::ids::ResourceId,
         handle: &ResourceHandle,
-        terminal: &phux_terminal::actor::TerminalHandle,
+        terminal: &phux_terminal_api::actor::TerminalHandle,
     ) {
         let output_rx = handle.output.subscribe();
         let ctx = OutputPumpContext {
@@ -151,7 +151,6 @@ impl PaneCaptureContext<'_> {
             drain: Some(CancellationToken::new()),
             snapshot: Some(terminal.snapshot.clone()),
             last_seq: None,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             terminal: terminal.clone(),
         };
         let pump_state = self.state.clone();
@@ -189,17 +188,21 @@ impl PaneCaptureContext<'_> {
     /// `label` names the capture in the rollback reason the client is told.
     pub(super) fn stage_synthesized_frames(
         &self,
+        presentation: &phux_terminal_api::Presentation,
         staging: &mut AttachStaging,
         wire_terminal_id: phux_protocol::ids::ResourceId,
-        snapshot: phux_terminal::grid::SnapshotBytes,
+        snapshot: phux_terminal_api::grid::SnapshotBytes,
         base_seq: u64,
         label: &str,
     ) -> Result<(), String> {
         let cols = snapshot.cols;
         let rows = snapshot.rows;
-        let Ok(adapted) =
-            adapt_bootstrap_snapshot(snapshot, self.client_caps, staging.budget.remaining_bytes())
-        else {
+        let Ok(adapted) = adapt_bootstrap_snapshot(
+            presentation,
+            snapshot,
+            self.client_caps,
+            staging.budget.remaining_bytes(),
+        ) else {
             return Err(format!("{label} adaptation exceeded source budget"));
         };
         debug_assert!(adapted.peak_bytes <= staging.budget.remaining_bytes());

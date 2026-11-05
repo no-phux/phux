@@ -34,7 +34,7 @@ use crate::runtime::{
     spawn_pane_with_pty_and_colors,
 };
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
-use phux_terminal::actor::{
+use phux_terminal_api::actor::{
     ConsumerAttachRequest, ConsumerDetachRequest, PwdRequest, ResizeRequest, ResizeSender,
     ResourceOutput, ResyncAudience, ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
 };

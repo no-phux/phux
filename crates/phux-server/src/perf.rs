@@ -94,6 +94,37 @@ pub(crate) fn tables() -> Vec<&'static [Metric]> {
     tables
 }
 
+pub(crate) fn engine_tables(state: &crate::state::SharedState) -> Vec<&'static [Metric]> {
+    let mut combined = Vec::new();
+    if let Some(engine) = state.terminal_engine() {
+        combined.push(engine.metrics());
+    }
+    combined.extend(tables());
+    combined
+}
+
+pub(crate) fn promote_helper_thread(name: &str) {
+    if !phux_perf::promote_current_thread() {
+        tracing::debug!(thread = name, "interactive scheduling not granted");
+    }
+}
+
+pub(crate) fn engine_report(state: &crate::state::SharedState) -> PerfReport {
+    let (epoch, baseline) = started();
+    phux_perf::snapshot_since(
+        "server",
+        &engine_tables(state),
+        epoch.elapsed(),
+        baseline.as_ref(),
+    )
+}
+
+pub(crate) fn engine_reset(state: &crate::state::SharedState) {
+    for table in engine_tables(state) {
+        phux_perf::reset(table);
+    }
+}
+
 /// Uptime epoch and the rusage read with it (the epoch restarts on upgrade
 /// re-exec while the pid's rusage survives).
 fn started() -> &'static (Instant, Option<phux_perf::ProcessStats>) {

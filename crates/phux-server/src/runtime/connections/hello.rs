@@ -158,7 +158,8 @@ pub(super) async fn negotiate_hello(
     state.with_mut(|s| {
         crate::runtime::whoami::admit_ssh_origin(s, client_id, client_caps.ssh_origin);
     });
-    let (selected_profile, bootstrap_limits) = select_hello_profile(&client_caps, client_id)?;
+    let (selected_profile, bootstrap_limits) =
+        select_hello_profile(state, &client_caps, client_id)?;
 
     let mut effective_client_caps = client_caps;
     effective_client_caps.output_mode = if matches!(
@@ -321,10 +322,11 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
 /// `CodecUnavailable`: `NativeState` requires an exact common codec and every
 /// required engine feature.
 fn select_hello_profile(
+    state: &SharedState,
     client_caps: &ClientCapabilities,
     client_id: ClientId,
 ) -> Result<(Option<BootstrapProfile>, BootstrapLimits), ConnectionClose> {
-    let server_bootstrap = crate::runtime::apps::bootstrap_capabilities();
+    let server_bootstrap = crate::runtime::apps::bootstrap_capabilities(state);
     if client_caps.bootstrap.profiles.as_wire() == 0 {
         debug!(
             ?client_id,

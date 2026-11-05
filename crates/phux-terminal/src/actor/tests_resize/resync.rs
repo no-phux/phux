@@ -14,6 +14,7 @@ async fn pixel_only_resize_updates_winsize_without_resync() {
             let handle = bundle.handle.clone();
             let mut out = handle.output.subscribe();
             let token = bundle.token;
+            let input_snapshot = bundle.actor.input_snapshot_tx.subscribe();
             let join = tokio::task::spawn_local(bundle.actor.run());
 
             handle
@@ -52,12 +53,7 @@ async fn pixel_only_resize_updates_winsize_without_resync() {
                 "pixel-only resize must reach the kernel winsize"
             );
             assert_eq!(
-                handle
-                    .terminal()
-                    .expect("terminal facet")
-                    .input_snapshot
-                    .borrow()
-                    .cell_px,
+                input_snapshot.borrow().cell_px,
                 (9, 18),
                 "mouse encoding must see the new cell size",
             );

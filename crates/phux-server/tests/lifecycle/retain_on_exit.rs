@@ -459,7 +459,7 @@ fn keep_empty_session_and_retained_pane_compose() {
 fn a_seed_pane_is_retained_when_retention_is_the_default() {
     phux_server_testkit::run_local(async {
         let mut h = Harness::start(|cfg| {
-            let mut seed = portable_pty::CommandBuilder::new("/bin/sh");
+            let mut seed = phux_server::LaunchCommand::new("/bin/sh");
             seed.args(["-c", "read _; exit 3"]);
             phux_server_testkit::seed_pty(cfg, seed);
             cfg.retain = RetainPolicy {

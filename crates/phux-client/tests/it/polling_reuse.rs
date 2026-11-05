@@ -55,7 +55,7 @@ impl Fixture {
             ..ServerConfig::with_default_socket()
         };
         let server = tokio::task::spawn_local(async move {
-            ServerRuntime::new(config)
+            ServerRuntime::new(config, std::sync::Arc::new(phux_terminal::TerminalEngine))
                 .run_async(async move {
                     let _ = stop.await;
                 })

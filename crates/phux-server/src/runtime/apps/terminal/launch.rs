@@ -3,8 +3,9 @@
 
 use crate::state::{ServerState, SharedState};
 
+use phux_terminal_api::launch as engine_launch;
 /// How a pane's process starts. Opaque to the host.
-pub(crate) type LaunchCommand = phux_terminal::pty::CommandBuilder;
+pub(crate) use phux_terminal_api::launch::LaunchCommand;
 
 /// A command from a non-empty request argv.
 pub(crate) fn argv_command(argv: Option<Vec<String>>) -> Option<LaunchCommand> {
@@ -62,12 +63,12 @@ pub(crate) fn named_session_command(
     let (term, shell, login_shell) =
         state.with(|s| (s.term().to_owned(), s.shell().to_owned(), s.login_shell()));
     let mut seed_cmd = argv_command(command)
-        .unwrap_or_else(|| phux_terminal::actor::default_shell_command(&shell, login_shell));
-    phux_terminal::actor::apply_spawn_cwd(&mut seed_cmd, cwd, name);
+        .unwrap_or_else(|| engine_launch::default_shell_command(&shell, login_shell));
+    engine_launch::apply_spawn_cwd(&mut seed_cmd, cwd, name);
     for (key, value) in env {
         seed_cmd.env(key, value);
     }
-    phux_terminal::actor::apply_term(&mut seed_cmd, &term);
+    engine_launch::apply_term(&mut seed_cmd, &term);
     seed_cmd
 }
 
@@ -79,10 +80,10 @@ pub(crate) fn seed_pane_command(
 ) -> LaunchCommand {
     let mut cmd = configured.unwrap_or_else(|| {
         let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
-        phux_terminal::actor::default_shell_command(&shell, login_shell)
+        engine_launch::default_shell_command(&shell, login_shell)
     });
     let term = state.with(|s| s.term().to_owned());
-    phux_terminal::actor::apply_term(&mut cmd, &term);
+    engine_launch::apply_term(&mut cmd, &term);
     cmd
 }
 
@@ -91,16 +92,16 @@ pub(crate) fn seed_pane_command(
 pub(crate) fn spec_command(s: &ServerState, launch: &phux_core::TerminalLaunch) -> LaunchCommand {
     let launch = launch.clone();
     let mut cmd = argv_command((!launch.argv.is_empty()).then_some(launch.argv))
-        .unwrap_or_else(|| phux_terminal::actor::default_shell_command(s.shell(), s.login_shell()));
+        .unwrap_or_else(|| engine_launch::default_shell_command(s.shell(), s.login_shell()));
     // A recorded launch directory is intent, not a hint. If it disappears
     // after validation, fail the activation rather than execute elsewhere.
     if let Some(cwd) = &launch.cwd {
-        phux_terminal::actor::apply_strict_spawn_cwd(&mut cmd, cwd);
+        engine_launch::apply_strict_spawn_cwd(&mut cmd, cwd);
     }
     for (key, value) in launch.env {
         cmd.env(key, value);
     }
-    phux_terminal::actor::apply_term(&mut cmd, s.term());
+    engine_launch::apply_term(&mut cmd, s.term());
     cmd
 }
 

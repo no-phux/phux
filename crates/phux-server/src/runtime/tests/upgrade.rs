@@ -36,7 +36,7 @@ async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
                 "no PTY crosses for a retained pane"
             );
 
-            let resumed = SharedState::new();
+            let resumed = crate::runtime::apps::terminal::test_support::terminal_state();
             let root = CancellationToken::new();
             resume_session_tree(&resumed, &blob, &root).expect("resume");
             let pane = resumed
@@ -99,7 +99,7 @@ async fn graceful_upgrade_retires_durable_screens_without_purging_results() {
             });
             old.activation_ended(pane, phux_core::ExitOutcome::exited(5), false);
             let blob = old.build_upgrade_blob(7).await;
-            let resumed = SharedState::new();
+            let resumed = crate::runtime::apps::terminal::test_support::terminal_state();
             let root = CancellationToken::new();
             resume_session_tree(&resumed, &blob, &root).unwrap();
             let pane = resumed
@@ -150,7 +150,7 @@ async fn transactional_resume_serves_on_the_adopted_listener() {
             };
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
             let server = tokio::task::spawn_local(async move {
-                ServerRuntime::new(cfg)
+                ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
                     .resume(resume_fd)
                     .overlay_detect(Vec::new)
                     .run_async(async move {
@@ -195,12 +195,13 @@ async fn a_refused_posture_on_resume_keeps_the_panes_and_drops_the_remote_door()
                 socket_path: dir.path().join("cold.sock"),
                 ..ServerConfig::with_default_socket()
             };
-            let refused = ServerRuntime::new(cold)
-                .listen_quic(quic)
-                .overlay_detect(Vec::new)
-                .run_async(std::future::pending())
-                .await
-                .expect_err("a cold start refuses no mode beside a listener");
+            let refused =
+                ServerRuntime::new(cold, std::sync::Arc::new(phux_terminal::TerminalEngine))
+                    .listen_quic(quic)
+                    .overlay_detect(Vec::new)
+                    .run_async(std::future::pending())
+                    .await
+                    .expect_err("a cold start refuses no mode beside a listener");
             assert!(
                 matches!(
                     refused,
@@ -219,7 +220,7 @@ async fn a_refused_posture_on_resume_keeps_the_panes_and_drops_the_remote_door()
             let (report_tx, report_rx) = tokio::sync::oneshot::channel();
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
             let server = tokio::task::spawn_local(async move {
-                ServerRuntime::new(cfg)
+                ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
                     .resume(resume_fd)
                     .listen_quic(quic)
                     .overlay_detect(Vec::new)
@@ -284,7 +285,7 @@ async fn dangling_blob_refuses_to_serve_after_resume() {
                 socket_path: path.clone(),
                 ..ServerConfig::with_default_socket()
             };
-            let err = ServerRuntime::new(cfg)
+            let err = ServerRuntime::new(cfg, std::sync::Arc::new(phux_terminal::TerminalEngine))
                 .resume(resume_fd)
                 .overlay_detect(Vec::new)
                 .run_async(std::future::pending())

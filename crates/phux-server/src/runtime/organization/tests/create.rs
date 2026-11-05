@@ -5,7 +5,7 @@ fn lookup_refuses_another_sessions_creation_receipt() {
     use phux_protocol::ids::ResourceKind;
     use phux_protocol::wire::frame::{CreatePlacement, ExitPolicy, LaunchMode};
     run(async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let open = |n, name: &str| Command::SessionCreate {
             operation: op(n),
@@ -67,7 +67,7 @@ fn lookup_refuses_another_sessions_creation_receipt() {
 #[test]
 fn create_rename_and_page_round_trip_with_typed_refusals() {
     run(async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let create = |n, name: &str| Command::SessionCreate {
             operation: op(n),
@@ -164,7 +164,7 @@ fn a_deferred_create_stays_dormant_until_relaunched_with_its_provenance() {
     use phux_protocol::wire::frame::{LaunchMode, RESOURCE_AGENT_SESSION_KEY, Scope};
 
     run(async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let (session, _) = state.with_mut(|s| s.seed_session("work"));
         let session =
@@ -232,7 +232,7 @@ fn a_resource_key_grant_reaches_the_activation_a_relaunch_starts() {
     use phux_protocol::wire::frame::LaunchMode;
 
     run(async {
-        let state = SharedState::new();
+        let state = crate::runtime::apps::terminal::test_support::terminal_state();
         let root = CancellationToken::new();
         let (session, _) = state.with_mut(|s| s.seed_session("work"));
         let session =
