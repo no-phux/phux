@@ -90,6 +90,9 @@ impl Desk {
     }
 
     pub(in crate::desk) fn copy(&mut self, tx: &mut Tx) {
+        if self.copy_document(tx) {
+            return;
+        }
         match self.selected() {
             Selected::Text(text) => tx.copy(text),
             Selected::TooLarge => self.say(
@@ -101,7 +104,11 @@ impl Desk {
     }
 
     /// Everything the focused view holds, scrollback included.
-    pub(in crate::desk) fn select_all(&mut self) {
+    pub(in crate::desk) fn select_all(&mut self, tx: &mut Tx) {
+        if let Some(key) = self.document_text_key() {
+            tx.select_all_text(key);
+            return;
+        }
         let engine = self.client.as_ref().and_then(|client| client.engine());
         if let (Some(engine), Some(view)) = (engine, self.shown.as_ref().and_then(|s| s.view)) {
             let _ = engine.select_all_view(view);

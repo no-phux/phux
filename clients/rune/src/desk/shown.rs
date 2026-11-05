@@ -11,6 +11,7 @@ use super::{Desk, NoticeKind, Shown, WANTED_GRACE, input, sessions};
 
 impl Desk {
     pub(super) fn want(&mut self, terminal: ResourceId) {
+        self.retry_document(&terminal);
         self.resources.returning = None;
         if let Some(document) = self.resources.entries.get(&terminal) {
             self.resources.dismissed.remove(&document.record.key);
@@ -136,6 +137,7 @@ impl Desk {
         let Some(target) = self.target(client) else {
             return false;
         };
+        self.subscribe_document(client, &target);
         if self.shown.as_ref().is_some_and(|s| s.terminal == target) {
             self.wanted = None;
             return false;

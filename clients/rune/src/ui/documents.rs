@@ -9,6 +9,7 @@ use crate::desk::resources::Body;
 
 pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
     let focused = id.clone();
+    let selected = id.clone();
     let measured = id.clone();
     let document = &desk.resources.entries[id];
     let label = document.record.name.as_deref().unwrap_or("Document");
@@ -16,6 +17,7 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
         &document.body,
         desk.pane_area(id).unwrap_or([0.0, 0.0]),
         ink,
+        id,
     );
     col()
         .key(format!("document-{id}"))
@@ -23,6 +25,12 @@ pub fn view(desk: &Desk, id: &ResourceId, ink: &Ink) -> El {
         .h_full()
         .min_w(0.0)
         .min_h(0.0)
+        .selection_group(true)
+        .on_selection_change(move |d: &mut Desk, change, _| {
+            if change.started() {
+                d.focus_pane(&selected);
+            }
+        })
         .padding(PAD)
         .gap(8.0)
         .fill(ink.bg)
@@ -49,7 +57,7 @@ fn message(words: impl Into<String>, ink: &Ink) -> El {
         .child(text(words.into()).font(LABEL).color(ink.dim))
 }
 
-fn body(body: &Body, area: [f32; 2], ink: &Ink) -> El {
+fn body(body: &Body, area: [f32; 2], ink: &Ink, id: &ResourceId) -> El {
     match body {
         Body::Pending => message("Waiting for the producer’s first document…", ink),
         Body::Empty => message("Empty document · waiting for the next publication", ink),
@@ -63,6 +71,7 @@ fn body(body: &Body, area: [f32; 2], ink: &Ink) -> El {
             })
             .child(
                 text(json.clone())
+                    .key(crate::desk::resources::text_key(id))
                     .selectable(true)
                     .wrap_anywhere()
                     .font(rune::TextStyle::new(12.0, 400.0))

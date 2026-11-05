@@ -2,13 +2,31 @@
 
 use phux_client_core::org_ops::OrgOutcome;
 use phux_client_runtime::Client;
-use phux_client_runtime::control::Event;
+use phux_client_runtime::control::{Event, Observation};
 use phux_protocol::ids::ResourceId;
 use rune::Tx;
 
 use super::{Desk, NoticeKind, layout};
 
 impl Desk {
+    /// Reconcile a coalesced event batch with its latest-incarnation snapshot
+    /// before exposing any resource publications to the window.
+    pub(super) fn observe(
+        &mut self,
+        client: &Client,
+        mut observation: Observation,
+        tx: &mut Tx,
+    ) -> (bool, bool) {
+        retain_current_epoch(&mut observation.events, observation.connection_epoch);
+        let mut changed = self.follow_connection(client, &mut observation);
+        // Output alone can't move anything: no layout pass per keystroke.
+        let rearrange = changed || observation.events.iter().any(moves_layout);
+        for event in observation.events {
+            changed |= self.apply(client, event, tx);
+        }
+        (changed, rearrange)
+    }
+
     pub(super) fn apply(&mut self, client: &Client, event: Event, tx: &mut Tx) -> bool {
         // A background window shows nothing to anyone.
         let on_screen = if self.focused {
@@ -107,6 +125,20 @@ impl Desk {
             | Event::TopologyChanged
             | Event::OrganizationChanged
             | Event::Attached { .. } => true,
+            other => self.apply_document_subscription(client, other),
+        }
+    }
+
+    fn apply_document_subscription(&mut self, client: &Client, event: Event) -> bool {
+        match event {
+            Event::CommandResult { request_id, result } => {
+                self.document_subscription_result(client, request_id, result)
+            }
+            Event::TerminalDetached {
+                terminal_id,
+                error: None,
+                ..
+            } => self.document_detached(&terminal_id),
             _ => false,
         }
     }
@@ -186,4 +218,21 @@ pub(super) const fn changes_resources(event: &Event) -> bool {
             | Event::Attached { .. }
             | Event::ConnectionOpened { .. }
     )
+}
+
+/// An observation carries the latest snapshot but may span several socket
+/// incarnations. Never apply earlier resource events against that snapshot.
+/// Unknown paste receipts still reach the user; they do not address resources.
+pub(super) fn retain_current_epoch(events: &mut Vec<Event>, epoch: u64) {
+    let Some(start) = events.iter().rposition(|event| {
+        matches!(event,
+        Event::ConnectionOpened { connection_epoch } if *connection_epoch == epoch)
+    }) else {
+        return;
+    };
+    let receipts: Vec<_> = events
+        .drain(..start)
+        .filter(|event| matches!(event, Event::InputDelivery { .. }))
+        .collect();
+    events.splice(0..0, receipts);
 }

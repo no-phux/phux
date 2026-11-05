@@ -125,6 +125,7 @@ impl Desk {
             keep
         });
         for id in wanted {
+            self.subscribe_document(client, &id);
             if Some(&id) == shown.as_ref() || self.others.contains_key(&id) {
                 continue;
             }

@@ -441,13 +441,9 @@ impl Desk {
         let Some(client) = self.client.clone() else {
             return updated | self.tend_link(tx);
         };
-        let mut observation = client.take_activity();
-        let mut changed = updated | self.follow_connection(&client, &mut observation);
-        // Output alone can't move anything: no layout pass per keystroke.
-        let rearrange = changed || observation.events.iter().any(events::moves_layout);
-        for event in std::mem::take(&mut observation.events) {
-            changed |= self.apply(&client, event, tx);
-        }
+        let (news, moved) = self.observe(&client, client.take_activity(), tx);
+        let mut changed = updated | news;
+        let rearrange = updated || moved;
         changed |= self.drop_dead_views(&client);
         let opened = self.settle_home(&client) | self.open_wanted(&client);
         changed |= opened;

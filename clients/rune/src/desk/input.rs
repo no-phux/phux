@@ -98,6 +98,9 @@ impl Desk {
             self.modal_key(modal, event, action, tx);
             return true;
         }
+        if self.native_text_shortcut(event) {
+            return false;
+        }
         if let Some(action) = action {
             self.shortcut(action, tx);
             return true;
@@ -234,7 +237,7 @@ impl Desk {
     pub fn shortcut(&mut self, action: Shortcut, tx: &mut Tx) {
         match action {
             Shortcut::Copy => self.copy(tx),
-            Shortcut::SelectAll => self.select_all(),
+            Shortcut::SelectAll => self.select_all(tx),
             Shortcut::Paste => self.paste_clipboard(tx),
             Shortcut::NewTerminal => self.new_tab(),
             Shortcut::Tab(index) => self.select_tab(usize::from(index)),

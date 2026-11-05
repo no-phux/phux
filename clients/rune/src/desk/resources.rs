@@ -12,8 +12,11 @@ use phux_protocol::wire::frame::ResourceRecord;
 
 use super::Desk;
 
+mod selection;
 mod startup;
+mod subscriptions;
 pub use startup::Source;
+use subscriptions::Subscription;
 
 #[cfg(test)]
 mod tests;
@@ -40,6 +43,7 @@ pub struct Document {
     pub seq: Option<u64>,
     pub body: Body,
     image_ready: bool,
+    subscription: Subscription,
 }
 
 pub enum Body {
@@ -57,6 +61,10 @@ pub const fn document_kind(kind: ResourceKind) -> bool {
     )
 }
 
+pub fn text_key(id: &ResourceId) -> String {
+    format!("document-json-{id}")
+}
+
 impl Document {
     fn new(record: ResourceRecord) -> Self {
         Self {
@@ -64,6 +72,7 @@ impl Document {
             seq: None,
             body: Body::Pending,
             image_ready: false,
+            subscription: Subscription::Unrequested,
         }
     }
 
@@ -233,15 +242,11 @@ impl Desk {
     }
 
     pub(super) fn refresh_resources(&mut self, client: &Client) -> bool {
+        self.follow_document_server(client);
         // The replica can still report Live between transport loss and the
         // next HELLO/seed. Its old handles are not current-epoch identity.
         if self.status != phux_client_runtime::control::Status::Attached {
             return false;
-        }
-        let server = client.server().map(|s| s.id);
-        if server != self.resources.server {
-            self.retire_documents(client);
-            self.resources.server = server;
         }
         let org = client.organization();
         if !org.is_live() {
@@ -273,6 +278,16 @@ impl Desk {
         }
         drop(org);
         changed | self.adopt_pending_documents() | self.restore_document(client)
+    }
+
+    fn follow_document_server(&mut self, client: &Client) {
+        let server = client.server().map(|s| s.id);
+        // None → HELLO identity establishes this epoch; it must not retire a
+        // bootstrap cut received before the first session AttachReady.
+        if self.resources.server.is_some() && self.resources.server != server {
+            self.retire_documents(client);
+        }
+        self.resources.server = server;
     }
 
     fn adopt_pending_documents(&mut self) -> bool {
