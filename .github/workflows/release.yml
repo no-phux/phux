@@ -69,9 +69,11 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      # always(): a root failure must not strand a merged desktop release.
+      # A root failure must not strand a merged desktop release. Release Please
+      # skips refreshing PRs while any merged release PR is untagged, so the
+      # run that merges one train's PR refreshes the other's PR one run later.
       - name: Desktop train
-        if: ${{ always() && steps.app-token.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.app-token.outcome == 'success' }}
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
