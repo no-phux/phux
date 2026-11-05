@@ -7,11 +7,12 @@ use super::plumbing::{
     AttachIdVerdict, ConnectionClose, classify_attach_id, detach_on_request, reply_pong,
 };
 use crate::runtime::apps::ResourceFrame;
-use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_attach, handle_move_terminal};
+use crate::runtime::apps::terminal::attach::{SpawnRequest, handle_move_terminal};
 use crate::runtime::apps::terminal::commands::handle_viewport_resize;
 use crate::runtime::apps::terminal::terminal_streams::{
     AttachFrame, direction_invalid, is_input_frame, is_metadata_frame, is_stream_frame,
 };
+use crate::runtime::session_attach::handle_attach;
 use crate::transport::FrameReader;
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{Command, DetachReason, ErrorCode, FrameKind};
@@ -125,17 +126,9 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
         let Some(selection) = self.negotiated.as_ref() else {
             return FrameFlow::Continue(());
         };
-        // A session ATTACH is a Terminal stream: refused, not closed, on a
-        // connection that offered no Terminal profile.
-        let Some(profile) = selection.profile else {
-            crate::runtime::send_error(
-                &self.plumbing.out_tx,
-                ErrorCode::CodecUnavailable,
-                crate::runtime::apps::terminal::commands::NO_TERMINAL_PROFILE,
-            )
-            .await;
-            return FrameFlow::Continue(());
-        };
+        // SESSION ATTACH preflights actual membership: only a session with
+        // Terminals requires a Terminal profile.
+        let profile = selection.profile;
         debug!(
             client_id = ?self.client_id,
             attach_id,

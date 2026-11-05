@@ -3,11 +3,11 @@ use phux_core::ids::SessionId;
 use super::{AttachSnapshotPane, ServerState};
 
 impl ServerState {
-    /// Panes in `session` with live handles, with their wire ids.
+    /// Members of every kind in `session` with live handles and wire ids.
     #[must_use]
     pub fn attach_snapshot_panes(&mut self, session: SessionId) -> Vec<AttachSnapshotPane> {
         let mut panes = Vec::new();
-        for pid in self.legacy_panes_of(session) {
+        for pid in self.session_resources(session) {
             if let Some(handle) = self.resource_handle(pid).cloned() {
                 panes.push(AttachSnapshotPane {
                     terminal_id: pid,

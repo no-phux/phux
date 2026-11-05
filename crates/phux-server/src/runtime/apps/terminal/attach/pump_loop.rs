@@ -194,7 +194,7 @@ pub(crate) fn release_after_pump_fault(
     clippy::too_many_arguments,
     reason = "single rollback boundary deliberately receives every staged and committed resource so cancellation, producer detach, pump abortion, and the fatal sentinel remain strictly ordered"
 )]
-pub(super) async fn fail_aggregate_attach_prepublication(
+pub(crate) async fn fail_aggregate_attach_prepublication(
     state: &SharedState,
     client_id: ClientId,
     attach_id: u32,

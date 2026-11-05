@@ -35,14 +35,8 @@ impl ServerState {
         self.sessions
             .terminal_members(session)
             .into_iter()
-            .filter(|id| self.legacy_visible(*id))
+            .filter(|id| self.resource_is_visible(*id))
             .collect()
-    }
-
-    /// The synthesized window's active pane: the session's `recent`
-    /// member (R14), else its first listed one.
-    fn legacy_active_pane(&self, session: SessionId, members: &[ResourceId]) -> Option<ResourceId> {
-        active_pane(self.recent_member(session, members), members)
     }
 
     /// The session's `recent` member (R14) when it is one of `members`,
@@ -58,7 +52,7 @@ impl ServerState {
 
     /// Whether a legacy client sees `resource`: its engine is live, or its
     /// activation is current.
-    fn legacy_visible(&self, resource: ResourceId) -> bool {
+    pub(super) fn resource_is_visible(&self, resource: ResourceId) -> bool {
         self.resource_handle(resource).is_some()
             || self
                 .sessions
@@ -98,10 +92,7 @@ impl ServerState {
                 continue;
             };
             let members = self.legacy_panes_of(sid);
-            if members.is_empty()
-                && record.key == self.org().authority().intake_session()
-                && sid != focus_session
-            {
+            if self.hidden_intake(sid, focus_session, &members) {
                 continue;
             }
             let session_wire = self.idspace.intern_session(sid);
@@ -130,49 +121,77 @@ impl ServerState {
                     .with_index(0)
                     .with_active_resource(active),
             );
-            for pid in members {
-                let Some(terminal) = self.sessions.registry.terminal(pid).cloned() else {
-                    continue;
-                };
-                let resource_wire = self.intern_resource_wire(pid);
-                let cwd =
-                    Some(terminal.cwd.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
-                // ADR-0124: a retained pane reports how its process ended.
-                let exit = self.retained_exit(pid);
-                let lifecycle = if exit.is_some() {
-                    phux_protocol::wire::frame::ResourceLifecycle::Exited
-                } else {
-                    phux_protocol::wire::frame::ResourceLifecycle::Running
-                };
-                // ADR-0033: the current lease holder, if any.
-                let input_holder = self.input_lease_holder(pid).map(|holder| {
-                    phux_protocol::ids::ClientId::new(u32::try_from(holder.0).unwrap_or(u32::MAX))
-                });
-                // ADR-0127: who watches without input.
-                let viewers = self
-                    .terminal_viewers(&resource_wire)
-                    .into_iter()
-                    .map(|viewer| {
-                        phux_protocol::ids::ClientId::new(
-                            u32::try_from(viewer.0).unwrap_or(u32::MAX),
-                        )
-                    })
-                    .collect();
-                panes.push(
-                    ResourceInfo::new(resource_wire, window_wire, terminal.dims.0, terminal.dims.1)
-                        .with_title(terminal.title.clone())
-                        .with_cwd(cwd)
-                        .with_lifecycle(lifecycle)
-                        .with_exit(exit)
-                        .with_input_holder(input_holder)
-                        .with_viewers(viewers)
-                        .with_session(Some(session_wire)),
-                );
-            }
+            panes.extend(self.snapshot_terminal_rows(members, window_wire, session_wire));
         }
+        panes.extend(self.snapshot_other_rows());
 
-        // Non-Terminal resources have no window (ADR-0102): listed after the
-        // walk with `0 x 0`, `WindowId(0)`, their parent, and facet.
+        self.sessions.registry.session(focus_session)?;
+        let focused_session_wire = self.idspace.intern_session(focus_session);
+        let (focused_window_wire, focused_pane_wire) = self.snapshot_focus(focus_session);
+        let mut snapshot =
+            SessionSnapshot::new(focused_session_wire, focused_window_wire, focused_pane_wire)
+                .with_sessions(sessions)
+                .with_windows(windows)
+                .with_resources(panes);
+        if self.has_remote_listener_report() {
+            snapshot = snapshot.with_listeners(self.remote_listeners().clone());
+        }
+        Some(snapshot)
+    }
+
+    fn hidden_intake(&self, session: SessionId, focus: SessionId, members: &[ResourceId]) -> bool {
+        members.is_empty()
+            && session != focus
+            && self.registry().session_key(session) == Some(self.org().authority().intake_session())
+            && self.session_resources(session).is_empty()
+    }
+
+    fn snapshot_terminal_rows(
+        &mut self,
+        members: Vec<ResourceId>,
+        window: phux_protocol::ids::WindowId,
+        session: phux_protocol::ids::SessionId,
+    ) -> Vec<ResourceInfo> {
+        let mut rows = Vec::new();
+        for pid in members {
+            let Some(terminal) = self.registry().terminal(pid).cloned() else {
+                continue;
+            };
+            let wire = self.intern_resource_wire(pid);
+            let cwd = Some(terminal.cwd.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
+            let exit = self.retained_exit(pid);
+            let lifecycle = if exit.is_some() {
+                phux_protocol::wire::frame::ResourceLifecycle::Exited
+            } else {
+                phux_protocol::wire::frame::ResourceLifecycle::Running
+            };
+            let input_holder = self.input_lease_holder(pid).map(|holder| {
+                phux_protocol::ids::ClientId::new(u32::try_from(holder.0).unwrap_or(u32::MAX))
+            });
+            let viewers = self
+                .terminal_viewers(&wire)
+                .into_iter()
+                .map(|viewer| {
+                    phux_protocol::ids::ClientId::new(u32::try_from(viewer.0).unwrap_or(u32::MAX))
+                })
+                .collect();
+            rows.push(
+                ResourceInfo::new(wire, window, terminal.dims.0, terminal.dims.1)
+                    .with_title(terminal.title)
+                    .with_cwd(cwd)
+                    .with_lifecycle(lifecycle)
+                    .with_exit(exit)
+                    .with_input_holder(input_holder)
+                    .with_viewers(viewers)
+                    .with_session(Some(session)),
+            );
+        }
+        rows
+    }
+
+    /// Non-Terminal resources have no synthetic window or Terminal role.
+    fn snapshot_other_rows(&mut self) -> Vec<ResourceInfo> {
+        let mut panes = Vec::new();
         let others: Vec<(ResourceId, phux_core::ResourceDescriptor)> = self
             .sessions
             .registry
@@ -181,7 +200,7 @@ impl ServerState {
             .map(|(id, r)| (id, r.clone()))
             .collect();
         for (id, descriptor) in others {
-            if !self.legacy_visible(id) {
+            if !self.resource_is_visible(id) {
                 continue;
             }
             let wire = self.intern_resource_wire(id);
@@ -205,13 +224,20 @@ impl ServerState {
                     .with_session(session),
             );
         }
+        panes
+    }
 
-        self.sessions.registry.session(focus_session)?;
-        let focused_session_wire = self.idspace.intern_session(focus_session);
-        let members = self.legacy_panes_of(focus_session);
-        let focus_pane = self.legacy_active_pane(focus_session, &members);
+    fn snapshot_focus(
+        &mut self,
+        focus_session: SessionId,
+    ) -> (phux_protocol::ids::WindowId, phux_protocol::ids::ResourceId) {
+        let members = self.session_resources(focus_session);
+        let focus_pane = self
+            .active_resource_of_session(focus_session)
+            .filter(|resource| members.contains(resource))
+            .or_else(|| members.first().copied());
         // An empty session carries the `0` sentinels.
-        let (focused_window_wire, focused_pane_wire) = focus_pane.map_or_else(
+        focus_pane.map_or_else(
             || {
                 (
                     phux_protocol::ids::WindowId::new(0),
@@ -220,20 +246,14 @@ impl ServerState {
             },
             |pane| {
                 (
-                    self.intern_window_wire(focus_session),
+                    if self.registry().terminal(pane).is_some() {
+                        self.intern_window_wire(focus_session)
+                    } else {
+                        phux_protocol::ids::WindowId::new(0)
+                    },
                     self.intern_resource_wire(pane),
                 )
             },
-        );
-
-        let mut snapshot =
-            SessionSnapshot::new(focused_session_wire, focused_window_wire, focused_pane_wire)
-                .with_sessions(sessions)
-                .with_windows(windows)
-                .with_resources(panes);
-        if self.has_remote_listener_report() {
-            snapshot = snapshot.with_listeners(self.remote_listeners().clone());
-        }
-        Some(snapshot)
+        )
     }
 }

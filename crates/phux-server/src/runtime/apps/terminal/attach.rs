@@ -26,12 +26,13 @@ use tracing::{debug, trace, warn};
 
 use crate::hub::relay::SatelliteSpawn;
 use crate::resource::ResourceHandle;
+#[cfg(test)]
+use crate::runtime::prepare_attach;
 use crate::runtime::pump::{self, PumpGeneration};
 use crate::runtime::spawn_reply::{dispatch_satellite_spawn, refuse_spawn, spawned_result};
 use crate::runtime::stream_id_from;
 use crate::runtime::{
-    SpawnOwnership, prepare_attach, seed_session_with_pty_and_colors, send_error,
-    spawn_pane_with_pty_and_colors,
+    SpawnOwnership, seed_session_with_pty_and_colors, send_error, spawn_pane_with_pty_and_colors,
 };
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use phux_terminal_api::actor::{
@@ -58,7 +59,7 @@ mod target;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use bootstrap::publishes_native_checkpoints;
 pub(crate) use bootstrap::*;
-use bootstrap::{BootstrapStagingBudget, SnapshotGate, initial_bootstrap_id};
+use bootstrap::{BootstrapStagingBudget, SnapshotGate};
 #[cfg(test)]
 use bootstrap_queue::GAP_RESYNC_QUEUE_WAIT;
 pub(crate) use bootstrap_queue::*;
@@ -67,16 +68,16 @@ pub(crate) use move_terminal::*;
 pub(crate) use output_pump::*;
 use output_pump::{PaneResync, tombstone_reason_for};
 use pane_capture::PaneCaptureContext;
-use prepare::{
-    AttachStaging, CaptureFailure, ConsumerRegistration, apply_client_default_colors,
-    apply_session_role, detach_prior_state_sync_consumers, is_same_session_reattach,
-    prepare_attach_or_refuse,
+use prepare::{AttachStaging, CaptureFailure, ConsumerRegistration};
+pub(crate) use prepare::{
+    apply_client_default_colors, apply_session_role, detach_prior_state_sync_consumers,
 };
-use publication::AttachPublication;
+use publication::release_gates;
+pub(crate) use pump_loop::fail_aggregate_attach_prepublication;
 #[cfg(test)]
 use pump_loop::next_wait;
 pub(crate) use pump_loop::*;
-use pump_loop::{GapCause, fail_aggregate_attach_prepublication, run_output_pump};
+use pump_loop::{GapCause, run_output_pump};
 pub(crate) use spawn::*;
 use spawn_plan::{
     PaneSpawnPlan, build_spawn_command, forwarded_resource, log_spawn_request,

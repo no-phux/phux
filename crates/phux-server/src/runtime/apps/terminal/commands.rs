@@ -18,13 +18,11 @@ use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, DetachReason, ErrorCode,
     FrameKind, InputMode, ResourceLifecycle, StateScope, TerminalSignal, ViewportInfo,
 };
-use std::collections::HashSet;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::resource::{ResourceHandle, WrongResourceKind};
-use crate::runtime::apps::terminal::attach::AttachPrepared;
 use crate::runtime::apps::terminal::input_lane::InputLaneHandle;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use crate::runtime::commands::attach_terminal::native_checkpoint_profile;

@@ -40,6 +40,9 @@ pub mod revocation;
 #[cfg(test)]
 mod revocation_conformance;
 pub(crate) mod service_http;
+pub(crate) mod session_attach;
+#[cfg(test)]
+pub(crate) use session_attach::prepare::prepare_attach;
 mod upgrade;
 mod whoami;
 

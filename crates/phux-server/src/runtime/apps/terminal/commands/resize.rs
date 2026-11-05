@@ -1,4 +1,4 @@
-//! Terminal resize handling and attach preparation.
+//! Terminal resize handling.
 #![allow(
     clippy::wildcard_imports,
     reason = "the split command modules share the parent command namespace"
@@ -115,78 +115,4 @@ pub(in crate::runtime) fn try_resize(
             false
         }
     }
-}
-
-/// Perform the attach mutation in one critical section: attach, build the
-/// snapshot, and collect the panes that can bootstrap plus the focused-session
-/// panes without an actor, which must be closed before `ATTACH_READY` rather
-/// than stranding the client's attach barrier.
-pub(crate) fn prepare_attach(
-    state: &SharedState,
-    client_id: ClientId,
-    session: phux_core::ids::SessionId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-    client_caps: ClientCapabilities,
-    bootstrap_profile: BootstrapProfile,
-    bootstrap_limits: BootstrapLimits,
-) -> Result<AttachPrepared, crate::state::AttachError> {
-    state.with_mut(|s| {
-        // The caller pinned the session by id; its name is read here, in
-        // the same critical section as the attach, never earlier.
-        let session_name = s
-            .registry()
-            .session(session)
-            .map(|found| found.name.clone())
-            .ok_or_else(|| crate::state::AttachError::UnknownSession(format!("{session:?}")))?;
-        let session_name = session_name.as_str();
-        let pane_count = s.legacy_panes_of(session).len();
-        if pane_count > crate::runtime::apps::terminal::attach::MAX_AGGREGATE_BOOTSTRAP_PANES {
-            return Err(crate::state::AttachError::ResourceLimit);
-        }
-        let sid = s.attach(
-            client_id,
-            session_name,
-            out_tx.clone(),
-            client_caps,
-            bootstrap_profile,
-            bootstrap_limits,
-        )?;
-        s.touch_session(sid);
-        let snapshot = s
-            .build_session_snapshot(sid)
-            .ok_or_else(|| crate::state::AttachError::UnknownSession(session_name.to_owned()))?;
-        // workload-auth §6: every returned Terminal is filtered by OBSERVE.
-        let snapshot = crate::policy::filter::filter_snapshot(
-            s,
-            client_id,
-            phux_protocol::kinds::Verb::Observe,
-            snapshot,
-        );
-        let panes_to_snapshot = s.attach_snapshot_panes(sid);
-        let bootstrapped: HashSet<_> = panes_to_snapshot
-            .iter()
-            .map(|pane| pane.wire_terminal_id.clone())
-            .collect();
-        let focused_windows: HashSet<_> = snapshot
-            .windows
-            .iter()
-            .filter(|window| window.session_id == snapshot.focused_session)
-            .map(|window| window.id)
-            .collect();
-        let closed_before_ready = snapshot
-            .resources
-            .iter()
-            .filter(|pane| {
-                focused_windows.contains(&pane.window_id) && !bootstrapped.contains(&pane.id)
-            })
-            .map(|pane| pane.id.clone())
-            .collect();
-        let initial_client_id = crate::runtime::wire_client(client_id);
-        Ok((
-            snapshot,
-            initial_client_id,
-            panes_to_snapshot,
-            closed_before_ready,
-        ))
-    })
 }

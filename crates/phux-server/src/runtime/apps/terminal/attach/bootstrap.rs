@@ -68,7 +68,7 @@ pub(crate) const fn bootstrap_stream_profile(
     }
 }
 
-pub(super) const fn initial_bootstrap_id() -> BootstrapId {
+pub(crate) const fn initial_bootstrap_id() -> BootstrapId {
     match BootstrapId::new(1) {
         Some(id) => id,
         None => unreachable!(),
@@ -97,6 +97,7 @@ pub(super) struct SnapshotGate {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) wire_terminal_id: phux_protocol::ids::ResourceId,
     /// Terminal facet, for the native publication fence.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) terminal: phux_terminal_api::actor::TerminalHandle,
     pub(super) gate: oneshot::Sender<OutputPumpStart>,
     pub(super) cut: Option<u64>,
@@ -104,61 +105,14 @@ pub(super) struct SnapshotGate {
     pub(super) native_cursor: Option<phux_terminal_api::native_state::OpaqueHistoryCursor>,
 }
 
-/// Connection-wide retention ceiling for an aggregate ATTACH: every pane's
-/// bootstrap is held until the atomic publication, so the aggregate is capped
-/// at one maximal native prefix rather than scaling with the pane count.
-pub(crate) const MAX_STAGED_BOOTSTRAP_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const MAX_STAGED_BOOTSTRAP_FRAMES: usize = 4_096 + 2;
+// Compatibility re-exports for Terminal bootstrap helpers and their tests.
+#[cfg(test)]
+pub(crate) use crate::runtime::session_attach::staging::MAX_AGGREGATE_BOOTSTRAP_PANES;
+pub(crate) use crate::runtime::session_attach::staging::{
+    MAX_STAGED_BOOTSTRAP_BYTES, MAX_STAGED_BOOTSTRAP_FRAMES,
+};
 
-/// Maximum panes in one aggregate bootstrap: each needs at least
-/// `BEGIN`/`CHUNK`/`READY`, so more cannot fit the frame budget.
-pub(crate) const MAX_AGGREGATE_BOOTSTRAP_PANES: usize = MAX_STAGED_BOOTSTRAP_FRAMES / 3;
-
-#[derive(Debug)]
-pub(super) struct BootstrapStagingBudget {
-    pub(super) max_bytes: usize,
-    pub(super) max_frames: usize,
-    pub(super) staged_bytes: usize,
-    pub(super) staged_frames: usize,
-}
-
-impl BootstrapStagingBudget {
-    pub(super) const fn with_limits(max_bytes: usize, max_frames: usize) -> Self {
-        Self {
-            max_bytes,
-            max_frames,
-            staged_bytes: 0,
-            staged_frames: 0,
-        }
-    }
-
-    pub(super) const fn remaining_bytes(&self) -> usize {
-        self.max_bytes.saturating_sub(self.staged_bytes)
-    }
-
-    pub(super) const fn remaining_frames(&self) -> usize {
-        self.max_frames.saturating_sub(self.staged_frames)
-    }
-
-    pub(super) fn append_accounted(
-        &mut self,
-        staged: &mut Vec<FrameKind>,
-        incoming: &mut Vec<FrameKind>,
-        incoming_bytes: usize,
-    ) -> Result<(), ()> {
-        let incoming_frames = incoming.len();
-        let next_frames = self.staged_frames.checked_add(incoming_frames).ok_or(())?;
-        let next_bytes = self.staged_bytes.checked_add(incoming_bytes).ok_or(())?;
-        if next_frames > self.max_frames || next_bytes > self.max_bytes {
-            return Err(());
-        }
-        staged.try_reserve(incoming_frames).map_err(|_| ())?;
-        staged.append(incoming);
-        self.staged_frames = next_frames;
-        self.staged_bytes = next_bytes;
-        Ok(())
-    }
-}
+pub(crate) use crate::runtime::session_attach::staging::BootstrapStagingBudget;
 
 /// Is `profile` publishing native libghostty checkpoints?
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

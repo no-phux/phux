@@ -170,6 +170,15 @@ pub(crate) trait ResourceApp: Sync {
     /// activation by the host; it cannot undo the accepted operation.
     fn launch(&self, launch: ResourceLaunch<'_>) -> Result<(), String>;
 
+    /// Stage this kind's bounded session bootstrap and a parked live pump.
+    /// Nothing may publish until the host opens the aggregate live gate.
+    fn stage_session<'a>(
+        &'a self,
+        capture: super::session_attach::SessionCapture<'a>,
+        staging: &'a mut super::session_attach::staging::SessionStaging,
+        pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), super::session_attach::staging::CaptureFailure>>;
+
     /// Whether a multi-stream connection waits for `STREAM_BIND` before
     /// bootstrapping this kind's content.
     fn defers_stream_bootstrap(&self) -> bool;

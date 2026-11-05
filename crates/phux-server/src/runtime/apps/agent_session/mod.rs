@@ -36,6 +36,15 @@ impl ResourceApp for AgentSessionApp {
         Err("an agent-session projection must be opened by its producer".to_owned())
     }
 
+    fn stage_session<'a>(
+        &'a self,
+        capture: super::super::session_attach::SessionCapture<'a>,
+        staging: &'a mut super::super::session_attach::staging::SessionStaging,
+        pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), super::super::session_attach::staging::CaptureFailure>> {
+        attach::stage_session(capture, staging, pane).boxed_local()
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         false
     }

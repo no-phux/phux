@@ -35,6 +35,16 @@ impl ResourceApp for TerminalApp {
         super::super::launch::execute(launch)
     }
 
+    fn stage_session<'a>(
+        &'a self,
+        capture: crate::runtime::session_attach::SessionCapture<'a>,
+        staging: &'a mut crate::runtime::session_attach::staging::SessionStaging,
+        pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), crate::runtime::session_attach::staging::CaptureFailure>>
+    {
+        super::super::attach::stage_session(capture, staging, pane).boxed_local()
+    }
+
     fn defers_stream_bootstrap(&self) -> bool {
         true
     }

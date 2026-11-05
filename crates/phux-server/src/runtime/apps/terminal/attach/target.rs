@@ -7,16 +7,6 @@
 use super::*;
 use phux_terminal_api::actor::TerminalResource as _;
 
-/// What `handle_attach` needs after leaving the state lock: the snapshot, the
-/// initial client id, the panes to bootstrap, and snapshot participants with
-/// no actor (published as `RESOURCE_CLOSED` before `ATTACH_READY`).
-pub(crate) type AttachPrepared = (
-    phux_protocol::wire::info::SessionSnapshot,
-    phux_protocol::ids::ClientId,
-    Vec<AttachSnapshotPane>,
-    Vec<phux_protocol::ids::ResourceId>,
-);
-
 /// Resolve `target` to the session the attach joins: the one the dispatch
 /// guard authorized, pinned by id before the first await, or the one a
 /// `CreateIfMissing` creates. No name is re-resolved after an await, so a

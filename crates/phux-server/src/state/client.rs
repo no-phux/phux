@@ -28,8 +28,9 @@ pub struct AttachedClient {
     /// Capabilities from HELLO (SPEC §6.2); outbound bytes are downsampled
     /// to them. Without a HELLO, the permissive default.
     pub client_caps: ClientCapabilities,
-    /// Immutable bootstrap profile selected for this HELLO.
-    pub bootstrap_profile: BootstrapProfile,
+    /// Immutable Terminal profile selected for this HELLO, if one was offered.
+    /// Sessions containing only other kinds do not need one.
+    pub bootstrap_profile: Option<BootstrapProfile>,
     /// Immutable payload limits selected for this HELLO.
     pub bootstrap_limits: BootstrapLimits,
     /// Current outer viewport; shared-Terminal geometry applies the
@@ -46,14 +47,15 @@ pub struct AttachedClient {
     pub viewer: bool,
 }
 
-/// One pane target in an ATTACH snapshot pass.
+/// One resource target in an ATTACH snapshot pass. The field names retain the
+/// legacy pane vocabulary; no Terminal facet is implied by membership.
 #[derive(Debug, Clone)]
 pub struct AttachSnapshotPane {
-    /// Core pane identifier.
+    /// Core resource identifier.
     pub terminal_id: ResourceId,
-    /// Cross-task handle to the pane's engine.
+    /// Cross-task handle to the resource's engine.
     pub handle: ResourceHandle,
-    /// Stable wire id to use in `TERMINAL_SNAPSHOT` / `RESOURCE_OUTPUT`.
+    /// Stable wire id for the bootstrap and live output.
     pub wire_terminal_id: WireResourceId,
 }
 
@@ -70,6 +72,9 @@ pub enum AttachError {
     /// The session cannot fit the bounded aggregate attach preflight.
     #[error("session exceeds aggregate attach resource limits")]
     ResourceLimit,
+    /// A session containing Terminals requires a negotiated Terminal profile.
+    #[error("session contains Terminals but HELLO selected no Terminal profile")]
+    TerminalProfileUnavailable,
 }
 
 impl ServerState {
@@ -122,7 +127,7 @@ impl ServerState {
             .cloned()
     }
 
-    /// Attach a client to `session_name`, subscribing it to every pane in
+    /// Attach a client to `session_name`, subscribing it to every resource in
     /// the session. `client_caps` come from HELLO; see
     /// [`Self::attach_default_caps`] otherwise.
     pub fn attach(
@@ -131,15 +136,19 @@ impl ServerState {
         session_name: &str,
         tx: mpsc::Sender<Outbound>,
         client_caps: ClientCapabilities,
-        bootstrap_profile: BootstrapProfile,
+        bootstrap_profile: impl Into<Option<BootstrapProfile>>,
         bootstrap_limits: BootstrapLimits,
     ) -> Result<SessionId, AttachError> {
+        let bootstrap_profile = bootstrap_profile.into();
         // Resolve first: re-attaching the same session is a re-bootstrap;
         // switching sessions is refused; an unknown name stays
         // UnknownSession.
         let session_id = self
             .find_session_by_name(session_name)
             .ok_or_else(|| AttachError::UnknownSession(session_name.to_owned()))?;
+        if bootstrap_profile.is_none() && !self.session_terminals(session_id).is_empty() {
+            return Err(AttachError::TerminalProfileUnavailable);
+        }
         if let Some(existing) = self.clients.attached.get(&client_id) {
             if existing.session != session_id {
                 return Err(AttachError::AlreadyAttached(client_id));
@@ -168,7 +177,7 @@ impl ServerState {
 
         // Subscribe every pane, not just the active one: the input gate
         // drops keys to unsubscribed panes, and every pane renders live.
-        let session_panes: Vec<ResourceId> = self.sessions.terminal_members(session_id);
+        let session_panes = self.registry().members(session_id);
         for pane in session_panes {
             self.resources.subscribe(client_id, pane);
         }

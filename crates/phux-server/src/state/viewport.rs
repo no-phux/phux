@@ -82,36 +82,50 @@ impl ServerState {
         latest: Option<phux_protocol::wire::frame::ViewportInfo>,
     ) -> Option<(u16, u16)> {
         use phux_config::WindowSize;
+        self.registry().terminal(terminal)?;
         match self.config.window_size {
             WindowSize::Manual => None,
             WindowSize::Latest => latest
                 .filter(|v| v.cols > 0 && v.rows > 0)
                 .map(|v| (v.cols, v.rows)),
             WindowSize::Active => self
-                .subscribers_for_resource(terminal)
-                .iter()
-                .filter_map(|cid| self.clients.attached.get(cid))
+                .terminal_viewport_clients(terminal)
                 .filter_map(|c| Some((c.active_seq, c.viewport?)))
                 .filter(|(_, v)| v.cols > 0 && v.rows > 0)
                 .max_by_key(|(seq, _)| *seq)
                 .map(|(_, v)| (v.cols, v.rows)),
             WindowSize::Smallest | WindowSize::Largest => {
-                let viewports = self
-                    .subscribers_for_resource(terminal)
-                    .iter()
-                    .filter_map(|cid| self.clients.attached.get(cid).and_then(|c| c.viewport))
-                    .filter(|v| v.cols > 0 && v.rows > 0);
-                let mut acc: Option<(u16, u16)> = None;
-                for v in viewports {
-                    acc = Some(match (acc, self.config.window_size) {
-                        (None, _) => (v.cols, v.rows),
-                        (Some((c, r)), WindowSize::Smallest) => (c.min(v.cols), r.min(v.rows)),
-                        (Some((c, r)), _) => (c.max(v.cols), r.max(v.rows)),
-                    });
-                }
-                acc
+                self.aggregate_terminal_geometry(terminal)
             }
         }
+    }
+
+    fn terminal_viewport_clients(
+        &self,
+        terminal: ResourceId,
+    ) -> impl Iterator<Item = &super::AttachedClient> {
+        self.subscribers_for_resource(terminal)
+            .iter()
+            .filter_map(|client| self.clients.attached.get(client))
+            .filter(move |client| self.registry().session_of(terminal) == Some(client.session))
+    }
+
+    fn aggregate_terminal_geometry(&self, terminal: ResourceId) -> Option<(u16, u16)> {
+        let viewports = self
+            .terminal_viewport_clients(terminal)
+            .filter_map(|client| client.viewport)
+            .filter(|v| v.cols > 0 && v.rows > 0);
+        let mut acc: Option<(u16, u16)> = None;
+        for viewport in viewports {
+            acc = Some(match (acc, self.config.window_size) {
+                (None, _) => (viewport.cols, viewport.rows),
+                (Some((c, r)), phux_config::WindowSize::Smallest) => {
+                    (c.min(viewport.cols), r.min(viewport.rows))
+                }
+                (Some((c, r)), _) => (c.max(viewport.cols), r.max(viewport.rows)),
+            });
+        }
+        acc
     }
 
     /// The cell pixel size a Terminal should report, from the most recent
@@ -120,9 +134,8 @@ impl ServerState {
     /// `ws_xpixel / ws_col` exact. `None` until some report has metrics.
     #[must_use]
     pub fn resolve_terminal_cell_px(&self, terminal: ResourceId) -> Option<(u16, u16)> {
-        self.subscribers_for_resource(terminal)
-            .iter()
-            .filter_map(|cid| self.clients.attached.get(cid))
+        self.registry().terminal(terminal)?;
+        self.terminal_viewport_clients(terminal)
             .filter_map(|c| Some((c.viewport_seq, viewport_cell_px(c.viewport.as_ref()?)?)))
             .max_by_key(|&(seq, _)| seq)
             .map(|(_, cell)| cell)
@@ -181,9 +194,7 @@ impl ServerState {
         &self,
         terminal: ResourceId,
     ) -> Option<phux_protocol::wire::frame::ViewportInfo> {
-        self.subscribers_for_resource(terminal)
-            .iter()
-            .filter_map(|client| self.clients.attached.get(client))
+        self.terminal_viewport_clients(terminal)
             .filter_map(|client| Some((client.viewport_seq, client.viewport?)))
             .filter(|(_, viewport)| viewport.cols > 0 && viewport.rows > 0)
             .max_by_key(|(seq, _)| *seq)

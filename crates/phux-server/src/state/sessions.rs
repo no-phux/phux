@@ -48,6 +48,35 @@ impl ServerState {
         self.sessions.default_pane_of(session)
     }
 
+    /// The session's default resource, regardless of kind: its recent member,
+    /// first arranged member, or oldest member. Terminal compatibility commands
+    /// deliberately keep using [`Self::active_pane_of_session`].
+    #[must_use]
+    pub fn active_resource_of_session(&self, session: SessionId) -> Option<ResourceId> {
+        let record = self.registry().session(session)?;
+        record
+            .recent
+            .and_then(|key| self.registry().resource_id(&key))
+            .or_else(|| {
+                record
+                    .arrangement
+                    .and_then(|key| self.org().arrangement(&key))
+                    .and_then(|arrangement| arrangement.resources().into_iter().next())
+                    .and_then(|key| self.registry().resource_id(&key))
+            })
+            .or_else(|| self.registry().members(session).into_iter().next())
+    }
+
+    /// Live or activating session members, in membership order, of every kind.
+    #[must_use]
+    pub fn session_resources(&self, session: SessionId) -> Vec<ResourceId> {
+        self.registry()
+            .members(session)
+            .into_iter()
+            .filter(|id| self.resource_is_visible(*id))
+            .collect()
+    }
+
     /// The session a request with no session and no touch history lands
     /// on: the oldest session with a live pane, else the oldest one other
     /// than the Intake. Empty Intake is never picked: older clients know
@@ -64,7 +93,7 @@ impl ServerState {
         sessions.sort_by_key(|(created, _, is_intake)| (*is_intake, *created));
         sessions
             .iter()
-            .find(|(_, id, _)| !self.legacy_panes_of(*id).is_empty())
+            .find(|(_, id, _)| !self.session_resources(*id).is_empty())
             .or_else(|| sessions.iter().find(|(_, _, is_intake)| !is_intake))
             .map(|(_, id, _)| *id)
     }

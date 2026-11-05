@@ -309,7 +309,7 @@ fn attach_stores_hello_selected_bootstrap_contract_unchanged() {
     )
     .unwrap();
     let attached = &s.attached()[&cid];
-    assert_eq!(attached.bootstrap_profile, profile);
+    assert_eq!(attached.bootstrap_profile, Some(profile));
     assert_eq!(attached.bootstrap_limits, limits);
 }
 

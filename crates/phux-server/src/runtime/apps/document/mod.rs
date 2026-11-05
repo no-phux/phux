@@ -30,6 +30,8 @@ pub(crate) use spawn::spawn_document;
 
 /// What the host needs from a document kind beyond its engine.
 pub(crate) trait DocumentApi: DocumentKind {
+    /// Validate a captured payload without constructing a second document.
+    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String>;
     /// The stream profile a viewer's bootstrap names.
     const PROFILE: BootstrapStreamProfile;
     /// The kind on the wire.
@@ -46,6 +48,12 @@ pub(crate) trait DocumentApi: DocumentKind {
 }
 
 impl DocumentApi for TreeDocument {
+    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String> {
+        serde_json::from_slice::<serde::de::IgnoredAny>(bytes)
+            .map(|_| ())
+            .map_err(|error| format!("the document is not JSON: {error}"))
+    }
+
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::AccessibilityTreeJsonV1;
     const WIRE_KIND: phux_protocol::ids::ResourceKind =
         phux_protocol::ids::ResourceKind::AccessibilityTree;
@@ -68,6 +76,10 @@ impl DocumentApi for TreeDocument {
 }
 
 impl DocumentApi for SurfaceDocument {
+    fn validate_bootstrap(bytes: &[u8]) -> Result<(), String> {
+        phux_tree::png_size(bytes).map(|_| ())
+    }
+
     const PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::PixelSurfacePngV1;
     const WIRE_KIND: phux_protocol::ids::ResourceKind =
         phux_protocol::ids::ResourceKind::PixelSurface;
@@ -108,6 +120,15 @@ impl<A: DocumentApi> ResourceApp for DocumentApp<A> {
             "a {} projection must be opened by its producer",
             A::LABEL
         ))
+    }
+
+    fn stage_session<'a>(
+        &'a self,
+        capture: super::super::session_attach::SessionCapture<'a>,
+        staging: &'a mut super::super::session_attach::staging::SessionStaging,
+        pane: crate::state::AttachSnapshotPane,
+    ) -> LocalBoxFuture<'a, Result<(), super::super::session_attach::staging::CaptureFailure>> {
+        attach::stage_session::<A>(capture, staging, pane).boxed_local()
     }
 
     fn defers_stream_bootstrap(&self) -> bool {
