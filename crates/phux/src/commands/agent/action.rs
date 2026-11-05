@@ -308,6 +308,13 @@ pub(crate) enum AgentAction {
         #[usage(subcommand)]
         action: super::tree::SurfaceAction,
     },
+    /// A browser page over the Chrome debugging protocol (CDP), as a tree (its
+    /// accessibility tree) and a surface (its screencast) under one pane.
+    /// Needs a browser started with `--remote-debugging-port`.
+    Page {
+        #[usage(subcommand)]
+        action: super::tree::PageAction,
+    },
     /// Append one record to a pane's agent session.
     ///
     /// The record is one `AgentEventsJsonlV1` line: `--type` from the closed

@@ -141,6 +141,10 @@ Commands:
   log               Read a pane's agent session stream.
   native-command    Send a typed SDK intent to the exact `AgentSession` and
                     activation.
+  page              A browser page over the Chrome debugging protocol (CDP), as
+                    a tree (its accessibility tree) and a surface (its
+                    screencast) under one pane. Needs a browser started with
+                    `--remote-debugging-port`.
   prompt            Hand an agent a turn's worth of work, with a delivery
                     receipt.
   report-state      Report hook-sourced lifecycle evidence to the pane's
@@ -419,6 +423,49 @@ Flags:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
+```
+
+## `phux agent page`
+
+```text
+A browser page over the Chrome debugging protocol (CDP), as a tree (its
+accessibility tree) and a surface (its screencast) under one pane. Needs a
+browser started with `--remote-debugging-port`.
+
+Usage: phux agent page <SUBCOMMAND>
+
+Commands:
+  mirror  Mirror a browser page into a tree and a surface until Ctrl-C.
+  help    Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux agent page mirror`
+
+```text
+Mirror a browser page into a tree and a surface until Ctrl-C.
+
+Usage: phux agent page mirror [FLAGS] <PAGE>
+
+Arguments:
+  <PAGE>  A fragment of the page's title or URL, or `first`.
+
+Flags:
+      --port <PORT>    The browser's debugging port (default 9222).
+      --pane <PANE>    The pane the documents bind to; this process's own pane
+                       when absent.
+      --interval <MS>  Milliseconds between accessibility-tree reads (default
+                       1000).
+      --json
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent prompt`

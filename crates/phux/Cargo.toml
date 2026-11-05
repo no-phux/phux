@@ -39,6 +39,10 @@ phux-core.workspace = true
 # raw bytes for stdout (D9); already in the dep graph, see the workspace
 # justification.
 base64.workspace = true
+# The browser producer (`phux agent page mirror`) speaks the DevTools
+# Protocol over a plain WebSocket; reconnect tests reuse the same client.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # Defaults are controlled by this executable's feature forwarding below.
 # Other workspace consumers can retain the server's own defaults.
 phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }
@@ -153,10 +157,6 @@ phux-tui = { workspace = true, features = ["testkit"] }
 # Command-level wire mocks encode framed replies with the protocol's native
 # BytesMut API; bytes is already a workspace/runtime dependency.
 bytes.workspace = true
-# Reconnect tests inspect the real WebSocket HELLO and reuse the negotiated
-# connection, rather than substituting a transport-only readiness probe.
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # Raw-PTY harnesses (the PTY e2e suites and examples/pty_screen.rs) that run
 # the real `phux attach` in a pseudoterminal and read what it paints through a
 # libghostty oracle, with no tmux reinterpreting the byte stream.

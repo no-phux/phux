@@ -23,9 +23,12 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 const SCHEMA_VERSION: u8 = 1;
 
 mod mirror;
+mod page;
+mod page_mirror;
 mod surface;
 mod surface_mirror;
 
+pub(crate) use page::{PageAction, run_page};
 pub(crate) use surface::SurfaceAction;
 pub(crate) use surface::run_surface;
 

@@ -149,8 +149,13 @@ non-terminal kind is therefore a replicated accessibility tree
 `phux wait` and the macOS producer follow): `phux snapshot` and `phux wait`
 for an application, with no
 Screen Recording grant. A pixel surface follows (`phux-phiio.7`), drawn first
-by the desktop app, then a browser kind over CDP (`phux-phiio.8`), whose
-screencast is already acknowledged per frame.
+by the desktop app, then a browser page over CDP (`phux-phiio.8`), whose
+screencast is already acknowledged per frame. A page needed no kind of its
+own: `phux agent page mirror` drives one over the DevTools Protocol and
+publishes its accessibility tree into an `AccessibilityTree` and its
+screencast into a `PixelSurface` under one pane, so `phux agent tree
+snapshot` and `phux agent surface snapshot` read it like any other. A kind
+of its own waits for a verb the two lack, such as navigation.
 
 ## Authority
 
